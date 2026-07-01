@@ -1,0 +1,100 @@
+{
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "type": "action.tools.list.response",
+  "id": "01J7TOOLS000000000000001",
+  "scope": {
+    "kind": "session",
+    "id": "session-01J7EXAMPLE"
+  },
+  "sequence": 3,
+  "timestamp_ms": 1726170000000,
+  "payload": {
+    "sources": [
+      {
+        "kind": "process",
+        "id": "filesystem",
+        "display_name": "Filesystem Tool Source",
+        "protocol": "example-tool-source",
+        "endpoint": "stdio:filesystem-tools"
+      }
+    ],
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read UTF-8 text from a workspace file.",
+        "source": {
+          "kind": "process",
+          "id": "filesystem",
+          "display_name": "Filesystem Tool Source",
+          "protocol": "example-tool-source",
+          "endpoint": "stdio:filesystem-tools"
+        },
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "annotations": {
+          "read_only": true,
+          "requires_approval": false
+        },
+        "features": {
+          "action.tools.execute": {
+            "level": "native"
+          },
+          "action.tools.progress": {
+            "level": "unavailable",
+            "reason": "read_file returns one terminal result"
+          }
+        }
+      },
+      {
+        "name": "write_file",
+        "description": "Write text to a workspace file.",
+        "source": {
+          "kind": "process",
+          "id": "filesystem",
+          "display_name": "Filesystem Tool Source",
+          "protocol": "example-tool-source",
+          "endpoint": "stdio:filesystem-tools"
+        },
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "path",
+            "content"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "annotations": {
+          "destructive": true,
+          "requires_approval": true
+        },
+        "features": {
+          "action.tools.execute": {
+            "level": "native"
+          },
+          "action.permissions": {
+            "level": "native"
+          }
+        }
+      }
+    ]
+  }
+}

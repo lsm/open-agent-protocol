@@ -1,0 +1,224 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "run.start.response",
+    "id": "01J7CORE000000000000000",
+    "sequence": 0,
+    "timestamp_ms": 1726170000000,
+    "in_reply_to": "01J7REQUEST000000000001",
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "accepted": true,
+      "status": "queued",
+      "model_id": "example-model",
+      "input_message_ids": [
+        "msg-user-01J7CORE"
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "run.started",
+    "id": "01J7CORE000000000000001",
+    "sequence": 1,
+    "timestamp_ms": 1726170000000,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "status": "running",
+      "model_id": "example-model"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "turn.started",
+    "id": "01J7CORE000000000000002",
+    "sequence": 2,
+    "timestamp_ms": 1726170000100,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "turn_id": "turn-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "turn_id": "turn-01J7CORE",
+      "index": 0
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "content.delta",
+    "id": "01J7CORE000000000000003",
+    "sequence": 3,
+    "timestamp_ms": 1726170000200,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "turn_id": "turn-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "turn_id": "turn-01J7CORE",
+      "part": {
+        "type": "text",
+        "text": "I will inspect the README."
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "tool.call.requested",
+    "id": "01J7CORE000000000000004",
+    "sequence": 4,
+    "timestamp_ms": 1726170000300,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "turn_id": "turn-01J7CORE",
+    "tool_call_id": "tool-call-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "turn_id": "turn-01J7CORE",
+      "tool_call_id": "tool-call-01J7CORE",
+      "name": "read_file",
+      "arguments_json": "{\"path\":\"README.md\"}"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "tool.call.started",
+    "id": "01J7CORE000000000000005",
+    "sequence": 5,
+    "timestamp_ms": 1726170000400,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "tool_call_id": "tool-call-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "tool_call_id": "tool-call-01J7CORE",
+      "name": "read_file"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "tool.call.completed",
+    "id": "01J7CORE000000000000006",
+    "sequence": 6,
+    "timestamp_ms": 1726170000500,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "tool_call_id": "tool-call-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "tool_call_id": "tool-call-01J7CORE",
+      "name": "read_file",
+      "content": "# Open Agent Protocol\n\nDraft public-domain semantic protocol..."
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "turn.completed",
+    "id": "01J7CORE000000000000007",
+    "sequence": 7,
+    "timestamp_ms": 1726170000600,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "turn_id": "turn-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "turn_id": "turn-01J7CORE",
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 18,
+        "total_tokens": 138
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "run.completed",
+    "id": "01J7CORE000000000000008",
+    "sequence": 8,
+    "timestamp_ms": 1726170000700,
+    "session_id": "session-01J7CORE",
+    "run_id": "run-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "run_id": "run-01J7CORE",
+      "final_response": {
+        "role": "assistant",
+        "content": "The README describes a public-domain semantic protocol for agent runtimes, tools, model IO, and UI/controller adapters."
+      },
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 18,
+        "total_tokens": 138
+      },
+      "duration_ms": 700
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "session.state.updated",
+    "id": "01J7CORE000000000000009",
+    "sequence": 9,
+    "timestamp_ms": 1726170000800,
+    "session_id": "session-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "status": "idle",
+      "current_model_id": "example-model",
+      "transcript_cursor": "cursor-01J7CORE-final",
+      "updated_at_ms": 1726170000800
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "transcript.delta",
+    "id": "01J7CORE000000000000010",
+    "sequence": 10,
+    "timestamp_ms": 1726170000800,
+    "session_id": "session-01J7CORE",
+    "payload": {
+      "session_id": "session-01J7CORE",
+      "added": [
+        {
+          "id": "msg-assistant-01J7CORE",
+          "role": "assistant",
+          "content": "The README describes a public-domain semantic protocol for agent runtimes, tools, model IO, and UI/controller adapters."
+        }
+      ],
+      "cursor": "cursor-01J7CORE-final"
+    }
+  }
+]

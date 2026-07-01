@@ -1,0 +1,161 @@
+{
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "type": "runtime.capabilities.response",
+  "id": "01J7DEGRADED000000000001",
+  "scope": {
+    "kind": "connection",
+    "id": "runtime-adapter"
+  },
+  "sequence": 1,
+  "timestamp_ms": 1726170000000,
+  "payload": {
+    "runtime": {
+      "id": "example.adapter",
+      "name": "Example Adapter",
+      "version": "draft",
+      "adapter": "external-agent-protocol"
+    },
+    "protocol_versions": [
+      "0.1"
+    ],
+    "bindings": [
+      {
+        "kind": "json_stdio",
+        "serialization": "jsonl"
+      }
+    ],
+    "layers": {
+      "model": {
+        "features": {
+          "model.chat": {
+            "level": "emulated",
+            "reason": "adapter exposes agent turns rather than direct model calls"
+          },
+          "model.streaming": {
+            "level": "degraded",
+            "reason": "model deltas may be reconstructed from coarse progress events"
+          },
+          "model.reasoning.output": {
+            "level": "unavailable",
+            "reason": "adapter does not expose raw reasoning events"
+          },
+          "model.tool_calling": {
+            "level": "degraded",
+            "reason": "tool calls may be visible only as agent progress"
+          }
+        }
+      },
+      "action": {
+        "tool_sources": [],
+        "features": {
+          "action.tools.list": {
+            "level": "unavailable",
+            "reason": "adapter does not expose a normalized tool catalog"
+          },
+          "action.tools.execute": {
+            "level": "degraded",
+            "reason": "tool execution is mediated by the remote runtime"
+          },
+          "action.tools.progress": {
+            "level": "degraded",
+            "reason": "progress is mapped from coarse runtime notifications when available"
+          },
+          "action.tool_sources.attach": {
+            "level": "unavailable",
+            "reason": "tool-source attachment must happen inside the adapted runtime"
+          },
+          "action.permissions": {
+            "level": "emulated",
+            "reason": "permission prompts are mapped to the adapted runtime's request/response flow"
+          }
+        }
+      },
+      "agent": {
+        "features": {
+          "agent.sessions": {
+            "level": "native"
+          },
+          "agent.sessions.list": {
+            "level": "degraded",
+            "reason": "adapter can list sessions only when the adapted runtime exposes them"
+          },
+          "agent.transcript.load": {
+            "level": "degraded",
+            "reason": "adapter may reconstruct transcript history from persisted session state"
+          },
+          "agent.run.streaming": {
+            "level": "degraded",
+            "reason": "stream shape follows the adapted runtime's progress model"
+          },
+          "agent.run.instructions": {
+            "level": "degraded",
+            "reason": "adapter may only prepend instructions to user input rather than replacing runtime instructions"
+          },
+          "agent.run.tool_selection": {
+            "level": "unavailable",
+            "reason": "adapted runtime does not expose per-run tool selection"
+          },
+          "agent.run.cancel": {
+            "level": "degraded",
+            "reason": "cancel maps to cooperative cancellation when supported"
+          },
+          "agent.run.interrupt": {
+            "level": "degraded",
+            "reason": "interrupt maps to cooperative cancellation or a stop request when supported"
+          },
+          "agent.run.resume": {
+            "level": "unavailable",
+            "reason": "adapter cannot guarantee resumable run state"
+          },
+          "agent.checkpoints": {
+            "level": "unavailable",
+            "reason": "adapter does not expose checkpoint identity"
+          },
+          "agent.branch": {
+            "level": "unavailable",
+            "reason": "branching requires runtime-native checkpoint support"
+          }
+        }
+      },
+      "control": {
+        "features": {
+          "control.capabilities": {
+            "level": "native"
+          },
+          "control.models.list": {
+            "level": "degraded",
+            "reason": "model catalog may be inferred from the adapted runtime"
+          },
+          "control.auth.providers": {
+            "level": "unavailable",
+            "reason": "auth is owned by the adapted runtime"
+          }
+        }
+      }
+    },
+    "degradation": [
+      {
+        "feature": "model.reasoning.output",
+        "from": "native",
+        "to": "unavailable",
+        "mode": "stripped",
+        "reason": "adapter does not expose raw or summarized reasoning"
+      },
+      {
+        "feature": "action.tools.progress",
+        "from": "native",
+        "to": "degraded",
+        "mode": "opaque",
+        "reason": "adapter cannot always distinguish tool progress from general agent progress"
+      },
+      {
+        "feature": "agent.run.resume",
+        "from": "native",
+        "to": "unavailable",
+        "mode": "opaque",
+        "reason": "resume state is not available across the adapter boundary"
+      }
+    ]
+  }
+}

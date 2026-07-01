@@ -1,0 +1,108 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "run.status.updated",
+    "id": "01J7INPUT000000000000001",
+    "sequence": 1,
+    "timestamp_ms": 1726171000000,
+    "session_id": "session-01J7INPUT",
+    "run_id": "run-01J7INPUT",
+    "payload": {
+      "session_id": "session-01J7INPUT",
+      "run_id": "run-01J7INPUT",
+      "status": "waiting_for_input",
+      "pending_user_input_id": "input-01J7INPUT",
+      "updated_at_ms": 1726171000000
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "user.input.requested",
+    "id": "01J7INPUT000000000000002",
+    "sequence": 2,
+    "timestamp_ms": 1726171000000,
+    "session_id": "session-01J7INPUT",
+    "run_id": "run-01J7INPUT",
+    "payload": {
+      "input_request_id": "input-01J7INPUT",
+      "session_id": "session-01J7INPUT",
+      "run_id": "run-01J7INPUT",
+      "tool_call_id": "tool-call-ask-user-01J7INPUT",
+      "title": "Choose deployment target",
+      "description": "The agent needs a target before it can continue.",
+      "questions": [
+        {
+          "id": "target",
+          "prompt": "Where should the changes be deployed?",
+          "kind": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "id": "staging",
+              "label": "Staging"
+            },
+            {
+              "id": "production",
+              "label": "Production",
+              "description": "Requires an additional approval before release."
+            }
+          ]
+        }
+      ],
+      "allow_cancel": true
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "user.input.resolve.request",
+    "id": "01J7INPUT000000000000003",
+    "sequence": 3,
+    "timestamp_ms": 1726171005000,
+    "session_id": "session-01J7INPUT",
+    "run_id": "run-01J7INPUT",
+    "payload": {
+      "input_request_id": "input-01J7INPUT",
+      "session_id": "session-01J7INPUT",
+      "run_id": "run-01J7INPUT",
+      "answers": [
+        {
+          "question_id": "target",
+          "selected_option_ids": [
+            "staging"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.ui-runtime-core",
+    "type": "user.input.resolved",
+    "id": "01J7INPUT000000000000004",
+    "sequence": 4,
+    "timestamp_ms": 1726171005100,
+    "session_id": "session-01J7INPUT",
+    "run_id": "run-01J7INPUT",
+    "payload": {
+      "input_request_id": "input-01J7INPUT",
+      "session_id": "session-01J7INPUT",
+      "run_id": "run-01J7INPUT",
+      "status": "submitted",
+      "answers": [
+        {
+          "question_id": "target",
+          "selected_option_ids": [
+            "staging"
+          ]
+        }
+      ]
+    }
+  }
+]

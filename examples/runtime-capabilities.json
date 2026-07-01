@@ -1,0 +1,156 @@
+{
+  "protocol": "open-agent-protocol",
+  "version": "0.1",
+  "type": "runtime.capabilities.response",
+  "id": "01J7RUNTIME00000000000001",
+  "scope": {
+    "kind": "connection",
+    "id": "runtime-local"
+  },
+  "sequence": 1,
+  "timestamp_ms": 1726170000000,
+  "payload": {
+    "runtime": {
+      "id": "example.runtime",
+      "name": "Example Runtime",
+      "version": "draft",
+      "adapter": "native"
+    },
+    "protocol_versions": [
+      "0.1"
+    ],
+    "bindings": [
+      {
+        "kind": "json_stdio",
+        "serialization": "jsonl"
+      },
+      {
+        "kind": "websocket",
+        "serialization": "json"
+      }
+    ],
+    "layers": {
+      "model": {
+        "features": {
+          "model.chat": {
+            "level": "native"
+          },
+          "model.streaming": {
+            "level": "native"
+          },
+          "model.reasoning.output": {
+            "level": "native"
+          },
+          "model.tool_calling": {
+            "level": "native"
+          },
+          "model.tool_calling.incremental_arguments": {
+            "level": "degraded",
+            "reason": "some model providers emit only completed tool calls"
+          },
+          "model.vision": {
+            "level": "emulated",
+            "reason": "available only for models that advertise image input"
+          }
+        }
+      },
+      "action": {
+        "tool_sources": [
+          "native",
+          "process"
+        ],
+        "features": {
+          "action.tools.list": {
+            "level": "native"
+          },
+          "action.tools.execute": {
+            "level": "native"
+          },
+          "action.tools.cancel": {
+            "level": "native"
+          },
+          "action.tools.progress": {
+            "level": "native"
+          },
+          "action.tool_sources.attach": {
+            "level": "native"
+          },
+          "action.permissions": {
+            "level": "native"
+          },
+          "action.artifacts": {
+            "level": "native"
+          }
+        }
+      },
+      "agent": {
+        "features": {
+          "agent.sessions": {
+            "level": "native"
+          },
+          "agent.sessions.list": {
+            "level": "native"
+          },
+          "agent.session.persistence": {
+            "level": "native"
+          },
+          "agent.transcript.load": {
+            "level": "native"
+          },
+          "agent.run.streaming": {
+            "level": "native"
+          },
+          "agent.run.instructions": {
+            "level": "native"
+          },
+          "agent.run.tool_selection": {
+            "level": "native"
+          },
+          "agent.run.cancel": {
+            "level": "native"
+          },
+          "agent.run.interrupt": {
+            "level": "native"
+          },
+          "agent.run.resume": {
+            "level": "native"
+          },
+          "agent.checkpoints": {
+            "level": "native"
+          },
+          "agent.context.compaction": {
+            "level": "native"
+          }
+        }
+      },
+      "control": {
+        "features": {
+          "control.capabilities": {
+            "level": "native"
+          },
+          "control.models.list": {
+            "level": "native"
+          },
+          "control.models.resolve": {
+            "level": "native"
+          },
+          "control.auth.providers": {
+            "level": "native"
+          },
+          "control.auth.login": {
+            "level": "native"
+          }
+        }
+      }
+    },
+    "degradation": [
+      {
+        "feature": "model.tool_calling.incremental_arguments",
+        "from": "native",
+        "to": "degraded",
+        "mode": "buffered",
+        "reason": "some provider bridges buffer tool-call arguments until a complete JSON object is available"
+      }
+    ]
+  }
+}
