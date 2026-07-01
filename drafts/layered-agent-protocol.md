@@ -1,31 +1,53 @@
-# Open Agent Protocol Draft
+# Open Agent Protocol Layered Draft
 
 Status: draft
+Protocol ID: `open-agent-protocol`
 License: CC0-1.0 public domain dedication, or the nearest legally valid equivalent in jurisdictions that do not recognize public domain dedication.
-Scope: a shared semantic protocol for Makai, NeoKai, and independent agent tooling.
+Scope: a shared semantic protocol for agent UIs, runtime adapters, and independent agent tooling.
 
-This document defines a portable layered agent protocol. It is not a Makai wire
-protocol, a NeoKai UI API, or a replacement for ACP/MCP. It is the common
-semantic model that those systems can bind to.
+This document defines the portable layered model behind Open Agent Protocol. It
+is not a project-specific wire protocol, a project-specific UI API, or a
+replacement for existing provider, tool, or agent-control protocols. The first
+practical conformance target is the [UI Runtime Core](ui-runtime-core.md). The
+broader [UI Runtime Protocol](ui-runtime-protocol.md) uses these layers as its
+source model.
 
 ## Goals
 
 The protocol should:
 
 - let one UI or controller talk to multiple agent runtimes through one event model;
-- normalize Claude SDK, Codex CLI, Gemini CLI, Makai, MCP-backed tools, and future runtimes without hiding important differences;
+- normalize provider SDKs, CLI-backed runtimes, hosted runtimes, local runtimes,
+  and tool-backed runtimes without hiding important differences;
 - separate agent loop semantics from tool/action semantics, model IO semantics, and transport framing;
 - expose capabilities and degradation explicitly so UIs can disable, label, or reroute features safely;
-- be usable in-process, over stdio, over WebSocket, over HTTP SSE, and through adapter bridges such as ACP;
+- be usable in-process, over stdio, over WebSocket, over HTTP SSE, and through
+  other transport bindings;
 - stay small enough that runtimes can implement a useful subset.
 
 Non-goals:
 
 - internet-scale agent identity and discovery;
 - forcing all implementations onto one transport;
-- replacing MCP as a tool-server protocol;
-- requiring ACP compatibility for internal runtime adapters;
-- requiring every runtime to support checkpoints, branching, MCP, or visible reasoning.
+- replacing existing provider, tool-host, or agent-control protocols;
+- requiring compatibility with any specific external protocol;
+- requiring every runtime to support checkpoints, branching, external tool
+  hosts, or visible reasoning.
+
+## Repository Artifacts
+
+This prose draft explains the protocol semantics. The schema-like draft contract
+and complete JSON examples live beside it:
+
+- [TypeScript protocol contract](../types/protocol.ts)
+- [UI runtime core profile](ui-runtime-core.md)
+- [UI runtime protocol profile](ui-runtime-protocol.md)
+- [UI runtime core TypeScript contract](../types/core.ts)
+- [Core run stream example](../examples/core-run-stream.json)
+- [Runtime capability example](../examples/runtime-capabilities.json)
+- [Degraded adapter capability example](../examples/degraded-runtime-capabilities.json)
+- [Tool-source example](../examples/tool-source.json)
+- [UI run stream example](../examples/ui-run-stream.json)
 
 ## Layer Model
 
@@ -42,8 +64,13 @@ Examples:
 - JSON lines over stdio;
 - WebSocket messages;
 - HTTP SSE;
-- ACP bridge messages;
-- Makai's existing envelope types.
+- host-specific envelopes that preserve protocol fields.
+
+The protocol is transport agnostic. A binding may choose request/response,
+bidirectional streams, server-sent streams, in-process calls, batching,
+heartbeats, reconnect behavior, or backpressure mechanisms. Those choices must
+not change event names, payload meaning, trace correlation, scoped ordering, or
+terminal event rules.
 
 Layer 0 bindings should preserve:
 
@@ -92,10 +119,10 @@ It owns:
 - terminal tool results;
 - artifact references;
 - permissions and approval requests;
-- MCP server attachment as one possible tool source.
+- external tool-source attachment when supported.
 
-It does not require all tools to be MCP tools. MCP is a binding/source for this
-layer, not the whole layer.
+It does not require all tools to come from one tool protocol. Tool-source
+protocols are Layer 2 sources or bindings, not the whole UI runtime protocol.
 
 ### Layer 3: Agent Runtime
 
@@ -135,11 +162,13 @@ able to ask "what can this runtime do?" before starting a run.
 ## Core Envelope
 
 Every binding should be able to represent this logical envelope. Field names are
-normative for the JSON binding.
+normative for the JSON binding. The maintained TypeScript draft is
+[`types/protocol.ts`](../types/protocol.ts); this excerpt shows the required
+shape.
 
 ```ts
 export interface ProtocolEnvelope<T = unknown> {
-  protocol: "layered-agent-protocol";
+  protocol: "open-agent-protocol";
   version: "0.1";
   type: string;
   id: string;
@@ -178,7 +207,6 @@ ID rules:
 
 - IDs are opaque non-empty strings.
 - Bindings may choose stricter formats.
-- Makai can keep 21-character session IDs and 26-character ULIDs.
 - New JSON bindings should prefer ULIDs for message, run, turn, model stream,
   tool execution, and auth-flow IDs.
 
@@ -237,6 +265,32 @@ export type ContentPart =
 
 export type ReasoningVisibility = "full" | "summary" | "redacted" | "none";
 ```
+
+## Shared Primitive Records
+
+Layer-specific events should reuse shared primitive records rather than define
+one-off payload shapes. The draft TypeScript contract currently defines these
+shared primitives:
+
+- `ProtocolMessage`: role plus ordered content parts.
+- `ModelDescriptor`: provider/model identity, modalities, context limits, and
+  model feature support.
+- `ToolDescriptor`: name, JSON Schema input, optional output schema, source,
+  annotations, and tool-level features.
+- `ToolSourceDescriptor`: native, local, process, remote, hosted, or extension
+  tool source identity.
+- `ArtifactRef`: externally stored output with URI, MIME type, size, and hash
+  metadata when available.
+- `PermissionRequestPayload`: approval request with explicit choices and a
+  stable permission ID.
+- `CheckpointRef`: restorable state identity, with room for message-index,
+  transcript-snapshot, and state-snapshot implementations.
+- `CapabilityDegradation`: cumulative feature loss from provider, adapter,
+  runtime, or binding transforms.
+
+These are intentionally additive. Implementations may include extension fields,
+but portable fields should graduate into the shared contract once two or more
+independent runtimes need them.
 
 ## Event Taxonomy
 
@@ -297,9 +351,13 @@ V1-compatible runtimes may skip incremental `model.tool_call.started` and
 
 | Type | Meaning |
 | --- | --- |
+| `agent.sessions.list.request` | List known sessions when persistence is supported. |
+| `agent.sessions.list.response` | Return session summaries and pagination metadata. |
 | `agent.session.open.request` | Open a new or existing session. |
 | `agent.session.opened` | Session is available. |
 | `agent.session.closed` | Session was closed. |
+| `agent.transcript.load.request` | Load persisted session transcript messages or events. |
+| `agent.transcript.load.response` | Return persisted transcript content. |
 | `agent.run.request` | Start or continue an agent run. |
 | `agent.run.started` | Run started. |
 | `agent.turn.started` | A model/tool turn started. |
@@ -307,6 +365,7 @@ V1-compatible runtimes may skip incremental `model.tool_call.started` and
 | `agent.run.interrupt.request` | Request interruption. |
 | `agent.run.interrupted` | Run stopped at an interruptible boundary. |
 | `agent.run.resume.request` | Resume an interrupted run. |
+| `agent.run.cancel.request` | Request terminal run cancellation. |
 | `agent.run.completed` | Run completed successfully. |
 | `agent.run.failed` | Run failed terminally. |
 | `agent.run.cancelled` | Run was cancelled. |
@@ -395,7 +454,7 @@ export interface RuntimeCapabilities {
 }
 
 export interface RuntimeBinding {
-  kind: "in_process" | "json_stdio" | "websocket" | "http_sse" | "acp" | string;
+  kind: "in_process" | "json_stdio" | "websocket" | "http_sse" | string;
   serialization?: "json" | "jsonl" | "binary" | string;
   endpoint?: string;
 }
@@ -415,7 +474,7 @@ export interface ModelLayerCapabilities {
 
 export interface ActionLayerCapabilities {
   features: FeatureMap;
-  tool_sources?: Array<"native" | "mcp" | string>;
+  tool_sources?: Array<"native" | "local" | "process" | "remote" | "hosted" | string>;
 }
 
 export interface AgentLayerCapabilities {
@@ -456,7 +515,7 @@ Action layer capability examples:
 - `action.tools.execute`
 - `action.tools.cancel`
 - `action.tools.progress`
-- `action.mcp.attach`
+- `action.tool_sources.attach`
 - `action.permissions`
 - `action.artifacts`
 - `action.hash_anchored_edits`
@@ -464,8 +523,12 @@ Action layer capability examples:
 Agent layer capability examples:
 
 - `agent.sessions`
+- `agent.sessions.list`
 - `agent.session.persistence`
 - `agent.run.streaming`
+- `agent.run.instructions`
+- `agent.run.tool_selection`
+- `agent.run.cancel`
 - `agent.run.interrupt`
 - `agent.run.resume`
 - `agent.checkpoints`
@@ -496,7 +559,7 @@ Rules:
 
 - UIs must gate features on effective capabilities, not runtime brand names.
 - Bridges must report destructive transforms, especially reasoning stripping,
-  tool-call buffering, missing MCP, and non-resumable streams.
+  tool-call buffering, unavailable tool catalogs, and non-resumable streams.
 - Missing events are not a valid capability signal.
 - If a requested feature is unavailable, the runtime should fail early with a
   typed error unless the request explicitly allows degraded execution.
@@ -517,93 +580,37 @@ Example:
 
 ## Relationship To Existing Protocols
 
-ACP should be an optional external adapter boundary, not the internal source of
-truth. ACP servers can plug into NeoKai or Makai through a bridge that maps ACP
-runs and progress events into this taxonomy. The bridge should report ACP event
-loss as degradation.
+Existing provider, tool-host, and agent-control protocols can be bridged into
+Open Agent Protocol, but they are not the internal source of truth.
 
-MCP remains the preferred tool-server ecosystem for many tools. This protocol
-should represent MCP servers as Layer 2 tool sources, not replace MCP.
+A full agent-control protocol may already expose sessions, prompts, runs,
+resume, and progress. If it does not expose UI-relevant controls such as a
+portable tool catalog, instruction override, checkpoint identity, rich progress,
+or clean resume semantics, the bridge must report those gaps as degradation.
 
-A2A can wrap a whole Layer 3 runtime as one opaque collaborating agent. It does
-not expose enough internal turn, tool, and reasoning state to be the UI runtime
-protocol.
+A generic tool or message protocol may be useful underneath a runtime adapter,
+but it is not sufficient by itself for the UI runtime profile. The adapter still
+needs to expose sessions, runs, turns, capabilities, permissions, artifacts,
+transcript lifecycle, and terminal event semantics.
 
-Agent Protocol style REST controllers can be bridged as non-streaming or
-polling runtimes. They should report degraded streaming, interrupt, and progress
+Non-streaming or polling controllers can be bridged as degraded runtimes. They
+should report degraded streaming, interrupt, cancellation, and progress
 capabilities when those features are absent.
 
 The most useful borrowed design is not a whole protocol. It is:
 
 - CloudEvents-like envelope discipline;
 - OpenTelemetry-like trace/span correlation;
-- MCP-style JSON Schema tool descriptors;
+- JSON Schema tool descriptors;
 - additive-only schema evolution;
 - explicit capability descriptors rather than runtime-name checks.
 
-## Makai Binding
+## Implementation Notes
 
-Makai can bind its existing architecture without replacing current transports.
-
-Current mapping:
-
-- `protocol/provider/*` maps to Layer 1 Model IO.
-- `protocol/tool/*` maps to Layer 2 Action.
-- `protocol/agent/*` and `agent/types.zig` map to Layer 3 Agent Runtime.
-- `protocol/auth/*` and `protocol/model_catalog_types.zig` map to the control plane.
-- `transports/*` and current JSON envelopes are Layer 0 bindings.
-
-Current TypeScript event mapping:
-
-| Makai TS event | Shared event |
-| --- | --- |
-| `message_start` | `model.stream.started` |
-| `text_delta` | `model.content.delta` with `part.type = "text"` |
-| `thinking_delta` | `model.content.delta` with `part.type = "reasoning"` |
-| `tool_call` | `model.tool_call.completed` |
-| `message_end` | `model.stream.completed` |
-| provider `error` | `model.stream.failed` |
-| `agent_start` | `agent.run.started` or `agent.session.opened`, depending on scope |
-| `turn_start` | `agent.turn.started` |
-| `turn_end` | `agent.turn.completed` |
-| `tool_execution_start` | `action.call.started` |
-| `tool_execution_end` | `action.call.completed` or `action.call.failed` |
-| `agent_end` | `agent.run.completed` |
-
-Recommended Makai work:
-
-1. Add a control-plane `runtime.capabilities` response to the TypeScript SDK and
-   Zig protocol runtime.
-2. Define JSON Schema fixtures for normalized provider, action, and agent events.
-3. Replace opaque `agent_event: event_json` as a public boundary with typed
-   normalized events while preserving the existing internal Zig union.
-4. Keep existing Makai envelope sequencing and ID formats as the Makai Layer 0
-   binding.
-5. Add conformance fixtures that map current Makai events to shared events.
-
-## NeoKai Binding
-
-NeoKai should bind the protocol at the `AgentRuntimeGateway` boundary.
-
-Recommended mapping:
-
-- `AgentRuntimeGateway` exposes Layer 3 operations and control-plane discovery.
-- `AgentRuntimeAdapter` maps Claude SDK, Codex CLI, Gemini CLI, ACP servers, or
-  Makai into the shared event taxonomy.
-- `ProviderBridge` owns Layer 1 model IO transforms.
-- MCP attachment lives in Layer 2 as a tool-source capability.
-- MessageHub WebSocket remains a Layer 0 transport binding.
-- The UI gates checkpoint, rewind, branch, compaction, MCP, and reasoning views
-  from `runtime.capabilities.response`.
-
-For third-party adapters, NeoKai should accept either:
-
-- a native adapter that emits this protocol directly; or
-- an ACP adapter bridged into this protocol with explicit degradation.
-
-Do not make ACP shape the internal NeoKai event model. ACP compatibility is
-valuable at the edge, but the internal model needs richer events for reasoning,
-tool progress, checkpoints, branches, and graceful UI degradation.
+Project-specific mappings should live outside the core protocol draft. A runtime
+can implement the protocol directly, through an adapter, or through a bridge
+from another protocol, as long as the effective UI-facing behavior is described
+by capabilities and degradation records.
 
 ## Versioning
 
@@ -620,30 +627,42 @@ Compatibility rules:
 
 ## First Conformance Target
 
-A runtime is minimally conformant if it can:
+The first concrete conformance target is the
+[UI Runtime Core](ui-runtime-core.md). A runtime adapter is minimally conformant
+for that profile if it can:
 
 1. return `runtime.capabilities.response`;
-2. start an agent run or model stream;
-3. emit normalized text deltas;
-4. emit terminal success or failure exactly once per run or stream;
-5. report unavailable features as capabilities rather than relying on UI
+2. open a session with `agent.session.opened`;
+3. start an agent run with `agent.run.started`;
+4. emit normalized text deltas;
+5. emit terminal success, failure, or cancellation exactly once per run;
+6. report unavailable features as capabilities rather than relying on UI
    runtime-name checks.
+
+A lower-level Layer 1-only implementation may still be useful if it can:
+
+1. return `runtime.capabilities.response`;
+2. start a model stream;
+3. emit normalized text deltas;
+4. emit terminal success, failure, or cancellation exactly once per stream.
 
 A richer coding-agent runtime should additionally support:
 
 1. tool discovery and execution events;
 2. interrupt and cancellation;
 3. model catalog discovery;
-4. checkpoint or transcript persistence if native;
-5. artifact references for large tool output;
-6. reasoning visibility metadata.
+4. session listing and transcript loading when persistence is native;
+5. checkpoint, rewind, or branch events when supported;
+6. artifact references for large tool output;
+7. reasoning visibility metadata.
 
 ## Open Decisions
 
 - Final protocol name and package name.
 - Whether auth remains in the core control plane or becomes a standard
   extension.
-- Exact JSON Schema packaging and generated TypeScript/Zig/Rust bindings.
+- Whether to add JSON Schema packaging alongside the TypeScript draft and
+  generate TypeScript/Zig/Rust bindings from one source of truth.
 - Checkpoint identity model: message-index checkpoints, state snapshots, or both.
 - Whether public conformance tests should require a JSON binding or allow pure
   in-process adapters.
