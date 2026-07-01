@@ -14,7 +14,7 @@ The broader [UI Runtime Protocol](ui-runtime-protocol.md) is a staging area for
 richer controls. Those controls should not be required by the core unless they
 prove necessary across multiple independent UIs and runtimes.
 
-Profile and feature conformance are described in the
+Profile and conformance-unit claims are described in the
 [Conformance Draft](conformance.md).
 
 ## Design Rule

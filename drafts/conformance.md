@@ -3,17 +3,17 @@
 Status: draft
 Base protocol: `open-agent-protocol` version `0.1`
 License: CC0-1.0 public domain dedication, or the nearest legally valid equivalent in jurisdictions that do not recognize public domain dedication.
-Scope: profile and feature conformance for Open Agent Protocol implementations.
+Scope: profile and conformance-unit claims for Open Agent Protocol implementations.
 
 Conformance is profile-based. Implementations should not make a broad
 "implements Open Agent Protocol" claim without naming the profile and optional
-feature sets they support.
+conformance units they support.
 
 The first conformance target is:
 
 - `open-agent-protocol.ui-runtime-core`
 
-Feature conformance is additive:
+Conformance units are additive:
 
 - `+persistence`
 - `+tools`
@@ -27,9 +27,23 @@ Example claims:
 - `open-agent-protocol.ui-runtime-core+tools+permissions`
 - `open-agent-protocol.ui-runtime-core+persistence+tools+permissions+user-input+models`
 
-Feature labels are conformance labels, not transport names and not runtime
-brands. A runtime UI should still gate controls from `runtime.capabilities`, not
-from a hardcoded implementation name.
+Conformance units are testable units of behavior, not transport names and not
+runtime brands. A runtime UI should still gate controls from
+`runtime.capabilities`, not from a hardcoded implementation name.
+
+The leading `+` is compact claim syntax for a conformance unit. Unit names can
+also be written without the plus sign when listed in reports, manifests, or test
+plans.
+
+## Profiles And Units
+
+A profile defines a coherent implementation target. The core profile is the
+smallest UI/runtime contract expected to interoperate on its own.
+
+A conformance unit defines one independently testable optional behavior within a
+profile. Units can be implemented and tested independently when their
+dependencies are satisfied. This keeps optional capabilities visible without
+turning every optional behavior into a separate profile.
 
 ## Transport Neutrality
 
@@ -76,7 +90,7 @@ Core conformance does not require persistence, tools, permissions, user-input
 prompts, model listing, checkpointing, artifacts, auth flows, or a specific
 transport.
 
-## Optional Feature Conformance
+## Optional Conformance Units
 
 ### `+tools`
 
