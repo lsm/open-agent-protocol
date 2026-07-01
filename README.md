@@ -9,6 +9,7 @@ prompts, and transcript sync without binding to a specific transport.
 
 Current drafts:
 
+- [Conformance Draft](drafts/conformance.md)
 - [UI Runtime Core](drafts/ui-runtime-core.md)
 - [UI Runtime Protocol](drafts/ui-runtime-protocol.md)
 - [Layered Agent Protocol](drafts/layered-agent-protocol.md)

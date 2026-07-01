@@ -40,6 +40,7 @@ This prose draft explains the protocol semantics. The schema-like draft contract
 and complete JSON examples live beside it:
 
 - [TypeScript protocol contract](../types/protocol.ts)
+- [Conformance draft](conformance.md)
 - [UI runtime core profile](ui-runtime-core.md)
 - [UI runtime protocol profile](ui-runtime-protocol.md)
 - [UI runtime core TypeScript contract](../types/core.ts)
