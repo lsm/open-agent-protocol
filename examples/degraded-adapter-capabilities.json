@@ -1,16 +1,16 @@
 {
   "protocol": "open-agent-protocol",
   "version": "0.1",
-  "type": "runtime.capabilities.response",
+  "type": "capabilities.response",
   "id": "01J7DEGRADED000000000001",
   "scope": {
     "kind": "connection",
-    "id": "runtime-adapter"
+    "id": "agent-adapter"
   },
   "sequence": 1,
   "timestamp_ms": 1726170000000,
   "payload": {
-    "runtime": {
+    "endpoint": {
       "id": "example.adapter",
       "name": "Example Adapter",
       "version": "draft",
@@ -48,6 +48,7 @@
       },
       "action": {
         "tool_sources": [],
+        "tools": [],
         "features": {
           "action.tools.list": {
             "level": "unavailable",
@@ -55,81 +56,106 @@
           },
           "action.tools.execute": {
             "level": "degraded",
-            "reason": "tool execution is mediated by the remote runtime"
+            "reason": "tool execution is mediated by the remote agent service"
           },
           "action.tools.progress": {
             "level": "degraded",
-            "reason": "progress is mapped from coarse runtime notifications when available"
+            "reason": "progress is mapped from coarse agent notifications when available"
           },
           "action.tool_sources.attach": {
             "level": "unavailable",
-            "reason": "tool-source attachment must happen inside the adapted runtime"
+            "reason": "tool-source attachment must happen inside the adapted system"
           },
           "action.permissions": {
             "level": "emulated",
-            "reason": "permission prompts are mapped to the adapted runtime's request/response flow"
+            "reason": "permission prompts are mapped to the adapted system's request/response flow"
           }
         }
       },
-      "agent": {
+      "agent_control": {
+        "delivery_modes": [
+          "auto",
+          "queue"
+        ],
         "features": {
-          "agent.sessions": {
+          "session.open": {
             "level": "native"
           },
-          "agent.sessions.list": {
+          "session.list": {
             "level": "degraded",
-            "reason": "adapter can list sessions only when the adapted runtime exposes them"
+            "reason": "adapter can list sessions only when the adapted system exposes them"
           },
-          "agent.transcript.load": {
+          "transcript.load": {
             "level": "degraded",
             "reason": "adapter may reconstruct transcript history from persisted session state"
           },
-          "agent.run.streaming": {
-            "level": "degraded",
-            "reason": "stream shape follows the adapted runtime's progress model"
+          "session.message.submit": {
+            "level": "native"
           },
-          "agent.run.instructions": {
-            "level": "degraded",
-            "reason": "adapter may only prepend instructions to user input rather than replacing runtime instructions"
+          "session.message.delivery.auto": {
+            "level": "native"
           },
-          "agent.run.tool_selection": {
+          "session.message.delivery.queue": {
+            "level": "emulated",
+            "reason": "adapter queues messages in its own session wrapper"
+          },
+          "session.message.delivery.steer": {
             "level": "unavailable",
-            "reason": "adapted runtime does not expose per-run tool selection"
+            "reason": "adapted system does not expose active-run steering"
           },
-          "agent.run.cancel": {
+          "session.message.delivery.btw": {
+            "level": "unavailable",
+            "reason": "adapted system cannot run side questions without blocking the main run"
+          },
+          "run.streaming": {
+            "level": "degraded",
+            "reason": "stream shape follows the adapted system's progress model"
+          },
+          "run.instructions": {
+            "level": "degraded",
+            "reason": "adapter may only prepend instructions to user input rather than replacing native instructions"
+          },
+          "run.tool_selection": {
+            "level": "unavailable",
+            "reason": "adapted system does not expose per-run tool selection"
+          },
+          "run.cancel": {
             "level": "degraded",
             "reason": "cancel maps to cooperative cancellation when supported"
           },
-          "agent.run.interrupt": {
+          "run.interrupt": {
             "level": "degraded",
             "reason": "interrupt maps to cooperative cancellation or a stop request when supported"
           },
-          "agent.run.resume": {
+          "run.resume": {
             "level": "unavailable",
             "reason": "adapter cannot guarantee resumable run state"
           },
-          "agent.checkpoints": {
+          "checkpoint": {
             "level": "unavailable",
             "reason": "adapter does not expose checkpoint identity"
           },
-          "agent.branch": {
+          "branch": {
             "level": "unavailable",
-            "reason": "branching requires runtime-native checkpoint support"
+            "reason": "branching requires native checkpoint support"
           }
         }
       },
-      "control": {
+      "control_plane": {
         "features": {
-          "control.capabilities": {
+          "protocol.initialize": {
             "level": "native"
           },
-          "control.models.list": {
-            "level": "degraded",
-            "reason": "model catalog may be inferred from the adapted runtime"
+          "capabilities": {
+            "level": "native"
           },
-          "control.auth.providers": {
+          "models.list": {
+            "level": "degraded",
+            "reason": "model catalog may be inferred from the adapted system"
+          },
+          "auth.providers": {
             "level": "unavailable",
-            "reason": "auth is owned by the adapted runtime"
+            "reason": "auth is owned by the adapted system"
           }
         }
       }
@@ -150,11 +176,18 @@
         "reason": "adapter cannot always distinguish tool progress from general agent progress"
       },
       {
-        "feature": "agent.run.resume",
+        "feature": "run.resume",
         "from": "native",
         "to": "unavailable",
         "mode": "opaque",
         "reason": "resume state is not available across the adapter boundary"
+      },
+      {
+        "feature": "session.message.delivery.steer",
+        "from": "native",
+        "to": "unavailable",
+        "mode": "opaque",
+        "reason": "adapted system does not expose active-run steering"
       }
     ]
   }

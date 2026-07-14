@@ -2,21 +2,21 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "type": "agent.run.started",
-    "id": "01J7UIRUN000000000000001",
+    "type": "run.started",
+    "id": "01J7RCRUN000000000000001",
     "scope": {
       "kind": "run",
-      "id": "run-01J7UI"
+      "id": "run-01J7RC"
     },
     "sequence": 1,
     "timestamp_ms": 1726170000000,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC"
     },
     "payload": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
       "status": "running",
       "model_id": "example-model"
     }
@@ -24,23 +24,23 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "type": "agent.turn.started",
-    "id": "01J7UIRUN000000000000002",
+    "type": "turn.started",
+    "id": "01J7RCRUN000000000000002",
     "scope": {
       "kind": "turn",
-      "id": "turn-01J7UI-A"
+      "id": "turn-01J7RC-A"
     },
     "sequence": 1,
     "timestamp_ms": 1726170000100,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A"
     },
     "payload": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A",
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A",
       "index": 0
     }
   },
@@ -48,21 +48,21 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "model.stream.started",
-    "id": "01J7UIRUN000000000000003",
+    "id": "01J7RCRUN000000000000003",
     "scope": {
       "kind": "model_stream",
-      "id": "model-stream-01J7UI-A"
+      "id": "model-stream-01J7RC-A"
     },
     "sequence": 1,
     "timestamp_ms": 1726170000200,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A",
-      "model_stream_id": "model-stream-01J7UI-A"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A",
+      "model_stream_id": "model-stream-01J7RC-A"
     },
     "payload": {
-      "model_stream_id": "model-stream-01J7UI-A",
+      "model_stream_id": "model-stream-01J7RC-A",
       "model_id": "example-model",
       "provider_id": "example-provider"
     }
@@ -71,21 +71,21 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "model.content.delta",
-    "id": "01J7UIRUN000000000000004",
+    "id": "01J7RCRUN000000000000004",
     "scope": {
       "kind": "model_stream",
-      "id": "model-stream-01J7UI-A"
+      "id": "model-stream-01J7RC-A"
     },
     "sequence": 2,
     "timestamp_ms": 1726170000300,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A",
-      "model_stream_id": "model-stream-01J7UI-A"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A",
+      "model_stream_id": "model-stream-01J7RC-A"
     },
     "payload": {
-      "model_stream_id": "model-stream-01J7UI-A",
+      "model_stream_id": "model-stream-01J7RC-A",
       "part": {
         "type": "text",
         "text": "I will inspect the project README."
@@ -96,23 +96,23 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "model.tool_call.completed",
-    "id": "01J7UIRUN000000000000005",
+    "id": "01J7RCRUN000000000000005",
     "scope": {
       "kind": "model_stream",
-      "id": "model-stream-01J7UI-A"
+      "id": "model-stream-01J7RC-A"
     },
     "sequence": 3,
     "timestamp_ms": 1726170000400,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A",
-      "model_stream_id": "model-stream-01J7UI-A",
-      "tool_call_id": "tool-call-01J7UI"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A",
+      "model_stream_id": "model-stream-01J7RC-A",
+      "tool_call_id": "tool-call-01J7RC"
     },
     "payload": {
-      "model_stream_id": "model-stream-01J7UI-A",
-      "tool_call_id": "tool-call-01J7UI",
+      "model_stream_id": "model-stream-01J7RC-A",
+      "tool_call_id": "tool-call-01J7RC",
       "name": "read_file",
       "arguments_json": "{\"path\":\"README.md\"}"
     }
@@ -121,21 +121,21 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "model.stream.completed",
-    "id": "01J7UIRUN000000000000006",
+    "id": "01J7RCRUN000000000000006",
     "scope": {
       "kind": "model_stream",
-      "id": "model-stream-01J7UI-A"
+      "id": "model-stream-01J7RC-A"
     },
     "sequence": 4,
     "timestamp_ms": 1726170000500,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A",
-      "model_stream_id": "model-stream-01J7UI-A"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A",
+      "model_stream_id": "model-stream-01J7RC-A"
     },
     "payload": {
-      "model_stream_id": "model-stream-01J7UI-A",
+      "model_stream_id": "model-stream-01J7RC-A",
       "stop_reason": "tool_call",
       "usage": {
         "input_tokens": 120,
@@ -148,21 +148,21 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "action.call.started",
-    "id": "01J7UIRUN000000000000007",
+    "id": "01J7RCRUN000000000000007",
     "scope": {
       "kind": "tool_execution",
-      "id": "tool-call-01J7UI"
+      "id": "tool-call-01J7RC"
     },
     "sequence": 1,
     "timestamp_ms": 1726170000600,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A",
-      "tool_call_id": "tool-call-01J7UI"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A",
+      "tool_call_id": "tool-call-01J7RC"
     },
     "payload": {
-      "tool_call_id": "tool-call-01J7UI",
+      "tool_call_id": "tool-call-01J7RC",
       "name": "read_file",
       "source": {
         "kind": "process",
@@ -176,21 +176,21 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "action.call.completed",
-    "id": "01J7UIRUN000000000000008",
+    "id": "01J7RCRUN000000000000008",
     "scope": {
       "kind": "tool_execution",
-      "id": "tool-call-01J7UI"
+      "id": "tool-call-01J7RC"
     },
     "sequence": 2,
     "timestamp_ms": 1726170000700,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A",
-      "tool_call_id": "tool-call-01J7UI"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A",
+      "tool_call_id": "tool-call-01J7RC"
     },
     "payload": {
-      "tool_call_id": "tool-call-01J7UI",
+      "tool_call_id": "tool-call-01J7RC",
       "name": "read_file",
       "content": [
         {
@@ -203,45 +203,45 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "type": "agent.turn.completed",
-    "id": "01J7UIRUN000000000000009",
+    "type": "turn.completed",
+    "id": "01J7RCRUN000000000000009",
     "scope": {
       "kind": "turn",
-      "id": "turn-01J7UI-A"
+      "id": "turn-01J7RC-A"
     },
     "sequence": 2,
     "timestamp_ms": 1726170000800,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A"
     },
     "payload": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-A"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-A"
     }
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "type": "agent.turn.started",
-    "id": "01J7UIRUN000000000000010",
+    "type": "turn.started",
+    "id": "01J7RCRUN000000000000010",
     "scope": {
       "kind": "turn",
-      "id": "turn-01J7UI-B"
+      "id": "turn-01J7RC-B"
     },
     "sequence": 1,
     "timestamp_ms": 1726170000900,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-B"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-B"
     },
     "payload": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-B",
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-B",
       "index": 1
     }
   },
@@ -249,21 +249,21 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "model.stream.started",
-    "id": "01J7UIRUN000000000000011",
+    "id": "01J7RCRUN000000000000011",
     "scope": {
       "kind": "model_stream",
-      "id": "model-stream-01J7UI-B"
+      "id": "model-stream-01J7RC-B"
     },
     "sequence": 1,
     "timestamp_ms": 1726170001000,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-B",
-      "model_stream_id": "model-stream-01J7UI-B"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-B",
+      "model_stream_id": "model-stream-01J7RC-B"
     },
     "payload": {
-      "model_stream_id": "model-stream-01J7UI-B",
+      "model_stream_id": "model-stream-01J7RC-B",
       "model_id": "example-model",
       "provider_id": "example-provider"
     }
@@ -272,24 +272,24 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "model.content.delta",
-    "id": "01J7UIRUN000000000000012",
+    "id": "01J7RCRUN000000000000012",
     "scope": {
       "kind": "model_stream",
-      "id": "model-stream-01J7UI-B"
+      "id": "model-stream-01J7RC-B"
     },
     "sequence": 2,
     "timestamp_ms": 1726170001100,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-B",
-      "model_stream_id": "model-stream-01J7UI-B"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-B",
+      "model_stream_id": "model-stream-01J7RC-B"
     },
     "payload": {
-      "model_stream_id": "model-stream-01J7UI-B",
+      "model_stream_id": "model-stream-01J7RC-B",
       "part": {
         "type": "text",
-        "text": "The README describes a public-domain protocol for agent runtimes, tools, model IO, and UI/controller adapters."
+        "text": "The README describes a public-domain semantic protocol for agent software layers, agent loops, model IO, tools, resources, and adapters for existing agent SDKs."
       }
     }
   },
@@ -297,21 +297,21 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "type": "model.stream.completed",
-    "id": "01J7UIRUN000000000000013",
+    "id": "01J7RCRUN000000000000013",
     "scope": {
       "kind": "model_stream",
-      "id": "model-stream-01J7UI-B"
+      "id": "model-stream-01J7RC-B"
     },
     "sequence": 3,
     "timestamp_ms": 1726170001200,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-B",
-      "model_stream_id": "model-stream-01J7UI-B"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-B",
+      "model_stream_id": "model-stream-01J7RC-B"
     },
     "payload": {
-      "model_stream_id": "model-stream-01J7UI-B",
+      "model_stream_id": "model-stream-01J7RC-B",
       "stop_reason": "end_turn",
       "usage": {
         "input_tokens": 160,
@@ -323,23 +323,23 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "type": "agent.turn.completed",
-    "id": "01J7UIRUN000000000000014",
+    "type": "turn.completed",
+    "id": "01J7RCRUN000000000000014",
     "scope": {
       "kind": "turn",
-      "id": "turn-01J7UI-B"
+      "id": "turn-01J7RC-B"
     },
     "sequence": 2,
     "timestamp_ms": 1726170001300,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-B"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-B"
     },
     "payload": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
-      "turn_id": "turn-01J7UI-B",
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
+      "turn_id": "turn-01J7RC-B",
       "usage": {
         "input_tokens": 280,
         "output_tokens": 42,
@@ -350,21 +350,21 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "type": "agent.run.completed",
-    "id": "01J7UIRUN000000000000015",
+    "type": "run.completed",
+    "id": "01J7RCRUN000000000000015",
     "scope": {
       "kind": "run",
-      "id": "run-01J7UI"
+      "id": "run-01J7RC"
     },
     "sequence": 2,
     "timestamp_ms": 1726170001400,
     "trace": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI"
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC"
     },
     "payload": {
-      "session_id": "session-01J7UI",
-      "run_id": "run-01J7UI",
+      "session_id": "session-01J7RC",
+      "run_id": "run-01J7RC",
       "usage": {
         "input_tokens": 280,
         "output_tokens": 42,

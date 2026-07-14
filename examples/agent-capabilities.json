@@ -1,18 +1,18 @@
 {
   "protocol": "open-agent-protocol",
   "version": "0.1",
-  "type": "runtime.capabilities.response",
+  "type": "capabilities.response",
   "id": "01J7RUNTIME00000000000001",
   "scope": {
     "kind": "connection",
-    "id": "runtime-local"
+    "id": "agent-local"
   },
   "sequence": 1,
   "timestamp_ms": 1726170000000,
   "payload": {
-    "runtime": {
-      "id": "example.runtime",
-      "name": "Example Runtime",
+    "endpoint": {
+      "id": "example.agent",
+      "name": "Example Agent",
       "version": "draft",
       "adapter": "native"
     },
@@ -59,6 +59,51 @@
           "native",
           "process"
         ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "Read UTF-8 text from a workspace file.",
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "annotations": {
+              "read_only": true
+            }
+          },
+          {
+            "name": "write_file",
+            "description": "Write text to a workspace file.",
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "path",
+                "content"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "annotations": {
+              "destructive": true,
+              "requires_approval": true
+            }
+          }
+        ],
         "features": {
           "action.tools.list": {
             "level": "native"
@@ -83,61 +128,85 @@
           }
         }
       },
-      "agent": {
+      "agent_control": {
+        "delivery_modes": [
+          "auto",
+          "queue",
+          "steer",
+          "btw"
+        ],
         "features": {
-          "agent.sessions": {
+          "session.open": {
             "level": "native"
           },
-          "agent.sessions.list": {
+          "session.list": {
             "level": "native"
           },
-          "agent.session.persistence": {
+          "session.persistence": {
             "level": "native"
           },
-          "agent.transcript.load": {
+          "transcript.load": {
             "level": "native"
           },
-          "agent.run.streaming": {
+          "session.message.submit": {
             "level": "native"
           },
-          "agent.run.instructions": {
+          "session.message.delivery.auto": {
             "level": "native"
           },
-          "agent.run.tool_selection": {
+          "session.message.delivery.queue": {
             "level": "native"
           },
-          "agent.run.cancel": {
+          "session.message.delivery.steer": {
             "level": "native"
           },
-          "agent.run.interrupt": {
+          "session.message.delivery.btw": {
             "level": "native"
           },
-          "agent.run.resume": {
+          "run.streaming": {
             "level": "native"
           },
-          "agent.checkpoints": {
+          "run.instructions": {
             "level": "native"
           },
-          "agent.context.compaction": {
+          "run.tool_selection": {
+            "level": "native"
+          },
+          "run.cancel": {
+            "level": "native"
+          },
+          "run.interrupt": {
+            "level": "native"
+          },
+          "run.resume": {
+            "level": "native"
+          },
+          "checkpoint": {
+            "level": "native"
+          },
+          "context.compaction": {
             "level": "native"
           }
         }
       },
-      "control": {
+      "control_plane": {
         "features": {
-          "control.capabilities": {
+          "protocol.initialize": {
             "level": "native"
           },
-          "control.models.list": {
+          "capabilities": {
             "level": "native"
           },
-          "control.models.resolve": {
+          "models.list": {
             "level": "native"
           },
-          "control.auth.providers": {
+          "models.resolve": {
             "level": "native"
           },
-          "control.auth.login": {
+          "auth.providers": {
+            "level": "native"
+          },
+          "auth.login": {
             "level": "native"
           }
         }

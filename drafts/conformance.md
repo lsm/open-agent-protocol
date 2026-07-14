@@ -11,7 +11,7 @@ conformance units they support.
 
 The first conformance target is:
 
-- `open-agent-protocol.ui-runtime-core`
+- `open-agent-protocol.agent-control-core`
 
 Conformance units are additive:
 
@@ -20,16 +20,19 @@ Conformance units are additive:
 - `+permissions`
 - `+user-input`
 - `+models`
+- `+queue`
+- `+steer`
+- `+btw`
 
 Example claims:
 
-- `open-agent-protocol.ui-runtime-core`
-- `open-agent-protocol.ui-runtime-core+tools+permissions`
-- `open-agent-protocol.ui-runtime-core+persistence+tools+permissions+user-input+models`
+- `open-agent-protocol.agent-control-core`
+- `open-agent-protocol.agent-control-core+tools+permissions`
+- `open-agent-protocol.agent-control-core+persistence+tools+permissions+user-input+models+steer`
 
 Conformance units are testable units of behavior, not transport names and not
-runtime brands. A runtime UI should still gate controls from
-`runtime.capabilities`, not from a hardcoded implementation name.
+implementation brands. A control layer should still gate controls from
+`capabilities`, not from a hardcoded implementation name.
 
 The leading `+` is compact claim syntax for a conformance unit. Unit names can
 also be written without the plus sign when listed in reports, manifests, or test
@@ -37,8 +40,9 @@ plans.
 
 ## Profiles And Units
 
-A profile defines a coherent implementation target. The core profile is the
-smallest UI/runtime contract expected to interoperate on its own.
+A profile defines a coherent implementation target. The agent-control core
+profile is the smallest control-layer/agent-loop boundary expected to
+interoperate on its own.
 
 A conformance unit defines one independently testable optional behavior within a
 profile. Units can be implemented and tested independently when their
@@ -63,32 +67,47 @@ backpressure, and reconnection mechanics. It must preserve:
 - extension fields;
 - capability and degradation reporting.
 
+Requests initiated across the agent-control boundary must still have semantic
+request/response correlation even when the binding carries all envelopes on an
+event stream. A successful request receives exactly one correlated `*.response`
+envelope. A rejected request receives exactly one correlated `error.response`
+envelope with a typed protocol error. Stream events do not replace
+request responses.
+
 ## Core Profile Requirements
 
-An implementation conforms to `open-agent-protocol.ui-runtime-core` if it
+An implementation conforms to `open-agent-protocol.agent-control-core` if it
 satisfies all of the following:
 
 1. Emits and accepts valid core envelopes.
-2. Supports `runtime.initialize.request` and `runtime.initialize.response`.
-3. Supports `runtime.capabilities.request` and
-   `runtime.capabilities.response`.
-4. Supports `session.open.request` and `session.opened`.
+2. Supports `protocol.initialize.request` and `protocol.initialize.response`.
+3. Supports `capabilities.request` and
+   `capabilities.response`.
+4. Supports `session.open.request` and `session.open.response`.
 5. Supports `session.state.request`, `session.state.response`, and
    `session.state.updated`.
-6. Accepts `run.start.request` and returns `run.start.response`.
+6. Accepts `session.message.submit.request` and returns
+   `session.message.submit.response`.
 7. Emits `run.status.updated` for meaningful run lifecycle changes.
 8. Streams assistant-visible output through `content.delta`.
 9. Emits exactly one terminal run event for every accepted run:
    `run.completed`, `run.failed`, or `run.cancelled`.
 10. Supports `run.cancel.request`, or declares cancellation as unavailable in
-    capabilities and returns a typed unsupported-feature error if called.
-11. Returns typed errors for unsupported commands.
+    capabilities and returns a correlated `error.response` with a typed
+    unsupported-feature error if called.
+11. Returns correlated `error.response` envelopes for unsupported commands and
+    invalid requests.
 12. Enables feature gating through capabilities and degradation records rather
-    than runtime names.
+    than implementation names.
 
 Core conformance does not require persistence, tools, permissions, user-input
-prompts, model listing, checkpointing, artifacts, auth flows, or a specific
-transport.
+prompts, model listing, queue/steer/btw delivery, checkpointing, artifacts,
+auth flows, or a specific transport.
+
+Core conformance requires `auto` message delivery. An implementation that
+receives an explicit unsupported delivery mode such as `queue`, `steer`, or
+`btw` must return a correlated `error.response` with a typed
+unsupported-feature error.
 
 ## Optional Conformance Units
 
@@ -96,26 +115,37 @@ transport.
 
 An implementation conforms to `+tools` if it:
 
-- advertises `tools` with an effective support level other than `unavailable`;
+- advertises `action.tools.list` and `action.tools.execute` with effective
+  support levels other than `unavailable`;
+- exposes the effective tool catalog through `capabilities.response` or
+  `action.tools.list.response` before the control layer is expected to render
+  or apply tool controls;
 - represents callable tools with core `ToolDefinition` records;
-- emits `tool.call.requested` when a tool call is selected;
-- emits `tool.call.started` when execution begins;
-- emits `tool.call.completed` exactly once for each started tool call;
-- marks failed tool calls through `is_error` or a typed failure extension.
+- emits `action.call.requested` when a tool call is selected;
+- emits `action.call.started` when execution begins;
+- emits exactly one terminal event for each started tool call:
+  `action.call.completed`, `action.call.failed`, or `action.call.cancelled`;
+- marks failed tool calls through `action.call.failed` with a typed error.
 
-`tool.call.progress` is optional. If progress is degraded, buffered, or
+`action.call.delta` progress is optional. If progress is degraded, buffered, or
 unavailable, the implementation should say so in capabilities or degradation
 records.
+
+The `+tools` unit means the implementation reports available/effective tools to the
+control layer and emits normalized tool lifecycle events. It does not require
+the control layer to send executable tool definitions to the agent loop or
+adapter.
+Control-layer-provided tools are a separate future unit.
 
 ### `+permissions`
 
 An implementation conforms to `+permissions` if it:
 
-- advertises `permissions` with an effective support level other than
+- advertises `action.permissions` with an effective support level other than
   `unavailable`;
-- emits `permission.requested` for operations requiring user approval;
-- accepts `permission.resolve.request`;
-- emits `permission.resolved` after the runtime accepts the decision;
+- emits `action.permission.requested` for operations requiring user approval;
+- accepts `action.permission.resolve.request`;
+- emits `action.permission.resolved` after the implementation accepts the decision;
 - never encodes permission prompts as opaque text-only assistant messages.
 
 Permission prompts ask whether an operation may proceed. They should not be used
@@ -136,8 +166,8 @@ An implementation conforms to `+user-input` if it:
 - emits `user.input.resolved` after submit or cancellation;
 - resumes, fails, or cancels the run using normal run lifecycle events.
 
-Draft persistence is not required for `+user-input`. A runtime that persists
-draft answers may expose that through extensions or a richer profile.
+Draft persistence is not required for `+user-input`. An implementation that
+persists draft answers may expose that through extensions or a richer profile.
 
 ### `+persistence`
 
@@ -154,24 +184,41 @@ An implementation conforms to `+persistence` if it:
   `session.state.request`.
 
 `transcript.delta` is optional unless the implementation claims live transcript
-sync. A runtime may support historical transcript loading without live persisted
-row deltas.
+sync. An implementation may support historical transcript loading without live
+persisted row deltas.
 
 ### `+models`
 
 An implementation conforms to `+models` if it:
 
-- advertises `runtime.models.list` with an effective support level other than
+- advertises `models.list` with an effective support level other than
   `unavailable`;
-- supports `runtime.models.list.request` and `runtime.models.list.response`;
-- accepts `model_id` in `run.start.request` when model selection is advertised;
-- reports the effective model in `run.start.response`, `run.started`, or
-  session state when known;
+- supports `models.request` and `models.response`;
+- accepts `model_id` in `session.message.submit.request` when model selection
+  is advertised;
+- reports the effective model in `session.message.submit.response`,
+  `run.started`, or session state when known;
 - reports degraded or unavailable model selection explicitly when an adapter can
   only infer or approximate model control.
 
 Model cache refresh, provider auth state, and model alias resolution are outside
 this feature unless a richer profile defines them.
+
+### `+queue`, `+steer`, And `+btw`
+
+Delivery mode units are independent. An implementation conforms to one of these
+units if it:
+
+- advertises the delivery mode in capabilities;
+- accepts `session.message.submit.request` with that explicit `delivery`;
+- returns `session.message.submit.response` with matching `effective_delivery`
+  unless it returns a correlated `error.response`;
+- reports the admission result as `queued`, `steered`, or `side_started`;
+- preserves normal run status, stream, and terminal-event rules for any run it
+  starts or touches.
+
+`btw` means a lightweight side question that uses the same session environment
+and configuration but does not block the main run.
 
 ## Fixture-Based Test Plan
 
@@ -196,9 +243,10 @@ wire messages into core envelopes.
 
 ## Error Expectations
 
-Unsupported commands should fail early with a typed protocol error. A conforming
-runtime should not silently ignore unsupported commands, invent private event
-names for core semantics, or rely on UI hardcoding to avoid unsupported paths.
+Unsupported commands should fail early with a typed protocol error. A
+conforming implementation should not silently ignore unsupported commands,
+invent private event names for core semantics, or rely on control-layer
+hardcoding to avoid unsupported paths.
 
 The minimum error shape is:
 
@@ -207,14 +255,14 @@ The minimum error shape is:
 - `retriable`
 - `details`
 
-The `code` should be stable enough for UI behavior. Human-readable text belongs
-in `message`.
+The `code` should be stable enough for control-layer behavior. Human-readable
+text belongs in `message`.
 
 ## Degradation Expectations
 
 Capabilities describe the current effective behavior, not the ideal behavior of
-the underlying provider or runtime. Adapters must report destructive transforms
-as degradation.
+the underlying provider, SDK, or agent loop. Adapters must report destructive
+transforms as degradation.
 
 Common examples:
 
@@ -229,4 +277,5 @@ Common examples:
   events.
 
 Degradation records should identify the affected feature, the effective support
-level, and a reason suitable for UI display or diagnostics.
+level, and a reason suitable for control-layer handling, presentation, or
+diagnostics.

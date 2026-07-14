@@ -2,7 +2,7 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "profile": "open-agent-protocol.ui-runtime-core",
+    "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
     "id": "01J7INPUT000000000000001",
     "sequence": 1,
@@ -20,7 +20,7 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "profile": "open-agent-protocol.ui-runtime-core",
+    "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.requested",
     "id": "01J7INPUT000000000000002",
     "sequence": 2,
@@ -59,7 +59,7 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "profile": "open-agent-protocol.ui-runtime-core",
+    "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.resolve.request",
     "id": "01J7INPUT000000000000003",
     "sequence": 3,
@@ -83,7 +83,7 @@
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
-    "profile": "open-agent-protocol.ui-runtime-core",
+    "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.resolved",
     "id": "01J7INPUT000000000000004",
     "sequence": 4,

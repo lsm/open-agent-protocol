@@ -4,15 +4,16 @@ These fixtures are illustrative JSON bindings for the draft protocol. They are
 not conformance tests yet, but they are shaped so future tests can load them as
 complete protocol envelopes.
 
-- `core-run-stream.json`: ordered UI runtime core stream for a simple
-  model/tool/final-response run, including run acknowledgement and transcript
-  sync.
-- `core-user-input.json`: core user-input prompt flow, separate from permission
-  approval.
-- `runtime-capabilities.json`: direct runtime capability response.
-- `degraded-runtime-capabilities.json`: adapter capability response that reports
+- `core-run-stream.json`: ordered agent-control core stream for a simple
+  message/final-response run, including message submission, admission, run
+  status, streamed content, terminal completion, and session state.
+- `core-user-input.json`: optional `+user-input` prompt flow, separate from
+  permission approval.
+- `agent-capabilities.json`: direct agent-control capability response.
+- `degraded-adapter-capabilities.json`: adapter capability response that reports
   feature loss as degradation.
-- `tool-source.json`: Layer 2 tool discovery from a generic process-backed tool
+- `tool-source.json`: action/tool discovery from a generic process-backed tool
   source.
-- `ui-run-stream.json`: ordered UI runtime stream for a simple model/tool/model
+- `agent-control-run-stream.json`: ordered agent-control stream for a simple
+  model/tool/model
   run.
