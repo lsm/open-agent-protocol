@@ -9,6 +9,8 @@ complete protocol envelopes.
   status, streamed content, terminal completion, and session state.
 - `core-user-input.json`: optional `+user-input` prompt flow, separate from
   permission approval.
+- `presentation-control-session.json`: presentation surface attach, view
+  snapshot, user intent, renderable view updates, and affordance changes.
 - `agent-capabilities.json`: direct agent-control capability response.
 - `degraded-adapter-capabilities.json`: adapter capability response that reports
   feature loss as degradation.

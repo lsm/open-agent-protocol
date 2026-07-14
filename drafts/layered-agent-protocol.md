@@ -47,12 +47,14 @@ This prose draft explains the protocol semantics. Related profile drafts and
 complete JSON examples live beside it:
 
 - [Conformance draft](conformance.md)
+- [Presentation control profile](presentation-control-profile.md)
 - [Agent control core profile](agent-control-core.md)
 - [Agent control profile](agent-control-profile.md)
 - [Core run stream example](../examples/core-run-stream.json)
 - [Agent capability example](../examples/agent-capabilities.json)
 - [Degraded adapter capability example](../examples/degraded-adapter-capabilities.json)
 - [Tool-source example](../examples/tool-source.json)
+- [Presentation-control session example](../examples/presentation-control-session.json)
 - [Agent-control run stream example](../examples/agent-control-run-stream.json)
 
 ## Layer Model
@@ -83,7 +85,7 @@ Initial boundary profiles:
 - `agent-control-core`: the first conformance target, covering the smallest
   useful control-layer to agent-loop boundary.
 - `agent-control`: richer control-layer to agent-loop behavior.
-- `presentation-control`: future profile for renderable state, user intent, and
+- `presentation-control`: renderable state, user intent, and
   presentation-side configuration changes.
 - `agent-loop`: future profile for pure loop engines that orchestrate model,
   action, workspace, artifact, and memory profiles.
@@ -279,6 +281,33 @@ Bindings should preserve:
 - reply correlation;
 - payload type;
 - extension fields.
+
+### Presentation-Control Profile
+
+The presentation-control profile normalizes the boundary between presentation
+surfaces and the control layer.
+
+It owns:
+
+- presentation surface attachment;
+- renderable view snapshots;
+- view updates;
+- user intent;
+- affordances derived from capabilities and policy;
+- pending prompts, notifications, and diagnostics.
+
+It does not own:
+
+- agent-control request correlation;
+- agent-loop policy;
+- model provider calls;
+- tool execution;
+- storage internals;
+- visual layout or widget implementation.
+
+Presentation-control should let a GUI, TUI, editor, or web surface render a
+useful agent experience without knowing which agent loop, SDK, model provider,
+or tool host is behind the control layer.
 
 ### Agent Loop Profile
 

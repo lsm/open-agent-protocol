@@ -17,6 +17,7 @@ SDKs or protocols are implementation shims, not a separate semantic layer.
 Current drafts:
 
 - [Conformance Draft](drafts/conformance.md)
+- [Presentation Control Profile](drafts/presentation-control-profile.md)
 - [Agent Control Core](drafts/agent-control-core.md)
 - [Agent Control Profile](drafts/agent-control-profile.md)
 - [Layered Agent Protocol](drafts/layered-agent-protocol.md)
