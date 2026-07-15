@@ -3,14 +3,10 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.presentation-control",
-    "type": "presentation.attach.request",
+    "type": "view.open.request",
     "id": "01J7PRESENT000000000001",
     "timestamp_ms": 1726170000000,
     "payload": {
-      "surface": {
-        "kind": "web",
-        "name": "Example Web UI"
-      },
       "view_preferences": {
         "timeline_density": "comfortable",
         "reasoning": "summary"
@@ -21,14 +17,12 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.presentation-control",
-    "type": "presentation.attach.response",
+    "type": "view.open.response",
     "id": "01J7PRESENT000000000002",
     "timestamp_ms": 1726170000000,
     "in_reply_to": "01J7PRESENT000000000001",
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "payload": {
-      "surface_id": "surface-01J7WEB",
       "view_id": "view-01J7MAIN",
       "accepted": true,
       "profile": "open-agent-protocol.presentation-control"
@@ -41,7 +35,6 @@
     "type": "view.snapshot.request",
     "id": "01J7PRESENT000000000003",
     "timestamp_ms": 1726170000100,
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "payload": {
       "view_id": "view-01J7MAIN"
@@ -55,12 +48,10 @@
     "id": "01J7PRESENT000000000004",
     "timestamp_ms": 1726170000100,
     "in_reply_to": "01J7PRESENT000000000003",
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "payload": {
       "view": {
         "view_id": "view-01J7MAIN",
-        "surface_id": "surface-01J7WEB",
         "active_session_id": "session-01J7PC",
         "sessions": [
           {
@@ -109,7 +100,6 @@
     "type": "intent.message.submit.request",
     "id": "01J7PRESENT000000000005",
     "timestamp_ms": 1726170000200,
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "payload": {
@@ -131,7 +121,6 @@
     "id": "01J7PRESENT000000000006",
     "timestamp_ms": 1726170000200,
     "in_reply_to": "01J7PRESENT000000000005",
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "payload": {
@@ -148,7 +137,6 @@
     "id": "01J7PRESENT000000000007",
     "sequence": 1,
     "timestamp_ms": 1726170000300,
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "run_id": "run-01J7PC",
@@ -190,7 +178,6 @@
     "id": "01J7PRESENT000000000008",
     "sequence": 2,
     "timestamp_ms": 1726170000300,
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "payload": {
@@ -221,7 +208,6 @@
     "id": "01J7PRESENT000000000009",
     "sequence": 3,
     "timestamp_ms": 1726170000700,
-    "surface_id": "surface-01J7WEB",
     "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "run_id": "run-01J7PC",

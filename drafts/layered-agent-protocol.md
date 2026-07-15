@@ -285,11 +285,10 @@ Bindings should preserve:
 ### Presentation-Control Profile
 
 The presentation-control profile normalizes the boundary between presentation
-surfaces and the control layer.
+views and the control layer.
 
 It owns:
 
-- presentation surface attachment;
 - renderable view snapshots;
 - view updates;
 - user intent;

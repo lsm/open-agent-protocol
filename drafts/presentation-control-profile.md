@@ -51,11 +51,6 @@ testing, plugin integration, remote UIs, and swapping presentation surfaces.
 
 ## Core Concepts
 
-`Surface`
-
-A presentation instance attached to a control layer. Examples include one
-browser tab, editor panel, terminal process, or mobile view.
-
 `View`
 
 A renderable projection of sessions, runs, timeline rows, prompts, controls,
@@ -90,7 +85,6 @@ Required fields:
 
 Optional fields:
 
-- `surface_id`: presentation surface ID when applicable.
 - `view_id`: view ID when applicable.
 - `session_id`: selected or affected session when applicable.
 - `run_id`: selected or affected run when applicable.
@@ -99,14 +93,14 @@ Optional fields:
 - `in_reply_to`: original request ID for correlated responses.
 - `extensions`: extension object for non-profile fields.
 
-## Minimum Surface
+## Minimum Profile
 
 Every row in this table is part of the minimum useful presentation-control
 profile.
 
 | Kind | Envelope type | Correlated response | Requirement |
 | --- | --- | --- | --- |
-| command | `presentation.attach.request` | `presentation.attach.response` | Attach a presentation surface and negotiate view preferences. |
+| command | `view.open.request` | `view.open.response` | Open a renderable view and negotiate view preferences. |
 | query | `view.snapshot.request` | `view.snapshot.response` | Return current renderable state for the requested view. |
 | command | `intent.message.submit.request` | `intent.message.submit.response` | Submit user-authored message intent to the control layer. |
 | command | `intent.run.cancel.request` | `intent.run.cancel.response`, or `error.response` if unavailable | Request cancellation through control-layer policy. |
@@ -123,7 +117,6 @@ A view snapshot should be renderable without agent-loop-specific knowledge.
 Common fields:
 
 - `view_id`
-- `surface_id`
 - `active_session_id`
 - `sessions`
 - `timeline`
@@ -273,6 +266,18 @@ The following are intentionally outside presentation-control:
 - Whether `view.updated` should use a small patch language or whole-object
   replacement per section.
 - Whether draft composer synchronization belongs in core or an optional unit.
-- How much multi-surface coordination should be standardized.
 - Whether notification/toast semantics should be part of presentation-control
   or left to extensions.
+
+## Idea Pool
+
+`Surface`
+
+A surface is a specific presentation instance attached to a control layer, such
+as one browser tab, editor panel, terminal process, or mobile view. Surface
+identity could help with multi-window coordination, focus state, per-surface
+preferences, or remote UI attachment.
+
+Surface identity is intentionally outside the minimum profile for now. A simple
+implementation can treat one connection as one presentation instance and only
+use `view_id`.
