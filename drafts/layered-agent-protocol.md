@@ -284,13 +284,14 @@ Bindings should preserve:
 
 ### Presentation-Control Profile
 
-The presentation-control profile normalizes the boundary between presentation
-views and the control layer.
+The presentation-control profile normalizes the boundary between the
+presentation layer and the control layer.
 
 It owns:
 
-- renderable view snapshots;
-- view updates;
+- domain presentation targets;
+- renderable snapshots;
+- presentation updates;
 - user intent;
 - affordances derived from capabilities and policy;
 - pending prompts, notifications, and diagnostics.

@@ -3,13 +3,13 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.presentation-control",
-    "type": "view.open.request",
+    "type": "presentation.snapshot.request",
     "id": "01J7PRESENT000000000001",
     "timestamp_ms": 1726170000000,
     "payload": {
-      "view_preferences": {
-        "timeline_density": "comfortable",
-        "reasoning": "summary"
+      "target": {
+        "kind": "session",
+        "session_id": "session-01J7PC"
       }
     }
   },
@@ -17,41 +17,16 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.presentation-control",
-    "type": "view.open.response",
+    "type": "presentation.snapshot.response",
     "id": "01J7PRESENT000000000002",
     "timestamp_ms": 1726170000000,
     "in_reply_to": "01J7PRESENT000000000001",
-    "view_id": "view-01J7MAIN",
     "payload": {
-      "view_id": "view-01J7MAIN",
-      "accepted": true,
-      "profile": "open-agent-protocol.presentation-control"
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.presentation-control",
-    "type": "view.snapshot.request",
-    "id": "01J7PRESENT000000000003",
-    "timestamp_ms": 1726170000100,
-    "view_id": "view-01J7MAIN",
-    "payload": {
-      "view_id": "view-01J7MAIN"
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.presentation-control",
-    "type": "view.snapshot.response",
-    "id": "01J7PRESENT000000000004",
-    "timestamp_ms": 1726170000100,
-    "in_reply_to": "01J7PRESENT000000000003",
-    "view_id": "view-01J7MAIN",
-    "payload": {
-      "view": {
-        "view_id": "view-01J7MAIN",
+      "snapshot": {
+        "target": {
+          "kind": "session",
+          "session_id": "session-01J7PC"
+        },
         "active_session_id": "session-01J7PC",
         "sessions": [
           {
@@ -100,7 +75,6 @@
     "type": "intent.message.submit.request",
     "id": "01J7PRESENT000000000005",
     "timestamp_ms": 1726170000200,
-    "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "payload": {
       "intent_id": "intent-01J7SEND",
@@ -121,7 +95,6 @@
     "id": "01J7PRESENT000000000006",
     "timestamp_ms": 1726170000200,
     "in_reply_to": "01J7PRESENT000000000005",
-    "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "payload": {
       "intent_id": "intent-01J7SEND",
@@ -133,14 +106,17 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.presentation-control",
-    "type": "view.updated",
+    "type": "presentation.updated",
     "id": "01J7PRESENT000000000007",
     "sequence": 1,
     "timestamp_ms": 1726170000300,
-    "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "run_id": "run-01J7PC",
     "payload": {
+      "target": {
+        "kind": "session",
+        "session_id": "session-01J7PC"
+      },
       "updates": [
         {
           "op": "upsert_timeline_item",
@@ -178,9 +154,12 @@
     "id": "01J7PRESENT000000000008",
     "sequence": 2,
     "timestamp_ms": 1726170000300,
-    "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "payload": {
+      "target": {
+        "kind": "session",
+        "session_id": "session-01J7PC"
+      },
       "affordances": [
         {
           "id": "send",
@@ -204,14 +183,17 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.presentation-control",
-    "type": "view.updated",
+    "type": "presentation.updated",
     "id": "01J7PRESENT000000000009",
     "sequence": 3,
     "timestamp_ms": 1726170000700,
-    "view_id": "view-01J7MAIN",
     "session_id": "session-01J7PC",
     "run_id": "run-01J7PC",
     "payload": {
+      "target": {
+        "kind": "session",
+        "session_id": "session-01J7PC"
+      },
       "updates": [
         {
           "op": "upsert_timeline_item",

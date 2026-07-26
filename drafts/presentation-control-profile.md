@@ -51,11 +51,17 @@ testing, plugin integration, remote UIs, and swapping presentation surfaces.
 
 ## Core Concepts
 
-`View`
+`Target`
 
-A renderable projection of sessions, runs, timeline rows, prompts, controls,
-diagnostics, and selection state. It is optimized for presentation, not for
-agent-loop execution.
+A stable domain object the presentation layer wants to present, such as a
+session, task, artifact, or dashboard. A target identifies what data is being
+requested; it does not identify a page, component, browser tab, or layout.
+
+`Snapshot`
+
+Presentation-ready state for a target at a point in time. A snapshot may
+contain sessions, timeline rows, prompts, controls, diagnostics, and selection
+state. It is optimized for presentation, not for agent-loop execution.
 
 `Intent`
 
@@ -85,7 +91,6 @@ Required fields:
 
 Optional fields:
 
-- `view_id`: view ID when applicable.
 - `session_id`: selected or affected session when applicable.
 - `run_id`: selected or affected run when applicable.
 - `sequence`: scoped ordering number.
@@ -100,23 +105,32 @@ profile.
 
 | Kind | Envelope type | Correlated response | Requirement |
 | --- | --- | --- | --- |
-| command | `view.open.request` | `view.open.response` | Open a renderable view and negotiate view preferences. |
-| query | `view.snapshot.request` | `view.snapshot.response` | Return current renderable state for the requested view. |
+| query | `presentation.snapshot.request` | `presentation.snapshot.response` | Return current presentation-ready state for a domain target. |
 | command | `intent.message.submit.request` | `intent.message.submit.response` | Submit user-authored message intent to the control layer. |
 | command | `intent.run.cancel.request` | `intent.run.cancel.response`, or `error.response` if unavailable | Request cancellation through control-layer policy. |
-| event | `view.updated` | not a response | Send renderable state updates after accepted intent or agent-control events. |
+| event | `presentation.updated` | not a response | Send presentation-ready updates for a target after accepted intent or agent-control events. |
 | event | `affordances.updated` | not a response | Send changed visible/enabled controls derived from capabilities and policy. |
 
 As with agent-control, requests have semantic request/response correlation.
 Renderable update events do not replace correlated responses.
 
-## View State Shape
+## Target Shape
 
-A view snapshot should be renderable without agent-loop-specific knowledge.
+A target is an extensible discriminated object. The minimum profile defines:
+
+- `{ "kind": "session", "session_id": "..." }`
+
+The identifier required by a target depends on its `kind`. Unknown target kinds
+may be carried through extensions. Richer profiles may define targets such as
+tasks, artifacts, or dashboards.
+
+## Snapshot Shape
+
+A snapshot should be renderable without agent-loop-specific knowledge.
 
 Common fields:
 
-- `view_id`
+- `target`
 - `active_session_id`
 - `sessions`
 - `timeline`
@@ -234,7 +248,7 @@ The control layer owns:
 - policy and capability gating;
 - optimistic update reconciliation;
 - retry and reconnect behavior;
-- projecting agent-control streams into view updates;
+- projecting agent-control streams into presentation updates;
 - producing affordances from capabilities, policy, and current state.
 
 ## Presentation Responsibilities
@@ -263,7 +277,7 @@ The following are intentionally outside presentation-control:
 
 ## Open Decisions
 
-- Whether `view.updated` should use a small patch language or whole-object
+- Whether `presentation.updated` should use a small patch language or whole-object
   replacement per section.
 - Whether draft composer synchronization belongs in core or an optional unit.
 - Whether notification/toast semantics should be part of presentation-control
@@ -279,5 +293,19 @@ identity could help with multi-window coordination, focus state, per-surface
 preferences, or remote UI attachment.
 
 Surface identity is intentionally outside the minimum profile for now. A simple
-implementation can treat one connection as one presentation instance and only
-use `view_id`.
+implementation can treat one connection as one presentation instance.
+
+`Observation`
+
+A live binding may need an opaque `observation_id` or `subscription_id` to
+resume an update stream, scope sequence numbers, or release server-side
+resources. This identifies an observation of a target, not a UI view. Snapshot
+queries do not require one, so observation identity is intentionally outside
+the minimum profile.
+
+`Projection`
+
+Some applications may need more than one semantic data shape for the same
+target. An optional projection hint such as `compact_thread` could select that
+shape. This should only be standardized if target kinds cannot express the
+actual domain distinction; it must not become a component or layout name.
