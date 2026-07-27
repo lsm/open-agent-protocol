@@ -67,7 +67,7 @@ events, implementation brand checks, or private adapter state.
 
 Policy and orchestration layer. It turns user or system intent into protocol
 operations, applies capability gates, selects effective models and tool policy,
-resolves permissions, decides `auto`, `queue`, `steer`, or `btw` delivery,
+resolves permissions, resolves requested delivery into concrete behavior,
 correlates requests and responses, manages reconnect and state recovery, and
 talks to one or more agent loops or agent-control endpoints.
 
@@ -392,10 +392,11 @@ Run control commands are capability-gated.
 
 `session.message.submit.request`
 
-Submits user-visible messages to a session. When the session is idle, the agent
-loop normally admits the submission by starting a run. When the session is
-active, `delivery` can request `queue`, `steer`, or `btw` behavior when those
-modes are advertised.
+Submits user-visible messages to a session. `delivery` is the requested
+delivery policy. It may be `auto`, `queue`, `steer`, or `btw`. `auto` asks the
+authoritative admission layer to resolve the concrete behavior from current
+session state, configured policy, capabilities, and degradation. This avoids
+requiring a caller to make the decision from potentially stale state.
 
 When supported, the request may include the selected `model_id`, additional
 `instructions`, `tool_choice`, and structured output preferences. `tool_choice`
@@ -406,8 +407,10 @@ that cannot honor instruction override or tool selection should report
 unavailable.
 
 The response is `session.message.submit.response`. It acknowledges admission,
-not completion, and reports the effective delivery mode, admission result, and
-run ID when a run was started, queued, steered, or side-started.
+not completion, and reports `requested_delivery`, concrete
+`effective_delivery`, admission result, and run ID when a run was started,
+queued, steered, or side-started. Effective delivery is `start`, `queue`,
+`steer`, or `btw`; it is never `auto`.
 
 `run.cancel.request`
 

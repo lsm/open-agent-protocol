@@ -175,13 +175,20 @@ the session is idle, the agent loop normally admits the submission by starting a
 run. If the session is already active, the requested delivery mode tells the
 agent loop how the control layer wants the message handled.
 
-Delivery modes:
+Requested delivery values:
 
-- `auto`: let the agent loop choose the normal behavior for the current state;
+- `auto`: resolve delivery authoritatively at admission time from current
+  session state, capabilities, and configured policy;
 - `queue`: run the message after current work reaches a safe boundary;
 - `steer`: inject guidance into active work at a safe boundary;
 - `btw`: answer a lightweight side question in the same environment and
   configuration without blocking the main run.
+
+`auto` is a resolution policy, not a concrete delivery outcome. It exists so a
+caller does not need to derive delivery from session state that may be stale by
+the time the request is admitted. An idle session normally resolves `auto` to
+`start`. An active session may resolve it to `queue`, `steer`, or `btw`
+according to authoritative configuration and supported capabilities.
 
 Core conformance requires `auto`. `queue`, `steer`, and `btw` are optional and
 must be advertised through capabilities before a control layer depends on them.
@@ -212,11 +219,18 @@ belong in a richer optional unit.
 
 The endpoint must answer an accepted `session.message.submit.request` with
 `session.message.submit.response` before or alongside the stream. The response
-returns a `submission_id`, the `effective_delivery`, the admission result,
-accepted message IDs when available, the effective `model_id` when known, and a
-`run_id` when the submission starts, queues, steers, or side-starts a run. This
-lets a control layer track optimistic input, correlate retries, and recover if
-the stream connection reconnects before `run.started` arrives.
+returns a `submission_id`, `requested_delivery`, `effective_delivery`, the
+admission result, accepted message IDs when available, the effective `model_id`
+when known, and a `run_id` when the submission starts, queues, steers, or
+side-starts a run.
+
+`requested_delivery` repeats the request value. `effective_delivery` is always
+the concrete admitted behavior: `start`, `queue`, `steer`, or `btw`; it must
+never be `auto`. When the request uses `auto`, the response may include
+`delivery_resolution` explaining the choice, such as `session_idle` or
+`configured_default`. This lets a control layer reconcile stale state, track
+optimistic input, correlate retries, and recover if the stream connection
+reconnects before `run.started` arrives.
 
 Core run statuses are `queued`, `running`, `waiting_for_input`, `cancelling`,
 `completed`, `failed`, and `cancelled`. `run.status.updated` should be emitted

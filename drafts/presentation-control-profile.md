@@ -190,6 +190,12 @@ layer and are not part of the minimum snapshot.
 - `enabled`
 - `disabled_reason`
 
+`delivery` is the selected requested-delivery policy. It may remain `auto`
+regardless of the visible session status. Presentation must not resolve `auto`
+from its local snapshot because that state may be stale when admission occurs.
+Control resolves it authoritatively and returns the requested and effective
+delivery in `intent.message.submit.response`.
+
 ### Affordance
 
 - `id`
@@ -264,7 +270,10 @@ Common minimum and near-core intents:
 | `intent.artifact.open.request` | User wants to open or retrieve an artifact. |
 
 Intent responses acknowledge whether the control layer accepted the intent. They
-do not mean the underlying agent loop completed the requested work.
+do not mean the underlying agent loop completed the requested work. An accepted
+message-submit response reports `requested_delivery`, concrete
+`effective_delivery`, and `admission` so Presentation can reconcile automatic
+delivery without inferring it from local run state.
 
 ## Control Responsibilities
 

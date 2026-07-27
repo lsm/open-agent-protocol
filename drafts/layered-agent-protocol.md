@@ -624,7 +624,7 @@ V1-compatible implementations may skip incremental `model.tool_call.started` and
 | `transcript.load.request` | Load persisted session transcript messages or events. |
 | `transcript.load.response` | Return persisted transcript content. |
 | `session.message.submit.request` | Submit user-visible messages to a session. |
-| `session.message.submit.response` | Acknowledge submission admission and effective delivery. |
+| `session.message.submit.response` | Acknowledge submission admission and report requested and concrete effective delivery. |
 | `run.started` | Run started. |
 | `run.status.updated` | Run status changed meaningfully. |
 | `turn.started` | A model/tool turn started. |
@@ -735,7 +735,9 @@ Feature support records contain:
 
 Layer capability sections contain a `features` map keyed by feature name. The
 action layer may also report `tool_sources`; the agent-control layer may also
-report delivery modes such as `auto`, `queue`, `steer`, and `btw`.
+report requested delivery values such as `auto`, `queue`, `steer`, and `btw`.
+`auto` is resolved at admission time; concrete effective delivery is `start`,
+`queue`, `steer`, or `btw`.
 
 Degradation records contain:
 

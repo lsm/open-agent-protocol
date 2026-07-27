@@ -97,7 +97,11 @@
     "payload": {
       "intent_id": "intent-01J7SEND",
       "accepted": true,
-      "control_request_id": "01J7REQUEST000000000001"
+      "control_request_id": "01J7REQUEST000000000001",
+      "requested_delivery": "auto",
+      "effective_delivery": "start",
+      "delivery_resolution": "session_idle",
+      "admission": "started"
     }
   },
   {

@@ -109,6 +109,11 @@ receives an explicit unsupported delivery mode such as `queue`, `steer`, or
 `btw` must return a correlated `error.response` with a typed
 unsupported-feature error.
 
+For an accepted `auto` submission, the response must repeat
+`requested_delivery: auto` and report a concrete `effective_delivery` of
+`start`, `queue`, `steer`, or `btw`. It must not report `auto` as the effective
+delivery.
+
 ## Optional Conformance Units
 
 ### `+tools`
@@ -211,8 +216,9 @@ units if it:
 
 - advertises the delivery mode in capabilities;
 - accepts `session.message.submit.request` with that explicit `delivery`;
-- returns `session.message.submit.response` with matching `effective_delivery`
-  unless it returns a correlated `error.response`;
+- returns `session.message.submit.response` with matching `requested_delivery`
+  and concrete `effective_delivery` unless it returns a correlated
+  `error.response`;
 - reports the admission result as `queued`, `steered`, or `side_started`;
 - preserves normal run status, stream, and terminal-event rules for any run it
   starts or touches.
