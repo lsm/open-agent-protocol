@@ -27,44 +27,42 @@
           "kind": "session",
           "session_id": "session-01J7PC"
         },
-        "active_session_id": "session-01J7PC",
-        "sessions": [
-          {
+        "revision": 1,
+        "state": {
+          "session": {
             "session_id": "session-01J7PC",
             "title": "Example session",
             "status": "idle",
             "updated_at_ms": 1726170000100
-          }
-        ],
-        "timeline": [],
-        "composer": {
-          "session_id": "session-01J7PC",
-          "draft": "",
-          "delivery": "auto",
-          "selected_model_id": "example-model",
-          "selected_tools": [],
-          "enabled": true
-        },
-        "affordances": [
-          {
-            "id": "send",
-            "kind": "send_message",
-            "visible": true,
-            "enabled": true,
-            "support": "native"
           },
-          {
-            "id": "cancel",
-            "kind": "cancel_run",
-            "visible": true,
-            "enabled": false,
-            "support": "native",
-            "reason": "No run is active."
-          }
-        ],
-        "pending_prompts": [],
-        "notifications": [],
-        "diagnostics": []
+          "timeline": [],
+          "composer": {
+            "session_id": "session-01J7PC",
+            "delivery": "auto",
+            "selected_model_id": "example-model",
+            "selected_tools": [],
+            "enabled": true
+          },
+          "affordances": [
+            {
+              "id": "send",
+              "kind": "send_message",
+              "visible": true,
+              "enabled": true,
+              "support": "native"
+            },
+            {
+              "id": "cancel",
+              "kind": "cancel_run",
+              "visible": true,
+              "enabled": false,
+              "support": "native",
+              "reason": "No run is active."
+            }
+          ],
+          "pending_prompts": [],
+          "diagnostics": []
+        }
       }
     }
   },
@@ -117,9 +115,11 @@
         "kind": "session",
         "session_id": "session-01J7PC"
       },
-      "updates": [
+      "base_revision": 1,
+      "revision": 2,
+      "changes": [
         {
-          "op": "upsert_timeline_item",
+          "kind": "timeline.item.upsert",
           "item": {
             "item_id": "item-user-01J7PC",
             "kind": "message",
@@ -138,43 +138,29 @@
           }
         },
         {
-          "op": "set_session_status",
-          "session_id": "session-01J7PC",
+          "kind": "session.status.set",
           "status": "running",
           "active_run_id": "run-01J7PC"
-        }
-      ]
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.presentation-control",
-    "type": "affordances.updated",
-    "id": "01J7PRESENT000000000008",
-    "sequence": 2,
-    "timestamp_ms": 1726170000300,
-    "session_id": "session-01J7PC",
-    "payload": {
-      "target": {
-        "kind": "session",
-        "session_id": "session-01J7PC"
-      },
-      "affordances": [
-        {
-          "id": "send",
-          "kind": "send_message",
-          "visible": true,
-          "enabled": false,
-          "support": "native",
-          "reason": "A run is active."
         },
         {
-          "id": "cancel",
-          "kind": "cancel_run",
-          "visible": true,
-          "enabled": true,
-          "support": "native"
+          "kind": "affordances.replace",
+          "affordances": [
+            {
+              "id": "send",
+              "kind": "send_message",
+              "visible": true,
+              "enabled": false,
+              "support": "native",
+              "reason": "A run is active."
+            },
+            {
+              "id": "cancel",
+              "kind": "cancel_run",
+              "visible": true,
+              "enabled": true,
+              "support": "native"
+            }
+          ]
         }
       ]
     }
@@ -185,7 +171,7 @@
     "profile": "open-agent-protocol.presentation-control",
     "type": "presentation.updated",
     "id": "01J7PRESENT000000000009",
-    "sequence": 3,
+    "sequence": 2,
     "timestamp_ms": 1726170000700,
     "session_id": "session-01J7PC",
     "run_id": "run-01J7PC",
@@ -194,9 +180,11 @@
         "kind": "session",
         "session_id": "session-01J7PC"
       },
-      "updates": [
+      "base_revision": 2,
+      "revision": 3,
+      "changes": [
         {
-          "op": "upsert_timeline_item",
+          "kind": "timeline.item.upsert",
           "item": {
             "item_id": "item-assistant-01J7PC",
             "kind": "message",
@@ -215,10 +203,29 @@
           }
         },
         {
-          "op": "set_session_status",
-          "session_id": "session-01J7PC",
+          "kind": "session.status.set",
           "status": "idle",
           "active_run_id": null
+        },
+        {
+          "kind": "affordances.replace",
+          "affordances": [
+            {
+              "id": "send",
+              "kind": "send_message",
+              "visible": true,
+              "enabled": true,
+              "support": "native"
+            },
+            {
+              "id": "cancel",
+              "kind": "cancel_run",
+              "visible": true,
+              "enabled": false,
+              "support": "native",
+              "reason": "No run is active."
+            }
+          ]
         }
       ]
     }

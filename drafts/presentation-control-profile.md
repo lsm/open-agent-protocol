@@ -109,7 +109,6 @@ profile.
 | command | `intent.message.submit.request` | `intent.message.submit.response` | Submit user-authored message intent to the control layer. |
 | command | `intent.run.cancel.request` | `intent.run.cancel.response`, or `error.response` if unavailable | Request cancellation through control-layer policy. |
 | event | `presentation.updated` | not a response | Send presentation-ready updates for a target after accepted intent or agent-control events. |
-| event | `affordances.updated` | not a response | Send changed visible/enabled controls derived from capabilities and policy. |
 
 As with agent-control, requests have semantic request/response correlation.
 Renderable update events do not replace correlated responses.
@@ -126,29 +125,24 @@ tasks, artifacts, or dashboards.
 
 ## Snapshot Shape
 
-A snapshot should be renderable without agent-loop-specific knowledge.
+A snapshot should be renderable without agent-loop-specific knowledge. Its
+state shape is discriminated by `target.kind`; the protocol does not define one
+universal state object for every target.
 
 Common fields:
 
 - `target`
-- `active_session_id`
-- `sessions`
+- `revision`
+- `state`
+
+The minimum `session` target state contains:
+
+- `session`
 - `timeline`
 - `composer`
 - `affordances`
 - `pending_prompts`
-- `notifications`
 - `diagnostics`
-
-### Session Summary
-
-- `session_id`
-- `title`
-- `status`
-- `active_run_id`
-- `updated_at_ms`
-- `unread_count`
-- `metadata`
 
 ### Timeline Item
 
@@ -185,12 +179,14 @@ Common item kinds:
 
 ### Composer State
 
+Composer state contains control-owned effective configuration and availability.
+Unsubmitted text and local attachment selection belong to the presentation
+layer and are not part of the minimum snapshot.
+
 - `session_id`
-- `draft`
 - `delivery`
 - `selected_model_id`
 - `selected_tools`
-- `attachments`
 - `enabled`
 - `disabled_reason`
 
@@ -218,6 +214,38 @@ Common affordance kinds:
 - `resolve_user_input`
 - `load_more_transcript`
 - `open_artifact`
+
+## Presentation Updates
+
+`presentation.updated` carries typed changes against a known snapshot revision.
+It must include:
+
+- `target`
+- `base_revision`
+- `revision`
+- `changes`
+
+Revisions are monotonically increasing integers scoped to one target. They
+describe presentation state consistency and are independent from envelope
+`sequence`, which orders messages within a binding-defined stream scope.
+
+Each change has a `kind` and kind-specific fields. The minimum session target
+uses changes such as:
+
+- `timeline.item.upsert`
+- `session.status.set`
+- `affordances.replace`
+- `pending_prompts.replace`
+- `diagnostics.replace`
+
+Changes address domain objects by stable IDs such as `item_id`; they must not
+address JSON array indexes or expose an implementation's object paths.
+
+The receiver applies an update only when its local revision equals
+`base_revision`. If the revisions do not match, it must discard the incremental
+changes and request `presentation.snapshot` for the target. Unknown change
+kinds must not corrupt known state; a receiver may ignore them and request a
+fresh snapshot when they affect correct rendering.
 
 ## Intent Events
 
@@ -257,6 +285,7 @@ The presentation layer owns:
 
 - layout, navigation, focus, keyboard, pointer, and accessibility behavior;
 - local draft text and input composition before submit;
+- local attachment selection before submit or upload;
 - rendering snapshots and updates;
 - displaying disabled states and reasons from affordances;
 - choosing when to request snapshots, history, or artifact display;
@@ -275,13 +304,13 @@ The following are intentionally outside presentation-control:
 - storage engine internals;
 - presentation-specific analytics.
 
-## Open Decisions
+## Resolved Core Decisions
 
-- Whether `presentation.updated` should use a small patch language or whole-object
-  replacement per section.
-- Whether draft composer synchronization belongs in core or an optional unit.
-- Whether notification/toast semantics should be part of presentation-control
-  or left to extensions.
+- Updates use typed changes and revision-based recovery, not JSON Patch or
+  unconditional whole-snapshot replacement.
+- Draft composer synchronization is outside the minimum profile.
+- Toasts and other transient notification presentation are UI implementation
+  details. Control reports semantic diagnostics and state instead.
 
 ## Idea Pool
 
@@ -309,3 +338,15 @@ Some applications may need more than one semantic data shape for the same
 target. An optional projection hint such as `compact_thread` could select that
 shape. This should only be standardized if target kinds cannot express the
 actual domain distinction; it must not become a component or layout name.
+
+`Draft Synchronization`
+
+Cross-surface or cross-device draft synchronization may be useful as an
+optional profile. It would require surface identity, draft revisions, conflict
+resolution, and persistence policy; none are required by the minimum profile.
+
+`Durable Notification`
+
+Some products may expose inbox-like notifications with identity, persistence,
+read state, and actions. Such domain notifications are distinct from transient
+toasts and may be standardized by a future profile if shared use cases emerge.
