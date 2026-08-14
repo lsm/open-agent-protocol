@@ -26,6 +26,10 @@ Fixtures:
 
 - [Example protocol envelopes](examples/README.md)
 
+Research notes:
+
+- [DeepSeek Harness plugin architecture review](research/deepseek-harness-plugin-review.md)
+
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool
 source, or SDK adapter can implement the protocol without project-specific
