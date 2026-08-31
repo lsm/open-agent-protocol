@@ -103,6 +103,8 @@ satisfies all of the following:
     correlated `error.response` whose code is `stale_capabilities`, except that
     `protocol.initialize.request` and `capabilities.request` ignore the field so
     discovery cannot be blocked by a stale revision.
+14. Repeats the admitted `capability_revision` on every successful response to
+    a request that supplied one.
 
 Core conformance does not require persistence, tools, permissions, user-input
 prompts, model listing, queue/steer/btw delivery, checkpointing, artifacts,

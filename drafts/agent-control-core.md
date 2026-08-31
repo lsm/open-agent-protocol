@@ -91,9 +91,9 @@ calls, JSONL over stdio, WebSocket messages, HTTP plus server-sent events, or
 another binding.
 
 Bindings must preserve event type, IDs, scoped ordering, request correlation,
-payload meaning, terminal event rules, and extension fields. Connection setup,
-heartbeats, reconnection, batching, authentication handshakes, and backpressure
-are binding concerns.
+`capability_revision`, payload meaning, terminal event rules, and extension
+fields. Connection setup, heartbeats, reconnection, batching, authentication
+handshakes, and backpressure are binding concerns.
 
 ## Request And Stream Semantics
 
