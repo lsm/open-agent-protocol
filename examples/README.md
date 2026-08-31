@@ -14,6 +14,8 @@ complete protocol envelopes.
 - `agent-capabilities.json`: direct agent-control capability response.
 - `degraded-adapter-capabilities.json`: adapter capability response that reports
   feature loss as degradation.
+- `capability-refresh.json`: stale capability precondition, typed rejection,
+  and descriptor refresh flow.
 - `tool-source.json`: action/tool discovery from a generic process-backed tool
   source.
 - `agent-control-run-stream.json`: ordered agent-control stream for a simple

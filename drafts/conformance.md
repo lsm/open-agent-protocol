@@ -82,7 +82,7 @@ satisfies all of the following:
 1. Emits and accepts valid core envelopes.
 2. Supports `protocol.initialize.request` and `protocol.initialize.response`.
 3. Supports `capabilities.request` and
-   `capabilities.response`.
+   `capabilities.response`, including an opaque `capability_revision`.
 4. Supports `session.open.request` and `session.open.response`.
 5. Supports `session.state.request`, `session.state.response`, and
    `session.state.updated`.
@@ -99,6 +99,9 @@ satisfies all of the following:
     invalid requests.
 12. Enables feature gating through capabilities and degradation records rather
     than implementation names.
+13. Rejects capability-gated requests carrying a non-current
+    `capability_revision` with a correlated `error.response` whose code is
+    `stale_capabilities`.
 
 Core conformance does not require persistence, tools, permissions, user-input
 prompts, model listing, queue/steer/btw delivery, checkpointing, artifacts,
@@ -238,11 +241,13 @@ Initial checks:
 3. Event ordering within a scoped sequence.
 4. Terminal-event rule: exactly one terminal run event per accepted run.
 5. Capability gating for unavailable and degraded features.
-6. Degradation reporting for adapter or binding feature loss.
-7. Reconnect and state recovery through `session.state.request`.
-8. Transcript cursor behavior for pagination and sync.
-9. Tool event lifecycle.
-10. User-input lifecycle.
+6. Capability revision equality, stale-request rejection, and refresh before
+   retry.
+7. Degradation reporting for adapter or binding feature loss.
+8. Reconnect and state recovery through `session.state.request`.
+9. Transcript cursor behavior for pagination and sync.
+10. Tool event lifecycle.
+11. User-input lifecycle.
 
 These tests should run against any binding by first normalizing binding-specific
 wire messages into core envelopes.

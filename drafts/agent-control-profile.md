@@ -206,6 +206,7 @@ Concrete JSON fixtures are maintained with the draft:
 - [Agent-control run stream](../examples/agent-control-run-stream.json)
 - [Agent capability descriptor](../examples/agent-capabilities.json)
 - [Degraded adapter capability descriptor](../examples/degraded-adapter-capabilities.json)
+- [Capability refresh flow](../examples/capability-refresh.json)
 - [Tool-source descriptor](../examples/tool-source.json)
 
 ## Agent-Control Lifecycle
@@ -227,6 +228,14 @@ A typical control-layer session follows this order:
 The control layer may skip optional discovery steps if the capability
 descriptor marks those features unavailable. The control layer must not infer
 support from implementation brand names.
+
+The returned descriptor is a revisioned endpoint snapshot. A control layer
+should attach that `capability_revision` to capability-gated requests when it
+needs deterministic admission against the state it presented to the user. On a
+`stale_capabilities` response, it refreshes the descriptor, recomputes feature
+gates, and decides whether the original operation is still valid. Endpoints may
+additionally advertise `capabilities.updates` for invalidation events; polling
+or stale-request recovery remains valid when they do not.
 
 ## Minimum Agent-Control Profile
 
