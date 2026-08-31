@@ -699,6 +699,8 @@ Failure rules:
   `capability_degraded`.
 - If a request's `capability_revision` does not match the current endpoint
   snapshot, return `stale_capabilities` with the expected and current revisions.
+  `protocol.initialize.request` and `capabilities.request` are the exceptions:
+  they ignore the field so bootstrap and recovery remain available.
 - Auth challenges should identify `provider_id` when known.
 - A single underlying failure should surface as one terminal failure event at
   the highest active scope. For example, a run should not emit both
@@ -832,8 +834,10 @@ Rules:
   implementation brand names.
 - Capability revisions are compared only for equality. Implementations must not
   require consumers to parse or order them.
-- A capability-gated request may carry the revision used by its sender as an
-  exact admission precondition. A stale precondition fails before work begins.
+- Any request after initialization and capability discovery may carry the
+  revision used by its sender as an exact admission precondition. A stale
+  precondition fails before work begins. Initialization and capability
+  discovery ignore the field so revision recovery cannot deadlock.
 - Dynamic endpoints may advertise `capabilities.updates` and emit
   `capabilities.updated` as an invalidation notice. The event does not replace a
   fresh `capabilities.request`.

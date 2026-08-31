@@ -99,9 +99,10 @@ satisfies all of the following:
     invalid requests.
 12. Enables feature gating through capabilities and degradation records rather
     than implementation names.
-13. Rejects capability-gated requests carrying a non-current
-    `capability_revision` with a correlated `error.response` whose code is
-    `stale_capabilities`.
+13. Rejects any request carrying a non-current `capability_revision` with a
+    correlated `error.response` whose code is `stale_capabilities`, except that
+    `protocol.initialize.request` and `capabilities.request` ignore the field so
+    discovery cannot be blocked by a stale revision.
 
 Core conformance does not require persistence, tools, permissions, user-input
 prompts, model listing, queue/steer/btw delivery, checkpointing, artifacts,

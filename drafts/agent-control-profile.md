@@ -169,6 +169,8 @@ Optional fields:
 - `sequence`: scoped ordering number.
 - `timestamp_ms`: sender timestamp in Unix milliseconds.
 - `in_reply_to`: original request ID for correlated responses.
+- `capability_revision`: opaque endpoint capability snapshot revision used as a
+  request precondition or reported for a response or event.
 - `trace`: cross-scope correlation IDs.
 - `extensions`: extension object for non-profile fields.
 
@@ -190,6 +192,7 @@ Bindings must preserve:
 
 - `id`, `type`, `scope`, `sequence`, `timestamp_ms`, and `payload`;
 - `in_reply_to` for request/response correlation;
+- `capability_revision` for capability freshness and admission preconditions;
 - `trace` for session, run, turn, model stream, and tool-call correlation;
 - terminal event semantics for runs, model streams, and tool executions;
 - extension fields, even when the binding does not understand them.
@@ -230,8 +233,9 @@ descriptor marks those features unavailable. The control layer must not infer
 support from implementation brand names.
 
 The returned descriptor is a revisioned endpoint snapshot. A control layer
-should attach that `capability_revision` to capability-gated requests when it
-needs deterministic admission against the state it presented to the user. On a
+should attach that `capability_revision` to requests after discovery when it
+needs deterministic admission against the state it presented to the user. It
+does not attach the revision to initialization or capability discovery. On a
 `stale_capabilities` response, it refreshes the descriptor, recomputes feature
 gates, and decides whether the original operation is still valid. Endpoints may
 additionally advertise `capabilities.updates` for invalidation events; polling

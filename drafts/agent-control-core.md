@@ -395,17 +395,22 @@ for equality and must not infer ordering or parse their contents.
 A static implementation may use one revision for its lifetime. Core does not
 require capabilities to change dynamically.
 
-A capability-gated request may set `capability_revision` to the revision the
-sender used when constructing the request. This is an exact precondition. If it
-does not equal the endpoint's current revision, the endpoint must reject the
-request with `error.response` and code `stale_capabilities`; the error details
-must include `expected_revision` and `current_revision`. The sender then obtains
-a fresh `capabilities.response`, updates its gates, and decides whether to retry.
+Any request other than `protocol.initialize.request` or `capabilities.request`
+may set `capability_revision` to the revision the sender used when constructing
+the request. When supplied, it is an exact precondition. If it does not equal
+the endpoint's current revision, the endpoint must reject the request with
+`error.response` and code `stale_capabilities`; the error details must include
+`expected_revision` and `current_revision`. The sender then obtains a fresh
+`capabilities.response`, updates its gates, and decides whether to retry.
 
-If a request omits `capability_revision`, the endpoint evaluates it against the
-current capabilities and applies the normal unsupported or degraded feature
-rules. A successful response to a pinned request must repeat the revision used
-for admission. A successful response to an unpinned capability-gated request
+Initialization and capability discovery are never revision-gated. A receiver
+must ignore `capability_revision` if it appears on either request, so a stale
+sender can always initialize or obtain a fresh snapshot.
+
+If any other request omits `capability_revision`, the endpoint evaluates it
+against the current capabilities and applies the normal unsupported or degraded
+feature rules. A successful response to a pinned request must repeat the
+revision used for admission. A successful response to an unpinned request
 should set the revision used for admission. This lets the control layer detect
 that an unpinned request was admitted under a newer snapshot.
 
@@ -435,8 +440,9 @@ An implementation is core-conformant if it can:
     invalid requests.
 
 A core implementation must reject a request carrying a stale
-`capability_revision` with the typed `stale_capabilities` error. It does not
-need to support dynamic capability updates.
+`capability_revision` with the typed `stale_capabilities` error, except for the
+two bootstrap requests that explicitly ignore it. It does not need to support
+dynamic capability updates.
 
 Core conformance only requires `auto` delivery. If a control layer asks for
 `queue`, `steer`, or `btw` and the endpoint did not advertise that mode, the
