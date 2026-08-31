@@ -1,0 +1,90 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.request",
+    "id": "01J7CAPREQUEST000000000001",
+    "capability_revision": "cap-example-agent-0001",
+    "session_id": "session-01J7CAP",
+    "payload": {
+      "session_id": "session-01J7CAP",
+      "messages": [
+        {
+          "id": "msg-user-01J7CAP",
+          "role": "user",
+          "content": "Use the selected model for this request."
+        }
+      ],
+      "delivery": "auto",
+      "model_id": "example-model"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "01J7CAPERROR0000000000001",
+    "in_reply_to": "01J7CAPREQUEST000000000001",
+    "capability_revision": "cap-example-agent-0002",
+    "payload": {
+      "error": {
+        "code": "stale_capabilities",
+        "message": "The endpoint capabilities changed before admission.",
+        "layer": "control",
+        "retriable": true,
+        "details": {
+          "expected_revision": "cap-example-agent-0001",
+          "current_revision": "cap-example-agent-0002"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "01J7CAPQUERY0000000000001",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "01J7CAPRESPONSE00000000001",
+    "in_reply_to": "01J7CAPQUERY0000000000001",
+    "capability_revision": "cap-example-agent-0002",
+    "payload": {
+      "endpoint": {
+        "id": "example.agent",
+        "name": "Example Agent"
+      },
+      "protocol_versions": [
+        "0.1"
+      ],
+      "bindings": [
+        {
+          "kind": "in_process"
+        }
+      ],
+      "layers": {
+        "agent_control": {
+          "features": {
+            "session.message.submit": {
+              "level": "native"
+            },
+            "session.message.delivery.auto": {
+              "level": "native"
+            },
+            "run.streaming": {
+              "level": "native"
+            }
+          }
+        }
+      }
+    }
+  }
+]

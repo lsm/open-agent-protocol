@@ -3,6 +3,7 @@
   "version": "0.1",
   "type": "capabilities.response",
   "id": "01J7RUNTIME00000000000001",
+  "capability_revision": "cap-example-agent-0001",
   "scope": {
     "kind": "connection",
     "id": "agent-local"
@@ -195,6 +196,9 @@
             "level": "native"
           },
           "capabilities": {
+            "level": "native"
+          },
+          "capabilities.updates": {
             "level": "native"
           },
           "models.list": {

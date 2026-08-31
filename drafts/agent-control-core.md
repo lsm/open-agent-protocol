@@ -79,6 +79,9 @@ Optional fields:
 - `run_id`: run scope ID when applicable.
 - `turn_id`: turn scope ID when applicable.
 - `tool_call_id`: tool-call scope ID when applicable.
+- `capability_revision`: opaque revision of the endpoint capability snapshot.
+  Its meaning depends on envelope direction as defined in Capability Snapshot
+  Freshness below.
 - `extensions`: extension object for non-core fields.
 
 ## Transport
@@ -88,9 +91,9 @@ calls, JSONL over stdio, WebSocket messages, HTTP plus server-sent events, or
 another binding.
 
 Bindings must preserve event type, IDs, scoped ordering, request correlation,
-payload meaning, terminal event rules, and extension fields. Connection setup,
-heartbeats, reconnection, batching, authentication handshakes, and backpressure
-are binding concerns.
+`capability_revision`, payload meaning, terminal event rules, and extension
+fields. Connection setup, heartbeats, reconnection, batching, authentication
+handshakes, and backpressure are binding concerns.
 
 ## Request And Stream Semantics
 
@@ -128,7 +131,7 @@ Kinds:
 | Kind | Core envelope type | Correlated response | Minimum requirement |
 | --- | --- | --- | --- |
 | command | `protocol.initialize.request` | `protocol.initialize.response` | Negotiate protocol version, profile, and endpoint identity. |
-| query | `capabilities.request` | `capabilities.response` | Return effective capabilities and degradation records for control-layer gating. |
+| query | `capabilities.request` | `capabilities.response` | Return revisioned effective capabilities and degradation records for control-layer gating. |
 | command | `session.open.request` | `session.open.response` | Open a new or existing session and return its stable `session_id`. |
 | query | `session.state.request` | `session.state.response` | Return canonical state for reconnect and recovery. |
 | command | `session.message.submit.request` | `session.message.submit.response` | Accept a user-visible message submission and report admission. |
@@ -352,6 +355,7 @@ Minimum features:
 Common optional core features:
 
 - `endpoint.status`
+- `capabilities.updates`
 - `models.list`
 - `session.list`
 - `transcript.load`
@@ -380,12 +384,51 @@ Support levels are:
 The control layer should enable controls from capabilities, not from
 implementation names.
 
+## Capability Snapshot Freshness
+
+`capabilities.response` is an authoritative snapshot for the endpoint identified
+by its descriptor. It must set `capability_revision` to an opaque, non-empty
+string. A revision identifies the complete effective descriptor, including
+degradation records and catalogs embedded in it. Consumers compare revisions
+for equality and must not infer ordering or parse their contents.
+
+A static implementation may use one revision for its lifetime. Core does not
+require capabilities to change dynamically.
+
+Any request other than `protocol.initialize.request` or `capabilities.request`
+may set `capability_revision` to the revision the sender used when constructing
+the request. When supplied, it is an exact precondition. If it does not equal
+the endpoint's current revision, the endpoint must reject the request with
+`error.response` and code `stale_capabilities`; the error details must include
+`expected_revision` and `current_revision`. The sender then obtains a fresh
+`capabilities.response`, updates its gates, and decides whether to retry.
+
+Initialization and capability discovery are never revision-gated. A receiver
+must ignore `capability_revision` if it appears on either request, so a stale
+sender can always initialize or obtain a fresh snapshot.
+
+If any other request omits `capability_revision`, the endpoint evaluates it
+against the current capabilities and applies the normal unsupported or degraded
+feature rules. A successful response to a pinned request must repeat the
+revision used for admission. A successful response to an unpinned request
+should set the revision used for admission. This lets the control layer detect
+that an unpinned request was admitted under a newer snapshot.
+
+An implementation with dynamic capabilities may advertise
+`capabilities.updates`. When advertised, it emits `capabilities.updated` after
+the effective descriptor changes. The event sets the envelope's
+`capability_revision` to the new revision and carries `previous_revision` plus
+an optional `reason` in its payload. It is an invalidation notice, not a
+descriptor delta. The receiver obtains the new snapshot with
+`capabilities.request`. Dynamic updates and their event are not required for
+core conformance.
+
 ## Minimum Conformance
 
 An implementation is core-conformant if it can:
 
 1. initialize a connection;
-2. return a capability descriptor;
+2. return a revisioned capability descriptor;
 3. open a session;
 4. return canonical session state;
 5. accept a message submit and return `session.message.submit.response`;
@@ -395,6 +438,11 @@ An implementation is core-conformant if it can:
 9. cancel a running run or report cancellation as unavailable;
 10. return correlated `error.response` envelopes for unsupported commands and
     invalid requests.
+
+A core implementation must reject a request carrying a stale
+`capability_revision` with the typed `stale_capabilities` error, except for the
+two bootstrap requests that explicitly ignore it. It does not need to support
+dynamic capability updates.
 
 Core conformance only requires `auto` delivery. If a control layer asks for
 `queue`, `steer`, or `btw` and the endpoint did not advertise that mode, the

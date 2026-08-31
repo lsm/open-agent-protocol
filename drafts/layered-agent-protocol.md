@@ -446,6 +446,8 @@ Optional fields:
 - `sequence`: scoped ordering number.
 - `timestamp_ms`: sender timestamp in Unix milliseconds.
 - `in_reply_to`: original request ID for correlated responses.
+- `capability_revision`: opaque endpoint capability snapshot revision used as a
+  request precondition or reported for a response or event.
 - `trace`: cross-scope correlation IDs.
 - `extensions`: extension object for non-core fields.
 
@@ -567,6 +569,7 @@ area or control plane.
 | --- | --- |
 | `capabilities.request` | Ask an agent-control endpoint or adapter for its capability descriptor. |
 | `capabilities.response` | Return supported layers, features, degradation, and bindings. |
+| `capabilities.updated` | Invalidate an earlier capability snapshot when dynamic updates are advertised. |
 | `models.request` | List or resolve models. |
 | `models.response` | Return model descriptors and cache metadata. |
 | `auth.providers.request` | List auth providers and auth state. |
@@ -674,6 +677,7 @@ Standard error codes:
 - `invalid_request`
 - `unsupported_feature`
 - `capability_degraded`
+- `stale_capabilities`
 - `auth_required`
 - `auth_expired`
 - `auth_refresh_failed`
@@ -693,6 +697,10 @@ Failure rules:
   missing capability name in `details.feature`.
 - If degraded execution is possible but not allowed by the request, return
   `capability_degraded`.
+- If a request's `capability_revision` does not match the current endpoint
+  snapshot, return `stale_capabilities` with the expected and current revisions.
+  `protocol.initialize.request` and `capabilities.request` are the exceptions:
+  they ignore the field so bootstrap and recovery remain available.
 - Auth challenges should identify `provider_id` when known.
 - A single underlying failure should surface as one terminal failure event at
   the highest active scope. For example, a run should not emit both
@@ -706,6 +714,9 @@ native support and known degradation.
 
 Capability descriptors contain:
 
+- `capability_revision`: an opaque, non-empty identity for the complete
+  effective snapshot. In JSON envelopes this is carried as the envelope field
+  of the same name.
 - `endpoint`: identity for the OAP boundary, with `id`, `name`, optional
   `version`, and optional `adapter`.
 - `protocol_versions`: supported protocol versions.
@@ -801,6 +812,7 @@ Control plane capability examples:
 
 - `protocol.initialize`
 - `capabilities`
+- `capabilities.updates`
 - `models.list`
 - `models.resolve`
 - `auth.providers`
@@ -820,6 +832,15 @@ Rules:
 
 - Adjacent layers must gate features on effective capabilities, not
   implementation brand names.
+- Capability revisions are compared only for equality. Implementations must not
+  require consumers to parse or order them.
+- Any request after initialization and capability discovery may carry the
+  revision used by its sender as an exact admission precondition. A stale
+  precondition fails before work begins. Initialization and capability
+  discovery ignore the field so revision recovery cannot deadlock.
+- Dynamic endpoints may advertise `capabilities.updates` and emit
+  `capabilities.updated` as an invalidation notice. The event does not replace a
+  fresh `capabilities.request`.
 - Bridges must report destructive transforms, especially reasoning stripping,
   tool-call buffering, unavailable tool catalogs, and non-resumable streams.
 - Missing events are not a valid capability signal.
