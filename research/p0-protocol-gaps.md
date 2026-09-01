@@ -131,8 +131,9 @@ envelope correlation. At minimum, a session-creating `session.open.request` and
 `session.message.submit.request` should accept an `idempotency_key` with these
 semantics:
 
-- the key is scoped to endpoint identity, operation type, and `session_id` when
-  the operation targets an existing session;
+- the key is scoped to endpoint identity, authenticated principal or tenant,
+  operation type, and `session_id` when the operation targets an existing
+  session;
 - a retry may use a new envelope `id` but repeats the same `idempotency_key`;
 - the same key and semantically equivalent request returns the original
   acceptance outcome, `submission_id`, message IDs, and run ID without
@@ -194,6 +195,8 @@ assumes a `run_id` is returned for queued work.
 - Retrying session creation with the same idempotency key returns the original
   `session_id` rather than creating a second session.
 - Reusing an idempotency key with different input fails deterministically.
+- The same key used by different authenticated principals cannot reveal or
+  collide with another principal's stored outcome.
 - A recognized replay returns its original outcome after capabilities advance;
   an unknown key still undergoes normal stale-revision validation.
 - Every `run.started` and terminal run event carries the same `run_id`.
@@ -487,8 +490,9 @@ Synthesized terminal events should include or reference:
   inferred or unavailable.
 
 `run.completed` must not be used merely because a stream ended. Cancellation
-requested but not confirmed remains `cancelling` until a terminal signal or a
-defined adapter timeout produces a typed failure.
+requested but not confirmed remains `cancelling`. A cancellation timeout starts
+the same containment process described above; it produces a typed failure only
+after quiescence is established.
 
 ### Acceptance criteria
 
@@ -543,8 +547,9 @@ Minimum cases:
 - idle message submission and streamed text;
 - tool call lifecycle when the SDK exposes tools;
 - explicit defer/queue while another run is active;
-- cancellation, abrupt SDK/process failure with an in-flight action, and
-  settlement-timeout containment.
+- cancellation, unconfirmed-cancellation timeout containment, abrupt
+  SDK/process failure with an in-flight action, and settlement-timeout
+  containment.
 
 **Makai**
 
