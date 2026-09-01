@@ -305,8 +305,10 @@ The blocking findings and acceptance criteria are developed separately in
   `content.delta`, while richer text still references `model.content.delta`.
 - Define adapter ID rules for native session, run, turn, message, and tool-call
   identities.
-- Define capability descriptors for delivery, cancellation, content, tools,
-  and state recovery at the level needed by real adapters.
+- Define capability scope, authority, provisional state, late discovery, and
+  refresh behavior at the level needed by real adapters.
+- Define admission and delivery mapping, including acceptance versus execution,
+  busy-session policy, and run-ID behavior for queue and steer.
 - Define normalized terminal mapping when a native SDK does not provide a clean
   completed, failed, or cancelled signal.
 - Add normative mapping fixtures for HyperNeo/Claude SDK, Makai, and pi.

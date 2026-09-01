@@ -329,7 +329,14 @@ strict adapter may emit two terminal events.
 
 ### Proposed resolution
 
-Define a conservative terminal classifier with precedence:
+For each adapter, define the authoritative terminal sources for a run. These
+may include the native semantic stream, an adapter task, and a child process or
+transport. The adapter collects terminal candidates but does not emit an OAP
+terminal event until a finalization barrier is satisfied: every required
+source has settled, or the native contract establishes that a source can no
+longer change the outcome.
+
+At that barrier, classify the collected signals with this precedence:
 
 1. An authoritative accepted cancellation that terminates work maps to
    `run.cancelled`.
@@ -339,9 +346,15 @@ Define a conservative terminal classifier with precedence:
 4. End-of-stream without an authoritative outcome maps to `run.failed` with a
    typed `terminal_outcome_unknown` adapter error.
 
-The adapter owns a per-run terminal guard and emits only the first terminal
-outcome selected by the classifier. Later conflicting native signals become
-diagnostics, not additional terminal events.
+The adapter then uses an atomic per-run terminal guard to emit the selected
+outcome exactly once. Signals arriving afterward from sources that the adapter
+contract declared non-authoritative become diagnostics, not additional terminal
+events. A success candidate must never cross the finalization barrier while a
+required process or transport can still report failure.
+
+If a required source does not settle, the adapter applies a declared terminal
+settlement timeout. Timeout maps to `run.failed` with a typed
+`terminal_settlement_timeout` error; it does not release a pending success.
 
 Synthesized terminal events should include or reference:
 
@@ -360,6 +373,8 @@ defined adapter timeout produces a typed failure.
 - Every `run.started` receives exactly one terminal event.
 - Abrupt EOF and adapter exceptions cannot become successful completion.
 - Cancellation races have a deterministic outcome.
+- A success candidate is not emitted before all required terminal sources
+  settle.
 - Conflicting late native events cannot produce a second terminal event.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
   and cancellation/failure races.
