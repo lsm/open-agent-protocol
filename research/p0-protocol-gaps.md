@@ -104,6 +104,7 @@ The drafts say IDs are opaque and stable, but do not tell an adapter:
 - whether queued work receives a run ID before execution;
 - how steering identifies the existing run it modifies;
 - how duplicate requests avoid duplicate sessions, messages, or runs;
+- how a caller identifies a retry when the original response was lost;
 - where native IDs may be retained for diagnostics without becoming portable
   identity.
 
@@ -125,6 +126,27 @@ Define identity by semantic scope:
 - Envelope `id` identifies one envelope. `in_reply_to` correlates a response to
   a request and must never substitute for a domain ID.
 
+Side-effecting requests need caller-supplied idempotency independent from
+envelope correlation. At minimum, `session.message.submit.request` should accept
+an `idempotency_key` with these semantics:
+
+- the key is scoped to endpoint identity, operation type, and `session_id` when
+  the operation targets an existing session;
+- a retry may use a new envelope `id` but repeats the same `idempotency_key`;
+- the same key and semantically equivalent request returns the original
+  acceptance outcome, `submission_id`, message IDs, and run ID without
+  repeating work;
+- the same key with a different semantic request fails with a typed
+  `idempotency_conflict` error;
+- the endpoint advertises or defines the retention window in which it can
+  guarantee deduplication;
+- without an idempotency key, a caller must assume that retrying after an
+  unknown outcome can duplicate work.
+
+The response's `submission_id` remains the endpoint-assigned identity for the
+accepted submission. It does not serve as the retry key because the caller may
+not have received it.
+
 An adapter may reuse a native ID only when its scope and stability satisfy the
 OAP rule. Otherwise it allocates an OAP ID and keeps a private durable mapping
 for every identity needed after reconnect. Native IDs may be exposed in a
@@ -145,12 +167,15 @@ assumes a `run_id` is returned for queued work.
 
 - Replaying a correlated response or reconnecting does not create new domain
   IDs.
+- Retrying a submit with the same idempotency key does not create a second
+  message or run, even when the first response was lost.
+- Reusing an idempotency key with different input fails deterministically.
 - Every `run.started` and terminal run event carries the same `run_id`.
 - Every started action has exactly one stable `tool_call_id` and one terminal
   action event.
 - Native IDs can be inspected without being mistaken for portable OAP IDs.
-- Fixtures cover generated IDs, reused native IDs, queueing, steering, and
-  reconnect recovery.
+- Fixtures cover generated IDs, reused native IDs, a lost-response retry,
+  idempotency conflict, queueing, steering, and reconnect recovery.
 
 ## P0.3 Capability Scope, Authority, And Late Discovery
 
