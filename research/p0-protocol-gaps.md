@@ -407,6 +407,17 @@ contract declared non-authoritative become diagnostics, not additional terminal
 events. A success candidate must never cross the finalization barrier while a
 required process or transport can still report failure.
 
+Before emitting the run terminal, the adapter must close every started child
+lifecycle exposed at the agent-control boundary. In particular, each
+`action.call.started` must receive exactly one `action.call.completed`,
+`action.call.failed`, or `action.call.cancelled` event using the original
+`tool_call_id`. Confirmed parent cancellation normally synthesizes
+`action.call.cancelled`; process failure, lost native state, or forced
+containment normally synthesizes `action.call.failed` with a typed
+`parent_run_terminated` error. Synthesized child terminals must be identified as
+adapter-generated and emitted before the run terminal so consumers cannot retain
+apparently active tools after the run ends.
+
 If a required source does not settle, a declared settlement timeout starts
 containment; it does not itself produce a terminal event. The adapter must:
 
@@ -446,8 +457,10 @@ defined adapter timeout produces a typed failure.
 - A settlement timeout cannot emit a terminal event until execution quiescence
   is established.
 - Conflicting late native events cannot produce a second terminal event.
+- Every started action receives one terminal action event before its parent run
+  terminal event.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
-  and cancellation/failure races.
+  cancellation/failure races, and failure with an in-flight action.
 
 ## P0.6 Normative Adapter Mapping Fixtures
 
@@ -485,7 +498,8 @@ Minimum cases:
 - idle message submission and streamed text;
 - tool call lifecycle when the SDK exposes tools;
 - explicit defer/queue while another run is active;
-- cancellation, abrupt SDK/process failure, and settlement-timeout containment.
+- cancellation, abrupt SDK/process failure with an in-flight action, and
+  settlement-timeout containment.
 
 **Makai**
 
