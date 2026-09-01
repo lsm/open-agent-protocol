@@ -276,6 +276,29 @@ Late discovery should follow the existing refresh mechanism:
    advertised updates.
 5. The control layer fetches the new snapshot and recomputes gates.
 
+`provisional` means discoverable but not yet safe to depend on. Before first
+admission, the endpoint identifies every capability the request depends on,
+including selected model, tools, delivery, content, and required core lifecycle
+features. If any dependency is provisional, the endpoint must do one of these
+without releasing the user prompt or permitting tool/model side effects:
+
+1. perform a native bootstrap probe, resolve the provisional records, publish a
+   new capability revision, and reapply normal revision validation; or
+2. reject with a typed `capability_provisional` error naming the unresolved
+   features and indicating that capability refresh or session initialization is
+   required.
+
+If a bootstrap probe changes the revision pinned by the request, the request is
+rejected as `stale_capabilities` before admission. The caller refreshes and may
+retry with the same idempotency key; because no admission occurred, this is a
+new attempt rather than replay of an accepted operation.
+
+An adapter whose native SDK emits initialization only after a query object is
+created may still conform if it withholds user input from the native message
+source until initialization settles. If it cannot prevent execution while
+probing, it cannot use that query as a capability bootstrap and must reject
+requests that depend on unresolved records.
+
 Effective capabilities are computed through these authorities, in order:
 
 1. underlying technical primitives from the native harness, provider, model,
@@ -320,6 +343,7 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
   conformance.
 - HyperNeo can represent tools learned from `system:init` without pretending
   they were known at connection time.
+- No request is admitted while a capability it depends on remains provisional.
 - Capability scope distinguishes endpoint support from session/model-effective
   support.
 - Adapters may add honestly emulated features only when sufficient lower-level
@@ -541,6 +565,8 @@ Minimum cases:
 **HyperNeo / Claude Agent SDK**
 
 - pre-run capabilities followed by `system:init` capability refresh;
+- a bootstrap probe that withholds user input until provisional dependencies
+  settle, followed by stale-revision rejection before admission;
 - lost submit response replayed after that capability revision changes;
 - configured policy denying a capability reported by `system:init`;
 - `auto` resolution rejecting degraded delivery without explicit opt-in;
