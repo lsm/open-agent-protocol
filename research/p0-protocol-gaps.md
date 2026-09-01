@@ -250,20 +250,33 @@ Late discovery should follow the existing refresh mechanism:
    advertised updates.
 5. The control layer fetches the new snapshot and recomputes gates.
 
-Effective capabilities are the intersection of these authorities, in order:
+Effective capabilities are computed through these authorities, in order:
 
-1. underlying technical support from the native harness, provider, model, and
-   configured resources;
-2. semantic fidelity the adapter can preserve or emulate;
-3. control and deployment policy for the current endpoint and scope.
+1. underlying technical primitives from the native harness, provider, model,
+   and configured resources;
+2. semantic behavior the adapter preserves or implements over those primitives;
+3. fidelity the selected binding can preserve, including streaming, progress,
+   ordering, cancellation, reconnect, and backpressure behavior;
+4. control and deployment policy for the current endpoint and scope.
 
-Later stages may narrow support but may not elevate behavior that an earlier
-stage cannot provide. Policy is the final veto: a technically available feature
-forbidden by policy is advertised as unavailable with a policy reason. Adapter
-transformation may change technically native support to `emulated` or
-`degraded`. `native` is valid only when the underlying behavior exists, the
-adapter preserves its OAP semantics, and policy permits it. Effective catalogs
-are filtered by the same intersection.
+The adapter may add an OAP feature that the native harness does not name when
+lower-level primitives are sufficient to implement equivalent semantics. Such a
+feature is `emulated`, not `native`, and its record identifies the implementing
+adapter behavior and relevant limitations. For example, a session wrapper may
+provide durable queueing over a native loop that only accepts immediate work.
+An adapter must not emulate a feature when the available primitives cannot meet
+its required safety and lifecycle semantics.
+
+After adapter composition, the binding may only preserve or narrow effective
+support. Buffered streams, missing bidirectional cancellation, lost progress,
+or insufficient reconnect semantics must change the affected feature to
+`degraded` or `unavailable`. Policy is the final veto: a technically available
+or honestly emulated feature forbidden by policy is advertised as unavailable
+with a policy reason.
+
+`native` is valid only when the underlying behavior exists and both adapter and
+binding preserve its OAP semantics. Effective catalogs are filtered by the same
+composition and policy rules.
 
 When source reports conflict and the adapter cannot compute a deterministic
 intersection, it advertises the feature as provisional and degraded or
@@ -283,7 +296,10 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
   they were known at connection time.
 - Capability scope distinguishes endpoint support from session/model-effective
   support.
-- Configured policy can remove but never invent underlying technical support.
+- Adapters may add honestly emulated features only when sufficient lower-level
+  primitives preserve the required semantics.
+- Binding limitations narrow affected capabilities before they are advertised.
+- Configured policy can remove but never invent effective support.
 - Conflicting capability sources resolve to a deterministic effective result;
   uncertainty never defaults to the most permissive result.
 - A descriptor revision changes whenever a gate or embedded effective catalog
@@ -514,6 +530,8 @@ Minimum cases:
 - `steer` during an active run;
 - `follow_up` queue;
 - abort and terminal classification;
+- a binding that buffers or loses stream/cancellation fidelity and therefore
+  narrows the effective capability snapshot;
 - JSONL request/response correlation independent from run identity.
 
 Fixtures should be normative for the adapter mapping rules they exercise, but
