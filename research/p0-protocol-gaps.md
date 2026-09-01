@@ -18,7 +18,7 @@ future profile must be designed first.
 | Gap | Why it blocks adoption | Required outcome |
 | --- | --- | --- |
 | P0.1 Agent-control event vocabulary | Core and richer drafts name the same visible stream differently. | One canonical agent-control vocabulary and explicit lower-profile projection rules. |
-| P0.2 Adapter identity | Existing harnesses do not consistently expose stable session, run, turn, message, and tool-call IDs. | Rules for generating, preserving, scoping, and recovering OAP IDs. |
+| P0.2 Adapter identity | Existing harnesses do not consistently expose stable session, run, turn, message, and tool-call IDs. | Rules for generating, preserving, scoping, recovering, and idempotently creating OAP identities. |
 | P0.3 Capability scope and late discovery | Real capabilities may vary by session, model, configuration, or become known only after native initialization. | A minimal core descriptor with scope, authority, provisional state, refresh, and degradation rules. |
 | P0.4 Admission and delivery mapping | HyperNeo, Makai, and pi admit work using different busy-session semantics. | Deterministic mapping to `auto`, `start`, `queue`, `steer`, and `btw`, including run-ID behavior. |
 | P0.5 Terminal outcome normalization | Native streams do not always provide a clean completed, failed, or cancelled event. | A conservative terminal classification algorithm with typed errors and synthesis disclosure. |
@@ -127,8 +127,9 @@ Define identity by semantic scope:
   a request and must never substitute for a domain ID.
 
 Side-effecting requests need caller-supplied idempotency independent from
-envelope correlation. At minimum, `session.message.submit.request` should accept
-an `idempotency_key` with these semantics:
+envelope correlation. At minimum, a session-creating `session.open.request` and
+`session.message.submit.request` should accept an `idempotency_key` with these
+semantics:
 
 - the key is scoped to endpoint identity, operation type, and `session_id` when
   the operation targets an existing session;
@@ -143,9 +144,11 @@ an `idempotency_key` with these semantics:
 - without an idempotency key, a caller must assume that retrying after an
   unknown outcome can duplicate work.
 
-The response's `submission_id` remains the endpoint-assigned identity for the
-accepted submission. It does not serve as the retry key because the caller may
-not have received it.
+The response's `session_id` or `submission_id` remains the endpoint-assigned
+identity for the accepted operation. It does not serve as the retry key because
+the caller may not have received it. Reopening an existing `session_id` and
+cancelling a known `run_id` should be inherently idempotent; the specification
+must identify any other command whose safe retry requires a key.
 
 An adapter may reuse a native ID only when its scope and stability satisfy the
 OAP rule. Otherwise it allocates an OAP ID and keeps a private durable mapping
@@ -169,13 +172,15 @@ assumes a `run_id` is returned for queued work.
   IDs.
 - Retrying a submit with the same idempotency key does not create a second
   message or run, even when the first response was lost.
+- Retrying session creation with the same idempotency key returns the original
+  `session_id` rather than creating a second session.
 - Reusing an idempotency key with different input fails deterministically.
 - Every `run.started` and terminal run event carries the same `run_id`.
 - Every started action has exactly one stable `tool_call_id` and one terminal
   action event.
 - Native IDs can be inspected without being mistaken for portable OAP IDs.
-- Fixtures cover generated IDs, reused native IDs, a lost-response retry,
-  idempotency conflict, queueing, steering, and reconnect recovery.
+- Fixtures cover generated IDs, reused native IDs, lost session-open and submit
+  responses, idempotency conflict, queueing, steering, and reconnect recovery.
 
 ## P0.3 Capability Scope, Authority, And Late Discovery
 
@@ -236,13 +241,35 @@ Define a small agent-control-core capability descriptor first:
 
 Late discovery should follow the existing refresh mechanism:
 
-1. The adapter returns the most authoritative pre-run snapshot available.
+1. The adapter returns the effective pre-run snapshot produced by the authority
+   rules below.
 2. Unknown late-bound behavior is provisional or unavailable, never silently
    assumed native.
 3. Native initialization changes effective capabilities.
 4. The adapter assigns a new revision and emits `capabilities.updated` when it
    advertised updates.
 5. The control layer fetches the new snapshot and recomputes gates.
+
+Effective capabilities are the intersection of these authorities, in order:
+
+1. underlying technical support from the native harness, provider, model, and
+   configured resources;
+2. semantic fidelity the adapter can preserve or emulate;
+3. control and deployment policy for the current endpoint and scope.
+
+Later stages may narrow support but may not elevate behavior that an earlier
+stage cannot provide. Policy is the final veto: a technically available feature
+forbidden by policy is advertised as unavailable with a policy reason. Adapter
+transformation may change technically native support to `emulated` or
+`degraded`. `native` is valid only when the underlying behavior exists, the
+adapter preserves its OAP semantics, and policy permits it. Effective catalogs
+are filtered by the same intersection.
+
+When source reports conflict and the adapter cannot compute a deterministic
+intersection, it advertises the feature as provisional and degraded or
+unavailable; it must not select the most permissive report. Capability and
+degradation records may retain separate technical, adapter, and policy reasons
+for diagnostics, while the control layer gates only on the effective result.
 
 An adapter claiming only agent-control should omit unrelated lower-profile
 sections or explicitly state that those boundaries are not exposed. It should
@@ -256,6 +283,9 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
   they were known at connection time.
 - Capability scope distinguishes endpoint support from session/model-effective
   support.
+- Configured policy can remove but never invent underlying technical support.
+- Conflicting capability sources resolve to a deterministic effective result;
+  uncertainty never defaults to the most permissive result.
 - A descriptor revision changes whenever a gate or embedded effective catalog
   changes.
 - The control layer can choose controls using only the descriptor and state,
@@ -377,9 +407,22 @@ contract declared non-authoritative become diagnostics, not additional terminal
 events. A success candidate must never cross the finalization barrier while a
 required process or transport can still report failure.
 
-If a required source does not settle, the adapter applies a declared terminal
-settlement timeout. Timeout maps to `run.failed` with a typed
-`terminal_settlement_timeout` error; it does not release a pending success.
+If a required source does not settle, a declared settlement timeout starts
+containment; it does not itself produce a terminal event. The adapter must:
+
+1. stop admitting conflicting work in the affected session or execution scope;
+2. request cancellation and terminate or isolate the native source using a
+   mechanism that prevents further effects in that scope;
+3. establish quiescence through process exit, transport closure plus an
+   authoritative remote status, or another adapter-specific guarantee;
+4. only then emit `run.failed` with a typed `terminal_settlement_timeout` error.
+
+If the adapter cannot establish quiescence, the run remains nonterminal and the
+session remains blocked in recovery/error state. It must not report completion
+or admit work that assumes the prior run has stopped. This exposes a necessary
+core decision: either conforming adapters must guarantee eventual quiescence,
+or the protocol needs an explicit orphaned/abandoned outcome distinct from
+ordinary terminal completion. A timeout cannot manufacture that guarantee.
 
 Synthesized terminal events should include or reference:
 
@@ -400,6 +443,8 @@ defined adapter timeout produces a typed failure.
 - Cancellation races have a deterministic outcome.
 - A success candidate is not emitted before all required terminal sources
   settle.
+- A settlement timeout cannot emit a terminal event until execution quiescence
+  is established.
 - Conflicting late native events cannot produce a second terminal event.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
   and cancellation/failure races.
@@ -436,10 +481,11 @@ Minimum cases:
 **HyperNeo / Claude Agent SDK**
 
 - pre-run capabilities followed by `system:init` capability refresh;
+- configured policy denying a capability reported by `system:init`;
 - idle message submission and streamed text;
 - tool call lifecycle when the SDK exposes tools;
 - explicit defer/queue while another run is active;
-- cancellation and abrupt SDK/process failure.
+- cancellation, abrupt SDK/process failure, and settlement-timeout containment.
 
 **Makai**
 
