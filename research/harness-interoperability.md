@@ -4,6 +4,8 @@ Status: research note
 Date: 2026-09-01
 Scope: HyperNeo, Makai, and pi adoption of Open Agent Protocol
 
+P0 findings: [Protocol Gaps From Harness Interoperability](p0-protocol-gaps.md)
+
 This note tests the current OAP layer model against three real agent harnesses.
 It is implementation research, not a normative protocol specification.
 
@@ -18,7 +20,7 @@ Reviewed revisions:
 The current OAP layer model fits all three systems, but they should not adopt
 it in the same way:
 
-1. HyperNeo should implement an OAP agent-control endpoint over the Cloud Agent
+1. HyperNeo should implement an OAP agent-control endpoint over the Claude Agent
    SDK. Its existing MessageHub can remain a binding and compatibility API.
 2. Makai should become the first native validation of the agent-loop, model-IO,
    and action-tool boundaries. Its existing protocols are already close to
@@ -37,8 +39,8 @@ Web presentation
     <-> existing web/daemon compatibility API
 Control projection and policy
     <-> OAP agent-control-core port
-Cloud Agent SDK adapter
-    <-> Cloud Agent SDK
+Claude Agent SDK adapter
+    <-> Claude Agent SDK
 ```
 
 That slice should cover initialization, capabilities, session open/state,
@@ -64,7 +66,7 @@ API that does not speak OAP. It normalizes IDs, lifecycle events, capabilities,
 errors, and degradation. An adapter is an implementation of a boundary, not an
 additional semantic layer.
 
-HyperNeo's Cloud Agent SDK integration and pi's JSONL RPC mode are adapter
+HyperNeo's Claude Agent SDK integration and pi's JSONL RPC mode are adapter
 candidates.
 
 ### Extension profile
@@ -84,8 +86,8 @@ behavior.
 | Concern | HyperNeo | Makai | pi | OAP implication |
 | --- | --- | --- | --- | --- |
 | Control boundary | Large web/daemon RPC surface | Agent run/stream API | JSONL RPC and `AgentSession` methods | `agent-control-core` is a viable common facade. |
-| Loop implementation | Hidden behind Cloud Agent SDK | Native agent protocol | Native `Agent`/`agentLoop` | Do not require adapters to expose hidden lower layers. |
-| Model boundary | Cloud SDK query options and events | Native provider protocol | `streamFn` and model APIs | Makai and pi can validate future model-IO; HyperNeo initially cannot. |
+| Loop implementation | Hidden behind Claude Agent SDK | Native agent protocol | Native `Agent`/`agentLoop` | Do not require adapters to expose hidden lower layers. |
+| Model boundary | Claude SDK query options and events | Native provider protocol | `streamFn` and model APIs | Makai and pi can validate future model-IO; HyperNeo initially cannot. |
 | Tool boundary | SDK tools, MCP servers, daemon policy | Native tool list/execute/progress/cancel | Typed tools with execution events | Common action-tool profile is justified. |
 | Session state | Daemon persistence and SDK session IDs | Stream/session envelope IDs | `AgentSession` tree and state | Core needs stable OAP IDs independent of native IDs. |
 | Streaming | Raw SDK messages plus daemon events | Structured agent/provider events | Structured agent/session events | Normalize to run, turn, content, action, and terminal events. |
@@ -111,13 +113,13 @@ The user-message path currently crosses several responsibilities:
 2. `packages/daemon/src/lib/rpc-handlers/session-handlers.ts` validates the
    request and delegates to the session manager.
 3. `packages/daemon/src/lib/session/message-persistence.ts` expands input,
-   decides admission, persists queue state, and creates a Cloud SDK message.
-4. `packages/daemon/src/lib/agent/query-runner.ts` constructs Cloud SDK query
+   decides admission, persists queue state, and creates a Claude SDK message.
+4. `packages/daemon/src/lib/agent/query-runner.ts` constructs Claude SDK query
    options and runs the SDK query.
 5. `packages/daemon/src/lib/agent/sdk-message-handler.ts` consumes SDK messages,
    updates daemon state, and emits UI-facing events.
 
-The path is functional, but transport, control policy, persistence, Cloud SDK
+The path is functional, but transport, control policy, persistence, Claude SDK
 adaptation, and presentation projection are coupled. The web application also
 renders SDK-specific messages directly. This makes a second agent backend
 expensive because the SDK's types leak through the entire stack.
@@ -125,15 +127,15 @@ expensive because the SDK's types leak through the entire stack.
 ### OAP placement
 
 The first OAP boundary should be an in-process agent-control port between
-HyperNeo's control logic and a Cloud Agent SDK adapter:
+HyperNeo's control logic and a Claude Agent SDK adapter:
 
 ```text
 HyperNeo presentation
     <-> presentation-control projection or existing compatibility RPC
 HyperNeo control
     <-> open-agent-protocol.agent-control-core
-Cloud Agent SDK adapter
-    <-> Cloud Agent SDK query and event stream
+Claude Agent SDK adapter
+    <-> Claude Agent SDK query and event stream
 ```
 
 MessageHub may carry OAP envelopes unchanged or continue carrying legacy
@@ -143,12 +145,12 @@ without fixing semantic coupling.
 The adapter should:
 
 - derive a revisioned capability snapshot from HyperNeo policy, configured
-  providers, and Cloud SDK initialization data;
+  providers, and Claude SDK initialization data;
 - assign stable OAP session, run, turn, and action IDs while retaining native
   IDs as adapter metadata;
 - map accepted input to `session.message.submit.response` and later lifecycle
   output to stream events;
-- map Cloud SDK `system:init` to capability or state updates rather than a raw
+- map Claude SDK `system:init` to capability or state updates rather than a raw
   timeline item;
 - normalize SDK text, reasoning, tool, usage, failure, and cancellation output;
 - report unavailable, emulated, or degraded lower-layer behavior honestly.
@@ -294,6 +296,9 @@ bag of vendor fields.
 
 ## Protocol Gaps Exposed By The Study
 
+The blocking findings and acceptance criteria are developed separately in
+[P0 Protocol Gaps From Harness Interoperability](p0-protocol-gaps.md).
+
 ### P0: required for the first adapters
 
 - Stabilize the exact agent-control-core event vocabulary. The core draft uses
@@ -304,7 +309,7 @@ bag of vendor fields.
   and state recovery at the level needed by real adapters.
 - Define normalized terminal mapping when a native SDK does not provide a clean
   completed, failed, or cancelled signal.
-- Add normative mapping fixtures for HyperNeo/Cloud SDK, Makai, and pi.
+- Add normative mapping fixtures for HyperNeo/Claude SDK, Makai, and pi.
 
 ### P1: needed for backend interchangeability
 
@@ -327,7 +332,7 @@ bag of vendor fields.
 
 1. Define an internal OAP agent-control endpoint interface and event sink. Keep
    it semantic and transport independent.
-2. Implement the Cloud Agent SDK adapter for the minimum core lifecycle.
+2. Implement the Claude Agent SDK adapter for the minimum core lifecycle.
 3. Put a compatibility facade in front of it so current MessageHub methods and
    web behavior continue to work.
 4. Project normalized OAP state and events into presentation-control snapshots
@@ -338,11 +343,11 @@ bag of vendor fields.
    and pi's low-level agent loop.
 7. Introduce focused HyperNeo extension profiles only for semantics the common
    profiles cannot represent.
-8. Retire raw Cloud SDK message rendering after the OAP projection covers the
+8. Retire raw Claude SDK message rendering after the OAP projection covers the
    user-visible timeline.
 
 Success for this stage is not that every HyperNeo RPC becomes OAP. Success is
-that one presentation and control path can switch among Cloud Agent SDK, Makai,
+that one presentation and control path can switch among Claude Agent SDK, Makai,
 and pi endpoints based on capabilities rather than implementation names.
 
 ## Decisions Before Implementation
@@ -351,7 +356,7 @@ The research supports these defaults:
 
 - Keep MessageHub as a binding and compatibility mechanism during migration.
 - Start with an in-process OAP agent-control port.
-- Treat Cloud Agent SDK as an opaque agent-control adapter where lower layers
+- Treat Claude Agent SDK as an opaque agent-control adapter where lower layers
   are not exposed.
 - Use Makai and pi to shape native lower-layer profiles.
 - Keep executable plugin systems distinct from semantic protocol extensions.
