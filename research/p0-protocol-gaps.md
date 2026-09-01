@@ -144,6 +144,25 @@ semantics:
 - without an idempotency key, a caller must assume that retrying after an
   unknown outcome can duplicate work.
 
+After authentication and structural validation, idempotency lookup precedes
+capability-revision validation:
+
+1. If the key identifies a completed or accepted semantically equivalent
+   operation, the endpoint returns the stored outcome and original admitted
+   capability revision. This is replay, not new admission, so a newer current
+   revision does not turn it into `stale_capabilities`.
+2. If the key exists for a semantically different operation, the endpoint
+   returns `idempotency_conflict`.
+3. If the key is unknown or its guaranteed retention has expired, the endpoint
+   applies normal current capability-revision validation before admitting work.
+4. On new admission, the endpoint atomically records the key, canonical request,
+   admitted revision, response, and allocated domain IDs before effects can be
+   repeated by a retry.
+
+Envelope IDs, timestamps, and a retried `capability_revision` are excluded from
+semantic-equivalence comparison. The original operation's semantic payload and
+idempotency scope are not.
+
 The response's `session_id` or `submission_id` remains the endpoint-assigned
 identity for the accepted operation. It does not serve as the retry key because
 the caller may not have received it. Reopening an existing `session_id` and
@@ -175,6 +194,8 @@ assumes a `run_id` is returned for queued work.
 - Retrying session creation with the same idempotency key returns the original
   `session_id` rather than creating a second session.
 - Reusing an idempotency key with different input fails deterministically.
+- A recognized replay returns its original outcome after capabilities advance;
+  an unknown key still undergoes normal stale-revision validation.
 - Every `run.started` and terminal run event carries the same `run_id`.
 - Every started action has exactly one stable `tool_call_id` and one terminal
   action event.
@@ -225,8 +246,10 @@ overclaim support.
 Define a small agent-control-core capability descriptor first:
 
 - endpoint identity and OAP profile versions;
-- required feature records for session open/state, message submission,
-  streaming, status, cancellation, and `auto` delivery;
+- required feature records for `protocol.initialize`, `capabilities`,
+  `session.open`, `session.state`, `session.message.submit`,
+  `session.message.delivery.auto`, `run.streaming`, `run.status`, and
+  `run.cancel`;
 - optional delivery, content, persistence, model-selection, tool, permission,
   and user-input feature records;
 - capability scope: endpoint by default, with explicit session or model
@@ -352,8 +375,11 @@ meaning or fail with a typed unsupported/degraded-feature response. They must
 not silently fall back to another mode.
 
 For `auto`, endpoint policy may choose any advertised effective mode. If it
-chooses emulated or degraded behavior, the capability snapshot and response
-must disclose that fact.
+chooses emulated behavior, the capability snapshot and response must disclose
+that fact. It may choose behavior advertised as `degraded` only when the request
+explicitly sets `allow_degraded_features` to permit it. Otherwise the endpoint
+must reject with `capability_degraded` before admission rather than disclose the
+degradation after work has started.
 
 Initial mappings should be:
 
@@ -372,6 +398,7 @@ Initial mappings should be:
 - A stale UI cannot cause the control layer to mislabel a resolved delivery.
 - Submission responses acknowledge admission and never imply completion.
 - Explicit modes never silently change meaning.
+- `auto` never admits degraded behavior without request opt-in.
 - Queue and steer fixtures define their run-ID and event behavior.
 - HyperNeo and pi can preserve their current user-visible delivery semantics.
 
@@ -510,7 +537,9 @@ Minimum cases:
 **HyperNeo / Claude Agent SDK**
 
 - pre-run capabilities followed by `system:init` capability refresh;
+- lost submit response replayed after that capability revision changes;
 - configured policy denying a capability reported by `system:init`;
+- `auto` resolution rejecting degraded delivery without explicit opt-in;
 - idle message submission and streamed text;
 - tool call lifecycle when the SDK exposes tools;
 - explicit defer/queue while another run is active;
