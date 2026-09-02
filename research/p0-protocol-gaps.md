@@ -183,7 +183,12 @@ For delivery:
   lifecycle. Admission is followed by queued run state. If the item is removed,
   cancelled, or fails before execution, the endpoint emits `run.cancelled` or
   `run.failed` with `started: false`; it does not invent `run.started`.
-- `steer` targets the active `run_id` and does not create a second main run.
+- `steer` does not create a run. Its request may carry `target_run_id`; when
+  omitted, the target is the running primary run, never a side run. A supplied
+  target must identify a running, steerable run in the same session's
+  `active_runs` collection or the endpoint rejects before admission with typed
+  `invalid_steer_target`. The `+steer` capability states whether explicit
+  targeting is supported.
 
 An endpoint that cannot guarantee this pre-start terminal lifecycle must not
 reserve a `run_id`. It returns only `submission_id`, and the submission does not
@@ -465,7 +470,7 @@ Initial mappings should be:
 | HyperNeo default `immediate` policy | request `auto`; adapter/control resolves authoritatively |
 | HyperNeo explicit `defer` | request `queue` when queue is advertised |
 | pi idle `prompt` | `auto` -> `start` |
-| pi `steer` | explicit `steer`, targeting active run |
+| pi `steer` | explicit `steer`, targeting the running primary run |
 | pi `follow_up` | explicit `queue` |
 | Makai new run | `auto` -> `start` |
 | Unsupported side question | `btw` unavailable and typed rejection |
@@ -481,6 +486,8 @@ Initial mappings should be:
   outcome is permitted.
 - `auto` never admits degraded behavior without request opt-in.
 - Queue and steer fixtures define their run-ID and event behavior.
+- Steering defaults to the running primary run and validates any explicit
+  `target_run_id` before admission.
 - Reconnect state preserves every reserved queued run and its execution order.
 - A queued run removed before start receives a terminal event without a false
   `run.started` event.
@@ -560,7 +567,12 @@ cancellation normally synthesizes
 containment normally synthesizes `action.call.failed` with a typed
 `parent_run_terminated` error. Synthesized child terminals must be identified as
 adapter-generated and emitted before the run terminal so consumers cannot retain
-apparently active tools after the run ends.
+apparently active tools after the run ends. At the agent-control boundary, all
+events carrying a `run_id`, including projected action events, use that run as
+their ordering scope. The child terminal therefore has a lower run-scoped
+`sequence` than the parent terminal. A binding must preserve this order even if
+its native action source uses a separate tool-execution scope; preserving only
+per-tool order is insufficient for agent-control conformance.
 
 If the parent becomes orphaned, any child action whose quiescence is also
 unknown terminates with `action.call.orphaned`, not a misleading failed or
@@ -593,8 +605,8 @@ condition with:
 - `reconciliation_status` equal to `unreconciled` or `quiescent`;
 - `blocked_execution_scopes`, containing every scope with at least one
   unreconciled orphan; and
-- session `execution_safety`, equal to `unknown` while any relevant scope is
-  blocked.
+- `current_execution_scope_id` plus session `execution_safety`, which describes
+  that current scope and is `unknown` when it is blocked.
 
 Persisting the orphan record and blocked scope is atomic with committing the
 `run.orphaned` terminal. The canonical state query must expose that mutation
@@ -611,9 +623,15 @@ is retained only as the reconciled native outcome.
 When reconciliation proves quiescence, the endpoint changes that record to
 `quiescent`, stores any known `native_outcome`, removes the execution scope from
 `blocked_execution_scopes` only when no unreconciled orphan still references it,
-recomputes session `execution_safety`, and emits `session.state.updated`. The
-orphan record remains available as historical safety state and is not converted
-to an active or differently terminal run.
+recomputes session `execution_safety` and `status`, and emits
+`session.state.updated`. Status is `error` while the current execution scope is
+blocked; after its final block clears, status is derived from current
+nonterminal runs as `running`, `waiting_for_input`, `queued`, or `idle` rather
+than remaining latched in `error`. If policy recovers by creating a new isolated
+scope, that scope becomes `current_execution_scope_id`, its safety and status are
+computed independently, and the old scope remains listed as blocked until
+reconciled. The orphan record remains available as historical safety state and
+is not converted to an active or differently terminal run.
 
 This fourth terminal is the proposed resolution for adapters over hosted or
 remote sources. The alternative would be to require guaranteed eventual
@@ -660,9 +678,13 @@ after quiescence is established.
 - A settlement timeout cannot emit a terminal event until execution quiescence
   is established or the run is explicitly classified as orphaned.
 - Conflicting late native events cannot produce a second terminal event.
+- Run-scoped sequencing makes every child action terminal observably precede
+  its parent run terminal across multiplexed bindings.
 - Reconnect state identifies every unreconciled orphan and blocked execution
   scope, and later quiescence updates safety state without replacing the
   historical terminal outcome.
+- Reconciliation or selection of a new isolated current scope recomputes session
+  status instead of leaving a recovered session latched in `error`.
 - `run.orphaned` is emitted only after negotiation selects a core version whose
   terminal vocabulary includes it; incompatible endpoints fail negotiation
   before admitting work.
