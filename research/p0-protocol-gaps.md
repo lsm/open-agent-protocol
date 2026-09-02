@@ -278,21 +278,33 @@ Define a small agent-control-core capability descriptor first:
 - an opaque revision covering the complete effective descriptor and embedded
   catalogs.
 
-Scoped records are conjunctive restrictions, not overrides. An endpoint begins
-with the unqualified endpoint record and applies every record whose complete
-qualifier set matches the operation context. A qualifier set may contain
-`session_id`, `model_id`, or both; a combined session/model restriction is one
-record carrying both qualifiers. Missing dimensions inherit the broader
-effective value, and a narrower record must never widen broader support.
+Capability evaluation has two distinct steps: context selection within each
+authority source, then restrictive composition across sources. A qualifier set
+may contain `session_id`, `model_id`, or both. For one source, select the matching
+records whose qualifier sets are maximal by set inclusion. A combined
+session/model record therefore replaces that source's broader session, model,
+and endpoint defaults. If matching session-only and model-only records are both
+maximal because no combined record exists, both apply and are intersected.
 
-Composition is deterministic: support uses the most restrictive matching level
+This selection rule lets a more-specific technical record enable a capability
+whose unqualified technical default is unavailable, without making unmatched
+contexts permissive. It is a contextual value, not a policy override. After
+selection, independently selected technical, adapter, binding, and policy
+records compose restrictively: support uses the most restrictive level
 (`unavailable`, then `degraded`, then `emulated`, then `native`); degradation
-reasons are accumulated; boolean permissions are intersected; limits use the
-most restrictive bound; and catalogs contain only entries allowed by every
-matching record, with their constraints intersected. An empty or contradictory
-intersection is `unavailable`. Policy remains the final veto after this scoped
-composition. The endpoint publishes the resulting effective record and covers
-it with the capability revision, so a peer never has to reproduce private
+reasons accumulate; boolean permissions intersect; limits use the most
+restrictive bound; and catalogs contain only entries allowed by every selected
+record, with their constraints intersected. An empty or contradictory
+intersection is `unavailable`, and policy remains the final veto.
+
+`provisional` follows the same two-step rule. A more-specific resolved record
+shadows a broader provisional default from the same source. Among all maximal
+records selected within a source, and then across independent sources, the
+effective value is provisional if any selected record is provisional. Thus an
+exact combined record can resolve a broad unknown, while an unresolved model or
+session restriction cannot be accidentally cleared by another scope. The
+endpoint publishes the resulting effective record and covers it with the
+capability revision, so a peer never has to reproduce selection or private
 adapter policy to decide admission.
 
 Late discovery should follow the existing refresh mechanism:
@@ -378,6 +390,11 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
   support.
 - Overlapping endpoint, session, model, and combined session/model records
   compose to the same most-restrictive effective result for every peer.
+- A context-specific record may safely enable support over an unavailable
+  default within one authority source, while unmatched contexts remain
+  unavailable and independent sources still narrow the result.
+- Provisional status is selected and composed deterministically; a specific
+  resolved record can shadow only broader defaults from the same source.
 - Adapters may add honestly emulated features only when sufficient lower-level
   primitives preserve the required semantics.
 - Binding limitations narrow affected capabilities before they are advertised.
