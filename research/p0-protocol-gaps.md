@@ -21,7 +21,7 @@ future profile must be designed first.
 | P0.2 Adapter identity | Existing harnesses do not consistently expose stable session, run, turn, message, and tool-call IDs. | Rules for generating, preserving, scoping, recovering, and idempotently creating OAP identities. |
 | P0.3 Capability scope and late discovery | Real capabilities may vary by session, model, configuration, or become known only after native initialization. | A minimal core descriptor with scope, authority, provisional state, refresh, and degradation rules. |
 | P0.4 Admission and delivery mapping | HyperNeo, Makai, and pi admit work using different busy-session semantics. | Deterministic mapping to `auto`, `start`, `queue`, `steer`, and `btw`, including run-ID behavior. |
-| P0.5 Terminal outcome normalization | Native streams do not always provide a clean completed, failed, or cancelled event. | A conservative terminal classification algorithm with typed errors and synthesis disclosure. |
+| P0.5 Terminal outcome normalization | Native streams do not always provide a clean completed, failed, cancelled, or provably quiescent outcome. | A conservative terminal classifier, including explicit orphaning, typed errors, and synthesis disclosure. |
 | P0.6 Normative adapter fixtures | Prose mappings cannot prove ordering, correlation, recovery, or degradation. | Native-input-to-OAP fixtures for all three harnesses with conformance assertions. |
 
 ## P0.1 Canonical Agent-Control Event Vocabulary
@@ -61,8 +61,9 @@ Use boundary-specific vocabulary:
   required by policy.
 - Agent-control tool lifecycle uses `action.call.*`; raw provider tool-call
   fragments remain model-IO events until the loop selects an action.
-- Core requires `run.started`, meaningful `run.status.updated` events, and one
-  terminal `run.*` event. Turn events remain optional until their core value is
+- Core requires `run.started` for execution that begins, meaningful
+  `run.status.updated` events, and one terminal `run.*` outcome for every
+  admitted run. Turn events remain optional until their core value is
   demonstrated by fixtures.
 
 The richer agent-control draft and examples should be changed to this
@@ -178,13 +179,18 @@ namespaced extension or diagnostic record, but peers must not depend on them.
 For delivery:
 
 - `start` and `btw` create a new `run_id`.
-- `queue` reserves a new `run_id` if the endpoint can guarantee the queued
-  lifecycle; otherwise acceptance must clearly identify a submission that has
-  not yet become a run.
+- `queue` reserves a new `run_id` and accepts responsibility for its complete
+  lifecycle. Admission is followed by queued run state. If the item is removed,
+  cancelled, or fails before execution, the endpoint emits `run.cancelled` or
+  `run.failed` with `started: false`; it does not invent `run.started`.
 - `steer` targets the active `run_id` and does not create a second main run.
 
-The queue rule requires a final decision in the core because the current draft
-assumes a `run_id` is returned for queued work.
+An endpoint that cannot guarantee this pre-start terminal lifecycle must not
+reserve a `run_id`. It returns only `submission_id`, and the submission does not
+become a run until execution is admitted later. OAP should choose one behavior
+for the standard queue unit; the proposed default is reservation plus a complete
+pre-start terminal lifecycle because it gives control layers stable queue
+identity.
 
 ### Acceptance criteria
 
@@ -200,6 +206,8 @@ assumes a `run_id` is returned for queued work.
 - A recognized replay returns its original outcome after capabilities advance;
   an unknown key still undergoes normal stale-revision validation.
 - Every `run.started` and terminal run event carries the same `run_id`.
+- Every reserved queued run receives one terminal event even when it never
+  emits `run.started`.
 - Every started action has exactly one stable `tool_call_id` and one terminal
   action event.
 - Native IDs can be inspected without being mistaken for portable OAP IDs.
@@ -401,6 +409,14 @@ Explicit `queue`, `steer`, or `btw` requests must either preserve that semantic
 meaning or fail with a typed unsupported/degraded-feature response. They must
 not silently fall back to another mode.
 
+The `+btw` unit creates concurrent runs, so it also requires recoverable
+canonical state. `session.state.response` and `session.state.updated` must expose
+an `active_runs` collection containing every primary and side run with at least
+`run_id`, relationship (`primary` or `side`), and status. A side run may include
+`parent_run_id` for the primary run whose environment and configuration it
+shares. The singular `active_run_id` is insufficient for `+btw`; implementations
+without concurrent runs may retain it as a core convenience field.
+
 For `auto`, endpoint policy may choose any advertised effective mode. If it
 chooses emulated behavior, the capability snapshot and response must disclose
 that fact. It may choose behavior advertised as `degraded` only when the request
@@ -427,6 +443,10 @@ Initial mappings should be:
 - Explicit modes never silently change meaning.
 - `auto` never admits degraded behavior without request opt-in.
 - Queue and steer fixtures define their run-ID and event behavior.
+- A queued run removed before start receives a terminal event without a false
+  `run.started` event.
+- Reconnect state for `+btw` lists both the primary run and every active side
+  run.
 - HyperNeo and pi can preserve their current user-visible delivery semantics.
 
 ## P0.5 Terminal Outcome Normalization
@@ -447,10 +467,11 @@ terminal event.
 
 ### Gap
 
-Core requires exactly one of `run.completed`, `run.failed`, or `run.cancelled`,
-but does not define how an adapter classifies incomplete or conflicting native
-signals. A permissive adapter may report success after a process failure; a
-strict adapter may emit two terminal events.
+Core currently requires exactly one of `run.completed`, `run.failed`, or
+`run.cancelled`, but does not define how an adapter classifies incomplete or
+conflicting native signals, or a source whose continued execution cannot be
+ruled out. A permissive adapter may report success after a process failure; a
+strict adapter may emit two terminal events or remain nonterminal forever.
 
 ### Proposed resolution
 
@@ -470,6 +491,10 @@ At that barrier, classify the collected signals with this precedence:
 3. An authoritative successful native result maps to `run.completed`.
 4. End-of-stream without an authoritative outcome maps to `run.failed` with a
    typed `terminal_outcome_unknown` adapter error.
+5. Failure to establish quiescence after containment maps to `run.orphaned`.
+   This is a terminal OAP observation outcome that explicitly means external
+   execution or side effects may continue; it is not completion or ordinary
+   failure.
 
 The adapter then uses an atomic per-run terminal guard to emit the selected
 outcome exactly once. Signals arriving afterward from sources that the adapter
@@ -488,6 +513,11 @@ containment normally synthesizes `action.call.failed` with a typed
 adapter-generated and emitted before the run terminal so consumers cannot retain
 apparently active tools after the run ends.
 
+If the parent becomes orphaned, any child action whose quiescence is also
+unknown terminates with `action.call.orphaned`, not a misleading failed or
+cancelled outcome. Adopting `run.orphaned` therefore requires the `+tools` unit
+to recognize `action.call.orphaned` as a fourth terminal action outcome.
+
 If a required source does not settle, a declared settlement timeout starts
 containment; it does not itself produce a terminal event. The adapter must:
 
@@ -498,12 +528,17 @@ containment; it does not itself produce a terminal event. The adapter must:
    authoritative remote status, or another adapter-specific guarantee;
 4. only then emit `run.failed` with a typed `terminal_settlement_timeout` error.
 
-If the adapter cannot establish quiescence, the run remains nonterminal and the
-session remains blocked in recovery/error state. It must not report completion
-or admit work that assumes the prior run has stopped. This exposes a necessary
-core decision: either conforming adapters must guarantee eventual quiescence,
-or the protocol needs an explicit orphaned/abandoned outcome distinct from
-ordinary terminal completion. A timeout cannot manufacture that guarantee.
+If the adapter cannot establish quiescence after its containment policy is
+exhausted, it emits `run.orphaned`. Canonical session state moves to `error`,
+sets `execution_safety: "unknown"`, and retains the orphaned run ID. The endpoint
+must not admit work into the same execution scope that assumes the source has
+stopped. Recovery requires authoritative later reconciliation or a new isolated
+scope; acknowledging the warning alone cannot establish safety.
+
+This fourth terminal is the proposed resolution for adapters over hosted or
+remote sources. The alternative would be to require guaranteed eventual
+quiescence as a core conformance precondition, excluding systems that cannot
+provide it. A timeout alone must never manufacture ordinary failure.
 
 Synthesized terminal events should include or reference:
 
@@ -520,18 +555,20 @@ after quiescence is established.
 
 ### Acceptance criteria
 
-- Every `run.started` receives exactly one terminal event.
+- Every admitted run receives exactly one terminal event, including a reserved
+  queued run that never starts.
 - Abrupt EOF and adapter exceptions cannot become successful completion.
 - Cancellation races have a deterministic outcome.
 - A success candidate is not emitted before all required terminal sources
   settle.
 - A settlement timeout cannot emit a terminal event until execution quiescence
-  is established.
+  is established or the run is explicitly classified as orphaned.
 - Conflicting late native events cannot produce a second terminal event.
 - Every started action receives one terminal action event before its parent run
   terminal event.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
-  cancellation/failure races, and failure with an in-flight action.
+  cancellation/failure races, failure with an in-flight action, and an orphaned
+  run with an orphaned action and blocked session scope.
 
 ## P0.6 Normative Adapter Mapping Fixtures
 
@@ -573,9 +610,11 @@ Minimum cases:
 - idle message submission and streamed text;
 - tool call lifecycle when the SDK exposes tools;
 - explicit defer/queue while another run is active;
+- queued work cancelled before start;
+- concurrent primary and `btw` side runs recovered through session state;
 - cancellation, unconfirmed-cancellation timeout containment, abrupt
   SDK/process failure with an in-flight action, and settlement-timeout
-  containment.
+  containment, including an orphaned outcome when quiescence remains unknown.
 
 **Makai**
 
