@@ -1064,11 +1064,15 @@ through reconnect, process replacement, buffering, or consumer restart.
 Define one canonical state authority and a minimum snapshot-reconciliation
 contract:
 
-- Each session incarnation has an opaque `stream_id` and a positive integer
-  `stream_generation`. Reopening the same recoverable incarnation preserves
-  both; replacement or reset durably increments the generation by exactly one
-  and creates a new stream ID before publishing any event from it. Generations
-  are never reused within a recoverable session.
+- For each session incarnation and authorized recovery view, the endpoint
+  assigns an opaque `stream_id` and a positive integer `stream_generation`. An
+  authorized recovery view is the complete event and state projection that a
+  consumer is currently permitted to receive; consumers with different
+  authorization need not share a stream or cursor. Reopening the same
+  recoverable view preserves both identifiers. Replacement or reset durably
+  increments that view's generation by exactly one and creates a new stream ID
+  before publishing any event from it. Generations are never reused within a
+  recoverable view's lineage.
 - Every canonical event has a stable `event_id` that is unique within the
   recoverable session across all stream generations, plus a consecutive,
   stream-wide integer `stream_position` within its `stream_id`. The first
@@ -1077,11 +1081,14 @@ contract:
   distinct from the envelope's existing scoped `sequence`: scoped `sequence`
   orders events within a run or another declared scope, while
   `stream_position` is the single reconciliation and replay cursor across all
-  scopes in the session stream.
+  scopes in that authorized stream view. The endpoint assigns positions only to
+  events deliverable in the view, so an event hidden by authorization cannot
+  create a cursor gap for its consumer.
 - Every canonical event carries `stream_id` and `stream_generation`.
   `session.state.response` includes both, `state_revision`, and a
   `through_stream_position` watermark. The returned state and its recovery
-  projection reflect every canonical event through that position.
+  projection reflect every canonical event in the authorized view through that
+  position and contain no state outside that view.
 - A consumer ignores an `event_id` it has already applied in that recoverable
   session, ignores traffic from an obsolete `stream_id`, and treats a
   `stream_position` gap as loss of continuity. It may buffer out-of-order events
@@ -1104,6 +1111,12 @@ contract:
   only the contiguous suffix beginning at P + 1. A snapshot for a higher
   generation replaces the old baseline and fences all lower-generation traffic;
   a lower-generation snapshot never replaces a higher observed fence.
+- An authorization change that alters a consumer's recovery projection replaces
+  its current view before the change takes effect: the endpoint increments the
+  view generation, assigns a new stream ID, and returns or makes available a
+  freshly authorized snapshot baseline. It does not continue the old cursor
+  while silently omitting newly forbidden events, and a broader view does not
+  expose newly permitted historical state except through that new baseline.
 - Reconciliation supplies the consumer's last `stream_id`,
   `stream_generation`, and `stream_position`. The endpoint may replay retained
   canonical events after that position only when both the supplied stream ID
@@ -1131,13 +1144,14 @@ contract:
   recover one advertised event category after a gap, it cannot claim reconnect
   conformance for that profile and binding.
 - Before a canonical event becomes externally visible, the endpoint atomically
-  commits its stream ID and generation, `stream_position`, and either its replay
-  record or the equivalent materialized projection update to storage sufficient
-  for the advertised recovery failure domain. A binding promising only reconnect
-  within the same process may use process memory; one promising
-  process-replacement recovery requires durable storage. A crash after commit
-  but before live delivery may reveal the event through later replay or state,
-  while a crash after delivery cannot make it disappear from recovery state.
+  commits its authorized-view stream ID and generation, `stream_position`, and
+  either its replay record or the equivalent materialized projection update to
+  storage sufficient for the advertised recovery failure domain. A binding
+  promising only reconnect within the same process may use process memory; one
+  promising process-replacement recovery requires durable storage. A crash
+  after commit but before live delivery may reveal the event through later
+  replay or state, while a crash after delivery cannot make it disappear from
+  recovery state.
 - If an event updates an existing item, it carries the stable item identity and
   a monotonic item revision. A stale revision cannot replace a newer canonical
   item. Raw text deltas need not be independently idempotent because the stream
@@ -1156,6 +1170,10 @@ rules.
   session state.
 - Duplicate delivery cannot duplicate a transcript item or action lifecycle.
 - Traffic from an old stream incarnation cannot modify the current session.
+- Events outside one consumer's authorized recovery view neither appear in its
+  snapshot nor create gaps in its stream positions.
+- An authorization change installs a newly fenced snapshot baseline before the
+  consumer continues on the changed recovery view.
 - An in-flight lower-generation snapshot cannot replace buffered or installed
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
@@ -1176,7 +1194,8 @@ rules.
   update, an unknown stream before its snapshot, a delayed pre-watermark event,
   a stale snapshot racing a higher-generation event, stale item revision,
   reconnect during execution, publish/crash recovery, and stream-incarnation
-  change.
+  change. Multi-participant fixtures cover different authorization views and an
+  authorization change during a live stream.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
