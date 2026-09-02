@@ -166,9 +166,20 @@ the same non-disclosing denial. Only then does the endpoint apply these rules:
    returns `idempotency_conflict`.
 3. If the key is unknown or its guaranteed retention has expired, the endpoint
    applies normal current capability-revision validation before admitting work.
-4. On new admission, the endpoint atomically records the key, canonical request,
-   admitted revision, response, and allocated domain IDs before effects can be
-   repeated by a retry.
+4. On new admission, the endpoint atomically commits the key, canonical request,
+   admitted revision, allocated domain IDs, response state, and the durable
+   session, queue, or runnable admission state. When an external effect cannot
+   share that transaction, the commit includes a resumable pending outbox intent
+   keyed by the same operation instead of claiming a completed effect.
+
+An acceptance response is exposed only after that commit. Recovery resumes a
+stored pending intent using the original domain IDs and never creates a second
+intent; replay returns the stored pending or accepted state. A crash before the
+commit leaves no replayable acceptance, while a crash after it leaves enough
+durable state to finish or report the admitted lifecycle. Implementations may
+choose a transaction, write-ahead log, or equivalent mechanism, but the protocol
+guarantee is that replay never reports work as admitted when neither its durable
+state nor a resumable intent exists.
 
 Envelope IDs, timestamps, and a retried `capability_revision` are excluded from
 semantic-equivalence comparison. The original operation's semantic payload and
@@ -221,6 +232,9 @@ identity.
   whether a stored idempotency outcome exists.
 - Replaying resource creation reauthorizes the stored created resource before
   disclosing its ID or any conflict information.
+- Crash-point fixtures prove that idempotency replay cannot return acceptance
+  without durable admission state or one resumable intent using the original
+  IDs.
 - A recognized replay returns its original outcome after capabilities advance;
   an unknown key still undergoes normal stale-revision validation.
 - Every `run.started` and terminal run event carries the same `run_id`.
