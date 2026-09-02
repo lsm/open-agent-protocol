@@ -147,8 +147,10 @@ semantics:
 - without an idempotency key, a caller must assume that retrying after an
   unknown outcome can duplicate work.
 
-After authentication and structural validation, idempotency lookup precedes
-capability-revision validation:
+After authentication, structural validation, and current authorization for the
+endpoint, operation, and target session, idempotency lookup precedes
+capability-revision validation. Authorization failure returns the normal typed
+denial without revealing whether a matching key or stored outcome exists:
 
 1. If the key identifies a completed or accepted semantically equivalent
    operation, the endpoint returns the stored outcome and original admitted
@@ -209,6 +211,8 @@ identity.
 - Reusing an idempotency key with different input fails deterministically.
 - The same key used by different authenticated principals cannot reveal or
   collide with another principal's stored outcome.
+- Revoked endpoint or session authorization prevents replay and does not reveal
+  whether a stored idempotency outcome exists.
 - A recognized replay returns its original outcome after capabilities advance;
   an unknown key still undergoes normal stale-revision validation.
 - Every `run.started` and terminal run event carries the same `run_id`.
@@ -689,6 +693,16 @@ when its adapter and binding can guarantee that every admitted run eventually
 reaches a legacy completed, failed, or cancelled terminal. This prevents a
 mid-run downgrade from leaving an older peer waiting forever.
 
+The same revision rule applies independently to `+tools`. The feature-unit
+revision that adopts this proposal includes `action.call.orphaned` in its
+normative terminal set and is selected alongside the core profile during
+initialization. If an endpoint can leave an exposed child action non-quiescent,
+it must negotiate both the orphan-capable core revision and the orphan-capable
+`+tools` revision before admission. It may combine the newer core with an older
+`+tools` revision only when its adapter guarantees that every exposed child
+action still reaches completed, failed, or cancelled. Selected core and feature
+unit versions remain fixed for the run.
+
 Synthesized terminal events should include or reference:
 
 - a typed error for failures;
@@ -727,6 +741,8 @@ after quiescence is established.
 - `run.orphaned` is emitted only after negotiation selects a core version whose
   terminal vocabulary includes it; incompatible endpoints fail negotiation
   before admitting work.
+- `action.call.orphaned` additionally requires an orphan-capable negotiated
+  `+tools` revision whenever exposed children can remain non-quiescent.
 - Every started action receives one terminal action event before its parent run
   terminal event.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
