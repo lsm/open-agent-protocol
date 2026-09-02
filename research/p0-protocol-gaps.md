@@ -437,13 +437,13 @@ The `+btw` and `+queue` units create multiple admitted nonterminal lifecycles, s
 they also require recoverable canonical state. `session.state.response` and
 `session.state.updated` must expose an `active_runs` collection containing every
 running, side, and reserved queued run with at least `run_id`, relationship
-(`primary` or `side`), and status (`queued` or a running status). Queued records
-appear in deterministic execution order and include `queue_position`; a side run
-may include `parent_run_id` for the primary run whose environment and
-configuration it shares. Here `active_runs` means all admitted nonterminal runs,
-not only those currently executing. The singular `active_run_id` is insufficient
-for either optional unit; implementations with only one nonterminal run may
-retain it as a core convenience field.
+(`primary` or `side`), `execution_scope_id`, and status (`queued` or a running
+status). Queued records appear in deterministic execution order and include
+`queue_position`; a side run may include `parent_run_id` for the primary run
+whose environment and configuration it shares. Here `active_runs` means all
+admitted nonterminal runs, not only those currently executing. The singular
+`active_run_id` is insufficient for either optional unit; implementations with
+only one nonterminal run may retain it as a core convenience field.
 
 For `auto`, endpoint policy may resolve idle admission to `start` without a
 separate `start` capability. `start` is the implicit concrete outcome of core
@@ -574,6 +574,15 @@ their ordering scope. The child terminal therefore has a lower run-scoped
 its native action source uses a separate tool-execution scope; preserving only
 per-tool order is insufficient for agent-control conformance.
 
+Every started child action is a required source in the parent's finalization
+barrier. A native parent-success candidate waits for all such actions to settle;
+it cannot synthesize an action failure and still become `run.completed`. If a
+child is proven quiescent but its semantic lifecycle cannot be recovered, the
+adapter emits `action.call.failed` with typed `child_lifecycle_incomplete` and
+the parent becomes `run.failed`. If the child cannot be proven quiescent after
+containment, it becomes `action.call.orphaned` and the parent becomes
+`run.orphaned` under the negotiated terminal vocabulary.
+
 If the parent becomes orphaned, any child action whose quiescence is also
 unknown terminates with `action.call.orphaned`, not a misleading failed or
 cancelled outcome. Adopting `run.orphaned` therefore requires the `+tools` unit
@@ -633,6 +642,14 @@ computed independently, and the old scope remains listed as blocked until
 reconciled. The orphan record remains available as historical safety state and
 is not converted to an active or differently terminal run.
 
+Session status aggregation is deterministic for the current execution scope:
+`closed` has highest precedence when the session is closed, then `error` when
+the current scope is blocked, then `running` when any run is executing, then
+`waiting_for_input` when none is executing and any run waits for input, then
+`queued` when only queued runs remain, and otherwise `idle`. Runs retained in an
+older blocked scope do not affect the new isolated current scope's status; they
+remain visible through `blocked_execution_scopes` and `orphaned_runs`.
+
 This fourth terminal is the proposed resolution for adapters over hosted or
 remote sources. The alternative would be to require guaranteed eventual
 quiescence as a core conformance precondition, excluding systems that cannot
@@ -680,11 +697,15 @@ after quiescence is established.
 - Conflicting late native events cannot produce a second terminal event.
 - Run-scoped sequencing makes every child action terminal observably precede
   its parent run terminal across multiplexed bindings.
+- A parent success waits for every started child; an unrecoverable quiescent
+  child fails the parent, while a non-quiescent child orphans it.
 - Reconnect state identifies every unreconciled orphan and blocked execution
   scope, and later quiescence updates safety state without replacing the
   historical terminal outcome.
 - Reconciliation or selection of a new isolated current scope recomputes session
   status instead of leaving a recovered session latched in `error`.
+- Multiple current-scope run states aggregate using one normative status
+  precedence.
 - `run.orphaned` is emitted only after negotiation selects a core version whose
   terminal vocabulary includes it; incompatible endpoints fail negotiation
   before admitting work.
