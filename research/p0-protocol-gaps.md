@@ -1118,23 +1118,26 @@ contract:
   `stream_position` gap as loss of continuity. It may buffer out-of-order events
   only within a binding-advertised bound; otherwise it reconciles. Gaps in a
   scoped `sequence` do not imply a stream-wide gap.
-- Each recoverable live stream advertises a `continuity_lease_ms`. Receipt of an
-  authenticated canonical event that advances the highest observed stream
-  position, or a fresh `stream.watermark`, renews the lease. Duplicate or
-  replayed events do not. A watermark is a non-canonical control signal: it does
-  not consume a stream position, and carries the current `stream_id`,
-  `stream_generation`, a positive monotonic `watermark_sequence`, and the
-  endpoint's highest committed `through_stream_position` for that authorized
-  view. A consumer renews the lease only when `watermark_sequence` exceeds every
-  value it previously accepted for that stream generation. The endpoint emits
-  fresh watermarks often enough to renew the lease while the live subscription
-  remains open; it durably preserves the next sequence across a recoverable
-  restart or replaces the stream and advances its generation. A watermark ahead
-  of the consumer's applied cursor exposes a missing tail; lease expiry exposes
-  loss even when later watermarks were dropped. Either condition freezes
-  application and triggers reconciliation. A binding may provide a stronger
-  acknowledged delivery mechanism, but silent best-effort tail delivery is
-  insufficient.
+- Each recoverable live stream advertises a `continuity_lease_ms`. Lease renewal
+  uses a consumer-issued, unpredictable, one-use challenge rather than arrival
+  time of ordinary stream traffic. The first lease starts when the live
+  subscription is established; each successful response starts the next. Before
+  the local monotonic lease deadline, the consumer sends
+  `stream.continuity.request` with a fresh challenge. The endpoint
+  returns an authenticated `stream.continuity.response` echoing that challenge,
+  the current `stream_id`, `stream_generation`, and highest committed
+  `through_stream_position` for the authorized view. Only a response matching
+  the currently outstanding challenge and received before that challenge's
+  local deadline renews the lease; the consumer then retires the challenge.
+  Canonical events, unsolicited watermarks, duplicate responses, responses to an
+  older challenge, and responses arriving after its deadline do not renew it.
+- A continuity response is a non-canonical control signal and does not consume a
+  stream position. A position ahead of the consumer's applied cursor exposes a
+  missing tail; lease expiry exposes loss even when the final event and all
+  current challenge responses were dropped. Either condition freezes
+  application and triggers reconciliation. A binding may provide an equivalent
+  freshness-proving challenge/acknowledgement exchange, but monotonic sequence
+  alone and silent best-effort tail delivery are insufficient.
 - A consumer never applies an event from an unknown `stream_id` directly. It
   records the highest authenticated `stream_generation` observed, triggers
   reconciliation, and may buffer unknown-stream events within a
@@ -1149,7 +1152,7 @@ contract:
 - The consumer tracks its highest contiguous applied `stream_position`. For
   same-stream reconciliation, it freezes application at that position C and
   records H, the highest authenticated position already observed in that stream,
-  including buffered events and watermarks. It requests recovery with
+  including buffered events and continuity responses. It requests recovery with
   `minimum_stream_position: H` and buffers later live events without applying
   them. The endpoint atomically captures its current highest committed position
   Q and must recover through T = max(H, Q). Fixing T for the response prevents
@@ -1294,9 +1297,9 @@ rules.
 - Dropping any nonterminal live event cannot permanently corrupt recovered
   session state.
 - Dropping the final run terminal with no later canonical event is exposed by an
-  authoritative watermark or continuity-lease expiry and recovered.
-- Replayed duplicates and duplicate watermarks cannot renew a continuity lease or
-  conceal a dropped stream tail.
+  authoritative continuity response or continuity-lease expiry and recovered.
+- Replayed events, delayed previously unseen watermarks, and stale challenge
+  responses cannot renew a continuity lease or conceal a dropped stream tail.
 - Duplicate delivery cannot duplicate a transcript item or action lifecycle.
 - Traffic from an old stream incarnation cannot modify the current session.
 - Events outside one consumer's authorized recovery view neither appear in its
@@ -1340,10 +1343,11 @@ rules.
   update, an unknown stream before its snapshot, a delayed pre-watermark event,
   a missing C + 1 with buffered C + 2, continuous same-stream traffic while
   reconciliation is frozen, a dropped final terminal followed by no canonical
-  event while duplicate P - 1 events and duplicate watermarks continue arriving,
-  replay-only optional events across a gap, a stale snapshot racing a
-  higher-generation event, stale item revision, reconnect during execution,
-  publish/crash recovery, and stream-incarnation change.
+  event while delayed distinct pre-terminal events, watermarks, and expired
+  challenge responses continue arriving, replay-only optional events across a
+  gap, a stale snapshot racing a higher-generation event, stale item revision,
+  reconnect during execution, publish/crash recovery, and stream-incarnation
+  change.
   Multi-participant fixtures cover different authorization views and an
   authorization change during a live stream, including a transition from a
   higher-numbered generation into a newly constructed view and an old snapshot
