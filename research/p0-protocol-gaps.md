@@ -1302,14 +1302,21 @@ Use participant-relative semantics, independent of deployment topology:
   redelivered. If the payload cannot be retained safely and reconstructed, the
   feature cannot advertise `retain-for-reconnect`; it must select cancel or the
   negotiated terminal/orphan behavior on disconnect.
-- Authorization loss while an interaction is pending atomically terminalizes it
-  as failed with typed `authorization_revoked`; deadline expiry terminalizes it
-  as cancelled with typed `deadline_expired`. The endpoint removes it from
-  actionable pending state, emits the canonical terminal resolution, and feeds
-  that outcome to the parent run. If the native source cannot accept the outcome
-  or establish quiescence, the normal containment and parent failure/orphan
-  rules apply. Neither condition may leave the interaction or parent waiting
-  indefinitely.
+- Authorization loss or deadline expiry atomically removes an interaction from
+  actionable pending state and begins containment; later participant responses
+  fail with typed `interaction_closing`. The endpoint first delivers the native
+  outcome and establishes quiescence. Only then does it emit the interaction's
+  one canonical terminal: failed with typed `authorization_revoked`, or
+  cancelled with typed `deadline_expired`, and feed that outcome to the parent
+  run. If the native source cannot accept the outcome or establish quiescence,
+  the endpoint performs normal containment before publishing a terminal. Once
+  containment proves the source can no longer consume a response, it emits the
+  corresponding failed or cancelled outcome. If containment instead classifies
+  the parent as orphaned while the source may still consume a response, it emits
+  the negotiated orphaned interaction outcome. A bounded containment failure
+  therefore changes the terminal classification rather than trying to revise an
+  already emitted terminal, and neither condition leaves the interaction or
+  parent waiting indefinitely.
 - Envelope `in_reply_to` correlates protocol delivery; `interaction_id` and
   `tool_call_id` preserve domain identity across retries, reconnect, or an
   alternate binding.
@@ -1373,13 +1380,16 @@ feature revisions are fixed for the interaction and run.
 - A reassociated participant can discover every retained pending interaction
   with its original identity and sufficient request data to resolve it.
 - Authorization loss and deadline expiry produce terminal interaction and
-  parent progress rather than an indefinitely blocked request.
+  parent progress rather than an indefinitely blocked request; failed or
+  cancelled is emitted only after quiescence, otherwise the negotiated orphaned
+  outcome is used.
 - A headless binding can advertise interactive confirmation unavailable while
   the same harness's interactive binding advertises it.
 - Fixtures cover server-initiated approval, client-hosted tool execution,
   retained-request redelivery, unauthorized resolution, disconnect,
-  cancellation races, authorization loss, deadline expiry, feature-version
-  negotiation, and parent-terminal races.
+  cancellation races, authorization loss, deadline expiry, containment failure
+  before interaction terminalization, feature-version negotiation, and
+  parent-terminal races.
 
 ## Resolution Order
 
