@@ -132,10 +132,13 @@ envelope correlation. At minimum, a session-creating `session.open.request` and
 `session.message.submit.request` should accept an `idempotency_key` with these
 semantics:
 
-- the key is scoped to endpoint identity, the authenticated principal,
-  operation type, and `session_id` when the operation targets an existing
-  session; tenant or organization identity is an additional scope dimension
-  when applicable, never a replacement for principal identity;
+- the key is scoped to endpoint identity, stable `caller_identity`, operation
+  type, and `session_id` when the operation targets an existing session;
+  `caller_identity` is the authenticated principal when authentication exists,
+  otherwise it is a binding-established identity for the local caller or trust
+  domain that remains stable across reconnect and process restart; tenant or
+  organization identity is an additional dimension when applicable, never a
+  replacement for caller identity;
 - a retry may use a new envelope `id` but repeats the same `idempotency_key`;
 - the same key and semantically equivalent request returns the original
   acceptance outcome, `submission_id`, message IDs, and run ID without
@@ -146,6 +149,14 @@ semantics:
   guarantee deduplication;
 - without an idempotency key, a caller must assume that retrying after an
   unknown outcome can duplicate work.
+
+An unauthenticated binding may use a stable local installation, OS principal,
+or single-tenant deployment identity as `caller_identity`; a transient
+connection ID is insufficient. If the binding cannot distinguish mutually
+untrusted callers with stable identities, the endpoint must isolate them into
+separate idempotency namespaces or decline the idempotency conformance claim. A
+single trusted in-process or stdio caller may use the stable deployment trust
+domain as its identity.
 
 After authentication, structural validation, and current authorization for the
 endpoint, operation, and target session, idempotency lookup precedes
@@ -228,6 +239,8 @@ identity.
 - Reusing an idempotency key with different input fails deterministically.
 - The same key used by different authenticated principals cannot reveal or
   collide with another principal's stored outcome.
+- The same key used by different unauthenticated binding caller identities also
+  cannot collide or reveal outcomes.
 - Revoked endpoint or session authorization prevents replay and does not reveal
   whether a stored idempotency outcome exists.
 - Replaying resource creation reauthorizes the stored created resource before
@@ -305,13 +318,16 @@ Define a small agent-control-core capability descriptor first:
 - an opaque revision covering the complete effective descriptor and embedded
   catalogs.
 
-Capability evaluation has two distinct steps: context selection within each
-authority source, then restrictive composition across sources. A qualifier set
-may contain `session_id`, `model_id`, or both. For one source, select the matching
-records whose qualifier sets are maximal by set inclusion. A combined
-session/model record therefore replaces that source's broader session, model,
-and endpoint defaults. If matching session-only and model-only records are both
-maximal because no combined record exists, both apply and are intersected.
+Capability evaluation has two distinct steps: field-wise context selection
+within each authority source, then restrictive composition across sources. A
+qualifier set may contain `session_id`, `model_id`, or both. For each field, take
+the matching records from one source that explicitly define that field, then
+select those whose qualifier sets are maximal by set inclusion. A combined
+session/model record shadows broader values only for fields it defines; omitted
+fields continue to inherit from the most-specific broader records that define
+them. If matching session-only and model-only records both define a field and
+are maximal because no combined value exists, both values apply and use that
+field's composition rule.
 
 This selection rule lets a more-specific technical record enable a capability
 whose unqualified technical default is unavailable, without making unmatched
@@ -324,9 +340,10 @@ restrictive bound; and catalogs contain only entries allowed by every selected
 record, with their constraints intersected. An empty or contradictory
 intersection is `unavailable`, and policy remains the final veto.
 
-Optional constraint omission is an identity value, not an empty value: an
-absent permission adds no allow or deny decision, an absent limit adds no bound,
-an absent catalog adds no filtering, and absent degradation reasons add none.
+After field-wise inheritance, optional constraint omission is an identity value,
+not an empty value: an absent permission adds no allow or deny decision, an
+absent limit adds no bound, an absent catalog adds no filtering, and absent
+degradation reasons add none.
 Explicit `false`, zero, an empty catalog, or another denying value remains a real
 restriction. If adapter, binding, or policy has no matching record, that source
 also contributes the identity value. Technical support is different: every
@@ -335,15 +352,16 @@ technical record means `unavailable`, preventing absence from inventing support.
 The technical basis may describe lower-level primitives that an adapter uses to
 provide an honestly `emulated` semantic feature.
 
-`provisional` follows the same two-step rule. A more-specific resolved record
-shadows a broader provisional default from the same source. Among all maximal
-records selected within a source, and then across independent sources, the
-effective value is provisional if any selected record is provisional. Thus an
-exact combined record can resolve a broad unknown, while an unresolved model or
-session restriction cannot be accidentally cleared by another scope. The
-endpoint publishes the resulting effective record and covers it with the
-capability revision, so a peer never has to reproduce selection or private
-adapter policy to decide admission.
+`provisional` follows the same field-wise rule and supports explicit `false`. A
+more-specific explicit `false` shadows a broader provisional `true` from the
+same source; omission inherits it. Among equally maximal defining records within
+a source, and then across independent sources, the effective value is
+provisional if any selected value is `true`. Thus an exact combined record can
+resolve a broad unknown, while an unresolved model or session restriction cannot
+be accidentally cleared by omission or another authority. The endpoint
+publishes the resulting effective record and covers it with the capability
+revision, so a peer never has to reproduce selection or private adapter policy
+to decide admission.
 
 Late discovery should follow the existing refresh mechanism:
 
@@ -431,6 +449,8 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
 - A context-specific record may safely enable support over an unavailable
   default within one authority source, while unmatched contexts remain
   unavailable and independent sources still narrow the result.
+- A specific record that changes one field inherits every unrelated broader
+  field from the same source, including denials and limits.
 - Provisional status is selected and composed deterministically; a specific
   resolved record can shadow only broader defaults from the same source.
 - Adapters may add honestly emulated features only when sufficient lower-level
