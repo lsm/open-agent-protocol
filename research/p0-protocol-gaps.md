@@ -428,13 +428,17 @@ Explicit `queue`, `steer`, or `btw` requests must either preserve that semantic
 meaning or fail with a typed unsupported/degraded-feature response. They must
 not silently fall back to another mode.
 
-The `+btw` unit creates concurrent runs, so it also requires recoverable
-canonical state. `session.state.response` and `session.state.updated` must expose
-an `active_runs` collection containing every primary and side run with at least
-`run_id`, relationship (`primary` or `side`), and status. A side run may include
-`parent_run_id` for the primary run whose environment and configuration it
-shares. The singular `active_run_id` is insufficient for `+btw`; implementations
-without concurrent runs may retain it as a core convenience field.
+The `+btw` and `+queue` units create multiple admitted nonterminal lifecycles, so
+they also require recoverable canonical state. `session.state.response` and
+`session.state.updated` must expose an `active_runs` collection containing every
+running, side, and reserved queued run with at least `run_id`, relationship
+(`primary` or `side`), and status (`queued` or a running status). Queued records
+appear in deterministic execution order and include `queue_position`; a side run
+may include `parent_run_id` for the primary run whose environment and
+configuration it shares. Here `active_runs` means all admitted nonterminal runs,
+not only those currently executing. The singular `active_run_id` is insufficient
+for either optional unit; implementations with only one nonterminal run may
+retain it as a core convenience field.
 
 For `auto`, endpoint policy may resolve idle admission to `start` without a
 separate `start` capability. `start` is the implicit concrete outcome of core
@@ -445,6 +449,12 @@ that fact. It may choose behavior advertised as `degraded` only when the request
 explicitly sets `allow_degraded_features` to permit it. Otherwise the endpoint
 must reject with `capability_degraded` before admission rather than disclose the
 degradation after work has started.
+
+If the session is busy and policy has no advertised, permitted `queue`, `steer`,
+or `btw` outcome, `auto` fails before admission with typed `session_busy`. It
+does not allocate a submission or run, release input to the harness, or silently
+invent busy-session behavior. The caller may retry after observing a state
+change.
 
 Initial mappings should be:
 
@@ -465,8 +475,11 @@ Initial mappings should be:
 - Explicit modes never silently change meaning.
 - Core `auto` may resolve to implicit `start`; every other concrete delivery
   outcome is capability-gated.
+- Busy `auto` fails deterministically as `session_busy` when no advertised busy
+  outcome is permitted.
 - `auto` never admits degraded behavior without request opt-in.
 - Queue and steer fixtures define their run-ID and event behavior.
+- Reconnect state preserves every reserved queued run and its execution order.
 - A queued run removed before start receives a terminal event without a false
   `run.started` event.
 - Reconnect state for `+btw` lists both the primary run and every active side
