@@ -774,6 +774,16 @@ must not admit work into the same execution scope that assumes the source has
 stopped. Recovery requires authoritative later reconciliation or a new isolated
 scope; acknowledging the warning alone cannot establish safety.
 
+When that scope becomes blocked, every already-admitted run in the scope that
+has not started is atomically removed from its queue and receives one
+`run.cancelled` terminal with `started: false` and typed
+`execution_scope_blocked`. These terminals are committed no later than the
+scope-blocking state update, so queued reservations cannot remain active behind
+the safety block. A run ID is never silently migrated to another scope; policy
+may preserve the user intent for explicit resubmission as a new run in a proven
+isolated scope. Admitted work that may already have started follows containment
+and ordinary failed/orphaned classification instead.
+
 Canonical `session.state.response` and `session.state.updated` represent this
 condition with:
 
@@ -883,6 +893,8 @@ after quiescence is established.
 - Reconnect state identifies every unreconciled orphan and blocked execution
   scope, and later quiescence updates safety state without replacing the
   historical terminal outcome.
+- Blocking an execution scope terminalizes every admitted queued run bound to it
+  before or atomically with the block; none remains indefinitely queued.
 - Reconciliation or selection of a new isolated current scope recomputes session
   status instead of leaving a recovered session latched in `error`.
 - Multiple current-scope run states aggregate using one normative status
@@ -897,7 +909,8 @@ after quiescence is established.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
   cancellation/failure races, denial and cancellation before action start,
   failure with an in-flight action, and an orphaned run with an orphaned action
-  and blocked session scope.
+  and blocked session scope. Orphan fixtures include an already-reserved queued
+  run in that scope and verify its non-started cancellation.
 
 ## P0.6 Normative Adapter Mapping Fixtures
 
@@ -1117,41 +1130,53 @@ contract:
   its current view before the change takes effect. The endpoint atomically
   increments the consumer's recovery-lineage generation, assigns a new stream
   ID, invalidates every pending snapshot response for an older view, and emits
-  an authenticated transition fence with a freshly authorized snapshot
-  baseline. Immediately before a snapshot becomes externally visible, the
-  endpoint revalidates both current authorization and lineage generation; an
-  obsolete response is suppressed and fails with typed `stale_recovery_view` or
-  is replaced by the new baseline. The endpoint does not continue the old cursor
-  while silently omitting newly forbidden events, and a broader view does not
-  expose newly permitted historical state except through the new baseline.
+  an authenticated transition fence containing the new generation, a revocable
+  `baseline_ref`, and an opaque acceptance token, but no baseline state.
+  Immediately before baseline state becomes externally visible, the endpoint
+  revalidates both current authorization and lineage generation; an obsolete
+  response is suppressed and fails with typed `stale_recovery_view` or is
+  replaced by the new fence. The endpoint does not continue the old cursor while
+  silently omitting newly forbidden events, and a broader view does not expose
+  newly permitted historical state except through the accepted new baseline.
 - The authorization-transition fence is mandatory even when no event occurs in
   the new view. It is semantically ordered before any subsequently delivered
   snapshot or event in that recovery lineage. A binding must preserve this
   publication order or provide an equivalent authenticated freshness check that
   prevents an old-view snapshot from being installed after the transition. On
-  accepting the fence, a conforming consumer atomically discards the old
-  baseline and buffered old-view traffic before installing the new baseline.
+  accepting the fence and baseline, a conforming consumer atomically discards
+  the old baseline and buffered old-view traffic before installing the new one.
   Revocation cannot retract data that was already legitimately delivered before
   the authorization change, but it cannot authorize stale delivery afterward.
+- To accept a fence, the consumer submits its `transition_id`, `baseline_ref`,
+  and acceptance token. The endpoint serializes acceptance with authorization
+  changes. If that transition is still current, it atomically records acceptance
+  and returns the authorized baseline; an idempotent retry returns the same
+  accepted result while it remains current. If a newer transition won first, the
+  old token and reference are invalid and acceptance fails with typed
+  `transition_superseded` plus the current fence. Thus an in-flight unaccepted
+  fence contains no state to install and cannot reveal a superseded baseline. If
+  acceptance won first, its baseline was legitimately published before the next
+  authorization change, which creates and delivers a new fence normally.
 - Each transition fence has a stable `transition_id` and is durably retained in
-  the recovery lineage until the consumer acknowledges that ID after atomically
-  installing the new baseline. Transport write success is not acknowledgement.
-  Until acknowledgement, the endpoint retries the fence on a live binding and,
-  after secure reassociation, redelivers it before accepting recovery against
-  the obsolete stream. Reconciliation with the old cursor also returns the
-  retained transition and current baseline. No subsequent snapshot or event in
-  the lineage is delivered ahead of the unacknowledged fence.
+  the recovery lineage until the consumer acknowledges installation after the
+  acceptance response. Transport write success is not acknowledgement. Until
+  acknowledgement, the endpoint retries the fence or idempotent accepted result
+  on a live binding and, after secure reassociation, redelivers it before
+  accepting recovery against the obsolete stream. Reconciliation with the old
+  cursor also returns the retained transition. No subsequent snapshot or event
+  in the lineage is delivered ahead of the unacknowledged current fence.
 - If authorization changes again before acknowledgement, the new transition
   atomically supersedes every older unacknowledged fence in the lineage. The
   endpoint destroys or revokes access to each superseded baseline payload,
-  retains only a non-disclosing tombstone for its `transition_id`, and makes the
-  newest fence immediately eligible for delivery; an obsolete fence never blocks
-  the current one. The current fence identifies the superseded transition IDs or
-  a contiguous generation range, and the consumer may acknowledge the current
-  transition without acknowledging each predecessor. A late acknowledgement of
-  a tombstoned ID fails with typed `transition_superseded` and returns or
-  references the current fence. Retry, reconnect, and reconciliation expose only
-  the newest authorized baseline.
+  acceptance token, and reference, retains only a non-disclosing tombstone for
+  its `transition_id`, and makes the newest fence immediately eligible for
+  delivery; an obsolete fence never blocks the current one. The current fence
+  identifies the superseded transition IDs or a contiguous generation range,
+  and the consumer may accept and acknowledge the current transition without
+  acknowledging each predecessor. A late acceptance or acknowledgement of a
+  tombstoned ID fails with typed `transition_superseded` and returns or references
+  the current fence. Retry, reconnect, and reconciliation expose only the newest
+  authorized fence and its baseline after successful acceptance.
 - A binding that cannot provide acknowledged, retained fence redelivery must
   instead attach an authenticated expiration lease to every authorized recovery
   baseline. After lease expiry the consumer stops rendering or acting on that
@@ -1224,6 +1249,8 @@ rules.
   or lease expiry forces refresh before further use.
 - Multiple authorization changes before acknowledgement coalesce into the newest
   authorized fence; no superseded baseline is disclosed or allowed to block it.
+- Acceptance of a superseded fence already in flight fails before baseline state
+  is returned; only the current transition can publish its authorized baseline.
 - An in-flight lower-generation snapshot cannot replace buffered or installed
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
@@ -1249,8 +1276,8 @@ rules.
   higher-numbered generation into a newly constructed view and an old snapshot
   response racing a revocation with no new-view event. A fixture drops the first
   transition fence, changes authorization again, and verifies supersession plus
-  retained delivery of only the newest baseline; a separate path verifies the
-  negotiated lease expiry.
+  rejection of the old acceptance token before retained delivery of only the
+  newest baseline; a separate path verifies the negotiated lease expiry.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
