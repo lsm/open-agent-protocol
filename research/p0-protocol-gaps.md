@@ -150,7 +150,13 @@ semantics:
 After authentication, structural validation, and current authorization for the
 endpoint, operation, and target session, idempotency lookup precedes
 capability-revision validation. Authorization failure returns the normal typed
-denial without revealing whether a matching key or stored outcome exists:
+denial without revealing whether a matching key or stored outcome exists. The
+lookup itself is internal and non-disclosing. If it finds a record, the endpoint
+must reauthorize every resource referenced by the stored request or outcome
+before returning replay data or an idempotency conflict. This includes a
+`session_id` allocated by an earlier session-creating request even though that ID
+was absent from the original request. Stored-resource authorization failure uses
+the same non-disclosing denial. Only then does the endpoint apply these rules:
 
 1. If the key identifies a completed or accepted semantically equivalent
    operation, the endpoint returns the stored outcome and original admitted
@@ -213,6 +219,8 @@ identity.
   collide with another principal's stored outcome.
 - Revoked endpoint or session authorization prevents replay and does not reveal
   whether a stored idempotency outcome exists.
+- Replaying resource creation reauthorizes the stored created resource before
+  disclosing its ID or any conflict information.
 - A recognized replay returns its original outcome after capabilities advance;
   an unknown key still undergoes normal stale-revision validation.
 - Every `run.started` and terminal run event carries the same `run_id`.
