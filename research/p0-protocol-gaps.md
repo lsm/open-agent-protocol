@@ -171,15 +171,17 @@ single trusted in-process or stdio caller may use the stable deployment trust
 domain as its identity.
 
 After authentication, structural validation, and current authorization for the
-endpoint, operation, and target session, idempotency lookup precedes
-capability-revision validation. Authorization failure returns the normal typed
-denial without revealing whether a matching key or stored outcome exists. The
-lookup itself is internal and non-disclosing. If it finds a record, the endpoint
-must reauthorize every resource referenced by the stored request or outcome
-before returning replay data or an idempotency conflict. This includes a
-`session_id` allocated by an earlier session-creating request even though that ID
-was absent from the original request. Stored-resource authorization failure uses
-the same non-disclosing denial. Only then does the endpoint apply these rules:
+endpoint, operation, and target session, a supplied idempotency key is looked up
+before capability-revision validation. A request without a key skips lookup but
+not capability validation or the durable admission gate below. Authorization
+failure returns the normal typed denial without revealing whether a matching key
+or stored outcome exists. The lookup itself is internal and non-disclosing. If it
+finds a record, the endpoint must reauthorize every resource referenced by the
+stored request or outcome before returning replay data or an idempotency
+conflict. This includes a `session_id` allocated by an earlier session-creating
+request even though that ID was absent from the original request.
+Stored-resource authorization failure uses the same non-disclosing denial. Only
+then does the endpoint apply these rules:
 
 1. If the key identifies a completed or accepted semantically equivalent
    operation, the endpoint returns the stored outcome and original admitted
@@ -187,22 +189,26 @@ the same non-disclosing denial. Only then does the endpoint apply these rules:
    revision does not turn it into `stale_capabilities`.
 2. If the key exists for a semantically different operation, the endpoint
    returns `idempotency_conflict`.
-3. If the key is unknown or its guaranteed retention has expired, the endpoint
-   applies normal current capability-revision validation before admitting work.
-4. On new admission, the endpoint atomically commits the key, canonical request,
-   admitted revision, allocated domain IDs, response state, and the durable
-   session, queue, or runnable admission state. When an external effect cannot
+3. If no key was supplied, or the supplied key is unknown or outside its
+   guaranteed retention, the endpoint applies normal current
+   capability-revision validation before admitting work.
+4. On every new admission, with or without a key, the endpoint atomically commits
+   the admitted revision, allocated domain IDs, response state, and durable
+   session, queue, or runnable admission state. The same commit includes the key
+   and canonical request when a key was supplied. When an external effect cannot
    share that transaction, the commit includes a resumable pending outbox intent
-   keyed by the same operation instead of claiming a completed effect.
+   using the allocated domain IDs instead of claiming a completed effect.
 
-An acceptance response is exposed only after that commit. Recovery resumes a
-stored pending intent using the original domain IDs and never creates a second
-intent; replay returns the stored pending or accepted state. A crash before the
-commit leaves no replayable acceptance, while a crash after it leaves enough
-durable state to finish or report the admitted lifecycle. Implementations may
-choose a transaction, write-ahead log, or equivalent mechanism, but the protocol
-guarantee is that replay never reports work as admitted when neither its durable
-state nor a resumable intent exists.
+An acceptance response is exposed only after this durable admission commit.
+Recovery resumes a stored pending intent using the original domain IDs and never
+creates a second intent. A keyed replay returns the stored pending or accepted
+state. An unkeyed caller that lost the response cannot safely deduplicate a retry,
+but the originally accepted lifecycle remains recoverable through canonical
+session state. A crash before the commit leaves no acceptance, while a crash
+after it leaves enough durable state to finish or report the admitted lifecycle.
+Implementations may choose a transaction, write-ahead log, or equivalent
+mechanism, but the protocol guarantee is that no response reports work as
+admitted when neither its durable state nor a resumable intent exists.
 
 Envelope IDs, timestamps, and a retried `capability_revision` are excluded from
 semantic-equivalence comparison. The original operation's semantic payload and
@@ -261,6 +267,9 @@ machine, but it is not an alternative standard queue behavior.
 - Crash-point fixtures prove that idempotency replay cannot return acceptance
   without durable admission state or one resumable intent using the original
   IDs.
+- The same crash points for a request without an idempotency key prove that every
+  exposed acceptance still has durable admission state or a resumable intent;
+  omission changes retry deduplication, not accepted-work recovery.
 - A recognized replay returns its original outcome after capabilities advance;
   an unknown key still undergoes normal stale-revision validation.
 - Every `run.started` and terminal run event carries the same `run_id`.
