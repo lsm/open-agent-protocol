@@ -1129,17 +1129,21 @@ contract:
   positions covered by the watermark, and applies only the contiguous suffix.
   Buffer overflow triggers another reconciliation; it never turns silent
   dropping into continuity.
-- The consumer tracks its highest contiguous applied `stream_position`. It
-  rejects a snapshot for the same stream and generation when the snapshot's
-  watermark is below that applied position, keeps its current state, and
-  reconciles again; installing such a snapshot could erase an event already
-  applied above the watermark. When a consumer accepts a snapshot through
+- The consumer tracks its highest contiguous applied `stream_position`. For
+  same-stream reconciliation, it freezes application at that position C,
+  requests a snapshot with `minimum_stream_position: C`, and buffers later live
+  events without applying them. The endpoint returns a snapshot for that stream
+  through at least C; a lower watermark does not satisfy the request. This fixed
+  barrier prevents continuous traffic from moving the acceptance threshold while
+  the snapshot is in flight. When the consumer accepts a snapshot through
   position P, it atomically installs that state as its baseline, sets the applied
   position to P, discards buffered or subsequently arriving events from the same
   `stream_id` at positions less than or equal to P, and applies only the
-  contiguous suffix beginning at P + 1. A snapshot for a higher generation
-  replaces the old baseline and fences all lower-generation traffic; a
-  lower-generation snapshot never replaces a higher observed fence.
+  contiguous suffix beginning at P + 1. The binding uses its advertised buffer
+  bound or backpressure while application is frozen; overflow triggers a newer
+  constrained snapshot without silently dropping continuity. A snapshot for a
+  higher generation replaces the old baseline and fences all lower-generation
+  traffic; a lower-generation snapshot never replaces a higher observed fence.
 - An authorization change that alters a consumer's recovery projection replaces
   its current view before the change takes effect. The endpoint atomically
   increments the consumer's recovery-lineage generation, assigns a new stream
@@ -1282,8 +1286,9 @@ rules.
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
   order.
-- A same-stream snapshot below the applied cursor is rejected, so it cannot erase
-  an event applied while that snapshot was in flight.
+- Same-stream reconciliation freezes at an applied cursor and requires a snapshot
+  at or beyond it, so continuous live traffic cannot starve baseline acceptance
+  or be erased by it.
 - A delayed event covered by a snapshot watermark cannot regress the installed
   state.
 - An event published before process replacement remains recoverable whenever
@@ -1298,7 +1303,7 @@ rules.
   from finite replay into materialized records.
 - Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
   update, an unknown stream before its snapshot, a delayed pre-watermark event,
-  an applied P + 1 event racing a same-stream snapshot through P, a stale
+  continuous same-stream traffic while reconciliation is frozen at C, a stale
   snapshot racing a higher-generation event, stale item revision, reconnect
   during execution, publish/crash recovery, and stream-incarnation change.
   Multi-participant fixtures cover different authorization views and an
