@@ -1141,6 +1141,17 @@ contract:
   the obsolete stream. Reconciliation with the old cursor also returns the
   retained transition and current baseline. No subsequent snapshot or event in
   the lineage is delivered ahead of the unacknowledged fence.
+- If authorization changes again before acknowledgement, the new transition
+  atomically supersedes every older unacknowledged fence in the lineage. The
+  endpoint destroys or revokes access to each superseded baseline payload,
+  retains only a non-disclosing tombstone for its `transition_id`, and makes the
+  newest fence immediately eligible for delivery; an obsolete fence never blocks
+  the current one. The current fence identifies the superseded transition IDs or
+  a contiguous generation range, and the consumer may acknowledge the current
+  transition without acknowledging each predecessor. A late acknowledgement of
+  a tombstoned ID fails with typed `transition_superseded` and returns or
+  references the current fence. Retry, reconnect, and reconciliation expose only
+  the newest authorized baseline.
 - A binding that cannot provide acknowledged, retained fence redelivery must
   instead attach an authenticated expiration lease to every authorized recovery
   baseline. After lease expiry the consumer stops rendering or acting on that
@@ -1211,6 +1222,8 @@ rules.
 - Dropping the first authorization-transition fence cannot leave a consumer on
   the old projection indefinitely: retained redelivery reaches acknowledgement,
   or lease expiry forces refresh before further use.
+- Multiple authorization changes before acknowledgement coalesce into the newest
+  authorized fence; no superseded baseline is disclosed or allowed to block it.
 - An in-flight lower-generation snapshot cannot replace buffered or installed
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
@@ -1235,8 +1248,9 @@ rules.
   authorization change during a live stream, including a transition from a
   higher-numbered generation into a newly constructed view and an old snapshot
   response racing a revocation with no new-view event. A fixture drops the first
-  transition fence and verifies retained redelivery and acknowledgement, or the
-  negotiated lease-expiry path.
+  transition fence, changes authorization again, and verifies supersession plus
+  retained delivery of only the newest baseline; a separate path verifies the
+  negotiated lease expiry.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
