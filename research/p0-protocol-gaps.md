@@ -1064,15 +1064,17 @@ through reconnect, process replacement, buffering, or consumer restart.
 Define one canonical state authority and a minimum snapshot-reconciliation
 contract:
 
-- For each session incarnation and authorized recovery view, the endpoint
-  assigns an opaque `stream_id` and a positive integer `stream_generation`. An
-  authorized recovery view is the complete event and state projection that a
-  consumer is currently permitted to receive; consumers with different
-  authorization need not share a stream or cursor. Reopening the same
-  recoverable view preserves both identifiers. Replacement or reset durably
-  increments that view's generation by exactly one and creates a new stream ID
-  before publishing any event from it. Generations are never reused within a
-  recoverable view's lineage.
+- For each session incarnation and consumer recovery lineage, the endpoint
+  assigns the current authorized recovery view an opaque `stream_id` and a
+  positive integer `stream_generation`. An authorized recovery view is the
+  complete event and state projection that a consumer is currently permitted to
+  receive; consumers with different authorization need not share a stream or
+  cursor. The recovery lineage spans every stream replacement and authorization
+  transition for the same securely reassociated consumer. Reopening its current
+  recoverable view preserves both identifiers. Any replacement or reset durably
+  increments the lineage generation by exactly one and creates a new stream ID
+  before publishing any event from it. Generations are never reused or decreased
+  within that recovery lineage.
 - Every canonical event has a stable `event_id` that is unique within the
   recoverable session across all stream generations, plus a consecutive,
   stream-wide integer `stream_position` within its `stream_id`. The first
@@ -1113,10 +1115,11 @@ contract:
   a lower-generation snapshot never replaces a higher observed fence.
 - An authorization change that alters a consumer's recovery projection replaces
   its current view before the change takes effect: the endpoint increments the
-  view generation, assigns a new stream ID, and returns or makes available a
-  freshly authorized snapshot baseline. It does not continue the old cursor
-  while silently omitting newly forbidden events, and a broader view does not
-  expose newly permitted historical state except through that new baseline.
+  consumer's recovery-lineage generation, assigns a new stream ID, and returns
+  or makes available a freshly authorized snapshot baseline. It does not
+  continue the old cursor while silently omitting newly forbidden events, and a
+  broader view does not expose newly permitted historical state except through
+  that new baseline.
 - Reconciliation supplies the consumer's last `stream_id`,
   `stream_generation`, and `stream_position`. The endpoint may replay retained
   canonical events after that position only when both the supplied stream ID
@@ -1173,7 +1176,8 @@ rules.
 - Events outside one consumer's authorized recovery view neither appear in its
   snapshot nor create gaps in its stream positions.
 - An authorization change installs a newly fenced snapshot baseline before the
-  consumer continues on the changed recovery view.
+  consumer continues on the changed recovery view, with a generation greater
+  than every generation previously accepted in that recovery lineage.
 - An in-flight lower-generation snapshot cannot replace buffered or installed
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
@@ -1195,7 +1199,8 @@ rules.
   a stale snapshot racing a higher-generation event, stale item revision,
   reconnect during execution, publish/crash recovery, and stream-incarnation
   change. Multi-participant fixtures cover different authorization views and an
-  authorization change during a live stream.
+  authorization change during a live stream, including a transition from a
+  higher-numbered generation into a newly constructed view.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
