@@ -480,7 +480,10 @@ may include the native semantic stream, an adapter task, and a child process or
 transport. The adapter collects terminal candidates but does not emit an OAP
 terminal event until a finalization barrier is satisfied: every required
 source has settled, or the native contract establishes that a source can no
-longer change the outcome.
+longer change the outcome. The barrier is also satisfied when the declared
+containment policy is exhausted and the adapter atomically commits to an
+orphaned outcome. This exception records that no authoritative outcome can be
+known safely; it does not pretend the unsettled source has stopped.
 
 At that barrier, classify the collected signals with this precedence:
 
@@ -502,8 +505,10 @@ At that barrier, classify the collected signals with this precedence:
 The adapter then uses an atomic per-run terminal guard to emit the selected
 outcome exactly once. Signals arriving afterward from sources that the adapter
 contract declared non-authoritative become diagnostics, not additional terminal
-events. A success candidate must never cross the finalization barrier while a
-required process or transport can still report failure.
+events. A completed, failed, or cancelled candidate must never cross the
+finalization barrier while a required process or transport can still change
+that outcome; only the explicit orphaned outcome can close observation while
+execution remains uncertain.
 
 Before emitting the run terminal, the adapter must close every started child
 lifecycle exposed at the agent-control boundary. In particular, each
@@ -539,6 +544,13 @@ sets `execution_safety: "unknown"`, and retains the orphaned run ID. The endpoin
 must not admit work into the same execution scope that assumes the source has
 stopped. Recovery requires authoritative later reconciliation or a new isolated
 scope; acknowledging the warning alone cannot establish safety.
+
+Later authoritative evidence about an orphaned run never emits another run
+terminal. It is recorded as reconciliation state and diagnostics behind the
+same atomic terminal guard. Evidence that proves quiescence may clear the
+session's execution-safety block according to policy, but the historical run
+outcome remains `run.orphaned`; a native completion or failure discovered later
+is retained only as the reconciled native outcome.
 
 This fourth terminal is the proposed resolution for adapters over hosted or
 remote sources. The alternative would be to require guaranteed eventual
