@@ -257,8 +257,8 @@ machine, but it is not an alternative standard queue behavior.
 - Every accepted standard `+queue` submission returns a reserved `run_id` and
   appears in canonical queued-run state; submission-only queueing is not
   standard `+queue` conformance.
-- Every started action has exactly one stable `tool_call_id` and one terminal
-  action event.
+- Every exposed action from `action.call.requested` onward has exactly one
+  stable `tool_call_id` and one terminal action event.
 - Native IDs can be inspected without being mistaken for portable OAP IDs.
 - Fixtures cover generated IDs, reused native IDs, lost session-open and submit
   responses, idempotency conflict, queueing, steering, and reconnect recovery.
@@ -307,7 +307,7 @@ The protocol lacks precise answers for:
 - how late-discovered tools or delivery behavior update the snapshot;
 - whether hidden lower layers should be absent or marked unavailable;
 - how catalogs participate in revision identity;
-- how policy restrictions differ from underlying technical support.
+- how policy restrictions differ from underlying technical support;
 - which participant advertises, invokes, executes, or resolves a capability.
 
 Without these rules, UIs will return to runtime-name checks or adapters will
@@ -335,6 +335,22 @@ Define a small agent-control-core capability descriptor first:
   policy restriction;
 - an opaque revision covering the complete effective descriptor and embedded
   catalogs.
+
+`capabilities.request` accepts an explicit `context` containing optional
+`session_id` and `model_id`. Omitting `context` requests only the unqualified
+endpoint snapshot; it never means the caller's implicit current session or
+model. The response echoes an exact `effective_context`, including any resolved
+default that affects support, and its revision covers that context plus the
+complete effective descriptor and catalogs. A revision is valid only for the
+echoed context.
+
+Admission uses the request's session and selected or resolved model as its
+capability context and verifies the pinned revision against that exact context.
+`capability_provisional` and `stale_capabilities` errors return the context that
+must be refreshed. `capabilities.updated` identifies the affected qualifier set
+or declares an endpoint-wide invalidation; a consumer refetches each matching
+exact context it intends to use. Neither side reconstructs an effective record
+by combining snapshots obtained for different contexts.
 
 Capability evaluation has two distinct steps: field-wise context selection
 within each authority source, then restrictive composition across sources. A
@@ -462,6 +478,8 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
 - No request is admitted while a capability it depends on remains provisional.
 - Capability scope distinguishes endpoint support from session/model-effective
   support.
+- Capability requests and responses identify the exact session/model context;
+  admission cannot pin a revision computed for another context.
 - Overlapping endpoint, session, model, and combined session/model records
   compose to the same most-restrictive effective result for every peer.
 - A context-specific record may safely enable support over an unavailable
@@ -674,13 +692,17 @@ finalization barrier while a required process or transport can still change
 that outcome; only the explicit orphaned outcome can close observation while
 execution remains uncertain.
 
-Before emitting the run terminal, the adapter must close every started child
-lifecycle exposed at the agent-control boundary. In particular, each
-`action.call.started` must receive exactly one `action.call.completed`,
+Before emitting the run terminal, the adapter must close every exposed
+nonterminal child lifecycle beginning with `action.call.requested`. Each
+requested call must receive exactly one `action.call.completed`,
 `action.call.failed`, `action.call.cancelled`, or `action.call.orphaned` event
-using the original `tool_call_id`. The orphaned outcome is valid only when the
-adapter cannot establish that the child action has stopped. Confirmed parent
-cancellation normally synthesizes
+using the original `tool_call_id`, whether or not `action.call.started` was
+emitted. A call denied, cancelled, or superseded before execution normally
+receives `action.call.cancelled` with `started: false`; an adapter or admission
+failure before execution receives `action.call.failed` with `started: false`.
+Neither case invents `action.call.started`. The orphaned outcome is valid only
+when execution may have begun and the adapter cannot establish that the child
+action has stopped. Confirmed parent cancellation normally synthesizes
 `action.call.cancelled`; process failure, lost native state, or forced
 containment normally synthesizes `action.call.failed` with a typed
 `parent_run_terminated` error. Synthesized child terminals must be identified as
@@ -692,11 +714,12 @@ their ordering scope. The child terminal therefore has a lower run-scoped
 its native action source uses a separate tool-execution scope; preserving only
 per-tool order is insufficient for agent-control conformance.
 
-Every started child action is a required source in the parent's finalization
-barrier. A native parent-success candidate waits for all such actions to settle;
-it cannot synthesize an action failure and still become `run.completed`. If a
-child is proven quiescent but its semantic lifecycle cannot be recovered, the
-adapter emits `action.call.failed` with typed `child_lifecycle_incomplete` and
+Every requested child action is a required source in the parent's finalization
+barrier once its requested event is exposed. A native parent-success candidate
+waits for all such actions to settle; it cannot synthesize an action failure and
+still become `run.completed`. If a child is proven quiescent but its semantic
+lifecycle cannot be recovered, the adapter emits `action.call.failed` with typed
+`child_lifecycle_incomplete` and
 the parent becomes `run.failed`. If the child cannot be proven quiescent after
 containment, it becomes `action.call.orphaned` and the parent becomes
 `run.orphaned` under the negotiated terminal vocabulary.
@@ -825,7 +848,7 @@ after quiescence is established.
 - Conflicting late native events cannot produce a second terminal event.
 - Run-scoped sequencing makes every child action terminal observably precede
   its parent run terminal across multiplexed bindings.
-- A parent success waits for every started child; an unrecoverable quiescent
+- A parent success waits for every requested child; an unrecoverable quiescent
   child fails the parent, while a non-quiescent child orphans it.
 - Reconnect state identifies every unreconciled orphan and blocked execution
   scope, and later quiescence updates safety state without replacing the
@@ -839,11 +862,12 @@ after quiescence is established.
   before admitting work.
 - `action.call.orphaned` additionally requires an orphan-capable negotiated
   `+tools` revision whenever exposed children can remain non-quiescent.
-- Every started action receives one terminal action event before its parent run
-  terminal event.
+- Every requested action receives one terminal action event before its parent
+  run terminal event, including calls that never start.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
-  cancellation/failure races, failure with an in-flight action, and an orphaned
-  run with an orphaned action and blocked session scope.
+  cancellation/failure races, denial and cancellation before action start,
+  failure with an in-flight action, and an orphaned run with an orphaned action
+  and blocked session scope.
 
 ## P0.6 Normative Adapter Mapping Fixtures
 
@@ -877,6 +901,8 @@ Minimum cases:
 **HyperNeo / Claude Agent SDK**
 
 - pre-run capabilities followed by `system:init` capability refresh;
+- distinct endpoint, session, model, and combined session/model capability
+  requests whose echoed contexts and revisions cannot be interchanged;
 - a bootstrap probe that withholds user input until provisional dependencies
   settle, followed by stale-revision rejection before admission;
 - lost submit response replayed after that capability revision changes;
@@ -920,7 +946,9 @@ Minimum cases:
 - reduced `exec --json`/TypeScript SDK mapping;
 - app-server initialize with directional client capabilities;
 - thread/turn/item stream with a stale expected-turn steer rejection;
-- server-initiated approval, user-input, and client-hosted tool requests.
+- server-initiated approval, user-input, and client-hosted tool requests;
+- a retained server-initiated request lost at disconnect and recovered or
+  redelivered with the same interaction identity after secure reassociation.
 
 **OpenCode**
 
@@ -1147,6 +1175,17 @@ Use participant-relative semantics, independent of deployment topology:
 - Every reverse-direction permission, user-input, elicitation, or delegated
   tool request has a stable `interaction_id`, `requested_by`, `responded_by`,
   relevant session/run/action scope, and one terminal resolution.
+- A `retain-for-reconnect` interaction is committed before first delivery into
+  the canonical recovery projection as a `pending_interaction` record containing
+  its identity, authorized participants, scope, request kind, payload or secure
+  payload reference, state, deadline, and disconnect policy. After secure
+  participant reassociation, the endpoint returns that record in recovery state
+  or redelivers the semantic request with a new envelope ID and the same
+  `interaction_id`. Resolution is idempotent by interaction identity.
+- Current authorization is rechecked before a retained payload is returned or
+  redelivered. If the payload cannot be retained safely and reconstructed, the
+  feature cannot advertise `retain-for-reconnect`; it must select cancel or the
+  negotiated terminal/orphan behavior on disconnect.
 - Envelope `in_reply_to` correlates protocol delivery; `interaction_id` and
   `tool_call_id` preserve domain identity across retries, reconnect, or an
   alternate binding.
@@ -1177,10 +1216,13 @@ records so those optional units can compose without redesigning the envelope.
   from envelope request IDs.
 - Retained reconnect preserves or securely rebinds participant identity; a new
   unassociated participant cannot resolve the old participant's interactions.
+- A reassociated participant can discover every retained pending interaction
+  with its original identity and sufficient request data to resolve it.
 - A headless binding can advertise interactive confirmation unavailable while
   the same harness's interactive binding advertises it.
 - Fixtures cover server-initiated approval, client-hosted tool execution,
-  unauthorized resolution, disconnect, and cancellation races.
+  retained-request redelivery, unauthorized resolution, disconnect, and
+  cancellation races.
 
 ## Resolution Order
 
