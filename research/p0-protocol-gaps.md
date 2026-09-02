@@ -1000,12 +1000,13 @@ contract:
 
 - Each session incarnation has an opaque `stream_id`. Reopening the same
   recoverable incarnation preserves it; replacement or reset creates a new one.
-- Every canonical event has a stable `event_id` and a strictly increasing,
-  stream-wide `stream_position` within its `stream_id`. `stream_position` is
-  distinct from the envelope's existing scoped `sequence`: scoped `sequence`
-  orders events within a run or another declared scope, while
-  `stream_position` is the single reconciliation and replay cursor across all
-  scopes in the session stream.
+- Every canonical event has a stable `event_id` and a consecutive, stream-wide
+  integer `stream_position` within its `stream_id`. The first position is one
+  and each subsequent canonical event increments it by exactly one, so a gap
+  unambiguously means an event is missing. `stream_position` is distinct from
+  the envelope's existing scoped `sequence`: scoped `sequence` orders events
+  within a run or another declared scope, while `stream_position` is the single
+  reconciliation and replay cursor across all scopes in the session stream.
 - `session.state.response` includes `stream_id`, `state_revision`, and a
   `through_stream_position` watermark. The returned state and its recovery
   projection reflect every canonical event through that position.
@@ -1013,6 +1014,11 @@ contract:
   `stream_id`, and treats a `stream_position` gap as loss of continuity. It may
   buffer out-of-order events only within a binding-advertised bound; otherwise
   it reconciles. Gaps in a scoped `sequence` do not imply a stream-wide gap.
+- When a consumer accepts a snapshot through position P, it atomically installs
+  that state as its baseline, discards buffered or subsequently arriving events
+  from the same `stream_id` at positions less than or equal to P, and applies
+  only the contiguous suffix beginning at P + 1. A snapshot for a new
+  `stream_id` replaces the old baseline and fences all old-stream traffic.
 - Reconciliation supplies the consumer's last `stream_id` and
   `stream_position`. The endpoint either replays retained canonical events
   after that position or returns a fresh state snapshot and new baseline.
@@ -1054,6 +1060,8 @@ rules.
 - Traffic from an old stream incarnation cannot modify the current session.
 - A snapshot and concurrently arriving events have one deterministic merge
   order.
+- A delayed event covered by a snapshot watermark cannot regress the installed
+  state.
 - Finite replay expires only after its events are represented in a sufficient
   materialized snapshot; retention exhaustion never skips output or action
   history.
@@ -1063,8 +1071,8 @@ rules.
   replay retained for the full session recovery lifetime, or an atomic handoff
   from finite replay into materialized records.
 - Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
-  update, stale item revision, reconnect during execution, and
-  stream-incarnation change.
+  update, a delayed pre-watermark event, stale item revision, reconnect during
+  execution, and stream-incarnation change.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
