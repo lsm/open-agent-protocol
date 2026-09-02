@@ -132,9 +132,10 @@ envelope correlation. At minimum, a session-creating `session.open.request` and
 `session.message.submit.request` should accept an `idempotency_key` with these
 semantics:
 
-- the key is scoped to endpoint identity, authenticated principal or tenant,
+- the key is scoped to endpoint identity, the authenticated principal,
   operation type, and `session_id` when the operation targets an existing
-  session;
+  session; tenant or organization identity is an additional scope dimension
+  when applicable, never a replacement for principal identity;
 - a retry may use a new envelope `id` but repeats the same `idempotency_key`;
 - the same key and semantically equivalent request returns the original
   acceptance outcome, `submission_id`, message IDs, and run ID without
