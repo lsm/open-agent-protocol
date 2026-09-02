@@ -489,9 +489,12 @@ At that barrier, classify the collected signals with this precedence:
 2. An authoritative native failure, protocol failure, adapter exception, or
    unexpected process termination maps to `run.failed`.
 3. An authoritative successful native result maps to `run.completed`.
-4. End-of-stream without an authoritative outcome maps to `run.failed` with a
-   typed `terminal_outcome_unknown` adapter error.
-5. Failure to establish quiescence after containment maps to `run.orphaned`.
+4. End-of-stream without an authoritative outcome triggers containment. If the
+   adapter establishes quiescence, it maps to `run.failed` with a typed
+   `terminal_outcome_unknown` adapter error; otherwise it maps to
+   `run.orphaned`.
+5. Any other failure to establish quiescence after containment maps to
+   `run.orphaned`.
    This is a terminal OAP observation outcome that explicitly means external
    execution or side effects may continue; it is not completion or ordinary
    failure.
@@ -505,8 +508,10 @@ required process or transport can still report failure.
 Before emitting the run terminal, the adapter must close every started child
 lifecycle exposed at the agent-control boundary. In particular, each
 `action.call.started` must receive exactly one `action.call.completed`,
-`action.call.failed`, or `action.call.cancelled` event using the original
-`tool_call_id`. Confirmed parent cancellation normally synthesizes
+`action.call.failed`, `action.call.cancelled`, or `action.call.orphaned` event
+using the original `tool_call_id`. The orphaned outcome is valid only when the
+adapter cannot establish that the child action has stopped. Confirmed parent
+cancellation normally synthesizes
 `action.call.cancelled`; process failure, lost native state, or forced
 containment normally synthesizes `action.call.failed` with a typed
 `parent_run_terminated` error. Synthesized child terminals must be identified as
