@@ -136,6 +136,10 @@ semantics:
 
 - the key is scoped to endpoint identity, stable `caller_identity`, operation
   type, and `session_id` when the operation targets an existing session;
+  endpoint identity means the logical OAP endpoint, not a process, connection,
+  or replica, and remains stable and shared with the idempotency store across
+  every restart, failover, and routing target covered by the advertised
+  retention and recovery failure domain;
   `caller_identity` is the authenticated principal when authentication exists,
   otherwise it is a binding-established identity for the local caller or trust
   domain that remains stable across reconnect and process restart; tenant or
@@ -151,6 +155,12 @@ semantics:
   guarantee deduplication;
 - without an idempotency key, a caller must assume that retrying after an
   unknown outcome can duplicate work.
+
+`protocol.initialize.response` exposes the logical `endpoint_id` used for this
+namespace. A deployment that cannot route every retry for that ID to the shared
+idempotency record must narrow its advertised retention/failure domain or
+decline idempotency conformance; generating a fresh replica-local endpoint ID
+does not make a duplicate admission conformant.
 
 An unauthenticated binding may use a stable local installation, OS principal,
 or single-tenant deployment identity as `caller_identity`; a transient
@@ -233,6 +243,8 @@ machine, but it is not an alternative standard queue behavior.
 
 - Replaying a correlated response or reconnecting does not create new domain
   IDs.
+- Restart or failover within the advertised idempotency failure domain preserves
+  the logical endpoint namespace and reaches the original admission record.
 - Retrying a submit with the same idempotency key does not create a second
   message or run, even when the first response was lost.
 - Retrying session creation with the same idempotency key returns the original
@@ -926,6 +938,8 @@ Minimum cases:
 - a bootstrap probe that withholds user input until provisional dependencies
   settle, followed by stale-revision rejection before admission;
 - lost submit response replayed after that capability revision changes;
+- lost submit response retried through another replica under the same logical
+  endpoint identity without duplicate admission;
 - configured policy denying a capability reported by `system:init`;
 - `auto` resolution rejecting degraded delivery without explicit opt-in;
 - idle message submission and streamed text;
@@ -968,7 +982,9 @@ Minimum cases:
 - thread/turn/item stream with a stale expected-turn steer rejection;
 - server-initiated approval, user-input, and client-hosted tool requests;
 - a retained server-initiated request lost at disconnect and recovered or
-  redelivered with the same interaction identity after secure reassociation.
+  redelivered with the same interaction identity after secure reassociation;
+- pending interaction authorization loss, deadline expiry, and orphan-capable
+  feature-version negotiation.
 
 **OpenCode**
 
@@ -1219,6 +1235,14 @@ Use participant-relative semantics, independent of deployment topology:
   redelivered. If the payload cannot be retained safely and reconstructed, the
   feature cannot advertise `retain-for-reconnect`; it must select cancel or the
   negotiated terminal/orphan behavior on disconnect.
+- Authorization loss while an interaction is pending atomically terminalizes it
+  as failed with typed `authorization_revoked`; deadline expiry terminalizes it
+  as cancelled with typed `deadline_expired`. The endpoint removes it from
+  actionable pending state, emits the canonical terminal resolution, and feeds
+  that outcome to the parent run. If the native source cannot accept the outcome
+  or establish quiescence, the normal containment and parent failure/orphan
+  rules apply. Neither condition may leave the interaction or parent waiting
+  indefinitely.
 - Envelope `in_reply_to` correlates protocol delivery; `interaction_id` and
   `tool_call_id` preserve domain identity across retries, reconnect, or an
   alternate binding.
@@ -1245,6 +1269,23 @@ The minimum core does not require tools, permission prompts, or user input. It
 does require initialization and capability composition to support directional
 records so those optional units can compose without redesigning the envelope.
 
+Each interaction-producing feature revision defines one terminal event with an
+`outcome` vocabulary of `resolved`, `rejected`, `cancelled`, `failed`, and,
+when negotiated, `orphaned`. `+permissions` uses
+`action.permission.resolved`; `+user-input` uses `user.input.resolved`; other
+units define their corresponding terminal event. Each carries
+`interaction_id`, scope, outcome, and typed reason or result. Event names remain
+feature-specific, but terminal and ordering rules are common.
+
+`orphaned` is a vocabulary change for each affected optional unit. An endpoint
+that may orphan a permission interaction must negotiate an orphan-capable
+`+permissions` revision; the same rule applies independently to `+user-input`
+and other interaction units. It also negotiates the orphan-capable core revision
+when the parent run may become `run.orphaned`. An older feature revision is
+permitted only when the adapter guarantees every interaction in that unit ends
+using its older recognized outcomes before the parent terminal. Selected
+feature revisions are fixed for the interaction and run.
+
 ### Acceptance criteria
 
 - A capability descriptor distinguishes runtime-owned, caller-owned, and
@@ -1254,6 +1295,8 @@ records so those optional units can compose without redesigning the envelope.
 - Exactly one authorized participant executes each selected action.
 - Each pending interaction has one terminal resolved, rejected, cancelled,
   failed, or orphaned outcome as defined by its feature revision.
+- Orphaned interaction outcomes are emitted only under an orphan-capable
+  revision of that specific optional unit.
 - Every run-scoped interaction reaches that terminal outcome before its parent
   run terminal; successful runs cannot retain unresolved prompts.
 - Retry and reconnect preserve interaction and action identity independently
@@ -1262,11 +1305,14 @@ records so those optional units can compose without redesigning the envelope.
   unassociated participant cannot resolve the old participant's interactions.
 - A reassociated participant can discover every retained pending interaction
   with its original identity and sufficient request data to resolve it.
+- Authorization loss and deadline expiry produce terminal interaction and
+  parent progress rather than an indefinitely blocked request.
 - A headless binding can advertise interactive confirmation unavailable while
   the same harness's interactive binding advertises it.
 - Fixtures cover server-initiated approval, client-hosted tool execution,
   retained-request redelivery, unauthorized resolution, disconnect,
-  cancellation races, and parent-terminal races.
+  cancellation races, authorization loss, deadline expiry, feature-version
+  negotiation, and parent-terminal races.
 
 ## Resolution Order
 
