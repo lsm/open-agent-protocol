@@ -273,6 +273,23 @@ Define a small agent-control-core capability descriptor first:
 - an opaque revision covering the complete effective descriptor and embedded
   catalogs.
 
+Scoped records are conjunctive restrictions, not overrides. An endpoint begins
+with the unqualified endpoint record and applies every record whose complete
+qualifier set matches the operation context. A qualifier set may contain
+`session_id`, `model_id`, or both; a combined session/model restriction is one
+record carrying both qualifiers. Missing dimensions inherit the broader
+effective value, and a narrower record must never widen broader support.
+
+Composition is deterministic: support uses the most restrictive matching level
+(`unavailable`, then `degraded`, then `emulated`, then `native`); degradation
+reasons are accumulated; boolean permissions are intersected; limits use the
+most restrictive bound; and catalogs contain only entries allowed by every
+matching record, with their constraints intersected. An empty or contradictory
+intersection is `unavailable`. Policy remains the final veto after this scoped
+composition. The endpoint publishes the resulting effective record and covers
+it with the capability revision, so a peer never has to reproduce private
+adapter policy to decide admission.
+
 Late discovery should follow the existing refresh mechanism:
 
 1. The adapter returns the effective pre-run snapshot produced by the authority
@@ -354,6 +371,8 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
 - No request is admitted while a capability it depends on remains provisional.
 - Capability scope distinguishes endpoint support from session/model-effective
   support.
+- Overlapping endpoint, session, model, and combined session/model records
+  compose to the same most-restrictive effective result for every peer.
 - Adapters may add honestly emulated features only when sufficient lower-level
   primitives preserve the required semantics.
 - Binding limitations narrow affected capabilities before they are advertised.
@@ -545,12 +564,36 @@ must not admit work into the same execution scope that assumes the source has
 stopped. Recovery requires authoritative later reconciliation or a new isolated
 scope; acknowledging the warning alone cannot establish safety.
 
+Canonical `session.state.response` and `session.state.updated` represent this
+condition with:
+
+- `orphaned_runs`, a collection of records containing `run_id`,
+  `execution_scope_id`, `orphaned_at`, `reconciliation_status`, and optional
+  `native_outcome`;
+- `reconciliation_status` equal to `unreconciled` or `quiescent`;
+- `blocked_execution_scopes`, containing every scope with at least one
+  unreconciled orphan; and
+- session `execution_safety`, equal to `unknown` while any relevant scope is
+  blocked.
+
+Persisting the orphan record and blocked scope is atomic with committing the
+`run.orphaned` terminal. The canonical state query must expose that mutation
+immediately, and the endpoint emits `session.state.updated` for live peers. The
+terminal run does not remain in `active_runs`.
+
 Later authoritative evidence about an orphaned run never emits another run
 terminal. It is recorded as reconciliation state and diagnostics behind the
 same atomic terminal guard. Evidence that proves quiescence may clear the
 session's execution-safety block according to policy, but the historical run
 outcome remains `run.orphaned`; a native completion or failure discovered later
 is retained only as the reconciled native outcome.
+
+When reconciliation proves quiescence, the endpoint changes that record to
+`quiescent`, stores any known `native_outcome`, removes the execution scope from
+`blocked_execution_scopes` only when no unreconciled orphan still references it,
+recomputes session `execution_safety`, and emits `session.state.updated`. The
+orphan record remains available as historical safety state and is not converted
+to an active or differently terminal run.
 
 This fourth terminal is the proposed resolution for adapters over hosted or
 remote sources. The alternative would be to require guaranteed eventual
@@ -581,6 +624,9 @@ after quiescence is established.
 - A settlement timeout cannot emit a terminal event until execution quiescence
   is established or the run is explicitly classified as orphaned.
 - Conflicting late native events cannot produce a second terminal event.
+- Reconnect state identifies every unreconciled orphan and blocked execution
+  scope, and later quiescence updates safety state without replacing the
+  historical terminal outcome.
 - Every started action receives one terminal action event before its parent run
   terminal event.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
