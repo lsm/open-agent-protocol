@@ -1023,13 +1023,17 @@ contract:
   run state for `content.delta` and run lifecycle events; a status-only
   snapshot is insufficient. A negotiated optional unit must similarly define
   its materialized recovery records, such as action-call records for `+tools`,
-  or require retained replay for its non-materialized events.
+  or retain replay for its non-materialized events for the full advertised
+  recovery lifetime of the session.
 - Transcript pagination remains optional. The recovery projection is the
   minimum canonical materialization needed to restore stream correctness for a
   recoverable session, not a general history-query API. An endpoint may satisfy
-  it with inline state, an atomic recovery reference, or retained replay. If it
-  cannot recover one advertised event category after a gap, it cannot claim
-  reconnect conformance for that profile and binding.
+  it with inline state, an atomic recovery reference, or replay that does not
+  expire during that recovery lifetime. Before finite replay for any position
+  expires, every still-recoverable event category after that position must be
+  durably folded into the materialized projection. If the endpoint cannot
+  recover one advertised event category after a gap, it cannot claim reconnect
+  conformance for that profile and binding.
 - If an event updates an existing item, it carries the stable item identity and
   a monotonic item revision. A stale revision cannot replace a newer canonical
   item. Raw text deltas need not be independently idempotent because the stream
@@ -1050,12 +1054,14 @@ rules.
 - Traffic from an old stream incarnation cannot modify the current session.
 - A snapshot and concurrently arriving events have one deterministic merge
   order.
-- Replay retention exhaustion falls back to a sufficient materialized snapshot
-  rather than silently skipping output or action history.
+- Finite replay expires only after its events are represented in a sufficient
+  materialized snapshot; retention exhaustion never skips output or action
+  history.
 - Core conformance works without event replay only when snapshot recovery
   reconstructs assembled content and lifecycle state through its watermark.
-- Each optional event-producing unit defines either sufficient snapshot records
-  or replay as part of its reconnect contract.
+- Each optional event-producing unit defines sufficient snapshot records,
+  replay retained for the full session recovery lifetime, or an atomic handoff
+  from finite replay into materialized records.
 - Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
   update, stale item revision, reconnect during execution, and
   stream-incarnation change.
@@ -1096,8 +1102,17 @@ a tool or both attempt execution.
 Use participant-relative semantics, independent of deployment topology:
 
 - Initialization assigns or confirms an opaque `participant_id` for each
-  participant on the semantic boundary. Authentication identity remains a
-  separate security concept.
+  logical participant on the semantic boundary. Authentication identity remains
+  a separate security concept, but a participant with retained interactions
+  preserves the same `participant_id` across reconnect or securely rebinds it
+  during initialization using the authenticated identity and a binding resume
+  credential. A trusted unauthenticated local binding uses its stable
+  binding-established caller or trust-domain identity for the same purpose.
+- A fresh connection that cannot prove reassociation receives a new
+  `participant_id` and cannot resolve interactions owned by the old one. The
+  endpoint retains or terminates those interactions according to their
+  advertised disconnect policy; it never transfers ownership by ID assertion
+  alone.
 - Directional capability records identify `offered_by` and the allowed
   initiating or consuming participant. A shorthand may omit these only when a
   profile defines one unambiguous direction.
@@ -1132,6 +1147,8 @@ records so those optional units can compose without redesigning the envelope.
   failed, or orphaned outcome as defined by its feature revision.
 - Retry and reconnect preserve interaction and action identity independently
   from envelope request IDs.
+- Retained reconnect preserves or securely rebinds participant identity; a new
+  unassociated participant cannot resolve the old participant's interactions.
 - A headless binding can advertise interactive confirmation unavailable while
   the same harness's interactive binding advertises it.
 - Fixtures cover server-initiated approval, client-hosted tool execution,
