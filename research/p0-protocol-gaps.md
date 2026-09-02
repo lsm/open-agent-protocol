@@ -218,10 +218,10 @@ For delivery:
   `run.failed` with `started: false`; it does not invent `run.started`.
 - `steer` does not create a run. Its request may carry `target_run_id`; when
   omitted, the target is the running primary run, never a side run. A supplied
-  target must identify a running, steerable run in the same session's
-  `active_runs` collection or the endpoint rejects before admission with typed
-  `invalid_steer_target`. The `+steer` capability states whether explicit
-  targeting is supported.
+  target must identify the running, steerable primary run in the same session's
+  `active_runs` collection; a side run is never eligible. Otherwise the
+  endpoint rejects before admission with typed `invalid_steer_target`. The
+  `+steer` capability states whether explicit targeting is supported.
 
 An endpoint that cannot guarantee this pre-start terminal lifecycle must not
 reserve a `run_id`. It returns only `submission_id`, and the submission does not
