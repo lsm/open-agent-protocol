@@ -310,6 +310,17 @@ restrictive bound; and catalogs contain only entries allowed by every selected
 record, with their constraints intersected. An empty or contradictory
 intersection is `unavailable`, and policy remains the final veto.
 
+Optional constraint omission is an identity value, not an empty value: an
+absent permission adds no allow or deny decision, an absent limit adds no bound,
+an absent catalog adds no filtering, and absent degradation reasons add none.
+Explicit `false`, zero, an empty catalog, or another denying value remains a real
+restriction. If adapter, binding, or policy has no matching record, that source
+also contributes the identity value. Technical support is different: every
+effective feature requires a selected technical-basis record; no matching
+technical record means `unavailable`, preventing absence from inventing support.
+The technical basis may describe lower-level primitives that an adapter uses to
+provide an honestly `emulated` semantic feature.
+
 `provisional` follows the same two-step rule. A more-specific resolved record
 shadows a broader provisional default from the same source. Among all maximal
 records selected within a source, and then across independent sources, the
@@ -512,8 +523,9 @@ Initial mappings should be:
 - Explicit modes never silently change meaning.
 - Core `auto` may resolve to implicit `start`; every other concrete delivery
   outcome is capability-gated.
-- Busy `auto` fails deterministically as `session_busy` when no advertised busy
-  outcome is permitted.
+- Busy `auto` fails as `session_busy` when no busy outcome is otherwise
+  supported; `capability_degraded` takes precedence when the only candidate is
+  excluded solely by missing degradation opt-in.
 - `auto` never admits degraded behavior without request opt-in.
 - Queue and steer fixtures define their run-ID and event behavior.
 - Steering defaults to the running primary run and validates any explicit
