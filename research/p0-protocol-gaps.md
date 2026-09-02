@@ -344,6 +344,15 @@ default that affects support, and its revision covers that context plus the
 complete effective descriptor and catalogs. A revision is valid only for the
 echoed context.
 
+Before resolving, composing, or echoing a qualified context, the endpoint
+authenticates the participant and applies current authorization to every named
+resource, including `session_id`, and to requested catalog entries where policy
+restricts their visibility. An unknown resource and an unauthorized resource
+produce the same non-disclosing typed denial and do not echo the requested
+context, effective descriptor, catalogs, or revision. Capability-update
+delivery applies the same authorization filter and cannot reveal that an
+inaccessible session or model changed.
+
 Admission uses the request's session and selected or resolved model as its
 capability context and verifies the pinned revision against that exact context.
 `capability_provisional` and `stale_capabilities` errors return the context that
@@ -480,6 +489,8 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
   support.
 - Capability requests and responses identify the exact session/model context;
   admission cannot pin a revision computed for another context.
+- Unauthorized contextual discovery and update delivery reveal neither resource
+  existence nor its effective capabilities.
 - Overlapping endpoint, session, model, and combined session/model records
   compose to the same most-restrictive effective result for every peer.
 - A context-specific record may safely enable support over an unavailable
@@ -903,6 +914,8 @@ Minimum cases:
 - pre-run capabilities followed by `system:init` capability refresh;
 - distinct endpoint, session, model, and combined session/model capability
   requests whose echoed contexts and revisions cannot be interchanged;
+- unauthorized and unknown session-qualified capability requests producing the
+  same non-disclosing denial without context or catalog data;
 - a bootstrap probe that withholds user input until provisional dependencies
   settle, followed by stale-revision rejection before admission;
 - lost submit response replayed after that capability revision changes;
