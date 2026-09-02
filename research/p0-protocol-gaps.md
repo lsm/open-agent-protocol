@@ -730,10 +730,15 @@ barrier once its requested event is exposed. A native parent-success candidate
 waits for all such actions to settle; it cannot synthesize an action failure and
 still become `run.completed`. If a child is proven quiescent but its semantic
 lifecycle cannot be recovered, the adapter emits `action.call.failed` with typed
-`child_lifecycle_incomplete` and
-the parent becomes `run.failed`. If the child cannot be proven quiescent after
+`child_lifecycle_incomplete` and the parent becomes `run.failed`. If the child
+cannot be proven quiescent after
 containment, it becomes `action.call.orphaned` and the parent becomes
 `run.orphaned` under the negotiated terminal vocabulary.
+
+Negotiated permission, user-input, elicitation, and other run-scoped
+interactions follow the same parent barrier. Their terminal resolutions precede
+the run terminal according to P0.8; a run cannot complete, fail, or cancel while
+leaving an actionable scoped request behind.
 
 If the parent becomes orphaned, any child action whose quiescence is also
 unknown terminates with `action.call.orphaned`, not a misleading failed or
@@ -861,6 +866,8 @@ after quiescence is established.
   its parent run terminal across multiplexed bindings.
 - A parent success waits for every requested child; an unrecoverable quiescent
   child fails the parent, while a non-quiescent child orphans it.
+- Every exposed run-scoped interaction reaches a terminal resolution before the
+  run terminal.
 - Reconnect state identifies every unreconciled orphan and blocked execution
   scope, and later quiescence updates safety state without replacing the
   historical terminal outcome.
@@ -1041,8 +1048,11 @@ through reconnect, process replacement, buffering, or consumer restart.
 Define one canonical state authority and a minimum snapshot-reconciliation
 contract:
 
-- Each session incarnation has an opaque `stream_id`. Reopening the same
-  recoverable incarnation preserves it; replacement or reset creates a new one.
+- Each session incarnation has an opaque `stream_id` and a positive integer
+  `stream_generation`. Reopening the same recoverable incarnation preserves
+  both; replacement or reset durably increments the generation by exactly one
+  and creates a new stream ID before publishing any event from it. Generations
+  are never reused within a recoverable session.
 - Every canonical event has a stable `event_id` and a consecutive, stream-wide
   integer `stream_position` within its `stream_id`. The first position is one
   and each subsequent canonical event increments it by exactly one, so a gap
@@ -1050,7 +1060,8 @@ contract:
   the envelope's existing scoped `sequence`: scoped `sequence` orders events
   within a run or another declared scope, while `stream_position` is the single
   reconciliation and replay cursor across all scopes in the session stream.
-- `session.state.response` includes `stream_id`, `state_revision`, and a
+- Every canonical event carries `stream_id` and `stream_generation`.
+  `session.state.response` includes both, `state_revision`, and a
   `through_stream_position` watermark. The returned state and its recovery
   projection reflect every canonical event through that position.
 - A consumer ignores a duplicate `event_id`, ignores traffic from an obsolete
@@ -1058,20 +1069,26 @@ contract:
   buffer out-of-order events only within a binding-advertised bound; otherwise
   it reconciles. Gaps in a scoped `sequence` do not imply a stream-wide gap.
 - A consumer never applies an event from an unknown `stream_id` directly. It
-  triggers reconciliation and may buffer unknown-stream events within a
-  binding-advertised bound. Once a snapshot identifies the current stream, it
-  discards buffered events from every other stream, discards current-stream
+  records the highest authenticated `stream_generation` observed, triggers
+  reconciliation, and may buffer unknown-stream events within a
+  binding-advertised bound. A snapshot whose generation is lower than that
+  observed fence is stale and cannot be installed; the consumer retains the
+  higher-generation buffer and reconciles again. Once a snapshot at the highest
+  observed generation identifies the current stream, it discards buffered
+  events from lower generations or competing IDs, discards current-stream
   positions covered by the watermark, and applies only the contiguous suffix.
   Buffer overflow triggers another reconciliation; it never turns silent
   dropping into continuity.
 - When a consumer accepts a snapshot through position P, it atomically installs
   that state as its baseline, discards buffered or subsequently arriving events
   from the same `stream_id` at positions less than or equal to P, and applies
-  only the contiguous suffix beginning at P + 1. A snapshot for a new
-  `stream_id` replaces the old baseline and fences all old-stream traffic.
-- Reconciliation supplies the consumer's last `stream_id` and
-  `stream_position`. The endpoint either replays retained canonical events
-  after that position or returns a fresh state snapshot and new baseline.
+  only the contiguous suffix beginning at P + 1. A snapshot for a higher
+  generation replaces the old baseline and fences all lower-generation traffic;
+  a lower-generation snapshot never replaces a higher observed fence.
+- Reconciliation supplies the consumer's last `stream_id`,
+  `stream_generation`, and `stream_position`. The endpoint either replays
+  retained canonical events after that position or returns a fresh state
+  snapshot and new baseline.
 - Snapshot fallback is valid only when the response contains or atomically
   references a materialized recovery projection sufficient to reconstruct
   every canonical event category that may have been missed. Core therefore
@@ -1091,13 +1108,13 @@ contract:
   recover one advertised event category after a gap, it cannot claim reconnect
   conformance for that profile and binding.
 - Before a canonical event becomes externally visible, the endpoint atomically
-  commits its `stream_position` and either its replay record or the equivalent
-  materialized projection update to storage sufficient for the advertised
-  recovery failure domain. A binding promising only reconnect within the same
-  process may use process memory; one promising process-replacement recovery
-  requires durable storage. A crash after commit but before live delivery may
-  reveal the event through later replay or state, while a crash after delivery
-  cannot make it disappear from recovery state.
+  commits its stream ID and generation, `stream_position`, and either its replay
+  record or the equivalent materialized projection update to storage sufficient
+  for the advertised recovery failure domain. A binding promising only reconnect
+  within the same process may use process memory; one promising
+  process-replacement recovery requires durable storage. A crash after commit
+  but before live delivery may reveal the event through later replay or state,
+  while a crash after delivery cannot make it disappear from recovery state.
 - If an event updates an existing item, it carries the stable item identity and
   a monotonic item revision. A stale revision cannot replace a newer canonical
   item. Raw text deltas need not be independently idempotent because the stream
@@ -1116,6 +1133,8 @@ rules.
   session state.
 - Duplicate delivery cannot duplicate a transcript item or action lifecycle.
 - Traffic from an old stream incarnation cannot modify the current session.
+- An in-flight lower-generation snapshot cannot replace buffered or installed
+  evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
   order.
 - A delayed event covered by a snapshot watermark cannot regress the installed
@@ -1132,8 +1151,9 @@ rules.
   from finite replay into materialized records.
 - Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
   update, an unknown stream before its snapshot, a delayed pre-watermark event,
-  stale item revision, reconnect during execution, publish/crash recovery, and
-  stream-incarnation change.
+  a stale snapshot racing a higher-generation event, stale item revision,
+  reconnect during execution, publish/crash recovery, and stream-incarnation
+  change.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
@@ -1209,6 +1229,15 @@ Use participant-relative semantics, independent of deployment topology:
 - Cancellation names the interaction or action it affects. Disconnect policy
   is advertised as cancel, retain-for-reconnect, or unavailable, and unresolved
   work follows the terminal/orphan rules rather than disappearing.
+- Every exposed run-scoped pending interaction participates in the parent run's
+  finalization barrier. Parent success waits for its terminal resolution. Before
+  a failed or cancelled parent emits its run terminal, the endpoint emits a
+  failed or cancelled interaction resolution with a typed `parent_run_terminated`
+  reason. If the parent is orphaned and the adapter cannot determine whether the
+  native source may still consume a response, the interaction is orphaned too.
+  Interaction terminals use the parent run's ordering scope and precede the run
+  terminal; a later response fails with typed `interaction_terminal` and cannot
+  affect the run.
 - Resolution from any participant other than the authorized responder fails
   with a typed authorization or ownership error before changing state.
 
@@ -1225,6 +1254,8 @@ records so those optional units can compose without redesigning the envelope.
 - Exactly one authorized participant executes each selected action.
 - Each pending interaction has one terminal resolved, rejected, cancelled,
   failed, or orphaned outcome as defined by its feature revision.
+- Every run-scoped interaction reaches that terminal outcome before its parent
+  run terminal; successful runs cannot retain unresolved prompts.
 - Retry and reconnect preserve interaction and action identity independently
   from envelope request IDs.
 - Retained reconnect preserves or securely rebinds participant identity; a new
@@ -1234,8 +1265,8 @@ records so those optional units can compose without redesigning the envelope.
 - A headless binding can advertise interactive confirmation unavailable while
   the same harness's interactive binding advertises it.
 - Fixtures cover server-initiated approval, client-hosted tool execution,
-  retained-request redelivery, unauthorized resolution, disconnect, and
-  cancellation races.
+  retained-request redelivery, unauthorized resolution, disconnect,
+  cancellation races, and parent-terminal races.
 
 ## Resolution Order
 
