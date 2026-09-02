@@ -450,11 +450,13 @@ explicitly sets `allow_degraded_features` to permit it. Otherwise the endpoint
 must reject with `capability_degraded` before admission rather than disclose the
 degradation after work has started.
 
-If the session is busy and policy has no advertised, permitted `queue`, `steer`,
-or `btw` outcome, `auto` fails before admission with typed `session_busy`. It
-does not allocate a submission or run, release input to the harness, or silently
-invent busy-session behavior. The caller may retry after observing a state
-change.
+If the session is busy and policy has no advertised `queue`, `steer`, or `btw`
+outcome that is otherwise supported, `auto` fails before admission with typed
+`session_busy`. If such an outcome exists and is excluded only because it is
+degraded and the request did not opt in, `capability_degraded` takes precedence.
+Both errors occur before the endpoint allocates a submission or run, releases
+input to the harness, or creates side effects. The caller may opt into disclosed
+degradation or retry after observing a state change.
 
 Initial mappings should be:
 
