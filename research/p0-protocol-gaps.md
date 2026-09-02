@@ -13,6 +13,38 @@ P0 means the protocol decision and at least one fixture must exist before OAP
 is used as the internal backend boundary for HyperNeo. It does not mean every
 future profile must be designed first.
 
+## Reviewed Systems
+
+These findings use evidence from nine agent system families across ten reviewed
+codebases or revisions:
+
+1. HyperNeo
+2. Makai
+3. pi
+4. Claude Agent SDK for TypeScript and Python
+5. Codex SDK, CLI, and app-server
+6. OpenCode
+7. Gemini CLI, SDK, stream-JSON, ACP, and A2A boundaries
+8. OpenHands
+9. Cline
+
+The companion [Harness Interoperability Study](harness-interoperability.md)
+records the exact revisions and detailed boundary analysis. A system appears
+below only where it supplies direct evidence for that gap; absence from one row
+does not mean it was excluded from the research. P0.6 requires adapter fixtures
+for every reviewed boundary family.
+
+| Gap | Systems supplying direct evidence |
+| --- | --- |
+| P0.1 Event vocabulary | HyperNeo, Makai, pi |
+| P0.2 Identity and correlation | HyperNeo, Makai, pi |
+| P0.3 Capabilities | HyperNeo, Makai, pi, Claude Agent SDK, Codex, Gemini, Cline |
+| P0.4 Admission and delivery | HyperNeo, Makai, pi, Codex, Cline |
+| P0.5 Terminal normalization | HyperNeo, Makai, pi, Claude Agent SDK, Gemini, OpenHands, Cline |
+| P0.6 Adapter fixtures | HyperNeo, Makai, pi, Claude Agent SDK, Codex, OpenCode, Gemini, OpenHands, Cline |
+| P0.7 State convergence and replay | Codex, OpenCode, OpenHands, Cline |
+| P0.8 Interaction ownership | Claude Agent SDK, Codex, OpenCode, Gemini, OpenHands, Cline |
+
 ## Summary
 
 | Gap | Why it blocks adoption | Required outcome |
