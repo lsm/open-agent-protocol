@@ -1069,21 +1069,24 @@ contract:
   both; replacement or reset durably increments the generation by exactly one
   and creates a new stream ID before publishing any event from it. Generations
   are never reused within a recoverable session.
-- Every canonical event has a stable `event_id` and a consecutive, stream-wide
-  integer `stream_position` within its `stream_id`. The first position is one
-  and each subsequent canonical event increments it by exactly one, so a gap
-  unambiguously means an event is missing. `stream_position` is distinct from
-  the envelope's existing scoped `sequence`: scoped `sequence` orders events
-  within a run or another declared scope, while `stream_position` is the single
-  reconciliation and replay cursor across all scopes in the session stream.
+- Every canonical event has a stable `event_id` that is unique within the
+  recoverable session across all stream generations, plus a consecutive,
+  stream-wide integer `stream_position` within its `stream_id`. The first
+  position is one and each subsequent canonical event increments it by exactly
+  one, so a gap unambiguously means an event is missing. `stream_position` is
+  distinct from the envelope's existing scoped `sequence`: scoped `sequence`
+  orders events within a run or another declared scope, while
+  `stream_position` is the single reconciliation and replay cursor across all
+  scopes in the session stream.
 - Every canonical event carries `stream_id` and `stream_generation`.
   `session.state.response` includes both, `state_revision`, and a
   `through_stream_position` watermark. The returned state and its recovery
   projection reflect every canonical event through that position.
-- A consumer ignores a duplicate `event_id`, ignores traffic from an obsolete
-  `stream_id`, and treats a `stream_position` gap as loss of continuity. It may
-  buffer out-of-order events only within a binding-advertised bound; otherwise
-  it reconciles. Gaps in a scoped `sequence` do not imply a stream-wide gap.
+- A consumer ignores an `event_id` it has already applied in that recoverable
+  session, ignores traffic from an obsolete `stream_id`, and treats a
+  `stream_position` gap as loss of continuity. It may buffer out-of-order events
+  only within a binding-advertised bound; otherwise it reconciles. Gaps in a
+  scoped `sequence` do not imply a stream-wide gap.
 - A consumer never applies an event from an unknown `stream_id` directly. It
   records the highest authenticated `stream_generation` observed, triggers
   reconciliation, and may buffer unknown-stream events within a
@@ -1102,9 +1105,13 @@ contract:
   generation replaces the old baseline and fences all lower-generation traffic;
   a lower-generation snapshot never replaces a higher observed fence.
 - Reconciliation supplies the consumer's last `stream_id`,
-  `stream_generation`, and `stream_position`. The endpoint either replays
-  retained canonical events after that position or returns a fresh state
-  snapshot and new baseline.
+  `stream_generation`, and `stream_position`. The endpoint may replay retained
+  canonical events after that position only when both the supplied stream ID
+  and generation equal the current authoritative stream identity. If either is
+  obsolete or otherwise does not identify the current stream, the endpoint
+  returns a fresh snapshot of the current generation and its new baseline. A
+  successful reconciliation never completes solely with replay from a replaced
+  stream.
 - Snapshot fallback is valid only when the response contains or atomically
   references a materialized recovery projection sufficient to reconstruct
   every canonical event category that may have been missed. Core therefore
