@@ -526,12 +526,16 @@ admission layer resolves it and returns:
 - optional `delivery_resolution` suitable for diagnostics;
 - any degradation applied during resolution.
 
-An explicit `steer` request carries `target_run_id`. A binding may offer a
-convenience operation that fills it from freshly fetched canonical state, but
-the semantic request reaching the admission authority must identify the target.
-The authority atomically verifies that the run is still the steerable primary
-run. A stale, terminal, side, or otherwise ineligible target fails before
-admission with typed `stale_run_target` or `run_not_steerable`.
+An explicit `steer` request may carry `target_run_id`. When omitted, the
+admission authority atomically resolves it to the running primary run; a stale
+UI or binding does not fill the semantic request from cached state. When
+supplied, the authority atomically verifies that it still identifies a running,
+steerable primary run in the same session. Absence of a valid default or a
+supplied stale, terminal, side, cross-session, or otherwise ineligible target
+fails before admission with typed `invalid_steer_target`. The error includes a
+non-authoritative diagnostic `reason`, such as `no_primary`, `stale`,
+`terminal`, `side_run`, `cross_session`, or `not_steerable`; consumers gate on
+the stable error type rather than exhaustively matching reasons.
 
 Explicit `queue`, `steer`, or `btw` requests must either preserve that semantic
 meaning or fail with a typed unsupported/degraded-feature response. They must
@@ -996,24 +1000,40 @@ contract:
 
 - Each session incarnation has an opaque `stream_id`. Reopening the same
   recoverable incarnation preserves it; replacement or reset creates a new one.
-- Every canonical event has a stable `event_id` and a strictly increasing
-  `sequence` within its `stream_id`. Sequence orders canonical events, not raw
-  transport frames.
+- Every canonical event has a stable `event_id` and a strictly increasing,
+  stream-wide `stream_position` within its `stream_id`. `stream_position` is
+  distinct from the envelope's existing scoped `sequence`: scoped `sequence`
+  orders events within a run or another declared scope, while
+  `stream_position` is the single reconciliation and replay cursor across all
+  scopes in the session stream.
 - `session.state.response` includes `stream_id`, `state_revision`, and a
-  `through_sequence` watermark. The returned state reflects every canonical
-  event through that sequence.
+  `through_stream_position` watermark. The returned state and its recovery
+  projection reflect every canonical event through that position.
 - A consumer ignores a duplicate `event_id`, ignores traffic from an obsolete
-  `stream_id`, and treats a sequence gap as loss of continuity. It may buffer
-  out-of-order events only within a binding-advertised bound; otherwise it
-  reconciles.
-- Reconciliation supplies the consumer's last `stream_id` and sequence. The
-  endpoint either replays retained canonical events after that position or
-  returns a fresh state snapshot and new baseline. Replay is an optional
-  fidelity optimization; the ability to recover through a snapshot is core.
+  `stream_id`, and treats a `stream_position` gap as loss of continuity. It may
+  buffer out-of-order events only within a binding-advertised bound; otherwise
+  it reconciles. Gaps in a scoped `sequence` do not imply a stream-wide gap.
+- Reconciliation supplies the consumer's last `stream_id` and
+  `stream_position`. The endpoint either replays retained canonical events
+  after that position or returns a fresh state snapshot and new baseline.
+- Snapshot fallback is valid only when the response contains or atomically
+  references a materialized recovery projection sufficient to reconstruct
+  every canonical event category that may have been missed. Core therefore
+  includes stable, revisioned assembled content items and current or terminal
+  run state for `content.delta` and run lifecycle events; a status-only
+  snapshot is insufficient. A negotiated optional unit must similarly define
+  its materialized recovery records, such as action-call records for `+tools`,
+  or require retained replay for its non-materialized events.
+- Transcript pagination remains optional. The recovery projection is the
+  minimum canonical materialization needed to restore stream correctness for a
+  recoverable session, not a general history-query API. An endpoint may satisfy
+  it with inline state, an atomic recovery reference, or retained replay. If it
+  cannot recover one advertised event category after a gap, it cannot claim
+  reconnect conformance for that profile and binding.
 - If an event updates an existing item, it carries the stable item identity and
   a monotonic item revision. A stale revision cannot replace a newer canonical
   item. Raw text deltas need not be independently idempotent because the stream
-  sequence and snapshot baseline prevent double application.
+  position and recovery baseline prevent double application.
 - An endpoint that cannot preserve execution across reconnect still returns a
   canonical post-disconnect state and classifies admitted runs using P0.5. It
   advertises replay unavailable rather than fabricating continuity.
@@ -1030,12 +1050,15 @@ rules.
 - Traffic from an old stream incarnation cannot modify the current session.
 - A snapshot and concurrently arriving events have one deterministic merge
   order.
-- Replay retention exhaustion falls back to a snapshot rather than silently
-  skipping history.
-- Core conformance works with snapshot recovery even when event replay is
-  unavailable.
-- Fixtures cover a sequence gap, duplicate event, out-of-order update, stale
-  item revision, reconnect during execution, and stream-incarnation change.
+- Replay retention exhaustion falls back to a sufficient materialized snapshot
+  rather than silently skipping output or action history.
+- Core conformance works without event replay only when snapshot recovery
+  reconstructs assembled content and lifecycle state through its watermark.
+- Each optional event-producing unit defines either sufficient snapshot records
+  or replay as part of its reconnect contract.
+- Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
+  update, stale item revision, reconnect during execution, and
+  stream-incarnation change.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
