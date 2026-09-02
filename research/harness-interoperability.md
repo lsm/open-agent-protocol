@@ -234,7 +234,7 @@ The common agent-control mapping is direct:
 
 | pi operation | OAP operation |
 | --- | --- |
-| `prompt` | `session.message.submit` with `auto` or idle start |
+| `prompt` | `session.message.submit` with `auto`, resolving to `start` when idle |
 | `steer` | `session.message.submit` with `steer` |
 | `follow_up` | `session.message.submit` with `queue` |
 | `abort` | `run.cancel` |

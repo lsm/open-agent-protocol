@@ -620,6 +620,22 @@ remote sources. The alternative would be to require guaranteed eventual
 quiescence as a core conformance precondition, excluding systems that cannot
 provide it. A timeout alone must never manufacture ordinary failure.
 
+`run.orphaned` changes the terminal vocabulary and therefore must not be emitted
+under the current `open-agent-protocol` `0.1` negotiation. The next core
+revision that adopts this proposal must include `run.orphaned` in its normative
+terminal set, and `protocol.initialize.response` must select that profile
+version before a run is admitted. The selected version is fixed for the run.
+An endpoint emits `run.orphaned` only to a peer that negotiated a version which
+recognizes it.
+
+An endpoint that may lose authoritative control of execution and cannot
+guarantee eventual quiescence must not negotiate the older three-terminal core
+as fully compatible. It rejects initialization/profile selection with a typed
+unsupported-version error instead. An endpoint may serve the older core only
+when its adapter and binding can guarantee that every admitted run eventually
+reaches a legacy completed, failed, or cancelled terminal. This prevents a
+mid-run downgrade from leaving an older peer waiting forever.
+
 Synthesized terminal events should include or reference:
 
 - a typed error for failures;
@@ -647,6 +663,9 @@ after quiescence is established.
 - Reconnect state identifies every unreconciled orphan and blocked execution
   scope, and later quiescence updates safety state without replacing the
   historical terminal outcome.
+- `run.orphaned` is emitted only after negotiation selects a core version whose
+  terminal vocabulary includes it; incompatible endpoints fail negotiation
+  before admitting work.
 - Every started action receives one terminal action event before its parent run
   terminal event.
 - Fixtures cover success, native failure, confirmed cancellation, abrupt EOF,
