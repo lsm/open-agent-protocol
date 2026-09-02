@@ -1133,6 +1133,20 @@ contract:
   baseline and buffered old-view traffic before installing the new baseline.
   Revocation cannot retract data that was already legitimately delivered before
   the authorization change, but it cannot authorize stale delivery afterward.
+- Each transition fence has a stable `transition_id` and is durably retained in
+  the recovery lineage until the consumer acknowledges that ID after atomically
+  installing the new baseline. Transport write success is not acknowledgement.
+  Until acknowledgement, the endpoint retries the fence on a live binding and,
+  after secure reassociation, redelivers it before accepting recovery against
+  the obsolete stream. Reconciliation with the old cursor also returns the
+  retained transition and current baseline. No subsequent snapshot or event in
+  the lineage is delivered ahead of the unacknowledged fence.
+- A binding that cannot provide acknowledged, retained fence redelivery must
+  instead attach an authenticated expiration lease to every authorized recovery
+  baseline. After lease expiry the consumer stops rendering or acting on that
+  projection until refresh or reconciliation confirms its current generation.
+  A profile claiming authorization-view transitions must negotiate one of these
+  mechanisms; best-effort fence delivery is not conforming.
 - Reconciliation supplies the consumer's last `stream_id`,
   `stream_generation`, and `stream_position`. The endpoint may replay retained
   canonical events after that position only when both the supplied stream ID
@@ -1194,6 +1208,9 @@ rules.
 - A snapshot response still pending when authorization changes cannot be
   installed after the new view takes effect, even when the new view produces no
   live event.
+- Dropping the first authorization-transition fence cannot leave a consumer on
+  the old projection indefinitely: retained redelivery reaches acknowledgement,
+  or lease expiry forces refresh before further use.
 - An in-flight lower-generation snapshot cannot replace buffered or installed
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
@@ -1217,7 +1234,9 @@ rules.
   change. Multi-participant fixtures cover different authorization views and an
   authorization change during a live stream, including a transition from a
   higher-numbered generation into a newly constructed view and an old snapshot
-  response racing a revocation with no new-view event.
+  response racing a revocation with no new-view event. A fixture drops the first
+  transition fence and verifies retained redelivery and acknowledgement, or the
+  negotiated lease-expiry path.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
