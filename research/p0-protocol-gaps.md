@@ -223,12 +223,11 @@ For delivery:
   endpoint rejects before admission with typed `invalid_steer_target`. The
   `+steer` capability states whether explicit targeting is supported.
 
-An endpoint that cannot guarantee this pre-start terminal lifecycle must not
-reserve a `run_id`. It returns only `submission_id`, and the submission does not
-become a run until execution is admitted later. OAP should choose one behavior
-for the standard queue unit; the proposed default is reservation plus a complete
-pre-start terminal lifecycle because it gives control layers stable queue
-identity.
+The standard `+queue` unit requires reservation plus this complete pre-start
+terminal lifecycle. An endpoint that cannot guarantee it must advertise
+`+queue` unavailable; it does not accept a queue item represented only by
+`submission_id`. A future extension may define a pending-submission state
+machine, but it is not an alternative standard queue behavior.
 
 ### Acceptance criteria
 
@@ -255,6 +254,9 @@ identity.
 - Every `run.started` and terminal run event carries the same `run_id`.
 - Every reserved queued run receives one terminal event even when it never
   emits `run.started`.
+- Every accepted standard `+queue` submission returns a reserved `run_id` and
+  appears in canonical queued-run state; submission-only queueing is not
+  standard `+queue` conformance.
 - Every started action has exactly one stable `tool_call_id` and one terminal
   action event.
 - Native IDs can be inspected without being mistaken for portable OAP IDs.
@@ -1014,6 +1016,13 @@ contract:
   `stream_id`, and treats a `stream_position` gap as loss of continuity. It may
   buffer out-of-order events only within a binding-advertised bound; otherwise
   it reconciles. Gaps in a scoped `sequence` do not imply a stream-wide gap.
+- A consumer never applies an event from an unknown `stream_id` directly. It
+  triggers reconciliation and may buffer unknown-stream events within a
+  binding-advertised bound. Once a snapshot identifies the current stream, it
+  discards buffered events from every other stream, discards current-stream
+  positions covered by the watermark, and applies only the contiguous suffix.
+  Buffer overflow triggers another reconciliation; it never turns silent
+  dropping into continuity.
 - When a consumer accepts a snapshot through position P, it atomically installs
   that state as its baseline, discards buffered or subsequently arriving events
   from the same `stream_id` at positions less than or equal to P, and applies
@@ -1040,6 +1049,14 @@ contract:
   durably folded into the materialized projection. If the endpoint cannot
   recover one advertised event category after a gap, it cannot claim reconnect
   conformance for that profile and binding.
+- Before a canonical event becomes externally visible, the endpoint atomically
+  commits its `stream_position` and either its replay record or the equivalent
+  materialized projection update to storage sufficient for the advertised
+  recovery failure domain. A binding promising only reconnect within the same
+  process may use process memory; one promising process-replacement recovery
+  requires durable storage. A crash after commit but before live delivery may
+  reveal the event through later replay or state, while a crash after delivery
+  cannot make it disappear from recovery state.
 - If an event updates an existing item, it carries the stable item identity and
   a monotonic item revision. A stale revision cannot replace a newer canonical
   item. Raw text deltas need not be independently idempotent because the stream
@@ -1062,6 +1079,8 @@ rules.
   order.
 - A delayed event covered by a snapshot watermark cannot regress the installed
   state.
+- An event published before process replacement remains recoverable whenever
+  that failure domain was advertised.
 - Finite replay expires only after its events are represented in a sufficient
   materialized snapshot; retention exhaustion never skips output or action
   history.
@@ -1071,8 +1090,9 @@ rules.
   replay retained for the full session recovery lifetime, or an atomic handoff
   from finite replay into materialized records.
 - Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
-  update, a delayed pre-watermark event, stale item revision, reconnect during
-  execution, and stream-incarnation change.
+  update, an unknown stream before its snapshot, a delayed pre-watermark event,
+  stale item revision, reconnect during execution, publish/crash recovery, and
+  stream-incarnation change.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
