@@ -1130,12 +1130,15 @@ contract:
   Buffer overflow triggers another reconciliation; it never turns silent
   dropping into continuity.
 - The consumer tracks its highest contiguous applied `stream_position`. For
-  same-stream reconciliation, it freezes application at that position C,
-  requests a snapshot with `minimum_stream_position: C`, and buffers later live
-  events without applying them. The endpoint returns a snapshot for that stream
-  through at least C; a lower watermark does not satisfy the request. This fixed
-  barrier prevents continuous traffic from moving the acceptance threshold while
-  the snapshot is in flight. When the consumer accepts a snapshot through
+  same-stream reconciliation, it freezes application at that position C and
+  records H, the highest authenticated position already observed in that stream,
+  including buffered post-gap events. It requests a snapshot with
+  `minimum_stream_position: H` and buffers later live events without applying
+  them. The endpoint returns a snapshot for that stream through at least H; a
+  lower watermark does not satisfy the request. Requiring H ensures the snapshot
+  covers every missing position that triggered reconciliation, while fixing H at
+  request time prevents continuous traffic from moving the acceptance threshold
+  while the snapshot is in flight. When the consumer accepts a snapshot through
   position P, it atomically installs that state as its baseline, sets the applied
   position to P, discards buffered or subsequently arriving events from the same
   `stream_id` at positions less than or equal to P, and applies only the
@@ -1287,8 +1290,8 @@ rules.
 - A snapshot and concurrently arriving events have one deterministic merge
   order.
 - Same-stream reconciliation freezes at an applied cursor and requires a snapshot
-  at or beyond it, so continuous live traffic cannot starve baseline acceptance
-  or be erased by it.
+  through the highest position already observed, so it covers the triggering gap
+  without continuous live traffic starving baseline acceptance.
 - A delayed event covered by a snapshot watermark cannot regress the installed
   state.
 - An event published before process replacement remains recoverable whenever
@@ -1303,9 +1306,10 @@ rules.
   from finite replay into materialized records.
 - Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
   update, an unknown stream before its snapshot, a delayed pre-watermark event,
-  continuous same-stream traffic while reconciliation is frozen at C, a stale
-  snapshot racing a higher-generation event, stale item revision, reconnect
-  during execution, publish/crash recovery, and stream-incarnation change.
+  a missing C + 1 with buffered C + 2, continuous same-stream traffic while
+  reconciliation is frozen, a stale snapshot racing a higher-generation event,
+  stale item revision, reconnect during execution, publish/crash recovery, and
+  stream-incarnation change.
   Multi-participant fixtures cover different authorization views and an
   authorization change during a live stream, including a transition from a
   higher-numbered generation into a newly constructed view and an old snapshot
