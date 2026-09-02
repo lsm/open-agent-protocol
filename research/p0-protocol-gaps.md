@@ -1118,6 +1118,17 @@ contract:
   `stream_position` gap as loss of continuity. It may buffer out-of-order events
   only within a binding-advertised bound; otherwise it reconciles. Gaps in a
   scoped `sequence` do not imply a stream-wide gap.
+- Each recoverable live stream advertises a `continuity_lease_ms`. Receipt of an
+  authenticated canonical event or `stream.watermark` renews the lease. A
+  watermark is a non-canonical control signal: it does not consume a stream
+  position, and carries the current `stream_id`, `stream_generation`, and the
+  endpoint's highest committed `through_stream_position` for that authorized
+  view. The endpoint emits watermarks often enough to renew the lease while the
+  live subscription remains open. A watermark ahead of the consumer's applied
+  cursor exposes a missing tail; lease expiry exposes loss even when the
+  watermark itself was dropped. Either condition freezes application and
+  triggers reconciliation. A binding may provide a stronger acknowledged
+  delivery mechanism, but silent best-effort tail delivery is insufficient.
 - A consumer never applies an event from an unknown `stream_id` directly. It
   records the highest authenticated `stream_generation` observed, triggers
   reconciliation, and may buffer unknown-stream events within a
@@ -1132,21 +1143,29 @@ contract:
 - The consumer tracks its highest contiguous applied `stream_position`. For
   same-stream reconciliation, it freezes application at that position C and
   records H, the highest authenticated position already observed in that stream,
-  including buffered post-gap events. It requests a snapshot with
+  including buffered events and watermarks. It requests recovery with
   `minimum_stream_position: H` and buffers later live events without applying
-  them. The endpoint returns a snapshot for that stream through at least H; a
-  lower watermark does not satisfy the request. Requiring H ensures the snapshot
-  covers every missing position that triggered reconciliation, while fixing H at
-  request time prevents continuous traffic from moving the acceptance threshold
-  while the snapshot is in flight. When the consumer accepts a snapshot through
-  position P, it atomically installs that state as its baseline, sets the applied
-  position to P, discards buffered or subsequently arriving events from the same
-  `stream_id` at positions less than or equal to P, and applies only the
-  contiguous suffix beginning at P + 1. The binding uses its advertised buffer
-  bound or backpressure while application is frozen; overflow triggers a newer
-  constrained snapshot without silently dropping continuity. A snapshot for a
-  higher generation replaces the old baseline and fences all lower-generation
-  traffic; a lower-generation snapshot never replaces a higher observed fence.
+  them. The endpoint atomically captures its current highest committed position
+  Q and must recover through T = max(H, Q). Fixing T for the response prevents
+  continuous traffic from moving the acceptance threshold while ensuring that a
+  detected gap or dropped tail is covered.
+- Same-stream recovery through T may return: contiguous canonical replay from
+  position C + 1 through at least T; a snapshot through P greater than or equal
+  to T whose recovery projection materializes every missed event category; or a
+  snapshot through S followed by contiguous replay from S + 1 through at least
+  T. The consumer applies replay in position order. When it accepts a snapshot
+  through P, it atomically installs that state as its baseline, sets the applied
+  position to P, discards buffered events from the same stream at positions less
+  than or equal to P, and applies only the contiguous replay or buffered suffix
+  beginning at P + 1. A response below T or a snapshot that omits a
+  non-materialized event category does not satisfy reconciliation. This permits
+  optional units backed only by retained replay without falsely advancing the
+  snapshot watermark.
+- The binding uses its advertised buffer bound or backpressure while application
+  is frozen; overflow triggers newer constrained recovery without silently
+  dropping continuity. A snapshot for a higher generation replaces the old
+  baseline and fences all lower-generation traffic; a lower-generation snapshot
+  never replaces a higher observed fence.
 - An authorization change that alters a consumer's recovery projection replaces
   its current view before the change takes effect. The endpoint atomically
   increments the consumer's recovery-lineage generation, assigns a new stream
@@ -1217,13 +1236,14 @@ contract:
   publication must use the lease mechanism, because no transport-independent
   protocol can erase data already delivered into a consumer's trust domain.
 - Reconciliation supplies the consumer's last `stream_id`,
-  `stream_generation`, and `stream_position`. The endpoint may replay retained
-  canonical events after that position only when both the supplied stream ID
-  and generation equal the current authoritative stream identity. If either is
-  obsolete or otherwise does not identify the current stream, the endpoint
-  returns a fresh snapshot of the current generation and its new baseline. A
-  successful reconciliation never completes solely with replay from a replaced
-  stream.
+  `stream_generation`, `stream_position`, and minimum recovery position H. The
+  endpoint may replay retained canonical events after the applied position only
+  when both the supplied stream ID and generation equal the current authoritative
+  stream identity, and replay or sufficient materialization must reach the fixed
+  target T defined above. If either identifier is obsolete or otherwise does not
+  identify the current stream, the endpoint returns a fresh snapshot of the
+  current generation and its new baseline. A successful reconciliation never
+  completes solely with replay from a replaced stream.
 - Snapshot fallback is valid only when the response contains or atomically
   references a materialized recovery projection sufficient to reconstruct
   every canonical event category that may have been missed. Core therefore
@@ -1267,6 +1287,8 @@ rules.
 
 - Dropping any nonterminal live event cannot permanently corrupt recovered
   session state.
+- Dropping the final run terminal with no later canonical event is exposed by an
+  authoritative watermark or continuity-lease expiry and recovered.
 - Duplicate delivery cannot duplicate a transcript item or action lifecycle.
 - Traffic from an old stream incarnation cannot modify the current session.
 - Events outside one consumer's authorized recovery view neither appear in its
@@ -1289,9 +1311,9 @@ rules.
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
   order.
-- Same-stream reconciliation freezes at an applied cursor and requires a snapshot
-  through the highest position already observed, so it covers the triggering gap
-  without continuous live traffic starving baseline acceptance.
+- Same-stream reconciliation freezes at an applied cursor and requires replay,
+  sufficient materialization, or both through the fixed recovery target, so it
+  covers the triggering gap without continuous traffic starving acceptance.
 - A delayed event covered by a snapshot watermark cannot regress the installed
   state.
 - An event published before process replacement remains recoverable whenever
@@ -1304,12 +1326,16 @@ rules.
 - Each optional event-producing unit defines sufficient snapshot records,
   replay retained for the full session recovery lifetime, or an atomic handoff
   from finite replay into materialized records.
+- A replay-only optional event category can close a same-stream gap without being
+  discarded behind an insufficient snapshot watermark.
 - Fixtures cover a `stream_position` gap, duplicate event, out-of-order scoped
   update, an unknown stream before its snapshot, a delayed pre-watermark event,
   a missing C + 1 with buffered C + 2, continuous same-stream traffic while
-  reconciliation is frozen, a stale snapshot racing a higher-generation event,
-  stale item revision, reconnect during execution, publish/crash recovery, and
-  stream-incarnation change.
+  reconciliation is frozen, a dropped final terminal followed by no canonical
+  event and a dropped watermark, replay-only optional events across a gap, a
+  stale snapshot racing a higher-generation event, stale item revision,
+  reconnect during execution, publish/crash recovery, and stream-incarnation
+  change.
   Multi-participant fixtures cover different authorization views and an
   authorization change during a live stream, including a transition from a
   higher-numbered generation into a newly constructed view and an old snapshot
