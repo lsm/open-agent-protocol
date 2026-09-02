@@ -1,12 +1,12 @@
 # P0 Protocol Gaps From Harness Interoperability
 
 Status: research findings requiring resolution
-Date: 2026-09-01
+Date: 2026-09-02
 Related study: [Harness Interoperability Study](harness-interoperability.md)
 
 This document isolates the protocol gaps that block a credible first adapter
-for HyperNeo, Makai, and pi. These are not speculative completeness features.
-Each gap was exposed by trying to map an existing harness to
+for the reviewed harnesses and bindings. These are not speculative completeness
+features. Each gap was exposed by trying to map an existing implementation to
 `open-agent-protocol.agent-control-core`.
 
 P0 means the protocol decision and at least one fixture must exist before OAP
@@ -22,7 +22,9 @@ future profile must be designed first.
 | P0.3 Capability scope and late discovery | Real capabilities may vary by session, model, configuration, or become known only after native initialization. | A minimal core descriptor with scope, authority, provisional state, refresh, and degradation rules. |
 | P0.4 Admission and delivery mapping | HyperNeo, Makai, and pi admit work using different busy-session semantics. | Deterministic mapping to `auto`, `start`, `queue`, `steer`, and `btw`, including run-ID behavior. |
 | P0.5 Terminal outcome normalization | Native streams do not always provide a clean completed, failed, cancelled, or provably quiescent outcome. | A conservative terminal classifier, including explicit orphaning, typed errors, and synthesis disclosure. |
-| P0.6 Normative adapter fixtures | Prose mappings cannot prove ordering, correlation, recovery, or degradation. | Native-input-to-OAP fixtures for all three harnesses with conformance assertions. |
+| P0.6 Normative adapter fixtures | Prose mappings cannot prove ordering, correlation, recovery, or degradation. | Native-input-to-OAP fixtures for every studied boundary family with conformance assertions. |
+| P0.7 State convergence and replay | Real UI streams can be lossy, duplicated, stale, or reordered while execution continues. | Canonical state, stream position, gap detection, deduplication, and deterministic reconciliation rules. |
+| P0.8 Interaction ownership | Rich endpoints initiate correlated requests in both directions and may delegate tools to either participant. | Directional capabilities and explicit requester, responder, execution owner, and cancellation scope. |
 
 ## P0.1 Canonical Agent-Control Event Vocabulary
 
@@ -276,6 +278,17 @@ pi exposes steering, follow-up, model changes, tools, and session operations,
 but no revisioned OAP descriptor. Available commands also differ between its
 low-level `Agent`, `AgentSession`, and JSONL RPC surfaces.
 
+Codex exposes materially different capabilities through its TypeScript SDK and
+app-server. Gemini CLI similarly differs across SDK, stream-JSON, ACP, and A2A
+bindings. Cline's ProtoBus exposes presentation controls absent from its ACP
+adapter. A product-level capability claim would therefore overstate at least
+one of these boundaries.
+
+Claude Agent SDK and Gemini SDK can register caller-supplied tools while also
+using runtime-owned tools. Codex app-server can request execution of a dynamic
+tool on the connected client. Capability direction and execution ownership are
+not derivable from a flat tool catalog.
+
 The current examples present one broad endpoint snapshot containing model,
 action, agent-control, and control-plane features. This is useful for the full
 layer model but too ambiguous for a minimum adapter claim: a Claude SDK adapter
@@ -293,6 +306,7 @@ The protocol lacks precise answers for:
 - whether hidden lower layers should be absent or marked unavailable;
 - how catalogs participate in revision identity;
 - how policy restrictions differ from underlying technical support.
+- which participant advertises, invokes, executes, or resolves a capability.
 
 Without these rules, UIs will return to runtime-name checks or adapters will
 overclaim support.
@@ -302,6 +316,8 @@ overclaim support.
 Define a small agent-control-core capability descriptor first:
 
 - endpoint identity and OAP profile versions;
+- endpoint role and directional capability records for each negotiated
+  participant;
 - required feature records for `protocol.initialize`, `capabilities`,
   `session.open`, `session.state`, `session.message.submit`,
   `session.message.delivery.auto`, `run.streaming`, `run.status`, and
@@ -462,7 +478,7 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
 - A descriptor revision changes whenever a gate or embedded effective catalog
   changes.
 - The control layer can choose controls using only the descriptor and state,
-  with no HyperNeo, Makai, pi, or provider name checks.
+  with no harness, SDK, CLI, binding, or provider name checks.
 
 ## P0.4 Admission And Delivery Mapping
 
@@ -478,6 +494,11 @@ follow-up use different queues and safe boundaries.
 Makai has run and stream entry points but does not yet expose the same
 control-facing busy-session admission contract.
 
+Codex app-server's `turn/steer` requires an expected active turn ID. Cline also
+fences stale traffic by task/render epoch and handles queued prompts separately
+from an active send. Both show that a mode name without an authoritative target
+precondition is insufficient.
+
 ### Gap
 
 OAP defines delivery names but not enough adapter mapping rules for:
@@ -487,6 +508,7 @@ OAP defines delivery names but not enough adapter mapping rules for:
 - queue ownership and durability;
 - steering an active run versus creating a new run;
 - reporting an emulated delivery mode;
+- rejecting a stale or already-terminal steer target;
 - what happens when `auto` resolves to an optional mode the caller did not
   explicitly request;
 - which IDs and events follow each outcome.
@@ -503,6 +525,13 @@ admission layer resolves it and returns:
 - affected or reserved `run_id` according to the identity rules;
 - optional `delivery_resolution` suitable for diagnostics;
 - any degradation applied during resolution.
+
+An explicit `steer` request carries `target_run_id`. A binding may offer a
+convenience operation that fills it from freshly fetched canonical state, but
+the semantic request reaching the admission authority must identify the target.
+The authority atomically verifies that the run is still the steerable primary
+run. A stale, terminal, side, or otherwise ineligible target fails before
+admission with typed `stale_run_target` or `run_not_steerable`.
 
 Explicit `queue`, `steer`, or `btw` requests must either preserve that semantic
 meaning or fail with a typed unsupported/degraded-feature response. They must
@@ -586,6 +615,13 @@ already expressed as one OAP terminal run event.
 pi emits `agent_end`; cancellation or failure may need to be inferred from the
 final agent state, abort signal, or error message rather than a distinct native
 terminal event.
+
+Claude Agent SDK background tasks use multiple update variants and terminal
+vocabularies. Gemini can report finished, cancelled, blocked, stopped, invalid
+stream, loop detection, or maximum-turn outcomes. OpenHands exposes paused,
+stuck, error, and confirmation-wait states. Cline explicitly filters terminal
+stragglers after cancellation. These are all adapter inputs, not direct aliases
+for an OAP terminal event.
 
 ### Gap
 
@@ -866,6 +902,46 @@ Minimum cases:
   narrows the effective capability snapshot;
 - JSONL request/response correlation independent from run identity.
 
+**Claude Agent SDK direct**
+
+- one-shot `query()` versus bidirectional `ClaudeSDKClient` capability claims;
+- caller-selected tools and prompt with effective initialization metadata;
+- permission allow, deny, and interrupt correlated to a tool call;
+- resume, subprocess failure, and inconsistent background-task terminal input.
+
+**Codex**
+
+- reduced `exec --json`/TypeScript SDK mapping;
+- app-server initialize with directional client capabilities;
+- thread/turn/item stream with a stale expected-turn steer rejection;
+- server-initiated approval, user-input, and client-hosted tool requests.
+
+**OpenCode**
+
+- session create/prompt/abort plus SSE status and message-part updates;
+- reconnect through durable session and message queries after an event gap;
+- permission and question resources resolved by stable request ID.
+
+**Gemini CLI**
+
+- SDK or stream-JSON content, tool, error, result, and cancellation mapping;
+- headless confirmation unavailable versus ACP permission capability;
+- resumed session and blocked, stopped, loop, or invalid-stream terminal input.
+
+**OpenHands**
+
+- conversation creation followed by runtime-ready and execution-state changes;
+- live delta loss recovered from paginated durable event history;
+- confirmation response, pause, fork point, and client-owned tool request.
+
+**Cline**
+
+- unary command correlation independent from task and run identity;
+- dropped and duplicated partial updates reconciled by item ID, sequence, epoch,
+  and full state;
+- active cancellation, queued-prompt cancellation, stale terminal straggler,
+  and partial-to-final item replacement.
+
 Fixtures should be normative for the adapter mapping rules they exercise, but
 not normative for the harness's private API. They should use reduced traces and
 neutral field names where copying upstream source formats would create
@@ -874,12 +950,169 @@ licensing or maintenance problems.
 ### Acceptance criteria
 
 - Every P0 rule is exercised by at least one fixture.
-- All three harnesses can produce the same minimum OAP lifecycle.
+- Every studied boundary can produce the same minimum OAP lifecycle or fails
+  negotiation with the precise unavailable core feature.
 - Fixture checks are transport independent.
 - An implementation can fail a mapping assertion without requiring the actual
   third-party SDK at conformance-test time.
 - Native API changes require updating only the adapter input side when OAP
   semantics remain unchanged.
+
+## P0.7 Canonical State Convergence And Replay
+
+### Evidence
+
+Cline intentionally makes partial UI-message delivery fire-and-forget. Its
+webview is a convergent replica: it merges copies by stable message identity and
+monotonic freshness sequence, rejects messages from an older epoch, and
+recovers from full state. Correctness explicitly does not depend on every live
+delivery arriving.
+
+OpenCode combines an SSE event stream with durable session and message queries.
+OpenHands separately exposes live runtime events and paginated persisted event
+history. Codex app-server and the CLI JSON streams can disconnect while an
+underlying turn or process continues. These are normal deployment conditions,
+not exceptional transport bugs.
+
+### Gap
+
+`session.state` exists, but OAP does not yet define:
+
+- how a consumer knows whether a snapshot precedes or follows a live event;
+- how duplicate, stale, reordered, or missing updates are detected;
+- whether a content delta may be applied twice;
+- how a reconnect resumes a stream or establishes a new baseline;
+- what happens when retained replay no longer covers the requested position;
+- how old traffic from a previous session incarnation is fenced.
+
+A transport-independent protocol still needs these semantics. WebSocket, SSE,
+stdio, JSON-RPC notifications, and in-process callbacks can all lose continuity
+through reconnect, process replacement, buffering, or consumer restart.
+
+### Proposed resolution
+
+Define one canonical state authority and a minimum snapshot-reconciliation
+contract:
+
+- Each session incarnation has an opaque `stream_id`. Reopening the same
+  recoverable incarnation preserves it; replacement or reset creates a new one.
+- Every canonical event has a stable `event_id` and a strictly increasing
+  `sequence` within its `stream_id`. Sequence orders canonical events, not raw
+  transport frames.
+- `session.state.response` includes `stream_id`, `state_revision`, and a
+  `through_sequence` watermark. The returned state reflects every canonical
+  event through that sequence.
+- A consumer ignores a duplicate `event_id`, ignores traffic from an obsolete
+  `stream_id`, and treats a sequence gap as loss of continuity. It may buffer
+  out-of-order events only within a binding-advertised bound; otherwise it
+  reconciles.
+- Reconciliation supplies the consumer's last `stream_id` and sequence. The
+  endpoint either replays retained canonical events after that position or
+  returns a fresh state snapshot and new baseline. Replay is an optional
+  fidelity optimization; the ability to recover through a snapshot is core.
+- If an event updates an existing item, it carries the stable item identity and
+  a monotonic item revision. A stale revision cannot replace a newer canonical
+  item. Raw text deltas need not be independently idempotent because the stream
+  sequence and snapshot baseline prevent double application.
+- An endpoint that cannot preserve execution across reconnect still returns a
+  canonical post-disconnect state and classifies admitted runs using P0.5. It
+  advertises replay unavailable rather than fabricating continuity.
+
+Transport bindings may add acknowledgements, windows, backpressure, or durable
+cursors. Those mechanisms do not replace the semantic watermark and snapshot
+rules.
+
+### Acceptance criteria
+
+- Dropping any nonterminal live event cannot permanently corrupt recovered
+  session state.
+- Duplicate delivery cannot duplicate a transcript item or action lifecycle.
+- Traffic from an old stream incarnation cannot modify the current session.
+- A snapshot and concurrently arriving events have one deterministic merge
+  order.
+- Replay retention exhaustion falls back to a snapshot rather than silently
+  skipping history.
+- Core conformance works with snapshot recovery even when event replay is
+  unavailable.
+- Fixtures cover a sequence gap, duplicate event, out-of-order update, stale
+  item revision, reconnect during execution, and stream-incarnation change.
+
+## P0.8 Participant Roles And Interaction Ownership
+
+### Evidence
+
+Codex app-server initiates correlated requests toward its connected peer for
+approval, user input, additional permissions, authentication, and dynamic tool
+execution. Claude Agent SDK and Gemini SDK can receive caller-supplied tools in
+addition to runtime tools. OpenHands exposes client tools for frontend-owned
+operations. OpenCode and Cline model pending questions or asks that are later
+resolved through a separate command.
+
+Calling one participant “client” and the other “server” does not solve this.
+The same semantic boundary can be an in-process call, stdio pair, WebSocket,
+HTTP/SSE service, or bidirectional RPC connection, and either participant may
+initiate an optional interaction.
+
+### Gap
+
+A flat `+tools`, `+permissions`, or `+user-input` capability does not identify:
+
+- who advertises and owns a tool;
+- where a selected tool call executes;
+- who may initiate a permission or input request;
+- which participant is authorized to resolve it;
+- how cancellation and disconnect affect a pending interaction;
+- whether a response is correlated to an envelope, an interaction, a tool
+  call, or all three.
+
+Without ownership, two conforming peers can both wait for the other to execute
+a tool or both attempt execution.
+
+### Proposed resolution
+
+Use participant-relative semantics, independent of deployment topology:
+
+- Initialization assigns or confirms an opaque `participant_id` for each
+  participant on the semantic boundary. Authentication identity remains a
+  separate security concept.
+- Directional capability records identify `offered_by` and the allowed
+  initiating or consuming participant. A shorthand may omit these only when a
+  profile defines one unambiguous direction.
+- Every reverse-direction permission, user-input, elicitation, or delegated
+  tool request has a stable `interaction_id`, `requested_by`, `responded_by`,
+  relevant session/run/action scope, and one terminal resolution.
+- Envelope `in_reply_to` correlates protocol delivery; `interaction_id` and
+  `tool_call_id` preserve domain identity across retries, reconnect, or an
+  alternate binding.
+- A tool descriptor identifies its execution owner. The agent loop selects and
+  invokes the tool, but only the declared owner executes it and returns the
+  terminal action result. MCP origin, local callback, remote service, or UI
+  implementation is binding metadata unless portable semantics depend on it.
+- Cancellation names the interaction or action it affects. Disconnect policy
+  is advertised as cancel, retain-for-reconnect, or unavailable, and unresolved
+  work follows the terminal/orphan rules rather than disappearing.
+- Resolution from any participant other than the authorized responder fails
+  with a typed authorization or ownership error before changing state.
+
+The minimum core does not require tools, permission prompts, or user input. It
+does require initialization and capability composition to support directional
+records so those optional units can compose without redesigning the envelope.
+
+### Acceptance criteria
+
+- A capability descriptor distinguishes runtime-owned, caller-owned, and
+  delegated tools without a runtime-name check.
+- Both participants can initiate correlated optional interactions when the
+  negotiated profile allows it.
+- Exactly one authorized participant executes each selected action.
+- Each pending interaction has one terminal resolved, rejected, cancelled,
+  failed, or orphaned outcome as defined by its feature revision.
+- Retry and reconnect preserve interaction and action identity independently
+  from envelope request IDs.
+- A headless binding can advertise interactive confirmation unavailable while
+  the same harness's interactive binding advertises it.
+- Fixtures cover server-initiated approval, client-hosted tool execution,
+  unauthorized resolution, disconnect, and cancellation races.
 
 ## Resolution Order
 
@@ -890,7 +1123,11 @@ The gaps should be resolved in this order:
 3. P0.3 capabilities, including late discovery and scope.
 4. P0.4 delivery, using the identity and capability rules.
 5. P0.5 terminal classification.
-6. P0.6 fixtures, written incrementally alongside each decision and completed
+6. P0.7 state convergence, because reconnect fixtures need a canonical merge
+   model.
+7. P0.8 interaction ownership, because optional tool and input fixtures are
+   otherwise ambiguous.
+8. P0.6 fixtures, written incrementally alongside each decision and completed
    as the acceptance gate for this stage.
 
 The protocol should not begin model-IO, action-tool, registry, or broad
