@@ -1131,6 +1131,12 @@ contract:
   local deadline renews the lease; the consumer then retires the challenge.
   Canonical events, unsolicited watermarks, duplicate responses, responses to an
   older challenge, and responses arriving after its deadline do not renew it.
+- Successful reconciliation atomically retires any expired or outstanding
+  challenge and starts a fresh local lease interval from recovery acceptance,
+  using the reconciled stream identity and applied position. The consumer then
+  issues a new one-use challenge for that interval. A binding may instead close
+  the expired subscription and establish a new one, whose establishment starts
+  the lease by the same rule. Recovery never returns to an already-expired lease.
 - A continuity response is a non-canonical control signal and does not consume a
   stream position. A position ahead of the consumer's applied cursor exposes a
   missing tail; lease expiry exposes loss even when the final event and all
@@ -1300,6 +1306,8 @@ rules.
   authoritative continuity response or continuity-lease expiry and recovered.
 - Replayed events, delayed previously unseen watermarks, and stale challenge
   responses cannot renew a continuity lease or conceal a dropped stream tail.
+- Successful reconciliation after lease expiry starts one fresh lease/challenge
+  cycle rather than immediately expiring and reconciling again.
 - Duplicate delivery cannot duplicate a transcript item or action lifecycle.
 - Traffic from an old stream incarnation cannot modify the current session.
 - Events outside one consumer's authorized recovery view neither appear in its
@@ -1346,8 +1354,9 @@ rules.
   event while delayed distinct pre-terminal events, watermarks, and expired
   challenge responses continue arriving, replay-only optional events across a
   gap, a stale snapshot racing a higher-generation event, stale item revision,
-  reconnect during execution, publish/crash recovery, and stream-incarnation
-  change.
+  reconnect during execution, a dropped continuity request or response followed
+  by successful recovery and a fresh lease, publish/crash recovery, and
+  stream-incarnation change.
   Multi-participant fixtures cover different authorization views and an
   authorization change during a live stream, including a transition from a
   higher-numbered generation into a newly constructed view and an old snapshot
