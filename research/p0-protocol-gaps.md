@@ -436,7 +436,10 @@ an `active_runs` collection containing every primary and side run with at least
 shares. The singular `active_run_id` is insufficient for `+btw`; implementations
 without concurrent runs may retain it as a core convenience field.
 
-For `auto`, endpoint policy may choose any advertised effective mode. If it
+For `auto`, endpoint policy may resolve idle admission to `start` without a
+separate `start` capability. `start` is the implicit concrete outcome of core
+`auto`, not an explicit request mode. Resolution to optional `queue`, `steer`, or
+`btw` behavior requires the corresponding advertised capability. If policy
 chooses emulated behavior, the capability snapshot and response must disclose
 that fact. It may choose behavior advertised as `degraded` only when the request
 explicitly sets `allow_degraded_features` to permit it. Otherwise the endpoint
@@ -460,6 +463,8 @@ Initial mappings should be:
 - A stale UI cannot cause the control layer to mislabel a resolved delivery.
 - Submission responses acknowledge admission and never imply completion.
 - Explicit modes never silently change meaning.
+- Core `auto` may resolve to implicit `start`; every other concrete delivery
+  outcome is capability-gated.
 - `auto` never admits degraded behavior without request opt-in.
 - Queue and steer fixtures define their run-ID and event behavior.
 - A queued run removed before start receives a terminal event without a false
