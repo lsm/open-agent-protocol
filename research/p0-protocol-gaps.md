@@ -1114,12 +1114,25 @@ contract:
   generation replaces the old baseline and fences all lower-generation traffic;
   a lower-generation snapshot never replaces a higher observed fence.
 - An authorization change that alters a consumer's recovery projection replaces
-  its current view before the change takes effect: the endpoint increments the
-  consumer's recovery-lineage generation, assigns a new stream ID, and returns
-  or makes available a freshly authorized snapshot baseline. It does not
-  continue the old cursor while silently omitting newly forbidden events, and a
-  broader view does not expose newly permitted historical state except through
-  that new baseline.
+  its current view before the change takes effect. The endpoint atomically
+  increments the consumer's recovery-lineage generation, assigns a new stream
+  ID, invalidates every pending snapshot response for an older view, and emits
+  an authenticated transition fence with a freshly authorized snapshot
+  baseline. Immediately before a snapshot becomes externally visible, the
+  endpoint revalidates both current authorization and lineage generation; an
+  obsolete response is suppressed and fails with typed `stale_recovery_view` or
+  is replaced by the new baseline. The endpoint does not continue the old cursor
+  while silently omitting newly forbidden events, and a broader view does not
+  expose newly permitted historical state except through the new baseline.
+- The authorization-transition fence is mandatory even when no event occurs in
+  the new view. It is semantically ordered before any subsequently delivered
+  snapshot or event in that recovery lineage. A binding must preserve this
+  publication order or provide an equivalent authenticated freshness check that
+  prevents an old-view snapshot from being installed after the transition. On
+  accepting the fence, a conforming consumer atomically discards the old
+  baseline and buffered old-view traffic before installing the new baseline.
+  Revocation cannot retract data that was already legitimately delivered before
+  the authorization change, but it cannot authorize stale delivery afterward.
 - Reconciliation supplies the consumer's last `stream_id`,
   `stream_generation`, and `stream_position`. The endpoint may replay retained
   canonical events after that position only when both the supplied stream ID
@@ -1178,6 +1191,9 @@ rules.
 - An authorization change installs a newly fenced snapshot baseline before the
   consumer continues on the changed recovery view, with a generation greater
   than every generation previously accepted in that recovery lineage.
+- A snapshot response still pending when authorization changes cannot be
+  installed after the new view takes effect, even when the new view produces no
+  live event.
 - An in-flight lower-generation snapshot cannot replace buffered or installed
   evidence from a higher generation.
 - A snapshot and concurrently arriving events have one deterministic merge
@@ -1200,7 +1216,8 @@ rules.
   reconnect during execution, publish/crash recovery, and stream-incarnation
   change. Multi-participant fixtures cover different authorization views and an
   authorization change during a live stream, including a transition from a
-  higher-numbered generation into a newly constructed view.
+  higher-numbered generation into a newly constructed view and an old snapshot
+  response racing a revocation with no new-view event.
 
 ## P0.8 Participant Roles And Interaction Ownership
 
