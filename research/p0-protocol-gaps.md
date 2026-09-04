@@ -426,6 +426,20 @@ context, effective descriptor, catalogs, or revision. Capability-update
 delivery applies the same authorization filter and cannot reveal that an
 inaccessible session or model changed.
 
+Capability disclosure has one publication linearization point that serializes
+with authorization and visibility-policy changes for the requested resources.
+The endpoint either composes the effective context, filtered catalogs,
+descriptor, and revision from the same authorized read snapshot used to publish
+the response, or revalidates all named resources and catalog visibility under the
+same lock or transaction immediately before the response crosses the consumer's
+trust boundary. If revocation or a visibility change linearizes first, the
+endpoint suppresses the prepared payload and returns the normal non-disclosing
+denial. If publication linearizes first, the disclosure was authorized at that
+point and a later change emits only the appropriately filtered capability update
+or invalidation. The same rule applies to qualified `capabilities.updated`
+delivery; transport enqueue alone does not authorize later publication of a
+stale payload.
+
 Admission uses the request's session and selected or resolved model as its
 capability context and verifies the pinned revision against that exact context.
 `capability_provisional` and `stale_capabilities` errors return the context that
@@ -564,6 +578,9 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
   admission cannot pin a revision computed for another context.
 - Unauthorized contextual discovery and update delivery reveal neither resource
   existence nor its effective capabilities.
+- Capability response and update publication racing authorization revocation has
+  one deterministic winner; revocation that linearizes first suppresses every
+  prepared context, catalog, descriptor, and revision payload.
 - Overlapping endpoint, session, model, and combined session/model records
   compose to the same most-restrictive effective result for every peer.
 - A context-specific record may safely enable support over an unavailable
@@ -583,6 +600,9 @@ not describe hidden Claude SDK internals as degraded model-IO conformance.
   changes.
 - The control layer can choose controls using only the descriptor and state,
   with no harness, SDK, CLI, binding, or provider name checks.
+- Fixtures pause capability response and update delivery after composition,
+  revoke session or catalog visibility, and verify non-disclosing suppression at
+  the publication boundary.
 
 ## P0.4 Admission And Delivery Mapping
 
