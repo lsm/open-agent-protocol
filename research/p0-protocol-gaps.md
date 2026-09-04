@@ -224,12 +224,25 @@ then does the endpoint apply these rules:
 3. If no key was supplied, or the supplied key is unknown or outside its
    guaranteed retention, the endpoint applies normal current
    capability-revision validation before admitting work.
-4. On every new admission, with or without a key, the endpoint atomically commits
-   the admitted revision, allocated domain IDs, response state, and durable
-   session, queue, or runnable admission state. The same commit includes the key
-   and canonical request when a key was supplied. When an external effect cannot
-   share that transaction, the commit includes a resumable pending outbox intent
-   using the allocated domain IDs instead of claiming a completed effect.
+4. Every new admission establishes one linearization point under concurrency
+   control that serializes with changes to endpoint and session authorization,
+   effective policy, and the exact-context capability revision used by the
+   request. Inside that transaction or equivalent critical section, the endpoint
+   revalidates current authorization and the requested capability revision
+   immediately before committing any runnable state or outbox intent.
+5. If authorization or the effective revision changed first, admission fails with
+   the normal non-disclosing denial or typed `stale_capabilities`; no intent is
+   runnable and no acceptance is stored. If admission linearized first, its
+   recorded revision was current at admission and any later revocation or policy
+   change applies through the normal cancellation and containment rules.
+6. On successful admission, with or without a key, that same serialized decision
+   atomically commits the admitted revision and context, allocated domain IDs,
+   response state, and durable session, queue, or runnable admission state. The
+   commit includes the key and canonical request when a key was supplied. When an
+   external effect cannot share that transaction, the commit includes a resumable
+   pending outbox intent using the allocated domain IDs instead of claiming a
+   completed effect. The outbox dispatcher cannot expose the intent to an
+   external executor before this commit completes.
 
 An acceptance response is exposed only after this durable admission commit.
 Recovery resumes a stored pending intent using the original domain IDs and never
@@ -304,6 +317,11 @@ machine, but it is not an alternative standard queue behavior.
   omission changes retry deduplication, not accepted-work recovery.
 - A recognized replay returns its original outcome after capabilities advance;
   an unknown key still undergoes normal stale-revision validation.
+- Admission racing an authorization, policy, or exact-context capability change
+  has one deterministic winner. A change that linearizes first prevents durable
+  or runnable admission under the stale decision; admission that linearizes first
+  records its then-current context and is governed by subsequent revocation or
+  containment.
 - Every `run.started` and terminal run event carries the same `run_id`.
 - Every reserved queued run receives one terminal event even when it never
   emits `run.started`.
@@ -314,7 +332,9 @@ machine, but it is not an alternative standard queue behavior.
   stable `tool_call_id` and one terminal action event.
 - Native IDs can be inspected without being mistaken for portable OAP IDs.
 - Fixtures cover generated IDs, reused native IDs, lost session-open and submit
-  responses, idempotency conflict, queueing, steering, and reconnect recovery.
+  responses, idempotency conflict, queueing, steering, reconnect recovery, and
+  authorization and capability changes paused between preliminary validation and
+  the admission linearization point.
 
 ## P0.3 Capability Scope, Authority, And Late Discovery
 
