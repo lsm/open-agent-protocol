@@ -26,6 +26,11 @@ Fixtures:
 
 - [Example protocol envelopes](examples/README.md)
 
+Research:
+
+- [Harness interoperability study](research/harness-interoperability.md)
+- [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
+
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool
 source, or SDK adapter can implement the protocol without project-specific
