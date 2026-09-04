@@ -1198,11 +1198,13 @@ contract:
   `stream.continuity.request` with a fresh challenge. The endpoint
   returns an authenticated `stream.continuity.response` echoing that challenge,
   the current `stream_id`, `stream_generation`, and highest committed
-  `through_stream_position` for the authorized view. Only a response matching
-  the currently outstanding challenge and received before that challenge's
-  local deadline renews the lease; the consumer then retires the challenge.
-  Canonical events, unsolicited watermarks, duplicate responses, responses to an
-  older challenge, and responses arriving after its deadline do not renew it.
+  `through_stream_position` for the authorized view. A response renews the lease
+  only when it matches the currently outstanding challenge, arrives before that
+  challenge's local deadline, and names the consumer's installed stream ID and
+  generation. The consumer then retires the challenge. Canonical events,
+  unsolicited watermarks, duplicate responses, responses to an older challenge,
+  responses arriving after its deadline, and responses for an obsolete stream
+  do not renew the lease.
 - Successful reconciliation atomically retires any expired or outstanding
   challenge and starts a fresh local lease interval from recovery acceptance,
   using the reconciled stream identity and applied position. The consumer then
@@ -1210,12 +1212,16 @@ contract:
   the expired subscription and establish a new one, whose establishment starts
   the lease by the same rule. Recovery never returns to an already-expired lease.
 - A continuity response is a non-canonical control signal and does not consume a
-  stream position. A position ahead of the consumer's applied cursor exposes a
-  missing tail; lease expiry exposes loss even when the final event and all
-  current challenge responses were dropped. Either condition freezes
-  application and triggers reconciliation. A binding may provide an equivalent
-  freshness-proving challenge/acknowledgement exchange, but monotonic sequence
-  alone and silent best-effort tail delivery are insufficient.
+  stream position. An authenticated response naming a stream identity different
+  from the installed identity is a fence, not a renewal: the consumer records
+  the highest observed generation, retires the challenge, freezes application,
+  and reconciles even when the reported position is lower and no canonical event
+  follows. A response for the installed stream with a position ahead of the
+  applied cursor exposes a missing tail; lease expiry exposes loss even when the
+  final event and all current challenge responses were dropped. Each condition
+  freezes application and triggers reconciliation. A binding may provide an
+  equivalent freshness-proving challenge/acknowledgement exchange, but monotonic
+  sequence alone and silent best-effort tail delivery are insufficient.
 - A consumer never applies an event from an unknown `stream_id` directly. It
   records the highest authenticated `stream_generation` observed, triggers
   reconciliation, and may buffer unknown-stream events within a
@@ -1380,6 +1386,9 @@ rules.
   responses cannot renew a continuity lease or conceal a dropped stream tail.
 - Successful reconciliation after lease expiry starts one fresh lease/challenge
   cycle rather than immediately expiring and reconciling again.
+- A continuity response naming a replacement stream triggers reconciliation and
+  cannot renew the obsolete stream's lease, even when no canonical event follows
+  and the replacement position is lower.
 - Duplicate delivery cannot duplicate a transcript item or action lifecycle.
 - Traffic from an old stream incarnation cannot modify the current session.
 - Events outside one consumer's authorized recovery view neither appear in its
@@ -1427,8 +1436,9 @@ rules.
   challenge responses continue arriving, replay-only optional events across a
   gap, a stale snapshot racing a higher-generation event, stale item revision,
   reconnect during execution, a dropped continuity request or response followed
-  by successful recovery and a fresh lease, publish/crash recovery, and
-  stream-incarnation change.
+  by successful recovery and a fresh lease, a continuity response revealing a
+  lower-position replacement stream with no subsequent event, publish/crash
+  recovery, and stream-incarnation change.
   Multi-participant fixtures cover different authorization views and an
   authorization change during a live stream, including a transition from a
   higher-numbered generation into a newly constructed view and an old snapshot
