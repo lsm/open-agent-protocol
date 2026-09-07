@@ -112,7 +112,7 @@ Fixture names are requirements, not claims that captures already exist.
 | `agent_end` with cancellation | `run.cancelled` only after authoritative settlement | normalized, session-scoped intent | degraded | `cancel-confirmed` |
 | error `agent_end` | one typed `run.failed` | normalized | degraded | `failed-run` |
 | `agent_error` during active work | candidate failure through the same terminal arbiter | normalized | degraded | `error-plus-agent-end` |
-| `agent_stop` / `agent_stopped` | session teardown acknowledgement; cancellation intent if active | normalized | session stop native, run cancel degraded | `cancel-active` |
+| `agent_stop` / `agent_stopped` | destructive session teardown; correlated stop response is cancellation settlement fallback at this pin when no earlier terminal won | normalized | session stop native, run cancel degraded | `cancel-active` |
 | successful run returns session to ready | session remains reusable at server boundary | normalized | native server behavior | `second-message-same-session` |
 | TypeScript SDK sends terminal `agent_stop` | one-attempt SDK teardown, not durable session semantics | lossy boundary | unavailable through SDK wrapper | `sdk-terminal-teardown` |
 | EOF/process exit before terminal | settle children, then one `run.failed` | synthesized | transport failure handling | `process-exit` |
@@ -152,15 +152,20 @@ routing problem tracked by Makai issue #201.
 cancellation flag. It is session-scoped teardown, not native run-targeted
 cancellation. Therefore:
 
-- a correlated `agent_stopped` acknowledges teardown intent;
-- it does not by itself settle the run;
-- natural completion or failure may win the race;
-- `agent_end`/failure evidence selects the terminal;
+- natural completion or failure observed before the stop response may win the
+  race;
+- a correlated `agent_stopped` acknowledges destructive teardown;
+- at this pin, stop removes the session before the detached execution publishes
+  its final `agent_end`, so that later publish is rejected and discarded;
+- the adapter must therefore settle cancellation from correlated
+  `agent_stopped` when no earlier terminal evidence won;
 - stale cancellation must never target a replacement run; and
 - a successful run cannot be reported as cancelled merely because stop was
   requested.
 
-Initial OAP cancellation support is degraded and session-destructive.
+Initial OAP cancellation support is degraded and session-destructive. The
+`agent_stopped` fallback is a pinned implementation impedance mismatch, not a
+claim that the native frame is generally run-targeted terminal authority.
 
 ## Session state and recovery
 
