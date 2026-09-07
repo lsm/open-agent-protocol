@@ -43,6 +43,19 @@ Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
+- [Pinned Codex app-server mapping](research/codex-app-server-8d7cc24-mapping.md)
+- [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
+
+Provider compatibility is tested independently from harness conformance. Inspect
+the credential-free China Coding Plan presets with:
+
+```sh
+go run ./cmd/oap providers zai-cn
+```
+
+Ordinary tests use fake credentials and loopback provider servers. Credentialed
+provider evidence is separately and explicitly gated as documented in the matrix;
+credential presence alone never enables network traffic.
 
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool

@@ -15,6 +15,7 @@ import (
 
 	"github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/provider"
 	"github.com/lsm/open-agent-protocol/validation"
 )
 
@@ -38,13 +39,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runDemo(ctx, args[1:], stdout)
 	case "check":
 		return runCheck(ctx, args[1:], stdout)
+	case "providers":
+		return runProviders(args[1:], stdout, stderr)
 	default:
 		return usage(stderr)
 	}
 }
 
 func usage(w io.Writer) error {
-	fmt.Fprintln(w, "usage: oap <validate|fixtures|demo|check> [arguments]")
+	fmt.Fprintln(w, "usage: oap <validate|fixtures|demo|check|providers> [arguments]")
 	return errors.New("invalid command")
 }
 
@@ -133,6 +136,32 @@ func runFixtures(args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "PASS fixtures: %d\n", len(outcomes))
+	return nil
+}
+
+func runProviders(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 || args[0] != "zai-cn" {
+		fmt.Fprintln(stderr, "usage: oap providers zai-cn [--format=human|json]")
+		return errors.New("invalid providers command")
+	}
+	fs := flag.NewFlagSet("providers zai-cn", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	format := fs.String("format", "human", "output format: human or json")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || (*format != "human" && *format != "json") {
+		return errors.New("providers zai-cn accepts only --format=human|json")
+	}
+	presets := provider.ZAIChinaCodingPlan()
+	if *format == "json" {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(presets)
+	}
+	for _, preset := range presets {
+		fmt.Fprintf(stdout, "%s\t%s\t%s%s\t%s\t%s\n", preset.ID, preset.Wire, preset.BaseURL, preset.Path, preset.Model, preset.EvidenceClass)
+	}
 	return nil
 }
 

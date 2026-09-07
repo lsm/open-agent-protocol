@@ -38,6 +38,24 @@ func TestValidateJSON(t *testing.T) {
 	}
 }
 
+func TestProvidersZAICN(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"providers", "zai-cn", "--format=json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("providers: %v\nstderr: %s", err, stderr.String())
+	}
+	var presets []struct {
+		ID            string `json:"id"`
+		Model         string `json:"model"`
+		EvidenceClass string `json:"evidence_class"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &presets); err != nil {
+		t.Fatal(err)
+	}
+	if len(presets) != 4 || presets[0].ID != "zai-cn-responses-control" || presets[0].Model != "glm-5.3" || presets[0].EvidenceClass != "documented-control" {
+		t.Fatalf("presets: %+v", presets)
+	}
+}
+
 func TestValidateInvalidReturnsError(t *testing.T) {
 	file := filepath.Join(repositoryRoot(), "fixtures", "schema-invalid", "missing-envelope-id.json")
 	var stdout, stderr bytes.Buffer
