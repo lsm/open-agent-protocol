@@ -9,6 +9,15 @@ for the reviewed harnesses and bindings. These are not speculative completeness
 features. Each gap was exposed by trying to map an existing implementation to
 `open-agent-protocol.agent-control-core`.
 
+> **Disposition for executable v0.1:** This remains a research record. Accepted
+> [Decision 0001](../decisions/0001-agent-control-v0.1-executable-core.md)
+> controls the smaller executable v0.1 subset. Durable idempotent admission,
+> contextual and provisional capabilities, queue/steer/side runs, continuity
+> leases, authorization-view fencing, retained cross-process interactions, and
+> orphan terminal vocabulary are deferred to later optional or negotiated
+> revisions. P0.6 describes the fixture program; it is not an additional
+> protocol semantic. Nothing in this research document silently changes v0.1.
+
 P0 means the protocol decision and at least one fixture must exist before OAP
 is used as the internal backend boundary for HyperNeo. It does not mean every
 future profile must be designed first.

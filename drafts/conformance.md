@@ -13,6 +13,14 @@ The first conformance target is:
 
 - `open-agent-protocol.agent-control-core`
 
+Its implemented subset is exercised by the claim
+`open-agent-protocol.agent-control-core/0.1-executable` and frozen in
+[Decision 0001](../decisions/0001-agent-control-v0.1-executable-core.md). The
+claim proves the flat envelope, one foreground run per session, `auto -> start`,
+correlated requests and reverse interactions, bounded adapter-journal recovery,
+and the three v0.1 terminal outcomes. It does not claim durable persistence,
+queue/steer/side runs, or orphan terminals.
+
 Conformance units are additive:
 
 - `+persistence`
@@ -138,7 +146,7 @@ An implementation conforms to `+tools` if it:
   `action.call.completed`, `action.call.failed`, or `action.call.cancelled`;
 - marks failed tool calls through `action.call.failed` with a typed error.
 
-`action.call.delta` progress is optional. If progress is degraded, buffered, or
+`action.call.progress` is optional. If progress is degraded, buffered, or
 unavailable, the implementation should say so in capabilities or degradation
 records.
 
@@ -170,7 +178,7 @@ An implementation conforms to `+user-input` if it:
   `unavailable`;
 - emits `run.status.updated` with `status: "waiting_for_input"` when a run is
   paused for user input;
-- emits `user.input.requested` with stable `input_request_id` and structured
+- emits `user.input.requested` with stable `interaction_id` and structured
   questions;
 - accepts `user.input.resolve.request`;
 - accepts `user.input.cancel.request` when the prompt is cancellable;
@@ -232,28 +240,40 @@ units if it:
 `btw` means a lightweight side question that uses the same session environment
 and configuration but does not block the main run.
 
-## Fixture-Based Test Plan
+## Executable Validation And Fixture Plan
 
-Conformance tests should start as fixture-based checks. A fixture is an ordered
-set of logical envelopes plus expected outcomes.
+Conformance has two validation layers:
 
-Initial checks:
+1. Structural validation applies the checked-in JSON Schema bundle to each
+   logical envelope.
+2. Stateful validation checks relationships across the ordered trace that JSON
+   Schema cannot express.
 
-1. Schema validation.
-2. Request/response correlation.
-3. Event ordering within a scoped sequence.
-4. Terminal-event rule: exactly one terminal run event per accepted run.
-5. Capability gating for unavailable and degraded features.
-6. Capability revision equality, stale-request rejection, and refresh before
-   retry.
-7. Degradation reporting for adapter or binding feature loss.
-8. Reconnect and state recovery through `session.state.request`.
-9. Transcript cursor behavior for pagination and sync.
-10. Tool event lifecycle.
-11. User-input lifecycle.
+Stateful checks include:
 
-These tests should run against any binding by first normalizing binding-specific
-wire messages into core envelopes.
+1. Exactly one correlated response for every request.
+2. Stable, distinct identity domains and agreement between envelope and payload
+   scope IDs.
+3. Positive, contiguous run-scoped sequences beginning with `run.started`.
+4. Exactly one terminal event for every accepted run and no run-scoped semantic
+   event after it.
+5. Exactly one terminal action event for every exposed tool call, including a
+   call cancelled or denied before execution starts.
+6. Closure of all run-scoped tool and interaction lifecycles before the parent
+   terminal.
+7. Interaction resolution by the declared participant only.
+8. Cancellation acknowledgement as nonterminal intent followed by authoritative
+   run settlement.
+9. Capability gating, degradation disclosure, revision equality, stale-request
+   rejection, and refresh before retry.
+10. Recovery as either a contiguous adapter-journal suffix or an explicit replay
+    gap plus authoritative session state.
+
+`fixtures/manifest.json` is the normative inventory. It declares whether each
+fixture is valid or invalid, the expected validation phase and diagnostic codes,
+and the conformance units it exercises. Validity must not be inferred from a
+filename. Bindings are tested by normalizing native wire messages into these
+logical envelopes before validation.
 
 ## Error Expectations
 
@@ -262,12 +282,15 @@ conforming implementation should not silently ignore unsupported commands,
 invent private event names for core semantics, or rely on control-layer
 hardcoding to avoid unsupported paths.
 
-The minimum error shape is:
+The minimum error shape requires:
 
 - `code`
 - `message`
+
+It may also include:
+
 - `retriable`
-- `details`
+- `details`, as an object
 
 The `code` should be stable enough for control-layer behavior. Human-readable
 text belongs in `message`.

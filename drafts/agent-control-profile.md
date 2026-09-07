@@ -449,7 +449,7 @@ approval.
 
 Rules:
 
-- `permission_id` is stable and must be used in
+- `interaction_id` is stable and must be used in
   `action.permission.resolve.request`.
 - Choices are explicit. The control or presentation layer should not infer
   grant/deny labels.
