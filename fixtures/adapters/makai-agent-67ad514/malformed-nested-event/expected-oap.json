@@ -1,0 +1,41 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-7",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-4",
+      "status": "running",
+      "model_id": "test",
+      "started_at_ms": 5
+    },
+    "sequence": 1,
+    "timestamp_ms": 6,
+    "session_id": "session",
+    "run_id": "run-4",
+    "capability_revision": "makai-agent-67ad514-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.failed",
+    "id": "event-9",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-4",
+      "error": {
+        "code": "makai_transport_failure",
+        "message": "EOF"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-4",
+    "capability_revision": "makai-agent-67ad514-oap-v1"
+  }
+]

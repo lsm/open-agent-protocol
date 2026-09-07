@@ -1,0 +1,81 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-7",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-4",
+      "status": "running",
+      "model_id": "test",
+      "started_at_ms": 5
+    },
+    "sequence": 1,
+    "timestamp_ms": 6,
+    "session_id": "session",
+    "run_id": "run-4",
+    "capability_revision": "makai-agent-67ad514-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-9",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-4",
+      "message_id": "message-5",
+      "part": {
+        "type": "text",
+        "text": "hello"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-4",
+    "capability_revision": "makai-agent-67ad514-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-10",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-4",
+      "final_response": {
+        "id": "message-5",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "hello"
+          }
+        ]
+      },
+      "stop_reason": "stop",
+      "result": {
+        "api": "messages",
+        "cache_read": 0,
+        "cache_write": 0,
+        "model": "fixture",
+        "provider": "fixture"
+      },
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 1,
+        "total_tokens": 3
+      }
+    },
+    "sequence": 3,
+    "timestamp_ms": 8,
+    "session_id": "session",
+    "run_id": "run-4",
+    "capability_revision": "makai-agent-67ad514-oap-v1"
+  }
+]

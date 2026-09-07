@@ -1,0 +1,7 @@
+[
+  {
+    "index": 1,
+    "reason": "native diagnostic or trigger has no independent portable event",
+    "type": "pong"
+  }
+]

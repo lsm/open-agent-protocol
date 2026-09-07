@@ -1,0 +1,1 @@
+{"action":"observe","classification":"mapped","direction":"agent-to-client","fidelity":"normalized","raw":{"message_id":"00000000000000000000000100","payload":{"code":"internal_error","message":"provider exploded"},"sequence":0,"session_id":"Abcdefghijklmnopqrstu","timestamp":0,"type":"agent_error","version":1}}

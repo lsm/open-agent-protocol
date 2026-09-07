@@ -1,0 +1,12 @@
+[
+  {
+    "index": 1,
+    "reason": "native diagnostic or trigger has no independent portable event",
+    "type": "agent_event"
+  },
+  {
+    "index": 4,
+    "reason": "native diagnostic or trigger has no independent portable event",
+    "type": "agent_event"
+  }
+]

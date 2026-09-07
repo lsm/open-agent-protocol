@@ -53,15 +53,17 @@ type runState struct {
 	subscribers     []chan base.Result
 }
 type toolState struct {
-	nativeID string
-	id       protocol.ToolCallID
-	run      *runState
-	name     string
-	args     json.RawMessage
-	progress json.RawMessage
-	result   json.RawMessage
-	started  bool
-	terminal bool
+	nativeID       string
+	id             protocol.ToolCallID
+	run            *runState
+	name           string
+	args           json.RawMessage
+	progress       json.RawMessage
+	result         json.RawMessage
+	started        bool
+	terminal       bool
+	requestedEvent protocol.EnvelopeID
+	startedEvent   protocol.EnvelopeID
 }
 
 func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
@@ -324,10 +326,15 @@ func (s *session) startTool(run *runState, nativeID, name string, args json.RawM
 	}
 	tool.started = true
 	s.mu.Unlock()
-	_ = s.emit(run, protocol.TypeActionCallRequested, s.toolPayload(tool), false)
+	requested, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, s.toolPayload(tool), false, "")
 	payload := s.toolPayload(tool)
+	payload.ArgumentsJSON = nil
 	payload.Progress = nil
-	_ = s.emit(run, protocol.TypeActionCallStarted, payload, false)
+	started, _ := s.emitEnvelope(run, protocol.TypeActionCallStarted, payload, false, requested.ID)
+	s.mu.Lock()
+	tool.requestedEvent = requested.ID
+	tool.startedEvent = started.ID
+	s.mu.Unlock()
 }
 func (s *session) updateTool(run *runState, nativeID string, progress json.RawMessage) {
 	s.mu.Lock()
@@ -339,7 +346,9 @@ func (s *session) updateTool(run *runState, nativeID string, progress json.RawMe
 	}
 	tool.progress = cloneRaw(progress)
 	s.mu.Unlock()
-	_ = s.emit(run, protocol.TypeActionCallProgress, s.toolPayload(tool), false)
+	payload := s.toolPayload(tool)
+	payload.ArgumentsJSON = nil
+	_, _ = s.emitEnvelope(run, protocol.TypeActionCallProgress, payload, false, tool.startedEvent)
 }
 func (s *session) endTool(run *runState, nativeID, name string, result json.RawMessage, failed bool) {
 	s.mu.Lock()
@@ -359,12 +368,13 @@ func (s *session) endTool(run *runState, nativeID, name string, result json.RawM
 	s.mu.Unlock()
 	payload := s.toolPayload(tool)
 	payload.ArgumentsJSON = nil
+	payload.Progress = nil
 	if failed {
 		payload.Result = nil
 		payload.Error = &protocol.ProtocolError{Code: "tool_failed", Message: "Makai tool execution failed"}
-		_ = s.emit(run, protocol.TypeActionCallFailed, payload, false)
+		_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, payload, false, tool.startedEvent)
 	} else {
-		_ = s.emit(run, protocol.TypeActionCallCompleted, payload, false)
+		_, _ = s.emitEnvelope(run, protocol.TypeActionCallCompleted, payload, false, tool.startedEvent)
 	}
 }
 func toolKey(run *runState, nativeID string) string {
@@ -619,11 +629,11 @@ func (s *session) settleTools(run *runState, cancel bool) {
 		payload := s.toolPayload(tool)
 		payload.ArgumentsJSON = nil
 		if cancel {
-			_ = s.emit(run, protocol.TypeActionCallCancelled, payload, false)
+			_, _ = s.emitEnvelope(run, protocol.TypeActionCallCancelled, payload, false, tool.startedEvent)
 		} else {
 			payload.Result = nil
 			payload.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "Makai run settled with an unfinished tool"}
-			_ = s.emit(run, protocol.TypeActionCallFailed, payload, false)
+			_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, payload, false, tool.startedEvent)
 		}
 	}
 }
@@ -644,16 +654,21 @@ func (s *session) transportFailed() {
 	}
 }
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {
+	_, err := s.emitEnvelope(run, typ, payload, terminal, "")
+	return err
+}
+
+func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID) (protocol.Envelope, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if run.terminal {
-		return errTerminalWon
+		return protocol.Envelope{}, errTerminalWon
 	}
 	event, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(s.ids.NewID("event")), payload)
 	if err != nil {
-		return err
+		return protocol.Envelope{}, err
 	}
 	now := s.clock.Now().UnixMilli()
 	sequence := run.next
@@ -663,6 +678,7 @@ func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, te
 	event.SessionID = s.state.SessionID
 	event.RunID = run.id
 	event.CapabilityRevision = CapabilityRevision
+	event.InReplyTo = inReplyTo
 	if typ == protocol.TypeActionCallRequested || typ == protocol.TypeActionCallStarted || typ == protocol.TypeActionCallProgress || typ == protocol.TypeActionCallCompleted || typ == protocol.TypeActionCallFailed || typ == protocol.TypeActionCallCancelled {
 		var action struct {
 			ToolCallID protocol.ToolCallID `json:"tool_call_id"`
@@ -711,7 +727,7 @@ func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, te
 	} else {
 		run.subscribers = nil
 	}
-	return nil
+	return event, nil
 }
 func (s *session) allSubscribersLocked() []chan base.Result {
 	var out []chan base.Result
