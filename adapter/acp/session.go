@@ -100,7 +100,8 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	}
 	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunRunning, next: 1, messageID: s.newMessageID(), messageTexts: make(map[protocol.MessageID]string), nativeMessages: make(map[string]protocol.MessageID), admitted: make(chan struct{})}
 	run.messageTexts[run.messageID] = ""
-	stream := make(chan base.Result, streamCapacity)
+	// Reserve one slot for an ordered overflow marker after a contiguous prefix.
+	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
 	s.active = run
 	s.runs[run.id] = run
@@ -270,7 +271,14 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 			var ok bool
 			mid, ok = run.nativeMessages[u.MessageID]
 			if !ok {
-				mid = s.newMessageID()
+				// ACP permits messageId to be absent. If the first explicit ID appears
+				// after unlabelled chunks, bind it to that same logical message rather
+				// than splitting the stream and dropping its prefix at settlement.
+				if len(run.nativeMessages) == 0 {
+					mid = run.messageID
+				} else {
+					mid = s.newMessageID()
+				}
 				run.nativeMessages[u.MessageID] = mid
 			}
 			run.messageID = mid
@@ -637,7 +645,8 @@ func (s *session) Resume(ctx context.Context, q base.ResumeRequest) (base.Recove
 	}
 	recovery := base.Recovery{State: s.state, RunID: r.id, RequestedAfter: q.AfterSequence, ReplayedFrom: q.AfterSequence, ReplayedThrough: q.AfterSequence}
 	gap := q.AfterSequence < latest && (oldest == 0 || q.AfterSequence+1 < oldest)
-	stream := make(chan base.Result, len(suffix)+64)
+	// Reserve one slot beyond the live-event budget for an overflow marker.
+	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
 	if gap {
 		recovery.ReplayGap = &base.ReplayGap{RequestedAfter: q.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
 		close(stream)
@@ -804,27 +813,19 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 	run.subscribers = run.subscribers[:0]
 	var retained []chan base.Result
 	for _, ch := range subs {
-		select {
-		case ch <- base.Result{Envelope: e}:
+		if len(ch) < cap(ch)-1 {
+			ch <- base.Result{Envelope: e}
 			if terminal {
 				close(ch)
 			} else {
 				retained = append(retained, ch)
 			}
-		default:
-			// Detach a slow consumer without stalling native reduction. Its final
-			// deliverable is an explicit overflow marker; canonical events remain in
-			// the bounded journal for Resume from the last consumed sequence.
-			select {
-			case <-ch:
-			default:
-			}
-			select {
-			case ch <- base.Result{Error: base.ErrEventStreamOverflow}:
-			default:
-			}
-			close(ch)
+			continue
 		}
+		// The final channel slot is reserved for this ordered detach signal. The
+		// consumer sees a contiguous prefix and resumes from its last sequence.
+		ch <- base.Result{Error: base.ErrEventStreamOverflow}
+		close(ch)
 	}
 	if !terminal {
 		run.subscribers = retained

@@ -22,11 +22,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "content.delta",
-    "id": "event-g",
+    "id": "event-f",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "message_id": "session/message-f",
+      "message_id": "session/message-c",
       "part": {
         "type": "text",
         "text": "fixture-ok"
@@ -43,12 +43,12 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-h",
+    "id": "event-g",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "final_response": {
-        "id": "session/message-f",
+        "id": "session/message-c",
         "role": "assistant",
         "content": "fixture-ok"
       },

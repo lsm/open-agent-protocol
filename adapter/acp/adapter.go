@@ -155,6 +155,9 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: initialize selected version %d or omitted capabilities", ErrNativeProtocol, initialized.ProtocolVersion)
 	}
+	// Select ordered delivery before any post-initialize request. A peer may send
+	// notifications immediately after a response in the same read batch.
+	inbound := client.Inbound()
 	var opened native.SessionNewResult
 	if err := client.Call(ctx, native.MethodSessionNew, native.SessionNewParams{Cwd: a.config.WorkingDirectory, MCPServers: append([]native.MCPServer(nil), a.config.MCPServers...)}, &opened); err != nil {
 		_ = client.Close()
@@ -169,7 +172,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
+	s := &session{client: client, inbound: inbound, clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
 }

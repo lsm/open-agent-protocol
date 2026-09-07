@@ -347,16 +347,56 @@ func TestSlowSubscriberDetachesWithOverflow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var sequences []uint64
 	var sawOverflow bool
 	for result := range stream {
 		if errors.Is(result.Error, base.ErrEventStreamOverflow) {
 			sawOverflow = true
+			continue
 		}
+		if result.Envelope.Sequence == nil {
+			t.Fatal("event missing sequence")
+		}
+		sequences = append(sequences, *result.Envelope.Sequence)
 	}
 	if !sawOverflow {
 		t.Fatal("slow stream closed without explicit overflow")
 	}
+	for i, sequence := range sequences {
+		if sequence != uint64(i+1) {
+			t.Fatalf("non-contiguous overflow prefix: %v", sequences)
+		}
+	}
 	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+}
+
+func TestFirstExplicitMessageIDContinuesUnlabelledChunks(t *testing.T) {
+	sessionAPI, f := openTest(t, 64)
+	_, stream := submit(t, sessionAPI)
+	<-f.promptStarted
+	f.update(t, native.AgentMessageChunk{SessionUpdate: "agent_message_chunk", Content: native.ContentBlock{Type: "text", Text: "hello "}})
+	f.update(t, native.AgentMessageChunk{SessionUpdate: "agent_message_chunk", MessageID: "m1", Content: native.ContentBlock{Type: "text", Text: "world"}})
+	waitCursor(t, sessionAPI, "3")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	var first, second protocol.ContentDeltaPayload
+	if err := events[1].DecodePayload(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := events[2].DecodePayload(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first.MessageID != second.MessageID {
+		t.Fatalf("unlabelled and first labelled chunks split: %q != %q", first.MessageID, second.MessageID)
+	}
+	var terminal protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&terminal); err != nil {
+		t.Fatal(err)
+	}
+	text, ok := terminal.FinalResponse.Content.Text()
+	if terminal.FinalResponse.ID != first.MessageID || !ok || text != "hello world" {
+		t.Fatalf("final response=%+v", terminal.FinalResponse)
+	}
 }
 
 func TestNativeMessageIDsArePortableAndSessionScoped(t *testing.T) {
