@@ -150,6 +150,35 @@ func TestClientFullInboundUnblocksCorrelatedCall(t *testing.T) {
 		t.Fatal("correlated call remained blocked after queue overflow")
 	}
 }
+func TestClientRoutesCorrelatedAgentMessageErrorAsObservation(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer serverSide.Close()
+	c := NewClient(clientSide, clientSide, ClientOptions{CloseReadWriter: clientSide, QueueCapacity: 4})
+	defer c.Close()
+	request := testEnvelope(t, native.TypeAgentMessage, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 2, native.AgentMessage{SessionID: "Abcdefghijklmnopqrstu", MessageJSON: `{}`})
+	go func() {
+		d := NewDecoder(serverSide, 0)
+		_, _ = d.Decode()
+		_, _ = io.WriteString(serverSide, `{"type":"agent_error","session_id":"Abcdefghijklmnopqrstu","message_id":"01ARZ3NDEKTSV4RRFFQ69G5FAW","sequence":0,"timestamp":1,"version":1,"in_reply_to":"01ARZ3NDEKTSV4RRFFQ69G5FAV","payload":{"code":"internal_error","message":"failed"}}`+"\n")
+	}()
+	if err := c.Send(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case in := <-c.Inbound():
+		if in.Envelope == nil || in.Envelope.Type != native.TypeAgentError || in.Envelope.InReplyTo == nil || *in.Envelope.InReplyTo != request.MessageID {
+			t.Fatalf("unexpected inbound: %+v", in)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing correlated agent error")
+	}
+	select {
+	case <-c.Done():
+		t.Fatalf("transport closed: %v", c.Err())
+	default:
+	}
+}
+
 func TestClientConcurrentWritesRemainFrames(t *testing.T) {
 	clientSide, serverSide := net.Pipe()
 	defer serverSide.Close()

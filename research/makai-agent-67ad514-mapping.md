@@ -142,6 +142,14 @@ request frame is written while retaining the run reservation until native
 settlement. Ambiguous post-write failures fail the reserved run rather than
 allowing a second submission to inherit late observations.
 
+The accepted native session starts with request sequence `1` for `agent_start`;
+the first `agent_message` must therefore use request sequence `2`. A rejected
+message can return a synchronous sequence-zero `agent_error` correlated to the
+`agent_message` frame even though message submission is otherwise one-way. The
+transport retains sent-frame identity long enough to classify that exact
+correlated error as an ordered observation; correlation to any other completed
+or unknown one-way request remains fatal.
+
 Only one in-flight run is allowed per mapped session. This is both the initial
 OAP policy and protection against the pinned TypeScript waiter's session-based
 routing problem tracked by Makai issue #201.

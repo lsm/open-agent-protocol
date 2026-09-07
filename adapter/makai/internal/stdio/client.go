@@ -53,7 +53,7 @@ type Client struct {
 	mu          sync.Mutex
 	pending     map[native.MessageID]pendingCall
 	seen        map[native.MessageID]struct{}
-	sent        map[native.MessageID]struct{}
+	sent        map[native.MessageID]native.Envelope
 	sequences   map[native.SessionID]uint64
 	closed      bool
 	err         error
@@ -76,7 +76,7 @@ func newClient(decoder *Decoder, writer io.Writer, options ClientOptions) *Clien
 	if wcap <= 0 {
 		wcap = cap
 	}
-	c := &Client{decoder: decoder, encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter, pending: map[native.MessageID]pendingCall{}, seen: map[native.MessageID]struct{}{}, sent: map[native.MessageID]struct{}{}, sequences: map[native.SessionID]uint64{}, writes: make(chan writeRequest, wcap), inbound: make(chan Inbound, cap), diagnostics: make(chan error, cap), done: make(chan struct{})}
+	c := &Client{decoder: decoder, encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter, pending: map[native.MessageID]pendingCall{}, seen: map[native.MessageID]struct{}{}, sent: map[native.MessageID]native.Envelope{}, sequences: map[native.SessionID]uint64{}, writes: make(chan writeRequest, wcap), inbound: make(chan Inbound, cap), diagnostics: make(chan error, cap), done: make(chan struct{})}
 	go c.writeLoop()
 	go c.readLoop()
 	return c
@@ -105,7 +105,7 @@ func (c *Client) Call(ctx context.Context, request native.Envelope, accepted ...
 		c.mu.Unlock()
 		return native.Envelope{}, fmt.Errorf("%w: %s", ErrDuplicateMessageID, request.MessageID)
 	}
-	c.sent[request.MessageID] = struct{}{}
+	c.sent[request.MessageID] = request
 	c.pending[request.MessageID] = pendingCall{session: request.SessionID, accept: accept, result: response}
 	c.mu.Unlock()
 	if err := c.write(ctx, request); err != nil {
@@ -141,7 +141,7 @@ func (c *Client) Send(ctx context.Context, env native.Envelope) error {
 		c.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrDuplicateMessageID, env.MessageID)
 	}
-	c.sent[env.MessageID] = struct{}{}
+	c.sent[env.MessageID] = env
 	c.mu.Unlock()
 	return c.write(ctx, env)
 }
@@ -215,14 +215,26 @@ func (c *Client) route(env native.Envelope) error {
 	}
 	var pending pendingCall
 	var matched bool
+	var correlatedObservation bool
 	if env.InReplyTo != nil {
 		pending, matched = c.pending[*env.InReplyTo]
 		if matched {
 			delete(c.pending, *env.InReplyTo)
+		} else if request, sent := c.sent[*env.InReplyTo]; sent &&
+			request.Type == native.TypeAgentMessage &&
+			env.Type == native.TypeAgentError &&
+			env.SessionID == request.SessionID {
+			correlatedObservation = true
 		}
 	}
 	c.mu.Unlock()
 	if env.InReplyTo != nil {
+		if correlatedObservation {
+			if !c.enqueue(Inbound{Envelope: &env}) {
+				return ErrInboundQueue
+			}
+			return nil
+		}
 		if !matched {
 			return fmt.Errorf("%w: %s", ErrReplyNotPending, *env.InReplyTo)
 		}

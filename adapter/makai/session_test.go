@@ -142,6 +142,16 @@ func collect(t *testing.T, stream base.EventStream) []protocol.Envelope {
 	return events
 }
 
+func TestFirstMessageUsesNativeSequenceTwo(t *testing.T) {
+	session, client := openTest(t, 32)
+	_, _ = submitTest(t, session)
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.sends) != 1 || client.sends[0].Sequence != 2 {
+		t.Fatalf("sent envelopes=%+v", client.sends)
+	}
+}
+
 func TestCompletedTextWaitsForAgentEnd(t *testing.T) {
 	session, client := openTest(t, 32)
 	response, stream := submitTest(t, session)
