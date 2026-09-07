@@ -100,16 +100,18 @@ type Client struct {
 	encoder           *Encoder
 	closer            io.Closer
 	strictResponseIDs bool
+	queueCapacity     int
 
 	mu       sync.Mutex
 	routeMu  sync.Mutex
 	pending  map[RequestID]chan callResult
 	incoming map[RequestID]*IncomingRequest
+	backlog  []InboundMessage
 	closed   bool
 	err      error
 
 	nextID        atomic.Int64
-	ordered       atomic.Bool
+	routeMode     atomic.Int32
 	writes        chan writeRequest
 	requests      chan *IncomingRequest
 	notifications chan NotificationMessage
@@ -142,7 +144,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	}
 	client := &Client{
 		decoder: NewDecoder(reader, options.FrameLimit), encoder: NewEncoder(writer),
-		closer: options.CloseReadWriter, strictResponseIDs: options.StrictResponseIDs,
+		closer: options.CloseReadWriter, strictResponseIDs: options.StrictResponseIDs, queueCapacity: capacity,
 		pending: make(map[RequestID]chan callResult), incoming: make(map[RequestID]*IncomingRequest),
 		writes: make(chan writeRequest, writeCapacity), requests: make(chan *IncomingRequest, capacity),
 		notifications: make(chan NotificationMessage, capacity), inbound: make(chan InboundMessage, capacity), diagnostics: make(chan error, capacity),
@@ -154,37 +156,53 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	return client
 }
 
-func (client *Client) Requests() <-chan *IncomingRequest         { return client.requests }
-func (client *Client) Notifications() <-chan NotificationMessage { return client.notifications }
+func (client *Client) Requests() <-chan *IncomingRequest {
+	client.activateLegacy()
+	return client.requests
+}
+func (client *Client) Notifications() <-chan NotificationMessage {
+	client.activateLegacy()
+	return client.notifications
+}
 func (client *Client) Inbound() <-chan InboundMessage {
 	client.routeMu.Lock()
-	defer client.routeMu.Unlock()
-	if client.ordered.Load() {
+	if client.routeMode.Load() == 0 {
+		client.routeMode.Store(1)
+		client.routeMu.Unlock()
+		go client.activateOrdered()
 		return client.inbound
 	}
-	client.ordered.Store(true)
-	// Move observations decoded before ordered mode was selected into the same
-	// stream. routeMu prevents the reader from routing another frame concurrently.
-	for {
-		select {
-		case request := <-client.requests:
-			client.inbound <- InboundMessage{Request: request}
-		default:
-			goto notifications
-		}
-	}
+	client.routeMu.Unlock()
+	return client.inbound
+}
 
-notifications:
+func (client *Client) activateOrdered() {
 	for {
+		client.routeMu.Lock()
+		if len(client.backlog) == 0 {
+			client.routeMode.Store(2)
+			client.routeMu.Unlock()
+			return
+		}
+		message := client.backlog[0]
+		client.backlog = client.backlog[1:]
+		client.routeMu.Unlock()
 		select {
-		case notification := <-client.notifications:
-			copy := notification
-			client.inbound <- InboundMessage{Notification: &copy}
-		default:
-			return client.inbound
+		case client.inbound <- message:
+		case <-client.done:
+			return
 		}
 	}
 }
+func (client *Client) activateLegacy() {
+	client.routeMu.Lock()
+	if client.routeMode.Load() == 0 {
+		client.routeMode.Store(-1)
+		client.backlog = nil
+	}
+	client.routeMu.Unlock()
+}
+
 func (client *Client) Diagnostics() <-chan error { return client.diagnostics }
 func (client *Client) Done() <-chan struct{}     { return client.done }
 
@@ -317,14 +335,15 @@ func (client *Client) readLoop() {
 }
 
 func (client *Client) route(message Message) bool {
+	mode := client.routeMode.Load()
 	switch message.Kind {
 	case MessageResponse:
-		if client.ordered.Load() && !client.barrier() {
+		if mode == 2 && !client.barrier() {
 			return true
 		}
 		return !client.deliver(message.ID, callResult{result: cloneRaw(message.Result)}) && client.unmatched(message.ID)
 	case MessageError:
-		if client.ordered.Load() && !client.barrier() {
+		if mode == 2 && !client.barrier() {
 			return true
 		}
 		return !client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}}) && client.unmatched(message.ID)
@@ -340,8 +359,19 @@ func (client *Client) route(message Message) bool {
 			client.closeWith(fmt.Errorf("%w: %s", ErrDuplicateRequestID, message.ID))
 			return true
 		}
-		if client.ordered.Load() {
-			return !client.enqueueInbound(InboundMessage{Request: incoming}, ErrRequestQueue)
+		observation := InboundMessage{Request: incoming}
+		if mode == 2 {
+			return !client.enqueueInbound(observation, ErrRequestQueue)
+		}
+		if mode >= 0 {
+			if len(client.backlog) >= client.queueCapacity {
+				client.closeWith(ErrRequestQueue)
+				return true
+			}
+			client.backlog = append(client.backlog, observation)
+			if mode == 1 {
+				return false
+			}
 		}
 		select {
 		case client.requests <- incoming:
@@ -352,8 +382,19 @@ func (client *Client) route(message Message) bool {
 		}
 	case MessageNotification:
 		notification := NotificationMessage{Method: message.Method, Params: cloneRaw(message.Params)}
-		if client.ordered.Load() {
-			return !client.enqueueInbound(InboundMessage{Notification: &notification}, ErrNotificationQueue)
+		observation := InboundMessage{Notification: &notification}
+		if mode == 2 {
+			return !client.enqueueInbound(observation, ErrNotificationQueue)
+		}
+		if mode >= 0 {
+			if len(client.backlog) >= client.queueCapacity {
+				client.closeWith(ErrNotificationQueue)
+				return true
+			}
+			client.backlog = append(client.backlog, observation)
+			if mode == 1 {
+				return false
+			}
 		}
 		select {
 		case client.notifications <- notification:

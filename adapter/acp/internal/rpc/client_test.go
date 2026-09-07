@@ -188,6 +188,35 @@ func TestClientInboundMigratesFramesDecodedBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestClientInboundPreservesMixedPreActivationOrder(t *testing.T) {
+	client, _, writer := clientPipes(t, 2, true)
+	writeWire(t, writer, Notification("first", json.RawMessage(`{}`)))
+	writeWire(t, writer, Request(StringID("second"), "second", json.RawMessage(`{}`)))
+	inbound := client.Inbound()
+	first := <-inbound
+	second := <-inbound
+	if first.Notification == nil || first.Notification.Method != "first" || second.Request == nil || second.Request.Method != "second" {
+		t.Fatalf("migration reordered observations: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestClientInboundMigrationDoesNotBlockAtCapacity(t *testing.T) {
+	client, _, writer := clientPipes(t, 2, true)
+	writeWire(t, writer, Notification("one", json.RawMessage(`{}`)))
+	writeWire(t, writer, Notification("two", json.RawMessage(`{}`)))
+	activated := make(chan (<-chan InboundMessage), 1)
+	go func() { activated <- client.Inbound() }()
+	var inbound <-chan InboundMessage
+	select {
+	case inbound = <-activated:
+	case <-time.After(time.Second):
+		t.Fatal("Inbound blocked while migrating a full backlog")
+	}
+	if (<-inbound).Notification.Method != "one" || (<-inbound).Notification.Method != "two" {
+		t.Fatal("full backlog was not migrated in order")
+	}
+}
+
 func TestClientRejectsDuplicateOutboundID(t *testing.T) {
 	client, reader, writer := clientPipes(t, 8, true)
 	first := make(chan error, 1)
