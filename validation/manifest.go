@@ -158,6 +158,9 @@ func (v *Validator) ValidateManifest(filename string) ([]FixtureOutcome, error) 
 		if walkErr != nil {
 			return walkErr
 		}
+		if d.IsDir() && p == filepath.Join(root, "adapters") {
+			return fs.SkipDir
+		}
 		if d.IsDir() || filepath.Ext(p) != ".json" || p == filename {
 			return nil
 		}

@@ -52,6 +52,7 @@ type Config struct {
 	Model            string
 	ApprovalPolicy   string
 	Sandbox          string
+	ResumeThreadID   string
 	Clock            adapter.Clock
 	IDs              adapter.IDGenerator
 	JournalCapacity  int
@@ -139,6 +140,7 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"run.resume":                    {Level: protocol.SupportDegraded, Reason: "thread/resume restores native attachment; canonical replay is bounded process memory"},
 		"run.reconciliation":            {Level: protocol.SupportEmulated, Reason: "state is the adapter's canonical projection of native observations"},
 		"run.replay":                    {Level: protocol.SupportDegraded, Reason: "only adapter-emitted events in bounded process memory are replayable"},
+		"action.tools":                  {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
 		"action.tools.execute":          {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
 		"action.permissions":            {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
 		"user_input":                    {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
@@ -163,15 +165,29 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	if err != nil {
 		return nil, err
 	}
-	params := native.ThreadStartParams{Model: implementation.config.Model, Cwd: implementation.config.WorkingDirectory, ApprovalPolicy: implementation.config.ApprovalPolicy, Sandbox: implementation.config.Sandbox}
-	var response native.ThreadStartResponse
-	if err := client.Call(ctx, native.MethodThreadStart, params, &response); err != nil {
-		_ = client.Close()
-		return nil, fmt.Errorf("start Codex thread: %w", err)
-	}
-	if response.Thread.ID == "" {
-		_ = client.Close()
-		return nil, fmt.Errorf("%w: thread/start returned no thread id", ErrNativeProtocol)
+	threadID := implementation.config.ResumeThreadID
+	if threadID == "" {
+		params := native.ThreadStartParams{Model: implementation.config.Model, Cwd: implementation.config.WorkingDirectory, ApprovalPolicy: implementation.config.ApprovalPolicy, Sandbox: implementation.config.Sandbox}
+		var response native.ThreadStartResponse
+		if err := client.Call(ctx, native.MethodThreadStart, params, &response); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("start Codex thread: %w", err)
+		}
+		threadID = response.Thread.ID
+		if threadID == "" {
+			_ = client.Close()
+			return nil, fmt.Errorf("%w: thread/start returned no thread id", ErrNativeProtocol)
+		}
+	} else {
+		var response native.ThreadResumeResponse
+		if err := client.Call(ctx, native.MethodThreadResume, native.ThreadResumeParams{ThreadID: threadID}, &response); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("resume Codex thread: %w", err)
+		}
+		if response.Thread.ID == "" || response.Thread.ID != threadID {
+			_ = client.Close()
+			return nil, fmt.Errorf("%w: thread/resume returned unexpected thread id %q", ErrNativeProtocol, response.Thread.ID)
+		}
 	}
 	sessionID := request.SessionID
 	if sessionID == "" {
@@ -181,7 +197,7 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	session := &session{
 		client: client, clock: implementation.clock, ids: implementation.ids,
 		capacity: implementation.config.JournalCapacity, participant: request.Participant.ID,
-		threadID: response.Thread.ID, model: implementation.config.Model,
+		threadID: threadID, model: implementation.config.Model,
 		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: implementation.config.Model, UpdatedAtMS: now},
 		runs:  make(map[protocol.RunID]*runState), turns: make(map[string]protocol.RunID),
 		items: make(map[string]itemBinding), interactions: make(map[protocol.InteractionID]*interactionBinding), stop: make(chan struct{}),

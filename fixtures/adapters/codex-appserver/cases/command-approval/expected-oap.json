@@ -1,0 +1,182 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-05",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "status": "running",
+      "model_id": "glm-test",
+      "started_at_ms": 4
+    },
+    "sequence": 1,
+    "timestamp_ms": 5,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-07",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "tool_call_id": "tool-call-06",
+      "requested_by": "agent",
+      "execution_owner": "codex.app-server",
+      "name": "codex.command",
+      "arguments_json": {
+        "command": "true",
+        "cwd": ""
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 6,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "tool_call_id": "tool-call-06",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-08",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "tool_call_id": "tool-call-06",
+      "requested_by": "agent",
+      "execution_owner": "codex.app-server",
+      "name": "codex.command",
+      "arguments_json": {
+        "command": "true",
+        "cwd": ""
+      }
+    },
+    "sequence": 3,
+    "timestamp_ms": 7,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "tool_call_id": "tool-call-06",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.permission.requested",
+    "id": "event-10",
+    "payload": {
+      "interaction_id": "interaction-09",
+      "requested_by": "agent",
+      "responded_by": "user",
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "tool_call_id": "tool-call-06",
+      "title": "Allow Codex action",
+      "description": "needs approval",
+      "choices": [
+        {
+          "id": "accept",
+          "label": "Approve once"
+        },
+        {
+          "id": "decline",
+          "label": "Deny"
+        },
+        {
+          "id": "cancel",
+          "label": "Deny and cancel run"
+        }
+      ],
+      "arguments_json": {
+        "command": "true",
+        "cwd": ""
+      }
+    },
+    "sequence": 4,
+    "timestamp_ms": 8,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "tool_call_id": "tool-call-06",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.permission.resolved",
+    "id": "event-11",
+    "payload": {
+      "interaction_id": "interaction-09",
+      "requested_by": "agent",
+      "responded_by": "user",
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "tool_call_id": "tool-call-06",
+      "outcome": "resolved",
+      "choice_id": "accept",
+      "granted": true
+    },
+    "sequence": 5,
+    "timestamp_ms": 9,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "tool_call_id": "tool-call-06",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-12",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "tool_call_id": "tool-call-06",
+      "requested_by": "agent",
+      "execution_owner": "codex.app-server",
+      "name": "codex.command",
+      "result": {
+        "output": "ok"
+      }
+    },
+    "sequence": 6,
+    "timestamp_ms": 10,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "tool_call_id": "tool-call-06",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-13",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "final_response": {
+        "id": "message-03",
+        "role": "assistant",
+        "content": ""
+      },
+      "stop_reason": "end_turn"
+    },
+    "sequence": 7,
+    "timestamp_ms": 11,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  }
+]

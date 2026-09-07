@@ -1,0 +1,3 @@
+{"direction":"server_to_client","kind":"notification","method":"turn/started","classification":"mapped","fidelity":"native","params":{"threadId":"native-thread","turn":{"id":"native-turn","status":"inProgress"}}}
+{"direction":"server_to_client","kind":"request","id":10,"method":"item/permissions/requestApproval","classification":"unsupported-request","fidelity":"unsupported","params":{"threadId":"native-thread","turnId":"native-turn","itemId":"native-item","permissions":{}},"expected_error":{"code":-32601,"message":"unsupported Codex server request"}}
+{"direction":"server_to_client","kind":"notification","method":"turn/completed","classification":"mapped","fidelity":"normalized","params":{"threadId":"native-thread","turn":{"id":"native-turn","status":"completed"}}}

@@ -1,0 +1,7 @@
+[
+  {
+    "index": 3,
+    "method": "turn/completed",
+    "reason": "duplicate terminal suppressed by terminal latch"
+  }
+]

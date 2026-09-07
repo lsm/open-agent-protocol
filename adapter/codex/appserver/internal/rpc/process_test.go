@@ -17,13 +17,19 @@ func TestHelperProcess(t *testing.T) {
 		return
 	}
 	args := os.Args
-	if len(args) == 0 || args[len(args)-1] != "app-server" {
+	if len(args) < 3 || strings.Join(args[len(args)-3:], "\x00") != "app-server\x00--listen\x00stdio://" {
 		os.Exit(10)
 	}
 	reader := NewDecoder(os.Stdin, DefaultFrameLimit)
 	message, err := reader.Decode()
 	if err != nil || message.Kind != MessageRequest || message.Method != "initialize" || message.ID != IntegerID(0) {
 		os.Exit(11)
+	}
+	var initialize struct {
+		ClientInfo ClientInfo `json:"clientInfo"`
+	}
+	if json.Unmarshal(message.Params, &initialize) != nil || initialize.ClientInfo.Name != "open-agent-protocol" || initialize.ClientInfo.Version != "0.1" {
+		os.Exit(13)
 	}
 	mode := os.Getenv("OAP_CODEX_RPC_HELPER")
 	if mode == "stderr-error" {

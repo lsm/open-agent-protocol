@@ -72,7 +72,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 		return nil, fmt.Errorf("%w: executable path and client info are required", ErrHandshake)
 	}
 	args := append([]string(nil), config.Args...)
-	args = append(args, "app-server")
+	args = append(args, "app-server", "--listen", "stdio://")
 	command := exec.Command(config.Path, args...)
 	command.Dir = config.Dir
 	command.Env = append([]string(nil), config.Env...)

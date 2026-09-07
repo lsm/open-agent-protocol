@@ -1,0 +1,20 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "native",
+    "index": 1,
+    "method": "turn/started"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 2,
+    "method": "turn/completed"
+  },
+  {
+    "classification": "observed-only",
+    "fidelity": "synthesized",
+    "index": 3,
+    "method": "turn/completed"
+  }
+]

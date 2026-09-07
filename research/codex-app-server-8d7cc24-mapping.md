@@ -67,7 +67,7 @@ they do not claim that a capture already exists.
 |---|---|---|---|---|---|
 | `initialize` response then `initialized` | `common.rs`; `test_app_server.rs` | Adapter readiness prerequisite | native | `protocol.initialize`: native | `handshake` |
 | `thread/start` response | `protocol/v2/thread.rs` | Open and associate an OAP session | normalized | `session.open`: native | `thread-start` |
-| `thread/resume` response | `protocol/v2/thread.rs` | Restore conversation attachment and reconcile | normalized | resume: native; replay: unavailable/degraded | `thread-resume` |
+| `thread/resume` response | `protocol/v2/thread.rs` | Explicit adapter configuration restores native conversation attachment; it does not replay OAP events | normalized | attachment: native; canonical replay: degraded process memory | `thread-resume` |
 | `turn/start` response | `protocol/v2/turn.rs` | Successful run admission only | native | submit/admission: native | `turn-admitted` |
 | `turn/started` | `protocol/v2/turn.rs` | `run.started`; first run sequence value | native | run start: native | `completed-text` |
 | `item/agentMessage/delta` | `protocol/v2/item.rs`; `AgentMessageDeltaNotification.json` | `content.delta` | native | text streaming: native once exercised | `completed-text` |
@@ -78,10 +78,10 @@ they do not claim that a capture already exists.
 | `turn/completed`, status `failed` | `protocol/v2/turn.rs` | exactly one typed `run.failed` | normalized | terminal: native normalization | `failed-turn` |
 | `turn/completed`, status `interrupted` | `protocol/v2/turn.rs` | `run.cancelled` only after confirmed interrupt | normalized | cancellation settlement: native normalization | `interrupted-turn` |
 | successful `turn/interrupt` response | `protocol/v2/turn.rs` | cancellation-intent acknowledgement | native | targeted cancel: native | `cancellation-race` |
-| `item/commandExecution/requestApproval` | `common.rs`; `CommandExecutionRequestApproval*.json` | permission interaction | normalized | unavailable until round-trip fixture passes | `command-approval` |
-| `item/fileChange/requestApproval` | `common.rs`; `FileChangeRequestApproval*.json` | permission interaction | normalized | unavailable until round-trip fixture passes | `file-approval` |
-| `item/permissions/requestApproval` | `common.rs`; `PermissionsRequestApproval*.json` | permission interaction | lossy pending scope analysis | unavailable initially | `permissions-approval` |
-| `item/tool/requestUserInput` | `common.rs`; `ToolRequestUserInput*.json` | ordinary user-input interaction | normalized/lossy by question kind | unavailable until subset fixtures pass | `user-input` |
+| `item/commandExecution/requestApproval` | `common.rs`; `CommandExecutionRequestApproval*.json` | permission interaction | normalized | simple decisions: native; rich amendments: unavailable | `command-approval` |
+| `item/fileChange/requestApproval` | `common.rs`; `FileChangeRequestApproval*.json` | permission interaction | lossy (`grantRoot` is not projected) | simple decisions: native | `file-approval` |
+| `item/permissions/requestApproval` | `common.rs`; `PermissionsRequestApproval*.json` | deterministic `-32601` reverse-response; no OAP interaction | unsupported | unavailable | `permissions-approval` |
+| `item/tool/requestUserInput` | `common.rs`; `ToolRequestUserInput*.json` | ordinary user-input interaction | normalized/lossy by question kind | options and free text: degraded; secret input: unavailable | `user-input` |
 | duplicate native terminal | reducer policy | diagnose and suppress | synthesized safeguard | terminal invariant | `duplicate-terminal` |
 | EOF/process exit before terminal | `app-server` process boundary | one typed `run.failed` | synthesized failure projection | transport failure handling | `process-exit` |
 
@@ -111,10 +111,12 @@ A successful `turn/interrupt` response acknowledges intent. Settlement waits for
 win. Duplicate intent is idempotent; stale cancellation cannot target a later
 turn.
 
-`thread/resume` restores native conversation/execution attachment. It is not OAP
-event replay. `Session.State` provides reconciliation. If implemented, canonical
-OAP replay is a bounded process-memory journal of events emitted by this adapter,
-with explicit gaps; exact native and cross-process replay are unavailable.
+`Config.ResumeThreadID` selects `thread/resume` during `Open` and restores native
+conversation attachment. It is not OAP event replay and does not reconstruct
+historical or active runs. `Session.State` provides reconciliation for state that
+this adapter has observed. `Session.Resume` separately replays the bounded
+process-memory journal of canonical events emitted by this adapter, with explicit
+gaps; exact native and cross-process replay are unavailable.
 
 ## Unknown and omitted observations
 

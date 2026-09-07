@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/adapter/codex/appserver/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/codex/appserver/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
@@ -64,6 +65,9 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 	switch method {
 	case native.MethodThreadStart:
 		response := result.(*native.ThreadStartResponse)
+		response.Thread.ID = client.threadID
+	case native.MethodThreadResume:
+		response := result.(*native.ThreadResumeResponse)
 		response.Thread.ID = client.threadID
 	case native.MethodTurnStart:
 		response := result.(*native.TurnStartResponse)
@@ -165,31 +169,12 @@ func submitFake(t *testing.T, session adapter.Session) (protocol.MessageSubmitRe
 
 func nextEvent(t *testing.T, stream adapter.EventStream) protocol.Envelope {
 	t.Helper()
-	select {
-	case result, ok := <-stream:
-		if !ok {
-			t.Fatal("event stream closed")
-		}
-		if result.Error != nil {
-			t.Fatal(result.Error)
-		}
-		return result.Envelope
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for event")
-		return protocol.Envelope{}
-	}
+	return adaptertest.Next(t, stream, time.Second)
 }
 
 func drainClosed(t *testing.T, stream adapter.EventStream) []protocol.Envelope {
 	t.Helper()
-	var events []protocol.Envelope
-	for result := range stream {
-		if result.Error != nil {
-			t.Fatal(result.Error)
-		}
-		events = append(events, result.Envelope)
-	}
-	return events
+	return adaptertest.Drain(t, stream, time.Second)
 }
 
 func TestCompletedLifecycle(t *testing.T) {
@@ -202,9 +187,8 @@ func TestCompletedLifecycle(t *testing.T) {
 	client.send(t, native.MethodAgentDelta, native.AgentMessageDeltaNotification{ThreadID: client.threadID, TurnID: client.turnID, ItemID: "message-native", Delta: "fixture-ok"})
 	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
 	events := drainClosed(t, stream)
-	if len(events) != 3 || events[0].Type != protocol.TypeRunStarted || events[1].Type != protocol.TypeContentDelta || events[2].Type != protocol.TypeRunCompleted {
-		t.Fatalf("events: %+v", events)
-	}
+	adaptertest.AssertTypes(t, events, protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted)
+	adaptertest.AssertRunTrace(t, admission, descriptor.CapabilityRevision, events)
 	for index, event := range events {
 		if event.RunID != admission.RunID || event.Sequence == nil || *event.Sequence != uint64(index+1) || event.CapabilityRevision != descriptor.CapabilityRevision {
 			t.Fatalf("event %d: %+v", index, event)
@@ -220,6 +204,29 @@ func TestCompletedLifecycle(t *testing.T) {
 	state, err := session.State(context.Background())
 	if err != nil || state.Status != protocol.SessionIdle || state.ActiveRunID != "" || state.TranscriptCursor != "3" {
 		t.Fatalf("state=%+v err=%v", state, err)
+	}
+}
+
+func TestOpenResumesExplicitNativeThread(t *testing.T) {
+	client := newFakeClient()
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+		Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+		ResumeThreadID: client.threadID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	client.mu.Lock()
+	calls := append([]string(nil), client.calls...)
+	client.mu.Unlock()
+	if len(calls) != 1 || calls[0] != native.MethodThreadResume {
+		t.Fatalf("native calls: %v", calls)
 	}
 }
 
@@ -287,6 +294,56 @@ func TestCancellationAcknowledgementWaitsForTerminal(t *testing.T) {
 	duplicate, err := session.Cancel(context.Background(), admission.RunID)
 	if err != nil || duplicate.Status != protocol.RunCancelled {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+}
+
+func TestNaturalTerminalWinsCancellationRace(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status native.TurnStatus
+		want   protocol.EnvelopeType
+	}{
+		{name: "completed", status: native.TurnCompleted, want: protocol.TypeRunCompleted},
+		{name: "failed", status: native.TurnFailed, want: protocol.TypeRunFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, session, _ := openFake(t)
+			admission, stream := submitFake(t, session)
+			client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+			_ = nextEvent(t, stream)
+			client.interruptGate = make(chan struct{})
+			cancelled := make(chan error, 1)
+			go func() {
+				_, err := session.Cancel(context.Background(), admission.RunID)
+				cancelled <- err
+			}()
+			deadline := time.Now().Add(time.Second)
+			for {
+				client.mu.Lock()
+				calls := append([]string(nil), client.calls...)
+				client.mu.Unlock()
+				if calls[len(calls)-1] == native.MethodTurnInterrupt {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("interrupt call did not start")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			turn := native.Turn{ID: client.turnID, Status: test.status}
+			if test.status == native.TurnFailed {
+				turn.Error = &native.TurnError{Message: "race failure"}
+			}
+			client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: turn})
+			events := drainClosed(t, stream)
+			close(client.interruptGate)
+			if err := <-cancelled; !errors.Is(err, adapter.ErrRunAlreadyTerminal) {
+				t.Fatalf("cancel result: %v", err)
+			}
+			if len(events) != 1 || events[0].Type != test.want {
+				t.Fatalf("race events: %+v", events)
+			}
+		})
 	}
 }
 
@@ -576,6 +633,7 @@ func TestInteractionResolutionValidation(t *testing.T) {
 
 func TestDescriptorClaimsTestedInteractions(t *testing.T) {
 	_, _, descriptor := openFake(t)
+	adaptertest.AssertDescriptor(t, descriptor)
 	if descriptor.Capabilities.Features["action.permissions"].Level != protocol.SupportNative || descriptor.Capabilities.Features["user_input"].Level != protocol.SupportDegraded || !descriptor.InteractiveGates {
 		t.Fatalf("descriptor: %+v", descriptor.Capabilities.Features)
 	}
