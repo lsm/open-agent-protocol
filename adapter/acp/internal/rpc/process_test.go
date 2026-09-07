@@ -1,0 +1,167 @@
+package rpc
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestACPHelperProcess(t *testing.T) {
+	mode := os.Getenv("OAP_ACP_RPC_HELPER")
+	if mode == "" {
+		return
+	}
+	reader, writer := NewDecoder(os.Stdin, DefaultFrameLimit), NewEncoder(os.Stdout)
+	message, err := reader.Decode()
+	if err != nil || message.Kind != MessageRequest || message.Method != "initialize" || message.ID != IntegerID(1) {
+		os.Exit(11)
+	}
+	var initialize InitializeRequest
+	if json.Unmarshal(message.Params, &initialize) != nil || initialize.ProtocolVersion != 1 || initialize.ClientCapabilities == nil || initialize.ClientInfo == nil || initialize.ClientInfo.Name != "open-agent-protocol" {
+		os.Exit(12)
+	}
+	if mode == "stderr-error" {
+		_, _ = fmt.Fprintln(os.Stderr, "Authorization: secret-value")
+		_ = writer.Encode(ErrorResponse(message.ID, ErrorObject{Code: -32000, Message: "authentication required"}))
+		return
+	}
+	responseID := message.ID
+	if mode == "wrong-id" {
+		responseID = IntegerID(99)
+	}
+	version := 1
+	if mode == "wrong-version" {
+		version = 2
+	}
+	result, _ := json.Marshal(InitializeResponse{
+		ProtocolVersion: version, AgentCapabilities: AgentCapabilities{},
+		AgentInfo: &Implementation{Name: "test-agent", Version: "1.0"},
+	})
+	_ = writer.Encode(Response(responseID, result))
+	for {
+		message, err = reader.Decode()
+		if err != nil {
+			if mode == "stay-alive" {
+				select {}
+			}
+			return
+		}
+		if message.Kind == MessageRequest {
+			_ = writer.Encode(Response(message.ID, json.RawMessage(`{"ok":true}`)))
+			if mode != "stay-alive" {
+				return
+			}
+		}
+	}
+}
+
+func helperConfig(mode string) ProcessConfig {
+	return ProcessConfig{
+		Path: os.Args[0], Args: []string{"-test.run=TestACPHelperProcess", "--"},
+		Env:                append(os.Environ(), "OAP_ACP_RPC_HELPER="+mode),
+		ClientInfo:         &Implementation{Name: "open-agent-protocol", Version: "0.1"},
+		ClientCapabilities: ClientCapabilities{}, ShutdownTimeout: time.Second,
+	}
+}
+
+func TestStartPerformsACPInitializeHandshakeAndCalls(t *testing.T) {
+	process, err := Start(context.Background(), helperConfig("success"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.Initialize.ProtocolVersion != 1 || process.Initialize.AgentInfo == nil || process.Initialize.AgentInfo.Name != "test-agent" {
+		t.Fatalf("initialize: %+v", process.Initialize)
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := process.Client.Call(context.Background(), "session/new", map[string]any{"cwd": "/tmp", "mcpServers": []any{}}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK {
+		t.Fatal("response not decoded")
+	}
+	_ = process.Close(context.Background())
+}
+
+func TestStartRejectsUnsupportedRequestedOrSelectedVersion(t *testing.T) {
+	config := helperConfig("success")
+	config.ProtocolVersion = 2
+	if _, err := Start(context.Background(), config); !errors.Is(err, ErrHandshake) {
+		t.Fatalf("requested: %v", err)
+	}
+	if _, err := Start(context.Background(), helperConfig("wrong-version")); !errors.Is(err, ErrHandshake) {
+		t.Fatalf("selected: %v", err)
+	}
+}
+
+func TestStartRejectsWrongHandshakeID(t *testing.T) {
+	if _, err := Start(context.Background(), helperConfig("wrong-id")); !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestStartReportsRedactedBoundedStderr(t *testing.T) {
+	config := helperConfig("stderr-error")
+	config.StderrLimit = 64
+	_, err := Start(context.Background(), config)
+	if !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-value") || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("not redacted: %v", err)
+	}
+}
+
+func TestProcessConcurrentCloseReturnsSameResult(t *testing.T) {
+	config := helperConfig("stay-alive")
+	config.ShutdownTimeout = time.Millisecond
+	process, err := Start(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wait sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wait.Add(1)
+		go func() { defer wait.Done(); results <- process.Close(context.Background()) }()
+	}
+	wait.Wait()
+	close(results)
+	var first string
+	for err := range results {
+		if err == nil {
+			t.Fatal("nil close result")
+		}
+		if first == "" {
+			first = err.Error()
+		} else if err.Error() != first {
+			t.Fatalf("different results %q %q", first, err)
+		}
+	}
+	if err := process.Close(context.Background()); err == nil || err.Error() != first {
+		t.Fatalf("repeat=%v want=%q", err, first)
+	}
+}
+
+func TestLimitedBufferBoundsAndRedacts(t *testing.T) {
+	buffer := &limitedBuffer{limit: 16}
+	input := strings.Repeat("x", 32)
+	written, err := buffer.Write([]byte(input))
+	if err != nil || written != len(input) || !strings.Contains(buffer.String(), "truncated") {
+		t.Fatalf("write=%d err=%v value=%q", written, err, buffer.String())
+	}
+	for input, want := range map[string]string{
+		"x-api-key=secret": "x-api-key=[REDACTED]", "Authorization: Bearer": "Authorization: [REDACTED]", "auth_token = abc": "auth_token = [REDACTED]",
+	} {
+		if got := redact(input); got != want {
+			t.Errorf("redact %q = %q want %q", input, got, want)
+		}
+	}
+}
