@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "Open Agent Protocol common types",
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "opaqueID": { "$ref": "#/$defs/nonEmptyString" },
+    "jsonObject": { "type": "object" },
+    "role": { "enum": ["system", "developer", "user", "assistant", "tool"] },
+    "image": {
+      "type": "object",
+      "properties": {
+        "url": { "$ref": "#/$defs/nonEmptyString" },
+        "data": { "$ref": "#/$defs/nonEmptyString" },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "oneOf": [
+        { "required": ["url"], "not": { "anyOf": [{ "required": ["data"] }, { "required": ["media_type"] }] } },
+        { "required": ["data", "media_type"], "not": { "required": ["url"] } }
+      ],
+      "additionalProperties": false
+    },
+    "contentPart": {
+      "oneOf": [
+        { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "text" }, "text": { "type": "string" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "reasoning"], "properties": { "type": { "const": "reasoning" }, "reasoning": { "type": "string" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "image"], "properties": { "type": { "const": "image" }, "image": { "$ref": "#/$defs/image" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "tool_call_id", "name", "arguments_json"], "properties": { "type": { "const": "tool_call" }, "tool_call_id": { "$ref": "#/$defs/opaqueID" }, "name": { "$ref": "#/$defs/nonEmptyString" }, "arguments_json": true }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "tool_call_id", "result"], "properties": { "type": { "const": "tool_result" }, "tool_call_id": { "$ref": "#/$defs/opaqueID" }, "result": true, "is_error": { "type": "boolean" } }, "additionalProperties": false }
+      ]
+    },
+    "content": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/contentPart" } }
+      ]
+    },
+    "message": {
+      "type": "object",
+      "required": ["role", "content"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueID" },
+        "role": { "$ref": "#/$defs/role" },
+        "content": { "$ref": "#/$defs/content" },
+        "metadata": { "$ref": "#/$defs/jsonObject" }
+      },
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "protocolError": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/nonEmptyString" },
+        "message": { "$ref": "#/$defs/nonEmptyString" },
+        "retriable": { "type": "boolean" },
+        "details": { "$ref": "#/$defs/jsonObject" }
+      },
+      "additionalProperties": false
+    },
+    "recovery": {
+      "type": "object",
+      "properties": {
+        "recovered": { "type": "boolean" },
+        "previous_session_id": { "$ref": "#/$defs/opaqueID" },
+        "previous_run_id": { "$ref": "#/$defs/opaqueID" },
+        "resume_cursor": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

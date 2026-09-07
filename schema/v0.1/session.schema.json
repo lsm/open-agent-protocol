@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "session.schema.json",
+  "title": "Open Agent Protocol session payloads",
+  "$defs": {
+    "status": { "enum": ["idle", "queued", "running", "waiting_for_input", "closed", "error"] },
+    "deliveryRequested": { "enum": ["auto", "queue", "steer", "btw"] },
+    "deliveryEffective": { "enum": ["start", "queue", "steer", "btw"] },
+    "state": { "type": "object", "required": ["session_id", "status"], "properties": { "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "status": { "$ref": "#/$defs/status" }, "active_run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "current_model_id": { "type": "string" }, "transcript_cursor": { "type": "string" }, "updated_at_ms": { "type": "integer" }, "metadata": { "type": "object" }, "recovery": { "$ref": "common.schema.json#/$defs/recovery" } }, "additionalProperties": false },
+    "openRequest": { "type": "object", "properties": { "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "metadata": { "type": "object" }, "recovery": { "$ref": "common.schema.json#/$defs/recovery" } }, "additionalProperties": false },
+    "openResponse": { "$ref": "#/$defs/state" },
+    "stateRequest": { "type": "object", "required": ["session_id"], "properties": { "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" } }, "additionalProperties": false },
+    "stateResponse": { "$ref": "#/$defs/state" },
+    "stateUpdated": { "$ref": "#/$defs/state" },
+    "messageSubmitRequest": { "type": "object", "required": ["session_id", "messages", "delivery"], "properties": { "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "messages": { "type": "array", "minItems": 1, "items": { "$ref": "common.schema.json#/$defs/message" } }, "delivery": { "$ref": "#/$defs/deliveryRequested" }, "model_id": { "type": "string" }, "instructions": { "type": "string" }, "tool_choice": true, "output_schema": { "type": "object" }, "allow_degraded_features": { "type": "array", "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" } }, "metadata": { "type": "object" } }, "additionalProperties": false },
+    "messageSubmitResponse": { "type": "object", "required": ["session_id", "accepted", "submission_id", "requested_delivery", "effective_delivery", "admission"], "properties": { "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "accepted": { "type": "boolean" }, "submission_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_delivery": { "$ref": "#/$defs/deliveryRequested" }, "effective_delivery": { "$ref": "#/$defs/deliveryEffective" }, "delivery_resolution": { "type": "string" }, "admission": { "enum": ["started", "queued", "steered", "side_started", "rejected"] }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "status": { "$ref": "run.schema.json#/$defs/status" }, "model_id": { "type": "string" }, "message_ids": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/opaqueID" } } }, "additionalProperties": false }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manifest.schema.json",
+  "title": "Open Agent Protocol v0.1 schema manifest",
+  "type": "object",
+  "required": ["protocol", "version", "profile", "root_schema", "schemas"],
+  "properties": {
+    "protocol": { "const": "open-agent-protocol" },
+    "version": { "const": "0.1" },
+    "profile": { "const": "open-agent-protocol.agent-control-core" },
+    "root_schema": { "const": "envelope.schema.json" },
+    "schemas": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": { "enum": ["common.schema.json", "envelope.schema.json", "capabilities.schema.json", "session.schema.json", "run.schema.json", "action.schema.json", "interaction.schema.json"] },
+      "allOf": [
+        { "contains": { "const": "common.schema.json" }, "minContains": 1 },
+        { "contains": { "const": "envelope.schema.json" }, "minContains": 1 },
+        { "contains": { "const": "capabilities.schema.json" }, "minContains": 1 },
+        { "contains": { "const": "session.schema.json" }, "minContains": 1 },
+        { "contains": { "const": "run.schema.json" }, "minContains": 1 },
+        { "contains": { "const": "action.schema.json" }, "minContains": 1 },
+        { "contains": { "const": "interaction.schema.json" }, "minContains": 1 }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

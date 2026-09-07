@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "action.schema.json",
+  "title": "Open Agent Protocol tool and permission payloads",
+  "$defs": {
+    "toolsListRequest": { "type": "object", "additionalProperties": false },
+    "toolsListResponse": { "type": "object", "required": ["tools"], "properties": { "tools": { "type": "array", "items": { "$ref": "capabilities.schema.json#/$defs/toolDefinition" } } }, "additionalProperties": false },
+    "callRequested": {
+      "type": "object", "required": ["session_id", "run_id", "tool_call_id", "requested_by", "execution_owner", "name", "arguments_json"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "execution_owner": { "$ref": "common.schema.json#/$defs/opaqueID" }, "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" }, "arguments_json": true }, "additionalProperties": false
+    },
+    "callStarted": {
+      "type": "object", "required": ["session_id", "run_id", "tool_call_id", "execution_owner", "name"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "execution_owner": { "$ref": "common.schema.json#/$defs/opaqueID" }, "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" }, "arguments_json": true }, "additionalProperties": false
+    },
+    "callProgress": {
+      "type": "object", "required": ["session_id", "run_id", "tool_call_id", "execution_owner", "progress"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "execution_owner": { "$ref": "common.schema.json#/$defs/opaqueID" }, "name": { "type": "string" }, "progress": true }, "additionalProperties": false
+    },
+    "callCompleted": {
+      "type": "object", "required": ["session_id", "run_id", "tool_call_id", "execution_owner", "result"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "execution_owner": { "$ref": "common.schema.json#/$defs/opaqueID" }, "name": { "type": "string" }, "result": true }, "additionalProperties": false
+    },
+    "callFailed": {
+      "type": "object", "required": ["session_id", "run_id", "tool_call_id", "execution_owner", "error"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "execution_owner": { "$ref": "common.schema.json#/$defs/opaqueID" }, "name": { "type": "string" }, "error": { "$ref": "common.schema.json#/$defs/protocolError" } }, "additionalProperties": false
+    },
+    "callCancelled": {
+      "type": "object", "required": ["session_id", "run_id", "tool_call_id", "execution_owner"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "execution_owner": { "$ref": "common.schema.json#/$defs/opaqueID" }, "name": { "type": "string" } }, "additionalProperties": false
+    },
+    "permissionChoice": { "type": "object", "required": ["id", "label"], "properties": { "id": { "$ref": "common.schema.json#/$defs/nonEmptyString" }, "label": { "$ref": "common.schema.json#/$defs/nonEmptyString" }, "description": { "type": "string" } }, "additionalProperties": false },
+    "permissionRequested": {
+      "type": "object", "required": ["interaction_id", "requested_by", "responded_by", "session_id", "run_id", "title", "choices"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "title": { "$ref": "common.schema.json#/$defs/nonEmptyString" }, "description": { "type": "string" }, "choices": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/permissionChoice" } }, "arguments_json": true }, "additionalProperties": false
+    },
+    "permissionResolveRequest": {
+      "type": "object", "required": ["interaction_id", "requested_by", "responded_by", "session_id", "run_id", "granted"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "choice_id": { "type": "string" }, "granted": { "type": "boolean" }, "reason": { "type": "string" }, "updated_arguments_json": true }, "additionalProperties": false
+    },
+    "permissionResolveResponse": { "type": "object", "required": ["interaction_id", "session_id", "run_id", "accepted"], "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "accepted": { "type": "boolean" } }, "additionalProperties": false },
+    "permissionResolved": {
+      "type": "object", "required": ["interaction_id", "requested_by", "responded_by", "session_id", "run_id", "outcome"],
+      "properties": { "interaction_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "requested_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "responded_by": { "$ref": "common.schema.json#/$defs/opaqueID" }, "session_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "run_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "tool_call_id": { "$ref": "common.schema.json#/$defs/opaqueID" }, "outcome": { "enum": ["resolved", "rejected", "cancelled", "failed"] }, "choice_id": { "type": "string" }, "granted": { "type": "boolean" }, "reason": { "$ref": "common.schema.json#/$defs/protocolError" } }, "additionalProperties": false
+    }
+  }
+}
