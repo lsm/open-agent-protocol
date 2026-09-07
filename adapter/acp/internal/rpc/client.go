@@ -166,41 +166,33 @@ func (client *Client) Notifications() <-chan NotificationMessage {
 }
 func (client *Client) Inbound() <-chan InboundMessage {
 	client.routeMu.Lock()
+	defer client.routeMu.Unlock()
 	if client.routeMode.Load() == 0 {
-		client.routeMode.Store(1)
-		client.routeMu.Unlock()
-		go client.activateOrdered()
-		return client.inbound
+		client.routeMode.Store(2)
+		for _, message := range client.backlog {
+			client.inbound <- message
+		}
+		client.backlog = nil
 	}
-	client.routeMu.Unlock()
 	return client.inbound
 }
 
-func (client *Client) activateOrdered() {
-	for {
-		client.routeMu.Lock()
-		if len(client.backlog) == 0 {
-			client.routeMode.Store(2)
-			client.routeMu.Unlock()
-			return
-		}
-		message := client.backlog[0]
-		client.backlog = client.backlog[1:]
-		client.routeMu.Unlock()
-		select {
-		case client.inbound <- message:
-		case <-client.done:
-			return
-		}
-	}
-}
 func (client *Client) activateLegacy() {
 	client.routeMu.Lock()
-	if client.routeMode.Load() == 0 {
-		client.routeMode.Store(-1)
-		client.backlog = nil
+	defer client.routeMu.Unlock()
+	if client.routeMode.Load() != 0 {
+		return
 	}
-	client.routeMu.Unlock()
+	client.routeMode.Store(-1)
+	for _, message := range client.backlog {
+		switch {
+		case message.Request != nil:
+			client.requests <- message.Request
+		case message.Notification != nil:
+			client.notifications <- *message.Notification
+		}
+	}
+	client.backlog = nil
 }
 
 func (client *Client) Diagnostics() <-chan error { return client.diagnostics }
@@ -363,15 +355,13 @@ func (client *Client) route(message Message) bool {
 		if mode == 2 {
 			return !client.enqueueInbound(observation, ErrRequestQueue)
 		}
-		if mode >= 0 {
+		if mode == 0 {
 			if len(client.backlog) >= client.queueCapacity {
 				client.closeWith(ErrRequestQueue)
 				return true
 			}
 			client.backlog = append(client.backlog, observation)
-			if mode == 1 {
-				return false
-			}
+			return false
 		}
 		select {
 		case client.requests <- incoming:
@@ -386,15 +376,13 @@ func (client *Client) route(message Message) bool {
 		if mode == 2 {
 			return !client.enqueueInbound(observation, ErrNotificationQueue)
 		}
-		if mode >= 0 {
+		if mode == 0 {
 			if len(client.backlog) >= client.queueCapacity {
 				client.closeWith(ErrNotificationQueue)
 				return true
 			}
 			client.backlog = append(client.backlog, observation)
-			if mode == 1 {
-				return false
-			}
+			return false
 		}
 		select {
 		case client.notifications <- notification:

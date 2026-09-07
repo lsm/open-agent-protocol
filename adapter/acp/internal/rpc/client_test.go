@@ -200,6 +200,19 @@ func TestClientInboundPreservesMixedPreActivationOrder(t *testing.T) {
 	}
 }
 
+func TestClientInboundSelectionDoesNotDuplicateIntoLegacyQueues(t *testing.T) {
+	client, _, writer := clientPipes(t, 2, true)
+	writeWire(t, writer, Notification("once", json.RawMessage(`{}`)))
+	if message := <-client.Inbound(); message.Notification == nil || message.Notification.Method != "once" {
+		t.Fatalf("inbound=%+v", message)
+	}
+	select {
+	case duplicate := <-client.notifications:
+		t.Fatalf("notification duplicated into legacy queue: %+v", duplicate)
+	default:
+	}
+}
+
 func TestClientInboundMigrationDoesNotBlockAtCapacity(t *testing.T) {
 	client, _, writer := clientPipes(t, 2, true)
 	writeWire(t, writer, Notification("one", json.RawMessage(`{}`)))
