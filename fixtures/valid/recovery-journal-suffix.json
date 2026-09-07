@@ -1,0 +1,8 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"open-req","payload":{"session_id":"s1","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"41"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"open-resp","in_reply_to":"open-req","session_id":"s1","payload":{"session_id":"s1","status":"running","active_run_id":"r1","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"41"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.request","id":"state-req","session_id":"s1","payload":{"session_id":"s1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-resp","in_reply_to":"state-req","session_id":"s1","payload":{"session_id":"s1","status":"running","active_run_id":"r1","transcript_cursor":"41","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"41"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"replay-42","session_id":"s1","run_id":"r1","sequence":42,"payload":{"session_id":"s1","run_id":"r1","part":{"type":"text","text":"resumed"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"replay-43","session_id":"s1","run_id":"r1","sequence":43,"payload":{"session_id":"s1","run_id":"r1","final_response":{"role":"assistant","content":"resumed"},"stop_reason":"end_turn"}}
+]

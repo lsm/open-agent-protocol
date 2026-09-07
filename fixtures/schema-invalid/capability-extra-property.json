@@ -1,0 +1,1 @@
+[{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"bad","in_reply_to":"req","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"unexpected":true}}]

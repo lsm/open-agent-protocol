@@ -1,0 +1,6 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"open-req","payload":{"session_id":"s1","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"42","reason":"replay_gap"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"open-resp","in_reply_to":"open-req","session_id":"s1","payload":{"session_id":"s1","status":"idle","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"42","reason":"replay_gap"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.request","id":"state-req","session_id":"s1","payload":{"session_id":"s1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-resp","in_reply_to":"state-req","session_id":"s1","payload":{"session_id":"s1","status":"idle","transcript_cursor":"42","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"42","reason":"replay_gap"}}}
+]
