@@ -22,9 +22,22 @@ Current drafts:
 - [Agent Control Profile](drafts/agent-control-profile.md)
 - [Layered Agent Protocol](drafts/layered-agent-protocol.md)
 
-Fixtures:
+Protocol artifacts:
 
-- [Example protocol envelopes](examples/README.md)
+- [Illustrative protocol envelopes](examples/README.md)
+- `fixtures/`: normative executable conformance traces
+- `schema/v0.1/`: JSON Schema bundle for the agent-control core
+
+Executable core (Go 1.24 or later):
+
+```sh
+go run ./cmd/oap check
+```
+
+The command validates positive and negative fixtures and drives the deterministic
+in-memory reference adapter. The reference adapter proves the public adapter
+boundary and bounded process-memory recovery; it is not a production harness or
+a durable persistence implementation.
 
 Research:
 
