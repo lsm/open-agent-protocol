@@ -65,6 +65,7 @@ type Process struct {
 	waitErr    error
 	timeout    time.Duration
 	close      sync.Once
+	closeErr   error
 }
 
 func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
@@ -132,26 +133,25 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 func (process *Process) Stderr() string { return redact(process.stderr.String()) }
 
 func (process *Process) Close(ctx context.Context) error {
-	var result error
 	process.close.Do(func() {
 		_ = process.stdin.Close()
 		timer := time.NewTimer(process.timeout)
 		defer timer.Stop()
 		select {
 		case <-process.waitDone:
-			result = process.WaitError()
+			process.closeErr = process.WaitError()
 		case <-ctx.Done():
 			_ = process.command.Process.Kill()
 			<-process.waitDone
-			result = ctx.Err()
+			process.closeErr = ctx.Err()
 		case <-timer.C:
 			_ = process.command.Process.Kill()
 			<-process.waitDone
-			result = fmt.Errorf("codex app-server rpc: shutdown timed out")
+			process.closeErr = fmt.Errorf("codex app-server rpc: shutdown timed out")
 		}
 		process.Client.shutdown(ErrClosed)
 	})
-	return result
+	return process.closeErr
 }
 
 func (process *Process) WaitError() error {

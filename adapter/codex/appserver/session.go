@@ -48,7 +48,14 @@ type runState struct {
 	cancelInFlight chan struct{}
 	messageID      protocol.MessageID
 	text           string
-	subscribers    []chan adapter.Result
+	subscribers    []*subscriber
+}
+
+const liveStreamCapacity = 32
+
+type subscriber struct {
+	stream   chan adapter.Result
+	detached bool
 }
 
 type itemBinding struct {
@@ -118,8 +125,8 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 		id: protocol.RunID(session.ids.NewID("run")), status: protocol.RunQueued,
 		nextSequence: 1, messageID: protocol.MessageID(session.ids.NewID("message")),
 	}
-	stream := make(chan adapter.Result, session.capacity+32)
-	run.subscribers = append(run.subscribers, stream)
+	stream := make(chan adapter.Result, liveStreamCapacity+1)
+	run.subscribers = append(run.subscribers, &subscriber{stream: stream})
 	// Reserve the one active-run slot before calling Codex. The dispatch loop uses
 	// opMu too, so notifications cannot overtake response admission and mapping.
 	session.mu.Lock()
@@ -437,7 +444,7 @@ func (session *session) Resume(ctx context.Context, request adapter.ResumeReques
 		}
 	}
 	recovery := adapter.Recovery{State: session.state, RunID: run.id, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
-	stream := make(chan adapter.Result, len(suffix)+32)
+	stream := make(chan adapter.Result, len(suffix)+33)
 	if request.AfterSequence < latest && (oldest == 0 || request.AfterSequence+1 < oldest) {
 		recovery.ReplayGap = &adapter.ReplayGap{RequestedAfter: request.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
 		close(stream)
@@ -453,7 +460,7 @@ func (session *session) Resume(ctx context.Context, request adapter.ResumeReques
 	if run.terminal {
 		close(stream)
 	} else {
-		run.subscribers = append(run.subscribers, stream)
+		run.subscribers = append(run.subscribers, &subscriber{stream: stream})
 	}
 	return recovery, stream, nil
 }
@@ -984,7 +991,7 @@ func (session *session) emit(run *runState, typ protocol.EnvelopeType, payload a
 	if len(session.journal) > session.capacity {
 		session.journal = append([]protocol.Envelope(nil), session.journal[len(session.journal)-session.capacity:]...)
 	}
-	subscribers := append([]chan adapter.Result(nil), run.subscribers...)
+	subscribers := append([]*subscriber(nil), run.subscribers...)
 	if terminal {
 		run.terminal = true
 		run.status = terminalStatus(typ)
@@ -999,15 +1006,23 @@ func (session *session) emit(run *runState, typ protocol.EnvelopeType, payload a
 	}
 	session.mu.Unlock()
 	for _, subscriber := range subscribers {
-		select {
-		case subscriber <- adapter.Result{Envelope: envelope}:
-		default:
-			// Streams are bounded detach points. A consumer that falls behind must
-			// resume from the journal instead of stalling native lifecycle reduction.
+		if subscriber.detached {
+			continue
 		}
-		if terminal {
-			close(subscriber)
+		if len(subscriber.stream) < cap(subscriber.stream)-1 {
+			subscriber.stream <- adapter.Result{Envelope: envelope}
+			if terminal {
+				subscriber.detached = true
+				close(subscriber.stream)
+			}
+			continue
 		}
+		// Every stream reserves one slot for this ordered detach signal. The
+		// consumer receives a contiguous prefix, then an explicit instruction to
+		// resume rather than a silent sequence gap or false normal close.
+		subscriber.stream <- adapter.Result{Error: adapter.ErrEventStreamOverflow}
+		subscriber.detached = true
+		close(subscriber.stream)
 	}
 	return nil
 }

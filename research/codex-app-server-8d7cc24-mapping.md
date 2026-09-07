@@ -27,10 +27,13 @@ integer. The adapter therefore owns a strict private codec rather than using a
 standard JSON-RPC implementation.
 
 One reader must classify and dispatch responses, errors, server requests, and
-notifications. One serialized writer must send client requests, notifications,
-and responses to reverse requests. Stderr is a separate diagnostic stream. EOF
-or process exit is transport failure unless the authoritative run terminal was
-already observed.
+notifications. One serialized write pump must send client requests,
+notifications, and responses to reverse requests. Caller context cancellation
+returns promptly; if a request may already have reached Codex, the transport is
+closed so a late native admission cannot be mistaken for a different OAP run.
+Reverse-request queue overflow also fails immediately without waiting on an
+error write. Stderr is a separate diagnostic stream. EOF or process exit is
+transport failure unless the authoritative run terminal was already observed.
 
 The mandatory handshake is:
 
@@ -116,7 +119,10 @@ conversation attachment. It is not OAP event replay and does not reconstruct
 historical or active runs. `Session.State` provides reconciliation for state that
 this adapter has observed. `Session.Resume` separately replays the bounded
 process-memory journal of canonical events emitted by this adapter, with explicit
-gaps; exact native and cross-process replay are unavailable.
+gaps; exact native and cross-process replay are unavailable. A slow live consumer
+is explicitly detached with `adapter.ErrEventStreamOverflow` after a contiguous
+prefix and must resume from its last sequence; events and terminals are never
+silently dropped into an apparently normal stream close.
 
 ## Unknown and omitted observations
 

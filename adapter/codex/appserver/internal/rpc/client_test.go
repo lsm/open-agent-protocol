@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+type blockingWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (writer *blockingWriter) Write(data []byte) (int, error) {
+	writer.once.Do(func() { close(writer.entered) })
+	<-writer.release
+	return len(data), nil
+}
+
 type pipeCloser struct {
 	in  *io.PipeReader
 	out *io.PipeWriter
@@ -149,29 +161,23 @@ func TestClientEOFUnblocksPendingCall(t *testing.T) {
 	}
 }
 
-func TestClientLateResponseIsDiagnostic(t *testing.T) {
-	client, reader, writer := clientPipes(t, 8)
+func TestClientCancellationAfterWriteClosesTransport(t *testing.T) {
+	client, reader, _ := clientPipes(t, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- client.Call(ctx, "cancelled", nil, nil) }()
-	request := readWire(t, reader)
+	_ = readWire(t, reader)
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("call: %v", err)
 	}
-	writeWire(t, writer, Response(request.ID, json.RawMessage(`null`)))
-	select {
-	case err := <-client.Diagnostics():
-		if !errors.Is(err, ErrResponseNotFound) {
-			t.Fatalf("diagnostic: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("late response was not diagnosed")
-	}
 	select {
 	case <-client.Done():
-		t.Fatal("late response closed client")
-	default:
+		if !errors.Is(client.Err(), context.Canceled) {
+			t.Fatalf("client error: %v", client.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled in-flight call did not close transport")
 	}
 }
 
@@ -186,6 +192,83 @@ func TestClientQueueOverflowIsTerminal(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("client did not fail on overflow")
+	}
+}
+
+func TestClientWriteReturnsWhenContextCancelledDuringBlockedWriter(t *testing.T) {
+	serverToClientReader, serverToClientWriter := io.Pipe()
+	writer := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	client := NewClient(serverToClientReader, writer, ClientOptions{})
+	t.Cleanup(func() {
+		close(writer.release)
+		_ = serverToClientWriter.Close()
+		_ = client.Close()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- client.Notify(ctx, "blocked", nil) }()
+	<-writer.entered
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked write ignored context cancellation")
+	}
+}
+
+func TestClientWriteReturnsWhenContextCancelledWhileQueued(t *testing.T) {
+	serverToClientReader, serverToClientWriter := io.Pipe()
+	writer := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	client := NewClient(serverToClientReader, writer, ClientOptions{})
+	t.Cleanup(func() {
+		select {
+		case <-writer.release:
+		default:
+			close(writer.release)
+		}
+		_ = serverToClientWriter.Close()
+		_ = client.Close()
+	})
+	first := make(chan error, 1)
+	go func() { first <- client.Notify(context.Background(), "first", nil) }()
+	<-writer.entered
+	ctx, cancel := context.WithCancel(context.Background())
+	second := make(chan error, 1)
+	go func() { second <- client.Notify(ctx, "second", nil) }()
+	cancel()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued write ignored context cancellation")
+	}
+	close(writer.release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientReverseRequestOverflowDoesNotBlockShutdown(t *testing.T) {
+	serverToClientReader, serverToClientWriter := io.Pipe()
+	client := NewClient(serverToClientReader, &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}, ClientOptions{QueueCapacity: 1, CloseReadWriter: serverToClientReader})
+	t.Cleanup(func() {
+		_ = serverToClientWriter.Close()
+		_ = client.Close()
+	})
+	writeWire(t, serverToClientWriter, Message{Kind: MessageRequest, ID: IntegerID(1), Method: "one"})
+	writeWire(t, serverToClientWriter, Message{Kind: MessageRequest, ID: IntegerID(2), Method: "two"})
+	select {
+	case <-client.Done():
+		if !errors.Is(client.Err(), ErrRequestQueue) {
+			t.Fatalf("got %v", client.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reverse request overflow blocked shutdown")
 	}
 }
 

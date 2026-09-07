@@ -76,19 +76,25 @@ type callResult struct {
 	err    error
 }
 
+type writeRequest struct {
+	ctx     context.Context
+	message Message
+	result  chan error
+}
+
 type Client struct {
 	decoder           *Decoder
 	encoder           *Encoder
 	closer            io.Closer
 	strictResponseIDs bool
 
-	writeMu sync.Mutex
 	mu      sync.Mutex
 	pending map[RequestID]chan callResult
 	closed  bool
 	err     error
 
 	nextID        atomic.Int64
+	writes        chan writeRequest
 	requests      chan *IncomingRequest
 	notifications chan NotificationMessage
 	diagnostics   chan error
@@ -103,6 +109,9 @@ type ClientOptions struct {
 	StrictResponseIDs bool
 }
 
+// NewClient starts dedicated reader and writer goroutines. Callers that need
+// Close or call cancellation to interrupt blocked I/O must provide
+// CloseReadWriter; generic io.Reader/io.Writer values have no interrupt primitive.
 func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Client {
 	capacity := options.QueueCapacity
 	if capacity <= 0 {
@@ -114,12 +123,14 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 		closer:            options.CloseReadWriter,
 		strictResponseIDs: options.StrictResponseIDs,
 		pending:           make(map[RequestID]chan callResult),
+		writes:            make(chan writeRequest),
 		requests:          make(chan *IncomingRequest, capacity),
 		notifications:     make(chan NotificationMessage, capacity),
 		diagnostics:       make(chan error, capacity),
 		done:              make(chan struct{}),
 	}
 	client.nextID.Store(options.FirstRequestID)
+	go client.writeLoop()
 	go client.readLoop()
 	return client
 }
@@ -175,6 +186,7 @@ func (client *Client) Call(ctx context.Context, method string, params any, resul
 		return nil
 	case <-ctx.Done():
 		client.removePending(id)
+		client.closeWith(ctx.Err())
 		return ctx.Err()
 	case <-client.done:
 		select {
@@ -201,11 +213,15 @@ func (client *Client) Notify(ctx context.Context, method string, params any) err
 }
 
 func (client *Client) Close() error {
+	client.closeWith(ErrClosed)
+	return nil
+}
+
+func (client *Client) closeWith(reason error) {
 	if client.closer != nil {
 		_ = client.closer.Close()
 	}
-	client.shutdown(ErrClosed)
-	return nil
+	client.shutdown(reason)
 }
 
 func (client *Client) readLoop() {
@@ -239,7 +255,6 @@ func (client *Client) readLoop() {
 			select {
 			case client.requests <- incoming:
 			default:
-				_ = client.write(context.Background(), ErrorResponse(message.ID, ErrorObject{Code: -32603, Message: ErrRequestQueue.Error()}))
 				client.shutdown(ErrRequestQueue)
 				return
 			}
@@ -285,19 +300,55 @@ func (client *Client) write(ctx context.Context, message Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	client.writeMu.Lock()
-	defer client.writeMu.Unlock()
-	client.mu.Lock()
-	closed := client.closed
-	err := client.err
-	client.mu.Unlock()
-	if closed {
-		if err != nil {
-			return err
-		}
-		return ErrClosed
+	request := writeRequest{ctx: ctx, message: message, result: make(chan error, 1)}
+	select {
+	case client.writes <- request:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-client.done:
+		return client.closeError()
 	}
-	return client.encoder.Encode(message)
+	select {
+	case err := <-request.result:
+		return err
+	case <-ctx.Done():
+		client.closeWith(ctx.Err())
+		return ctx.Err()
+	case <-client.done:
+		select {
+		case err := <-request.result:
+			return err
+		default:
+			return client.closeError()
+		}
+	}
+}
+
+func (client *Client) writeLoop() {
+	for {
+		select {
+		case request := <-client.writes:
+			if err := request.ctx.Err(); err != nil {
+				request.result <- err
+				continue
+			}
+			err := client.encoder.Encode(request.message)
+			request.result <- err
+			if err != nil {
+				client.shutdown(err)
+				return
+			}
+		case <-client.done:
+			return
+		}
+	}
+}
+
+func (client *Client) closeError() error {
+	if err := client.Err(); err != nil {
+		return err
+	}
+	return ErrClosed
 }
 
 func (client *Client) shutdown(reason error) {

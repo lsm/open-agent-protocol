@@ -101,6 +101,7 @@ var (
 	ErrInteractionResolved = errors.New("adapter: interaction already resolved")
 	ErrWrongResponder      = errors.New("adapter: interaction resolved by undeclared participant")
 	ErrInvalidResolution   = errors.New("adapter: invalid interaction resolution")
+	ErrEventStreamOverflow = errors.New("adapter: event stream consumer fell behind; resume from the last sequence")
 )
 
 type RunTerminalError struct {

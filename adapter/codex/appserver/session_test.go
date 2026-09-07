@@ -230,6 +230,65 @@ func TestOpenResumesExplicitNativeThread(t *testing.T) {
 	}
 }
 
+func TestLiveStreamOverflowReportsErrorAndResumes(t *testing.T) {
+	client, session, _ := openFake(t)
+	admission, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	for index := range 40 {
+		client.send(t, native.MethodAgentDelta, native.AgentMessageDeltaNotification{ThreadID: client.threadID, TurnID: client.turnID, ItemID: "message-native", Delta: fmt.Sprintf("%02d", index)})
+	}
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	deadline := time.Now().Add(time.Second)
+	for {
+		state, err := session.State(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.ActiveRunID == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("native events did not settle")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var prefix []protocol.Envelope
+	var streamErr error
+	for result := range stream {
+		if result.Error != nil {
+			streamErr = result.Error
+			continue
+		}
+		prefix = append(prefix, result.Envelope)
+	}
+	if !errors.Is(streamErr, adapter.ErrEventStreamOverflow) {
+		t.Fatalf("stream error=%v", streamErr)
+	}
+	if len(prefix) == 0 || prefix[len(prefix)-1].Type == protocol.TypeRunCompleted {
+		t.Fatalf("overflowed prefix unexpectedly contains terminal: %d events", len(prefix))
+	}
+	for index, event := range prefix {
+		if event.Sequence == nil || *event.Sequence != uint64(index+1) {
+			t.Fatalf("event %d sequence=%v", index, event.Sequence)
+		}
+	}
+	last := *prefix[len(prefix)-1].Sequence
+	recovery, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: admission.RunID, AfterSequence: last})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := drainClosed(t, replay)
+	if recovery.ReplayedFrom != last+1 || len(replayed) == 0 || replayed[len(replayed)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("recovery=%+v replayed=%d", recovery, len(replayed))
+	}
+	for index, event := range replayed {
+		if event.Sequence == nil || *event.Sequence != last+uint64(index)+1 {
+			t.Fatalf("replayed event %d sequence=%v", index, event.Sequence)
+		}
+	}
+}
+
 func TestTurnStartResponseIsAdmissionOnly(t *testing.T) {
 	_, session, _ := openFake(t)
 	_, stream := submitFake(t, session)

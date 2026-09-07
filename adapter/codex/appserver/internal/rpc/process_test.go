@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -49,10 +50,16 @@ func TestHelperProcess(t *testing.T) {
 	for {
 		message, err = reader.Decode()
 		if err != nil {
+			if mode == "stay-alive" {
+				select {}
+			}
 			os.Exit(0)
 		}
 		if message.Kind == MessageRequest {
 			_ = NewEncoder(os.Stdout).Encode(Response(message.ID, json.RawMessage(`{"ok":true}`)))
+			if mode == "stay-alive" {
+				continue
+			}
 			os.Exit(0)
 		}
 	}
@@ -85,8 +92,42 @@ func TestStartPerformsHandshakeAndCalls(t *testing.T) {
 	if !result.OK {
 		t.Fatal("call result was not decoded")
 	}
-	if err := process.Close(context.Background()); err != nil && process.WaitError() != nil {
+	if err := process.Close(context.Background()); err != nil && !strings.Contains(err.Error(), "process exited") && !strings.Contains(err.Error(), "shutdown timed out") {
 		t.Fatal(err)
+	}
+}
+
+func TestProcessConcurrentCloseReturnsSameResult(t *testing.T) {
+	config := helperConfig("stay-alive")
+	config.ShutdownTimeout = time.Millisecond
+	process, err := Start(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wait sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			results <- process.Close(context.Background())
+		}()
+	}
+	wait.Wait()
+	close(results)
+	var first string
+	for err := range results {
+		if err == nil {
+			t.Fatal("concurrent close returned nil")
+		}
+		if first == "" {
+			first = err.Error()
+		} else if err.Error() != first {
+			t.Fatalf("close errors differ: %q and %q", first, err)
+		}
+	}
+	if err := process.Close(context.Background()); err == nil || err.Error() != first {
+		t.Fatalf("repeated close=%v want=%q", err, first)
 	}
 }
 
