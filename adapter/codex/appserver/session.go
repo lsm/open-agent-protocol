@@ -23,17 +23,18 @@ type session struct {
 	ids      adapter.IDGenerator
 	capacity int
 
-	participant protocol.ParticipantID
-	threadID    string
-	model       string
-	state       protocol.SessionState
-	closed      bool
-	active      *runState
-	runs        map[protocol.RunID]*runState
-	turns       map[string]protocol.RunID
-	items       map[string]itemBinding
-	journal     []protocol.Envelope
-	stop        chan struct{}
+	participant  protocol.ParticipantID
+	threadID     string
+	model        string
+	state        protocol.SessionState
+	closed       bool
+	active       *runState
+	runs         map[protocol.RunID]*runState
+	turns        map[string]protocol.RunID
+	items        map[string]itemBinding
+	interactions map[protocol.InteractionID]*interactionBinding
+	journal      []protocol.Envelope
+	stop         chan struct{}
 }
 
 type runState struct {
@@ -56,6 +57,26 @@ type itemBinding struct {
 	arguments  json.RawMessage
 	started    bool
 	terminal   bool
+}
+
+type interactionKind uint8
+
+const (
+	permissionInteraction interactionKind = iota + 1
+	inputInteraction
+)
+
+type interactionBinding struct {
+	kind              interactionKind
+	runID             protocol.RunID
+	toolCallID        protocol.ToolCallID
+	requestedBy       protocol.ParticipantID
+	respondedBy       protocol.ParticipantID
+	request           *rpc.IncomingRequest
+	resolved          bool
+	questions         []native.UserInputQuestion
+	optionLabels      map[string]map[string]string
+	permissionChoices map[string]bool
 }
 
 func (session *session) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
@@ -171,8 +192,148 @@ func (session *session) State(ctx context.Context) (protocol.SessionState, error
 	return session.state, nil
 }
 
-func (session *session) Resolve(context.Context, adapter.InteractionResolution) error {
-	return adapter.ErrInteractionNotFound
+func (session *session) Resolve(ctx context.Context, resolution adapter.InteractionResolution) error {
+	session.opMu.Lock()
+	defer session.opMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	session.mu.Lock()
+	var id protocol.InteractionID
+	if resolution.Permission != nil && resolution.Input == nil {
+		id = resolution.Permission.InteractionID
+	} else if resolution.Input != nil && resolution.Permission == nil {
+		id = resolution.Input.InteractionID
+	} else {
+		session.mu.Unlock()
+		return adapter.ErrInvalidResolution
+	}
+	binding := session.interactions[id]
+	if binding == nil || binding.runID != resolution.RunID {
+		session.mu.Unlock()
+		return adapter.ErrInteractionNotFound
+	}
+	if binding.resolved {
+		session.mu.Unlock()
+		return adapter.ErrInteractionResolved
+	}
+	if resolution.RespondedBy != binding.respondedBy {
+		session.mu.Unlock()
+		return adapter.ErrWrongResponder
+	}
+	run := session.runs[binding.runID]
+	if run == nil || run.terminal {
+		session.mu.Unlock()
+		return adapter.ErrInteractionResolved
+	}
+	session.mu.Unlock()
+
+	if binding.kind == permissionInteraction {
+		request := resolution.Permission
+		if request == nil || request.SessionID != session.state.SessionID || request.RunID != run.id || request.RequestedBy != binding.requestedBy || request.RespondedBy != binding.respondedBy || len(request.UpdatedArgumentsJSON) != 0 {
+			return adapter.ErrInvalidResolution
+		}
+		granted, outcome, valid := permissionDecision(request.ChoiceID, binding.permissionChoices)
+		if !valid || request.Granted != granted {
+			return adapter.ErrInvalidResolution
+		}
+		if err := binding.request.Respond(ctx, native.ApprovalResponse{Decision: native.ApprovalDecision(request.ChoiceID)}); err != nil {
+			return err
+		}
+		session.mu.Lock()
+		binding.resolved = true
+		session.mu.Unlock()
+		payload := protocol.PermissionResolvedPayload{InteractionID: id, RequestedBy: binding.requestedBy, RespondedBy: binding.respondedBy, SessionID: session.state.SessionID, RunID: run.id, ToolCallID: binding.toolCallID, Outcome: outcome, ChoiceID: request.ChoiceID, Granted: &granted}
+		return session.emit(run, protocol.TypeActionPermissionResolved, payload, false)
+	}
+
+	request := resolution.Input
+	if request == nil || request.SessionID != session.state.SessionID || request.RunID != run.id || request.RequestedBy != binding.requestedBy || request.RespondedBy != binding.respondedBy {
+		return adapter.ErrInvalidResolution
+	}
+	answers, err := nativeAnswers(binding, request.Answers)
+	if err != nil {
+		return err
+	}
+	if err := binding.request.Respond(ctx, native.UserInputResponse{Answers: answers}); err != nil {
+		return err
+	}
+	session.mu.Lock()
+	binding.resolved = true
+	run.status = protocol.RunRunning
+	session.state.Status = protocol.SessionRunning
+	session.state.UpdatedAtMS = session.clock.Now().UnixMilli()
+	session.mu.Unlock()
+	payload := protocol.UserInputResolvedPayload{InteractionID: id, RequestedBy: binding.requestedBy, RespondedBy: binding.respondedBy, SessionID: session.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: request.Answers}
+	if err := session.emit(run, protocol.TypeUserInputResolved, payload, false); err != nil {
+		return err
+	}
+	return session.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: session.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: session.clock.Now().UnixMilli()}, false)
+}
+
+func permissionDecision(choiceID string, available map[string]bool) (bool, protocol.InteractionOutcome, bool) {
+	if !available[choiceID] {
+		return false, "", false
+	}
+	switch choiceID {
+	case "accept", "acceptForSession":
+		return true, protocol.InteractionResolved, true
+	case "decline":
+		return false, protocol.InteractionRejected, true
+	case "cancel":
+		return false, protocol.InteractionCancelled, true
+	default:
+		return false, "", false
+	}
+}
+
+func nativeAnswers(binding *interactionBinding, input []protocol.InputAnswer) (map[string]native.UserInputAnswer, error) {
+	questions := make(map[string]native.UserInputQuestion, len(binding.questions))
+	for _, question := range binding.questions {
+		questions[question.ID] = question
+	}
+	answers := make(map[string]native.UserInputAnswer, len(input))
+	for _, answer := range input {
+		question, exists := questions[answer.QuestionID]
+		if !exists {
+			return nil, adapter.ErrInvalidResolution
+		}
+		if _, duplicate := answers[answer.QuestionID]; duplicate {
+			return nil, adapter.ErrInvalidResolution
+		}
+		values := make([]string, 0, len(answer.SelectedOptionIDs)+1)
+		if question.Options == nil {
+			if len(answer.SelectedOptionIDs) != 0 || answer.Text == "" {
+				return nil, adapter.ErrInvalidResolution
+			}
+			values = append(values, answer.Text)
+		} else {
+			if len(answer.SelectedOptionIDs) != 1 {
+				return nil, adapter.ErrInvalidResolution
+			}
+			optionID := answer.SelectedOptionIDs[0]
+			if optionID == "other" {
+				if !question.IsOther || answer.Text == "" {
+					return nil, adapter.ErrInvalidResolution
+				}
+				values = append(values, answer.Text)
+			} else {
+				if answer.Text != "" {
+					return nil, adapter.ErrInvalidResolution
+				}
+				label, exists := binding.optionLabels[answer.QuestionID][optionID]
+				if !exists {
+					return nil, adapter.ErrInvalidResolution
+				}
+				values = append(values, label)
+			}
+		}
+		answers[answer.QuestionID] = native.UserInputAnswer{Answers: values}
+	}
+	if len(answers) != len(questions) {
+		return nil, adapter.ErrInvalidResolution
+	}
+	return answers, nil
 }
 
 func (session *session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
@@ -296,15 +457,180 @@ func (session *session) dispatch() {
 			session.handleNotification(notification)
 		case request := <-session.client.Requests():
 			if request != nil {
-				_ = request.RespondError(context.Background(), -32601, "unsupported Codex server request", map[string]string{"method": request.Method})
+				session.handleRequest(request)
 			}
 		case <-session.client.Done():
+			session.opMu.Lock()
 			session.failActive("native_transport_closed", errorString(session.client.Err()))
+			session.opMu.Unlock()
 			return
 		case <-session.stop:
 			return
 		}
 	}
+}
+
+func (session *session) handleRequest(request *rpc.IncomingRequest) {
+	session.opMu.Lock()
+	defer session.opMu.Unlock()
+	switch request.Method {
+	case native.MethodCommandApproval, native.MethodFileApproval:
+		threadID, turnID, itemID, reason, decisions, err := approvalScope(request.Method, request.Params)
+		if err != nil || threadID != session.threadID {
+			_ = request.RespondError(context.Background(), -32602, "invalid approval request scope", nil)
+			return
+		}
+		run := session.runFor(threadID, turnID)
+		if run == nil || !session.prepareEvent(run) {
+			_ = request.RespondError(context.Background(), -32602, "approval request does not target the active run", nil)
+			return
+		}
+		session.mu.Lock()
+		item, exists := session.items[itemID]
+		if !exists || item.runID != run.id || !item.started || item.terminal {
+			session.mu.Unlock()
+			_ = request.RespondError(context.Background(), -32602, "approval request does not target an active action", nil)
+			return
+		}
+		interactionID := protocol.InteractionID(session.ids.NewID("interaction"))
+		binding := &interactionBinding{kind: permissionInteraction, runID: run.id, toolCallID: item.toolCallID, requestedBy: "agent", respondedBy: session.participant, request: request, permissionChoices: decisions}
+		session.interactions[interactionID] = binding
+		session.mu.Unlock()
+		title := "Allow Codex action"
+		if request.Method == native.MethodFileApproval {
+			title = "Allow Codex file changes"
+		}
+		payload := protocol.PermissionRequestedPayload{InteractionID: interactionID, RequestedBy: binding.requestedBy, RespondedBy: binding.respondedBy, SessionID: session.state.SessionID, RunID: run.id, ToolCallID: binding.toolCallID, Title: title, Description: reason, Choices: permissionChoices(decisions), ArgumentsJSON: item.arguments}
+		if err := session.emit(run, protocol.TypeActionPermissionRequested, payload, false); err != nil {
+			session.mu.Lock()
+			delete(session.interactions, interactionID)
+			session.mu.Unlock()
+			_ = request.RespondError(context.Background(), -32603, "failed to expose approval request", nil)
+		}
+	case native.MethodUserInput:
+		var params native.UserInputRequestParams
+		if json.Unmarshal(request.Params, &params) != nil || params.ThreadID != session.threadID || params.TurnID == "" || len(params.Questions) == 0 {
+			_ = request.RespondError(context.Background(), -32602, "invalid user input request", nil)
+			return
+		}
+		run := session.runFor(params.ThreadID, params.TurnID)
+		if run == nil || !session.prepareEvent(run) {
+			_ = request.RespondError(context.Background(), -32602, "user input does not target the active run", nil)
+			return
+		}
+		questions := make([]protocol.InputQuestion, 0, len(params.Questions))
+		optionLabels := make(map[string]map[string]string, len(params.Questions))
+		seenQuestions := make(map[string]struct{}, len(params.Questions))
+		for _, question := range params.Questions {
+			if question.ID == "" || question.Question == "" || question.IsSecret {
+				_ = request.RespondError(context.Background(), -32602, "invalid user input question", nil)
+				return
+			}
+			if _, duplicate := seenQuestions[question.ID]; duplicate {
+				_ = request.RespondError(context.Background(), -32602, "duplicate user input question id", nil)
+				return
+			}
+			seenQuestions[question.ID] = struct{}{}
+			kind := protocol.InputText
+			var options []protocol.InputOption
+			if question.Options != nil {
+				kind = protocol.InputSingleChoice
+				labels := make(map[string]string, len(*question.Options))
+				options = make([]protocol.InputOption, 0, len(*question.Options))
+				for index, option := range *question.Options {
+					optionID := fmt.Sprintf("option-%d", index+1)
+					options = append(options, protocol.InputOption{ID: optionID, Label: option.Label, Description: option.Description})
+					labels[optionID] = option.Label
+				}
+				if question.IsOther {
+					options = append(options, protocol.InputOption{ID: "other", Label: "Other", Description: "Provide a custom answer"})
+				}
+				optionLabels[question.ID] = labels
+			}
+			questions = append(questions, protocol.InputQuestion{ID: question.ID, Prompt: question.Question, Kind: kind, Required: true, Options: options})
+		}
+		session.mu.Lock()
+		interactionID := protocol.InteractionID(session.ids.NewID("interaction"))
+		binding := &interactionBinding{kind: inputInteraction, runID: run.id, toolCallID: protocol.ToolCallID(params.ItemID), requestedBy: "agent", respondedBy: session.participant, request: request, questions: params.Questions, optionLabels: optionLabels}
+		session.interactions[interactionID] = binding
+		run.status = protocol.RunWaitingForInput
+		session.state.Status = protocol.SessionWaitingForInput
+		session.state.UpdatedAtMS = session.clock.Now().UnixMilli()
+		session.mu.Unlock()
+		payload := protocol.UserInputRequestedPayload{InteractionID: interactionID, RequestedBy: binding.requestedBy, RespondedBy: binding.respondedBy, SessionID: session.state.SessionID, RunID: run.id, Title: "Codex needs input", Questions: questions}
+		if err := session.emit(run, protocol.TypeUserInputRequested, payload, false); err != nil {
+			session.mu.Lock()
+			delete(session.interactions, interactionID)
+			session.mu.Unlock()
+			_ = request.RespondError(context.Background(), -32603, "failed to expose user input request", nil)
+			return
+		}
+		_ = session.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: session.state.SessionID, RunID: run.id, Status: protocol.RunWaitingForInput, PendingUserInputID: interactionID, UpdatedAtMS: session.clock.Now().UnixMilli()}, false)
+	default:
+		_ = request.RespondError(context.Background(), -32601, "unsupported Codex server request", map[string]string{"method": request.Method})
+	}
+}
+
+func approvalScope(method string, raw json.RawMessage) (threadID, turnID, itemID, reason string, decisions map[string]bool, err error) {
+	decisions = standardApprovalDecisions()
+	switch method {
+	case native.MethodCommandApproval:
+		var params native.CommandApprovalParams
+		if decodeErr := json.Unmarshal(raw, &params); decodeErr != nil || params.ThreadID == "" || params.TurnID == "" || params.ItemID == "" {
+			return "", "", "", "", nil, adapter.ErrInvalidResolution
+		}
+		if params.Reason != nil {
+			reason = *params.Reason
+		}
+		if len(params.AvailableDecisions) != 0 && string(params.AvailableDecisions) != "null" {
+			var available []native.ApprovalDecision
+			if decodeErr := json.Unmarshal(params.AvailableDecisions, &available); decodeErr != nil {
+				return "", "", "", "", nil, adapter.ErrInvalidResolution
+			}
+			decisions = make(map[string]bool, len(available))
+			for _, decision := range available {
+				if _, _, valid := permissionDecision(string(decision), standardApprovalDecisions()); !valid {
+					return "", "", "", "", nil, adapter.ErrInvalidResolution
+				}
+				decisions[string(decision)] = true
+			}
+			if len(decisions) == 0 {
+				return "", "", "", "", nil, adapter.ErrInvalidResolution
+			}
+		}
+		return params.ThreadID, params.TurnID, params.ItemID, reason, decisions, nil
+	case native.MethodFileApproval:
+		var params native.FileApprovalParams
+		if decodeErr := json.Unmarshal(raw, &params); decodeErr != nil || params.ThreadID == "" || params.TurnID == "" || params.ItemID == "" {
+			return "", "", "", "", nil, adapter.ErrInvalidResolution
+		}
+		if params.Reason != nil {
+			reason = *params.Reason
+		}
+		return params.ThreadID, params.TurnID, params.ItemID, reason, decisions, nil
+	default:
+		return "", "", "", "", nil, adapter.ErrInvalidResolution
+	}
+}
+
+func standardApprovalDecisions() map[string]bool {
+	return map[string]bool{"accept": true, "acceptForSession": true, "decline": true, "cancel": true}
+}
+
+func permissionChoices(decisions map[string]bool) []protocol.PermissionChoice {
+	definitions := []protocol.PermissionChoice{
+		{ID: "accept", Label: "Approve once"},
+		{ID: "acceptForSession", Label: "Approve for session"},
+		{ID: "decline", Label: "Deny"},
+		{ID: "cancel", Label: "Deny and cancel run"},
+	}
+	choices := make([]protocol.PermissionChoice, 0, len(decisions))
+	for _, choice := range definitions {
+		if decisions[choice.ID] {
+			choices = append(choices, choice)
+		}
+	}
+	return choices
 }
 
 func (session *session) handleNotification(notification rpc.NotificationMessage) {
@@ -485,6 +811,7 @@ func (session *session) onCompleted(value native.TurnCompletedNotification) {
 	if run == nil || !session.prepareEvent(run) {
 		return
 	}
+	session.closePendingInteractions(run, value.Turn.Status)
 	session.closePendingActions(run, value.Turn.Status)
 	switch value.Turn.Status {
 	case native.TurnCompleted:
@@ -504,6 +831,35 @@ func (session *session) onCompleted(value native.TurnCompletedNotification) {
 		_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
 	default:
 		session.failRun(run, "invalid_native_terminal", "turn/completed did not contain a terminal status")
+	}
+}
+
+func (session *session) closePendingInteractions(run *runState, status native.TurnStatus) {
+	session.mu.Lock()
+	type pendingInteraction struct {
+		id      protocol.InteractionID
+		binding *interactionBinding
+	}
+	var pending []pendingInteraction
+	for id, binding := range session.interactions {
+		if binding.runID == run.id && !binding.resolved {
+			binding.resolved = true
+			pending = append(pending, pendingInteraction{id: id, binding: binding})
+		}
+	}
+	session.mu.Unlock()
+	for _, entry := range pending {
+		_ = entry.binding.request.RespondError(context.Background(), -32800, "OAP run terminated before interaction resolution", nil)
+		if entry.binding.kind == permissionInteraction {
+			outcome := protocol.InteractionFailed
+			if status == native.TurnInterrupted {
+				outcome = protocol.InteractionCancelled
+			}
+			reason := protocol.ProtocolError{Code: "run_terminated", Message: "run terminated before permission resolution"}
+			_ = session.emit(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: entry.id, RequestedBy: entry.binding.requestedBy, RespondedBy: entry.binding.respondedBy, SessionID: session.state.SessionID, RunID: run.id, ToolCallID: entry.binding.toolCallID, Outcome: outcome, Reason: &reason}, false)
+		} else {
+			_ = session.emit(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: entry.id, RequestedBy: entry.binding.requestedBy, RespondedBy: entry.binding.respondedBy, SessionID: session.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false)
+		}
 	}
 }
 
@@ -542,6 +898,7 @@ func (session *session) failRun(run *runState, code, message string) {
 	if message == "" {
 		message = code
 	}
+	session.closePendingInteractions(run, native.TurnFailed)
 	session.closePendingActions(run, native.TurnFailed)
 	_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
 }

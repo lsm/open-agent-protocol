@@ -140,8 +140,8 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"run.reconciliation":            {Level: protocol.SupportEmulated, Reason: "state is the adapter's canonical projection of native observations"},
 		"run.replay":                    {Level: protocol.SupportDegraded, Reason: "only adapter-emitted events in bounded process memory are replayable"},
 		"action.tools.execute":          {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
-		"action.permissions":            {Level: protocol.SupportUnavailable, Reason: "enabled after reverse-request round-trip conformance"},
-		"user_input":                    {Level: protocol.SupportUnavailable, Reason: "enabled after supported question subsets pass conformance"},
+		"action.permissions":            {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
+		"user_input":                    {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: "codex.app-server", Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
 	return adapter.Descriptor{
@@ -149,7 +149,7 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		CapabilityRevision:         CapabilityRevision,
 		Journal:                    adapter.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: implementation.config.JournalCapacity},
 		MaxActiveRunsPerSession:    1,
-		InteractiveGates:           false,
+		InteractiveGates:           true,
 		CancellationTarget:         "run",
 		CancellationImplementation: "native_turn_interrupt",
 	}, nil
@@ -184,7 +184,7 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		threadID: response.Thread.ID, model: implementation.config.Model,
 		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: implementation.config.Model, UpdatedAtMS: now},
 		runs:  make(map[protocol.RunID]*runState), turns: make(map[string]protocol.RunID),
-		items: make(map[string]itemBinding), stop: make(chan struct{}),
+		items: make(map[string]itemBinding), interactions: make(map[protocol.InteractionID]*interactionBinding), stop: make(chan struct{}),
 	}
 	go session.dispatch()
 	return session, nil

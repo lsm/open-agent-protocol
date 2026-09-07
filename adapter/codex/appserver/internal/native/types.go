@@ -160,3 +160,75 @@ type FileChange struct {
 type ToolError struct {
 	Message string `json:"message"`
 }
+
+type CommandApprovalParams struct {
+	ThreadID              string          `json:"threadId"`
+	TurnID                string          `json:"turnId"`
+	ItemID                string          `json:"itemId"`
+	Kind                  string          `json:"kind"`
+	StartedAtMS           int64           `json:"startedAtMs"`
+	ApprovalID            *string         `json:"approvalId,omitempty"`
+	EnvironmentID         *string         `json:"environmentId"`
+	Reason                *string         `json:"reason,omitempty"`
+	NetworkContext        json.RawMessage `json:"networkApprovalContext,omitempty"`
+	Command               *string         `json:"command,omitempty"`
+	Cwd                   *string         `json:"cwd,omitempty"`
+	CommandActions        json.RawMessage `json:"commandActions,omitempty"`
+	AdditionalPermissions json.RawMessage `json:"additionalPermissions,omitempty"`
+	AvailableDecisions    json.RawMessage `json:"availableDecisions,omitempty"`
+	ExecPolicyAmendment   json.RawMessage `json:"proposedExecpolicyAmendment,omitempty"`
+	NetworkAmendments     json.RawMessage `json:"proposedNetworkPolicyAmendments,omitempty"`
+}
+
+type FileApprovalParams struct {
+	ThreadID    string  `json:"threadId"`
+	TurnID      string  `json:"turnId"`
+	ItemID      string  `json:"itemId"`
+	StartedAtMS int64   `json:"startedAtMs"`
+	Reason      *string `json:"reason,omitempty"`
+	GrantRoot   *string `json:"grantRoot,omitempty"`
+}
+
+type ApprovalDecision string
+
+const (
+	ApprovalAccept           ApprovalDecision = "accept"
+	ApprovalAcceptForSession ApprovalDecision = "acceptForSession"
+	ApprovalDecline          ApprovalDecision = "decline"
+	ApprovalCancel           ApprovalDecision = "cancel"
+)
+
+type ApprovalResponse struct {
+	Decision ApprovalDecision `json:"decision"`
+}
+
+type UserInputRequestParams struct {
+	ThreadID         string              `json:"threadId"`
+	TurnID           string              `json:"turnId"`
+	ItemID           string              `json:"itemId"`
+	Questions        []UserInputQuestion `json:"questions"`
+	IsBlocking       bool                `json:"isBlocking"`
+	AutoResolutionMS *int64              `json:"autoResolutionMs"`
+}
+
+type UserInputQuestion struct {
+	ID       string             `json:"id"`
+	Header   string             `json:"header"`
+	Question string             `json:"question"`
+	IsOther  bool               `json:"isOther"`
+	IsSecret bool               `json:"isSecret"`
+	Options  *[]UserInputOption `json:"options"`
+}
+
+type UserInputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+type UserInputResponse struct {
+	Answers map[string]UserInputAnswer `json:"answers"`
+}
+
+type UserInputAnswer struct {
+	Answers []string `json:"answers"`
+}

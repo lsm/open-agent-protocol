@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +102,34 @@ func (client *fakeClient) send(t *testing.T, method string, payload any) {
 	client.notifications <- rpc.NotificationMessage{Method: method, Params: data}
 }
 
+func (client *fakeClient) request(t *testing.T, id int64, method string, payload any) (*rpc.IncomingRequest, <-chan rpc.Message) {
+	t.Helper()
+	serverToClientReader, serverToClientWriter := io.Pipe()
+	clientToServerReader, clientToServerWriter := io.Pipe()
+	rpcClient := rpc.NewClient(serverToClientReader, clientToServerWriter, rpc.ClientOptions{QueueCapacity: 8})
+	t.Cleanup(func() {
+		_ = rpcClient.Close()
+		_ = serverToClientWriter.Close()
+		_ = clientToServerReader.Close()
+	})
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = rpc.NewEncoder(serverToClientWriter).Encode(rpc.Request(rpc.IntegerID(id), method, data))
+	}()
+	request := <-rpcClient.Requests()
+	response := make(chan rpc.Message, 1)
+	go func() {
+		decoder := rpc.NewDecoder(clientToServerReader, 0)
+		message, _ := decoder.Decode()
+		response <- message
+	}()
+	client.requests <- request
+	return request, response
+}
+
 func openFake(t *testing.T) (*fakeClient, adapter.Session, adapter.Descriptor) {
 	t.Helper()
 	client := newFakeClient()
@@ -132,6 +161,23 @@ func submitFake(t *testing.T, session adapter.Session) (protocol.MessageSubmitRe
 		t.Fatal(err)
 	}
 	return response, stream
+}
+
+func nextEvent(t *testing.T, stream adapter.EventStream) protocol.Envelope {
+	t.Helper()
+	select {
+	case result, ok := <-stream:
+		if !ok {
+			t.Fatal("event stream closed")
+		}
+		if result.Error != nil {
+			t.Fatal(result.Error)
+		}
+		return result.Envelope
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event")
+		return protocol.Envelope{}
+	}
 }
 
 func drainClosed(t *testing.T, stream adapter.EventStream) []protocol.Envelope {
@@ -283,9 +329,254 @@ func TestActionLifecycleAndReplay(t *testing.T) {
 	}
 }
 
-func TestDescriptorDoesNotOverclaimInteractions(t *testing.T) {
+func TestCommandApprovalRoundTrip(t *testing.T) {
+	client, session, _ := openFake(t)
+	admission, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	item := native.Item{Type: "commandExecution", ID: "native-item", Command: "true", Status: "inProgress"}
+	client.send(t, native.MethodItemStarted, native.ItemNotification{ThreadID: client.threadID, TurnID: client.turnID, Item: item})
+	for range 3 {
+		_ = nextEvent(t, stream)
+	}
+	reason := "needs approval"
+	_, nativeResponse := client.request(t, 7, native.MethodCommandApproval, native.CommandApprovalParams{
+		ThreadID: client.threadID, TurnID: client.turnID, ItemID: item.ID,
+		Kind: "command", StartedAtMS: 10, Reason: &reason,
+	})
+	requested := nextEvent(t, stream)
+	if requested.Type != protocol.TypeActionPermissionRequested {
+		t.Fatalf("event: %+v", requested)
+	}
+	var payload protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	resolution := adapter.InteractionResolution{
+		RunID: admission.RunID, RespondedBy: "user",
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			SessionID: "session-1", RunID: admission.RunID, ChoiceID: "accept", Granted: true,
+		},
+	}
+	if err := session.Resolve(context.Background(), resolution); err != nil {
+		t.Fatal(err)
+	}
+	response := <-nativeResponse
+	if response.Kind != rpc.MessageResponse {
+		t.Fatalf("native response: %+v", response)
+	}
+	var approval native.ApprovalResponse
+	if err := json.Unmarshal(response.Result, &approval); err != nil || approval.Decision != native.ApprovalAccept {
+		t.Fatalf("approval=%+v err=%v", approval, err)
+	}
+	resolved := nextEvent(t, stream)
+	if resolved.Type != protocol.TypeActionPermissionResolved {
+		t.Fatalf("event: %+v", resolved)
+	}
+	if err := session.Resolve(context.Background(), resolution); !errors.Is(err, adapter.ErrInteractionResolved) {
+		t.Fatalf("duplicate resolution: %v", err)
+	}
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInterrupted}})
+	_ = drainClosed(t, stream)
+}
+
+func TestApprovalDecisionsAndAvailability(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		choiceID string
+		granted  bool
+		outcome  protocol.InteractionOutcome
+	}{
+		{name: "session", choiceID: "acceptForSession", granted: true, outcome: protocol.InteractionResolved},
+		{name: "cancel", choiceID: "cancel", granted: false, outcome: protocol.InteractionCancelled},
+		{name: "decline", choiceID: "decline", granted: false, outcome: protocol.InteractionRejected},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, session, _ := openFake(t)
+			admission, stream := submitFake(t, session)
+			client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+			item := native.Item{Type: "commandExecution", ID: "native-item", Status: "inProgress"}
+			client.send(t, native.MethodItemStarted, native.ItemNotification{ThreadID: client.threadID, TurnID: client.turnID, Item: item})
+			for range 3 {
+				_ = nextEvent(t, stream)
+			}
+			available, err := json.Marshal([]native.ApprovalDecision{native.ApprovalAcceptForSession, native.ApprovalDecline, native.ApprovalCancel})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, nativeResponse := client.request(t, 11, native.MethodCommandApproval, native.CommandApprovalParams{ThreadID: client.threadID, TurnID: client.turnID, ItemID: item.ID, Kind: "command", StartedAtMS: 10, AvailableDecisions: available})
+			requested := nextEvent(t, stream)
+			var payload protocol.PermissionRequestedPayload
+			if err := requested.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.Choices) != 3 {
+				t.Fatalf("choices: %+v", payload.Choices)
+			}
+			resolution := adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, ChoiceID: test.choiceID, Granted: test.granted}}
+			if err := session.Resolve(context.Background(), resolution); err != nil {
+				t.Fatal(err)
+			}
+			response := <-nativeResponse
+			var result native.ApprovalResponse
+			if err := json.Unmarshal(response.Result, &result); err != nil || string(result.Decision) != test.choiceID {
+				t.Fatalf("response=%+v err=%v", result, err)
+			}
+			resolved := nextEvent(t, stream)
+			var resolvedPayload protocol.PermissionResolvedPayload
+			if err := resolved.DecodePayload(&resolvedPayload); err != nil || resolvedPayload.Outcome != test.outcome {
+				t.Fatalf("payload=%+v err=%v", resolvedPayload, err)
+			}
+			client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInterrupted}})
+			_ = drainClosed(t, stream)
+		})
+	}
+}
+
+func TestUserInputRoundTrip(t *testing.T) {
+	client, session, _ := openFake(t)
+	admission, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	_ = nextEvent(t, stream)
+	options := []native.UserInputOption{{Label: "Fast", Description: "Lower latency"}, {Label: "Safe", Description: "More checks"}}
+	_, nativeResponse := client.request(t, 8, native.MethodUserInput, native.UserInputRequestParams{
+		ThreadID: client.threadID, TurnID: client.turnID, ItemID: "tool-item", IsBlocking: true,
+		Questions: []native.UserInputQuestion{{ID: "mode", Header: "Mode", Question: "Choose mode", Options: &options}, {ID: "note", Header: "Note", Question: "Add note", Options: nil}},
+	})
+	requested := nextEvent(t, stream)
+	status := nextEvent(t, stream)
+	if requested.Type != protocol.TypeUserInputRequested || status.Type != protocol.TypeRunStatusUpdated {
+		t.Fatalf("events: %+v %+v", requested, status)
+	}
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Questions) != 2 || payload.Questions[0].Kind != protocol.InputSingleChoice || payload.Questions[1].Kind != protocol.InputText {
+		t.Fatalf("questions: %+v", payload.Questions)
+	}
+	resolution := adapter.InteractionResolution{
+		RunID: admission.RunID, RespondedBy: "user",
+		Input: &protocol.UserInputResolveRequest{
+			InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			SessionID: "session-1", RunID: admission.RunID,
+			Answers: []protocol.InputAnswer{{QuestionID: "mode", SelectedOptionIDs: []string{"option-2"}}, {QuestionID: "note", Text: "ship it"}},
+		},
+	}
+	if err := session.Resolve(context.Background(), resolution); err != nil {
+		t.Fatal(err)
+	}
+	response := <-nativeResponse
+	var nativeResult native.UserInputResponse
+	if err := json.Unmarshal(response.Result, &nativeResult); err != nil {
+		t.Fatal(err)
+	}
+	if got := nativeResult.Answers["mode"].Answers; len(got) != 1 || got[0] != "Safe" {
+		t.Fatalf("selected answer: %+v", nativeResult.Answers)
+	}
+	if got := nativeResult.Answers["note"].Answers; len(got) != 1 || got[0] != "ship it" {
+		t.Fatalf("text answer: %+v", nativeResult.Answers)
+	}
+	if nextEvent(t, stream).Type != protocol.TypeUserInputResolved || nextEvent(t, stream).Type != protocol.TypeRunStatusUpdated {
+		t.Fatal("missing input resolution lifecycle")
+	}
+	state, err := session.State(context.Background())
+	if err != nil || state.Status != protocol.SessionRunning {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	_ = drainClosed(t, stream)
+}
+
+func TestUserInputOtherAndRequiredAnswers(t *testing.T) {
+	client, session, _ := openFake(t)
+	admission, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	_ = nextEvent(t, stream)
+	options := []native.UserInputOption{{Label: "Known", Description: "known value"}}
+	_, nativeResponse := client.request(t, 12, native.MethodUserInput, native.UserInputRequestParams{
+		ThreadID: client.threadID, TurnID: client.turnID, ItemID: "tool-item", IsBlocking: true,
+		Questions: []native.UserInputQuestion{{ID: "choice", Header: "Choice", Question: "Choose", IsOther: true, Options: &options}, {ID: "note", Header: "Note", Question: "Add note"}},
+	})
+	requested := nextEvent(t, stream)
+	_ = nextEvent(t, stream)
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := payload.Questions[0].Options; len(got) != 2 || got[1].ID != "other" {
+		t.Fatalf("options: %+v", got)
+	}
+	partial := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"other"}, Text: "custom"}}}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &partial}); !errors.Is(err, adapter.ErrInvalidResolution) {
+		t.Fatalf("partial resolution: %v", err)
+	}
+	partial.Answers = append(partial.Answers, protocol.InputAnswer{QuestionID: "note", Text: "complete"})
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &partial}); err != nil {
+		t.Fatal(err)
+	}
+	response := <-nativeResponse
+	var result native.UserInputResponse
+	if err := json.Unmarshal(response.Result, &result); err != nil || len(result.Answers["choice"].Answers) != 1 || result.Answers["choice"].Answers[0] != "custom" {
+		t.Fatalf("response=%+v err=%v", result, err)
+	}
+	_ = nextEvent(t, stream)
+	_ = nextEvent(t, stream)
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	_ = drainClosed(t, stream)
+}
+
+func TestPendingInteractionClosesBeforeRunTerminal(t *testing.T) {
+	client, session, _ := openFake(t)
+	_, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	_ = nextEvent(t, stream)
+	_, nativeResponse := client.request(t, 9, native.MethodUserInput, native.UserInputRequestParams{
+		ThreadID: client.threadID, TurnID: client.turnID, ItemID: "tool-item", IsBlocking: true,
+		Questions: []native.UserInputQuestion{{ID: "note", Header: "Note", Question: "Add note"}},
+	})
+	_ = nextEvent(t, stream)
+	_ = nextEvent(t, stream)
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInterrupted}})
+	events := drainClosed(t, stream)
+	if len(events) != 2 || events[0].Type != protocol.TypeUserInputResolved || events[1].Type != protocol.TypeRunCancelled {
+		t.Fatalf("terminal ordering: %+v", events)
+	}
+	if response := <-nativeResponse; response.Kind != rpc.MessageError {
+		t.Fatalf("native response: %+v", response)
+	}
+}
+
+func TestInteractionResolutionValidation(t *testing.T) {
+	client, session, _ := openFake(t)
+	admission, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	_ = nextEvent(t, stream)
+	options := []native.UserInputOption{{Label: "One", Description: "first"}}
+	_, _ = client.request(t, 10, native.MethodUserInput, native.UserInputRequestParams{
+		ThreadID: client.threadID, TurnID: client.turnID, ItemID: "tool-item", IsBlocking: true,
+		Questions: []native.UserInputQuestion{{ID: "choice", Header: "Choice", Question: "Choose", Options: &options}},
+	})
+	requested := nextEvent(t, stream)
+	_ = nextEvent(t, stream)
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	base := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"missing"}}}}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "intruder", Input: &base}); !errors.Is(err, adapter.ErrWrongResponder) {
+		t.Fatalf("wrong responder: %v", err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &base}); !errors.Is(err, adapter.ErrInvalidResolution) {
+		t.Fatalf("invalid answer: %v", err)
+	}
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInterrupted}})
+	_ = drainClosed(t, stream)
+}
+
+func TestDescriptorClaimsTestedInteractions(t *testing.T) {
 	_, _, descriptor := openFake(t)
-	if descriptor.Capabilities.Features["action.permissions"].Level != protocol.SupportUnavailable || descriptor.Capabilities.Features["user_input"].Level != protocol.SupportUnavailable {
+	if descriptor.Capabilities.Features["action.permissions"].Level != protocol.SupportNative || descriptor.Capabilities.Features["user_input"].Level != protocol.SupportDegraded || !descriptor.InteractiveGates {
 		t.Fatalf("descriptor: %+v", descriptor.Capabilities.Features)
 	}
 	if descriptor.MaxActiveRunsPerSession != 1 || descriptor.Journal.Replay != protocol.SupportDegraded {
