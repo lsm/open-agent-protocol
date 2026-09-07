@@ -164,6 +164,24 @@ establish the exact Codex + Flash combination. Live evidence therefore uses
 compatibility candidate. Backend results cannot alter hermetic adapter
 conformance claims.
 
+A real-process loopback integration is available but skipped by default because
+provisioning the pinned Rust binary is external to Go CI. Build commit
+`8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9` from `codex-rs` with:
+
+```sh
+cargo build --locked --release -p codex-cli --bin codex
+OAP_CODEX_INTEGRATION=1 \
+OAP_CODEX_COMMIT=8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9 \
+OAP_CODEX_BIN=/absolute/path/to/codex \
+go test ./adapter/codex/appserver -run '^TestPinnedCodexProcessAgainstResponsesMock$' -count=1 -v
+```
+
+The test creates isolated `CODEX_HOME` and workspace directories, supplies only a
+small sanitized child environment, disables provider retries, targets the local
+Responses mock with a fake bearer token, and drives the process through the
+public OAP adapter. Explicit opt-in without the exact commit assertion or binary
+is a failure, not a skip.
+
 ## Deferred scope
 
 This pin does not cover `turn/steer`, queued/side runs, concurrent runs, full
