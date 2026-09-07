@@ -102,6 +102,7 @@ type Client struct {
 	strictResponseIDs bool
 
 	mu       sync.Mutex
+	routeMu  sync.Mutex
 	pending  map[RequestID]chan callResult
 	incoming map[RequestID]*IncomingRequest
 	closed   bool
@@ -156,8 +157,33 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 func (client *Client) Requests() <-chan *IncomingRequest         { return client.requests }
 func (client *Client) Notifications() <-chan NotificationMessage { return client.notifications }
 func (client *Client) Inbound() <-chan InboundMessage {
+	client.routeMu.Lock()
+	defer client.routeMu.Unlock()
+	if client.ordered.Load() {
+		return client.inbound
+	}
 	client.ordered.Store(true)
-	return client.inbound
+	// Move observations decoded before ordered mode was selected into the same
+	// stream. routeMu prevents the reader from routing another frame concurrently.
+	for {
+		select {
+		case request := <-client.requests:
+			client.inbound <- InboundMessage{Request: request}
+		default:
+			goto notifications
+		}
+	}
+
+notifications:
+	for {
+		select {
+		case notification := <-client.notifications:
+			copy := notification
+			client.inbound <- InboundMessage{Notification: &copy}
+		default:
+			return client.inbound
+		}
+	}
 }
 func (client *Client) Diagnostics() <-chan error { return client.diagnostics }
 func (client *Client) Done() <-chan struct{}     { return client.done }
@@ -281,60 +307,63 @@ func (client *Client) readLoop() {
 			client.closeWith(err)
 			return
 		}
-		switch message.Kind {
-		case MessageResponse:
-			if client.ordered.Load() && !client.barrier() {
-				return
-			}
-			if !client.deliver(message.ID, callResult{result: cloneRaw(message.Result)}) && client.unmatched(message.ID) {
-				return
-			}
-		case MessageError:
-			if client.ordered.Load() && !client.barrier() {
-				return
-			}
-			if !client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}}) && client.unmatched(message.ID) {
-				return
-			}
-		case MessageRequest:
-			incoming := &IncomingRequest{ID: message.ID, Method: message.Method, Params: cloneRaw(message.Params), client: client}
-			client.mu.Lock()
-			_, duplicate := client.incoming[message.ID]
-			if !duplicate {
-				client.incoming[message.ID] = incoming
-			}
-			client.mu.Unlock()
-			if duplicate {
-				client.closeWith(fmt.Errorf("%w: %s", ErrDuplicateRequestID, message.ID))
-				return
-			}
-			if client.ordered.Load() {
-				if !client.enqueueInbound(InboundMessage{Request: incoming}, ErrRequestQueue) {
-					return
-				}
-			} else {
-				select {
-				case client.requests <- incoming:
-				default:
-					client.closeWith(ErrRequestQueue)
-					return
-				}
-			}
-		case MessageNotification:
-			notification := NotificationMessage{Method: message.Method, Params: cloneRaw(message.Params)}
-			if client.ordered.Load() {
-				if !client.enqueueInbound(InboundMessage{Notification: &notification}, ErrNotificationQueue) {
-					return
-				}
-			} else {
-				select {
-				case client.notifications <- notification:
-				default:
-					client.closeWith(ErrNotificationQueue)
-					return
-				}
-			}
+		client.routeMu.Lock()
+		stop := client.route(message)
+		client.routeMu.Unlock()
+		if stop {
+			return
 		}
+	}
+}
+
+func (client *Client) route(message Message) bool {
+	switch message.Kind {
+	case MessageResponse:
+		if client.ordered.Load() && !client.barrier() {
+			return true
+		}
+		return !client.deliver(message.ID, callResult{result: cloneRaw(message.Result)}) && client.unmatched(message.ID)
+	case MessageError:
+		if client.ordered.Load() && !client.barrier() {
+			return true
+		}
+		return !client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}}) && client.unmatched(message.ID)
+	case MessageRequest:
+		incoming := &IncomingRequest{ID: message.ID, Method: message.Method, Params: cloneRaw(message.Params), client: client}
+		client.mu.Lock()
+		_, duplicate := client.incoming[message.ID]
+		if !duplicate {
+			client.incoming[message.ID] = incoming
+		}
+		client.mu.Unlock()
+		if duplicate {
+			client.closeWith(fmt.Errorf("%w: %s", ErrDuplicateRequestID, message.ID))
+			return true
+		}
+		if client.ordered.Load() {
+			return !client.enqueueInbound(InboundMessage{Request: incoming}, ErrRequestQueue)
+		}
+		select {
+		case client.requests <- incoming:
+			return false
+		default:
+			client.closeWith(ErrRequestQueue)
+			return true
+		}
+	case MessageNotification:
+		notification := NotificationMessage{Method: message.Method, Params: cloneRaw(message.Params)}
+		if client.ordered.Load() {
+			return !client.enqueueInbound(InboundMessage{Notification: &notification}, ErrNotificationQueue)
+		}
+		select {
+		case client.notifications <- notification:
+			return false
+		default:
+			client.closeWith(ErrNotificationQueue)
+			return true
+		}
+	default:
+		return false
 	}
 }
 

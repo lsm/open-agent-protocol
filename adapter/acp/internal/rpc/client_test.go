@@ -164,6 +164,30 @@ func TestClientOrderedInboundBarrierPrecedesResponse(t *testing.T) {
 	}
 }
 
+func TestClientInboundMigratesFramesDecodedBeforeActivation(t *testing.T) {
+	client, reader, writer := clientPipes(t, 8, true)
+	result := make(chan error, 1)
+	go func() {
+		var out string
+		result <- client.Call(context.Background(), "session/new", nil, &out)
+	}()
+	request := readWire(t, reader)
+	writeWire(t, writer, Response(request.ID, json.RawMessage(`"done"`)))
+	writeWire(t, writer, Notification("session/update", json.RawMessage(`{"n":1}`)))
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	inbound := client.Inbound()
+	select {
+	case message := <-inbound:
+		if message.Notification == nil || message.Notification.Method != "session/update" {
+			t.Fatalf("migrated inbound=%+v", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("notification decoded before activation was stranded")
+	}
+}
+
 func TestClientRejectsDuplicateOutboundID(t *testing.T) {
 	client, reader, writer := clientPipes(t, 8, true)
 	first := make(chan error, 1)
