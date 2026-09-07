@@ -21,6 +21,7 @@ const streamCapacity = 64
 type session struct {
 	mu             sync.Mutex
 	emitMu         sync.Mutex
+	transitionMu   sync.Mutex
 	opMu           sync.Mutex
 	client         Client
 	inbound        <-chan stdio.Inbound
@@ -47,6 +48,7 @@ type runState struct {
 	terminal        bool
 	cancelRequested bool
 	messageID       protocol.MessageID
+	nativeMessageID native.MessageID
 	text            string
 	result          *native.Result
 	admitted        chan struct{}
@@ -98,18 +100,24 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.state.ActiveRunID = run.id
 	s.state.CurrentModelID = req.ModelID
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
-	s.nativeSequence++
-	sequence := s.nativeSequence
+	sequence := s.nativeSequence + 1
 	s.mu.Unlock()
 	env, err := s.newNativeEnvelope(native.TypeAgentMessage, sequence, native.AgentMessage{SessionID: s.nativeID, MessageJSON: string(messageJSON)})
 	if err == nil {
+		run.nativeMessageID = env.MessageID
 		err = s.client.Send(ctx, env)
 	}
 	if err != nil {
+		s.mu.Lock()
+		s.unusable = true
+		s.mu.Unlock()
 		close(run.admitted)
 		s.failRun(run, "makai_admission_failed", err.Error())
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
+	s.mu.Lock()
+	s.nativeSequence = sequence
+	s.mu.Unlock()
 	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
 		s.failRun(run, "makai_admission_projection_failed", err.Error())
@@ -167,8 +175,22 @@ func (s *session) dispatch() {
 				close(inbound.Barrier)
 			}
 		case <-s.client.Done():
-			s.transportFailed()
-			return
+			// The reader may enqueue valid observations immediately before EOF.
+			// Reduce that ordered prefix before projecting transport failure.
+			for {
+				select {
+				case inbound := <-s.inbound:
+					switch {
+					case inbound.Envelope != nil:
+						s.handleEnvelope(*inbound.Envelope)
+					case inbound.Barrier != nil:
+						close(inbound.Barrier)
+					}
+				default:
+					s.transportFailed()
+					return
+				}
+			}
 		case <-s.stop:
 			return
 		}
@@ -176,6 +198,17 @@ func (s *session) dispatch() {
 }
 
 func (s *session) handleEnvelope(env native.Envelope) {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	if env.SessionID != s.nativeID {
+		s.mu.Lock()
+		run := s.active
+		s.mu.Unlock()
+		if run != nil {
+			s.failRun(run, "makai_foreign_session", "native observation belongs to another session")
+		}
+		return
+	}
 	s.mu.Lock()
 	run := s.active
 	s.mu.Unlock()
@@ -209,9 +242,19 @@ func (s *session) handleEnvelope(env native.Envelope) {
 			return
 		}
 		s.mu.Lock()
+		duplicate := run.result != nil
+		s.mu.Unlock()
+		if duplicate {
+			s.failRun(run, "makai_duplicate_result", "received more than one agent_result")
+			return
+		}
+		s.mu.Lock()
 		run.result = &result
 		s.mu.Unlock()
 	case native.TypeAgentError:
+		if env.InReplyTo != nil && *env.InReplyTo != run.nativeMessageID {
+			return
+		}
 		payload, _ := native.DecodePayload[native.AgentError](env)
 		s.failRun(run, string(payload.Code), payload.Message)
 	case native.TypeToolExecute:
@@ -221,6 +264,7 @@ func (s *session) handleEnvelope(env native.Envelope) {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
+		s.failRun(run, "makai_unsolicited_session_stop", "Makai stopped the native session without a pending cancellation")
 	case native.TypeToolStreaming, native.TypeToolResult, native.TypeSessionInfo, native.TypeAck, native.TypeNack, native.TypePong, native.TypeGoodbye:
 		return
 	default:
@@ -429,14 +473,19 @@ func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
 	usage := (*protocol.Usage)(nil)
 	resultMap := map[string]any(nil)
 	if result != nil {
-		message.Content = resultContent(*result, run.text)
+		content, err := s.resultContent(run, *result, run.text)
+		if err != nil {
+			s.failRun(run, "makai_invalid_result_tool", err.Error())
+			return
+		}
+		message.Content = content
 		usage = &protocol.Usage{InputTokens: result.Input, OutputTokens: result.Output, TotalTokens: result.Input + result.Output}
 		resultMap = map[string]any{"provider": result.Provider, "api": result.API, "model": result.Model, "cache_read": result.CacheRead, "cache_write": result.CacheWrite}
 	}
 	_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: message, StopReason: stopReason, Result: resultMap, Usage: usage}, true)
 }
 
-func resultContent(result native.Result, fallback string) protocol.MessageContent {
+func (s *session) resultContent(run *runState, result native.Result, fallback string) (protocol.MessageContent, error) {
 	parts := make([]protocol.ContentPart, 0, len(result.Content))
 	for _, content := range result.Content {
 		switch content.Type {
@@ -445,15 +494,21 @@ func resultContent(result native.Result, fallback string) protocol.MessageConten
 		case "thinking":
 			parts = append(parts, protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: content.Thinking})
 		case "tool_call":
-			parts = append(parts, protocol.ContentPart{Type: protocol.ContentToolCall, ToolCallID: protocol.ToolCallID(content.ID), Name: content.Name, ArgumentsJSON: json.RawMessage(content.ArgumentsJSON)})
+			s.mu.Lock()
+			tool := s.tools[toolKey(run, content.ID)]
+			s.mu.Unlock()
+			if tool == nil {
+				return protocol.MessageContent{}, fmt.Errorf("result references unobserved tool call %q", content.ID)
+			}
+			parts = append(parts, protocol.ContentPart{Type: protocol.ContentToolCall, ToolCallID: tool.id, Name: content.Name, ArgumentsJSON: json.RawMessage(content.ArgumentsJSON)})
 		case "image":
 			parts = append(parts, protocol.ContentPart{Type: protocol.ContentImage, Image: &protocol.ImageContent{Data: content.Data, MediaType: content.MimeType}})
 		}
 	}
 	if len(parts) == 0 {
-		return protocol.TextContent(fallback)
+		return protocol.TextContent(fallback), nil
 	}
-	return protocol.PartsContent(parts)
+	return protocol.PartsContent(parts), nil
 }
 
 func (s *session) State(ctx context.Context) (protocol.SessionState, error) {
@@ -501,8 +556,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		s.mu.Unlock()
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
-	s.nativeSequence++
-	sequence := s.nativeSequence
+	sequence := s.nativeSequence + 1
 	s.mu.Unlock()
 	request, err := s.newNativeEnvelope(native.TypeAgentStop, sequence, native.AgentStop{SessionID: s.nativeID, Reason: "OAP run cancellation requested"})
 	if err != nil {
@@ -510,12 +564,18 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	}
 	response, err := s.client.Call(ctx, request, native.TypeAgentStopped, native.TypeAgentError)
 	if err != nil {
+		s.mu.Lock()
+		s.unusable = true
+		s.mu.Unlock()
+		s.failRun(run, "makai_cancellation_ambiguous", err.Error())
 		return protocol.RunCancelResponse{}, err
 	}
 	if response.Type == native.TypeAgentError {
 		payload, _ := native.DecodePayload[native.AgentError](response)
 		return protocol.RunCancelResponse{}, fmt.Errorf("Makai agent_stop failed: %s: %s", payload.Code, payload.Message)
 	}
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
 	s.mu.Lock()
 	if run.terminal {
 		status := run.status
@@ -525,6 +585,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	run.cancelRequested = true
 	run.status = protocol.RunCancelling
 	s.unusable = true
+	s.nativeSequence = sequence
 	s.mu.Unlock()
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	// At the pinned server, agent_stop removes the session before the detached
@@ -642,15 +703,18 @@ func (s *session) failRun(run *runState, code, message string) {
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
 }
 func (s *session) transportFailed() {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
 	s.mu.Lock()
 	run := s.active
 	closed := s.closed
+	if !closed {
+		s.unusable = true
+	}
 	s.mu.Unlock()
 	if !closed && run != nil {
 		<-run.admitted
-		s.opMu.Lock()
 		s.failRun(run, "makai_transport_failure", fmt.Sprint(s.client.Err()))
-		s.opMu.Unlock()
 	}
 }
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {

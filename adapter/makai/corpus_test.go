@@ -158,9 +158,19 @@ func runMakaiCorpusCase(t *testing.T, root string, entry makaiCorpusManifestCase
 	adaptertest.AssertDescriptor(t, descriptor)
 	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
 	admission, stream := submitTest(t, session)
+	client.mu.Lock()
+	if len(client.sends) != 1 {
+		client.mu.Unlock()
+		t.Fatalf("got %d native submissions", len(client.sends))
+	}
+	nativeMessageID := client.sends[0].MessageID
+	client.mu.Unlock()
 	for i, frame := range frames {
 		switch frame.Action {
 		case "", "observe":
+			if decoded[i].Type == native.TypeAgentError && decoded[i].Sequence == 0 {
+				decoded[i].InReplyTo = &nativeMessageID
+			}
 			client.inbound <- stdio.Inbound{Envelope: decoded[i]}
 		case "process-exit":
 			client.mu.Lock()

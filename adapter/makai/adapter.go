@@ -149,7 +149,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, errors.New("makai adapter: ID generator must produce a 21-character native session ID for kind makai-session")
 	}
-	request, err := a.envelope(native.TypeAgentStart, nativeAssociation, 1, native.AgentStart{ConfigJSON: string(a.config.AgentConfig), SystemPrompt: a.config.SystemPrompt})
+	request, err := a.envelope(native.TypeAgentStart, nativeAssociation, 1, native.AgentStart{ConfigJSON: string(a.config.AgentConfig), SystemPrompt: a.config.SystemPrompt, ResumeSessionID: &nativeAssociation})
 	if err != nil {
 		_ = client.Close()
 		return nil, err
@@ -190,9 +190,9 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, fmt.Errorf("%w: agent_start failed: %s: %s", ErrNativeProtocol, payload.Code, payload.Message)
 	}
 	started, err := native.DecodePayload[native.AgentStarted](response)
-	if err != nil || !started.SessionID.Valid() {
+	if err != nil || !started.SessionID.Valid() || started.SessionID != nativeAssociation || response.SessionID != nativeAssociation {
 		_ = client.Close()
-		return nil, fmt.Errorf("%w: invalid agent_started response", ErrNativeProtocol)
+		return nil, fmt.Errorf("%w: invalid or foreign agent_started response: requested=%s envelope=%s payload=%s", ErrNativeProtocol, nativeAssociation, response.SessionID, started.SessionID)
 	}
 	id := req.SessionID
 	if id == "" {

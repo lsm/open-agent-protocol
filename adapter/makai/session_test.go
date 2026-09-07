@@ -38,7 +38,7 @@ func (g *fakeIDs) NewID(kind string) string {
 	g.n++
 	switch kind {
 	case "makai-session":
-		return fmt.Sprintf("%021d", g.n)
+		return "Abcdefghijklmnopqrstu"
 	case "makai-frame":
 		return fmt.Sprintf("000000000000000000000%05d", g.n)
 	default:
@@ -52,6 +52,7 @@ type fakeClient struct {
 	done     chan struct{}
 	closed   bool
 	sends    []native.Envelope
+	sendErr  error
 	callHook func(context.Context, native.Envelope, ...native.Type) (native.Envelope, error)
 }
 
@@ -63,7 +64,7 @@ func (f *fakeClient) Call(ctx context.Context, request native.Envelope, accepted
 		return f.callHook(ctx, request, accepted...)
 	}
 	id := native.MessageID("01ARZ3NDEKTSV4RRFFQ69G5FAV")
-	env, _ := native.NewEnvelope(native.TypeAgentStarted, "Abcdefghijklmnopqrstu", id, 1, 1, native.AgentStarted{SessionID: "Abcdefghijklmnopqrstu"})
+	env, _ := native.NewEnvelope(native.TypeAgentStarted, request.SessionID, id, 1, 1, native.AgentStarted{SessionID: request.SessionID})
 	env.InReplyTo = &request.MessageID
 	return env, nil
 }
@@ -71,7 +72,7 @@ func (f *fakeClient) Send(_ context.Context, env native.Envelope) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sends = append(f.sends, env)
-	return nil
+	return f.sendErr
 }
 func (f *fakeClient) Inbound() <-chan stdio.Inbound { return f.inbound }
 func (f *fakeClient) Done() <-chan struct{}         { return f.done }
@@ -149,6 +150,39 @@ func TestFirstMessageUsesNativeSequenceTwo(t *testing.T) {
 	defer client.mu.Unlock()
 	if len(client.sends) != 1 || client.sends[0].Sequence != 2 {
 		t.Fatalf("sent envelopes=%+v", client.sends)
+	}
+}
+
+func TestAdmissionFailureRetiresSession(t *testing.T) {
+	session, client := openTest(t, 32)
+	client.sendErr = errors.New("write failed")
+	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	if err == nil {
+		t.Fatal("submission unexpectedly succeeded")
+	}
+	events := collect(t, stream)
+	if len(events) != 1 || events[0].Type != protocol.TypeRunFailed {
+		t.Fatalf("events=%v", types(events))
+	}
+	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("second submit error=%v", err)
+	}
+}
+
+func TestForeignAgentStartedIsRejected(t *testing.T) {
+	client := newFakeClient()
+	client.callHook = func(_ context.Context, request native.Envelope, _ ...native.Type) (native.Envelope, error) {
+		id := native.MessageID("01ARZ3NDEKTSV4RRFFQ69G5FAW")
+		env, _ := native.NewEnvelope(native.TypeAgentStarted, "Zbcdefghijklmnopqrstu", id, 1, 1, native.AgentStarted{SessionID: "Zbcdefghijklmnopqrstu"})
+		env.InReplyTo = &request.MessageID
+		return env, nil
+	}
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), WorkingDirectory: "/workspace", AgentConfig: json.RawMessage(`{"model":"test"}`), Clock: &fakeClock{}, IDs: &fakeIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := implementation.Open(context.Background(), base.OpenRequest{SessionID: "session"}); !errors.Is(err, ErrNativeProtocol) {
+		t.Fatalf("open error=%v", err)
 	}
 }
 
