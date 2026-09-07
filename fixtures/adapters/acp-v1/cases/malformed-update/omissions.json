@@ -1,0 +1,7 @@
+[
+  {
+    "index": 4,
+    "method": "response:result",
+    "reason": "arrives after authoritative terminal or is superseded by fatal settlement"
+  }
+]

@@ -1,0 +1,40 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-d",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "status": "running",
+      "started_at_ms": 3
+    },
+    "sequence": 1,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.failed",
+    "id": "event-f",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "error": {
+        "code": "acp_prompt_error",
+        "message": "fixture prompt failure"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 5,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v1"
+  }
+]

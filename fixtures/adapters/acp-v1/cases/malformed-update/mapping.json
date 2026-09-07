@@ -1,0 +1,30 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 1,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 2,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "required-unmapped",
+    "fidelity": "normalized",
+    "index": 3,
+    "method": "session/update",
+    "oap": "adapter setup or run evidence"
+  },
+  {
+    "classification": "observed-only",
+    "fidelity": "native",
+    "index": 4,
+    "method": "response:result",
+    "oap": "adapter setup or run evidence"
+  }
+]
