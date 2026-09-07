@@ -56,14 +56,15 @@ type Process struct {
 	Client     *Client
 	Initialize InitializeResponse
 
-	command  *exec.Cmd
-	stdin    io.WriteCloser
-	stderr   *limitedBuffer
-	waitDone chan struct{}
-	waitMu   sync.Mutex
-	waitErr  error
-	timeout  time.Duration
-	close    sync.Once
+	command    *exec.Cmd
+	stdin      io.WriteCloser
+	stderr     *limitedBuffer
+	stderrDone chan struct{}
+	waitDone   chan struct{}
+	waitMu     sync.Mutex
+	waitErr    error
+	timeout    time.Duration
+	close      sync.Once
 }
 
 func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
@@ -72,7 +73,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	}
 	args := append([]string(nil), config.Args...)
 	args = append(args, "app-server")
-	command := exec.CommandContext(ctx, config.Path, args...)
+	command := exec.Command(config.Path, args...)
 	command.Dir = config.Dir
 	command.Env = append([]string(nil), config.Env...)
 	stdin, err := command.StdinPipe()
@@ -95,10 +96,14 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 		stderrLimit = defaultStderrLimit
 	}
 	stderr := &limitedBuffer{limit: stderrLimit}
-	go func() { _, _ = io.Copy(stderr, stderrPipe) }()
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(stderr, stderrPipe)
+		close(stderrDone)
+	}()
 
 	process := &Process{
-		command: command, stdin: stdin, stderr: stderr, waitDone: make(chan struct{}),
+		command: command, stdin: stdin, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}),
 		timeout: config.ShutdownTimeout,
 	}
 	if process.timeout <= 0 {
@@ -157,6 +162,7 @@ func (process *Process) WaitError() error {
 
 func (process *Process) wait() {
 	err := process.command.Wait()
+	<-process.stderrDone
 	process.waitMu.Lock()
 	process.waitErr = err
 	process.waitMu.Unlock()

@@ -185,6 +185,13 @@ func ParseMessage(data []byte) (Message, error) {
 		message.Result = cloneRaw(object["result"])
 	}
 	if hasError {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(object["error"], &fields); err != nil {
+			return Message{}, fmt.Errorf("%w: malformed error object", ErrInvalidMessage)
+		}
+		if _, exists := fields["code"]; !exists {
+			return Message{}, fmt.Errorf("%w: error code is required", ErrInvalidMessage)
+		}
 		var rpcError ErrorObject
 		if err := json.Unmarshal(object["error"], &rpcError); err != nil || rpcError.Message == "" {
 			return Message{}, fmt.Errorf("%w: malformed error object", ErrInvalidMessage)

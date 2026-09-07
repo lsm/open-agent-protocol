@@ -11,10 +11,11 @@ import (
 )
 
 var (
-	ErrClosed            = errors.New("codex app-server rpc: client closed")
-	ErrResponseNotFound  = errors.New("codex app-server rpc: response id is not pending")
-	ErrNotificationQueue = errors.New("codex app-server rpc: notification queue is full")
-	ErrRequestQueue      = errors.New("codex app-server rpc: reverse request queue is full")
+	ErrClosed                 = errors.New("codex app-server rpc: client closed")
+	ErrResponseNotFound       = errors.New("codex app-server rpc: response id is not pending")
+	ErrNotificationQueue      = errors.New("codex app-server rpc: notification queue is full")
+	ErrRequestQueue           = errors.New("codex app-server rpc: reverse request queue is full")
+	ErrReverseRequestResolved = errors.New("codex app-server rpc: reverse request already resolved")
 )
 
 type RemoteError struct {
@@ -32,33 +33,37 @@ type IncomingRequest struct {
 	Params json.RawMessage
 	Trace  json.RawMessage
 	client *Client
-	once   sync.Once
+	mu     sync.Mutex
+	done   bool
 }
 
 func (request *IncomingRequest) Respond(ctx context.Context, result any) error {
-	var responseErr error = errors.New("codex app-server rpc: reverse request already resolved")
-	request.once.Do(func() {
-		data, err := marshalValue(result)
-		if err != nil {
-			responseErr = err
-			return
-		}
-		responseErr = request.client.write(ctx, Response(request.ID, data))
-	})
-	return responseErr
+	data, err := marshalValue(result)
+	if err != nil {
+		return err
+	}
+	return request.respond(ctx, Response(request.ID, data))
 }
 
 func (request *IncomingRequest) RespondError(ctx context.Context, code int64, message string, data any) error {
-	var responseErr error = errors.New("codex app-server rpc: reverse request already resolved")
-	request.once.Do(func() {
-		raw, err := marshalOptional(data)
-		if err != nil {
-			responseErr = err
-			return
-		}
-		responseErr = request.client.write(ctx, ErrorResponse(request.ID, ErrorObject{Code: code, Message: message, Data: raw}))
-	})
-	return responseErr
+	raw, err := marshalOptional(data)
+	if err != nil {
+		return err
+	}
+	return request.respond(ctx, ErrorResponse(request.ID, ErrorObject{Code: code, Message: message, Data: raw}))
+}
+
+func (request *IncomingRequest) respond(ctx context.Context, message Message) error {
+	request.mu.Lock()
+	defer request.mu.Unlock()
+	if request.done {
+		return ErrReverseRequestResolved
+	}
+	if err := request.client.write(ctx, message); err != nil {
+		return err
+	}
+	request.done = true
+	return nil
 }
 
 type NotificationMessage struct {
