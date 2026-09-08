@@ -95,9 +95,16 @@ func TestProcessHandshakeFailureRedactsAndBoundsStderr(t *testing.T) {
 func TestProcessInvalidInitialState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	start := time.Now()
 	_, err := Start(ctx, helperConfig("badstate"))
 	if !errors.Is(err, ErrHandshake) {
 		t.Fatalf("%v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid get_state response") {
+		t.Fatalf("%v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("invalid state rejection took %v", elapsed)
 	}
 }
 func TestProcessHandshakeCancellationReaps(t *testing.T) {

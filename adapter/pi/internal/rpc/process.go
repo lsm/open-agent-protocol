@@ -107,7 +107,8 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 		ready <- stateResult{state: state, err: err}
 	}()
 	var state native.SessionState
-	for state.SessionID == "" {
+readiness:
+	for {
 		select {
 		case result := <-ready:
 			if result.err != nil {
@@ -115,6 +116,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 				return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, result.err, process.Stderr())
 			}
 			state = result.state
+			break readiness
 		case inbound := <-process.Client.Inbound():
 			if inbound.Barrier != nil {
 				close(inbound.Barrier)
