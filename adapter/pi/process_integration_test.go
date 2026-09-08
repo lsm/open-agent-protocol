@@ -2,8 +2,11 @@ package pi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,14 +22,15 @@ import (
 
 const piMockSecret = "fixture-pi-key"
 
-// TestPinnedPiProcessSmoke is credential-free proof that the supplied pinned
-// executable starts in RPC mode and completes the adapter readiness handshake.
-// It is deliberately independent from the provider integration gate.
-func TestPinnedPiProcessSmoke(t *testing.T) {
+// TestPiProcessSmoke is credential-free runtime evidence that a supplied
+// version-matched executable starts in RPC mode and completes the adapter
+// readiness handshake. Set OAP_PI_SHA256 to bind the evidence to an exact
+// artifact; the semver check alone does not prove PinnedCommit.
+func TestPiProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_PI_SMOKE") != "1" {
-		t.Skip("set OAP_PI_SMOKE=1 and absolute OAP_PI_BIN pointing to Pi v0.85.1 to run")
+		t.Skip("set OAP_PI_SMOKE=1 and absolute OAP_PI_BIN pointing to Pi v0.85.1 to run; optionally set OAP_PI_SHA256 for exact-artifact evidence")
 	}
-	binary := pinnedPiBinary(t)
+	binary := verifiedPiBinary(t)
 	root := t.TempDir()
 	implementation := newPinnedPi(t, binary, root, piEnvironment(t, root, ""), nil)
 
@@ -39,7 +43,12 @@ func TestPinnedPiProcessSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close(context.Background())
+	closed := false
+	defer func() {
+		if !closed {
+			_ = session.Close(context.Background())
+		}
+	}()
 	state, err := session.State(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -47,19 +56,24 @@ func TestPinnedPiProcessSmoke(t *testing.T) {
 	if state.SessionID != "pi-smoke-session" || state.Status != protocol.SessionIdle {
 		t.Fatalf("state=%+v", state)
 	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatalf("close Pi smoke session: %v", err)
+	}
+	closed = true
 }
 
-// TestPinnedPiProcessAgainstResponsesMock is the hermetic behavioral gate. The
-// only configured provider endpoint is an in-process loopback server, and the
-// child receives a fixed allowlisted environment containing no ambient secrets.
-func TestPinnedPiProcessAgainstResponsesMock(t *testing.T) {
+// TestPiProcessAgainstResponsesMock is the hermetic behavioral gate. The only
+// configured provider endpoint is an in-process loopback server, and the child
+// receives a fixed allowlisted environment containing no ambient secrets. This
+// is runtime-version evidence unless OAP_PI_SHA256 binds the exact artifact.
+func TestPiProcessAgainstResponsesMock(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping pinned Pi process integration in short mode")
+		t.Skip("skipping opt-in Pi process integration in short mode")
 	}
 	if os.Getenv("OAP_PI_INTEGRATION") != "1" {
-		t.Skip("set OAP_PI_INTEGRATION=1 and absolute OAP_PI_BIN pointing to Pi v0.85.1 to run")
+		t.Skip("set OAP_PI_INTEGRATION=1 and absolute OAP_PI_BIN pointing to Pi v0.85.1 to run; optionally set OAP_PI_SHA256 for exact-artifact evidence")
 	}
-	binary := pinnedPiBinary(t)
+	binary := verifiedPiBinary(t)
 	mock := providertest.New(t, providertest.Config{OpenAIKey: piMockSecret})
 	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
 
@@ -91,7 +105,12 @@ func TestPinnedPiProcessAgainstResponsesMock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close(context.Background())
+	closed := false
+	defer func() {
+		if !closed {
+			_ = session.Close(context.Background())
+		}
+	}()
 	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
 		SessionID: "pi-process-session", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
@@ -119,9 +138,13 @@ func TestPinnedPiProcessAgainstResponsesMock(t *testing.T) {
 	if requests[0].Header.Get("Authorization") != "Bearer "+piMockSecret {
 		t.Fatal("unexpected mock authorization")
 	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatalf("close Pi integration session: %v", err)
+	}
+	closed = true
 }
 
-func pinnedPiBinary(t *testing.T) string {
+func verifiedPiBinary(t *testing.T) string {
 	t.Helper()
 	binary := os.Getenv("OAP_PI_BIN")
 	if binary == "" || !filepath.IsAbs(binary) {
@@ -130,6 +153,31 @@ func pinnedPiBinary(t *testing.T) string {
 	info, err := os.Stat(binary)
 	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
 		t.Fatalf("OAP_PI_BIN is not an executable file: %v", err)
+	}
+	if expected := os.Getenv("OAP_PI_SHA256"); expected != "" {
+		if len(expected) != sha256.Size*2 {
+			t.Fatal("OAP_PI_SHA256 must be exactly 64 hexadecimal characters")
+		}
+		expectedDigest, err := hex.DecodeString(expected)
+		if err != nil {
+			t.Fatal("OAP_PI_SHA256 must be exactly 64 hexadecimal characters")
+		}
+		file, err := os.Open(binary)
+		if err != nil {
+			t.Fatalf("open OAP_PI_BIN for digest verification: %v", err)
+		}
+		hash := sha256.New()
+		_, copyErr := io.Copy(hash, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			t.Fatalf("hash OAP_PI_BIN: %v", copyErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close OAP_PI_BIN after hashing: %v", closeErr)
+		}
+		if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), hex.EncodeToString(expectedDigest)) {
+			t.Fatal("OAP_PI_BIN SHA-256 does not match OAP_PI_SHA256")
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -279,5 +279,18 @@ exactly once: `initialize-minimal`, `message-admitted`, `message-rejected`,
 `switch-session`, `process-exit`, `malformed-command`, `fork-tree`, and
 `no-implied-replay`.
 
-A separately gated live-process test against the pinned `pi --mode rpc` binary
-uses a hermetic provider and follows the standing credential policy.
+Separately gated real-process tests use a caller-supplied Pi v0.85.1 executable:
+`OAP_PI_SMOKE=1` exercises startup/readiness without credentials, while
+`OAP_PI_INTEGRATION=1` exercises a complete response against a hermetic loopback
+provider. Both require an absolute `OAP_PI_BIN`, remain skipped in ordinary test
+and CI runs, perform no download, and assert clean session shutdown. The checked
+`--version` is runtime-version evidence only and does not prove `PinnedCommit`;
+when strong artifact identity is needed, `OAP_PI_SHA256` must supply the expected
+SHA-256 digest and the gate verifies it before execution.
+
+The pinned ledger records the extension wire protocol and disabling flag, but it
+does not pin the extension authoring/discovery API needed to construct a safe,
+deterministic no-agent fixture. The real-process gate therefore does not claim
+to prove extension discovery behavior. Production `--no-extensions` enforcement
+and rejection of caller extension flags are instead unit-tested at the adapter
+argv/config boundary.

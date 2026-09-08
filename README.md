@@ -60,6 +60,15 @@ Ordinary tests use fake credentials and loopback provider servers. Credentialed
 provider evidence is separately and explicitly gated as documented in the matrix;
 credential presence alone never enables network traffic.
 
+Pi real-process checks are also explicitly opt-in and skipped by ordinary CI.
+Provide an absolute Pi v0.85.1 executable in `OAP_PI_BIN`, then set
+`OAP_PI_SMOKE=1` for the credential-free readiness check or
+`OAP_PI_INTEGRATION=1` for the loopback-provider path. The executable's reported
+semver is runtime-version evidence only; it does not prove the source commit.
+Set `OAP_PI_SHA256` to the expected 64-character artifact digest when exact
+artifact provenance is required. The gate never downloads an executable and
+passes no ambient credentials to it.
+
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool
 source, or SDK adapter can implement the protocol without project-specific
