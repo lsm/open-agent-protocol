@@ -261,7 +261,7 @@ one-at-a-time vs all drain behavior.
 
 ## Executable evidence corpus
 
-`fixtures/adapters/pi-v0.85.1/` contains nine compact cases, each with exactly
+`fixtures/adapters/pi-v0.85.1/` contains ten compact cases, each with exactly
 `case.json`, `native.jsonl`, `mapping.json`, `omissions.json`, and
 `expected-oap.json`. The manifest and every case pin the tag, commit, tree, and
 seven inspected source blobs. Strict inventory checks reject unlisted files;
@@ -270,8 +270,12 @@ through the production decoder/reducer and validate exact OAP traces, while
 codec-only or injected-extension mismatches are named explicitly. Golden trace
 updates require `OAP_UPDATE_PI_CORPUS=1`.
 
-The nine representative cases cover each of the 24 ledger fixture labels
-exactly once: `initialize-minimal`, `message-admitted`, `message-rejected`,
+The ten representative cases cover each of the 24 ledger fixture labels
+exactly once. `message-rejected` is now a distinct executable case driven
+through `Session.Submit`; native-control outcome labels require matching decoded
+responses or queue observations, while unsupported controls remain explicitly
+command/codec evidence rather than advertised OAP execution support:
+`initialize-minimal`, `message-admitted`, `message-rejected`,
 `completed-text`, `streaming-deltas`, `multi-turn-tools`, `tool-completed`,
 `tool-failed`, `tool-progress`, `tool-parallel-order`, `steer-queued`,
 `steer-injected`, `follow-up-run`, `cancel-settled`, `error-retry`,

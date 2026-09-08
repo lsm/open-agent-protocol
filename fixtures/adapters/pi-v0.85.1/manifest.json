@@ -85,10 +85,16 @@
       ]
     },
     {
+      "id": "prompt-rejected",
+      "path": "prompt-rejected",
+      "ledger_fixtures": [
+        "message-rejected"
+      ]
+    },
+    {
       "id": "malformed-command",
       "path": "malformed-command",
       "ledger_fixtures": [
-        "message-rejected",
         "malformed-command"
       ]
     }

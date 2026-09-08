@@ -8,10 +8,10 @@
   },
   {
     "index": 2,
-    "type": "agent_start",
-    "direction": "pi-to-host",
+    "type": "process_exit",
+    "direction": "harness-control",
     "classification": "mapped",
     "fidelity": "synthesized",
-    "oap": "adapter reducer projection"
+    "oap": "transport failure projection"
   }
 ]

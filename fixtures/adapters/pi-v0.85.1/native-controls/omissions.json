@@ -1,1 +1,42 @@
-[]
+[
+   {
+      "index" : 2,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "response:steer"
+   },
+   {
+      "index" : 3,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "queue_update"
+   },
+   {
+      "index" : 5,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "response:follow_up"
+   },
+   {
+      "index" : 6,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "queue_update"
+   },
+   {
+      "index" : 8,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "response:get_state"
+   },
+   {
+      "index" : 10,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "response:get_entries"
+   },
+   {
+      "index" : 12,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "response:switch_session"
+   },
+   {
+      "index" : 14,
+      "reason" : "Native observation is decoded evidence only and does not imply an advertised OAP execution outcome.",
+      "type" : "response:fork"
+   }
+]

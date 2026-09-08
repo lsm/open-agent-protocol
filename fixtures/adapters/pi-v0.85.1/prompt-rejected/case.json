@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "id": "extension-dialog",
+  "id": "prompt-rejected",
   "native": "native.jsonl",
   "expected_oap": "expected-oap.json",
   "mapping": "mapping.json",
@@ -21,13 +21,13 @@
     }
   },
   "advertised_capabilities": {
-    "action.permissions": "unavailable",
-    "run.streaming": "native"
+    "run.streaming": "native",
+    "run.replay": "degraded"
   },
   "identity_map": {
-    "native.extension_ui_request.id": "oap.interaction_id",
-    "native.sessionId": "oap.session_id_association"
+    "native.sessionId": "oap.session_id_association",
+    "native.command.id": "private_request_correlation",
+    "native.toolCallId": "oap.tool_call_id"
   },
-  "resolve_extension": true,
-  "noncanonical_mismatch": "Injectable-client reducer evidence only: the canonical interaction trace is validated, but the built-in production process disables extensions and does not advertise an interactive gate."
+  "prompt_failure": true
 }

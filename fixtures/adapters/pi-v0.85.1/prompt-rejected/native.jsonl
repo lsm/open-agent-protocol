@@ -1,0 +1,1 @@
+{"direction":"host-to-pi","classification":"observed-only","fidelity":"native","action":"prompt-failure","raw":{"type":"prompt","message":"hello","streamingBehavior":"steer"}}

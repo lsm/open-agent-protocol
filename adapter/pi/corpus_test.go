@@ -82,6 +82,7 @@ type piCorpusCase struct {
 	ReplayAfter      *uint64            `json:"replay_after,omitempty"`
 	Cancel           bool               `json:"cancel,omitempty"`
 	ResolveExtension bool               `json:"resolve_extension,omitempty"`
+	PromptFailure    bool               `json:"prompt_failure,omitempty"`
 	Noncanonical     string             `json:"noncanonical_mismatch,omitempty"`
 	CodecOnly        bool               `json:"codec_only,omitempty"`
 }
@@ -160,6 +161,8 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 	mappings := piLoadJSON[[]piCorpusMapping](t, filepath.Join(dir, definition.Mapping))
 	omissions := piLoadJSON[[]piCorpusOmission](t, filepath.Join(dir, definition.Omissions))
 	assertPiClassifications(t, frames, decoded, mappings, omissions)
+	assertPiCaseActions(t, definition, frames)
+	assertPiLedgerEvidence(t, entry.LedgerFixtures, frames, decoded)
 	if definition.CodecOnly {
 		assertPiExpected(t, filepath.Join(dir, definition.ExpectedOAP), nil)
 		if definition.Noncanonical == "" {
@@ -169,8 +172,9 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 	}
 
 	client := newFakeClient()
+	promptErr := errors.New("fixture prompt rejected")
 	client.onCall = func(c native.Command) {
-		if c.Type == native.CommandPrompt {
+		if c.Type == native.CommandPrompt && !definition.PromptFailure {
 			client.emit(t, map[string]any{"type": "agent_start"})
 		}
 	}
@@ -188,11 +192,32 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 	}
 	adaptertest.AssertDescriptor(t, descriptor)
 	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
-	admission, stream := submitTest(t, session.(*Session))
+	var admission protocol.MessageSubmitResponse
+	var stream base.EventStream
+	if definition.PromptFailure {
+		client.mu.Lock()
+		client.err = promptErr
+		client.mu.Unlock()
+		var err error
+		admission, stream, err = session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		if !errors.Is(err, promptErr) {
+			t.Fatalf("prompt rejection error = %v, want %v", err, promptErr)
+		}
+		if admission.Accepted || len(adaptertest.Drain(t, stream, time.Second)) != 0 {
+			t.Fatal("rejected prompt exposed admission or run events")
+		}
+		if _, err := session.State(context.Background()); err == nil {
+			t.Fatal("rejected prompt did not leave session fail-closed")
+		}
+		assertPiExpected(t, filepath.Join(dir, definition.ExpectedOAP), nil)
+		return
+	}
+	admission, stream = submitTest(t, session.(*Session))
 	var collected []protocol.Envelope
+	var resolutionTrace []protocol.Envelope
 	for i, frame := range frames {
 		switch frame.Action {
-		case "", "observe":
+		case "", "observe", "observe-extension":
 			if decoded[i].Event != nil {
 				client.inbound <- rpc.Inbound{Event: decoded[i].Event}
 			} else if decoded[i].ExtensionRequest != nil {
@@ -206,14 +231,31 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 			for len(collected) < 3 {
 				collected = append(collected, adaptertest.Next(t, stream, time.Second))
 			}
-			var request protocol.UserInputRequestedPayload
-			if err := collected[len(collected)-2].DecodePayload(&request); err != nil {
+			var requested protocol.UserInputRequestedPayload
+			if err := collected[len(collected)-2].DecodePayload(&requested); err != nil {
 				t.Fatal(err)
 			}
-			err := session.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: request.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "value", SelectedOptionIDs: []string{"yes"}}}}})
+			request := protocol.UserInputResolveRequest{InteractionID: requested.InteractionID, RequestedBy: requested.RequestedBy, RespondedBy: requested.RespondedBy, SessionID: admission.SessionID, RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "value", SelectedOptionIDs: []string{"yes"}}}}
+			requestEnvelope, err := protocol.NewEnvelope(protocol.TypeUserInputResolveRequest, "resolve-request", request)
 			if err != nil {
 				t.Fatal(err)
 			}
+			requestEnvelope.SessionID, requestEnvelope.RunID = admission.SessionID, admission.RunID
+			if err := session.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: request.RespondedBy, Input: &request}); err != nil {
+				t.Fatal(err)
+			}
+			client.mu.Lock()
+			responses := append([]native.ExtensionUIResponse(nil), client.responses...)
+			client.mu.Unlock()
+			if len(responses) != 1 || responses[0].ID != "ui-1" || responses[0].Confirmed == nil || !*responses[0].Confirmed {
+				t.Fatalf("native extension response mismatch: %+v", responses)
+			}
+			responseEnvelope, err := protocol.NewEnvelope(protocol.TypeUserInputResolveResponse, "resolve-response", protocol.UserInputResolveResponse{InteractionID: requested.InteractionID, SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			responseEnvelope.SessionID, responseEnvelope.RunID, responseEnvelope.InReplyTo = admission.SessionID, admission.RunID, requestEnvelope.ID
+			resolutionTrace = []protocol.Envelope{requestEnvelope, responseEnvelope}
 		case "process-exit":
 			client.mu.Lock()
 			client.err = errors.New("fixture process exit")
@@ -233,10 +275,9 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 	}
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
 	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
-	if definition.Noncanonical == "" {
-		validatePiTrace(t, admission, descriptor, events, definition.Cancel)
-	} else {
-		t.Logf("case %s: explicit noncanonical mismatch: %s", entry.ID, definition.Noncanonical)
+	validatePiTrace(t, admission, descriptor, events, definition.Cancel, resolutionTrace)
+	if definition.Noncanonical != "" {
+		t.Logf("case %s: explicit production-boundary mismatch: %s", entry.ID, definition.Noncanonical)
 	}
 	if definition.ReplayAfter != nil {
 		assertPiReplay(t, session, admission.RunID, *definition.ReplayAfter, events)
@@ -272,6 +313,18 @@ func piLoadFrames(t *testing.T, filename string) ([]piCorpusFrame, []rpc.Frame) 
 			} else {
 				got = value
 			}
+		case "harness-control":
+			if frame.Action != "process-exit" {
+				t.Fatalf("frame %d invalid harness control action %q", i+1, frame.Action)
+			}
+			var control struct {
+				Type  string `json:"type"`
+				Error string `json:"error"`
+			}
+			piDecodeStrict(t, frame.Raw, &control, fmt.Sprintf("%s frame %d", filename, i+1))
+			if control.Type != "process_exit" || control.Error == "" {
+				t.Fatalf("frame %d invalid process-exit control", i+1)
+			}
 		case "host-to-pi":
 			var command native.Command
 			err := native.DecodeStrict(frame.Raw, &command)
@@ -303,6 +356,110 @@ func piLoadFrames(t *testing.T, filename string) ([]piCorpusFrame, []rpc.Frame) 
 	return frames, decoded
 }
 
+func assertPiCaseActions(t *testing.T, definition piCorpusCase, frames []piCorpusFrame) {
+	t.Helper()
+	cancel, resolve, promptFailure := 0, 0, 0
+	for i, frame := range frames {
+		switch frame.Action {
+		case "", "observe", "observe-extension", "outbound-only", "decode-error", "process-exit", "cancel", "resolve-extension", "prompt-failure", "state":
+		default:
+			t.Fatalf("frame %d has unknown action %q", i+1, frame.Action)
+		}
+		if frame.Action == "cancel" {
+			cancel++
+		}
+		if frame.Action == "resolve-extension" {
+			resolve++
+		}
+		if frame.Action == "prompt-failure" {
+			promptFailure++
+		}
+	}
+	if definition.Cancel != (cancel == 1) || cancel > 1 {
+		t.Fatalf("cancel metadata/action mismatch: metadata=%t actions=%d", definition.Cancel, cancel)
+	}
+	if definition.ResolveExtension != (resolve == 1) || resolve > 1 {
+		t.Fatalf("resolve_extension metadata/action mismatch: metadata=%t actions=%d", definition.ResolveExtension, resolve)
+	}
+	if definition.PromptFailure != (promptFailure == 1) || promptFailure > 1 {
+		t.Fatalf("prompt_failure metadata/action mismatch: metadata=%t actions=%d", definition.PromptFailure, promptFailure)
+	}
+}
+
+func hasPiCommand(frames []piCorpusFrame, typ native.CommandType) bool {
+	for _, frame := range frames {
+		if frame.Direction != "host-to-pi" {
+			continue
+		}
+		var command native.Command
+		if json.Unmarshal(frame.Raw, &command) == nil && command.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+func hasPiEvent(decoded []rpc.Frame, typ native.EventType) bool {
+	for _, frame := range decoded {
+		if frame.Event != nil && frame.Event.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+func hasPiResponse(decoded []rpc.Frame, command native.CommandType) bool {
+	for _, frame := range decoded {
+		if frame.Response != nil && frame.Response.Command == command && frame.Response.Success {
+			return true
+		}
+	}
+	return false
+}
+func assertPiLedgerEvidence(t *testing.T, labels []string, frames []piCorpusFrame, decoded []rpc.Frame) {
+	t.Helper()
+	for _, label := range labels {
+		ok := true
+		switch label {
+		case "message-rejected":
+			ok = len(frames) == 1 && frames[0].Action == "prompt-failure"
+		case "malformed-command":
+			ok = len(frames) == 1 && frames[0].Action == "decode-error"
+		case "steer-queued":
+			ok = hasPiEvent(decoded, native.EventQueueUpdate)
+		case "steer-injected":
+			ok = hasPiCommand(frames, native.CommandSteer) && hasPiResponse(decoded, native.CommandSteer)
+		case "follow-up-run":
+			ok = hasPiCommand(frames, native.CommandFollowUp) && hasPiResponse(decoded, native.CommandFollowUp)
+		case "reconcile-state":
+			ok = hasPiCommand(frames, native.CommandGetState) && hasPiResponse(decoded, native.CommandGetState)
+		case "entries-since":
+			ok = hasPiCommand(frames, native.CommandGetEntries) && hasPiResponse(decoded, native.CommandGetEntries)
+		case "switch-session":
+			ok = hasPiCommand(frames, native.CommandSwitchSession) && hasPiResponse(decoded, native.CommandSwitchSession)
+		case "fork-tree":
+			ok = hasPiCommand(frames, native.CommandFork) && hasPiResponse(decoded, native.CommandFork)
+		case "no-implied-replay":
+			ok = hasPiCommand(frames, native.CommandGetEntries) && hasPiResponse(decoded, native.CommandGetEntries)
+		case "process-exit":
+			ok = false
+			for _, frame := range frames {
+				if frame.Action == "process-exit" && frame.Direction == "harness-control" {
+					ok = true
+				}
+			}
+		case "extension-dialog":
+			request, response := false, false
+			for _, frame := range frames {
+				request = request || frame.Action == "observe-extension"
+				response = response || frame.Action == "resolve-extension"
+			}
+			ok = request && response
+		}
+		if !ok {
+			t.Fatalf("ledger label %q lacks executable evidence", label)
+		}
+	}
+}
+
 func assertPiClassifications(t *testing.T, frames []piCorpusFrame, decoded []rpc.Frame, mappings []piCorpusMapping, omissions []piCorpusOmission) {
 	t.Helper()
 	if len(frames) != len(mappings) {
@@ -317,7 +474,9 @@ func assertPiClassifications(t *testing.T, frames []piCorpusFrame, decoded []rpc
 	}
 	for i, f := range frames {
 		typ := "codec-error"
-		if f.Direction == "host-to-pi" && f.Action != "decode-error" {
+		if f.Direction == "harness-control" {
+			typ = "process_exit"
+		} else if f.Direction == "host-to-pi" && f.Action != "decode-error" {
 			var c native.Command
 			_ = json.Unmarshal(f.Raw, &c)
 			typ = string(c.Type)
@@ -333,13 +492,17 @@ func assertPiClassifications(t *testing.T, frames []piCorpusFrame, decoded []rpc
 			t.Fatalf("frame %d mapping mismatch: %+v type=%s", i+1, m, typ)
 		}
 		switch f.Classification {
-		case "mapped", "required-unmapped":
-			if omitted[i+1].Index != 0 {
-				t.Fatalf("mapped frame %d is omitted", i+1)
+		case "mapped":
+			if omitted[i+1].Index != 0 || m.OAP == "" {
+				t.Fatalf("mapped frame %d must name its OAP projection and cannot be omitted", i+1)
+			}
+		case "required-unmapped":
+			if omitted[i+1].Index != 0 || m.OAP != "" || f.Fidelity != "unsupported" {
+				t.Fatalf("required-unmapped frame %d has inconsistent mapping semantics", i+1)
 			}
 		case "observed-only":
-			if omitted[i+1].Index == 0 || omitted[i+1].Type != typ {
-				t.Fatalf("observed-only frame %d lacks omission", i+1)
+			if omitted[i+1].Index == 0 || omitted[i+1].Type != typ || m.OAP != "" {
+				t.Fatalf("observed-only frame %d has inconsistent omission semantics", i+1)
 			}
 		default:
 			t.Fatalf("invalid classification %q", f.Classification)
@@ -352,7 +515,7 @@ func assertPiClassifications(t *testing.T, frames []piCorpusFrame, decoded []rpc
 	}
 }
 
-func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool) {
+func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool, resolutionTrace []protocol.Envelope) {
 	t.Helper()
 	capReq, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
 	capRes, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
@@ -382,6 +545,38 @@ func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, des
 		trace = append(trace, events[anchor:]...)
 	} else {
 		trace = append(trace, events...)
+	}
+	if len(resolutionTrace) > 0 {
+		// The injected-client case cannot pass capability-aware semantic validation:
+		// production truthfully advertises user input unavailable. Still construct
+		// and check the canonical request/response portion and its ordering/identity.
+		anchor := -1
+		var requested protocol.UserInputRequestedPayload
+		for i, event := range trace {
+			if event.Type == protocol.TypeUserInputRequested {
+				anchor = i + 1
+				if err := event.DecodePayload(&requested); err != nil {
+					t.Fatal(err)
+				}
+				break
+			}
+		}
+		if anchor < 0 || len(resolutionTrace) != 2 || resolutionTrace[0].Type != protocol.TypeUserInputResolveRequest || resolutionTrace[1].Type != protocol.TypeUserInputResolveResponse || resolutionTrace[1].InReplyTo != resolutionTrace[0].ID {
+			t.Fatal("invalid injected interaction request/response trace")
+		}
+		var request protocol.UserInputResolveRequest
+		var response protocol.UserInputResolveResponse
+		if err := resolutionTrace[0].DecodePayload(&request); err != nil {
+			t.Fatal(err)
+		}
+		if err := resolutionTrace[1].DecodePayload(&response); err != nil {
+			t.Fatal(err)
+		}
+		if request.InteractionID != requested.InteractionID || response.InteractionID != requested.InteractionID || request.SessionID != admission.SessionID || response.SessionID != admission.SessionID || request.RunID != admission.RunID || response.RunID != admission.RunID || !response.Accepted {
+			t.Fatal("injected interaction identity or acceptance mismatch")
+		}
+		trace = append(trace[:anchor], append(resolutionTrace, trace[anchor:]...)...)
+		return
 	}
 	encoded, _ := json.Marshal(trace)
 	if result := validation.MustNew().ValidateBytes(encoded, "pi-corpus"); !result.Valid() {

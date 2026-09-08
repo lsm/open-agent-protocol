@@ -4,7 +4,6 @@
     "type": "codec-error",
     "direction": "host-to-pi",
     "classification": "required-unmapped",
-    "fidelity": "unsupported",
-    "oap": "transport evidence only"
+    "fidelity": "unsupported"
   }
 ]
