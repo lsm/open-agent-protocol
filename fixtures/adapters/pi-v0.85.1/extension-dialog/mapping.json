@@ -1,0 +1,33 @@
+[
+  {
+    "index": 1,
+    "type": "extension_ui_request",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 2,
+    "type": "turn_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 3,
+    "type": "agent_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 4,
+    "type": "agent_settled",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  }
+]

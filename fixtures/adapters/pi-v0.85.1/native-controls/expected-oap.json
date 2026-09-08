@@ -1,0 +1,47 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-2",
+      "status": "running",
+      "started_at_ms": 3
+    },
+    "sequence": 1,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.85.1-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-2",
+      "final_response": {
+        "id": "message-3",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "controls recorded"
+          }
+        ]
+      },
+      "stop_reason": "stop"
+    },
+    "sequence": 2,
+    "timestamp_ms": 5,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.85.1-oap-v1"
+  }
+]

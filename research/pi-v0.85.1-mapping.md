@@ -1,9 +1,10 @@
 # Pi coding agent v0.85.1 mapping ledger
 
-Status: pinned evidence boundary for the fifth production OAP adapter
-candidate (after Codex app-server, ACP, Makai, and the Claude Code wrapper).
-This is an implementation input, not an interoperability claim. No adapter
-code exists yet.
+Status: implemented fifth production OAP adapter (after Codex app-server,
+ACP, Makai, and the Claude Code wrapper), pinned to the RPC evidence boundary.
+The executable corpus below proves the documented projection; native surfaces
+outside the advertised OAP v0.1 capabilities remain evidence, not support
+claims.
 
 ## Provenance
 
@@ -82,10 +83,28 @@ proves there.
 - **Framing robustness:** line-oriented JSON over stdio with explicit raw
   stdout backpressure handling (`waitForRawStdoutBackpressure` subscribed to
   agent events); SIGTERM/SIGHUP trigger tracked-children teardown and
-  numbered exit (143/129).
+  numbered exit (143/129). The adapter's production codec adopts a strict LF
+  policy: every frame must end in LF, CR is rejected rather than accepted as
+  CRLF, empty or unterminated frames fail, and UTF-8 plus the configured frame
+  limit are checked before dispatch.
+- **Discriminator facts:** ordinary inbound events are discriminated directly
+  by their top-level `type`; `response` and `extension_ui_request` are distinct
+  frame families. Persisted entries carry their own `type`, `id`, and
+  `parentId`; notably the wire spellings include `branch_summary` and
+  `custom_message`. `get_entries { since }` is cursor-shaped transcript
+  reconstruction, not live-event replay. `entry_appended` is not a complete
+  history feed at this pin; it is visibly emitted for extension custom-entry
+  writes.
+- **Known union gap:** the pinned TypeScript declared RPC union omits
+  `extension_error`, although the pinned runtime emits that top-level frame
+  when an extension callback fails. Production native types explicitly accept
+  this observed runtime variant rather than mistaking it for an ordinary
+  agent event.
 
 There are no sequence numbers and no capability negotiation. The first
-exchanged frame is whatever the host sends; readiness is implicit.
+exchanged frame is whatever the host sends; readiness is implicit. The
+adapter performs `get_state` as its readiness handshake and treats an idle
+snapshot as provisional: native events or process failure may follow.
 
 ## Identity domains
 
@@ -107,8 +126,8 @@ exchanged frame is whatever the host sends; readiness is implicit.
 | Native observation | OAP meaning | Fidelity | Initial support | Required fixture |
 |---|---|---|---|---|
 | process start (`--mode rpc`) | initialize response and descriptor | synthesized | emulated | `initialize-minimal` |
-| `prompt` response (post-preflight success) | admission; allocate submission and run | normalized | emulated | `message-admitted` |
-| `prompt` error response (preflight failure) | submission rejected | normalized | native | `message-rejected` |
+| successful `prompt` response, then `agent_start` | canonical admission; allocate submission and run only once started semantics are proven | normalized | emulated | `message-admitted` |
+| `prompt` error response, slash command without an agent run, or accepted prompt with no later `agent_start` | rejected/failed pre-start submission; no canonical accepted run | normalized | native/degraded | `message-rejected` |
 | `agent_start` event | `run.started` | normalized | native | `completed-text` |
 | `message_start/update/end` (assistant) | portable message lifecycle; `message_update` carries the provider stream event | normalized | native | `streaming-deltas` |
 | `turn_start` / `turn_end` | internal turn diagnostics | observed-only | no core claim | `multi-turn-tools` |
@@ -165,11 +184,12 @@ one-at-a-time vs all drain behavior.
 
 ## Session state and recovery
 
-- Sessions are append-only JSONL trees under `~/.pi/agent/sessions/`
-  (cwd-encoded path), entries typed `message | thinking_level_change |
-  model_change | compaction | branchSummary | custom | customMessage |
-  label | session_info`, each with `id`, `parentId`, `timestamp`
-  (`session-manager.ts`).
+- Sessions are persisted as append-only JSONL trees under
+  `~/.pi/agent/sessions/` (cwd-encoded path), with entry discriminators
+  `message | thinking_level_change | model_change | compaction |
+  branch_summary | custom | custom_message | label | session_info`; each entry
+  has `id`, `parentId`, and `timestamp` (`session-manager.ts`). The live
+  `entry_appended` event is not a comprehensive feed of those writes.
 - `get_entries` supports `since` — a genuine cursor-shaped transcript
   reconstruction primitive, but reconstruction, not event replay: there is
   no redelivery contract for the live stream.
@@ -179,66 +199,85 @@ one-at-a-time vs all drain behavior.
 - Corrupt/oversized session files are skipped during discovery without
   failing the scan (defensive persistence).
 
-## P0 mismatches
+## P0 mismatches and implemented policy
 
-1. **No capability negotiation:** descriptor is synthesized; `get_state`,
+1. **No capability negotiation:** the descriptor is synthesized; `get_state`,
    `get_available_models`, and `get_commands` provide post-hoc truth.
-2. **No native submission/run identity:** adapter allocates both; the RPC
+2. **No native submission/run identity:** the adapter allocates both; the RPC
    `id` is caller-private.
-3. **Admission is post-preflight and queue-aware:** a success response means
-   accepted-for-eventual-execution, not execution started; OAP admission
-   mapping must state this explicitly (it aligns with OAP's
-   admission/settlement split).
-4. **Settlement is two-stage** (`agent_end` + `agent_settled`) and
-   retry-complicated (`willRetry`); one terminal arbiter required.
-5. **Abort acknowledgement is post-settlement** (awaited idle) — the
-   opposite default from Claude Code; the adapter must not treat Pi's ack
-   as intent-only, nor Claude's as settlement.
-6. **Steering/follow-up queues are first-class** — OAP delivery modes can be
-   native here, but queue-mode switches (`one-at-a-time`) are process-wide
-   state, not per-run.
-7. **Extension UI interactions are not permissions:** they are a general
-   dialog surface; OAP interaction mapping must not mislabel them.
-8. **Parallel tool completion order differs from result emission order** —
-   the action reducer must key strictly on `toolCallId`, not ordering.
-9. **No sequence numbers:** OAP sequence is adapter-owned.
-10. **Session tree semantics exceed core OAP:** fork/navigate/branch need an
-    explicit extension decision before any claim.
+3. **Native prompt success is not canonical OAP acceptance:** Pi can report
+   success for queued prompts, slash commands, and extension-consumed input
+   without starting an agent. OAP v0.1 canonical accepted submissions require
+   started semantics, so the adapter withholds success until `agent_start`.
+   A no-agent/slash path fails pre-start rather than fabricating a run.
+4. **Production extensions are disabled:** the spawned process always receives
+   `--no-extensions`, explicit extension flags are rejected, and the descriptor
+   advertises `InteractiveGates=false`. The corpus extension-dialog case uses
+   an injected client solely as reducer evidence and is explicitly
+   noncanonical; extension UI is neither a production capability nor a
+   permission claim.
+5. **Settlement is two-stage** (`agent_end` + `agent_settled`) and
+   retry-complicated (`willRetry`); one terminal arbiter is used.
+6. **Cancellation before `agent_start`:** local abort intent is retained across
+   the pre-start boundary. A late `agent_start` is immediately followed by the
+   native abort, and no successful admission is exposed merely because Pi had
+   acknowledged the prompt.
+7. **Abort acknowledgement is post-idle natively**, but the adapter still uses
+   `agent_settled` as terminal authority and handles completion/cancellation
+   races through one arbiter.
+8. **Steering/follow-up queues are first-class natively but unavailable in the
+   current OAP surface:** the codec corpus records them; it does not imply an
+   advertised delivery claim. `auto` alone is exposed for submission.
+9. **Parallel tool completion order differs from result emission order** —
+   action state is keyed strictly on `toolCallId`, not ordering.
+10. **No sequence numbers:** OAP sequence is adapter-owned and replay is only
+    the bounded adapter journal. `get_entries since` does not imply replay.
+11. **Session tree and process session replacement exceed core OAP:** fork,
+    navigation, `switch_session`, and `new_session` remain codec evidence only.
+12. **Provisional idle and transport failure:** initial/get-state idle is a
+    reconciliation observation, not settlement. EOF/process exit before
+    authoritative settlement produces one synthesized `run.failed`.
 
-## Initial capabilities
+## Advertised capabilities
 
 - initialize / capability revision: `emulated`
-- session association: `emulated` (process + `get_state`)
-- submission/admission: `emulated` (post-preflight response)
+- session association and state: `emulated` (process plus `get_state`)
+- submission/admission: `emulated`; native prompt success is held until
+  `agent_start`
 - run identity/status/sequence: `emulated`
-- one foreground run per session, plus native queueing: enforced locally
-- text streaming: `native` (`message_update` with provider stream events)
-- tool lifecycle and progress: `degraded` until fixtures pass
-- delivery `auto`/`queue`/`steer`: `native` candidates (first adapter with
-  truthful steer support), degraded until fixtures pass
-- cancellation: `native` candidate (post-settlement ack), degraded until
-  the race fixtures pass
-- interactions: `degraded` (extension UI channel exists, is not
-  permission-shaped)
+- one foreground run per OAP session: enforced locally
+- text streaming: `native` (`message_update` provider stream events)
+- tool lifecycle/progress: `degraded` observed lifecycle; Pi owns execution
+- delivery `auto`: `emulated`; `queue` and `steer`: `unavailable`
+- cancellation: `degraded`; native abort with `agent_settled` authority
+- interactions and permissions: `unavailable`; production extensions disabled
+  and `InteractiveGates=false`
 - reconciliation: `emulated` (`get_state`)
-- transcript reconstruction: `degraded` (`get_entries since`)
-- event replay: `unavailable`
-- fork/branch navigation: `unavailable` pending OAP extension decision
-- model catalog: `degraded` (`get_available_models` exists, unexercised)
-- compaction control, retry control, bash passthrough: observed-only, no
+- run resume/replay: `degraded`, bounded process-memory OAP journal only
+- transcript reconstruction, fork/tree navigation, and session switching:
+  `unavailable` at the OAP boundary despite native codec evidence
+- compaction, retry, queue controls, and bash passthrough: observed-only, no
   core claim
 
-## Evidence corpus plan
+## Executable evidence corpus
 
-`fixtures/adapters/pi-v0.85.1/` with the standard five-file case shape,
-covering at minimum: `initialize-minimal`, `message-admitted`,
-`message-rejected`, `completed-text`, `streaming-deltas`,
-`multi-turn-tools`, `tool-completed`, `tool-failed`, `tool-progress`,
-`tool-parallel-order`, `steer-queued`, `steer-injected`, `follow-up-run`,
-`cancel-settled`, `error-retry`, `compaction`, `extension-dialog`,
-`reconcile-state`, `entries-since`, `switch-session`, `process-exit`,
-`malformed-command`, `fork-tree`, `no-implied-replay`.
+`fixtures/adapters/pi-v0.85.1/` contains nine compact cases, each with exactly
+`case.json`, `native.jsonl`, `mapping.json`, `omissions.json`, and
+`expected-oap.json`. The manifest and every case pin the tag, commit, tree, and
+seven inspected source blobs. Strict inventory checks reject unlisted files;
+classification checks account for every native line; canonical cases execute
+through the production decoder/reducer and validate exact OAP traces, while
+codec-only or injected-extension mismatches are named explicitly. Golden trace
+updates require `OAP_UPDATE_PI_CORPUS=1`.
 
-A gated live-process test against the real `pi --mode rpc` binary with a
-hermetic provider follows the Makai integration-gate pattern; the standing
-credential policy applies unchanged.
+The nine representative cases cover each of the 24 ledger fixture labels
+exactly once: `initialize-minimal`, `message-admitted`, `message-rejected`,
+`completed-text`, `streaming-deltas`, `multi-turn-tools`, `tool-completed`,
+`tool-failed`, `tool-progress`, `tool-parallel-order`, `steer-queued`,
+`steer-injected`, `follow-up-run`, `cancel-settled`, `error-retry`,
+`compaction`, `extension-dialog`, `reconcile-state`, `entries-since`,
+`switch-session`, `process-exit`, `malformed-command`, `fork-tree`, and
+`no-implied-replay`.
+
+A separately gated live-process test against the pinned `pi --mode rpc` binary
+uses a hermetic provider and follows the standing credential policy.

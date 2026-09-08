@@ -1,0 +1,7 @@
+[
+  {
+    "index": 1,
+    "type": "turn_start",
+    "reason": "Pi turn boundaries are diagnostics with no OAP core projection"
+  }
+]

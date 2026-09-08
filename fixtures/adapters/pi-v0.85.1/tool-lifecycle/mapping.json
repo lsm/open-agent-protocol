@@ -1,0 +1,65 @@
+[
+  {
+    "index": 1,
+    "type": "turn_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 2,
+    "type": "tool_execution_start",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 3,
+    "type": "tool_execution_start",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 4,
+    "type": "tool_execution_update",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 5,
+    "type": "tool_execution_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 6,
+    "type": "tool_execution_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 7,
+    "type": "agent_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 8,
+    "type": "agent_settled",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  }
+]

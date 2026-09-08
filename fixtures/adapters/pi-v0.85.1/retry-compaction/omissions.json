@@ -1,0 +1,22 @@
+[
+  {
+    "index": 1,
+    "type": "auto_retry_start",
+    "reason": "Retry lifecycle is observed only; willRetry controls terminal arbitration"
+  },
+  {
+    "index": 3,
+    "type": "auto_retry_end",
+    "reason": "Retry lifecycle is observed only"
+  },
+  {
+    "index": 4,
+    "type": "compaction_start",
+    "reason": "Context maintenance is outside OAP run lifecycle"
+  },
+  {
+    "index": 5,
+    "type": "compaction_end",
+    "reason": "Context maintenance is outside OAP run lifecycle"
+  }
+]

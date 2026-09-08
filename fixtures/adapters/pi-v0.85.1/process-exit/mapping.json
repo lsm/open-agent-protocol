@@ -1,0 +1,17 @@
+[
+  {
+    "index": 1,
+    "type": "turn_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 2,
+    "type": "agent_start",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "adapter reducer projection"
+  }
+]

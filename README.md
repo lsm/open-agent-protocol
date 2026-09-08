@@ -46,6 +46,7 @@ Research:
 - [Pinned Codex app-server mapping](research/codex-app-server-8d7cc24-mapping.md)
 - [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md)
 - [Pinned Makai agent-protocol mapping](research/makai-agent-67ad514-mapping.md)
+- [Pinned Pi coding-agent mapping](research/pi-v0.85.1-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
 
 Provider compatibility is tested independently from harness conformance. Inspect

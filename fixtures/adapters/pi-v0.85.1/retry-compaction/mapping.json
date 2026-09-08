@@ -1,0 +1,54 @@
+[
+  {
+    "index": 1,
+    "type": "auto_retry_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 2,
+    "type": "agent_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 3,
+    "type": "auto_retry_end",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 4,
+    "type": "compaction_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 5,
+    "type": "compaction_end",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 6,
+    "type": "agent_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 7,
+    "type": "agent_settled",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  }
+]

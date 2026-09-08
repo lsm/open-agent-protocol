@@ -1,0 +1,66 @@
+[
+  {
+    "index": 1,
+    "type": "steer",
+    "direction": "host-to-pi",
+    "classification": "required-unmapped",
+    "fidelity": "unsupported",
+    "oap": "transport evidence only"
+  },
+  {
+    "index": 2,
+    "type": "follow_up",
+    "direction": "host-to-pi",
+    "classification": "required-unmapped",
+    "fidelity": "unsupported",
+    "oap": "transport evidence only"
+  },
+  {
+    "index": 3,
+    "type": "get_state",
+    "direction": "host-to-pi",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "transport evidence only"
+  },
+  {
+    "index": 4,
+    "type": "get_entries",
+    "direction": "host-to-pi",
+    "classification": "required-unmapped",
+    "fidelity": "unsupported",
+    "oap": "transport evidence only"
+  },
+  {
+    "index": 5,
+    "type": "switch_session",
+    "direction": "host-to-pi",
+    "classification": "required-unmapped",
+    "fidelity": "unsupported",
+    "oap": "transport evidence only"
+  },
+  {
+    "index": 6,
+    "type": "fork",
+    "direction": "host-to-pi",
+    "classification": "required-unmapped",
+    "fidelity": "unsupported",
+    "oap": "transport evidence only"
+  },
+  {
+    "index": 7,
+    "type": "agent_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 8,
+    "type": "agent_settled",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  }
+]
