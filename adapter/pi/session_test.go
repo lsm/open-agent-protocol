@@ -134,7 +134,7 @@ func eventTypes(events []protocol.Envelope) []protocol.EnvelopeType {
 	return out
 }
 func assistant(text, reason string) map[string]any {
-	return map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}, "api": "messages", "provider": "fake", "model": "m", "usage": map[string]any{"input": 1, "output": 2}, "stopReason": reason, "timestamp": 1}
+	return map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}, "api": "messages", "provider": "fake", "model": "m", "usage": map[string]any{"input": 1, "output": 2, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 3, "cost": map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}, "stopReason": reason, "timestamp": 1}
 }
 func TestProbeIsConservative(t *testing.T) {
 	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
@@ -394,8 +394,78 @@ func TestPinnedMessageUpdateShapesAreDiscriminated(t *testing.T) {
 	if _, _, err := decodeProviderEvent(json.RawMessage(`{"type":"future_delta","contentIndex":0,"delta":"x"}`)); err == nil {
 		t.Fatal("unknown variant accepted")
 	}
-	if _, emit, err := decodeProviderEvent(json.RawMessage(`{"type":"toolcall_delta","contentIndex":2,"delta":"{}","partial":{"type":"toolCall","id":"call","name":"read","arguments":{}}}`)); err != nil || emit {
-		t.Fatalf("tool delta emit=%v err=%v", emit, err)
+	valid := []string{
+		`{"type":"start"}`,
+		`{"type":"text_start","contentIndex":0}`,
+		`{"type":"text_end","contentIndex":0,"content":"x"}`,
+		`{"type":"thinking_start","contentIndex":1}`,
+		`{"type":"thinking_end","contentIndex":1,"content":"why"}`,
+		`{"type":"toolcall_start","contentIndex":2,"id":"call","toolName":"read"}`,
+		`{"type":"toolcall_delta","contentIndex":2,"delta":"{\"path\":"}`,
+		`{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"call","name":"read","arguments":{"path":"x"},"namespace":"fs"}}`,
+	}
+	for _, raw := range valid {
+		if _, emit, err := decodeProviderEvent(json.RawMessage(raw)); err != nil || emit {
+			t.Fatalf("shape=%s emit=%v err=%v", raw, emit, err)
+		}
+	}
+	if _, _, err := decodeProviderEvent(json.RawMessage(`{"type":"toolcall_delta","contentIndex":2,"delta":"{}","partial":{}}`)); err == nil {
+		t.Fatal("serialized-out partial accepted")
+	}
+}
+
+func TestPinnedMessageRolesAcceptFullOptionalShape(t *testing.T) {
+	full := assistant("ok", "stop")
+	full["responseModel"] = "resolved"
+	full["responseId"] = "resp"
+	full["providerThinkingLevel"] = "high"
+	full["diagnostics"] = []any{map[string]any{"type": "warning", "message": "notice"}}
+	full["deferred"] = map[string]any{"provider": "fake", "modelId": "m", "api": "messages", "id": "deferred", "expiresAt": 2, "pollAfterMs": 1, "data": map[string]any{"x": true}}
+	full["rawStopReason"] = "native_stop"
+	full["endTurn"] = true
+	raw, _ := json.Marshal(full)
+	message, err := decodeWireMessage(raw)
+	if err != nil || message == nil {
+		t.Fatalf("message=%+v err=%v", message, err)
+	}
+	tool := map[string]any{"role": "toolResult", "toolCallId": "call", "toolName": "read", "content": []any{map[string]any{"type": "image", "data": "AA==", "mimeType": "image/png"}}, "details": map[string]any{"x": 1}, "usage": map[string]any{"input": 1}, "addedToolNames": []string{"new"}, "isError": false, "timestamp": 2}
+	raw, _ = json.Marshal(tool)
+	if message, err := decodeWireMessage(raw); err != nil || message != nil {
+		t.Fatalf("tool message=%+v err=%v", message, err)
+	}
+}
+
+func TestProviderEventsRejectMissingAndNegativeFields(t *testing.T) {
+	invalid := []string{
+		`{"type":"text_delta","contentIndex":0}`,
+		`{"type":"text_delta","delta":"x"}`,
+		`{"type":"text_delta","contentIndex":-1,"delta":"x"}`,
+		`{"type":"text_end","contentIndex":0}`,
+		`{"type":"toolcall_start","contentIndex":0,"toolName":"read"}`,
+		`{"type":"toolcall_end","contentIndex":0}`,
+		`{"type":"done","reason":"stop"}`,
+		`{"type":"error","error":{}}`,
+	}
+	for _, raw := range invalid {
+		if _, _, err := decodeProviderEvent(json.RawMessage(raw)); err == nil {
+			t.Fatalf("accepted %s", raw)
+		}
+	}
+}
+
+func TestPreStartExtensionBufferedBehindRunStarted(t *testing.T) {
+	client := newFakeClient()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "early-ui", Method: native.ExtensionInput, Title: "Name"})
+			client.emit(t, map[string]any{"type": "agent_start"})
+		}
+	}
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	first, second := adaptertest.Next(t, stream, time.Second), adaptertest.Next(t, stream, time.Second)
+	if first.Type != protocol.TypeRunStarted || second.Type != protocol.TypeUserInputRequested {
+		t.Fatalf("types=%s,%s", first.Type, second.Type)
 	}
 }
 
@@ -433,6 +503,43 @@ func TestInitialStreamingRejected(t *testing.T) {
 	client.mu.Unlock()
 	if !closed {
 		t.Fatal("client not closed")
+	}
+}
+
+func TestRetryCandidateDoesNotReuseStaleMessageEnd(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "agent_start"})
+	client.emit(t, map[string]any{"type": "message_end", "message": assistant("stale", "stop")})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("stale", "stop")}, "willRetry": true})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	if events[len(events)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("events=%v", eventTypes(events))
+	}
+}
+
+func TestAbortedFinalCancelsOpenToolsBeforeParent(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "agent_start"})
+	_ = adaptertest.Next(t, stream, time.Second)
+	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "open", "toolName": "read", "args": map[string]any{}})
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandAbort {
+			client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("", "aborted")}, "willRetry": false})
+			client.emit(t, map[string]any{"type": "agent_settled"})
+		}
+	}
+	if _, err := s.Cancel(context.Background(), response.RunID); err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	if len(events) < 2 || events[len(events)-2].Type != protocol.TypeActionCallCancelled || events[len(events)-1].Type != protocol.TypeRunCancelled {
+		t.Fatalf("events=%v", eventTypes(events))
 	}
 }
 

@@ -57,6 +57,7 @@ type runState struct {
 	reasoning    strings.Builder
 	final        *wireMessage
 	pending      []native.Event
+	pendingUI    []native.ExtensionUIRequest
 	subscribers  []chan base.Result
 }
 type toolState struct {
@@ -108,18 +109,32 @@ type deltaEvent struct {
 	Delta        string `json:"delta"`
 }
 type providerStartEvent struct {
-	Type    string          `json:"type"`
-	Partial json.RawMessage `json:"partial"`
+	Type string `json:"type"`
 }
 type providerIndexedEvent struct {
 	Type         string `json:"type"`
 	ContentIndex int    `json:"contentIndex"`
 }
+type providerContentEndEvent struct {
+	Type         string `json:"type"`
+	ContentIndex int    `json:"contentIndex"`
+	Content      string `json:"content"`
+}
+type providerToolCallStartEvent struct {
+	Type         string `json:"type"`
+	ContentIndex int    `json:"contentIndex"`
+	ID           string `json:"id"`
+	ToolName     string `json:"toolName"`
+}
 type providerToolCallDeltaEvent struct {
-	Type         string          `json:"type"`
-	ContentIndex int             `json:"contentIndex"`
-	Delta        string          `json:"delta"`
-	Partial      json.RawMessage `json:"partial"`
+	Type         string `json:"type"`
+	ContentIndex int    `json:"contentIndex"`
+	Delta        string `json:"delta"`
+}
+type providerToolCallEndEvent struct {
+	Type         string              `json:"type"`
+	ContentIndex int                 `json:"contentIndex"`
+	ToolCall     wireToolCallContent `json:"toolCall"`
 }
 type providerDoneEvent struct {
 	Type    string          `json:"type"`
@@ -127,8 +142,9 @@ type providerDoneEvent struct {
 	Message json.RawMessage `json:"message"`
 }
 type providerErrorEvent struct {
-	Type  string          `json:"type"`
-	Error json.RawMessage `json:"error"`
+	Type   string          `json:"type"`
+	Reason string          `json:"reason"`
+	Error  json.RawMessage `json:"error"`
 }
 type toolStart struct {
 	Type       native.EventType `json:"type"`
@@ -156,15 +172,22 @@ type agentEnd struct {
 	WillRetry bool              `json:"willRetry"`
 }
 type wireMessage struct {
-	Role         string          `json:"role"`
-	Content      json.RawMessage `json:"content"`
-	API          string          `json:"api,omitempty"`
-	Provider     string          `json:"provider,omitempty"`
-	Model        string          `json:"model,omitempty"`
-	Usage        json.RawMessage `json:"usage,omitempty"`
-	StopReason   string          `json:"stopReason,omitempty"`
-	ErrorMessage string          `json:"errorMessage,omitempty"`
-	Timestamp    int64           `json:"timestamp,omitempty"`
+	Role                  string            `json:"role"`
+	Content               json.RawMessage   `json:"content"`
+	API                   string            `json:"api"`
+	Provider              string            `json:"provider"`
+	Model                 string            `json:"model"`
+	ResponseModel         string            `json:"responseModel,omitempty"`
+	ResponseID            string            `json:"responseId,omitempty"`
+	ProviderThinkingLevel string            `json:"providerThinkingLevel,omitempty"`
+	Diagnostics           []json.RawMessage `json:"diagnostics,omitempty"`
+	Usage                 json.RawMessage   `json:"usage"`
+	StopReason            string            `json:"stopReason"`
+	Deferred              json.RawMessage   `json:"deferred,omitempty"`
+	ErrorMessage          string            `json:"errorMessage,omitempty"`
+	RawStopReason         string            `json:"rawStopReason,omitempty"`
+	EndTurn               *bool             `json:"endTurn,omitempty"`
+	Timestamp             int64             `json:"timestamp"`
 }
 type wireUserMessage struct {
 	Role      string          `json:"role"`
@@ -172,13 +195,15 @@ type wireUserMessage struct {
 	Timestamp int64           `json:"timestamp"`
 }
 type wireToolResultMessage struct {
-	Role       string          `json:"role"`
-	ToolCallID string          `json:"toolCallId"`
-	ToolName   string          `json:"toolName"`
-	Content    json.RawMessage `json:"content"`
-	Details    json.RawMessage `json:"details,omitempty"`
-	IsError    bool            `json:"isError"`
-	Timestamp  int64           `json:"timestamp"`
+	Role           string          `json:"role"`
+	ToolCallID     string          `json:"toolCallId"`
+	ToolName       string          `json:"toolName"`
+	Content        json.RawMessage `json:"content"`
+	Details        json.RawMessage `json:"details,omitempty"`
+	Usage          json.RawMessage `json:"usage,omitempty"`
+	AddedToolNames []string        `json:"addedToolNames,omitempty"`
+	IsError        bool            `json:"isError"`
+	Timestamp      int64           `json:"timestamp"`
 }
 type settledEvent struct {
 	Type native.EventType `json:"type"`
@@ -350,6 +375,11 @@ func (s *Session) reduce(in rpc.Inbound) {
 		return
 	}
 	if in.ExtensionRequest != nil {
+		run := s.activeRun()
+		if run != nil && !run.started {
+			run.pendingUI = append(run.pendingUI, *in.ExtensionRequest)
+			return
+		}
 		s.applyExtension(*in.ExtensionRequest)
 	}
 }
@@ -389,12 +419,20 @@ func (s *Session) applyEvent(event native.Event) {
 		s.mu.Unlock()
 		_ = s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false)
 		pending := run.pending
+		pendingUI := run.pendingUI
 		run.pending = nil
+		run.pendingUI = nil
 		for _, queued := range pending {
 			if run.terminal {
 				break
 			}
 			s.applyEvent(queued)
+		}
+		for _, queued := range pendingUI {
+			if run.terminal {
+				break
+			}
+			s.applyExtension(queued)
 		}
 	case native.EventMessageUpdate:
 		var value messageUpdate
@@ -456,6 +494,8 @@ func (s *Session) applyEvent(event native.Event) {
 			return
 		}
 		if value.WillRetry {
+			run.candidate = nil
+			run.final = nil
 			return
 		}
 		run.candidate = &value
@@ -476,12 +516,36 @@ func decodeProviderEvent(raw json.RawMessage) (protocol.ContentPart, bool, error
 	if err := native.DecodeStrict(raw, &object); err != nil {
 		return protocol.ContentPart{}, false, err
 	}
+	require := func(names ...string) error {
+		for _, name := range names {
+			if _, ok := object[name]; !ok {
+				return fmt.Errorf("assistant message event requires %s", name)
+			}
+		}
+		return nil
+	}
+	index := func() error {
+		var n int
+		if err := require("contentIndex"); err != nil {
+			return err
+		}
+		if json.Unmarshal(object["contentIndex"], &n) != nil || n < 0 {
+			return errors.New("assistant message event has invalid contentIndex")
+		}
+		return nil
+	}
 	var header providerEventHeader
 	if value, ok := object["type"]; !ok || json.Unmarshal(value, &header.Type) != nil || header.Type == "" {
 		return protocol.ContentPart{}, false, errors.New("assistant message event requires type")
 	}
 	switch header.Type {
 	case "text_delta", "thinking_delta":
+		if err := require("delta"); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		if err := index(); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
 		var value deltaEvent
 		if err := native.DecodeStrict(raw, &value); err != nil {
 			return protocol.ContentPart{}, false, err
@@ -493,16 +557,58 @@ func decodeProviderEvent(raw json.RawMessage) (protocol.ContentPart, bool, error
 	case "start":
 		var value providerStartEvent
 		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
-	case "text_start", "text_end", "thinking_start", "thinking_end", "toolcall_start", "toolcall_end":
+	case "text_start", "thinking_start":
+		if err := index(); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
 		var value providerIndexedEvent
 		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
+	case "text_end", "thinking_end":
+		if err := require("content"); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		if err := index(); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		var value providerContentEndEvent
+		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
+	case "toolcall_start":
+		if err := require("id", "toolName"); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		if err := index(); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		var value providerToolCallStartEvent
+		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
+	case "toolcall_end":
+		if err := require("toolCall"); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		if err := index(); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		var value providerToolCallEndEvent
+		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
 	case "toolcall_delta":
+		if err := require("delta"); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
+		if err := index(); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
 		var value providerToolCallDeltaEvent
 		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
 	case "done":
+		if err := require("reason", "message"); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
 		var value providerDoneEvent
 		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
 	case "error":
+		if err := require("reason", "error"); err != nil {
+			return protocol.ContentPart{}, false, err
+		}
 		var value providerErrorEvent
 		return protocol.ContentPart{}, false, native.DecodeStrict(raw, &value)
 	default:
@@ -573,21 +679,10 @@ func (s *Session) toolPayload(t *toolState) protocol.ActionCallPayload {
 }
 
 func (s *Session) settleRun(run *runState) {
-	// A non-retrying agent_end proves that natural completion won even when an
-	// abort was requested concurrently. Without that candidate, settled after
-	// abort is authoritative cancellation evidence.
-	cancelled := run.cancelIntent && run.candidate == nil
-	s.settleChildren(run, cancelled)
-	if cancelled {
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "Pi settled after abort intent"}, true)
-		return
-	}
-	if run.candidate == nil {
-		s.failRun(run, "pi_missing_agent_end", "agent_settled arrived without terminal agent_end")
-		return
-	}
-	final := run.final
-	if final == nil {
+	// Prefer the terminal candidate's message over message_end so a previous
+	// retry attempt can never supply the authoritative final response.
+	var final *wireMessage
+	if run.candidate != nil {
 		for i := len(run.candidate.Messages) - 1; i >= 0; i-- {
 			m, err := decodeWireMessage(run.candidate.Messages[i])
 			if err != nil {
@@ -600,12 +695,21 @@ func (s *Session) settleRun(run *runState) {
 			}
 		}
 	}
-	if final == nil {
-		s.failRun(run, "pi_missing_final_message", "agent settlement omitted assistant message")
+	if final == nil && run.candidate != nil {
+		final = run.final
+	}
+	cancelled := run.cancelIntent && (run.candidate == nil || (final != nil && final.StopReason == "aborted"))
+	s.settleChildren(run, cancelled)
+	if cancelled {
+		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "Pi settled after abort intent"}, true)
 		return
 	}
-	if final.StopReason == "aborted" && run.cancelIntent {
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "Pi reported aborted after cancellation intent"}, true)
+	if run.candidate == nil {
+		s.failRun(run, "pi_missing_agent_end", "agent_settled arrived without terminal agent_end")
+		return
+	}
+	if final == nil {
+		s.failRun(run, "pi_missing_final_message", "agent settlement omitted assistant message")
 		return
 	}
 	if final.ErrorMessage != "" || final.StopReason == "error" || final.StopReason == "aborted" {
@@ -636,31 +740,125 @@ func decodeWireMessage(raw json.RawMessage) (*wireMessage, error) {
 	if value, ok := object["role"]; !ok || json.Unmarshal(value, &role) != nil {
 		return nil, errors.New("message requires role")
 	}
+	require := func(names ...string) error {
+		for _, name := range names {
+			if _, ok := object[name]; !ok {
+				return fmt.Errorf("%s message requires %s", role, name)
+			}
+		}
+		return nil
+	}
 	switch role {
 	case "assistant":
+		if err := require("content", "api", "provider", "model", "usage", "stopReason", "timestamp"); err != nil {
+			return nil, err
+		}
 		var message wireMessage
 		if err := native.DecodeStrict(raw, &message); err != nil {
 			return nil, err
 		}
-		if len(message.Content) == 0 {
-			return nil, errors.New("assistant message requires content")
+		if err := validateWireContent(message.Content, false); err != nil {
+			return nil, err
 		}
 		return &message, nil
 	case "user":
+		if err := require("content", "timestamp"); err != nil {
+			return nil, err
+		}
 		var message wireUserMessage
 		if err := native.DecodeStrict(raw, &message); err != nil {
 			return nil, err
 		}
+		if err := validateWireContent(message.Content, true); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	case "toolResult":
+		if err := require("toolCallId", "toolName", "content", "isError", "timestamp"); err != nil {
+			return nil, err
+		}
 		var message wireToolResultMessage
 		if err := native.DecodeStrict(raw, &message); err != nil {
+			return nil, err
+		}
+		if err := validateWireContent(message.Content, true); err != nil {
 			return nil, err
 		}
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown message role %q", role)
 	}
+}
+
+func validateWireContent(raw json.RawMessage, allowImage bool) error {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return nil
+	}
+	var parts []json.RawMessage
+	if err := native.DecodeStrict(raw, &parts); err != nil {
+		return err
+	}
+	for _, part := range parts {
+		var object map[string]json.RawMessage
+		if err := native.DecodeStrict(part, &object); err != nil {
+			return err
+		}
+		var typ string
+		if value, ok := object["type"]; !ok || json.Unmarshal(value, &typ) != nil {
+			return errors.New("content block requires type")
+		}
+		switch typ {
+		case "text":
+			var p wireTextContent
+			if err := native.DecodeStrict(part, &p); err != nil {
+				return err
+			}
+			if _, ok := object["text"]; !ok {
+				return errors.New("text block requires text")
+			}
+		case "thinking":
+			if allowImage {
+				return errors.New("thinking block not valid here")
+			}
+			var p wireThinkingContent
+			if err := native.DecodeStrict(part, &p); err != nil {
+				return err
+			}
+			if _, ok := object["thinking"]; !ok {
+				return errors.New("thinking block requires thinking")
+			}
+		case "toolCall":
+			if allowImage {
+				return errors.New("toolCall block not valid here")
+			}
+			var p wireToolCallContent
+			if err := native.DecodeStrict(part, &p); err != nil {
+				return err
+			}
+			for _, n := range []string{"id", "name", "arguments"} {
+				if _, ok := object[n]; !ok {
+					return fmt.Errorf("toolCall requires %s", n)
+				}
+			}
+		case "image":
+			if !allowImage {
+				return errors.New("image block not valid here")
+			}
+			var p wireImageContent
+			if err := native.DecodeStrict(part, &p); err != nil {
+				return err
+			}
+			for _, n := range []string{"data", "mimeType"} {
+				if _, ok := object[n]; !ok {
+					return fmt.Errorf("image requires %s", n)
+				}
+			}
+		default:
+			return fmt.Errorf("unknown content block %q", typ)
+		}
+	}
+	return nil
 }
 
 type wireContentHeader struct {
@@ -670,6 +868,11 @@ type wireTextContent struct {
 	Type          string `json:"type"`
 	Text          string `json:"text"`
 	TextSignature string `json:"textSignature,omitempty"`
+}
+type wireImageContent struct {
+	Type     string `json:"type"`
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
 }
 type wireThinkingContent struct {
 	Type              string `json:"type"`
@@ -683,6 +886,7 @@ type wireToolCallContent struct {
 	Name             string          `json:"name"`
 	Arguments        json.RawMessage `json:"arguments"`
 	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
+	Namespace        string          `json:"namespace,omitempty"`
 }
 
 func (s *Session) wireContent(raw json.RawMessage, run *runState) (protocol.MessageContent, error) {
@@ -812,18 +1016,16 @@ func (s *Session) Resolve(ctx context.Context, res base.InteractionResolution) e
 		return err
 	}
 	binding.phase = interactionResolving
-	s.reduceMu.Unlock()
+	// Respond is caller-bounded by ctx. Keep the reducer serialized through the
+	// reverse-channel write and canonical child emissions so agent_settled cannot
+	// overtake a resolution already admitted here.
 	if err := s.client.Respond(ctx, response); err != nil {
-		s.reduceMu.Lock()
-		if binding.phase == interactionResolving {
-			binding.phase = interactionResolved
-		}
+		binding.phase = interactionResolved
 		s.failRun(binding.run, "pi_interaction_response_failed", err.Error())
 		s.reduceMu.Unlock()
 		return err
 	}
-	s.reduceMu.Lock()
-	if binding.phase != interactionResolving || binding.run.terminal {
+	if binding.run.terminal {
 		s.reduceMu.Unlock()
 		return base.ErrInteractionResolved
 	}
