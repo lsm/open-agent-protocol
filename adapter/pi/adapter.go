@@ -187,6 +187,10 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: initial state: %v", ErrNativeProtocol, err)
 	}
+	if initial.IsStreaming {
+		_ = client.Close()
+		return nil, fmt.Errorf("%w: initial state is already streaming", ErrNativeProtocol)
+	}
 	id := req.SessionID
 	if id == "" {
 		id = protocol.SessionID(a.ids.NewID("session"))

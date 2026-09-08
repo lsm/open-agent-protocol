@@ -251,8 +251,8 @@ func TestToolsKeyedByIDAndSettleBeforeParent(t *testing.T) {
 	if fmt.Sprint(types) != fmt.Sprint(want) {
 		t.Fatalf("types=%v", types)
 	}
-	if events[1].ToolCallID != "a" || events[3].ToolCallID != "b" {
-		t.Fatalf("ids=%s,%s", events[1].ToolCallID, events[3].ToolCallID)
+	if events[1].ToolCallID == "a" || events[3].ToolCallID == "b" || events[1].ToolCallID == events[3].ToolCallID {
+		t.Fatalf("mapped ids=%s,%s", events[1].ToolCallID, events[3].ToolCallID)
 	}
 }
 
@@ -380,6 +380,104 @@ func TestReplayGapAndOverflow(t *testing.T) {
 	events := adaptertest.Drain(t, replay, time.Second)
 	if recovery.ReplayedThrough != 3 || len(events) != 2 || events[1].Type != protocol.TypeRunCompleted {
 		t.Fatalf("recovery=%+v events=%v", recovery, eventTypes(events))
+	}
+}
+
+func TestPinnedMessageUpdateShapesAreDiscriminated(t *testing.T) {
+	text, emit, err := decodeProviderEvent(json.RawMessage(`{"type":"text_delta","contentIndex":0,"delta":"x"}`))
+	if err != nil || !emit || text.Type != protocol.ContentText || text.Text != "x" {
+		t.Fatalf("text=%+v emit=%v err=%v", text, emit, err)
+	}
+	if _, _, err := decodeProviderEvent(json.RawMessage(`{"type":"text_delta","contentIndex":0,"delta":"x","partial":{}}`)); err == nil {
+		t.Fatal("cross-variant member accepted")
+	}
+	if _, _, err := decodeProviderEvent(json.RawMessage(`{"type":"future_delta","contentIndex":0,"delta":"x"}`)); err == nil {
+		t.Fatal("unknown variant accepted")
+	}
+	if _, emit, err := decodeProviderEvent(json.RawMessage(`{"type":"toolcall_delta","contentIndex":2,"delta":"{}","partial":{"type":"toolCall","id":"call","name":"read","arguments":{}}}`)); err != nil || emit {
+		t.Fatalf("tool delta emit=%v err=%v", emit, err)
+	}
+}
+
+func TestPreStartObservationsBufferBehindRunStarted(t *testing.T) {
+	client := newFakeClient()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			client.emit(t, map[string]any{"type": "message_update", "usage": map[string]any{}, "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": "early"}})
+			client.emit(t, map[string]any{"type": "agent_start"})
+		}
+	}
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	first, second := adaptertest.Next(t, stream, time.Second), adaptertest.Next(t, stream, time.Second)
+	if first.Type != protocol.TypeRunStarted || second.Type != protocol.TypeContentDelta {
+		t.Fatalf("types=%s,%s", first.Type, second.Type)
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("early", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	_ = adaptertest.Drain(t, stream, time.Second)
+}
+
+func TestInitialStreamingRejected(t *testing.T) {
+	client := newFakeClient()
+	client.state = validState(true)
+	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) { return client, client.state, nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Open(context.Background(), base.OpenRequest{}); !errors.Is(err, ErrNativeProtocol) {
+		t.Fatalf("open err=%v", err)
+	}
+	client.mu.Lock()
+	closed := client.closed
+	client.mu.Unlock()
+	if !closed {
+		t.Fatal("client not closed")
+	}
+}
+
+func TestAbortedFinalWithIntentCancels(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "agent_start"})
+	_ = adaptertest.Next(t, stream, time.Second)
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandAbort {
+			client.emit(t, map[string]any{"type": "message_end", "message": assistant("", "aborted")})
+			client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("", "aborted")}, "willRetry": false})
+			client.emit(t, map[string]any{"type": "agent_settled"})
+		}
+	}
+	if _, err := s.Cancel(context.Background(), response.RunID); err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	if events[len(events)-1].Type != protocol.TypeRunCancelled {
+		t.Fatalf("events=%v", eventTypes(events))
+	}
+}
+
+func TestFinalToolCallUsesMappedIdentity(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "agent_start"})
+	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "native", "toolName": "read", "args": map[string]any{"path": "x"}})
+	client.emit(t, map[string]any{"type": "tool_execution_end", "toolCallId": "native", "toolName": "read", "result": map[string]any{"text": "x"}, "isError": false})
+	final := assistant("done", "stop")
+	final["content"] = []any{map[string]any{"type": "toolCall", "id": "native", "name": "read", "arguments": map[string]any{"path": "x"}}, map[string]any{"type": "text", "text": "done"}}
+	client.emit(t, map[string]any{"type": "message_end", "message": final})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{final}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	var done protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&done); err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := done.FinalResponse.Content.Parts()
+	if !ok || len(parts) != 2 || parts[0].ToolCallID == "native" || parts[0].ToolCallID == "" {
+		t.Fatalf("parts=%+v", parts)
 	}
 }
 
