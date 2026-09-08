@@ -33,7 +33,6 @@ type Session struct {
 	participant  protocol.ParticipantID
 	state        protocol.SessionState
 	nativeState  native.SessionState
-	idleSeen     bool
 	closed       bool
 	unusable     bool
 	active       *runState
@@ -56,6 +55,8 @@ type runState struct {
 	text         strings.Builder
 	reasoning    strings.Builder
 	final        *wireMessage
+	startResult  chan error
+	startOnce    sync.Once
 	pending      []native.Event
 	pendingUI    []native.ExtensionUIRequest
 	subscribers  []chan base.Result
@@ -209,6 +210,10 @@ type settledEvent struct {
 	Type native.EventType `json:"type"`
 }
 
+func (r *runState) signalStart(err error) {
+	r.startOnce.Do(func() { r.startResult <- err; close(r.startResult) })
+}
+
 func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
@@ -241,7 +246,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.commandMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunActive
 	}
-	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunQueued, next: 1, messageID: protocol.MessageID(s.ids.NewID("message"))}
+	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunQueued, next: 1, messageID: protocol.MessageID(s.ids.NewID("message")), startResult: make(chan error, 1)}
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
 	s.active, s.runs[run.id] = run, run
@@ -260,12 +265,17 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.reduceMu.Unlock()
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
-	s.mu.Lock()
-	terminal := run.terminal
-	started := run.started
-	s.mu.Unlock()
-	if terminal && !started {
-		return protocol.MessageSubmitResponse{}, stream, fmt.Errorf("%w: prompt settled without agent_start", ErrNativeProtocol)
+	// Prompt success proves admission but not execution. Do not report the
+	// canonical started admission until the authoritative agent_start arrives.
+	select {
+	case startErr := <-run.startResult:
+		if startErr != nil {
+			return protocol.MessageSubmitResponse{}, stream, startErr
+		}
+	case <-ctx.Done():
+		// Admission succeeded, but start is now ambiguous to this caller. Keep the
+		// reserved run alive for reducer/transport authority and never misreport it.
+		return protocol.MessageSubmitResponse{}, stream, ctx.Err()
 	}
 	response := protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, MessageIDs: messageIDs}
 	return response, stream, nil
@@ -398,6 +408,12 @@ func (s *Session) applyEvent(event native.Event) {
 	if !run.started && event.Type != native.EventAgentStart {
 		// Pi may write observations before the prompt response is delivered. Keep
 		// them private until agent_start establishes the canonical run boundary.
+		// A settlement without agent_start makes canonical started admission
+		// impossible and is surfaced without emitting an invalid pre-start run event.
+		if event.Type == native.EventAgentSettled {
+			s.terminateBeforeStart(run, fmt.Errorf("%w: agent_settled arrived without agent_start", ErrNativeProtocol))
+			return
+		}
 		run.pending = append(run.pending, event)
 		return
 	}
@@ -417,7 +433,11 @@ func (s *Session) applyEvent(event native.Event) {
 		run.status = protocol.RunRunning
 		s.state.Status = protocol.SessionRunning
 		s.mu.Unlock()
-		_ = s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false)
+		if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+			run.signalStart(err)
+			return
+		}
+		run.signalStart(nil)
 		pending := run.pending
 		pendingUI := run.pendingUI
 		run.pending = nil
@@ -1093,31 +1113,15 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 		s.unusable = true
 		return s.state, fmt.Errorf("%w: native session changed", ErrNativeProtocol)
 	}
+	// Native idle can precede delivery of an already-written agent_settled by
+	// an unbounded listener delay. It is reconciliation evidence only; never a
+	// terminal contradiction or substitute for the authoritative event.
 	s.nativeState = nativeState
-	if s.active != nil && !s.active.terminal && s.active.started && !s.active.cancelIntent {
-		if nativeState.IsStreaming {
-			s.idleSeen = false
-		} else if s.idleSeen {
-			s.unusable = true
-			go s.failAfterReconcile(s.active)
-		} else {
-			// A single idle snapshot may race an already-written agent_settled.
-			s.idleSeen = true
-		}
-	} else {
-		s.idleSeen = false
-	}
 	if s.closed || s.unusable {
 		return s.state, base.ErrSessionClosed
 	}
 	return s.state, nil
 }
-func (s *Session) failAfterReconcile(run *runState) {
-	s.reduceMu.Lock()
-	defer s.reduceMu.Unlock()
-	s.failRun(run, "pi_reconciliation_gap", "get_state reports idle before authoritative agent_settled")
-}
-
 func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCancelResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.RunCancelResponse{}, err
@@ -1276,10 +1280,38 @@ func (s *Session) settleChildren(run *runState, cancel bool) {
 		_ = s.emit(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: i.id, RequestedBy: i.requestedBy, RespondedBy: i.respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false)
 	}
 }
+func (s *Session) terminateBeforeStart(run *runState, err error) {
+	s.mu.Lock()
+	if run.terminal {
+		s.mu.Unlock()
+		return
+	}
+	run.terminal = true
+	run.status = protocol.RunFailed
+	if s.active == run {
+		s.active = nil
+	}
+	s.state.Status = protocol.SessionIdle
+	s.state.ActiveRunID = ""
+	subscribers := run.subscribers
+	run.subscribers = nil
+	s.mu.Unlock()
+	run.signalStart(err)
+	for _, stream := range subscribers {
+		close(stream)
+	}
+}
+
 func (s *Session) failRun(run *runState, code, message string) {
 	if run == nil {
 		return
 	}
+	err := fmt.Errorf("%w: %s", ErrNativeProtocol, message)
+	if !run.started {
+		s.terminateBeforeStart(run, err)
+		return
+	}
+	run.signalStart(err)
 	s.settleChildren(run, true)
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
 }

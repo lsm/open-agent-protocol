@@ -120,6 +120,18 @@ func openTest(t *testing.T, client *fakeClient, capacity int) *Session {
 }
 func submitTest(t *testing.T, s *Session) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
+	s.client.(*fakeClient).mu.Lock()
+	hook := s.client.(*fakeClient).onCall
+	s.client.(*fakeClient).mu.Unlock()
+	if hook == nil {
+		s.client.(*fakeClient).mu.Lock()
+		s.client.(*fakeClient).onCall = func(c native.Command) {
+			if c.Type == native.CommandPrompt {
+				s.client.(*fakeClient).emit(t, map[string]any{"type": "agent_start"})
+			}
+		}
+		s.client.(*fakeClient).mu.Unlock()
+	}
 	response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
 	if err != nil {
 		t.Fatal(err)
@@ -183,29 +195,99 @@ func TestPromptAdmissionDoesNotSynthesizeStartAndPreservesEarlyEvents(t *testing
 	_ = adaptertest.Drain(t, stream, time.Second)
 }
 
-func TestPromptSuccessBeforeAgentStartEmitsNothing(t *testing.T) {
+func TestSubmitWaitsForDelayedAgentStart(t *testing.T) {
 	client := newFakeClient()
+	client.onCall = func(native.Command) {}
 	s := openTest(t, client, 32)
-	_, stream := submitTest(t, s)
+	type result struct {
+		response protocol.MessageSubmitResponse
+		stream   base.EventStream
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		done <- result{r, stream, err}
+	}()
 	select {
-	case got := <-stream:
-		t.Fatalf("premature=%s", got.Envelope.Type)
+	case got := <-done:
+		t.Fatalf("submit returned before start: %+v", got)
 	case <-time.After(20 * time.Millisecond):
 	}
 	client.emit(t, map[string]any{"type": "agent_start"})
-	if got := adaptertest.Next(t, stream, time.Second); got.Type != protocol.TypeRunStarted {
-		t.Fatalf("got=%s", got.Type)
+	got := <-done
+	if got.err != nil || got.response.Admission != protocol.AdmissionStarted {
+		t.Fatalf("result=%+v", got)
+	}
+	if event := adaptertest.Next(t, got.stream, time.Second); event.Type != protocol.TypeRunStarted {
+		t.Fatalf("event=%s", event.Type)
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("ok", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	_ = adaptertest.Drain(t, got.stream, time.Second)
+}
+
+func TestSubmitContextBeforeStartDoesNotMisreportAdmission(t *testing.T) {
+	client := newFakeClient()
+	client.onCall = func(native.Command) {}
+	s := openTest(t, client, 32)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	response, stream, err := s.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	if !errors.Is(err, context.DeadlineExceeded) || response.Accepted {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	client.emit(t, map[string]any{"type": "agent_start"})
+	if event := adaptertest.Next(t, stream, time.Second); event.Type != protocol.TypeRunStarted {
+		t.Fatalf("event=%s", event.Type)
 	}
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("ok", "stop")}, "willRetry": false})
 	client.emit(t, map[string]any{"type": "agent_settled"})
 	_ = adaptertest.Drain(t, stream, time.Second)
 }
 
+func TestSubmitTerminalBeforeStartReturnsErrorWithoutRunEvents(t *testing.T) {
+	client := newFakeClient()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("never", "stop")}, "willRetry": false})
+			client.emit(t, map[string]any{"type": "agent_settled"})
+		}
+	}
+	s := openTest(t, client, 32)
+	response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	if err == nil || response.Accepted {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	if _, ok := <-stream; ok {
+		t.Fatal("pre-start terminal emitted run event")
+	}
+}
+
+func TestSubmitTransportFailureBeforeStartReturnsError(t *testing.T) {
+	client := newFakeClient()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			client.mu.Lock()
+			client.err = errors.New("process exited")
+			client.mu.Unlock()
+			close(client.done)
+		}
+	}
+	s := openTest(t, client, 32)
+	response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	if err == nil || response.Accepted {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	if _, ok := <-stream; ok {
+		t.Fatal("pre-start transport failure emitted run event")
+	}
+}
+
 func TestFinalMessageAuthoritativeAndRetryEndNonterminal(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	_, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	client.emit(t, map[string]any{"type": "message_update", "usage": map[string]any{}, "assistantMessageEvent": map[string]any{"type": "thinking_delta", "contentIndex": 0, "delta": "why"}})
 	client.emit(t, map[string]any{"type": "message_update", "usage": map[string]any{}, "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 1, "delta": "draft"}})
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("ignored", "error")}, "willRetry": true})
@@ -238,7 +320,6 @@ func TestToolsKeyedByIDAndSettleBeforeParent(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	_, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "a", "toolName": "read", "args": map[string]any{"path": "a"}})
 	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "b", "toolName": "read", "args": map[string]any{"path": "b"}})
 	client.emit(t, map[string]any{"type": "tool_execution_update", "toolCallId": "a", "toolName": "read", "args": map[string]any{"path": "a"}, "partialResult": map[string]any{"text": "half"}})
@@ -260,7 +341,6 @@ func TestExtensionConfirmIsGenericInput(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	_ = adaptertest.Next(t, stream, time.Second)
 	client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "ui-1", Method: native.ExtensionConfirm, Title: "Proceed?", Message: "Continue"})
 	requested := adaptertest.Next(t, stream, time.Second)
@@ -294,7 +374,6 @@ func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	_ = adaptertest.Next(t, stream, time.Second)
 	client.onCall = func(c native.Command) {
 		if c.Type == native.CommandAbort {
@@ -317,7 +396,6 @@ func TestAbortSettlementCancelsWhenNoNaturalCandidate(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	_ = adaptertest.Next(t, stream, time.Second)
 	client.onCall = func(c native.Command) {
 		if c.Type == native.CommandAbort {
@@ -338,7 +416,6 @@ func TestProcessExitFailsActiveOnce(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	_, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	client.mu.Lock()
 	client.err = errors.New("exit 9")
 	client.mu.Unlock()
@@ -360,7 +437,6 @@ func TestReplayGapAndOverflow(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 2)
 	response, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	client.emit(t, map[string]any{"type": "message_update", "usage": map[string]any{}, "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": "a"}})
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("a", "stop")}, "willRetry": false})
 	client.emit(t, map[string]any{"type": "agent_settled"})
@@ -510,7 +586,6 @@ func TestRetryCandidateDoesNotReuseStaleMessageEnd(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	_, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	client.emit(t, map[string]any{"type": "message_end", "message": assistant("stale", "stop")})
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("stale", "stop")}, "willRetry": true})
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{}, "willRetry": false})
@@ -525,7 +600,6 @@ func TestAbortedFinalCancelsOpenToolsBeforeParent(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	_ = adaptertest.Next(t, stream, time.Second)
 	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "open", "toolName": "read", "args": map[string]any{}})
 	client.onCall = func(c native.Command) {
@@ -547,7 +621,6 @@ func TestAbortedFinalWithIntentCancels(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	_ = adaptertest.Next(t, stream, time.Second)
 	client.onCall = func(c native.Command) {
 		if c.Type == native.CommandAbort {
@@ -569,7 +642,6 @@ func TestFinalToolCallUsesMappedIdentity(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	_, stream := submitTest(t, s)
-	client.emit(t, map[string]any{"type": "agent_start"})
 	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "native", "toolName": "read", "args": map[string]any{"path": "x"}})
 	client.emit(t, map[string]any{"type": "tool_execution_end", "toolCallId": "native", "toolName": "read", "result": map[string]any{"text": "x"}, "isError": false})
 	final := assistant("done", "stop")
@@ -585,6 +657,30 @@ func TestFinalToolCallUsesMappedIdentity(t *testing.T) {
 	parts, ok := done.FinalResponse.Content.Parts()
 	if !ok || len(parts) != 2 || parts[0].ToolCallID == "native" || parts[0].ToolCallID == "" {
 		t.Fatalf("parts=%+v", parts)
+	}
+}
+
+func TestRepeatedIdleSnapshotsRemainProvisionalUntilSettled(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	if event := adaptertest.Next(t, stream, time.Second); event.Type != protocol.TypeRunStarted {
+		t.Fatalf("event=%s", event.Type)
+	}
+	for i := 0; i < 10; i++ {
+		state, err := s.State(context.Background())
+		if err != nil {
+			t.Fatalf("state %d: %v", i, err)
+		}
+		if state.Status != protocol.SessionRunning {
+			t.Fatalf("state %d prematurely changed: %+v", i, state)
+		}
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("eventually", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events=%v", eventTypes(events))
 	}
 }
 
