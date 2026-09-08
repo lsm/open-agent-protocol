@@ -1,0 +1,1 @@
+{"source":"stream","classification":"mapped","fidelity":"synthesized","raw":{"id":"evt_c001","type":"session.next.prompted","durable":{"aggregateID":"ses_other","seq":1,"version":1},"data":{"timestamp":1,"sessionID":"ses_fake00000000000000","messageID":"msg_rebind","prompt":{"text":"hello"},"delivery":"steer"}}}

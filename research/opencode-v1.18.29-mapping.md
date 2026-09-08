@@ -213,6 +213,53 @@ response.
 8. **Revert exceeds core OAP:** stage/clear/commit is a rewind protocol;
    extension decision required before any claim.
 
+## Implementation outcomes (first adapter tranche)
+
+The Go adapter tranche (`adapter/opencode/`, corpus at
+`fixtures/adapters/opencode-v1.18.29/`) recorded these additional
+discoveries:
+
+1. **OAP v0.1 admission blocks native steer and queue.** The canonical
+   stateful validator requires every accepted submission to resolve to one
+   started run (`admission=started`, `effective_delivery=start`), and the
+   server defaults omitted delivery to `steer`. The adapter therefore maps
+   `auto` to native steer (start-when-idle, locally gated to one active
+   run) and rejects explicit `steer`/`queue`/`btw` until OAP extends the
+   admission model; `delivery.queue`/`delivery.steer` are advertised
+   degraded with that reason. This is an OAP-core decision item, not an
+   OpenCode defect.
+2. **The pinned durable inventory omits `session.next.step.failed`.** The
+   event is defined durable (`stepSettlementOptions`, version 2) and
+   persisted, but it is absent from `DurableDefinitions`, so the
+   per-session SSE filter drops it and a history reader decoding through
+   the manifest would fault. The adapter defensively decodes it (fixture
+   `step-failure`) and this omission should be reported upstream.
+3. **Pre-start terminal failures are not canonically representable.** A
+   rejected admission or a foreign-aggregate event settles a run before
+   `run.started`; v0.1 canonical traces reject run-scoped events without a
+   preceding started run. Those corpus cases are recorded without canonical
+   validation and logged as the mismatch evidence.
+4. **Queued admissions are real but non-canonical.** `SessionInput.Admitted`
+   without `promotedSeq` answers `admission=queued` truthfully; the corpus
+   pins the trace (`queued-admission`) outside canonical validation pending
+   the same admission-model extension.
+5. **Settlement fence:** derived settlement is wait-idle corroboration plus
+   a bounded history read after the triggering sequence, deduplicated by
+   durable seq against the subscription prefix — recording the assumption
+   that the last durable event of a turn is persisted before the loop goes
+   idle.
+6. **Deltas are not on the durable stream** (`text.delta` and friends are
+   live-only), so first-tranche streaming is full-value boundaries —
+   `run.streaming` stays degraded exactly as advertised.
+7. **SSE strictness choices:** field parsing follows the SSE spec (unknown
+   fields ignored, comments skipped) while bare-CR line endings are
+   rejected because the pinned producer emits LF only; response bodies are
+   strict-decoded (unknown fields and duplicate keys rejected).
+8. **Permissions remain unavailable in v1** — the durable stream carries no
+   permission events and the polling surface is unexercised, so no
+   interaction mapping is claimed.
+
+
 ## Initial capabilities
 
 - initialize / descriptor: `emulated` (OpenAPI + catalogs)

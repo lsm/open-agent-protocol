@@ -1,0 +1,6 @@
+[
+    {"index": 1, "type": "action", "source": "stream", "classification": "mapped", "fidelity": "normalized", "oap": ""},
+    {"index": 2, "type": "session.next.prompted", "source": "stream", "classification": "mapped", "fidelity": "normalized", "oap": "run.started"},
+    {"index": 3, "type": "session.next.step.started", "source": "stream", "classification": "observed-only", "fidelity": "normalized", "oap": ""},
+    {"index": 4, "type": "session.next.step.ended", "source": "stream", "classification": "mapped", "fidelity": "normalized", "oap": "run.cancelled"}
+]
