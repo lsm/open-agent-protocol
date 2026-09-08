@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,10 @@ type Client interface {
 }
 
 // ClientFactory supplies a ready client and its initial get_state snapshot.
-// rpc.Process performs that readiness handshake for the built-in factory.
+// rpc.Process performs that readiness handshake for the built-in factory. Custom
+// factories must disable Pi extensions: every admitted prompt must cross the
+// model-producing agent_start boundary rather than be consumed by an extension
+// command or input hook.
 type ClientFactory interface {
 	Start(context.Context) (Client, native.SessionState, error)
 }
@@ -90,6 +94,13 @@ type Adapter struct {
 }
 
 func New(config Config) (*Adapter, error) {
+	if config.Factory == nil {
+		for _, arg := range config.Args {
+			if arg == "--extension" || arg == "-e" || strings.HasPrefix(arg, "--extension=") {
+				return nil, errors.New("pi adapter: explicit extensions are incompatible with canonical prompt admission")
+			}
+		}
+	}
 	if config.Factory == nil && config.ProcessFactory == nil && config.Executable == "" {
 		return nil, errors.New("pi adapter: factory or executable is required")
 	}
@@ -115,7 +126,11 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	if config.Factory == nil {
-		pc := rpc.ProcessConfig{Path: config.Executable, Args: append([]string(nil), config.Args...), Dir: config.WorkingDirectory, Env: append([]string(nil), config.Environment...), FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ShutdownTimeout: config.ShutdownTimeout}
+		// Pi's parser treats repeated --no-extensions flags idempotently. Force it
+		// after caller arguments so discovered extensions cannot consume a prompt
+		// without producing agent_start.
+		args := append(append([]string(nil), config.Args...), "--no-extensions")
+		pc := rpc.ProcessConfig{Path: config.Executable, Args: args, Dir: config.WorkingDirectory, Env: append([]string(nil), config.Environment...), FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ShutdownTimeout: config.ShutdownTimeout}
 		config.Factory = ClientFactoryFunc(func(ctx context.Context) (Client, native.SessionState, error) {
 			bridge, err := config.ProcessFactory.Start(ctx, pc)
 			if err != nil {

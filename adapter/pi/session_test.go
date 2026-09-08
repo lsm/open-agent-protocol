@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -148,6 +149,27 @@ func eventTypes(events []protocol.Envelope) []protocol.EnvelopeType {
 func assistant(text, reason string) map[string]any {
 	return map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}, "api": "messages", "provider": "fake", "model": "m", "usage": map[string]any{"input": 1, "output": 2, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 3, "cost": map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}, "stopReason": reason, "timestamp": 1}
 }
+func TestProductionProcessForcesExtensionsDisabled(t *testing.T) {
+	var got rpc.ProcessConfig
+	factory := ProcessFactoryFunc(func(_ context.Context, config rpc.ProcessConfig) (ProcessBridge, error) {
+		got = config
+		return nil, errors.New("stop after config capture")
+	})
+	a, err := New(Config{ProcessFactory: factory, Executable: "/usr/bin/pi", WorkingDirectory: "/tmp", Args: []string{"--no-extensions"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Open(context.Background(), base.OpenRequest{}); err == nil {
+		t.Fatal("open unexpectedly succeeded")
+	}
+	if len(got.Args) != 2 || got.Args[0] != "--no-extensions" || got.Args[1] != "--no-extensions" {
+		t.Fatalf("args=%q", got.Args)
+	}
+	if _, err := New(Config{ProcessFactory: factory, Executable: "/usr/bin/pi", WorkingDirectory: "/tmp", Args: []string{"--extension", "plugin.ts"}}); err == nil {
+		t.Fatal("explicit extension accepted")
+	}
+}
+
 func TestProbeIsConservative(t *testing.T) {
 	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
 		return newFakeClient(), validState(false), nil
@@ -195,6 +217,20 @@ func TestPromptAdmissionDoesNotSynthesizeStartAndPreservesEarlyEvents(t *testing
 	_ = adaptertest.Drain(t, stream, time.Second)
 }
 
+func TestSlashCommandRejectedWithoutNativeSideEffect(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("/extension-command argument")}}})
+	if !errors.Is(err, ErrUnsupportedInput) || stream != nil {
+		t.Fatalf("stream=%v err=%v", stream, err)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.calls) != 0 {
+		t.Fatalf("native calls=%+v", client.calls)
+	}
+}
+
 func TestSubmitWaitsForDelayedAgentStart(t *testing.T) {
 	client := newFakeClient()
 	client.onCall = func(native.Command) {}
@@ -225,6 +261,53 @@ func TestSubmitWaitsForDelayedAgentStart(t *testing.T) {
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("ok", "stop")}, "willRetry": false})
 	client.emit(t, map[string]any{"type": "agent_settled"})
 	_ = adaptertest.Drain(t, got.stream, time.Second)
+}
+
+func TestCancelBeforeAgentStartPreservesCanonicalOrdering(t *testing.T) {
+	client := newFakeClient()
+	prompted := make(chan struct{})
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			close(prompted)
+		}
+	}
+	s := openTest(t, client, 32)
+	type submitResult struct {
+		response protocol.MessageSubmitResponse
+		stream   base.EventStream
+		err      error
+	}
+	done := make(chan submitResult, 1)
+	go func() {
+		response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		done <- submitResult{response: response, stream: stream, err: err}
+	}()
+	<-prompted
+	state, err := s.State(context.Background())
+	if err != nil || state.ActiveRunID == "" {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	cancel, err := s.Cancel(context.Background(), state.ActiveRunID)
+	if err != nil || cancel.Status != protocol.RunCancelling {
+		t.Fatalf("cancel=%+v err=%v", cancel, err)
+	}
+	client.emit(t, map[string]any{"type": "agent_start"})
+	result := <-done
+	if result.err != nil || result.response.RunID != state.ActiveRunID {
+		t.Fatalf("submit=%+v", result)
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("", "aborted")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := adaptertest.Drain(t, result.stream, time.Second)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeRunCancelled}
+	if got := eventTypes(events); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events=%v want=%v", got, want)
+	}
+	for i, event := range events {
+		if event.Sequence == nil || *event.Sequence != uint64(i+1) {
+			t.Fatalf("event %d sequence=%v", i, event.Sequence)
+		}
+	}
 }
 
 func TestSubmitContextBeforeStartDoesNotMisreportAdmission(t *testing.T) {

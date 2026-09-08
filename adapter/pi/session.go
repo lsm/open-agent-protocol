@@ -321,7 +321,15 @@ func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []nat
 	if len(texts) == 0 {
 		return "", nil, nil, fmt.Errorf("%w: prompt requires text", ErrUnsupportedInput)
 	}
-	return strings.Join(texts, "\n\n"), images, ids, nil
+	text := strings.Join(texts, "\n\n")
+	if strings.HasPrefix(text, "/") {
+		// A registered extension slash command can acknowledge Pi's prompt RPC
+		// without entering the model loop or emitting agent_start. The adapter
+		// cannot distinguish registered commands from unknown slash input, so it
+		// conservatively rejects the entire ambiguous class before native I/O.
+		return "", nil, nil, fmt.Errorf("%w: slash-command input", ErrUnsupportedInput)
+	}
+	return text, images, ids, nil
 }
 
 func (s *Session) callStrict(ctx context.Context, command native.Command, dst any) error {
@@ -432,10 +440,20 @@ func (s *Session) applyEvent(event native.Event) {
 		run.started = true
 		run.status = protocol.RunRunning
 		s.state.Status = protocol.SessionRunning
+		cancelIntent := run.cancelIntent
 		s.mu.Unlock()
 		if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 			run.signalStart(err)
 			return
+		}
+		if cancelIntent {
+			s.mu.Lock()
+			run.status = protocol.RunCancelling
+			s.mu.Unlock()
+			if err := s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+				run.signalStart(err)
+				return
+			}
 		}
 		run.signalStart(nil)
 		pending := run.pending
@@ -1151,9 +1169,14 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
 	run.cancelIntent = true
-	run.status = protocol.RunCancelling
+	started := run.started
+	if started {
+		run.status = protocol.RunCancelling
+	}
 	s.mu.Unlock()
-	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+	if started {
+		_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+	}
 	s.reduceMu.Unlock()
 	if err := s.callStrict(ctx, native.Command{Type: native.CommandAbort}, nil); err != nil {
 		s.reduceMu.Lock()
