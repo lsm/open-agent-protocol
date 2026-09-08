@@ -170,6 +170,26 @@ func TestProductionProcessForcesExtensionsDisabled(t *testing.T) {
 	}
 }
 
+func TestProductionProcessRejectsStandaloneFlagTerminatorWithoutSideEffects(t *testing.T) {
+	starts := 0
+	factory := ProcessFactoryFunc(func(context.Context, rpc.ProcessConfig) (ProcessBridge, error) {
+		starts++
+		return nil, errors.New("unexpected process start")
+	})
+	args := []string{"--model", "test", "--", "prompt"}
+	wantArgs := append([]string(nil), args...)
+
+	if _, err := New(Config{ProcessFactory: factory, Executable: "/usr/bin/pi", WorkingDirectory: "/tmp", Args: args}); err == nil {
+		t.Fatal("standalone -- accepted")
+	}
+	if starts != 0 {
+		t.Fatalf("process starts=%d", starts)
+	}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args mutated: got %q want %q", args, wantArgs)
+	}
+}
+
 func TestProbeIsConservative(t *testing.T) {
 	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
 		return newFakeClient(), validState(false), nil
@@ -184,7 +204,7 @@ func TestProbeIsConservative(t *testing.T) {
 	if d.Capabilities.Features["session.message.delivery.queue"].Level != protocol.SupportUnavailable || d.Capabilities.Features["session.message.delivery.steer"].Level != protocol.SupportUnavailable || d.Capabilities.Features["action.permissions"].Level != protocol.SupportUnavailable {
 		t.Fatalf("descriptor overclaims: %+v", d.Capabilities.Features)
 	}
-	if d.CapabilityRevision != CapabilityRevision || d.MaxActiveRunsPerSession != 1 || !d.InteractiveGates {
+	if d.CapabilityRevision != CapabilityRevision || d.MaxActiveRunsPerSession != 1 || d.InteractiveGates {
 		t.Fatalf("descriptor=%+v", d)
 	}
 }

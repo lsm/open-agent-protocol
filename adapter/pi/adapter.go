@@ -96,6 +96,9 @@ type Adapter struct {
 func New(config Config) (*Adapter, error) {
 	if config.Factory == nil {
 		for _, arg := range config.Args {
+			if arg == "--" {
+				return nil, errors.New("pi adapter: standalone -- prevents enforced extension disabling")
+			}
 			if arg == "--extension" || arg == "-e" || strings.HasPrefix(arg, "--extension=") {
 				return nil, errors.New("pi adapter: explicit extensions are incompatible with canonical prompt admission")
 			}
@@ -187,7 +190,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute": {Level: protocol.SupportUnavailable, Reason: "Pi executes tools internally"},
 		"action.permissions":   {Level: protocol.SupportUnavailable, Reason: "extension dialogs are generic user input, not permissions"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "pi.rpc", Name: "Pi RPC Adapter", Version: PinnedVersion, Adapter: "pi-rpc-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "run", CancellationImplementation: "native_abort_with_agent_settled_authority"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "pi.rpc", Name: "Pi RPC Adapter", Version: PinnedVersion, Adapter: "pi-rpc-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "run", CancellationImplementation: "native_abort_with_agent_settled_authority"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
