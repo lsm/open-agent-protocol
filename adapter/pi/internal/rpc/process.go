@@ -91,16 +91,46 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	}
 	process.Client = NewClient(stdout, stdin, ClientOptions{FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, CloseReadWriter: pipes})
 	go process.wait()
-	// Startup has no semantic observations to reduce, but Call still uses the
-	// same barrier discipline as every later response.
-	go acknowledgeBarriers(process.Client)
 
-	var state native.SessionState
-	if err := process.Client.Call(ctx, native.Command{Type: native.CommandGetState}, &state); err != nil {
-		_ = process.abort()
-		return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, err, process.Stderr())
+	// Pi has no ready frame, so get_state is the handshake. Drive its response
+	// barrier here without leaving a competing inbound consumer behind for the
+	// semantic adapter. Any observation before readiness is ambiguous and fails
+	// startup rather than being silently discarded.
+	type stateResult struct {
+		state native.SessionState
+		err   error
 	}
-	if state.SessionID == "" || !validInitialState(state) {
+	ready := make(chan stateResult, 1)
+	go func() {
+		var state native.SessionState
+		err := process.Client.Call(ctx, native.Command{Type: native.CommandGetState}, &state)
+		ready <- stateResult{state: state, err: err}
+	}()
+	var state native.SessionState
+	for state.SessionID == "" {
+		select {
+		case result := <-ready:
+			if result.err != nil {
+				_ = process.abort()
+				return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, result.err, process.Stderr())
+			}
+			state = result.state
+		case inbound := <-process.Client.Inbound():
+			if inbound.Barrier != nil {
+				close(inbound.Barrier)
+				continue
+			}
+			_ = process.abort()
+			return nil, fmt.Errorf("%w: native observation preceded get_state response; stderr: %s", ErrHandshake, process.Stderr())
+		case <-ctx.Done():
+			_ = process.abort()
+			return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, ctx.Err(), process.Stderr())
+		case <-process.Client.Done():
+			_ = process.abort()
+			return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, process.Client.Err(), process.Stderr())
+		}
+	}
+	if !validInitialState(state) {
 		_ = process.abort()
 		return nil, fmt.Errorf("%w: invalid get_state response; stderr: %s", ErrHandshake, process.Stderr())
 	}
