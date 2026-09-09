@@ -227,14 +227,21 @@ func verifiedDeepSeekBinary(t *testing.T) string {
 // composed so stdout stays pure JSON-RPC; the spine stays tool-free.
 func writeHarnessComposition(t *testing.T, root, providerBaseURL string) string {
 	t.Helper()
+	// The pinned composition format is a top-level YAML sequence of plugin
+	// rows (id/name/config), matching examples/jsonrpc-agent/*.cordis.yml at
+	// the pinned commit.
 	var composition strings.Builder
-	composition.WriteString("plugins:\n")
-	composition.WriteString("  \"@deepseek-ai/dsh-sdk-jsonrpc-server\":\n")
+	composition.WriteString("- id: sdk-jsonrpc-server\n")
+	composition.WriteString("  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'\n")
+	composition.WriteString("  config:\n")
 	composition.WriteString("    maxTokensAsSuccess: false\n")
 	if providerBaseURL != "" {
-		composition.WriteString("  \"@deepseek-ai/dsh-llm-pi-ai\":\n")
+		composition.WriteString("- id: llm-loopback\n")
+		composition.WriteString("  name: '@deepseek-ai/dsh-llm-pi-ai'\n")
+		composition.WriteString("  config:\n")
 		composition.WriteString("    providers:\n")
-		composition.WriteString(fmt.Sprintf("      %q:\n", deepseekRoute))
+		composition.WriteString(fmt.Sprintf("      %s:\n", deepseekRoute))
+		composition.WriteString("        displayName: OAP Loopback Fixture\n")
 		composition.WriteString("        apiKeyEnv: LOOPBACK_API_KEY\n")
 		composition.WriteString("        api: openai-responses\n")
 		composition.WriteString(fmt.Sprintf("        baseURL: %q\n", providerBaseURL))
@@ -245,7 +252,9 @@ func writeHarnessComposition(t *testing.T, root, providerBaseURL string) string 
 		composition.WriteString("            maxTokens: 1024\n")
 		composition.WriteString("            input: [text]\n")
 	}
-	composition.WriteString("  \"@deepseek-ai/dsh-agent-spine-demo\":\n")
+	composition.WriteString("- id: agent-spine\n")
+	composition.WriteString("  name: '@deepseek-ai/dsh-agent-spine-demo'\n")
+	composition.WriteString("  config:\n")
 	composition.WriteString("    includeHarnessIdentity: false\n")
 	composition.WriteString("    includeRuntimeContext: false\n")
 	composition.WriteString("    persona: ''\n")
