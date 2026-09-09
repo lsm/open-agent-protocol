@@ -1,0 +1,41 @@
+{
+  "advertised_capabilities": {
+    "run.cancel": "unavailable",
+    "run.replay": "unavailable",
+    "session.message.submit": "degraded"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "unsupported-controls",
+  "identity_map": {
+    "child.sessionId": "adapter_child_settlement_identity",
+    "native.callId": "oap.tool_call_id",
+    "native.sessionId": "oap.session_id_association",
+    "native.turn": "adapter_run_ownership_evidence",
+    "prompt.messageId": "oap.submission_id"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "47f943859bef60e4160492346772ded9b24f765a",
+    "commit_tree": "f904efab9ef435201d6ba4da88a34d6366568272",
+    "repository": "https://github.com/deepseek-ai/deepseek-harness",
+    "sources": {
+      "core_agent_inbox_blob": "c6b9204c92f497ae90b4e058fb6e0905427c4c8d",
+      "core_agent_loop_blob": "668ef6582657ed0e1e4420777696ee50251371ad",
+      "core_agent_runtime_types_blob": "7d713f8c77112f8e74150bc060ec677bb5107f90",
+      "core_agent_types_blob": "b54e56ea8f9dc61674167dff98dbbe7dc5c857e4",
+      "core_session_invariant_blob": "da7cd55964b7b49fc00d6bab0a65d50994b4f2c3",
+      "core_session_known_event_types_blob": "d65935f1b86934b1de957aa26f9032c296510d3c",
+      "core_session_surface_blob": "ba6c2dda800f36d64b370a7fac375db3f4486334",
+      "core_session_types_blob": "17aacd1dfc2f3a9d241a2fbdea59263323f57d51",
+      "llm_message_blob": "608b56475df8dfdef72e104f180cf4dd024eb0be",
+      "llm_types_blob": "326db1cb1473cb435ec98425c2df359977eba4fa",
+      "sdk_protocol_transport_blob": "36574f46bf3e34738be045408e25bb79932ff609",
+      "sdk_protocol_types_blob": "533b5f23c5f019db924647916ffcde4a144541d5",
+      "sdk_server_blob": "195caa908de0343b59244ae966b4b7afe3cf93d2"
+    },
+    "tag": "47f9438"
+  },
+  "version": 1
+}

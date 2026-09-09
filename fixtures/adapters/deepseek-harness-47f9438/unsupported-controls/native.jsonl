@@ -1,0 +1,4 @@
+{"direction":"harness-control","classification":"required-unmapped","fidelity":"unsupported","action":"oap-control","raw":{"expect":"unavailable","op":"cancel","type":"oap_control"}}
+{"direction":"harness-control","classification":"required-unmapped","fidelity":"unsupported","action":"oap-control","raw":{"expect":"unavailable","op":"resume","type":"oap_control"}}
+{"direction":"harness-control","classification":"required-unmapped","fidelity":"unsupported","action":"oap-control","raw":{"expect":"unavailable","op":"resolve","type":"oap_control"}}
+{"direction":"harness-control","classification":"mapped","fidelity":"synthesized","action":"oap-control","raw":{"expect":"","op":"assert-state","status":"idle","type":"oap_control"}}
