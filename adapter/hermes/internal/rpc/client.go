@@ -321,12 +321,12 @@ func (client *Client) route(message Message) bool {
 		if mode == 2 && !client.barrier() {
 			return true
 		}
-		return !client.deliver(message.ID, callResult{result: cloneRaw(message.Result)})
+		return client.deliver(message.ID, callResult{result: cloneRaw(message.Result)})
 	case MessageError:
 		if mode == 2 && !client.barrier() {
 			return true
 		}
-		return !client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}})
+		return client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}})
 	case MessageRequest:
 		incoming := &IncomingRequest{ID: message.ID, Method: message.Method, Params: cloneRaw(message.Params), client: client}
 		client.mu.Lock()

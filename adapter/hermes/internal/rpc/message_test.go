@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -205,5 +206,57 @@ func TestClientRejectsWriteAfterClose(t *testing.T) {
 	client.Close()
 	if err := client.Call(context.Background(), "m", nil, nil); !errors.Is(err, ErrClosed) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClientSurvivesSequentialResponses(t *testing.T) {
+	// Regression: route() inverted deliver()'s continuation contract, so the
+	// read loop retired the client after the FIRST successfully delivered
+	// response. Every earlier test issued at most one response per client, so
+	// only a second sequential call exposed it.
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	defer client.Close()
+	// Acknowledge ordering barriers as they arrive so responses release.
+	go func() {
+		for message := range client.Inbound() {
+			if message.Barrier != nil {
+				close(message.Barrier)
+			}
+		}
+	}()
+	server := bufio.NewReader(serverReader)
+	call := func(id int64, reply string, wantErr bool) {
+		results := make(chan error, 1)
+		go func() {
+			var result struct {
+				Status string `json:"status"`
+			}
+			results <- client.CallID(context.Background(), IntegerID(id), "prompt.submit", nil, &result)
+		}()
+		// Consume the request line before answering it.
+		if _, err := server.ReadBytes('\n'); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := serverWriter.Write([]byte(reply + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-results:
+			if wantErr != (err != nil) {
+				t.Fatalf("call %d: err = %v, wantErr = %v", id, err, wantErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("call %d never settled", id)
+		}
+	}
+	call(1, `{"id":1,"jsonrpc":"2.0","result":{"status":"streaming"}}`, false)
+	call(2, `{"id":2,"jsonrpc":"2.0","result":{"status":"streaming"}}`, false)
+	call(3, `{"id":3,"jsonrpc":"2.0","error":{"code":5004,"message":"busy"}}`, true)
+	select {
+	case <-client.Done():
+		t.Fatal("client retired after sequential responses")
+	default:
 	}
 }
