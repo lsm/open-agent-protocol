@@ -1,9 +1,32 @@
 # DeepSeek Harness 47f9438 mapping ledger
 
-Status: approved pinned contract for the eighth production OAP adapter candidate.
+Status: implemented pinned contract for the DeepSeek Harness OAP adapter.
 This ledger freezes the selected JSON-RPC boundary and the conservative adapter
 projection. It is an implementation input, not a claim about other Harness
-surfaces. No adapter code exists yet.
+surfaces.
+
+Implementation status:
+
+- `adapter/deepseek/internal/native` + `internal/rpc`: strict pinned wire
+  vocabulary and JSON-RPC transport (commit `0ab56a0`), hardened by confirmed
+  review findings (commit `ec231fe`): the initialize response now barriers
+  behind every earlier observation and any pre-handshake observation fails the
+  handshake closed; the pinned stream-chunk union, per-variant content-block
+  members and exclusivity, structured image attachments, tool-result block
+  correlation, `EpochHeader` identity, per-kind message-source provenance,
+  structured turn-end causes, and the `maxTokens` safe-integer bound are all
+  enforced; whitespace-surrounded frames are rejected per the frozen strictness
+  policy; teardown closes the stderr read side so a leaked descendant cannot
+  hang `Close`; writes stop at logical shutdown and the write pump drains.
+- `adapter/deepseek` public adapter/reducer (commit `64da496`): reservation,
+  receipt, buffered candidate turns, retrospective direct-user ownership proof,
+  child-before-parent settlement, and terminal arbitration per this ledger.
+- Gated real-process tests (commits `670d464`, `7dbd7c4`) drive a caller
+  supplied runtime over the exact composition shapes pinned in
+  `examples/jsonrpc-agent/*.cordis.yml` (top-level sequence of `id`/`name`/
+  `config` rows).
+- Executable evidence corpus: `fixtures/adapters/deepseek-harness-47f9438`
+  driven by `adapter/deepseek/corpus_test.go`.
 
 ## Provenance
 
