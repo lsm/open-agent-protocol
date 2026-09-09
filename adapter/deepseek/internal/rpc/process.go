@@ -39,6 +39,7 @@ type Process struct {
 	command    *exec.Cmd
 	stdin      io.WriteCloser
 	pipes      *pipeCloser
+	stderrPipe io.ReadCloser
 	stderr     *limitedBuffer
 	stderrDone chan struct{}
 	waitDone   chan struct{}
@@ -84,16 +85,54 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	stderrDone := make(chan struct{})
 	go func() { _, _ = io.Copy(stderr, stderrPipe); close(stderrDone) }()
 	pipes := &pipeCloser{read: stdout, write: stdin}
-	process := &Process{command: command, stdin: stdin, pipes: pipes, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
+	process := &Process{command: command, stdin: stdin, pipes: pipes, stderrPipe: stderrPipe, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
 	if process.timeout <= 0 {
 		process.timeout = 5 * time.Second
 	}
 	process.Client = NewClient(stdout, stdin, ClientOptions{FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, CloseReadWriter: pipes, StrictResponseIDs: true})
 	go process.wait()
+
+	// Activate the ordered inbound stream before the handshake so the
+	// initialize response barriers behind every earlier notification. Any
+	// native observation preceding the handshake is foreign activity at this
+	// boundary: the runtime owns no sessions before initialize returns, so
+	// fail closed rather than buffering events of unknown provenance.
+	inbound := process.Client.Inbound()
+	type initOutcome struct {
+		result native.InitializeResult
+		err    error
+	}
+	ready := make(chan initOutcome, 1)
+	go func() {
+		var initialized native.InitializeResult
+		err := process.Client.Call(ctx, native.MethodInitialize, config.Initialize, &initialized)
+		ready <- initOutcome{result: initialized, err: err}
+	}()
 	var initialized native.InitializeResult
-	if err := process.Client.Call(ctx, native.MethodInitialize, config.Initialize, &initialized); err != nil {
-		_ = process.abort()
-		return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, err, process.Stderr())
+handshake:
+	for {
+		select {
+		case outcome := <-ready:
+			if outcome.err != nil {
+				_ = process.abort()
+				return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, outcome.err, process.Stderr())
+			}
+			initialized = outcome.result
+			break handshake
+		case message := <-inbound:
+			if message.Barrier != nil {
+				close(message.Barrier)
+				continue
+			}
+			_ = process.abort()
+			return nil, fmt.Errorf("%w: native observation preceded initialize response; stderr: %s", ErrHandshake, process.Stderr())
+		case <-ctx.Done():
+			_ = process.abort()
+			return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, ctx.Err(), process.Stderr())
+		case <-process.Client.Done():
+			_ = process.abort()
+			return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, process.Client.Err(), process.Stderr())
+		}
 	}
 	if err := native.ValidateInitializeResult(initialized); err != nil {
 		_ = process.abort()
@@ -133,6 +172,10 @@ func (p *Process) Close(ctx context.Context) error {
 }
 func (p *Process) wait() {
 	err := p.command.Wait()
+	// A descendant that inherited stderr can hold the read end open after the
+	// parent exits; closing our side bounds the drain instead of hanging
+	// teardown indefinitely on a leaked grandchild.
+	_ = p.stderrPipe.Close()
 	<-p.stderrDone
 	p.waitMu.Lock()
 	p.waitErr = err

@@ -21,6 +21,8 @@ func TestDecoderStrictLFObjectFrames(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"x"}`,
 		"{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"method\":\"y\"}\n",
 		"{\"jsonrpc\":\"2.0\",\"method\":\"x\"} garbage\n",
+		" {\"jsonrpc\":\"2.0\",\"method\":\"x\"}\n",
+		"{\"jsonrpc\":\"2.0\",\"method\":\"x\"} \n",
 		"[]\n",
 	}
 	for _, raw := range invalid {

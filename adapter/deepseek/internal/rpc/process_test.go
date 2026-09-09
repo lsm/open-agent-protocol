@@ -13,7 +13,7 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/deepseek/internal/native"
 )
 
-func TestProcessInitializeBacklogEnvAndShutdown(t *testing.T) {
+func TestProcessInitializeEnvAndShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
 	}
@@ -23,7 +23,6 @@ func TestProcessInitializeBacklogEnvAndShutdown(t *testing.T) {
 	script := writeScript(t, dir, `printf '%s' "$*" > "$ARGS_FILE"
 printf '%s' "${ONLY_ENV-unset}" > "$ENV_FILE"
 IFS= read -r init
-printf '%s\n' '{"jsonrpc":"2.0","method":"session.status","params":{"sessionId":"pre","status":"running"}}'
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}'
 IFS= read -r shutdown
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
@@ -31,15 +30,6 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
 	p, err := Start(context.Background(), ProcessConfig{Path: script, Args: []string{"one", "two"}, Env: []string{"ARGS_FILE=" + argsFile, "ENV_FILE=" + envFile, "ONLY_ENV=exact"}, Initialize: native.InitializeParams{Cwd: dir, Provider: "p", Model: "m"}})
 	if err != nil {
 		t.Fatal(err)
-	}
-	in := p.Client.Inbound()
-	select {
-	case msg := <-in:
-		if msg.Notification == nil || msg.Notification.Method != native.NotifySessionStatus {
-			t.Fatalf("backlog %#v", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("missing startup notification")
 	}
 	if err := p.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -54,6 +44,24 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
 	}
 	if err := p.Close(context.Background()); err != nil {
 		t.Fatalf("cached close: %v", err)
+	}
+}
+
+func TestProcessRejectsObservationBeforeInitializeResponse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	dir := t.TempDir()
+	script := writeScript(t, dir, `IFS= read -r init
+printf '%s\n' '{"jsonrpc":"2.0","method":"session.status","params":{"sessionId":"pre","status":"running"}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}'
+sleep 10
+`)
+	// The runtime owns no sessions before initialize returns, so any earlier
+	// observation is foreign activity and must fail the handshake closed.
+	_, err := Start(context.Background(), ProcessConfig{Path: script, Initialize: native.InitializeParams{Cwd: dir, Provider: "p", Model: "m"}})
+	if !errors.Is(err, ErrHandshake) || !strings.Contains(err.Error(), "preceded initialize response") {
+		t.Fatalf("got %v", err)
 	}
 }
 

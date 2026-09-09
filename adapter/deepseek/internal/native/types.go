@@ -180,8 +180,45 @@ type RequestContext struct {
 	ContextWindow *int64 `json:"contextWindow,omitempty"`
 }
 type RequestHeader struct {
-	Header json.RawMessage `json:"header"`
-	Reason string          `json:"reason"`
+	Header EpochHeader `json:"header"`
+	Reason string      `json:"reason"`
+}
+
+// EpochHeader is the pinned request-header snapshot; config is retained raw
+// because LlmCallConfig is merge-extensible, but its identity fields are not.
+type EpochHeader struct {
+	Config          json.RawMessage `json:"config"`
+	AdapterDefaults json.RawMessage `json:"adapterDefaults,omitempty"`
+	System          *string         `json:"system,omitempty"`
+	Tools           json.RawMessage `json:"tools,omitempty"`
+}
+
+func (header EpochHeader) valid() bool {
+	if len(header.Config) == 0 {
+		return false
+	}
+	var config map[string]json.RawMessage
+	if DecodeStrict(header.Config, &config) != nil {
+		return false
+	}
+	provider, providerErr := rawString(config["provider"])
+	model, modelErr := rawString(config["model"])
+	if providerErr != nil || modelErr != nil || provider == "" || model == "" {
+		return false
+	}
+	if len(header.Tools) > 0 {
+		var tools []json.RawMessage
+		if DecodeStrict(header.Tools, &tools) != nil {
+			return false
+		}
+		for _, tool := range tools {
+			var fields map[string]json.RawMessage
+			if DecodeStrict(tool, &fields) != nil || !blockHasKeys(fields, "name", "description", "input_schema") {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // DataAs strictly decodes the event payload into its pinned concrete type.
@@ -204,13 +241,13 @@ func DecodeNotification(method string, data []byte) (any, error) {
 	if err := DecodeStrict(data, value); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	if err := validateNotification(value); err != nil {
+	if err := validateNotification(value, data); err != nil {
 		return nil, err
 	}
 	return value, nil
 }
 
-func validateNotification(value any) error {
+func validateNotification(value any, data []byte) error {
 	require := func(ok bool, what string) error {
 		if !ok {
 			return fmt.Errorf("%w: %s", ErrInvalid, what)
@@ -234,7 +271,17 @@ func validateNotification(value any) error {
 		if err := require(v.Status == "ok" || v.Status == "error", "invalid subagent status"); err != nil {
 			return err
 		}
-		return require(validStopReason(v.StopReason), "invalid subagent stopReason")
+		if err := require(validStopReason(v.StopReason), "invalid subagent stopReason"); err != nil {
+			return err
+		}
+		var object map[string]json.RawMessage
+		if err := DecodeStrict(data, &object); err != nil {
+			return fmt.Errorf("%w: invalid subagent.finished: %v", ErrInvalid, err)
+		}
+		if raw, ok := object["lastAssistantMessage"]; ok && !validBlocksRaw(raw) {
+			return fmt.Errorf("%w: invalid subagent.finished lastAssistantMessage", ErrInvalid)
+		}
+		return nil
 	}
 	return ErrInvalid
 }
@@ -292,6 +339,14 @@ func (event Event) Validate() error {
 	if err := DecodeStrict(event.Data, target); err != nil {
 		return fmt.Errorf("%w: %s data: %v", ErrInvalid, event.Type, err)
 	}
+	object := func() map[string]json.RawMessage {
+		var fields map[string]json.RawMessage
+		if DecodeStrict(event.Data, &fields) != nil {
+			return nil
+		}
+		return fields
+	}
+	blocksOf := func(raw json.RawMessage) bool { return validBlocksRaw(raw) }
 	switch data := target.(type) {
 	case *TurnStart:
 		if data.Turn <= 0 {
@@ -310,11 +365,13 @@ func (event Event) Validate() error {
 			return fmt.Errorf("%w: invalid assistant/chunk", ErrInvalid)
 		}
 	case *UserMessage:
-		if data.ID == "" || data.Role != "user" || !validSource(data.Source) {
+		fields := object()
+		if data.ID == "" || data.Role != "user" || !validSource(data.Source) || fields == nil || !blocksOf(fields["content"]) {
 			return fmt.Errorf("%w: invalid user/message", ErrInvalid)
 		}
 	case *InboxSpliced:
-		if (data.Target != "next-turn" && data.Target != "next-step") || data.Start < 0 || (data.Outcome != "" && data.Outcome != "canceled") {
+		fields := object()
+		if (data.Target != "next-turn" && data.Target != "next-step") || data.Start < 0 || (data.Outcome != "" && data.Outcome != "canceled") || fields == nil {
 			return fmt.Errorf("%w: invalid agent/inbox/spliced", ErrInvalid)
 		}
 		for _, message := range data.Inserted {
@@ -322,8 +379,26 @@ func (event Event) Validate() error {
 				return fmt.Errorf("%w: invalid inserted user message", ErrInvalid)
 			}
 		}
+		var inserted []json.RawMessage
+		if DecodeStrict(fields["inserted"], &inserted) != nil {
+			return fmt.Errorf("%w: invalid agent/inbox/spliced inserted", ErrInvalid)
+		}
+		for _, element := range inserted {
+			var messageFields map[string]json.RawMessage
+			if DecodeStrict(element, &messageFields) != nil || !blocksOf(messageFields["content"]) {
+				return fmt.Errorf("%w: invalid inserted user message content", ErrInvalid)
+			}
+		}
 	case *AssistantMessageEvent:
-		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "assistant" || data.Message.Source.Kind != "model" || !validSource(data.Message.Source) || !validBlocks(data.Message.Content) || (data.Usage != nil && !validUsage(*data.Usage)) {
+		fields := object()
+		validContent := false
+		if fields != nil {
+			var messageFields map[string]json.RawMessage
+			if DecodeStrict(fields["message"], &messageFields) == nil {
+				validContent = blocksOf(messageFields["content"])
+			}
+		}
+		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "assistant" || data.Message.Source.Kind != "model" || !validSource(data.Message.Source) || !validContent || (data.Usage != nil && !validUsage(*data.Usage)) {
 			return fmt.Errorf("%w: invalid assistant/message", ErrInvalid)
 		}
 	case *ToolCall:
@@ -331,7 +406,18 @@ func (event Event) Validate() error {
 			return fmt.Errorf("%w: invalid tool/call", ErrInvalid)
 		}
 	case *ToolResult:
-		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validBlocks(data.Message.Content) || (data.Error != nil && (data.Error.Name == "" || data.Error.Code == "")) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
+		fields := object()
+		validContent := false
+		if fields != nil {
+			var messageFields map[string]json.RawMessage
+			if DecodeStrict(fields["message"], &messageFields) == nil {
+				validContent = blocksOf(messageFields["content"])
+			}
+		}
+		// The pinned ToolResultMessage content is exactly one tool-result block
+		// correlated with the message source's callId.
+		singleMatchingBlock := len(data.Message.Content) == 1 && data.Message.Content[0].Type == "tool-result" && data.Message.Content[0].ToolCallID == data.Message.Source.CallID
+		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !singleMatchingBlock || (data.Error != nil && (data.Error.Name == "" || data.Error.Code == "")) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
 			return fmt.Errorf("%w: invalid tool/result", ErrInvalid)
 		}
 	case *TodoWrite:
@@ -344,7 +430,7 @@ func (event Event) Validate() error {
 			}
 		}
 	case *RequestHeader:
-		if len(data.Header) == 0 || (data.Reason != "initial" && data.Reason != "resume" && data.Reason != "change") {
+		if !data.Header.valid() || (data.Reason != "initial" && data.Reason != "resume" && data.Reason != "change") {
 			return fmt.Errorf("%w: invalid request/header", ErrInvalid)
 		}
 	case *RequestContext:
@@ -360,25 +446,103 @@ func validBlocks(blocks []ContentBlock) bool {
 		return false
 	}
 	for _, block := range blocks {
-		switch block.Type {
-		case "text", "reasoning":
-		case "image":
-			if len(block.Attachment) == 0 || !json.Valid(block.Attachment) {
-				return false
-			}
-		case "tool-call":
-			if block.ID == "" || block.Name == "" || !json.Valid([]byte(block.Arguments)) {
-				return false
-			}
-		case "tool-result":
-			if block.ToolCallID == "" || !validBlocks(block.Content) {
-				return false
-			}
-		default:
+		if !validBlock(block) {
+			return false
+		}
+		if block.Type == "tool-result" && !validBlocks(block.Content) {
 			return false
 		}
 	}
 	return true
+}
+
+// validBlocksRaw validates a raw content-block array: every element must be an
+// object carrying its pinned variant's required members, and decoded values
+// must satisfy the per-variant exclusions of validBlock.
+func validBlocksRaw(raw json.RawMessage) bool {
+	var elements []json.RawMessage
+	if len(raw) == 0 || DecodeStrict(raw, &elements) != nil || elements == nil {
+		return false
+	}
+	for _, element := range elements {
+		if !validBlockRaw(element) {
+			return false
+		}
+	}
+	return true
+}
+
+func validBlockRaw(element json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	if DecodeStrict(element, &object) != nil {
+		return false
+	}
+	kind, err := rawString(object["type"])
+	if err != nil {
+		return false
+	}
+	var block ContentBlock
+	if DecodeStrict(element, &block) != nil || !validBlock(block) {
+		return false
+	}
+	switch kind {
+	case "text", "reasoning":
+		return blockHasKeys(object, "text")
+	case "image":
+		return blockHasKeys(object, "attachment") && validAttachment(object["attachment"])
+	case "tool-call":
+		return blockHasKeys(object, "id", "name", "arguments")
+	case "tool-result":
+		return blockHasKeys(object, "toolCallId", "content") && validBlocksRaw(object["content"])
+	default:
+		return false
+	}
+}
+
+// validBlock enforces per-variant field exclusivity: a decoded block may carry
+// only the members its pinned variant defines.
+func validBlock(block ContentBlock) bool {
+	switch block.Type {
+	case "text", "reasoning":
+		return block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil
+	case "image":
+		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil
+	case "tool-call":
+		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
+	case "tool-result":
+		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && validBlocks(block.Content)
+	default:
+		return false
+	}
+}
+
+// validAttachment validates the pinned ImageAttachmentRef core identity.
+func validAttachment(raw json.RawMessage) bool {
+	var attachment struct {
+		AttachmentID string `json:"attachmentId"`
+		MediaType    string `json:"mediaType"`
+	}
+	return DecodeStrict(raw, &attachment) == nil && attachment.AttachmentID != "" && attachment.MediaType != ""
+}
+
+func blockHasKeys(object map[string]json.RawMessage, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := object[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func rawString(raw json.RawMessage) (string, error) {
+	var value string
+	if len(raw) == 0 {
+		return "", errors.New("missing value")
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func validUsage(usage TokenUsage) bool {
@@ -406,20 +570,101 @@ func validTurnEndReason(raw json.RawMessage) bool {
 	case "completed", "blocked", "max-tokens", "interrupted":
 		return len(reason.Reason) == 0 && len(reason.Error) == 0
 	case "aborted":
-		return len(reason.Reason) > 0 && json.Valid(reason.Reason)
+		return validCancelCause(reason.Reason)
 	case "error":
-		return len(reason.Error) > 0 && json.Valid(reason.Error)
+		return validLlmFailure(reason.Error)
 	}
 	return false
 }
 
-func validStreamChunk(raw json.RawMessage) bool {
-	var value map[string]json.RawMessage
-	if DecodeStrict(raw, &value) != nil {
+func validCancelCause(raw json.RawMessage) bool {
+	var cause struct {
+		Kind   string `json:"kind"`
+		Reason string `json:"reason,omitempty"`
+	}
+	if DecodeStrict(raw, &cause) != nil {
 		return false
 	}
-	var kind string
-	return json.Unmarshal(value["type"], &kind) == nil && kind != ""
+	switch cause.Kind {
+	case "user", "parent", "disposed", "legacy":
+		return cause.Reason == ""
+	case "hook":
+		return cause.Reason != ""
+	}
+	return false
+}
+
+func validLlmFailure(raw json.RawMessage) bool {
+	var failure struct {
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	}
+	return DecodeStrict(raw, &failure) == nil && failure.Message != "" && failure.Code != ""
+}
+
+func validStreamChunk(raw json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	if DecodeStrict(raw, &object) != nil {
+		return false
+	}
+	kind, err := rawString(object["type"])
+	if err != nil || kind == "" {
+		return false
+	}
+	nonNegativeIndex := func() bool {
+		var index int64
+		return json.Unmarshal(object["index"], &index) == nil && index >= 0
+	}
+	switch kind {
+	case "block-start":
+		return blockHasKeys(object, "index", "blockType") && nonNegativeIndex() && func() bool {
+			value, err := rawString(object["blockType"])
+			return err == nil && value != ""
+		}()
+	case "text-delta", "reasoning-delta":
+		return blockHasKeys(object, "index", "text") && nonNegativeIndex()
+	case "tool-call-delta":
+		return blockHasKeys(object, "index", "id", "argumentsDelta") && nonNegativeIndex() && func() bool {
+			value, err := rawString(object["id"])
+			return err == nil && value != ""
+		}()
+	case "block-end":
+		if !blockHasKeys(object, "index", "block") || !nonNegativeIndex() {
+			return false
+		}
+		return validBlockRaw(object["block"])
+	case "usage":
+		if !blockHasKeys(object, "usage") {
+			return false
+		}
+		var value struct {
+			Usage TokenUsage `json:"usage"`
+		}
+		return DecodeStrict(raw, &value) == nil && validUsage(value.Usage)
+	case "finish":
+		return blockHasKeys(object, "reason") && validFinishReason(object["reason"])
+	default:
+		return false
+	}
+}
+
+func validFinishReason(raw json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	if DecodeStrict(raw, &object) != nil {
+		return false
+	}
+	kind, err := rawString(object["kind"])
+	if err != nil {
+		return false
+	}
+	switch kind {
+	case "stop", "tool-calls", "max-tokens":
+		return len(object) == 1
+	case "aborted", "error":
+		return len(object) == 2 && blockHasKeys(object, "failure") && validLlmFailure(object["failure"])
+	default:
+		return false
+	}
 }
 
 func validSurfaceOp(raw json.RawMessage) bool {
@@ -438,13 +683,14 @@ func validSurfaceOp(raw json.RawMessage) bool {
 func validSource(v MessageSource) bool {
 	switch v.Kind {
 	case "user":
-		return v.Plugin == "" && v.Provider == "" && v.Model == "" && v.CallID == ""
+		return v.Plugin == "" && v.Provider == "" && v.Model == "" && v.CallID == "" && v.Form == "" && v.Summary == "" && v.Sections == nil && v.ReplayState == nil
 	case "plugin":
-		return v.Plugin != ""
+		// form/summary/sections are the plugin variant's ContextFormed members.
+		return v.Plugin != "" && v.Provider == "" && v.Model == "" && v.CallID == "" && v.ReplayState == nil
 	case "model":
-		return v.Provider != "" && v.Model != ""
+		return v.Provider != "" && v.Model != "" && v.Plugin == "" && v.CallID == "" && v.Form == "" && v.Summary == "" && v.Sections == nil
 	case "tool":
-		return v.CallID != ""
+		return v.CallID != "" && v.Plugin == "" && v.Provider == "" && v.Model == "" && v.Form == "" && v.Summary == "" && v.Sections == nil && v.ReplayState == nil
 	}
 	return false
 }
@@ -456,12 +702,16 @@ func validStopReason(v string) bool {
 	return false
 }
 
+// maxSafeInteger is JavaScript's largest exactly representable integer; the
+// pinned runtime validates maxTokens as a positive safe integer.
+const maxSafeInteger = int64(9007199254740991)
+
 func ValidateInitializeParams(v InitializeParams) error {
 	if v.Cwd == "" || v.Provider == "" || v.Model == "" {
 		return fmt.Errorf("%w: initialize cwd, provider, and model are required", ErrInvalid)
 	}
-	if v.MaxTokens != nil && *v.MaxTokens <= 0 {
-		return fmt.Errorf("%w: maxTokens must be positive", ErrInvalid)
+	if v.MaxTokens != nil && (*v.MaxTokens <= 0 || *v.MaxTokens > maxSafeInteger) {
+		return fmt.Errorf("%w: maxTokens must be a positive safe integer", ErrInvalid)
 	}
 	return nil
 }
@@ -474,6 +724,9 @@ func ValidateInitializeResult(v InitializeResult) error {
 func ValidatePrompt(v SessionPromptParams) error {
 	if v.SessionID == "" || v.ContentBlocks == nil {
 		return fmt.Errorf("%w: prompt sessionId and contentBlocks are required", ErrInvalid)
+	}
+	if !validBlocks(v.ContentBlocks) {
+		return fmt.Errorf("%w: prompt contentBlocks are invalid", ErrInvalid)
 	}
 	return nil
 }

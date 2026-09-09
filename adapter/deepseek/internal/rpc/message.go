@@ -132,6 +132,12 @@ func ParseMessage(data []byte) (Message, error) {
 	if !utf8.Valid(data) {
 		return Message{}, fmt.Errorf("%w: frame is not UTF-8", ErrInvalidMessage)
 	}
+	// The adapter boundary is deliberately narrower than the native transport,
+	// which trims lines: a frame must be exactly one JSON object with no
+	// surrounding whitespace.
+	if len(data) == 0 || data[0] != '{' || data[len(data)-1] != '}' {
+		return Message{}, fmt.Errorf("%w: frame must be exactly one JSON object", ErrInvalidMessage)
+	}
 	if err := rejectDuplicateKeys(data); err != nil {
 		return Message{}, fmt.Errorf("%w: %v", ErrInvalidMessage, err)
 	}

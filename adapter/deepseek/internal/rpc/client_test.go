@@ -12,16 +12,27 @@ import (
 )
 
 func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
-	input := strings.NewReader("{\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"sessionId\":\"s\",\"status\":\"running\"}}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"messageId\":\"m\"}}\n")
-	client := NewClient(input, io.Discard, ClientOptions{})
+	// A static reader lets the read loop parse the response before the call
+	// registers its pending entry, so synchronize on the pipe: the fixture
+	// writes the reply only after the request write completed.
+	reader, remote := io.Pipe()
+	defer remote.Close()
+	client := NewClient(reader, io.Discard, ClientOptions{})
 	in := client.Inbound()
+	started := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() {
 		var result struct {
 			MessageID string `json:"messageId"`
 		}
-		done <- client.CallID(context.Background(), IntegerID(1), "session/prompt", map[string]any{}, &result)
+		done <- client.CallStarted(context.Background(), "session/prompt", map[string]string{"sessionId": "s"}, &result, started)
 	}()
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.Write([]byte("{\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"sessionId\":\"s\",\"status\":\"running\"}}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"messageId\":\"m\"}}\n")); err != nil {
+		t.Fatal(err)
+	}
 	first := <-in
 	if first.Notification == nil || first.Notification.Method != "session.status" {
 		t.Fatalf("first %#v", first)
@@ -38,6 +49,26 @@ func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
 	close(barrier.Barrier)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientRejectsWriteAfterClose(t *testing.T) {
+	reader, remote := io.Pipe()
+	defer remote.Close()
+	output := &lockedShortWriter{}
+	client := NewClient(reader, output, ClientOptions{})
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Call(context.Background(), "session/prompt", map[string]string{"sessionId": "s"}, nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("got %v", err)
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for output.Len() > 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("bytes written after close: %q", output.String())
 	}
 }
 

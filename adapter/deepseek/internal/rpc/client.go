@@ -274,6 +274,13 @@ func (client *Client) callID(ctx context.Context, id RequestID, method string, p
 	case outcome := <-response:
 		return decodeCallResult(method, outcome, result)
 	case <-ctx.Done():
+		// Cancellation and response delivery can race; a response already
+		// buffered is authoritative and must win over the local deadline.
+		select {
+		case outcome := <-response:
+			return decodeCallResult(method, outcome, result)
+		default:
+		}
 		client.removePending(id)
 		// The request was fully written. Without a protocol response, its remote
 		// outcome is ambiguous; retire the connection so a late response cannot
@@ -478,6 +485,13 @@ func (client *Client) write(ctx context.Context, message Message) error {
 		return err
 	}
 	request := writeRequest{ctx: ctx, message: message, started: make(chan struct{}), result: make(chan error, 1)}
+	// Check shutdown first: a closed client must never accept new writes, and
+	// a random select could otherwise enqueue into a pump that already exited.
+	select {
+	case <-client.done:
+		return client.closeError()
+	default:
+	}
 	select {
 	case client.writes <- request:
 	case <-ctx.Done():
@@ -523,7 +537,16 @@ func (client *Client) writeLoop() {
 				return
 			}
 		case <-client.done:
-			return
+			// Drain queued writes so no caller is left waiting on a result and
+			// no byte is emitted after logical shutdown.
+			for {
+				select {
+				case request := <-client.writes:
+					request.result <- client.closeError()
+				default:
+					return
+				}
+			}
 		}
 	}
 }
