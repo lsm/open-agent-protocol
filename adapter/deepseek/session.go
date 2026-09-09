@@ -159,7 +159,21 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			return protocol.MessageSubmitResponse{}, stream, startErr
 		}
 	case <-ctx.Done():
-		return protocol.MessageSubmitResponse{}, stream, ctx.Err()
+		// Cancellation and admission can race; an admission that already
+		// resolved is authoritative. Otherwise release the reservation so the
+		// session stays usable instead of wedging on an abandoned run.
+		s.reduceMu.Lock()
+		if !run.started && !run.terminal {
+			s.abortPreStartUnlocked(run, ctx.Err())
+			s.reduceMu.Unlock()
+			return protocol.MessageSubmitResponse{}, stream, ctx.Err()
+		}
+		s.reduceMu.Unlock()
+		// Resolved under reduceMu implies signalStart already fired.
+		startErr := <-run.startResult
+		if startErr != nil {
+			return protocol.MessageSubmitResponse{}, stream, startErr
+		}
 	}
 	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(result.MessageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: s.model, MessageIDs: messageIDs}, stream, nil
 }
@@ -313,6 +327,11 @@ func (s *Session) applyNative(run *runState, n rpc.NotificationMessage) {
 			s.failRun(run, "deepseek_external_activity", "foreign child finish")
 			return
 		}
+		if !run.started {
+			// Buffered like its started; the admission replay reconciles the
+			// pair so a pre-receipt finish cannot fail or resurrect a run.
+			return
+		}
 		child := s.children[v.ChildSessionID]
 		if child == nil || child.run != run || child.terminal {
 			s.failRun(run, "deepseek_child_lifecycle", "unmatched child finish")
@@ -331,24 +350,6 @@ func (s *Session) observeCandidate(run *runState, e native.Event) {
 		run.candidateEvents = append(run.candidateEvents, e)
 	}
 	switch e.Type {
-	case "agent/inbox/spliced":
-		var v native.InboxSpliced
-		if e.DataAs(&v) != nil {
-			s.failRun(run, "deepseek_invalid_event", "invalid splice")
-			return
-		}
-		count := 0
-		for _, m := range v.Inserted {
-			if m.Source.Kind == "user" {
-				count++
-				if run.receipt != "" && m.ID == run.receipt {
-					run.matchedInsertion = true
-				}
-			}
-		}
-		if count > 0 {
-			run.insertionCount += count
-		}
 	case "turn/start":
 		var v native.TurnStart
 		_ = e.DataAs(&v)
@@ -365,18 +366,25 @@ func (s *Session) observeCandidate(run *runState, e native.Event) {
 		}
 		var v native.StepBoundary
 		_ = e.DataAs(&v)
-		if v.Turn != run.candidateTurn || run.candidateStep != 0 {
+		if v.Turn != run.candidateTurn {
 			s.discardCandidate(run)
 			return
 		}
+		if run.turn != 0 {
+			return // proof already found; later boundaries stay in the candidate
+		}
+		// The entered message may be forwarded in any step of the candidate
+		// turn, so a later step/start re-opens the step window instead of
+		// discarding the candidate.
 		run.candidateStep = v.Step
+		run.candidateEvents = []native.Event{run.candidateEvents[0], e}
 	case "user/message":
 		if !run.candidateOpen || run.candidateStep == 0 {
 			return
 		}
 		var v native.UserMessage
 		_ = e.DataAs(&v)
-		if run.receipt != "" && v.ID == run.receipt && v.Source.Kind == "user" && v.Source.Plugin == "" && v.Source.Provider == "" && v.Source.Model == "" && v.Source.CallID == "" {
+		if run.receipt != "" && v.ID == run.receipt && directUser(v.Source) {
 			run.turn = run.candidateTurn
 			run.step = run.candidateStep
 		}
@@ -402,14 +410,15 @@ func (s *Session) discardCandidate(run *runState) {
 	run.candidateEvents = nil
 }
 func (s *Session) evaluateAdmission(run *runState) {
-	if run.started || run.receipt == "" {
+	if run.started || run.terminal || run.receipt == "" {
 		return
 	}
 	// Reconstruct from the buffered wire order because the response barrier may
 	// deliver messageId only after all of these notifications were reduced.
 	var matches, turn, step int64
+	var turnStart native.Event
 	var candidate []native.Event
-	closed := false
+	entered, closed := false, false
 	for _, n := range run.pendingNotifications {
 		ev, ok := n.Value.(*native.SessionEventNotification)
 		if !ok {
@@ -430,14 +439,23 @@ func (s *Session) evaluateAdmission(run *runState) {
 			var v native.TurnStart
 			_ = ev.Event.DataAs(&v)
 			turn, step, closed = v.Turn, 0, false
+			turnStart = ev.Event
+			entered = false
 			candidate = []native.Event{ev.Event}
 		case "step/start":
 			var v native.StepBoundary
 			_ = ev.Event.DataAs(&v)
-			if turn == v.Turn && step == 0 {
-				step = v.Step
-				candidate = append(candidate, ev.Event)
+			if turn != v.Turn {
+				continue
 			}
+			if entered {
+				candidate = append(candidate, ev.Event)
+				continue
+			}
+			// The entered message may be forwarded in any step of the turn; the
+			// proof records the step that actually contains it.
+			step = v.Step
+			candidate = []native.Event{turnStart, ev.Event}
 		case "user/message":
 			if turn == 0 || step == 0 {
 				continue
@@ -445,8 +463,10 @@ func (s *Session) evaluateAdmission(run *runState) {
 			candidate = append(candidate, ev.Event)
 			var v native.UserMessage
 			_ = ev.Event.DataAs(&v)
-			if v.ID == run.receipt && directUser(v.Source) {
-				run.turn, run.step, run.candidateEvents = turn, step, append([]native.Event(nil), candidate...)
+			if !entered && v.ID == run.receipt && directUser(v.Source) {
+				entered = true
+				run.turn, run.step = turn, step
+				run.candidateEvents = append([]native.Event(nil), candidate...)
 			}
 		case "turn/end":
 			var v native.TurnEnd
@@ -454,7 +474,7 @@ func (s *Session) evaluateAdmission(run *runState) {
 			if v.Turn == turn {
 				candidate = append(candidate, ev.Event)
 				closed = true
-				if run.turn == 0 {
+				if !entered {
 					turn, step, candidate = 0, 0, nil
 				}
 			}

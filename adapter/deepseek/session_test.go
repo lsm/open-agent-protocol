@@ -357,3 +357,170 @@ func TestUnsupportedControlsHaveNoNativeSideEffects(t *testing.T) {
 		t.Fatal("native side effect")
 	}
 }
+
+func TestPreAdmissionChildNotificationsDefer(t *testing.T) {
+	proof := func(f *fakeClient, receipt string) {
+		f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")}}})
+		f.ev(2, "turn/start", native.TurnStart{Turn: 1})
+		f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(4, "user/message", native.UserMessage{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")})
+	}
+	// Force the failing interleaving deterministically: everything above must
+	// be reduced while the submission is still pre-receipt.
+	reduced := func(f *fakeClient) {
+		bar := make(chan struct{})
+		f.in <- rpc.InboundMessage{Barrier: bar}
+		<-bar
+	}
+	t.Run("matched child pair defers to admission", func(t *testing.T) {
+		s, f := openTest(t)
+		ch := submitAsync(s)
+		<-f.started
+		proof(f, "receipt")
+		f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "child"})
+		f.notify(&native.SubagentFinishedNotification{Provider: "p", AgentID: "agent", ParentSessionID: "session", ChildSessionID: "child", Status: "ok", StopReason: "completed"})
+		reduced(f)
+		f.prompts <- promptReply{id: "receipt"}
+		select {
+		case got := <-ch:
+			if got.err != nil {
+				t.Fatalf("pre-receipt child pair failed the submission: %v", got.err)
+			}
+			f.ev(5, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 1, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}, Source: native.MessageSource{Kind: "model", Provider: "p", Model: "m"}}})
+			f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+			f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+			events := drain(t, got.st)
+			adaptertest.AssertRunTrace(t, got.r, CapabilityRevision, events)
+			if len(events) != 2 || events[0].Type != protocol.TypeRunStarted || events[1].Type != protocol.TypeRunCompleted {
+				t.Fatalf("events %v", events)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("admission timed out")
+		}
+	})
+	t.Run("unmatched finish fails the admitted run coherently", func(t *testing.T) {
+		s, f := openTest(t)
+		ch := submitAsync(s)
+		<-f.started
+		proof(f, "receipt")
+		f.notify(&native.SubagentFinishedNotification{Provider: "p", AgentID: "agent", ParentSessionID: "session", ChildSessionID: "ghost", Status: "ok", StopReason: "completed"})
+		reduced(f)
+		f.prompts <- promptReply{id: "receipt"}
+		select {
+		case got := <-ch:
+			if got.err != nil {
+				t.Fatalf("submission failed before ownership proof: %v", got.err)
+			}
+			events := drain(t, got.st)
+			adaptertest.AssertRunTrace(t, got.r, CapabilityRevision, events)
+			if len(events) != 2 || events[0].Type != protocol.TypeRunStarted || events[1].Type != protocol.TypeRunFailed {
+				t.Fatalf("events %v", events)
+			}
+			var payload protocol.RunFailedPayload
+			if err := events[1].DecodePayload(&payload); err != nil || payload.Error.Code != "deepseek_child_lifecycle" {
+				t.Fatalf("failure payload %+v err=%v", payload.Error, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("admission timed out")
+		}
+		state, err := s.State(context.Background())
+		if err != nil || state.Status != protocol.SessionIdle {
+			t.Fatalf("session unusable after coherent failure: state=%+v err=%v", state, err)
+		}
+	})
+}
+
+func TestSubmitCancellationReleasesReservation(t *testing.T) {
+	s, f := openTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := make(chan struct {
+		r   protocol.MessageSubmitResponse
+		st  base.EventStream
+		err error
+	}, 1)
+	go func() {
+		r, st, err := s.Submit(ctx, request())
+		ch <- struct {
+			r   protocol.MessageSubmitResponse
+			st  base.EventStream
+			err error
+		}{r, st, err}
+	}()
+	<-f.started
+	cancel()
+	f.prompts <- promptReply{id: "receipt"}
+	select {
+	case got := <-ch:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", got.err)
+		}
+		for range got.st {
+		}
+	case <-time.After(time.Second):
+		t.Fatal("submit did not settle")
+	}
+	state, err := s.State(context.Background())
+	if err != nil || state.Status != protocol.SessionIdle {
+		t.Fatalf("abandoned reservation leaked: state=%+v err=%v", state, err)
+	}
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatalf("session wedged after abandoned submission: %v", err)
+	}
+}
+
+func TestEnteredMessageMayArriveInLaterStep(t *testing.T) {
+	// The ledger permits the entered direct-user message to be forwarded in
+	// any step of its turn; the proof must record the step that contains it.
+	proof := func(f *fakeClient, receipt string) {
+		f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")}}})
+		f.ev(2, "turn/start", native.TurnStart{Turn: 1})
+		f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(4, "user/message", native.UserMessage{ID: "other", Role: "user", Content: []native.ContentBlock{}, Source: native.MessageSource{Kind: "plugin", Plugin: "watcher"}})
+		f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(6, "step/start", native.StepBoundary{Turn: 1, Step: 2})
+		f.ev(7, "user/message", native.UserMessage{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")})
+	}
+	settle := func(f *fakeClient) {
+		f.ev(8, "assistant/chunk", native.AssistantChunk{Turn: 1, Step: 2, Chunk: json.RawMessage(`{"type":"text-delta","index":0,"text":"hi"}`)})
+		f.ev(9, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 2, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "hi"}}, Source: native.MessageSource{Kind: "model", Provider: "p", Model: "m"}}, Usage: &native.TokenUsage{InputTokens: 1, OutputTokens: 1}})
+		f.ev(10, "step/end", native.StepBoundary{Turn: 1, Step: 2})
+		f.ev(11, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	}
+	runCase := func(t *testing.T, replyFirst bool) {
+		s, f := openTest(t)
+		ch := submitAsync(s)
+		<-f.started
+		if replyFirst {
+			f.prompts <- promptReply{id: "receipt"}
+			proof(f, "receipt")
+			settle(f)
+		} else {
+			proof(f, "receipt")
+			settle(f)
+			f.prompts <- promptReply{id: "receipt"}
+		}
+		select {
+		case got := <-ch:
+			if got.err != nil {
+				t.Fatalf("later-step entry rejected: %v", got.err)
+			}
+			events := drain(t, got.st)
+			adaptertest.AssertRunTrace(t, got.r, CapabilityRevision, events)
+			want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+			if len(events) != len(want) {
+				t.Fatalf("events %v", events)
+			}
+			for i := range want {
+				if events[i].Type != want[i] {
+					t.Fatalf("events %v", events)
+				}
+			}
+		case <-time.After(time.Second):
+			t.Fatal("admission timed out")
+		}
+	}
+	t.Run("retrospective proof at the reply", func(t *testing.T) { runCase(t, false) })
+	t.Run("live proof during dispatch", func(t *testing.T) { runCase(t, true) })
+}
