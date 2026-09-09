@@ -378,3 +378,36 @@ Gated live-process tests follow the established pattern: spawn
 `<python> -m tui_gateway.entry` with an isolated environment, verify
 ready/epoch, admission through `message.complete`, stdin-EOF teardown;
 credential presence never enables live traffic.
+
+## Process gates (implemented)
+
+`adapter/hermes/process_integration_test.go`, skip-by-default:
+
+- `OAP_HERMES_SMOKE=1` + absolute `OAP_HERMES_BIN` (interpreter) and
+  `OAP_HERMES_ROOT` (pinned checkout, gateway cwd): credential-free
+  ready/epoch handshake through the production process layer,
+  dual-identity `session.create`, idle state, clean stdin-EOF teardown.
+  No prompt is submitted, so no provider traffic is possible.
+- `OAP_HERMES_INTEGRATION=1` adds the hermetic behavioral gate: the only
+  provider endpoint is an in-process loopback speaking streaming OpenAI
+  chat completions (`OPENAI_BASE_URL`), the single credential is the
+  test-owned fixture key, and the model statically resolves to the
+  openai provider in the pinned catalog (`gpt-5.6-sol`). Asserts started
+  admission, streamed deltas, `run.completed` settlement, the exact
+  loopback request (path/model/bearer/stream), post-run idle, clean
+  close.
+- Optional `OAP_HERMES_SHA256` (64 hex) binds the interpreter artifact
+  for exact-artifact evidence; without it a passing gate is runtime
+  evidence only.
+- The child environment is fully replaced: isolated HOME/XDG dirs, dead
+  loopback proxies with loopback-only NO_PROXY, unbuffered stdio, no
+  ambient credentials.
+
+Development environment note: no python interpreter exists on this
+machine, so the gates were validated structurally (skip-by-default, and
+the spawn path proven fail-fast with non-gateway executables:
+immediate-exit → handshake EOF error; `/bin/echo` → strict-codec
+non-object rejection; digest and checkout guards verified). The
+production process path itself is exercised hermetically by the corpus
+process cases via the fixture-server re-exec. A live run requires a
+prepared interpreter with the pinned checkout's dependencies.

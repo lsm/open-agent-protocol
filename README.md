@@ -48,6 +48,7 @@ Research:
 - [Pinned Makai agent-protocol mapping](research/makai-agent-67ad514-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.85.1-mapping.md)
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-47f9438-mapping.md)
+- [Pinned Hermes agent mapping](research/hermes-v2026.8.31-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
 
 Provider compatibility is tested independently from harness conformance. Inspect
@@ -81,6 +82,18 @@ own temporary Cordis configuration so stdout stays pure JSON-RPC. The wire
 the pinned source commit and tree in the mapping ledger remain the provenance.
 Set `OAP_DEEPSEEK_HARNESS_SHA256` to the expected 64-character artifact digest
 when exact artifact provenance is required.
+
+Hermes agent real-process checks follow the same opt-in gate. Provide an
+absolute python interpreter in `OAP_HERMES_BIN` (able to import the pinned
+checkout's dependencies) and the pinned hermes-agent v2026.8.31 checkout in
+`OAP_HERMES_ROOT` (the gateway's cwd), then set `OAP_HERMES_SMOKE=1` for the
+credential-free ready/session.create/EOF-teardown check or
+`OAP_HERMES_INTEGRATION=1` for the loopback-provider path (streaming OpenAI
+chat completions against an in-process mock, test-owned key only). The gates
+never download anything and pass no ambient credentials; teardown evidence is
+stdin EOF, matching the pinned gateway, which has no shutdown RPC. Set
+`OAP_HERMES_SHA256` to the expected 64-character interpreter digest when exact
+artifact provenance is required.
 
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool
