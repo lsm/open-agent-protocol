@@ -47,6 +47,7 @@ Research:
 - [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md)
 - [Pinned Makai agent-protocol mapping](research/makai-agent-67ad514-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.85.1-mapping.md)
+- [Pinned DeepSeek Harness mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
 
 Provider compatibility is tested independently from harness conformance. Inspect
@@ -68,6 +69,18 @@ semver is runtime-version evidence only; it does not prove the source commit.
 Set `OAP_PI_SHA256` to the expected 64-character artifact digest when exact
 artifact provenance is required. The gate never downloads an executable and
 passes no ambient credentials to it.
+
+DeepSeek Harness real-process checks follow the same opt-in gate. Provide an
+absolute `dsh-jsonrpc-agent` runtime built from the pinned source commit in
+`OAP_DEEPSEEK_HARNESS_BIN`, then set `OAP_DEEPSEEK_HARNESS_SMOKE=1` for the
+credential-free initialize/shutdown check or
+`OAP_DEEPSEEK_HARNESS_INTEGRATION=1` for the loopback-provider path. The gates
+never download a runtime, pass no ambient credentials to it, and compose their
+own temporary Cordis configuration so stdout stays pure JSON-RPC. The wire
+`serverInfo` version and any release text are runtime-version evidence only;
+the pinned source commit and tree in the mapping ledger remain the provenance.
+Set `OAP_DEEPSEEK_HARNESS_SHA256` to the expected 64-character artifact digest
+when exact artifact provenance is required.
 
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool
