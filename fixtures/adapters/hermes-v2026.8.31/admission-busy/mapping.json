@@ -1,0 +1,15 @@
+[
+  {"index":1,"type":"request:prompt.submit","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.message.submit(auto→start)"},
+  {"index":2,"type":"response:prompt.submit","direction":"gateway-to-host","classification":"required-unmapped","fidelity":"unsupported"},
+  {"index":3,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":4,"type":"oap_control:assert-state","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"reducer-owned session state"},
+  {"index":5,"type":"request:prompt.submit","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.message.submit(auto→start)"},
+  {"index":6,"type":"response:prompt.submit","direction":"gateway-to-host","classification":"required-unmapped","fidelity":"unsupported"},
+  {"index":7,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":8,"type":"oap_control:assert-state","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"reducer-owned session state"},
+  {"index":9,"type":"request:prompt.submit","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.message.submit(auto→start)"},
+  {"index":10,"type":"response:prompt.submit","direction":"gateway-to-host","classification":"required-unmapped","fidelity":"unsupported"},
+  {"index":11,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":12,"type":"oap_control:assert-state","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"reducer-owned session state"},
+  {"index":13,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session close via stdin EOF"}
+]

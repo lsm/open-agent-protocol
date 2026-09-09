@@ -1,0 +1,11 @@
+{"action":"submit","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","method":"prompt.submit","params":{"session_id":"sess0001","text":"hello"}}}
+{"action":"reply","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","result":{"status":"streaming"}}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.start","session_id":"sess0001","seq":1}}}
+{"action":"wait-submit","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"harness_sync","op":"wait-submit"}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"normalized","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"sess0001","seq":2,"payload":{"text":"Hi"}}}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"overlap-submit","expect":"run-active"}}
+{"action":"oap-control","classification":"required-unmapped","direction":"harness-control","fidelity":"unsupported","raw":{"type":"oap_control","op":"resume","expect":"unavailable"}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":3,"payload":{"text":"done","usage":{"model":"m","input":3,"output":5,"reasoning":1,"prompt":3,"completion":5,"total":8,"calls":2},"status":"complete"}}}}
+{"action":"wait-submit","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"harness_sync","op":"wait-submit"}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"assert-state","status":"idle"}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"close"}}

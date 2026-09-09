@@ -1,0 +1,23 @@
+{"action":"submit","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","method":"prompt.submit","params":{"session_id":"sess0001","text":"hello"}}}
+{"action":"reply","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","result":{"status":"streaming"}}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.start","session_id":"sess0001","seq":1}}}
+{"action":"wait-submit","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"harness_sync","op":"wait-submit"}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"sess0001","seq":2,"payload":{"command":"rm -rf /tmp/x","choices":["once","session","always","deny"]}}}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"native","raw":{"type":"oap_control","op":"resolve","kind":"approval","answer":"once"}}
+{"action":"expect-write","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":3,"jsonrpc":"2.0","method":"approval.respond","params":{"session_id":"sess0001","choice":"once"}}}
+{"action":"reply","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":3,"jsonrpc":"2.0","result":{"resolved":true}}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"clarify.request","session_id":"sess0001","seq":3,"payload":{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}}}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"native","raw":{"type":"oap_control","op":"resolve","kind":"clarify","answer":"a"}}
+{"action":"expect-write","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":4,"jsonrpc":"2.0","method":"clarify.respond","params":{"request_id":"aaaa1111","answer":"a"}}}
+{"action":"reply","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":4,"jsonrpc":"2.0","result":{"status":"ok"}}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"sudo.request","session_id":"sess0001","seq":4,"payload":{"request_id":"bbbb2222"}}}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"native","raw":{"type":"oap_control","op":"resolve","kind":"sudo","answer":"test-password-fixture"}}
+{"action":"expect-write","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":5,"jsonrpc":"2.0","method":"sudo.respond","params":{"request_id":"bbbb2222","password":"test-password-fixture"}}}
+{"action":"reply","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":5,"jsonrpc":"2.0","result":{"status":"ok"}}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"secret.request","session_id":"sess0001","seq":5,"payload":{"request_id":"cccc3333","prompt":"CI token","env_var":"CI_TOKEN"}}}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"native","raw":{"type":"oap_control","op":"resolve","kind":"secret","answer":"test-secret-fixture"}}
+{"action":"expect-write","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":6,"jsonrpc":"2.0","method":"secret.respond","params":{"request_id":"cccc3333","value":"test-secret-fixture"}}}
+{"action":"reply","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":6,"jsonrpc":"2.0","result":{"status":"ok"}}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":6,"payload":{"text":"done","usage":{"model":"m","input":3,"output":5,"reasoning":1,"prompt":3,"completion":5,"total":8,"calls":2},"status":"complete"}}}}
+{"action":"wait-submit","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"harness_sync","op":"wait-submit"}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"close"}}

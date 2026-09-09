@@ -1,0 +1,11 @@
+[
+  {"index":1,"type":"request:prompt.submit","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.message.submit(auto→start)"},
+  {"index":2,"type":"response:prompt.submit","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"admission receipt (status-only)"},
+  {"index":3,"type":"event/message.start","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.started (by construction)"},
+  {"index":4,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":5,"type":"event/clarify.request","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"user.input.requested(single_choice)"},
+  {"index":6,"type":"event/clarify.expire","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"user.input.resolved(cancelled)"},
+  {"index":7,"type":"event/message.complete","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.completed(usage)"},
+  {"index":8,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":9,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session close via stdin EOF"}
+]

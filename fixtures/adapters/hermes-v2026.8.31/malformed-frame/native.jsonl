@@ -1,0 +1,9 @@
+{"action":"auto","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{"name":"fixture"},"change_events":true,"replay_epoch":"e3b0c44298fc1c149afbf4c8996fb924"}}}}
+{"action":"open","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":1,"jsonrpc":"2.0","method":"session.create","params":{"model":"hermes-test"}}}
+{"action":"auto","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":1,"jsonrpc":"2.0","result":{"session_id":"sess0001","stored_session_id":"20260831_093000_ab12cd","message_count":0,"info":{}}}}
+{"action":"submit","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","method":"prompt.submit","params":{"session_id":"sess0001","text":"hello"}}}
+{"action":"auto","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","result":{"status":"streaming"}}}
+{"action":"auto","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.start","session_id":"sess0001","seq":1}}}
+{"action":"auto","classification":"mapped","direction":"gateway-to-host","fidelity":"normalized","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"sess0001","seq":2,"payload":{"text":"Hi"}}}}
+{"action":"decode-error","classification":"required-unmapped","direction":"gateway-to-host","fidelity":"unsupported","raw":" {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}"}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"close"}}

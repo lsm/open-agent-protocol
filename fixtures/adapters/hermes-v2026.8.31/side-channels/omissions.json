@@ -1,0 +1,4 @@
+[
+  {"index":5,"type":"event/btw.complete","reason":"btw side-channel terminal; task-scoped; no OAP projection in v1"},
+  {"index":6,"type":"event/background.complete","reason":"background side-channel terminal; no OAP projection in v1"}
+]

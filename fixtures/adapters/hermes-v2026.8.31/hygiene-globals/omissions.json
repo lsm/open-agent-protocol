@@ -1,0 +1,5 @@
+[
+  {"index":5,"type":"event/sessions.changed","reason":"global frame; no seq, no session semantics"},
+  {"index":6,"type":"event/session.reclaimed","reason":"global eviction notice for another session; ignorable"},
+  {"index":7,"type":"event/skin.changed","reason":"global frame; no seq, no session semantics"}
+]
