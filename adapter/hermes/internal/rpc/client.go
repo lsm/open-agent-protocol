@@ -106,13 +106,14 @@ type Client struct {
 	closer        io.Closer
 	queueCapacity int
 
-	mu       sync.Mutex
-	routeMu  sync.Mutex
-	pending  map[RequestID]chan callResult
-	incoming map[RequestID]*IncomingRequest
-	backlog  []InboundMessage
-	closed   bool
-	err      error
+	mu        sync.Mutex
+	routeMu   sync.Mutex
+	pending   map[RequestID]chan callResult
+	incoming  map[RequestID]*IncomingRequest
+	backlog   []InboundMessage
+	closed    bool
+	err       error
+	readerErr error
 
 	nextID        atomic.Int64
 	routeMode     atomic.Int32
@@ -207,6 +208,12 @@ func (client *Client) Done() <-chan struct{}     { return client.done }
 func (client *Client) Err() error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
+	// A reader error is the specific wire truth (malformed frame, EOF) and
+	// wins over the concurrent process-exit or close error: whichever
+	// shutdown raced first must not decide the surfaced cause.
+	if client.readerErr != nil {
+		return client.readerErr
+	}
 	return client.err
 }
 
@@ -302,6 +309,9 @@ func (client *Client) readLoop() {
 	for {
 		message, err := client.decoder.Decode()
 		if err != nil {
+			client.mu.Lock()
+			client.readerErr = err
+			client.mu.Unlock()
 			client.closeWith(err)
 			return
 		}
@@ -318,13 +328,18 @@ func (client *Client) route(message Message) bool {
 	mode := client.routeMode.Load()
 	switch message.Kind {
 	case MessageResponse:
-		if mode == 2 && !client.barrier() {
-			return true
+		if mode == 2 {
+			// The barrier orders the response behind wire-earlier
+			// observations. When the transport retires before the barrier is
+			// acknowledged, the frame was still decoded from the wire —
+			// deliver the evidence rather than dropping it; there are no
+			// later frames to order against.
+			client.barrier()
 		}
 		return client.deliver(message.ID, callResult{result: cloneRaw(message.Result)})
 	case MessageError:
-		if mode == 2 && !client.barrier() {
-			return true
+		if mode == 2 {
+			client.barrier()
 		}
 		return client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}})
 	case MessageRequest:

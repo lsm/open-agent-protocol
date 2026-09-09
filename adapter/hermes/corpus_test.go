@@ -800,6 +800,9 @@ func (c *hmCorpusClient) transportClose(err error) {
 		close(c.done)
 		c.closed = true
 	}
+	// The reducer's dispatch drains the inbound stream to this close before
+	// settling the failure, mirroring the production relay's close.
+	close(c.in)
 }
 
 // hmFindInteraction locates the open gate of the given kind on the reducer's
@@ -1259,8 +1262,15 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 					rejected = true
 				}
 			}
-			code, failed := hmFailedCode(t, hmLastEnvelope(t, *execution))
-			ok = rejected && failed && code == "hermes_process_exit"
+			terminal := hmLastEnvelope(t, *execution)
+			code, failed := hmFailedCode(t, terminal)
+			var payload protocol.RunFailedPayload
+			live := failed && terminal.DecodePayload(&payload) == nil &&
+				strings.Contains(payload.Error.Message, "invalid JSON-RPC message")
+			// The corrupt bytes must have traversed the production decoder on
+			// the live transport: the surfaced cause is the reader's codec
+			// error, not a coincidental process exit.
+			ok = rejected && failed && code == "hermes_process_exit" && live
 		case "submit-streaming":
 			streaming := 0
 			for i := range decoded {
@@ -1510,19 +1520,22 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			ok = ok && cancelled
 		case "steer-run":
 			level, advertised := hmDescriptorLevel(*execution, "session.message.delivery.steer")
-			ok = execution.overlapRejected && !hmWrote(*execution, native.MethodSessionSteer) && advertised && level == protocol.SupportUnavailable
+			ok = execution.overlapRejected && !hmWrote(*execution, native.MethodSessionSteer) &&
+				advertised && level == protocol.SupportUnavailable &&
+				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "steer-rejected":
-			var result native.SteerResult
-			ok = native.DecodeStrict([]byte(`{"status":"rejected"}`), &result) == nil &&
-				!hmWrote(*execution, native.MethodSessionSteer) && execution.overlapRejected
+			// The pinned native surface (steer result statuses queued|rejected)
+			// is typed and tested in the native package; this rule pins the
+			// behavioral side only: v1 never steers, and overlap is rejected
+			// locally before any native write.
+			ok = execution.overlapRejected && !hmWrote(*execution, native.MethodSessionSteer) &&
+				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "subagent-steer":
-			var result native.SubagentSteerResult
-			ok = native.DecodeStrict([]byte(`{"status":"ok","subagent_id":"sa1"}`), &result) == nil &&
-				!hmWrote(*execution, native.MethodSubagentSteer)
+			ok = !hmWrote(*execution, native.MethodSubagentSteer) &&
+				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "subagent-interrupt":
-			var result native.SubagentInterruptResult
-			ok = native.DecodeStrict([]byte(`{"found":true,"subagent_id":"sa1"}`), &result) == nil &&
-				!hmWrote(*execution, native.MethodSubagentInterrupt)
+			ok = !hmWrote(*execution, native.MethodSubagentInterrupt) &&
+				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "btw-delivery":
 			var task native.TaskRequestResult
 			ok = hmHasEvent(decoded, native.EventBTWComplete) && !hmWrote(*execution, native.MethodPromptBTW) &&
@@ -1612,21 +1625,20 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 				}
 			}
 			ok = hasTick && usage && len(hmEventIndexes(decoded, native.EventSessionUsage)) == 1
-		case "replay-in-window":
-			var result native.EventsSinceResult
-			window := `{"events":[{"type":"message.start","session_id":"sess0001","seq":1},{"type":"message.delta","session_id":"sess0001","seq":2,"payload":{"text":"x"}}],"latest_seq":2,"truncated":false,"count":2,"epoch":"e3b0c44298fc1c149afbf4c8996fb924"}`
+		case "replay-in-window", "replay-truncated", "replay-unknown-session":
+			// The pinned replay shapes (window, explicit truncation,
+			// unknown-session empty result) are typed and tested in the
+			// native package; these rules pin the behavioral side only: v1
+			// never issues session.events.since and advertises replay
+			// unavailable, so no gap contract is ever implied.
 			level, advertised := hmDescriptorLevel(*execution, "run.replay")
-			ok = native.DecodeStrict([]byte(window), &result) == nil && len(result.Events) == 2 &&
-				!hmWrote(*execution, native.MethodSessionEventsSinc) && advertised && level == protocol.SupportUnavailable
-		case "replay-truncated":
-			var result native.EventsSinceResult
-			ok = native.DecodeStrict([]byte(`{"events":[],"latest_seq":600,"truncated":true,"count":0,"epoch":"e3b0c44298fc1c149afbf4c8996fb924"}`), &result) == nil &&
-				result.Truncated && !hmWrote(*execution, native.MethodSessionEventsSinc)
-		case "replay-unknown-session":
-			var result native.EventsSinceResult
-			ok = native.DecodeStrict([]byte(`{"events":[],"latest_seq":0,"truncated":false,"count":0,"epoch":"e3b0c44298fc1c149afbf4c8996fb924"}`), &result) == nil &&
-				result.LatestSeq == 0 && !result.Truncated && !hmWrote(*execution, native.MethodSessionEventsSinc)
+			ok = !hmWrote(*execution, native.MethodSessionEventsSinc) && !hmWrote(*execution, native.MethodSessionEventsStat) &&
+				advertised && level == protocol.SupportUnavailable &&
+				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "epoch-restart":
+			// A silent seq reset (restart) breaks the contiguous fencing and
+			// fails the session closed; epoch identity itself is validated by
+			// the handshake pin and typed in the native package.
 			restart := false
 			maxSeq := int64(0)
 			for i := range decoded {
@@ -1640,11 +1652,7 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 					maxSeq = decoded[i].Event.Seq
 				}
 			}
-			first := native.ReadyPayload{ChangeEvents: true, ReplayEpoch: "e3b0c44298fc1c149afbf4c8996fb924"}
-			second := native.ReadyPayload{ChangeEvents: true, ReplayEpoch: "e3b0c44298fc1c149afbf4c8996fb925"}
-			ok = restart && execution.submitClosed &&
-				native.ValidateReady(&first) == nil && native.ValidateReady(&second) == nil &&
-				first.ReplayEpoch != second.ReplayEpoch
+			ok = restart && execution.submitClosed
 		case "resume-live":
 			level, advertised := hmDescriptorLevel(*execution, "run.resume")
 			ok = execution.resumeUnavailable >= 2 && !hmWrote(*execution, "session.resume") &&
@@ -1954,7 +1962,9 @@ func hmServeFixture() {
 
 // hmServerScript extracts the byte-exact program the fixture gateway must run
 // from a case transcript: the ready frame, id-keyed responses, and the event
-// script replayed after the first prompt response.
+// script replayed after the first prompt response. decode-error frames carry
+// corrupt wire bytes as string raws and are replayed verbatim, so malformed
+// input actually traverses the production decoder.
 func hmServerScript(script string) hmServerParts {
 	data, err := os.ReadFile(script)
 	if err != nil {
@@ -1967,13 +1977,19 @@ func hmServerScript(script string) hmServerParts {
 			Action    string          `json:"action"`
 			Raw       json.RawMessage `json:"raw"`
 		}
-		if json.Unmarshal(line, &frame) != nil || frame.Direction != "gateway-to-host" || frame.Action != "auto" {
+		if json.Unmarshal(line, &frame) != nil || frame.Direction != "gateway-to-host" {
+			continue
+		}
+		if frame.Action != "auto" && frame.Action != "decode-error" {
 			continue
 		}
 		trimmed := bytes.TrimSpace(frame.Raw)
 		if len(trimmed) > 0 && trimmed[0] == '"' {
 			// A string raw is a corrupt wire line replayed verbatim.
-			parts.script = append(parts.script, string(trimmed)[1:len(trimmed)-1])
+			var literal string
+			if json.Unmarshal(trimmed, &literal) == nil {
+				parts.script = append(parts.script, literal)
+			}
 			continue
 		}
 		var object map[string]json.RawMessage

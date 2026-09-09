@@ -50,7 +50,7 @@
       "run_id": "run-b",
       "error": {
         "code": "hermes_process_exit",
-        "message": "EOF"
+        "message": "hermes rpc: invalid JSON-RPC message: frame must be exactly one JSON object"
       }
     },
     "sequence": 3,

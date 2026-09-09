@@ -228,18 +228,28 @@ func (s *Session) dispatch() {
 			s.reduce(in)
 			s.reduceMu.Unlock()
 		case <-s.client.Done():
+			// The inbound stream's owner (the factory relay on the process
+			// path, the harness fake in tests) closes the channel once every
+			// already-routed observation is forwarded. Draining to that close
+			// before settling makes transport-death ordering deterministic:
+			// the failure terminal always follows the full ordered evidence.
 			for {
+				var in rpc.InboundMessage
+				var ok bool
 				select {
-				case in := <-s.inbound:
-					s.reduceMu.Lock()
-					s.reduce(in)
-					s.reduceMu.Unlock()
-				default:
+				case in, ok = <-s.inbound:
+				case <-s.stop:
+					return
+				}
+				if !ok {
 					s.reduceMu.Lock()
 					s.transportFailed()
 					s.reduceMu.Unlock()
 					return
 				}
+				s.reduceMu.Lock()
+				s.reduce(in)
+				s.reduceMu.Unlock()
 			}
 		case <-s.stop:
 			return

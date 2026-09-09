@@ -124,6 +124,10 @@ func New(config Config) (*Adapter, error) {
 			// is a legal interleaving, not a reordering.
 			relay := make(chan rpc.InboundMessage, relayCapacity)
 			go func() {
+				// Closing the relay marks the inbound stream finished: the
+				// reducer drains it to completion before settling a transport
+				// failure, so evidence ordering at death is deterministic.
+				defer close(relay)
 				inbound := client.Inbound()
 				forward := func(message rpc.InboundMessage) {
 					if message.Barrier != nil {

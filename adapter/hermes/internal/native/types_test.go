@@ -190,4 +190,36 @@ func TestResultShapesDecode(t *testing.T) {
 	if err := DecodeStrict([]byte(`{"status":"ok","remaining":["q2"]}`), &RespondResult{}); err != nil {
 		t.Fatal(err)
 	}
+	// The v1-unavailable native surfaces keep their pinned shapes typed here,
+	// so the corpus rules stay behavioral: steer (queued|rejected),
+	// registry-scoped subagent control, and the replay window contract.
+	var steer SteerResult
+	if err := DecodeStrict([]byte(`{"status":"rejected"}`), &steer); err != nil || steer.Status != "rejected" {
+		t.Fatalf("steer = %+v err=%v", steer, err)
+	}
+	if err := DecodeStrict([]byte(`{"status":"queued","text":"later"}`), &steer); err != nil || steer.Status != "queued" {
+		t.Fatalf("steer = %+v err=%v", steer, err)
+	}
+	var subagentSteer SubagentSteerResult
+	if err := DecodeStrict([]byte(`{"status":"ok","subagent_id":"sa1","text":"redirected"}`), &subagentSteer); err != nil || subagentSteer.SubagentID != "sa1" {
+		t.Fatalf("subagent steer = %+v err=%v", subagentSteer, err)
+	}
+	var subagentInterrupt SubagentInterruptResult
+	if err := DecodeStrict([]byte(`{"found":true,"subagent_id":"sa1"}`), &subagentInterrupt); err != nil || !subagentInterrupt.Found {
+		t.Fatalf("subagent interrupt = %+v err=%v", subagentInterrupt, err)
+	}
+	window := `{"events":[{"type":"message.start","session_id":"s","seq":1},{"type":"message.delta","session_id":"s","seq":2,"payload":{"text":"x"}}],"latest_seq":2,"truncated":false,"count":2,"epoch":"` + testEpoch + `"}`
+	if err := DecodeStrict([]byte(window), &since); err != nil || len(since.Events) != 2 || since.Count != 2 {
+		t.Fatalf("replay window = %+v err=%v", since, err)
+	}
+	truncated := `{"events":[],"latest_seq":600,"truncated":true,"count":0,"epoch":"` + testEpoch + `"}`
+	if err := DecodeStrict([]byte(truncated), &since); err != nil || !since.Truncated || since.LatestSeq != 600 {
+		t.Fatalf("replay truncated = %+v err=%v", since, err)
+	}
+	if err := ValidateReady(&ReadyPayload{ChangeEvents: true, ReplayEpoch: testEpoch}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateReady(&ReadyPayload{ChangeEvents: true, ReplayEpoch: "e3b0c44298fc1c149afbf4c8996fb925"}); err != nil {
+		t.Fatal(err)
+	}
 }
