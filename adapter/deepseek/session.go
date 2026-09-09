@@ -56,15 +56,10 @@ type runState struct {
 	candidateTurn        int64
 	candidateStep        int64
 	candidateOpen        bool
-	candidateEnded       bool
-	candidateIdle        bool
 	candidateEvents      []native.Event
 	pendingNotifications []rpc.NotificationMessage
-	insertionCount       int
-	matchedInsertion     bool
 	startResult          chan error
 	startOnce            sync.Once
-	text, reasoning      strings.Builder
 	final                *native.AssistantMessageEvent
 	endKind              string
 	turnEnded            bool
@@ -584,11 +579,6 @@ func (s *Session) applyOwnedEvent(run *runState, e native.Event) {
 		if !ok {
 			return
 		}
-		if part.Type == protocol.ContentText {
-			run.text.WriteString(part.Text)
-		} else {
-			run.reasoning.WriteString(part.Reasoning)
-		}
 		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: part}, false)
 	case "assistant/message":
 		var v native.AssistantMessageEvent
@@ -949,6 +939,9 @@ func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, te
 		if s.active == run {
 			s.active = nil
 		}
+		// Settled runs keep no subscribers or journal slot; drop the registry
+		// entry so a long-lived session does not retain one runState per run.
+		delete(s.runs, run.id)
 		s.state.Status = protocol.SessionIdle
 		s.state.ActiveRunID = ""
 	}
