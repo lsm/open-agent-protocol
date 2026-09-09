@@ -147,6 +147,25 @@ func (p *Process) Done() <-chan struct{} { return p.waitDone }
 func (p *Process) WaitError() error      { p.waitMu.Lock(); defer p.waitMu.Unlock(); return p.waitErr }
 func (p *Process) Close(ctx context.Context) error {
 	p.close.Do(func() {
+		// The shutdown response is delivered only after its ordering barrier is
+		// acknowledged by an inbound consumer. During teardown the semantic
+		// consumer may already be gone, so drain the stream here: acknowledge
+		// barriers and discard residual observations — the session is closing
+		// and they can no longer affect reducer state.
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for {
+				select {
+				case message := <-p.Client.Inbound():
+					if message.Barrier != nil {
+						close(message.Barrier)
+					}
+				case <-p.Client.Done():
+					return
+				}
+			}
+		}()
 		shutdownCtx, cancel := context.WithTimeout(ctx, p.timeout)
 		defer cancel()
 		var result struct{}
@@ -167,6 +186,7 @@ func (p *Process) Close(ctx context.Context) error {
 			p.closeErr = errors.New("deepseek rpc: shutdown timed out")
 		}
 		p.Client.closeWith(ErrClosed)
+		<-drained
 	})
 	return p.closeErr
 }

@@ -108,6 +108,35 @@ sleep 10
 	}
 }
 
+func TestProcessCloseDeliversShutdownResponse(t *testing.T) {
+	// A runtime that answers shutdown and then waits for stdin EOF must close
+	// cleanly: the response settles the call through the teardown drain, stdin
+	// closes, and the child exits — no timeout kill.
+	dir := t.TempDir()
+	script := writeScript(t, dir, `IFS= read -r init
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}'
+IFS= read -r shutdown
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+IFS= read -r eof || exit 0
+`)
+	p, err := Start(context.Background(), ProcessConfig{Path: script, Initialize: native.InitializeParams{Cwd: dir, Provider: "p", Model: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("close stalled for %v", elapsed)
+	}
+	select {
+	case <-p.Done():
+	default:
+		t.Fatal("child not reaped")
+	}
+}
+
 func writeScript(t *testing.T, dir, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, "fixture.sh")

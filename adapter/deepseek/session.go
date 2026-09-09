@@ -816,9 +816,12 @@ func (s *Session) Close(ctx context.Context) error {
 	s.state.Status = protocol.SessionClosed
 	subs := s.allSubscribersLocked()
 	s.mu.Unlock()
-	s.stopOnce.Do(func() { close(s.stop) })
 	s.reduceMu.Unlock()
+	// Keep dispatch alive through the shutdown handshake: the shutdown
+	// response is delivered only after its ordering barrier is acknowledged,
+	// and dispatch is the semantic consumer that acknowledges barriers.
 	err := s.client.Close()
+	s.stopOnce.Do(func() { close(s.stop) })
 	for _, c := range subs {
 		close(c)
 	}
