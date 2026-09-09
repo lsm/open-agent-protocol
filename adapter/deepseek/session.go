@@ -241,8 +241,17 @@ func (s *Session) applyNotification(n rpc.NotificationMessage) {
 	if run == nil {
 		run = s.active
 	}
+	unusable := s.unusable
 	s.mu.Unlock()
 	if run == nil { // Any unsolicited native activity violates dedicated-session ownership.
+		// A whole-agent status for this own session is quiescence evidence,
+		// not work: a failed pre-start admission leaves the native agent to
+		// report idle after its turn ends, and the next submission may follow.
+		if !unusable {
+			if status, isStatus := n.Value.(*native.SessionStatusNotification); isStatus && status.SessionID == s.nativeID {
+				return
+			}
+		}
 		s.externalActivity("notification without reserved run")
 		return
 	}
@@ -463,6 +472,11 @@ func (s *Session) evaluateAdmission(run *runState) {
 	}
 	if closed {
 		run.candidateEvents = candidate
+	} else if turn == run.turn && len(candidate) > len(run.candidateEvents) {
+		// Events already reduced between the matching entered message and this
+		// evaluation belong to the owned turn; without this they would never
+		// be replayed and their content or terminal evidence would be lost.
+		run.candidateEvents = candidate
 	}
 	run.id = protocol.RunID(s.ids.NewID("run"))
 	run.started = true
@@ -607,28 +621,24 @@ func (s *Session) sameStep(run *runState, t, st int64) bool {
 	}
 	return true
 }
+
+// chunkPart projects the pinned StreamChunk union. Only the two delta
+// variants carry streaming content; block boundaries, usage, finish, and
+// tool-argument deltas are bookkeeping with no portable delta projection.
 func chunkPart(raw json.RawMessage) (protocol.ContentPart, bool) {
 	var v struct {
-		Type      string `json:"type"`
-		Text      string `json:"text,omitempty"`
-		Delta     string `json:"delta,omitempty"`
-		Reasoning string `json:"reasoning,omitempty"`
+		Type  string `json:"type"`
+		Index int64  `json:"index"`
+		Text  string `json:"text"`
 	}
 	if native.DecodeStrict(raw, &v) != nil {
 		return protocol.ContentPart{}, false
 	}
-	text := v.Text
-	if text == "" {
-		text = v.Delta
-	}
 	switch v.Type {
-	case "text", "text_delta":
-		return protocol.ContentPart{Type: protocol.ContentText, Text: text}, true
-	case "reasoning", "reasoning_delta":
-		if v.Reasoning == "" {
-			v.Reasoning = text
-		}
-		return protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: v.Reasoning}, true
+	case "text-delta":
+		return protocol.ContentPart{Type: protocol.ContentText, Text: v.Text}, true
+	case "reasoning-delta":
+		return protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: v.Text}, true
 	}
 	return protocol.ContentPart{}, false
 }

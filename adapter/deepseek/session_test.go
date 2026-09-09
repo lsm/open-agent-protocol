@@ -263,7 +263,7 @@ func TestPromptResponseMayFollowEarlyNotifications(t *testing.T) {
 func TestCompletedRunMapsChunksUsageAndSettlement(t *testing.T) {
 	s, f := openTest(t)
 	a, st := admission(t, s, f, "receipt")
-	f.ev(5, "assistant/chunk", native.AssistantChunk{Turn: 1, Step: 1, Chunk: json.RawMessage(`{"type":"text","text":"hi"}`)})
+	f.ev(5, "assistant/chunk", native.AssistantChunk{Turn: 1, Step: 1, Chunk: json.RawMessage(`{"type":"text-delta","index":0,"text":"hi"}`)})
 	f.ev(6, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 1, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "hi"}}, Source: native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}}, Usage: &native.TokenUsage{InputTokens: 2, OutputTokens: 1}})
 	f.ev(7, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 	f.ev(8, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
