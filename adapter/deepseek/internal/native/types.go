@@ -638,6 +638,7 @@ func validStreamChunk(raw json.RawMessage) bool {
 			return false
 		}
 		var value struct {
+			Type  string     `json:"type"`
 			Usage TokenUsage `json:"usage"`
 		}
 		return DecodeStrict(raw, &value) == nil && validUsage(value.Usage)
