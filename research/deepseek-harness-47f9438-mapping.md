@@ -27,6 +27,44 @@ Implementation status:
   `config` rows).
 - Executable evidence corpus: `fixtures/adapters/deepseek-harness-47f9438`
   driven by `adapter/deepseek/corpus_test.go`.
+- Second independent review (reducer, corpus, transport, gates) confirmed six
+  defects, each reproduced before and green after its focused fix:
+  - `c3dc09b` admission semantics — a pre-receipt `subagent.finished` failed
+    its own deferred `subagent.started`'s submission and the late reply then
+    re-admitted the aborted run, wedging the session at `running` with no
+    live run; the live and retrospective ownership proofs disagreed on
+    later-step entered messages (the retrospective path recorded the first
+    step's number and legal step-2 events then failed `sameStep`); and
+    caller cancellation between reply and proof left the reservation
+    permanently active. Pre-receipt finishes now defer like starts and
+    reconcile at the admission replay, `evaluateAdmission` no-ops on
+    terminal runs, both proof paths re-open the step window per same-turn
+    `step/start` and record the step containing the entered message, and
+    cancellation releases an unresolved reservation (a resolved admission
+    stays authoritative).
+  - `7b2209b` shutdown delivery — `Session.Close` stopped the dispatch loop
+    before the shutdown round-trip, so the response's ordering barrier was
+    never acknowledged, the call never delivered its result, and Close
+    success was derived from exit status. Dispatch now stays alive through
+    the handshake and `Process.Close` drains the inbound stream itself
+    while tearing down.
+  - `d363cad` child environment — an explicit empty `Config.Environment`
+    was collapsed to nil and silently inherited the full ambient
+    environment; nil-ness is now preserved (unset inherits, any explicit
+    slice replaces verbatim).
+  - `01625e9` reducer hygiene — write-only runState bookkeeping removed and
+    settled runs pruned from the session registry.
+  - `6831507` corpus determinism — the `unknown-events` case sent its
+    invalid observation without first settling the second submission; the
+    reply-vs-teardown race admitted or aborted nondeterministically. The
+    missing `wait-submit` barrier is restored.
+  - One speculative finding (the rpc handshake select could misattribute a
+    post-response observation) is unreachable at this pin and documented
+    here without a code change; the remaining noted gaps (no pre-receipt
+    subagent or later-step corpus fixtures — both now covered by reducer
+    regression tests; `initialize-repeat-rejected` evidenced as one
+    initialize for N prompts rather than a rejection path; no
+    golden-visible `in_reply_to` linkage) are accepted as recorded.
 
 ## Provenance
 
