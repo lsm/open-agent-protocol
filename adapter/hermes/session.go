@@ -154,7 +154,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.reduceMu.Unlock()
 		s.promptMu.Unlock()
 		s.abortPreStart(run, err)
-		return protocol.MessageSubmitResponse{}, stream, err
+		return protocol.MessageSubmitResponse{}, nil, err
 	}
 	// The response barriers behind wire-earlier events, so everything the
 	// gateway emitted before answering has already been reduced.
@@ -170,7 +170,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	select {
 	case startErr := <-run.startResult:
 		if startErr != nil {
-			return protocol.MessageSubmitResponse{}, stream, startErr
+			return protocol.MessageSubmitResponse{}, nil, startErr
 		}
 	case <-ctx.Done():
 		// Cancellation and the opening frame can race; a run that already
@@ -179,12 +179,12 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		if !run.started && !run.terminal {
 			s.abortPreStartUnlocked(run, ctx.Err())
 			s.reduceMu.Unlock()
-			return protocol.MessageSubmitResponse{}, stream, ctx.Err()
+			return protocol.MessageSubmitResponse{}, nil, ctx.Err()
 		}
 		s.reduceMu.Unlock()
 		startErr := <-run.startResult
 		if startErr != nil {
-			return protocol.MessageSubmitResponse{}, stream, startErr
+			return protocol.MessageSubmitResponse{}, nil, startErr
 		}
 	}
 	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(run.messageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, MessageIDs: []protocol.MessageID{run.messageID}}, stream, nil
@@ -596,7 +596,10 @@ func (s *Session) expireInteraction(run *runState, payload *native.ExpirePayload
 	}
 }
 
-// Resolve answers one open gate through its native respond method.
+// Resolve answers one open gate through its native respond method. The
+// resolution must carry exactly one answer per surfaced question (option or
+// text form per the schema); batch clarify becomes one native respond per
+// question, carrying the batch question selector.
 func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -615,37 +618,45 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInteractionNotFound
 	}
-	var params any
+	answers := resolution.Input.Answers
+	var approval *native.ApprovalRespondParams
+	var calls []native.RespondParams
 	switch binding.kind {
 	case "approval":
-		if len(resolution.Input.Answers) != 1 {
+		if len(answers) != 1 || len(answers[0].SelectedOptionIDs) != 1 {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
-		params = native.ApprovalRespondParams{SessionID: s.nativeID, Choice: resolution.Input.Answers[0].SelectedOptionIDs[0]}
+		approval = &native.ApprovalRespondParams{SessionID: s.nativeID, Choice: answers[0].SelectedOptionIDs[0]}
 	case "clarify":
-		respond := native.RespondParams{RequestID: binding.requestID}
-		for _, answer := range resolution.Input.Answers {
-			if len(answer.SelectedOptionIDs) > 0 {
-				respond.Answer = answer.SelectedOptionIDs[0]
+		if len(answers) != len(binding.questions) {
+			s.reduceMu.Unlock()
+			return base.ErrInvalidResolution
+		}
+		for _, question := range binding.questions {
+			_, value, ok := answerFor(answers, question.ID)
+			if !ok || value == "" {
+				s.reduceMu.Unlock()
+				return base.ErrInvalidResolution
 			}
-			if answer.Text != "" {
-				respond.Answer = answer.Text
+			respond := native.RespondParams{RequestID: binding.requestID, Answer: value}
+			if len(binding.questions) > 1 {
+				respond.QuestionID = string(question.ID)
 			}
+			calls = append(calls, respond)
 		}
-		params = respond
-	case "sudo":
+	case "sudo", "secret":
+		if len(answers) != 1 || answers[0].Text == "" {
+			s.reduceMu.Unlock()
+			return base.ErrInvalidResolution
+		}
 		respond := native.RespondParams{RequestID: binding.requestID}
-		for _, answer := range resolution.Input.Answers {
-			respond.Password = answer.Text
+		if binding.kind == "sudo" {
+			respond.Password = answers[0].Text
+		} else {
+			respond.Value = answers[0].Text
 		}
-		params = respond
-	case "secret":
-		respond := native.RespondParams{RequestID: binding.requestID}
-		for _, answer := range resolution.Input.Answers {
-			respond.Value = answer.Text
-		}
-		params = respond
+		calls = []native.RespondParams{respond}
 	default:
 		s.reduceMu.Unlock()
 		return errUnavailable
@@ -653,13 +664,36 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	binding.resolved = true
 	s.reduceMu.Unlock()
 
-	var result native.RespondResult
-	remoteErr := s.client.Call(ctx, respondMethod(binding.kind), params, &result)
-	if remoteErr != nil {
+	unresolve := func() {
 		s.reduceMu.Lock()
 		binding.resolved = false
 		s.reduceMu.Unlock()
-		return remoteErr
+	}
+	if approval != nil {
+		var result native.ApprovalRespondResult
+		remoteErr := s.client.Call(ctx, native.MethodApprovalRespond, *approval, &result)
+		if remoteErr == nil && !result.Resolved {
+			remoteErr = fmt.Errorf("%w: approval.respond did not resolve the gate", ErrNativeProtocol)
+		}
+		if remoteErr != nil {
+			unresolve()
+			return remoteErr
+		}
+	} else {
+		for _, call := range calls {
+			var result native.RespondResult
+			remoteErr := s.client.Call(ctx, respondMethod(binding.kind), call, &result)
+			if remoteErr == nil && result.Status != "ok" {
+				remoteErr = fmt.Errorf("%w: %s returned status %q", ErrNativeProtocol, respondMethod(binding.kind), result.Status)
+			}
+			if remoteErr != nil {
+				// A mid-batch failure leaves earlier answers delivered
+				// natively; the error lets the client retry, and re-sending
+				// an earlier answer is the native registry's to judge.
+				unresolve()
+				return remoteErr
+			}
+		}
 	}
 	s.reduceMu.Lock()
 	respondedBy := resolution.RespondedBy
@@ -670,6 +704,21 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	s.reduceMu.Unlock()
 	return nil
+}
+
+// answerFor locates the answer for one question and reduces it to the native
+// value member: a selected option id when present, else the text form.
+func answerFor(answers []protocol.InputAnswer, question string) (protocol.InputAnswer, string, bool) {
+	for _, answer := range answers {
+		if answer.QuestionID != question {
+			continue
+		}
+		if len(answer.SelectedOptionIDs) > 0 {
+			return answer, answer.SelectedOptionIDs[0], true
+		}
+		return answer, answer.Text, true
+	}
+	return protocol.InputAnswer{}, "", false
 }
 
 func respondMethod(kind string) string {

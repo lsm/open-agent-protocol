@@ -370,6 +370,9 @@ func TestBusyStatusesAreAdmissionFailures(t *testing.T) {
 		if got.response.RunID != "" {
 			t.Fatalf("status %s exposed a run", status)
 		}
+		if got.stream != nil {
+			t.Fatalf("status %s exposed an event stream", status)
+		}
 		state, err := s.State(context.Background())
 		if err != nil || state.Status != protocol.SessionIdle {
 			t.Fatalf("status %s left state=%+v err=%v", status, state, err)
@@ -518,7 +521,9 @@ func TestSubmitCancellationReleasesReservation(t *testing.T) {
 	if !errors.Is(got.err, context.Canceled) {
 		t.Fatalf("err = %v", got.err)
 	}
-	for range got.stream {
+	if got.stream != nil {
+		for range got.stream {
+		}
 	}
 	state, err := s.State(context.Background())
 	if err != nil || state.Status != protocol.SessionIdle {
@@ -628,5 +633,86 @@ func TestPostSettlementCorroborationKeepsSessionUsable(t *testing.T) {
 	}
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("session unusable after settled session.info: %v", err)
+	}
+}
+
+func TestResolveValidatesAnswerShapes(t *testing.T) {
+	// The schema's answer oneOf allows the text form; an approval answer
+	// without a selected option must be rejected, not panic.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
+	binding := lastInteraction(t, s)
+	textForm := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", Text: "once"}}}})
+	if !errors.Is(textForm, base.ErrInvalidResolution) {
+		t.Fatalf("text-form approval err = %v", textForm)
+	}
+	noAnswers := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session"}})
+	if !errors.Is(noAnswers, base.ErrInvalidResolution) {
+		t.Fatalf("empty answers err = %v", noAnswers)
+	}
+	// The gate is still resolvable after the rejections.
+	f.queue(native.MethodApprovalRespond, reply{result: native.ApprovalRespondResult{Resolved: true}})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	drain(t, (<-ch).stream)
+}
+
+func TestBatchClarifyResolvesEveryQuestion(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"first?","choices":["a","b"]},{"qid":"q2","question":"second?","choices":["c","d"]}]}`)
+	binding := lastInteraction(t, s)
+	// A partial answer set is invalid before any native write.
+	partial := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q1", SelectedOptionIDs: []string{"a"}}}}})
+	if !errors.Is(partial, base.ErrInvalidResolution) {
+		t.Fatalf("partial batch err = %v", partial)
+	}
+	if f.callCount(native.MethodClarifyRespond) != 0 {
+		t.Fatal("rejected batch wrote a native respond")
+	}
+	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
+	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q1", SelectedOptionIDs: []string{"a"}}, {QuestionID: "q2", SelectedOptionIDs: []string{"d"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.callCount(native.MethodClarifyRespond); got != 2 {
+		t.Fatalf("clarify.respond calls = %d", got)
+	}
+	f.callsMu.Lock()
+	first, second := f.calls[1], f.calls[2]
+	f.callsMu.Unlock()
+	respondOne, ok := first.params.(native.RespondParams)
+	if !ok || respondOne.QuestionID != "q1" || respondOne.Answer != "a" {
+		t.Fatalf("first respond = %+v", first)
+	}
+	respondTwo, ok := second.params.(native.RespondParams)
+	if !ok || respondTwo.QuestionID != "q2" || respondTwo.Answer != "d" {
+		t.Fatalf("second respond = %+v", second)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	validateWithCapabilities(t, got.response, events)
+}
+
+func TestRespondFailureDoesNotProjectSubmitted(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}`)
+	binding := lastInteraction(t, s)
+	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "expired"}})
+	err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a"}}}}})
+	if err == nil {
+		t.Fatal("expired respond projected as submitted")
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	events := drain(t, (<-ch).stream)
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeUserInputResolved {
+			t.Fatal("failed resolution emitted user.input.resolved")
+		}
 	}
 }
