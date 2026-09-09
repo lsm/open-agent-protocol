@@ -18,6 +18,7 @@ const (
 	PinnedVersion          = native.ReleaseTag
 	CapabilityRevision     = "hermes-v2026.8.31-oap-v1"
 	defaultJournalCapacity = 256
+	relayCapacity          = 256
 )
 
 var ErrNativeProtocol = errors.New("hermes adapter: invalid native protocol observation")
@@ -112,6 +113,52 @@ func New(config Config) (*Adapter, error) {
 				return nil, "", err
 			}
 			client := p.ClientHandle()
+			// The ordered inbound stream is active from the ready handshake
+			// on: responses release only after their ordering barrier is
+			// acknowledged by an inbound consumer. session.create is issued
+			// before the Session's dispatch exists, so a relay consumer owns
+			// the stream from factory time — barriers are acknowledged in
+			// wire order and observations are forwarded for the reducer. The
+			// reducer is dual-order convergent (response vs opening frames),
+			// so a call returning while wire-earlier events sit in the relay
+			// is a legal interleaving, not a reordering.
+			relay := make(chan rpc.InboundMessage, relayCapacity)
+			go func() {
+				inbound := client.Inbound()
+				forward := func(message rpc.InboundMessage) {
+					if message.Barrier != nil {
+						close(message.Barrier)
+						return
+					}
+					relay <- message
+				}
+				for {
+					var message rpc.InboundMessage
+					var ok bool
+					select {
+					case message, ok = <-inbound:
+						if !ok {
+							return
+						}
+					case <-client.Done():
+						// Drain observations the reader already routed before
+						// retiring: the reducer settles from ordered evidence
+						// ahead of the failure terminal, deterministically.
+						for {
+							select {
+							case message, ok = <-inbound:
+								if !ok {
+									return
+								}
+								forward(message)
+							default:
+								return
+							}
+						}
+					}
+					forward(message)
+				}
+			}()
 			// The runtime session id is native-minted by session.create; the
 			// ready handshake already completed inside the process start.
 			var created native.SessionCreateResult
@@ -123,7 +170,7 @@ func New(config Config) (*Adapter, error) {
 				_ = p.Close(context.Background())
 				return nil, "", ErrNativeProtocol
 			}
-			return &sessionClient{Client: client, bridge: p, session: created}, created.SessionID, nil
+			return &sessionClient{Client: client, bridge: p, session: created, inbound: relay}, created.SessionID, nil
 		})
 	}
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
@@ -139,7 +186,12 @@ type sessionClient struct {
 	Client
 	bridge  ProcessBridge
 	session native.SessionCreateResult
+	inbound chan rpc.InboundMessage
 }
+
+// Inbound returns the relay stream owned since factory time, not the
+// transport's raw ordered stream (its barriers are acknowledged by the relay).
+func (p *sessionClient) Inbound() <-chan rpc.InboundMessage { return p.inbound }
 
 func (p *sessionClient) Done() <-chan struct{} { return p.bridge.Done() }
 func (p *sessionClient) Err() error {

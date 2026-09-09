@@ -575,3 +575,58 @@ func validateWithCapabilities(t *testing.T, admission protocol.MessageSubmitResp
 		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, data)
 	}
 }
+
+func TestEventsBeforeConvergenceBufferAndReplay(t *testing.T) {
+	// A piped burst can deliver the whole turn around the prompt.submit
+	// response: the response barrier orders only wire-earlier events, so
+	// run-scoped observations arriving before the convergence point buffer
+	// and replay in wire order once the run starts.
+	s, f := openTest(t)
+	ch := submitAsync(s)
+	// Wire order: message.start, a delta, then the streaming response.
+	open := func() {
+		f.event(native.EventMessageStart, 1, "")
+		f.event(native.EventMessageDelta, 2, `{"text":"Hi"}`)
+	}
+	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}, before: open})
+	f.awaitCall(t, native.MethodPromptSubmit)
+	got := <-ch
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	events := drain(t, got.stream)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+	if len(events) != len(want) {
+		t.Fatalf("events %v", events)
+	}
+	for i := range want {
+		if events[i].Type != want[i] {
+			t.Fatalf("event %d = %s, want %s", i, events[i].Type, want[i])
+		}
+	}
+	var delta protocol.ContentDeltaPayload
+	if err := events[1].DecodePayload(&delta); err != nil || delta.Part.Text != "Hi" {
+		t.Fatalf("buffered delta lost: %+v err=%v", delta.Part, err)
+	}
+	validateWithCapabilities(t, got.response, events)
+}
+
+func TestPostSettlementCorroborationKeepsSessionUsable(t *testing.T) {
+	// The pin guarantees settled session.info after message.complete; the
+	// terminal cleanup releases the run, so an idle session must accept the
+	// corroboration frame instead of failing closed as foreign activity.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
+	got := <-ch
+	drain(t, got.stream)
+	f.event(native.EventSessionInfo, 3, `{"model":"m","provider":"p","running":false,"title":"t","cwd":"/tmp","stored_session_id":"20260831_093000_ab12cd"}`)
+	state, err := s.State(context.Background())
+	if err != nil || state.Status != protocol.SessionIdle {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatalf("session unusable after settled session.info: %v", err)
+	}
+}

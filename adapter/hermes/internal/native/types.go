@@ -551,6 +551,23 @@ func knownEvent(eventType string) bool {
 	return observedEvents[eventType]
 }
 
+// runScopedEvents are the types whose frames belong to one owned run: turn
+// grammar, tools, and interaction gates. Every other known type — modeled
+// corroboration (message.interim, session.usage, session.info, error,
+// subagent/task completions) and the observed-only closure — may legally
+// arrive on an idle session, because the pin guarantees post-settlement
+// corroboration after message.complete.
+var runScopedEvents = map[string]bool{
+	EventMessageStart: true, EventMessageDelta: true, EventReasoningDelta: true, EventThinkingDelta: true,
+	EventMessageComplete: true, EventToolStart: true, EventToolComplete: true,
+	EventApprovalRequest: true, EventClarifyRequest: true, EventSudoRequest: true, EventSecretRequest: true,
+	EventSecretExpire: true, EventSudoExpire: true, EventClarifyExpire: true,
+}
+
+// IsRunScoped reports whether an event type carries run semantics and is
+// therefore illegal on an idle, run-less session.
+func IsRunScoped(eventType string) bool { return runScopedEvents[eventType] }
+
 // payloadTarget returns the strict decode target for a modeled type, nil for
 // an observed-only type, and ok=false when the type is not in the pin.
 func payloadTarget(eventType string) (any, bool) {

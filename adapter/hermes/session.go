@@ -55,9 +55,13 @@ type runState struct {
 	terminal bool
 	// accepted records the {status: streaming} response; openSeen records
 	// the message.start frame. The run starts when both are observed — in
-	// either wire order.
+	// either wire order. Run-scoped observations arriving before the
+	// convergence point are buffered in wire order and replayed at start:
+	// the response barrier orders only wire-earlier events, so a piped
+	// burst can deliver turn frames around the response.
 	accepted      bool
 	openSeen      bool
+	buffered      []native.Event
 	submittedText string
 	messageID     protocol.MessageID
 	final         *native.MessageCompletePayload
@@ -292,8 +296,16 @@ func (s *Session) applyEvent(event *native.Event) {
 		return
 	}
 	if run == nil {
-		// The only legal session-scoped observation on a dedicated session
-		// with no reserved run is a turn the native opened on its own
+		if !native.IsRunScoped(event.Type) {
+			// Post-settlement corroboration (settled session.info, status
+			// update, usage ticks, trailing subagent frames): the pin
+			// guarantees these after message.complete, and the terminal
+			// cleanup already released the run, so an idle session may
+			// legitimately observe them.
+			return
+		}
+		// The only remaining session-scoped observations on a dedicated
+		// session with no reserved run are turns the native opened on its own
 		// (queued drain, auto-continue, loop wakeup) — foreign activity.
 		s.foreignActivity(fmt.Sprintf("session event %q without a reserved run", event.Type))
 		return
@@ -303,6 +315,39 @@ func (s *Session) applyEvent(event *native.Event) {
 		// corroboration; anything run-scoped is impossible after settlement.
 		return
 	}
+	if !run.started {
+		s.reserveObservation(run, event)
+		return
+	}
+	s.applyRunEvent(run, event)
+}
+
+// reserveObservation applies one run-scoped observation against a reserved,
+// not-yet-started run: message.start converges the opening handshake, every
+// other observation buffers in wire order for replay at startRun.
+func (s *Session) reserveObservation(run *runState, event *native.Event) {
+	if event.Type == native.EventMessageStart {
+		s.mu.Lock()
+		already := run.openSeen
+		run.openSeen = true
+		accepted := run.accepted
+		s.mu.Unlock()
+		if already {
+			s.failRun(run, "hermes_invalid_grammar", "turn opened twice")
+			return
+		}
+		if accepted {
+			s.startRun(run)
+		}
+		return
+	}
+	run.buffered = append(run.buffered, *event)
+}
+
+// applyRunEvent reduces one run-scoped observation for a started run. The
+// per-session seq fence and run lookup happen in applyEvent; replayed buffer
+// entries re-enter here without re-fencing.
+func (s *Session) applyRunEvent(run *runState, event *native.Event) {
 	switch event.Type {
 	case native.EventMessageStart:
 		s.mu.Lock()
@@ -373,12 +418,22 @@ func (s *Session) startRun(run *runState) {
 	s.runs[run.id] = run
 	s.state.Status = protocol.SessionRunning
 	s.state.ActiveRunID = run.id
+	replay := run.buffered
+	run.buffered = nil
 	s.mu.Unlock()
 	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		run.signalStart(err)
 		return
 	}
 	run.signalStart(nil)
+	// Observations buffered before the convergence point reduce now, in wire
+	// order. A replayed settlement is terminal: stop draining.
+	for _, event := range replay {
+		if run.terminal {
+			return
+		}
+		s.applyRunEvent(run, &event)
+	}
 }
 
 func (s *Session) emitDelta(run *runState, event *native.Event, kind protocol.ContentPartType) {
@@ -769,6 +824,7 @@ func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 	s.state.Status = protocol.SessionIdle
 	subs := run.subscribers
 	run.subscribers = nil
+	run.buffered = nil
 	s.mu.Unlock()
 	run.signalStart(err)
 	for _, c := range subs {
