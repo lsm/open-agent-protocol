@@ -111,7 +111,14 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	if config.Factory == nil {
-		pc := rpc.ProcessConfig{Path: config.Executable, Args: append([]string(nil), config.Args...), Dir: config.WorkingDirectory, Env: append([]string(nil), config.Environment...), FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ShutdownTimeout: config.ShutdownTimeout, Initialize: native.InitializeParams{Cwd: config.WorkingDirectory, Provider: config.Provider, Model: config.Model, MaxTokens: config.MaxTokens}}
+		// Copy into a non-nil base so an explicit empty allowlist stays an
+		// empty environment; appending into a nil base would silently turn it
+		// into inherit-parent.
+		env := config.Environment
+		if env != nil {
+			env = append([]string{}, env...)
+		}
+		pc := rpc.ProcessConfig{Path: config.Executable, Args: append([]string(nil), config.Args...), Dir: config.WorkingDirectory, Env: env, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ShutdownTimeout: config.ShutdownTimeout, Initialize: native.InitializeParams{Cwd: config.WorkingDirectory, Provider: config.Provider, Model: config.Model, MaxTokens: config.MaxTokens}}
 		config.Factory = ClientFactoryFunc(func(ctx context.Context) (Client, string, error) {
 			p, err := config.ProcessFactory.Start(ctx, pc)
 			if err != nil {
