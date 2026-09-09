@@ -411,3 +411,51 @@ non-object rejection; digest and checkout guards verified). The
 production process path itself is exercised hermetically by the corpus
 process cases via the fixture-server re-exec. A live run requires a
 prepared interpreter with the pinned checkout's dependencies.
+
+## Review outcomes (tranche closeout)
+
+Independent adversarial review of the tranche surfaced seven findings,
+each independently reproduced before fixing (a8ab597, 657629b):
+
+1. **Resolve panicked on schema-legal approval text answers** — the
+   answer oneOf's text form indexed `SelectedOptionIDs[0]` unguarded.
+   Fixed: per-gate validation, `ErrInvalidResolution`, gate stays
+   resolvable.
+2. **Batch clarify collapsed to one respond** — N questions answered by
+   a single `clarify.respond` carrying only the last answer, `question_id`
+   never sent, and `{status:"expired"}` results projected as submitted.
+   Fixed: one respond per question with the batch selector; non-ok
+   statuses fail the resolution and restore the binding.
+3. **Transport-death settlement was non-deterministic** — identical wire
+   input settled as completed/failed/error depending on scheduler
+   timing (reproduced 1-in-120 on the corpus; probe: 56/3/1 over 60).
+   Fixed: the factory relay closes the relay channel after draining
+   everything the reader routed, and dispatch drains to that close
+   before the failure terminal; responses decoded before retirement are
+   delivered rather than dropped.
+4. **`Err()` was a first-writer race** (reader EOF vs process exit),
+   flipping frozen evidence. Fixed: reader errors — the specific wire
+   truth — always win.
+5. **The malformed-frame corpus bytes never reached the wire** — the
+   fixture builder skipped decode-error frames, so the label proved
+   load-time rejection plus a coincidental exit, not the live
+   decoder-plus-teardown path. Fixed: corrupt bytes replay verbatim;
+   the rule requires the reader's codec error as the surfaced cause.
+6. **Six evidence rules were tautological** — decoding literals defined
+   inside the test certifies nothing about the fixtures. The pinned
+   shapes (steer statuses, registry-scoped subagent control, replay
+   window/truncation/unknown-session, ready epochs) moved to the native
+   package's shape tests; the rules now assert behavior only.
+7. **Submit returned a non-nil stream with admission errors**, against
+   the repo convention. Fixed.
+
+Clean bills: lock ordering (no inversion; calls outside `reduceMu`),
+native type validation vs the frozen ledger, codec strictness,
+handshake/teardown/redaction. Noted as design debt, not defects: tools/
+interactions maps grow per session, dead `inputState.answers` field,
+per-call context cancellation retires the whole client, `Cancel` ignores
+a `not_interrupted` result.
+
+Post-fix verification: full package suite, 10/10 corpus stress,
+120/120 malformed-frame stress, race x2, and the full repository battery
+green.
