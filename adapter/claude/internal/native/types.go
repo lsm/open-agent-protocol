@@ -214,13 +214,15 @@ type StreamEventFrame struct {
 }
 
 // StreamDelta extracts a projected text or thinking delta from the wrapped
-// event, if this event carries one.
+// event, if this event carries one. The two delta kinds carry their payload
+// under different members (text vs thinking), per the Messages streaming API.
 func (frame *StreamEventFrame) StreamDelta() (kind, text string, ok bool) {
 	var event struct {
 		Type  string `json:"type"`
 		Delta struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
 		} `json:"delta"`
 	}
 	if json.Unmarshal(frame.Event, &event) != nil || event.Type != "content_block_delta" {
@@ -230,7 +232,7 @@ func (frame *StreamEventFrame) StreamDelta() (kind, text string, ok bool) {
 	case "text_delta":
 		return "text", event.Delta.Text, true
 	case "thinking_delta":
-		return "thinking", event.Delta.Text, true
+		return "thinking", event.Delta.Thinking, true
 	default:
 		return "", "", false
 	}

@@ -146,9 +146,9 @@ func TestStreamEventDeltas(t *testing.T) {
 	}
 
 	frame = mustDecode(t, TypeStreamEvent, "", `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}},"session_id":"`+sessionID+`","uuid":"e2"}`)
-	kind, _, ok = frame.(*StreamEventFrame).StreamDelta()
-	if !ok || kind != "thinking" {
-		t.Fatalf("thinking delta = %q %v", kind, ok)
+	kind, thinking, ok := frame.(*StreamEventFrame).StreamDelta()
+	if !ok || kind != "thinking" || thinking != "hmm" {
+		t.Fatalf("thinking delta = %q %q %v", kind, thinking, ok)
 	}
 
 	frame = mustDecode(t, TypeStreamEvent, "", `{"type":"stream_event","event":{"type":"message_stop"},"session_id":"`+sessionID+`","uuid":"e3"}`)
