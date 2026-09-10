@@ -164,7 +164,9 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 		SubmissionID:      protocol.SubmissionID(session.ids.NewID("submission")),
 		RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart,
 		DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted,
-		RunID: run.id, Status: protocol.RunQueued, ModelID: params.Model, MessageIDs: messageIDs,
+		// A started admission reports the running status (decision 0002);
+		// the run's internal state still promotes at run.started.
+		RunID: run.id, Status: protocol.RunRunning, ModelID: params.Model, MessageIDs: messageIDs,
 	}, stream, nil
 }
 

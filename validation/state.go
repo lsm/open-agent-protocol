@@ -296,10 +296,10 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	case p.RunID == "":
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "accepted submission must reserve a run identity")
 		return
-	case p.Admission == protocol.AdmissionStarted && p.EffectiveDelivery == protocol.DeliveryStart:
-	case p.Admission == protocol.AdmissionQueued && p.EffectiveDelivery == protocol.EffectiveDeliveryQueue:
+	case p.Admission == protocol.AdmissionStarted && p.EffectiveDelivery == protocol.DeliveryStart && p.Status == protocol.RunRunning:
+	case p.Admission == protocol.AdmissionQueued && p.EffectiveDelivery == protocol.EffectiveDeliveryQueue && p.Status == protocol.RunQueued:
 	default:
-		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "v0.1 admission must resolve auto to one started or queued run (decision 0002)")
+		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "v0.1 admission must resolve auto to one started (status running) or queued (status queued) run (decision 0002)")
 		return
 	}
 	if old := s.runs[p.RunID]; old != nil {
@@ -362,9 +362,9 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 			if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted {
 				s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.cancelled requires accepted cancellation")
 			}
-			if r.started {
-				s.add(CodeDuplicateRunTerminal, i, line, e, "/type", "run emitted more than one terminal event")
-			}
+			// A pre-start-settled run is still settled: its terminal is its
+			// one absorbing event whether or not run.started ever appeared.
+			s.add(CodeDuplicateRunTerminal, i, line, e, "/type", "run emitted more than one terminal event")
 		} else {
 			s.add(CodeEventAfterTerminal, i, line, e, "/type", "run event occurred after terminality")
 		}

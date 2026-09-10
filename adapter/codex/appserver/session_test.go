@@ -180,7 +180,7 @@ func drainClosed(t *testing.T, stream adapter.EventStream) []protocol.Envelope {
 func TestCompletedLifecycle(t *testing.T) {
 	client, session, descriptor := openFake(t)
 	admission, stream := submitFake(t, session)
-	if admission.Status != protocol.RunQueued || admission.EffectiveDelivery != protocol.DeliveryStart {
+	if admission.Status != protocol.RunRunning || admission.EffectiveDelivery != protocol.DeliveryStart {
 		t.Fatalf("admission: %+v", admission)
 	}
 	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
