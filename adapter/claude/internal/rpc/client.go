@@ -172,6 +172,9 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	return client
 }
 
+// Inbound is the ordered inbound stream. It closes exactly when the client
+// retires (the reader is its sole producer), so a consumer that drains to
+// channel close has observed every frame the wire delivered before death.
 func (client *Client) Inbound() <-chan InboundMessage { return client.inbound }
 func (client *Client) Done() <-chan struct{}          { return client.done }
 
@@ -270,6 +273,10 @@ func (client *Client) mintID() string {
 }
 
 func (client *Client) readLoop() {
+	// The reader is the only producer of the inbound stream, so its exit is
+	// the stream's end: consumers drain deterministically to retirement
+	// instead of parking on a channel nobody will ever close.
+	defer close(client.inbound)
 	for {
 		message, err := client.decoder.Decode()
 		if err != nil {
