@@ -661,3 +661,37 @@ The `stop-task` label is behavioral: v1 never writes any stop_task-shaped
 control request (the only cancellation write is interrupt; children settle
 via task frames), asserted across every corpus case by the allowed-write
 check.
+
+## Process integration gates (delivered)
+
+`adapter/claude/process_integration_test.go` follows the Hermes/DeepSeek
+gate pattern; ordinary and short runs skip both gates, and credential
+presence alone never enables execution.
+
+- `OAP_CLAUDE_SMOKE=1` with absolute `OAP_CLAUDE_BIN`: credential-free
+  startup evidence — spawn, initialize exchange (readiness on this
+  boundary), idle state, and clean stdin-EOF teardown inside the bounded
+  grace. No submit occurs, so no provider traffic is possible; the child
+  environment contains no credentials and every proxy is dead.
+- `OAP_CLAUDE_INTEGRATION=1`: the hermetic behavioral gate — an in-process
+  loopback speaking streaming Anthropic Messages is the only reachable
+  endpoint; the child gets a fixed allowlisted environment whose single
+  credential is the test-owned fixture key. Asserts echo-converged
+  admission, streamed deltas, `run.completed` carrying the fixture text,
+  loopback receipt of a `/v1/messages` request with the passed model, the
+  `x-api-key` + `anthropic-version` headers, and no bearer token, then a
+  clean close. Request assertions are structural, per the pin.
+- `OAP_CLAUDE_SHA256` (64 hex) binds either gate to the exact frozen binary.
+
+Both gates were executed against the pinned linux-x64 binary
+(sha256 `26d02035…d5ba`) with the digest bound, five consecutive times each,
+all green.
+
+Implementation discovery made executable by the smoke gate (fixed): the
+default factory originally ran the initialize exchange inside
+`Factory.Start`, i.e. before the session's dispatch loop existed — and the
+control response's ordering barrier needs a reducer to acknowledge it, so
+every production `Open` deadlocked until the initialize timeout. The
+corpus missed this because its injected factory returned before waiting on
+the exchange. The exchange now runs in `Open` after dispatch is live; the
+corpus-style injected-factory path is unchanged.

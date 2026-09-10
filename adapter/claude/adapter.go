@@ -77,6 +77,11 @@ type Adapter struct {
 	config Config
 	clock  base.Clock
 	ids    base.IDGenerator
+	// initializeAtOpen marks adapters that own their process: readiness on
+	// this boundary is the initialize control exchange, which Open completes
+	// once the session's dispatch loop is live (the response's ordering
+	// barrier needs a reducer to acknowledge it).
+	initializeAtOpen bool
 }
 
 func New(config Config) (*Adapter, error) {
@@ -101,6 +106,7 @@ func New(config Config) (*Adapter, error) {
 			return &rpcProcess{p}, nil
 		})
 	}
+	initializeAtOpen := false
 	if config.Factory == nil {
 		// Ambient environments are never inherited by default: a nil
 		// Environment becomes an explicit empty allowlist, so no ambient
@@ -123,25 +129,16 @@ func New(config Config) (*Adapter, error) {
 		}
 		argv = append(argv, config.Args...)
 		pc := rpc.ProcessConfig{Path: config.Executable, Args: argv, Dir: config.WorkingDirectory, Env: env, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, ExitTimeout: config.ExitTimeout}
+		initializeAtOpen = true
 		config.Factory = ClientFactoryFunc(func(ctx context.Context) (Client, error) {
 			p, err := config.ProcessFactory.Start(ctx, pc)
 			if err != nil {
 				return nil, err
 			}
-			client := p.ClientHandle()
-			// Readiness on this boundary is the initialize control exchange,
-			// not a pre-input frame: the CLI emits nothing before the first
-			// submit.
-			initCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
-			defer cancel()
-			if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: nil}, &struct{}{}); err != nil {
-				_ = p.Close(context.Background())
-				return nil, fmt.Errorf("claude adapter: initialize exchange failed: %w", err)
-			}
-			return &sessionClient{Client: client, bridge: p}, nil
+			return &sessionClient{Client: p.ClientHandle(), bridge: p}, nil
 		})
 	}
-	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
+	return &Adapter{config: config, clock: config.Clock, ids: config.IDs, initializeAtOpen: initializeAtOpen}, nil
 }
 
 type rpcProcess struct{ *rpc.Process }
@@ -209,6 +206,18 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	now := a.clock.Now().UnixMilli()
 	s := &Session{client: client, clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
+	if a.initializeAtOpen {
+		// Readiness on this boundary is the initialize control exchange, not
+		// a pre-input frame: the CLI emits nothing before the first submit.
+		// The session's dispatch loop is already reducing, so the exchange's
+		// ordering barrier is acknowledged.
+		initCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
+		defer cancel()
+		if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: nil}, &struct{}{}); err != nil {
+			_ = s.Close(context.Background())
+			return nil, fmt.Errorf("claude adapter: initialize exchange failed: %w", err)
+		}
+	}
 	return s, nil
 }
 
