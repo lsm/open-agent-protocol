@@ -623,3 +623,41 @@ probe environment.
 A gated live-process test (explicit opt-in, sanitized env, hermetic loopback
 provider) follows the Hermes/DeepSeek gate pattern; credential policy from
 `research/zai-china-coding-plan-evidence.md` applies unchanged.
+
+## Corpus outcome (delivered)
+
+`fixtures/adapters/claude-code-2.1.263/` carries 12 cases covering all 29
+required labels; `adapter/claude/corpus_test.go` drives the production codec,
+transport, and reducer through the public adapter over real pipes (the scripted
+peer writes fixture lines the reader must decode; every adapter write is
+compared against the transcript with the minted control-request id collapsed
+to a `@request` placeholder). The initialize exchange at open is issued
+exactly like the production process factory, so its wire shape is behavioral
+evidence, not metadata.
+
+Cases: initialize-lifecycle, admission-corroboration, settlement-statuses,
+interrupt-cancel, queued-continuation, background-children,
+streaming-provenance, tool-lifecycle, permission-gates, process-exit,
+malformed-stdout, hygiene-recovery. Each has the five-file layout with the
+full artifact-pin provenance block; expected OAP traces are byte-stable
+across runs (only wall-clock stamps normalize) and every admitted run passes
+executable OAP schema + state-machine validation, with cancel envelopes
+prepended behind `run.cancelled` terminals per protocol requirement.
+
+Implementation discoveries made executable by the corpus (both fixed):
+
+1. **thinking deltas carry their payload under `thinking`, not `text`.** The
+   Messages streaming API shapes `content_block_delta` as
+   `{"delta":{"type":"thinking_delta","thinking":...}}`; the reducer first
+   read only the `text` member and emitted empty reasoning parts. The corpus
+   streaming case fails before the fix (schema-invalid reasoning part) and
+   passes after.
+2. **Resolved permission gates must retire from the interaction table.** A
+   resolved or CLI-withdrawn `can_use_tool` gate that lingers makes a later
+   gate in the same session unresolvable (lookup finds the dead entry). Gates
+   are now deleted on resolution and on control_cancel withdrawal.
+
+The `stop-task` label is behavioral: v1 never writes any stop_task-shaped
+control request (the only cancellation write is interrupt; children settle
+via task frames), asserted across every corpus case by the allowed-write
+check.

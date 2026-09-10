@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -39,7 +40,7 @@ func (i *testIDs) NewID(k string) string {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.n++
-	return k + "-" + string(rune('a'+i.n-1))
+	return fmt.Sprintf("%s-%d", k, i.n)
 }
 
 // wirePeer is a scripted CLI counterpart driving the production rpc client

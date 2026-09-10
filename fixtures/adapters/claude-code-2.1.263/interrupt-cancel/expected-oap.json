@@ -1,0 +1,65 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "running",
+      "model_id": "claude-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.263-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-5",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "message_id": "message-2",
+      "part": {
+        "type": "text",
+        "text": "partial"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.263-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancelled",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "reason": "interrupt confirmed by terminal_reason aborted_streaming",
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      },
+      "duration_ms": 66
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.263-oap-v1"
+  }
+]

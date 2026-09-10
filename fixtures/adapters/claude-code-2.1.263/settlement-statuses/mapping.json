@@ -1,0 +1,194 @@
+[
+  {
+    "index": 1,
+    "type": "write:control_request/initialize",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "protocol.initialize (emulated readiness exchange)"
+  },
+  {
+    "index": 2,
+    "type": "response:initialize",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "readiness receipt"
+  },
+  {
+    "index": 3,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 4,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "state refresh (CurrentModelID)"
+  },
+  {
+    "index": 5,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 6,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "content.delta(text)"
+  },
+  {
+    "index": 7,
+    "type": "observe:result/success",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run terminal"
+  },
+  {
+    "index": 8,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
+    "index": 9,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 10,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "state refresh (CurrentModelID)"
+  },
+  {
+    "index": 11,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 12,
+    "type": "observe:result/error_max_turns",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run terminal (limit stop)"
+  },
+  {
+    "index": 13,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
+    "index": 14,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 15,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "state refresh (CurrentModelID)"
+  },
+  {
+    "index": 16,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 17,
+    "type": "observe:result/success",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run.failed (claude_api_429)"
+  },
+  {
+    "index": 18,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
+    "index": 19,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 20,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "state refresh (CurrentModelID)"
+  },
+  {
+    "index": 21,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 22,
+    "type": "observe:result/error_during_execution",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run.failed (claude_error_during_execution)"
+  },
+  {
+    "index": 23,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
+    "index": 24,
+    "type": "oap_control:close",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "session close via stdin EOF"
+  }
+]
