@@ -197,3 +197,12 @@ durable identity storage, cross-process journals, exact replay, continuity
 leases, a generalized Responses proxy, Chat-Completions-to-Responses conversion,
 or automatic support for newer Codex revisions. Each requires new pinned
 evidence, capability units, and fixtures.
+
+### Conformance note (decision 0002, 2026-09-10)
+
+The submit response originally reported `admission=started` with
+`status=queued` — a mixed claim predating the admission-shape vocabulary.
+Decision 0002 made the shapes canonical and the validator now rejects the
+mix; the adapter reports `status=running` for its started admissions. The
+run's internal state still promotes at `run.started` exactly as before; only
+the response's status claim changed.

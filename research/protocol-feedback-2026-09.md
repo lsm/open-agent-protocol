@@ -92,16 +92,22 @@ content-dependent; `permission_denials` is the authoritative denial record);
 OpenCode #4/#8 (permissions and questions are separate native channels; the
 durable stream carries no permission events at all).
 
-**Adjudication.** Five of eight harnesses expose native permission surfaces;
-all five projected the portable subset (typed request, one resolution,
-cancelled) through `action.permission.*`/`user_input.*` and disclosed the
-remainder as degraded or unavailable. The recurring losses — deadlines/expiry,
-answers that rewrite the acted payload, multi-question batch round trips —
-were all deferred by Decision 0001 (deadlines, retained reassociation) and the
-adapters demonstrated the loss is survivable and visible. **Deferral stands.**
-The strongest future candidate is payload-rewriting answers (Codex edited
-commands, Claude `updatedInput`); it should return when a consumer requirement
-exists, not before.
+**Adjudication.** Four of eight harnesses mapped native permission surfaces
+through the portable interaction contract — Codex (command and file-change
+approvals), ACP (`session/request_permission`), Claude Code (`can_use_tool`),
+and Hermes (approval/clarify/sudo/secret gates) — each projecting the typed
+request, one resolution, and cancelled through `action.permission.*`/
+`user_input.*`, and disclosing the remainder as degraded or unavailable.
+OpenCode is the counter-case: its ledger records separate native permission
+and question channels (P0 #4), but the durable stream carries no permission
+events and its adapter claims no interaction mapping at all (implementation
+outcome #8); pi disables its extension surface entirely. The recurring
+losses — deadlines/expiry, answers that rewrite the acted payload,
+multi-question batch round trips — were all deferred by Decision 0001
+(deadlines, retained reassociation) and the adapters demonstrated the loss is
+survivable and visible. **Deferral stands.** The strongest future candidate is
+payload-rewriting answers (Codex edited commands, Claude `updatedInput`); it
+should return when a consumer requirement exists, not before.
 
 ## PF-3. Limit-reached terminals — **documented non-change**
 
@@ -132,8 +138,9 @@ adapter publishes a held terminal on the authoritative `session_state_changed:
 idle` signal and prunes child edges (review-verified). Hermes #6/#7: `btw` is
 native there and nowhere else; background prompts and subagent-scoped
 steer/interrupt exist natively. DeepSeek: parent terminals wait for owned child
-`subagent.finished` settlement, joined by identity not ordering. pi #11:
-follow-up runs beyond the foreground boundary.
+`subagent.finished` settlement, joined by identity not ordering. pi #8:
+steering/follow-up queues are first-class natively, beyond the
+foreground-boundary contract (also cited under PF-1).
 
 **Adjudication.** Decision 0001 deferred first-class subagent and
 background-task lifecycles. The four adapters each demonstrated a safe
@@ -226,6 +233,41 @@ continuity ever be negotiated.
   review. Resolved alongside PF-1 (Decision 0002 gives the path a canonical
   accepted-then-pre-start-failed shape).
 
+## PF-10. Unowned-frame attribution — **confirmation**
+
+**Evidence.** The same reducer discipline recurs across at least five
+ledgers: Claude Code #7 (runtime-injected user-role frames must not become
+phantom runs; `origin.kind` is the discriminator); Codex ("unscoped
+observations are not guessed onto the active run"); Hermes (a `message.start`
+turn on the session is not proof that a specific submit started it;
+correlation is by construction); DeepSeek ("a candidate turn must never be
+assigned merely from adjacency" — the retrospective entered-message proof);
+ACP P0 #2 (updates carry no prompt/run ID, so the adapter must scope them).
+
+**Adjudication.** Confirmed as the load-bearing reducer discipline behind
+Decision 0001's typed identities and PF-1: frames are attributed to a run
+only through an ownership proof minted by the admission path (an echo, a
+receipt-to-turn correlation, a thread/turn scope), never through adjacency,
+session identity, or arrival order — and unattributable frames are evidence
+only. Every adapter implements such a proof and every corpus pins a
+phantom-run rejection case. No protocol vocabulary is needed: this is
+reducer-side behavior the canonical trace invariants already force (a run
+cannot exist without an accepted admission). Recorded here so the pattern
+has an adjudication slot like the others.
+
+## PF-11. Native errors carry no portable codes — **documented non-change**
+
+**Evidence.** Hermes #8: native error frames carry no code; codes live in an
+optional `error_surface` and the adapter synthesizes stable namespaced codes.
+Codex statuses, DeepSeek `turn/end` reasons, and Claude Code result subtypes
+are similarly richer or flatter than OAP's `error.code`/`stop_reason`.
+
+**Adjudication.** Every adapter already synthesizes stable, namespaced,
+adapter-prefixed codes (`acp_*`, `claude_*`, `opencode_*`, `deepseek_*`, …)
+and the schema keeps `code` an open string. A shared cross-harness code
+registry would be premature: no consumer requirement exists and the mappings
+are pinned per ledger. No change.
+
 ## What was deliberately not changed
 
 No evidence in eight tranches supported pulling forward: durable idempotent
@@ -247,3 +289,46 @@ exactly as Decision 0001 records, now with the additional citations above.
 | PF-7 Decision 0001 invariants | confirmed ×8 | this document |
 | PF-8 restart/cursor epochs | deferral stands | this document |
 | PF-9 upstream/convention | recorded | ledger + adapter fix |
+| PF-10 unowned-frame attribution | confirmation | this document |
+| PF-11 error-code synthesis | non-change, recorded | this document |
+
+## Review outcome (tranche verified)
+
+Independent adversarial review of this tranche returned six findings; each
+was independently verified before fixing:
+
+1. **The validator accepted multiple pre-start terminals** for a
+   never-started run — the duplicate-terminal check still gated on
+   `run.started`. Reproduced fail-before (a queued admission followed by two
+   `run.failed` events validated) and fixed; the new negative fixture
+   `admission-prestart-duplicate-terminal` pins it (pass-after).
+2. **The error-plus-dangling-stream convention survived on two OpenCode
+   paths** (invalid native message identity, foreign admission) that PF-9
+   described as resolved. Fixed: every reserved-run failure path now returns
+   the accepted queued reservation (regression test
+   `TestPreStartFailuresReportReservation`).
+3. **The `status` member of the admission shapes was unenforced.** Now
+   canonical: `started` must report `running`, `queued` must report
+   `queued`. Reproduced fail-before (`admission-status-mismatch` fixture
+   validated), fixed, pass-after. This also exposed and fixed a genuine
+   pre-existing incoherence: the Codex adapter reported
+   `admission=started` with `status=queued` since the first tranche.
+4. **PF-2's "five of eight … all five projected" was unfaithful to
+   OpenCode**, which claims no interaction mapping. Rewritten: four
+   projectors (Codex, ACP, Claude Code, Hermes) with OpenCode as the
+   recorded counter-case.
+5. **PF-4 cited pi #11 for follow-up queues; #11 is session-tree/fork.**
+   Corrected to pi #8.
+6. **Material omission:** unowned-frame attribution (the phantom-run
+   discipline) recurs across five ledgers and had no adjudication slot.
+   Added as PF-10, with the adjacent native-error-code synthesis recorded as
+   PF-11.
+
+Clean bills from the review, spot-verified here: the PF-1 evidence chain and
+every other ledger citation; validator negative probes (pre-start
+non-terminal events, pre-start completion, cancelled-without-accepted-pair,
+unstarted-unsettled reservations, sequence discipline, one-reservation
+sessions); fixture/manifest exactness; the OpenCode locking and teardown
+review; and decision 0002's internal consistency apart from findings 1 and 3.
+Post-fix battery: `oap check` (43 fixtures), full, short, and race suites,
+vet, gofmt, and `git diff --check` all green.

@@ -273,8 +273,9 @@ this adapter:
   cases now execute under canonical v0.1 validation (no exclusions remain);
 - the queued reservation response carries `effective_delivery=queue`
   (previously the contradictory `start`);
-- the conflict-admission path returns the accepted queued reservation with
-  the failure on its stream, instead of an error paired with a dangling
+- every reserved-run failure path (prompt conflict, foreign admission,
+  invalid native message identity) returns the accepted queued reservation
+  with the failure on its stream, instead of an error paired with a dangling
   stream;
 - explicit `queue`/`steer` delivery *requests* remain outside the v0.1
   subset, exactly as before.

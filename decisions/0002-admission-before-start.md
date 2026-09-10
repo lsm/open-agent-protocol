@@ -46,8 +46,10 @@ An accepted `session.message.submit.response` resolves to exactly one of:
    submission is accepted while it is nonterminal.
 
 Any other combination — `steered`, `side_started`, `queued` with
-`effective_delivery="start"`, `started` with `effective_delivery="queue"` —
-remains rejected in this subset, exactly as before.
+`effective_delivery="start"`, `started` with `effective_delivery="queue"`,
+or an admission whose `status` contradicts its shape (`started` must report
+`status="running"`; `queued` must report `status="queued"`) — remains
+rejected in this subset.
 
 ### Promotion
 
@@ -93,8 +95,9 @@ composition canonical.
 ## Consequences
 
 - The validator accepts the two admission shapes and pre-start terminals, and
-  rejects pre-start non-terminal events, pre-start completion, mixed
-  admission/delivery claims, and unstarted-unsettled admissions.
+  rejects pre-start non-terminal events, pre-start completion, a second
+  terminal after a pre-start settlement, mixed admission/delivery/status
+  claims, and unstarted-unsettled admissions.
 - The three pinned OpenCode mismatch corpus cases become canonically valid
   evidence; the OpenCode conflict-admission path returns an accepted queued
   response with the failure on its stream instead of an error plus a dangling
