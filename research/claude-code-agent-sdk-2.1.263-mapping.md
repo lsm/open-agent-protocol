@@ -1,9 +1,11 @@
 # Claude Code / Claude Agent SDK 2.1.263 mapping ledger
 
-Status: pinned evidence boundary for the fourth production OAP adapter (after
-Codex app-server, ACP, and Makai). This is an implementation input, not an
-interoperability claim. No adapter code exists yet; this ledger defines what a
-truthful Go wrapper may claim.
+Status: frozen implementation contract for the eighth (final) production OAP
+adapter. Every artifact hash below was re-verified at freeze time, and the
+pinned CLI binary was exercised live (credential-free, hermetic loopback, and
+interrupt probes; findings recorded in "Live-binary verification"). This is an
+implementation input, not an interoperability claim about other Claude Code
+surfaces.
 
 ## Provenance
 
@@ -101,6 +103,109 @@ bridge, which is out of scope for the stdio adapter.
 Evidence class: full readable implementation source. The Python transport,
 control protocol, parser, and resume paths below cite this tree.
 
+## Live-binary verification (freeze evidence)
+
+At freeze time every hash above was recomputed and matched, `claude --version`
+self-reported `2.1.263 (Claude Code)`, and the pinned linux-x64 binary was
+driven directly (not through either SDK) under a fully replaced environment:
+`env -i` plus only HOME, CLAUDE_CONFIG_DIR (fresh temp), PATH, and — for the
+behavioral probes — ANTHROPIC_BASE_URL pointed at an in-process scripted
+Anthropic Messages loopback with a test-owned key. No ambient credential was
+forwarded. Findings, each observed on the wire:
+
+1. **`command_lifecycle` frames exist and are nowhere typed.** Every submitted
+   turn emits `{"type":"command_lifecycle","command_uuid":<submitted uuid>,
+   "state":...,"uuid":...,"session_id":...}` transitions: `queued` →
+   `started` → terminal (`completed` on success, `cancelled` when the turn
+   dies before running, e.g. after an auth-failure result). The family is
+   gated by the `msg_lifecycle_v1` capability (present on this build). It is
+   not modeled by the Python 0.2.152 parser (skipped as an unknown type), and
+   the TypeScript 0.3.263 declarations mention it only in interrupt prose.
+   The adapter therefore treats it as **corroborating admission evidence
+   only**; the `user_message_uuid` echo is the primary correlation.
+2. **The `user_message_uuid`/`user_message_uuids` echo is verified on all
+   three promised surfaces**: the first `stream_event` of the turn (with
+   `--include-partial-messages`), the first complete `assistant` frame
+   (without partials), and both success and error `result` frames. The
+   submitted uuid rides the inbound user frame's `uuid` field.
+3. **`system/init` recurs per turn and arrives only after the first
+   submit** — there is no init frame before input, so the CLI session UUID
+   cannot be learned at spawn time. Observed fields beyond the Python model:
+   `capabilities` (`["interrupt_receipt_v1","interrupt_cancel_queued_v1",
+   "msg_lifecycle_v1"]` on this build), `apiKeySource`, `claude_code_version`,
+   `terminal_slash_commands`, `analytics_disabled`,
+   `product_feedback_disabled`, `memory_paths`, `messaging_socket_path`,
+   `fast_mode_state`, `fast_mode_disabled_reason`.
+4. **Assistant block frames interleave mid-stream.** With partial messages
+   on, the complete `assistant` frame carrying a finished text block was
+   emitted between that block's `content_block_delta` and its
+   `content_block_stop`. The reducer must treat complete frames and stream
+   events as one interleaved arrival stream, not two phases.
+5. **Auth failure (no credentials)**: a synthetic assistant frame arrives
+   with `model:"<synthetic>"`, `error:"authentication_failed"`,
+   `is_api_error_message:true`, content "Not logged in · Please run /login",
+   followed by a `result` with `subtype:"success"`, `is_error:true`,
+   `terminal_reason:"api_error"`, `api_error_status:null`, and the error text
+   in `result` (exactly the `_error_result_text` errors→result preference
+   case), then process exit 1.
+6. **Tool round trip**: `assistant` tool_use block → (permission ask when the
+   command is not auto-approved) → `user` frame whose content carries the
+   matching `tool_result` **plus** a structured `tool_use_result` object
+   (Bash: `stdout`, `stderr`, `interrupted`, `isImage`, `noOutputExpected`)
+   → turn continues. Safe commands (`echo probe`) were **auto-approved with
+   no ask** in default permission mode; an ask-gated command (`touch
+   /tmp/...`) produced the `can_use_tool` control_request below. Corpus
+   fixtures must use ask-gated commands to exercise the gate.
+7. **`can_use_tool` reverse request, verbatim shape**: `{"type":
+   "control_request","request_id":<uuid>,"request":{"subtype":"can_use_tool",
+   "tool_name":"Bash","display_name":"Bash","input":{...},
+   "description":<command>,"permission_suggestions":[{"type":"addRules",
+   "rules":[{"toolName","ruleContent"}],"behavior":"allow","destination":
+   "localSettings"},{"type":"addDirectories","directories":[...],
+   "destination":"session"},{"type":"setMode","mode":"acceptEdits",
+   "destination":"session"}],"blocked_path":...,"tool_use_id":...}}`. An
+   `allow` response `{"behavior":"allow","updatedInput":{...}}` was accepted
+   and the tool ran the updatedInput verbatim; the round trip completed.
+8. **Interrupt (mid-stream)**: `interrupt` control_request → immediate
+   `control_response` success `{"still_queued":[]}` (the `interrupt_receipt_v1`
+   contract honored); then a synthetic `user` frame with text
+   `[Request interrupted by user]`; then the result with
+   `subtype:"error_during_execution"`, `is_error:true`,
+   `terminal_reason:"aborted_streaming"`, `errors:["[ede_diagnostic] ..."]`,
+   `num_turns:2` (the synthetic user frame counts), `stop_reason:null`;
+   exit 1. **Cancellation therefore keys off `terminal_reason`, never off
+   subtype or `is_error`.**
+9. **Sequential turns on one process**: a second submit after the first
+   result produces a fresh `command_lifecycle` pair, a fresh `system/init`,
+   the same CLI session UUID, and cumulative `modelUsage` on the second
+   result. Stdin held open across turns is the native mode.
+10. **Teardown**: stdin EOF after a clean result exits 0 promptly. A
+    nonzero exit after an error result corroborates the already-terminal
+    error (the CLI exits non-zero on purpose for shell consumers).
+11. **Provider request shape** (first turn): `POST {base}/v1/messages`,
+    header `x-api-key` from ANTHROPIC_API_KEY, `anthropic-version:
+    2023-06-01`, no `Authorization` bearer, a fixed `anthropic-beta` list,
+    UA `claude-cli/2.1.263 (external, sdk-cli)`, `stream:true`. Even with
+    `--system-prompt ""` the CLI injects its own `<system-reminder>`
+    blocks (agent and skill listings) into the first user message — so
+    provider-body assertions must be structural (path/model/auth/stream),
+    never byte-exact.
+12. **`initialize` exchange verified**: request
+    `{"subtype":"initialize","hooks":null,...}` → success response carrying
+    `commands`, `agents`, `models`, `account`, `output_style`/
+    `available_output_styles`, `current_permission_mode`, `session_state`,
+    `pid`, `analytics_disabled` (superset of the TS-documented shape). Basic
+    turns work without any initialize (probes ran without it); initialize is
+    required only to register hooks, declare `perTaskStopAffordance`, or
+    load plugins.
+13. **TerminalReason vocabulary (from sdk.d.ts, 19 values)**: blocking_limit,
+    rapid_refill_breaker, prompt_too_long, image_error, model_error,
+    api_error, malformed_tool_use_exhausted, aborted_streaming, aborted_tools,
+    stop_hook_prevented, hook_stopped, tool_deferred, max_turns,
+    background_requested, completed, budget_exhausted,
+    structured_output_retry_exhausted, tool_deferred_unavailable,
+    turn_setup_failed.
+
 ## Boundary selection
 
 The Go OAP adapter wraps the **CLI process directly**, not the Python or
@@ -157,12 +262,20 @@ Two logical streams share one stdio pipe pair, distinguished by frame `type`:
 
 - `system` / `init`: session metadata at the start of **each turn** (session
   UUID, model, cwd, tools, MCP servers, slash commands, permission mode,
-  capabilities list) — it recurs, it is not a one-time ready frame;
+  capabilities list) — it recurs, it is not a one-time ready frame; the first
+  one appears only after the first submit;
+- `command_lifecycle` (verified live, `msg_lifecycle_v1`-gated): per-submitted-
+  uuid state transitions `queued`/`started`/terminal — corroborating evidence
+  only, untyped in both SDK pins;
 - `assistant`: one frame per completed content block while streaming; several
   consecutive frames can share `message.id`; the turn's stop reason and final
   usage arrive only on the result frame (`sdk.d.ts` `SDKAssistantMessage`);
+  with partial messages on, these interleave with `stream_event` frames
+  mid-stream (verified live);
 - `user`: the CLI's own user-role content, chiefly `tool_result` blocks
-  answering the assistant's `tool_use`;
+  answering the assistant's `tool_use` (plus a synthetic
+  `[Request interrupted by user]` text frame after an interrupt), carrying a
+  structured per-tool `tool_use_result` twin;
 - `stream_event`: raw Anthropic API stream events, present only with
   `--include-partial-messages`;
 - `result`: exactly one per turn, after that turn's messages; the
@@ -170,18 +283,47 @@ Two logical streams share one stdio pipe pair, distinguished by frame `type`:
 - `system` informational subtypes after a result are legal (task
   notifications, `session_state_changed`, prompt suggestions) — a result does
   not imply stream quiescence;
+- `keep_alive`: payload-free liveness heartbeat, must be ignored;
+- `tool_progress`: long-running tool heartbeat/progress keyed by
+  `tool_use_id`;
 - reverse `control_request`: `can_use_tool`, `hook_callback`, `mcp_message`
   (Python); TS additionally `request_user_dialog` and elicitation routing;
   `control_cancel_request` withdraws an in-flight reverse request;
-- `transcript_mirror` frames when `--session-mirror` is enabled.
+- `transcript_mirror` frames when `--session-mirror` is enabled (not enabled
+  by this adapter);
+- `conversation_reset`, `rate_limit_event`, `tool_use_summary`,
+  `prompt_suggestion`, `active_goal`, `auth_status`, and the informational
+  `system` subtypes: session-scope observations.
+
+### Strictness policy (frozen)
+
+The two reference hosts split tolerance by discriminator, and the adapter
+mirrors that split exactly rather than imposing a blanket rule:
+
+- **Unknown top-level `type` values and unknown `system` subtypes are
+  ignored as observed-only** — both SDKs document and implement this
+  ("the set grows over time"; `parse_message` returns None; `parse_stdout_line`
+  skips non-JSON lines). Unlike the Hermes gateway (a closed, versioned
+  vocabulary), this wire is explicitly forward-compatible.
+- **A known discriminator with a violated shape is fatal** — the native
+  `parse_message` raises `MessageParseError` on missing required fields of
+  known types, and `_parse_stdout_line` raises on JSON-looking lines that do
+  not parse.
+- The adapter codec is stricter than the native reader where the repo
+  convention demands it: exact LF-terminated single-object frames, UTF-8 and
+  duplicate-key rejection, bounded frame size. The native reader strips
+  surrounding whitespace, silently skips blank and non-`{`-prefixed lines,
+  and drops a truncated tail at EOF; the adapter fails closed on all three
+  (recorded mismatch, same policy as the DeepSeek and Hermes ledgers).
 
 ## Identity domains
 
 | Native identity | OAP identity | Rule |
 |---|---|---|
-| CLI session UUID (`session_id` on emitted messages) | `session_id` | Typed endpoint-scoped association. It is also the resume input, but possession of it is not proof of recoverability. |
+| CLI session UUID (`session_id` on emitted messages) | `session_id` association evidence | Adapter mints the OAP session id; the CLI UUID is observed on frames (first available only after the first submit) and recorded as association evidence. It is also the resume input, but possession of it is not proof of recoverability. |
 | logical stream label (`"default"` on written user messages) | private | Never an OAP identity; must not be conflated with the session UUID. |
-| `user_message_uuid` (host-stamped on submit, echoed on first reply frame and result) | `submission_id` correlation | Strongest native admission correlation; host mints it, CLI echoes it. |
+| submitted `uuid` → echoed `user_message_uuid`/`user_message_uuids` (first reply frame and result) | `submission_id` correlation | Strongest native admission correlation; host mints it, CLI echoes it (verified live on all three surfaces). |
+| `command_lifecycle.command_uuid` | corroborating admission evidence | Same uuid as the submit; observed-only (untyped in both SDK pins, capability-gated). |
 | one user turn ending in one `result` | `run_id` | Adapter allocates; Claude Code has no native run identity. |
 | assistant `uuid` | transcript `message_id` | One per emitted frame; block-level, not turn-level. |
 | `tool_use` block `id` / `tool_use_id` | `tool_call_id` | Namespace by endpoint and session; also the `can_use_tool` correlation key. |
@@ -202,24 +344,26 @@ Fixture names are requirements, not claims that captures exist.
 | Native observation | OAP meaning | Fidelity | Initial support | Required fixture |
 |---|---|---|---|---|
 | subprocess spawn + `initialize` request/response | initialize response and descriptor | synthesized | emulated | `initialize-minimal` |
-| per-turn `system/init` frame | capability truth refresh | normalized | emulated, per-session descriptor | `initialize-minimal` |
-| complete user JSONL frame written | allocate submission and run; admit | synthesized | emulated | `message-admitted` |
-| first reply frame of the turn (`user_message_uuid` echo) | `run.started` | synthesized | emulated | `completed-text` |
-| assistant block frame | portable message lifecycle | normalized | degraded (block granularity) | `completed-text` |
-| `stream_event` deltas (`--include-partial-messages`) | `content.delta` | native | native once exercised | `streaming-deltas` |
+| per-turn `system/init` frame | capability truth refresh | normalized | emulated, per-session descriptor | `per-turn-init` |
+| complete user JSONL frame written (host-minted `uuid`, `origin` human) | allocate submission and run | synthesized | emulated | `message-admitted` |
+| `command_lifecycle` transitions (`msg_lifecycle_v1`) | admission corroboration only | observed-only | observed | `command-lifecycle` |
+| first reply frame of the turn (`user_message_uuid` echo — first stream event or first assistant frame) | admission confirmed + `run.started` | synthesized | emulated | `message-admitted`, `completed-text` |
+| assistant block frame | portable message lifecycle (interleaves with stream events) | normalized | degraded (block granularity) | `completed-text`, `interleaved-blocks` |
+| `stream_event` deltas (`--include-partial-messages`, enabled by default in this adapter) | `content.delta` (text/thinking) | native | native | `streaming-deltas` |
 | `tool_use` block in assistant content | `action.call.requested` then `started` | normalized | degraded | `tool-roundtrip` |
-| `tool_progress` frames | action progress | normalized | degraded | `tool-progress` |
-| user frame carrying `tool_result` | action terminal (completed/failed by `is_error`) | normalized | degraded | `tool-roundtrip`, `tool-failed` |
-| reverse `can_use_tool` control request | `interaction.requested` (permission), resolved by host response | normalized | degraded pending fixture | `permission-gate` |
+| `tool_progress` frames | observed-only (OAP has no action-progress event) | observed-only | observed | `tool-progress` |
+| user frame carrying `tool_result` (+ structured `tool_use_result`) | action terminal (completed/failed by `is_error`) | normalized | degraded | `tool-roundtrip`, `tool-failed` |
+| reverse `can_use_tool` control request | `user_input.requested` (allow/deny), resolved by host response | normalized | native | `permission-gate` |
 | `task_started` / `task_progress` | child lifecycle begin/progress | normalized | degraded | `subagent-task` |
 | `task_notification` terminal | child settled | normalized | degraded | `subagent-task` |
 | `task_updated` patch with terminal status | child settled (second legal shape) | normalized | same ledger | `task-updated-terminal` |
-| `result` success, `is_error=false` | `run.completed` after child settlement | normalized | terminal normalization | `completed-text` |
+| `result` success, `is_error=false` | `run.completed` (final response from `result`, usage from `usage`/`modelUsage`) after child settlement | normalized | terminal normalization | `completed-text` |
 | `result` success, `is_error=true` (API error text in `result`) | `run.failed` | normalized | degraded | `api-error-result` |
-| `result` `error_max_turns` | completed with explicit limit reason | normalized | degraded | `max-turns` |
-| `result` `error_during_execution` / other error subtypes | `run.failed` | normalized | degraded | `error-result` |
-| `terminal_reason` `aborted_streaming`/`aborted_tools` | `run.cancelled` | normalized | degraded | `interrupt-cancel` |
-| `interrupt` control response (ack, `still_queued`) | cancellation intent acknowledged | normalized | distinct from settlement | `interrupt-cancel` |
+| `result` `error_max_turns` | completed with explicit limit stop reason | normalized | degraded | `max-turns` |
+| `result` `error_during_execution` / other error subtypes (non-aborted) | `run.failed` | normalized | degraded | `error-result` |
+| `terminal_reason` `aborted_streaming`/`aborted_tools` (any subtype) | `run.cancelled` | normalized | degraded | `interrupt-cancel` |
+| `interrupt` control response (ack, `still_queued`) | cancellation intent acknowledged, never settlement | normalized | distinct from settlement | `interrupt-cancel` |
+| synthetic `[Request interrupted by user]` user frame / `<synthetic>` assistant frame | in-turn evidence only | observed-only | observed | `interrupt-cancel` |
 | `stop_task` control + `task_notification stopped` | child-targeted stop, not run cancel | normalized | degraded | `stop-task` |
 | injected user turn (`origin` != human/absent) | session-scope observation, not a new run | lossy/observed-only | attribution rule | `injected-turn-origin` |
 | second turn on same process | new run, same session | normalized | native server behavior | `second-turn` |
@@ -230,27 +374,38 @@ Fixture names are requirements, not claims that captures exist.
 
 ### Terminal arbitration
 
-One reducer owns settlement:
+One reducer owns settlement, keyed off `terminal_reason` first (live-verified:
+an interrupt settles as `subtype:"error_during_execution"` + `is_error:true` +
+`terminal_reason:"aborted_streaming"`, so subtype and `is_error` alone can
+never discriminate cancellation):
 
 1. exactly one `result` frame closes each turn; it is the sole turn-terminal
    candidate;
-2. `subtype` + `is_error` + `terminal_reason` jointly pick completed,
-   cancelled, or failed — notably `subtype:"success"` with `is_error:true` is
-   an API-error failure, and `is_error:true` error subtypes never mean
-   cancelled;
-3. cancellation is proven only by `terminal_reason` in
-   {`aborted_streaming`, `aborted_tools`}; the interrupt control response is
-   intent acknowledgement and may list `still_queued` work that will still
-   run;
-4. child tasks settle before the parent terminal is published (dual terminal
+2. **cancelled ⟺ `terminal_reason ∈ {aborted_streaming, aborted_tools}`** —
+   the interrupt control response is intent acknowledgement and may list
+   `still_queued` work that will still run; it never settles anything;
+3. **completed ⟺ `is_error:false ∧ subtype:"success"`** with the reason from
+   `terminal_reason` (`completed` or absent → `completed`; `max_turns` or
+   subtype `error_max_turns` → completed with explicit limit stop reason —
+   a native error subtype projected as a graceful OAP stop, recorded as a
+   mismatch);
+4. **failed** — everything else: `subtype:"success"` with `is_error:true`
+   (API-error text in `result`, optional `api_error_status`), error subtypes
+   (`error_during_execution`, `error_max_budget_usd`,
+   `error_max_structured_output_retries`), and any other error terminal
+   reason. Error text preference follows the reference `_error_result_text`:
+   `errors[]`, then `result`, then non-success subtype, then HTTP status;
+5. child tasks settle before the parent terminal is published (dual terminal
    shapes honored);
-5. informational system frames arriving after the result belong to session
+6. informational system frames arriving after the result belong to session
    scope or a successor turn — they must never be appended to a settled run
    (OAP terminality invariant);
-6. a nonzero process exit after an error result corroborates the existing
-   terminal; the Python SDK's `ResultError` rewrite (`query.py`
-   `_error_result_text`) is the reference for preferring `errors[]`, then
-   `result`, then subtype text.
+7. a nonzero process exit after an error result corroborates the existing
+   terminal (verified: exit 1 after both the auth-failure and interrupted
+   results);
+8. a synthetic `[Request interrupted by user]` user frame and the synthetic
+   `<synthetic>`-model assistant frame are evidence within the turn, not
+   projections of their own.
 
 ### Turn-vs-run and queue semantics
 
@@ -344,15 +499,19 @@ restart — reconciliation-shaped, and the only native reconnect primitive.
 ## P0 mismatches
 
 1. **No native run identity:** one turn = one candidate run; adapter
-   allocates `run_id` and uses `user_message_uuid` for submission
-   correlation.
+   allocates `run_id` and uses the submitted-uuid/`user_message_uuid` echo
+   for submission correlation (verified live on all three echo surfaces).
 2. **Queued continuation turns:** `queued_turn_count` / `still_queued` mean a
    submission's settlement may be a later result than the first one after
    the send. OAP needs an explicit rule (bind run to send-echo UUIDs, not to
-   result order).
+   result order). v1 closes the surface conservatively: one outstanding
+   submission per process, overlap rejected locally before any write
+   (queue/steer delivery modes stay unavailable).
 3. **Cancellation is three mechanisms** (turn interrupt, queued-cancel,
    per-task stop) with acknowledgement distinct from settlement; OAP
-   `run.cancel` maps to interrupt + terminal-aborted evidence only.
+   `run.cancel` maps to interrupt + terminal-aborted evidence only
+   (live-verified: the aborted result is an `error_during_execution` subtype
+   — only `terminal_reason` discriminates).
 4. **Child settlement has two legal terminal shapes** (`task_notification`,
    `task_updated` patch) and the SDK's stdin heuristic for it is knowingly
    incomplete (#1088); prefer `session_state_changed: idle`.
@@ -361,76 +520,106 @@ restart — reconciliation-shaped, and the only native reconnect primitive.
    run.
 6. **Identity conflation traps:** logical stream label vs session UUID;
    assistant block UUID vs message identity; `task_id` vs `tool_use_id`;
-   control `request_id` vs any OAP identity.
+   control `request_id` vs any OAP identity; `command_uuid` vs `tool_use_id`.
 7. **Injected turns need origin attribution:** runtime-injected user-role
    frames (task notifications, peer messages) must not become phantom runs;
    `origin.kind` is the discriminator, with the caveat that host-sent prompts
-   carry no origin unless the host stamps `{"kind":"human"}`.
+   carry no origin unless the host stamps `{"kind":"human"}` (the adapter
+   stamps it — only `human` is honored from an SDK host).
 8. **No native sequence or replay:** ordering is arrival-only; replay is
    unavailable; persistence is not replay.
 9. **Environment and credentials:** Python merges ambient env by default and
    resume materialization copies (redacted) credentials into a temp dir; the
    OAP adapter must instead use a sanitized child environment and must never
    forward ambient Anthropic credentials, consistent with the repository's
-   standing credential policy.
+   standing credential policy (live-verified: the CLI honors a replaced env
+   and ANTHROPIC_BASE_URL with x-api-key auth and no bearer).
 10. **Capability truth is per-turn, not negotiated:** the recurring
     `system/init` frame (tools, models, capabilities list) is richer than a
     static descriptor; the adapter synthesizes its descriptor from it and
     refreshes per turn.
+11. **`command_lifecycle` is live but untyped in both reference SDKs**
+    (`msg_lifecycle_v1`-gated): the adapter observes it as corroborating
+    admission evidence only, never as the correlation contract.
+12. **Permission asks are content-dependent:** safe commands are auto-approved
+    without any ask (verified: `echo`), so a permission-gate fixture must use
+    an ask-gated command; `permission_denials` on the result is the
+    authoritative denial record, the `permission_denied` system frame is
+    best-effort.
+13. **The CLI injects `<system-reminder>` content into the first provider
+    request even under `--system-prompt ""`** — provider-request assertions
+    in gates must be structural, never byte-exact.
 
 Per the standing rule, each mismatch must lead to an explicit OAP
 decision/revision or a documented adapter boundary; none is silently
 compensated.
 
-## Initial capabilities
+## Initial capabilities (frozen v1 surface)
 
-- initialize / capability revision: `emulated`
-- session association (process + initialize + init frame): `emulated`
-- submission/admission (write completion + `user_message_uuid`): `emulated`
-- run identity/status/sequence: `emulated`
-- one foreground turn per process at a time: enforced locally
-- text streaming: `native` with `--include-partial-messages`, else
-  `degraded` (block-level)
-- tool lifecycle and progress: `degraded` until fixtures pass
-- permission interactions: `degraded` pending `permission-gate` fixture
-  (native reverse-control surface exists)
-- cancellation: `degraded` (intent/settlement split, queue semantics)
-- child/background tasks: `degraded`
+- spawn argv (frozen): `<cli> --output-format stream-json --verbose
+  --input-format stream-json --system-prompt "" [--model <m>]
+  --include-partial-messages --permission-prompt-tool stdio
+  --setting-sources=` — the last two always on: partial messages make text
+  streaming native, and routing every permission ask to the control channel
+  is the only headless-correct prompt surface (without it, asks fail closed
+  to deny). The child environment is fully replaced (no ambient inheritance,
+  no ambient credentials)
+- initialize / capability revision: `emulated` (initialize exchange at open;
+  per-turn `system/init` refresh recorded)
+- session association (process + initialize + first-turn init frame): `emulated`
+- submission/admission (host-minted uuid + `user_message_uuid` echo on the
+  first reply frame): `emulated`
+- run identity/status/sequence: `emulated` (adapter-owned contiguous
+  sequence; native frames carry none)
+- one foreground turn per process at a time: enforced locally (overlap
+  rejected before any native write)
+- text streaming: `native` (`--include-partial-messages` always on)
+- tool lifecycle: `degraded` (requested + synthesized started + terminal by
+  `is_error`; `tool_progress` observed-only)
+- permission interactions: `native` (`can_use_tool` round trip live-verified;
+  allow/deny surfaced as a single-choice input gate; deny → run continues
+  with the CLI's denial semantics)
+- cancellation: `degraded` (interrupt intent; settlement only via
+  `terminal_reason` aborted_* → `run.cancelled`)
+- child/background tasks: `degraded` (edge tracking for settlement;
+  `stop_task` observed-only in v1)
 - conversation resume/fork inputs: native CLI inputs; OAP `run.resume` is
-  reclassified conversation-level and advertised `degraded` until pinned
+  reclassified conversation-level and advertised `unavailable` in v1
 - replay/reconciliation: `unavailable` (`reinitialize` is the only
   reconnect-shaped primitive)
-- steer/BTW/side runs: `unavailable` initially (`shouldQuery`/`priority`
-  exist on inbound messages but are unexercised)
-- model catalog: `degraded` (init frame + `list_models` exist; unexercised)
-- hooks, SDK MCP hosting, dialogs, elicitation: `unavailable` initially
+- steer/BTW/side runs: `unavailable` in v1 (`shouldQuery`/`priority` exist on
+  inbound messages but are unexercised)
+- model catalog: `degraded` (init frame models; `list_models` unexercised)
+- hooks, SDK MCP hosting, dialogs, elicitation: `unavailable` in v1
 
-## Evidence corpus plan
+## Evidence corpus plan (frozen)
 
 `fixtures/adapters/claude-code-2.1.263/`, each case with native JSONL
 (sanitized, reduced), expected OAP, mapping, omissions, provenance pinning
-the artifact hashes above:
+the artifact hashes above. Required labels:
 
-1. `initialize-minimal` — spawn, initialize exchange, init frame, descriptor
-2. `message-admitted` — user write, `user_message_uuid` echo, admission
-3. `completed-text` — assistant blocks + result success -> run.completed
-4. `streaming-deltas` — `stream_event` -> content.delta
-5. `max-turns` — `error_max_turns` -> completed with limit reason
-6. `api-error-result` — success subtype with `is_error` -> run.failed
-7. `interrupt-cancel` — interrupt ack, `still_queued`, aborted terminal ->
-   run.cancelled
-8. `permission-gate` — `can_use_tool` round trip -> interaction lifecycle
-9. `tool-roundtrip` / `tool-failed` / `tool-progress` — action lifecycle
-10. `subagent-task` — task edges settle before parent terminal
-11. `task-updated-terminal` — child settles only via `task_updated`
-12. `stop-task` — child-targeted stop distinct from run cancel
-13. `injected-turn-origin` — origin-attributed user frame creates no run
-14. `second-turn` — sequential turns, distinct runs, same session
-15. `process-exit` / `malformed-stdout-line` — transport failure paths
-16. `resume-fork` — resume vs fork session-UUID behavior
-17. `no-implied-replay` — persistence inputs do not constitute replay
+- handshake/session: `initialize-minimal`, `per-turn-init`,
+  `second-turn`
+- admission: `message-admitted`, `command-lifecycle`,
+  `injected-turn-origin`, `queued-turn-count`
+- run lifecycle: `completed-text`, `max-turns`, `api-error-result`,
+  `error-result`, `interrupt-cancel`, `process-exit`,
+  `malformed-stdout-line`
+- streaming: `streaming-deltas`, `interleaved-blocks`
+- tools: `tool-roundtrip`, `tool-failed`, `tool-progress`,
+  `auto-approved-tool`
+- interactions: `permission-gate`, `permission-deny`
+- children: `subagent-task`, `task-updated-terminal`, `stop-task`
+- hygiene: `keep-alive-ignored`, `unknown-frame-ignored`,
+  `no-implied-replay`, `resume-fork`
 
-A gated live-process test (explicit opt-in, sanitized env, hermetic or
-explicitly authorized provider) may replicate the Makai integration gate
-pattern; credential policy from `research/zai-china-coding-plan-evidence.md`
-applies unchanged.
+Case sources: the live-binary probe transcripts (credential-free auth-failure
+run, loopback text/tool/interrupt runs, initialize exchange) reduced and
+sanitized to the pinned frame shapes, plus constructed variants for the
+shapes the probes cannot produce hermetically (subagent/task edges, resume
+inputs). Corpus fixtures never contain real paths, ids, or prompts from the
+probe environment.
+
+A gated live-process test (explicit opt-in, sanitized env, hermetic loopback
+provider) follows the Hermes/DeepSeek gate pattern; credential policy from
+`research/zai-china-coding-plan-evidence.md` applies unchanged.
