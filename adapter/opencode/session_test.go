@@ -384,9 +384,14 @@ func TestAdmissionFailureRetiresSession(t *testing.T) {
 	client := newFakeClient()
 	client.promptErr = errors.New("HTTP 409")
 	session, _ := openTest(t, client, 32)
-	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	if err == nil {
-		t.Fatal("submit unexpectedly succeeded")
+	// Decision 0002: the reserved run settles pre-start on its stream and the
+	// response reports the accepted queued reservation — no error return.
+	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Accepted || response.Admission != protocol.AdmissionQueued || response.EffectiveDelivery != protocol.EffectiveDeliveryQueue || response.RunID == "" {
+		t.Fatalf("reservation = %+v", response)
 	}
 	events := adaptertest.Drain(t, stream, time.Second)
 	if len(events) != 1 || events[0].Type != protocol.TypeRunFailed {

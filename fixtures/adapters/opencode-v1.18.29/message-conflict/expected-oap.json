@@ -4,7 +4,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.failed",
-    "id": "event-4",
+    "id": "event-5",
     "payload": {
       "session_id": "session",
       "run_id": "run-1",

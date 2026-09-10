@@ -189,12 +189,16 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	adaptertest.AssertDescriptor(t, descriptor)
 	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
 	response, stream, submitErr := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	if definition.AdmissionRejected {
-		if submitErr == nil {
-			t.Fatal("admission unexpectedly succeeded")
-		}
-	} else if submitErr != nil {
+	if submitErr != nil {
 		t.Fatal(submitErr)
+	}
+	if definition.AdmissionRejected {
+		// Decision 0002: the harness rejected the prompt, the reserved run
+		// settles pre-start on the stream, and the response reports the
+		// accepted queued reservation.
+		if !response.Accepted || response.Admission != protocol.AdmissionQueued || response.EffectiveDelivery != protocol.EffectiveDeliveryQueue || response.RunID == "" {
+			t.Fatalf("conflict reservation = %+v", response)
+		}
 	}
 	admission := response
 	client.mu.Lock()
@@ -260,21 +264,16 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		}
 	}
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
-	if definition.AdmissionRejected {
-		// The deterministic first run identity the failed stream carries.
-		admission = protocol.MessageSubmitResponse{SessionID: "session", Accepted: true, SubmissionID: "submission-rejected", RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, Admission: protocol.AdmissionStarted, RunID: "run-1", Status: protocol.RunRunning}
-	}
 	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
-	canonical := admission.Admission == protocol.AdmissionStarted && len(events) > 0 && events[0].Type == protocol.TypeRunStarted
+	// Decision 0002 made both former mismatch shapes canonical: a queued
+	// reservation that promotes via run.started, and an accepted run whose
+	// first and only event is a pre-start terminal. Non-terminal events
+	// before run.started remain invalid.
+	canonical := len(events) > 0 && (events[0].Type == protocol.TypeRunStarted || events[0].Type == protocol.TypeRunFailed || events[0].Type == protocol.TypeRunCancelled)
 	if canonical {
 		validateOpenCodeTrace(t, admission, descriptor, events, definition.Cancel)
 	} else {
-		// Either a queued admission or a pre-start terminal failure: both
-		// are pinned v0.1 mismatches (canonical traces require every
-		// accepted submission to resolve to one started run before any
-		// run-scoped event), so the trace is recorded without canonical
-		// validation until OAP extends the admission model.
-		t.Logf("case %s: trace excluded from canonical v0.1 validation", entry.ID)
+		t.Fatalf("case %s: trace has no canonical first event", entry.ID)
 	}
 	if definition.ReplayAfter != nil {
 		assertOpenCodeReplay(t, session, admission.RunID, *definition.ReplayAfter, events)

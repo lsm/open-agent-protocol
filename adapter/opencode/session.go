@@ -123,15 +123,29 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		return protocol.MessageSubmitResponse{}, stream, ErrNativeProtocol
 	}
 	run.nativeMessageID = nativeMessage
+	// The reservation response (decision 0002): the run identity is reserved
+	// at admission and nothing is emitted yet. A pre-start failure path that
+	// has already settled the run on the stream still reports this accepted
+	// queued reservation — never an error paired with a dangling stream.
+	reservation := protocol.MessageSubmitResponse{
+		SessionID:         s.state.SessionID,
+		Accepted:          true,
+		SubmissionID:      protocol.SubmissionID(s.ids.NewID("submission")),
+		RequestedDelivery: req.Delivery,
+		EffectiveDelivery: protocol.EffectiveDeliveryQueue,
+		Admission:         protocol.AdmissionQueued,
+		RunID:             run.id,
+		Status:            protocol.RunQueued,
+		ModelID:           req.ModelID,
+	}
 	admitted, err := s.client.Prompt(ctx, s.nativeID, native.PromptRequest{ID: nativeMessage, Prompt: native.Prompt{Text: promptText}, Delivery: delivery})
 	if err != nil {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
 		close(run.admitted)
-		code := "opencode_admission_ambiguous"
-		s.failRun(run, code, err.Error())
-		return protocol.MessageSubmitResponse{}, stream, err
+		s.failRun(run, "opencode_admission_ambiguous", err.Error())
+		return reservation, stream, nil
 	}
 	s.mu.Lock()
 	if admitted.ID != nativeMessage {
@@ -143,27 +157,17 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	}
 	s.pending[admitted.ID] = run
 	s.mu.Unlock()
-	response := protocol.MessageSubmitResponse{
-		SessionID:         s.state.SessionID,
-		Accepted:          true,
-		SubmissionID:      protocol.SubmissionID(s.ids.NewID("submission")),
-		RequestedDelivery: req.Delivery,
-		EffectiveDelivery: effectiveDelivery(req.Delivery),
-		Admission:         protocol.AdmissionQueued,
-		RunID:             run.id,
-		Status:            protocol.RunQueued,
-		ModelID:           req.ModelID,
-		MessageIDs:        []protocol.MessageID{protocol.MessageID(admitted.ID)},
-	}
+	reservation.MessageIDs = []protocol.MessageID{protocol.MessageID(admitted.ID)}
 	if admitted.PromotedSeq != nil {
-		response.Admission = protocol.AdmissionStarted
-		response.Status = protocol.RunRunning
+		reservation.Admission = protocol.AdmissionStarted
+		reservation.EffectiveDelivery = protocol.DeliveryStart
+		reservation.Status = protocol.RunRunning
 		s.mu.Lock()
 		run.status = protocol.RunRunning
 		s.mu.Unlock()
 	}
 	close(run.admitted)
-	return response, stream, nil
+	return reservation, stream, nil
 }
 
 func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native.Delivery, error) {
@@ -184,16 +188,12 @@ func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native
 		// session is idle, which is the truthful auto projection here.
 		return text, native.DeliverySteer, nil
 	default:
-		// steer and queue are native server deliveries, but OAP v0.1
-		// canonical admission resolves every accepted submission to one
-		// started run; exposing them needs an OAP admission-model
-		// extension first (see the pinned ledger's mismatch list).
-		return "", "", fmt.Errorf("%w: delivery %q requires an OAP admission extension", ErrUnsupported, req.Delivery)
+		// steer and queue are native server deliveries, and decision 0002
+		// made an auto request resolving to a queued reservation canonical;
+		// but explicit queue/steer delivery requests still exceed the
+		// v0.1 subset (deferred by decisions 0001/0002).
+		return "", "", fmt.Errorf("%w: delivery %q is outside the v0.1 request subset", ErrUnsupported, req.Delivery)
 	}
-}
-
-func effectiveDelivery(protocol.RequestedDeliveryMode) protocol.EffectiveDeliveryMode {
-	return protocol.DeliveryStart
 }
 
 func (s *session) dispatch() {
