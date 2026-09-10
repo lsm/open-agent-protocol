@@ -98,11 +98,12 @@ type gateState struct {
 	requested protocol.EnvelopeID
 }
 
-// childState tracks a background task to its terminal frame.
+// childState tracks a background task of one run to its terminal frame.
 type childState struct {
 	taskID    string
 	toolUseID string
 	taskType  string
+	run       *runState
 	settled   bool
 }
 
@@ -159,9 +160,16 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.pending = run
 	s.mu.Unlock()
 	// The write completing is not admission — the CLI's echo of the turn uuid
-	// is. The write itself can only fail on transport retirement.
+	// is. A write failure is either a clean pre-enqueue rejection (the frame
+	// never left) or an ambiguous loss (cancellation raced the write, or the
+	// transport died mid-flight): only the former may release the reservation.
 	writeErr := s.client.WriteUser(ctx, frame)
 	if writeErr != nil {
+		if !errors.Is(writeErr, rpc.ErrWriteQueue) {
+			s.mu.Lock()
+			s.unusable = true
+			s.mu.Unlock()
+		}
 		s.abortPreStartUnlocked(run, writeErr)
 		s.reduceMu.Unlock()
 		s.promptMu.Unlock()
@@ -176,9 +184,14 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		}
 	case <-ctx.Done():
 		// Cancellation and the echo can race; a run that already converged is
-		// authoritative, otherwise release the reservation.
+		// authoritative. Otherwise the user turn was already written and its
+		// native outcome is ambiguous — retire the session rather than
+		// release the reservation over a turn the CLI may still execute.
 		s.reduceMu.Lock()
 		if !run.started && !run.terminal {
+			s.mu.Lock()
+			s.unusable = true
+			s.mu.Unlock()
 			s.abortPreStartUnlocked(run, ctx.Err())
 			s.reduceMu.Unlock()
 			return protocol.MessageSubmitResponse{}, nil, ctx.Err()
@@ -353,7 +366,8 @@ func (s *Session) currentRun() *runState {
 }
 
 // associate learns or relearns the CLI session identity from any frame that
-// carries one; a changed id is conversation-reset evidence, never drift.
+// carries one; a changed id is conversation-reset evidence, never drift. The
+// id is surfaced as session state metadata so the association is observable.
 func (s *Session) associate(observation *rpc.ObservationMessage) {
 	var frame struct {
 		SessionID string `json:"session_id"`
@@ -364,6 +378,12 @@ func (s *Session) associate(observation *rpc.ObservationMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nativeSessionID = frame.SessionID
+	if s.state.Metadata == nil {
+		s.state.Metadata = map[string]json.RawMessage{}
+	}
+	if encoded, err := json.Marshal(frame.SessionID); err == nil {
+		s.state.Metadata["claude_native_session_id"] = encoded
+	}
 }
 
 // reserveObservation applies one observation against a reserved, not-yet-
@@ -447,6 +467,12 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 		if frame.ParentToolUseID != nil {
 			return
 		}
+		// Frames that attribute themselves to another turn are that turn's
+		// evidence; unattributed frames remain this turn's (the CLI does not
+		// stamp every event).
+		if (frame.UserMessageUUID != "" || len(frame.UserMessageUUIDs) > 0) && frame.UserMessageUUID != run.submissionUUID && !containsUUID(frame.UserMessageUUIDs, run.submissionUUID) {
+			return
+		}
 		if kind, text, ok := frame.StreamDelta(); ok {
 			s.emitDelta(run, kind, text)
 		}
@@ -463,6 +489,13 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 	case *native.TaskUpdatedFrame:
 		if frame.Terminal() {
 			s.settleChild(run, frame.TaskID)
+		}
+	case *native.SessionStateFrame:
+		// The CLI's authoritative idle signal closes the turn: a held
+		// terminal publishes even if tracked children (background tasks can
+		// outlive their turn) never reported.
+		if frame.State == "idle" {
+			s.publishDeferred(run)
 		}
 	default:
 		// tool_progress, command_lifecycle, status, session_state_changed,
@@ -534,6 +567,9 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 
 func (s *Session) endTool(run *runState, nativeID string, content json.RawMessage, isError *bool) {
 	tool := s.tools[nativeID]
+	if tool != nil && tool.run != run {
+		return // a prior run's tool reported late; evidence only
+	}
 	if tool == nil || tool.terminal {
 		s.failRun(run, "claude_tool_lifecycle", "unmatched tool completion")
 		return
@@ -740,10 +776,12 @@ func (s *Session) settleRun(run *runState, frame *native.ResultFrame, raw json.R
 	s.publishTerminal(run, frame)
 }
 
+// unsettledDeferringChildren counts this run's unsettled deferring children;
+// a prior run's stale edges never hold a later run's terminal.
 func (s *Session) unsettledDeferringChildren(run *runState) int {
 	count := 0
 	for _, child := range s.children {
-		if !child.settled && (child.taskType == "local_agent" || child.taskType == "local_workflow") {
+		if child.run == run && !child.settled && (child.taskType == "local_agent" || child.taskType == "local_workflow") {
 			count++
 		}
 	}
@@ -754,7 +792,7 @@ func (s *Session) trackChild(run *runState, taskID, toolUseID, taskType string) 
 	if taskID == "" {
 		return
 	}
-	s.children[taskID] = &childState{taskID: taskID, toolUseID: toolUseID, taskType: taskType}
+	s.children[taskID] = &childState{taskID: taskID, toolUseID: toolUseID, taskType: taskType, run: run}
 }
 
 func (s *Session) settleChild(run *runState, taskID string) {
@@ -763,6 +801,9 @@ func (s *Session) settleChild(run *runState, taskID string) {
 		return
 	}
 	child.settled = true
+	if child.run != run {
+		return // another run's task reported; evidence only
+	}
 	// A held terminal publishes once the last deferring child settles.
 	if run.terminal || run.deferred == nil {
 		return
@@ -773,6 +814,22 @@ func (s *Session) settleChild(run *runState, taskID string) {
 		run.deferred = nil
 		s.mu.Unlock()
 		s.publishTerminal(run, frame)
+	}
+}
+
+// publishDeferred releases a held terminal candidate on the CLI's
+// authoritative idle signal: the turn is closed even if tracked children
+// (background tasks can outlive their turn) never reported.
+func (s *Session) publishDeferred(run *runState) {
+	if run.terminal {
+		return
+	}
+	s.mu.Lock()
+	deferred := run.deferred
+	run.deferred = nil
+	s.mu.Unlock()
+	if deferred != nil {
+		s.publishTerminal(run, deferred)
 	}
 }
 
@@ -789,6 +846,10 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 	}
 	run.deferred = nil
 	s.mu.Unlock()
+	// Everything the terminal absorbs settles first: open tool calls are
+	// cancelled, abandoned asks are answered and cancelled, and the run's
+	// child edges are pruned.
+	s.sweepRun(run)
 	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens), TotalTokens: uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens)}
 	switch {
 	case frame.Cancelled():
@@ -806,6 +867,36 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 			code = "claude_api_" + strconv.Itoa(*frame.APIErrorStatus)
 		}
 		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: errorResultText(frame)}, Usage: usage, DurationMS: frame.DurationMS}, true)
+	}
+}
+
+// sweepRun settles everything the run's terminal absorbs: open tool calls
+// are cancelled, abandoned permission asks are answered (so the CLI is never
+// left blocked) and resolved as cancelled, and the run's child edges are
+// pruned so stale state cannot hold a later run's terminal.
+func (s *Session) sweepRun(run *runState) {
+	for _, tool := range s.tools {
+		if tool.run != run || tool.terminal {
+			continue
+		}
+		tool.terminal = true
+		payload := s.toolPayload(tool)
+		payload.ArgumentsJSON = nil
+		_, _ = s.emitEnvelope(run, protocol.TypeActionCallCancelled, payload, false, tool.started)
+	}
+	for _, gate := range s.interactions {
+		if gate.run != run || gate.resolved {
+			continue
+		}
+		gate.resolved = true
+		delete(s.interactions, gate.id)
+		_ = gate.control.RespondError(context.Background(), "claude adapter: run settled while the permission ask was open")
+		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, gate.requested)
+	}
+	for id, child := range s.children {
+		if child.run == run {
+			delete(s.children, id)
+		}
 	}
 }
 

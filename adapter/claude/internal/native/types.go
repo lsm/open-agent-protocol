@@ -398,10 +398,11 @@ func DecodeObservation(frameType, subtype string, raw []byte) (any, error) {
 		if err := unmarshal(raw, &frame); err != nil {
 			return nil, err
 		}
-		switch frame.Subtype {
-		case ResultSuccess, ResultErrorDuringExecution, ResultErrorMaxTurns, ResultErrorMaxBudgetUSD, ResultErrorStructuredOutput:
-		default:
-			return nil, fmt.Errorf("%w: unknown result subtype %q", ErrInvalidFrame, frame.Subtype)
+		// The reference hosts type the result subtype as success-or-string;
+		// an unknown error subtype arbitrates as a failure, never a
+		// transport violation.
+		if frame.Subtype == "" {
+			return nil, fmt.Errorf("%w: result frame requires subtype", ErrInvalidFrame)
 		}
 		if frame.SessionID == "" {
 			return nil, fmt.Errorf("%w: result frame requires session_id", ErrInvalidFrame)

@@ -47,10 +47,11 @@ func (i *testIDs) NewID(k string) string {
 // over real pipes. io.Pipe writes block until consumed, so a drain goroutine
 // buffers the adapter's writes into a channel the test receives from.
 type wirePeer struct {
-	t       *testing.T
-	client  *rpc.Client
-	writeIn io.Writer
-	frames  chan rpc.Message
+	t         *testing.T
+	client    *rpc.Client
+	writeIn   io.Writer
+	frames    chan rpc.Message
+	userTurns int
 }
 
 // pipePair retires both directions of the scripted transport, so client Close
@@ -109,6 +110,9 @@ func (w *wirePeer) written() (rpc.Message, json.RawMessage) {
 	case message, ok := <-w.frames:
 		if !ok {
 			w.t.Fatal("adapter write stream ended")
+		}
+		if message.Kind == rpc.KindObservation && message.Type == rpc.TypeUser {
+			w.userTurns++
 		}
 		return message, message.Raw
 	case <-time.After(5 * time.Second):
@@ -807,10 +811,14 @@ func TestOverlapSubmitRejectedBeforeWrite(t *testing.T) {
 	if stream != nil {
 		t.Fatal("rejected overlap exposed an event stream")
 	}
-	// No second user turn reached the wire; the first one plus the turn's
-	// frames are all that exist.
+	// No second user turn reached the wire: the rejection happened before
+	// any write, and the drain barrier proves nothing else is in flight.
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	peer.awaitDrain()
+	if peer.userTurns != 1 {
+		t.Fatalf("rejected overlap wrote %d user turns", peer.userTurns)
+	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -859,4 +867,174 @@ func TestSubmitRejectsInvalidSurfaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = peer
+}
+
+// ---- review regression tests (fail-before evidence) -------------------------
+
+func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_10","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a10"}`)
+	peer.send(`{"type":"control_request","request_id":"ask-10","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_10"}}`)
+	gate := openGate(t, session, uuid)
+	_ = gate
+	go func() {
+		_, _ = session.Cancel(context.Background(), outcome.admission.RunID)
+	}()
+	message, _ := peer.written()
+	if message.Subtype != "interrupt" {
+		t.Fatalf("expected interrupt, got %+v", message)
+	}
+	peer.answerControl(message.RequestID, `{"still_queued":[]}`)
+	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u10"}`)
+	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r10"}`)
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+	if terminalOf(events).Type != protocol.TypeRunCancelled {
+		t.Fatalf("terminal = %s", terminalOf(events).Type)
+	}
+	// The abandoned ask is answered so the CLI is never left blocked.
+	if _, raw := peer.written(); !strings.Contains(string(raw), `"error"`) {
+		t.Fatalf("gate answer = %s", raw)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSubmitCancellationAfterWriteRetiresSession(t *testing.T) {
+	_, session, peer := openWire(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	channel := make(chan submitOutcome, 1)
+	go func() {
+		admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		channel <- submitOutcome{admission, stream, err}
+	}()
+	peer.writtenUser()
+	cancel()
+	select {
+	case outcome := <-channel:
+		if outcome.err == nil {
+			t.Fatal("cancelled submit accepted")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("submit did not return")
+	}
+	// The user turn is already on the wire and its outcome is ambiguous: the
+	// session must refuse further submissions rather than overlap them.
+	if _, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) || stream != nil {
+		t.Fatalf("post-cancellation submit err = %v", err)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestForeignTurnDeltaNotAttributed(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"foreign"}},"session_id":"` + peerSession + `","parent_tool_use_id":null,"uuid":"e9","user_message_uuid":"other-turn","user_message_uuids":["other-turn"]}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+	for _, event := range events {
+		if event.Type != protocol.TypeContentDelta {
+			continue
+		}
+		var payload protocol.ContentDeltaPayload
+		if err := event.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(payload.Part.Text, "foreign") {
+			t.Fatal("another turn's delta was attributed to this run")
+		}
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdleSignalPublishesDeferredTerminal(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"system","subtype":"task_started","task_id":"task-9","description":"research","uuid":"t9","session_id":"` + peerSession + `","task_type":"local_agent"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "spawned", 0))
+	peer.send(`{"type":"system","subtype":"session_state_changed","state":"idle","session_id":"` + peerSession + `","uuid":"ss1"}`)
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+	if terminalOf(events).Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal = %s", terminalOf(events).Type)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStaleChildDoesNotDeferLaterRuns(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid1, outcome1 := admit(t, session, peer)
+	peer.send(`{"type":"system","subtype":"task_started","task_id":"task-stale","description":"research","uuid":"ts","session_id":"` + peerSession + `","task_type":"local_agent"}`)
+	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_unknown","type":"tool_result","content":"x","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"us"}`)
+	events1 := adaptertest.Drain(t, outcome1.stream, 5*time.Second)
+	if terminalOf(events1).Type != protocol.TypeRunFailed {
+		t.Fatalf("run 1 terminal = %s", terminalOf(events1).Type)
+	}
+	_ = uuid1
+	// Run 1's unsettled child must not hold run 2's terminal.
+	uuid2, outcome2 := admit(t, session, peer)
+	peer.send(resultFrame(uuid2, "success", false, "completed", "second", 0))
+	events2 := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
+	assertValidTrace(t, outcome2.admission, events2)
+	if terminalOf(events2).Type != protocol.TypeRunCompleted {
+		t.Fatalf("run 2 terminal = %s", terminalOf(events2).Type)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLateToolResultForPriorRunIgnored(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid1, outcome1 := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_30","name":"Read","input":{"file_path":"/tmp/x"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a30"}`)
+	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_30","type":"tool_result","content":"data","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u30"}`)
+	peer.send(resultFrame(uuid1, "success", false, "completed", "one", 0))
+	adaptertest.Drain(t, outcome1.stream, 5*time.Second)
+	// A late tool_result for run 1's tool must not fail run 2.
+	uuid2, outcome2 := admit(t, session, peer)
+	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_30","type":"tool_result","content":"late","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u31"}`)
+	peer.send(resultFrame(uuid2, "success", false, "completed", "two", 0))
+	events := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
+	assertValidTrace(t, outcome2.admission, events)
+	if terminalOf(events).Type != protocol.TypeRunCompleted {
+		t.Fatalf("run 2 terminal = %s (%v)", terminalOf(events).Type, eventTypes(events))
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnknownResultSubtypeFailsRunNotTransport(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"result","subtype":"error_new_future","duration_ms":50,"duration_api_ms":10,"is_error":true,"num_turns":1,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":2,"output_tokens":1},"modelUsage":{},"permission_denials":[],"terminal_reason":"completed","errors":["future failure"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"rf"}`)
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	terminal := terminalOf(events)
+	if terminal.Type != protocol.TypeRunFailed {
+		t.Fatalf("terminal = %s", terminal.Type)
+	}
+	var payload protocol.RunFailedPayload
+	if err := terminal.DecodePayload(&payload); err != nil || payload.Error.Code != "claude_error_new_future" {
+		t.Fatalf("payload = %+v err=%v", payload, err)
+	}
+	// The transport survived: the session stays usable for another turn.
+	uuid2, outcome2 := admit(t, session, peer)
+	peer.send(resultFrame(uuid2, "success", false, "completed", "next", 0))
+	events2 := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
+	if terminalOf(events2).Type != protocol.TypeRunCompleted {
+		t.Fatalf("second terminal = %s", terminalOf(events2).Type)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }

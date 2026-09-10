@@ -126,8 +126,11 @@ func TestResultArbitrationInputs(t *testing.T) {
 		t.Fatal("max turns not detected")
 	}
 
-	if _, err := decode(t, TypeResult, "weird_subtype", `{"type":"result","subtype":"weird_subtype","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}`); err == nil {
-		t.Fatal("unknown result subtype accepted")
+	if _, err := decode(t, TypeResult, "error_new_future", `{"type":"result","subtype":"error_new_future","duration_ms":1,"duration_api_ms":1,"is_error":true,"num_turns":1,"session_id":"s","errors":["future failure"]}`); err != nil {
+		t.Fatalf("unknown result subtype rejected: %v", err)
+	}
+	if _, err := decode(t, TypeResult, "", `{"type":"result","subtype":"","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}`); err == nil {
+		t.Fatal("result without subtype accepted")
 	}
 	if _, err := decode(t, TypeResult, ResultSuccess, `{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1}`); err == nil {
 		t.Fatal("result without session_id accepted")
