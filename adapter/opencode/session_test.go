@@ -72,18 +72,19 @@ func (s *fakeSubscription) fail(err error) {
 }
 
 type fakeClient struct {
-	mu           sync.Mutex
-	session      native.SessionID
-	events       chan native.Event
-	subscription *fakeSubscription
-	promoted     bool
-	promptErr    error
-	interrupts   int
-	waits        int
-	historyErr   error
-	historyPage  native.HistoryPage
-	prompts      []native.PromptRequest
-	closed       bool
+	mu               sync.Mutex
+	session          native.SessionID
+	events           chan native.Event
+	subscription     *fakeSubscription
+	promoted         bool
+	promptErr        error
+	foreignAdmission bool
+	interrupts       int
+	waits            int
+	historyErr       error
+	historyPage      native.HistoryPage
+	prompts          []native.PromptRequest
+	closed           bool
 }
 
 func newFakeClient() *fakeClient {
@@ -103,6 +104,9 @@ func (f *fakeClient) Prompt(_ context.Context, session native.SessionID, request
 	defer f.mu.Unlock()
 	if f.promptErr != nil {
 		return native.Admitted{}, f.promptErr
+	}
+	if f.foreignAdmission {
+		return native.Admitted{AdmittedSeq: 1, ID: "msg_foreign", SessionID: session, Prompt: request.Prompt, Delivery: request.Delivery, TimeCreated: 1}, nil
 	}
 	f.prompts = append(f.prompts, request)
 	var promoted *int64
@@ -377,6 +381,40 @@ func TestForeignSessionEventFailsRun(t *testing.T) {
 	}
 	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("second submit err=%v", err)
+	}
+}
+
+// TestPreStartFailuresReportReservation pins the decision 0002 contract on
+// every reserved-run failure path: Submit never pairs an error with a
+// non-nil stream; the accepted queued reservation settles pre-start instead.
+func TestPreStartFailuresReportReservation(t *testing.T) {
+	cases := map[string]func(*fakeClient){
+		"foreign admission": func(client *fakeClient) { client.foreignAdmission = true },
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			setup(client)
+			session, _ := openTest(t, client, 32)
+			response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+			if err != nil {
+				t.Fatalf("submit paired an error with a stream: %v", err)
+			}
+			if !response.Accepted || response.Admission != protocol.AdmissionQueued || response.EffectiveDelivery != protocol.EffectiveDeliveryQueue || response.Status != protocol.RunQueued || response.RunID == "" {
+				t.Fatalf("reservation = %+v", response)
+			}
+			events := adaptertest.Drain(t, stream, time.Second)
+			if len(events) != 1 || events[0].Type != protocol.TypeRunFailed {
+				t.Fatalf("events=%v", types(events))
+			}
+			var payload protocol.RunFailedPayload
+			if err := events[0].DecodePayload(&payload); err != nil || payload.Error.Code != "opencode_foreign_admission" {
+				t.Fatalf("payload = %+v err=%v", payload, err)
+			}
+			if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+				t.Fatalf("second submit err=%v", err)
+			}
+		})
 	}
 }
 

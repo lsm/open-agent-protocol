@@ -113,20 +113,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.state.CurrentModelID = req.ModelID
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	s.mu.Unlock()
-	nativeMessage := native.MessageID(s.ids.NewID("opencode-message"))
-	if !nativeMessage.Valid() {
-		s.mu.Lock()
-		s.unusable = true
-		s.mu.Unlock()
-		close(run.admitted)
-		s.failRun(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message")
-		return protocol.MessageSubmitResponse{}, stream, ErrNativeProtocol
-	}
-	run.nativeMessageID = nativeMessage
 	// The reservation response (decision 0002): the run identity is reserved
-	// at admission and nothing is emitted yet. A pre-start failure path that
-	// has already settled the run on the stream still reports this accepted
-	// queued reservation — never an error paired with a dangling stream.
+	// at admission and nothing is emitted yet. Any pre-start failure path
+	// that has already settled the run on the stream still reports this
+	// accepted queued reservation — never an error paired with a dangling
+	// stream.
 	reservation := protocol.MessageSubmitResponse{
 		SessionID:         s.state.SessionID,
 		Accepted:          true,
@@ -138,6 +129,16 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		Status:            protocol.RunQueued,
 		ModelID:           req.ModelID,
 	}
+	nativeMessage := native.MessageID(s.ids.NewID("opencode-message"))
+	if !nativeMessage.Valid() {
+		s.mu.Lock()
+		s.unusable = true
+		s.mu.Unlock()
+		close(run.admitted)
+		s.failRun(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message")
+		return reservation, stream, nil
+	}
+	run.nativeMessageID = nativeMessage
 	admitted, err := s.client.Prompt(ctx, s.nativeID, native.PromptRequest{ID: nativeMessage, Prompt: native.Prompt{Text: promptText}, Delivery: delivery})
 	if err != nil {
 		s.mu.Lock()
@@ -153,7 +154,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.mu.Unlock()
 		close(run.admitted)
 		s.failRun(run, "opencode_foreign_admission", fmt.Sprintf("server admitted %s for request %s", admitted.ID, nativeMessage))
-		return protocol.MessageSubmitResponse{}, stream, ErrNativeProtocol
+		return reservation, stream, nil
 	}
 	s.pending[admitted.ID] = run
 	s.mu.Unlock()
