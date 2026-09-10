@@ -259,6 +259,26 @@ discoveries:
    permission events and the polling surface is unexercised, so no
    interaction mapping is claimed.
 
+### Resolution under decision 0002 (2026-09-10)
+
+Outcomes 1, 3, and 4 above were adjudicated as protocol feedback PF-1 and
+resolved by [Decision 0002](../decisions/0002-admission-before-start.md):
+an accepted submission may canonically report `admission=queued` with
+`effective_delivery=queue` and reserve its run identity at admission, and an
+accepted run may settle pre-start with `run.failed` (or `run.cancelled`
+behind an accepted cancel) as its only run-scoped event. Consequences for
+this adapter:
+
+- the `queued-admission`, `foreign-session`, and `message-conflict` corpus
+  cases now execute under canonical v0.1 validation (no exclusions remain);
+- the queued reservation response carries `effective_delivery=queue`
+  (previously the contradictory `start`);
+- the conflict-admission path returns the accepted queued reservation with
+  the failure on its stream, instead of an error paired with a dangling
+  stream;
+- explicit `queue`/`steer` delivery *requests* remain outside the v0.1
+  subset, exactly as before.
+
 
 ## Initial capabilities
 

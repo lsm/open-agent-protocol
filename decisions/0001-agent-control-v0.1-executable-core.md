@@ -1,6 +1,7 @@
 # Decision 0001: Agent-Control v0.1 Executable Core
 
-Status: accepted
+Status: accepted (admission clause amended by
+[Decision 0002](0002-admission-before-start.md))
 Date: 2026-09-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

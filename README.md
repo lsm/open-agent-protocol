@@ -51,6 +51,12 @@ Research:
 - [Pinned Hermes agent mapping](research/hermes-v2026.8.31-mapping.md)
 - [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
+- [Protocol feedback from eight adapter tranches](research/protocol-feedback-2026-09.md)
+
+Decisions:
+
+- [0001 — agent-control v0.1 executable core](decisions/0001-agent-control-v0.1-executable-core.md)
+- [0002 — admission before started](decisions/0002-admission-before-start.md)
 
 Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:
