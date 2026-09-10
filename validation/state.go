@@ -288,8 +288,18 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	if !p.Accepted {
 		return
 	}
-	if p.Admission != protocol.AdmissionStarted || p.EffectiveDelivery != protocol.DeliveryStart || p.RunID == "" {
-		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "v0.1 admission must resolve auto to one started run")
+	// Decision 0002: an accepted submission resolves to exactly one of the
+	// two canonical admission shapes — started (run.started emitted
+	// atomically with the response) or queued (run identity reserved, nothing
+	// emitted yet, settled pre-start on failure/cancellation).
+	switch {
+	case p.RunID == "":
+		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "accepted submission must reserve a run identity")
+		return
+	case p.Admission == protocol.AdmissionStarted && p.EffectiveDelivery == protocol.DeliveryStart:
+	case p.Admission == protocol.AdmissionQueued && p.EffectiveDelivery == protocol.EffectiveDeliveryQueue:
+	default:
+		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "v0.1 admission must resolve auto to one started or queued run (decision 0002)")
 		return
 	}
 	if old := s.runs[p.RunID]; old != nil {
@@ -369,7 +379,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		return
 	}
-	if !r.started {
+	if !r.started && !preStartSettlement(e.Type) {
 		s.add(CodeMissingRunStarted, i, line, e, "/type", "run-scoped event occurred before run.started")
 	}
 	if e.Type == protocol.TypeRunStatusUpdated {
@@ -629,6 +639,14 @@ func isRequest(t protocol.EnvelopeType) bool  { return strings.HasSuffix(string(
 func isResponse(t protocol.EnvelopeType) bool { return strings.HasSuffix(string(t), ".response") }
 func isTerminal(t protocol.EnvelopeType) bool {
 	return t == protocol.TypeRunCompleted || t == protocol.TypeRunFailed || t == protocol.TypeRunCancelled
+}
+
+// preStartSettlement reports whether the event type may settle an accepted
+// run before run.started (decision 0002): a run can fail or be cancelled
+// before any start was observable, but it cannot complete — completion
+// without an observed start has no faithful projection.
+func preStartSettlement(t protocol.EnvelopeType) bool {
+	return t == protocol.TypeRunFailed || t == protocol.TypeRunCancelled
 }
 func isRunEvent(t protocol.EnvelopeType) bool {
 	switch t {

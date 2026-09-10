@@ -1,0 +1,5 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"submit","session_id":"s1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"admit","in_reply_to":"submit","session_id":"s1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"queue","admission":"queued","run_id":"r1","status":"queued"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.failed","id":"fail","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","error":{"code":"harness_conflict","message":"HTTP 409 ConflictError"}}}
+]
