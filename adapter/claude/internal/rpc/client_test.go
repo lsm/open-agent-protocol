@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -329,34 +331,50 @@ func TestConcurrentCallsStayCorrelated(t *testing.T) {
 			}
 		}
 	}()
-	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			result := make(chan error, 1)
-			go func() {
-				result <- p.client.Call(context.Background(), json.RawMessage(`{"subtype":"interrupt"}`), nil)
-			}()
+	// A single dispatcher answers each request by echoing its tag, so every
+	// caller can verify it received its own response — a mis-delivered
+	// response fails whichever caller got it.
+	dispatcherDone := make(chan struct{})
+	go func() {
+		defer close(dispatcherDone)
+		for {
 			request, err := p.readFrame()
 			if err != nil {
-				t.Error(err)
 				return
 			}
-			p.send(`{"type":"control_response","response":{"subtype":"success","request_id":"` + request.RequestID + `","response":{"still_queued":[]}}}`)
-			select {
-			case err := <-result:
-				if err != nil {
-					t.Error(err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Error("call timed out")
+			var sent struct {
+				Request struct {
+					N int `json:"n"`
+				} `json:"request"`
 			}
-		}()
+			if json.Unmarshal(request.Raw, &sent) != nil || sent.Request.N == 0 {
+				t.Errorf("request %s carries no tag: %s", request.RequestID, request.Raw)
+				return
+			}
+			p.send(`{"type":"control_response","response":{"subtype":"success","request_id":"` + request.RequestID + `","response":{"n":` + strconv.Itoa(sent.Request.N) + `}}}`)
+		}
+	}()
+	var wg sync.WaitGroup
+	for i := 1; i <= 4; i++ {
+		wg.Add(1)
+		go func(tag int) {
+			defer wg.Done()
+			type echo struct {
+				N int `json:"n"`
+			}
+			var reply echo
+			if err := p.client.Call(context.Background(), json.RawMessage(fmt.Sprintf(`{"subtype":"interrupt","n":%d}`, tag)), &reply); err != nil {
+				t.Errorf("call %d: %v", tag, err)
+				return
+			}
+			if reply.N != tag {
+				t.Errorf("call %d received response %d", tag, reply.N)
+			}
+		}(i)
 	}
 	wg.Wait()
-	// The consumer goroutine parks until the client retires (t.Cleanup
-	// closes it) or its own deadline; all four calls have already returned,
-	// so nothing is left to assert on it.
+	// The parked goroutines end when the client retires (t.Cleanup) or their
+	// own deadlines; all four calls have already returned.
 	_ = consumerDone
+	_ = dispatcherDone
 }
