@@ -695,3 +695,54 @@ every production `Open` deadlocked until the initialize timeout. The
 corpus missed this because its injected factory returned before waiting on
 the exchange. The exchange now runs in `Open` after dispatch is live; the
 corpus-style injected-factory path is unchanged.
+
+## Review outcome (tranche verified)
+
+An independent adversarial review of the tranche produced eight findings;
+every one was reproduced against the code (seven by failing regression
+tests, one by inspection) before any fix. All confirmed findings are fixed,
+each with a fail-before/pass-after regression test:
+
+1. **A run terminal published while a tool call or permission gate was open
+   produced an OAP-invalid trace** (`pending_tool_at_terminal`,
+   `pending_interaction_at_terminal`) and left the CLI's ask unanswered.
+   Terminals now sweep first: open tools emit `action.call.cancelled`,
+   abandoned gates are answered with a control error and resolved as
+   cancelled, and the run's child edges are pruned.
+2. **Submit-context cancellation after the write released the reservation
+   over a still-executing native turn**, allowing overlap, and turn-1
+   deltas were misattributed into run 2's transcript. The ambiguous loss
+   now retires the session (the rpc layer already retired the transport on
+   the same race), and stream events that attribute themselves to another
+   turn are that turn's evidence only.
+3. **A deferred terminal was never published on the
+   `session_state_changed: idle` signal**, wedging the session while the
+   process lived. The idle signal now releases a held terminal candidate —
+   background tasks can outlive their turn, so idle closes it regardless
+   of unsettled tracked children.
+4. **Child and tool bookkeeping was session-global**: a prior run's stale
+   unsettled child deferred every later run's terminal, and a late
+   `tool_result` for a prior run's tool failed the current run. Children
+   are now run-scoped and pruned at their run's terminal; tool completions
+   for another run are evidence only.
+5. **An unknown `result` subtype killed the transport.** The reference
+   hosts type the subtype as success-or-string; an unknown error subtype
+   now arbitrates as `run.failed` with `claude_<subtype>`, keeping the
+   session usable.
+6. **Codec strictness edges had no tests** (CR, empty frame, unterminated
+   tail, non-UTF-8, exact/oversize limits); now covered in
+   `internal/rpc/codec_test.go`.
+7. **The native session UUID was write-only**; it is now surfaced as
+   session state metadata (`claude_native_session_id`), making the
+   association evidence observable.
+8. **Two weak tests**: the concurrent-correlation test used identical
+   payloads (it now tags each call and verifies per-caller delivery), and
+   the overlap-rejection test claimed "no second user turn reached the
+   wire" without asserting it (it now counts user-turn writes).
+
+Categories with no findings: concurrency (lock order, barrier acks,
+teardown, no races under `-race`), wire/codec correctness, and the terminal
+arbitration happy paths. After the fixes, the full repository battery
+(vet, full, short, race, `oap check`, gofmt, `git diff --check`) is green,
+the corpus remains byte-stable, and both process gates re-ran green three
+times against the pinned digest-bound binary.
