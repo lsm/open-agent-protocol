@@ -621,8 +621,8 @@ func NewUserTurn(uuid, text string) (json.RawMessage, error) {
 // ValidateTurnUUID rejects degenerate submission identities before they are
 // written to the wire.
 func ValidateTurnUUID(uuid string) error {
-	if len(uuid) < 8 || len(uuid) > 128 {
-		return fmt.Errorf("%w: turn uuid must be 8-128 bytes", ErrInvalidFrame)
+	if len(uuid) == 0 || len(uuid) > 128 {
+		return fmt.Errorf("%w: turn uuid must be 1-128 bytes", ErrInvalidFrame)
 	}
 	for _, char := range uuid {
 		switch {

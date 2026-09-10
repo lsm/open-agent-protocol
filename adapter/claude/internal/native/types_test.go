@@ -260,7 +260,7 @@ func TestHostWriteShapes(t *testing.T) {
 	if err := ValidateTurnUUID(turnUUID); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"", "short", "sp ace-uuid", "uuid/with/slashes", "uuid_with_underscore"} {
+	for _, bad := range []string{"", "sp ace-uuid", "uuid/with/slashes", "uuid_with_underscore"} {
 		if err := ValidateTurnUUID(bad); err == nil {
 			t.Fatalf("uuid %q accepted", bad)
 		}
