@@ -244,6 +244,21 @@ func TestCreateSessionRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+// TestCreateSessionRejectsOversizedBody pins that a body longer than the frame
+// limit is rejected, not truncated: LimitReader's artificial EOF would
+// otherwise let a valid JSON prefix pass with its trailing bytes discarded.
+func TestCreateSessionRejectsOversizedBody(t *testing.T) {
+	valid := `{"data":` + sessionInfo + `}`
+	body := valid + strings.Repeat(" ", 32) + `{"tail":true}`
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}), Options{FrameLimit: len(valid) + 8})
+	_, err := client.CreateSession(context.Background(), CreateSessionRequest{})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized body accepted: err=%v", err)
+	}
+}
+
 // TestSubscriptionCloseInterruptsBlockedRead pins that Close tears down an idle
 // SSE stream instead of leaking the pump goroutine and connection. The server
 // flushes headers then sends nothing; Close must cancel the request so the

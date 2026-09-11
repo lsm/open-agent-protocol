@@ -123,9 +123,15 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 		return nil
 	}
-	payload, err := io.ReadAll(io.LimitReader(response.Body, int64(c.frame)))
+	// Read one byte past the limit: an artificial EOF from LimitReader would
+	// otherwise let a body whose valid JSON prefix fits the limit pass with its
+	// trailing bytes silently discarded.
+	payload, err := io.ReadAll(io.LimitReader(response.Body, int64(c.frame)+1))
 	if err != nil {
 		return err
+	}
+	if len(payload) > c.frame {
+		return fmt.Errorf("opencode httpapi: %s response exceeds %d bytes", path, c.frame)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return native.DecodeAPIError(response.StatusCode, payload)
