@@ -1136,6 +1136,12 @@ func extensionResponse(b *inputState, r protocol.UserInputResolveRequest) (nativ
 		v := b.questions[0].Options[n-1].Label
 		response.Value = &v
 	default:
+		// ExtensionInput/ExtensionEditor surface a required text question; an
+		// empty value or a choice-form answer would be written natively as an
+		// empty string yet later projected as the submitted answer.
+		if len(a.SelectedOptionIDs) != 0 || a.Text == "" {
+			return response, base.ErrInvalidResolution
+		}
 		v := a.Text
 		response.Value = &v
 	}

@@ -550,6 +550,55 @@ func TestExtensionConfirmIsGenericInput(t *testing.T) {
 	_ = adaptertest.Drain(t, stream, time.Second)
 }
 
+func TestExtensionInputRejectsMalformedTextAnswers(t *testing.T) {
+	// ExtensionInput/ExtensionEditor surface a required text question. An empty
+	// value or a choice-form answer must be rejected before any native write,
+	// never written as an empty string and then projected as the answer.
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	_ = adaptertest.Next(t, stream, time.Second)
+	client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "ui-2", Method: native.ExtensionInput, Title: "Name"})
+	requested := adaptertest.Next(t, stream, time.Second)
+	if adaptertest.Next(t, stream, time.Second).Type != protocol.TypeRunStatusUpdated {
+		t.Fatal("missing waiting status")
+	}
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(a protocol.InputAnswer) error {
+		return s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{a}}})
+	}
+	if err := resolve(protocol.InputAnswer{QuestionID: "value", Text: ""}); !errors.Is(err, base.ErrInvalidResolution) {
+		t.Fatalf("empty text err = %v", err)
+	}
+	if err := resolve(protocol.InputAnswer{QuestionID: "value", SelectedOptionIDs: []string{"yes"}}); !errors.Is(err, base.ErrInvalidResolution) {
+		t.Fatalf("choice-form text err = %v", err)
+	}
+	client.mu.Lock()
+	wrote := len(client.responses)
+	client.mu.Unlock()
+	if wrote != 0 {
+		t.Fatalf("rejected answers wrote %d native responses", wrote)
+	}
+	if err := resolve(protocol.InputAnswer{QuestionID: "value", Text: "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	nativeResponse := client.responses[0]
+	client.mu.Unlock()
+	if nativeResponse.Value == nil || *nativeResponse.Value != "Ada" {
+		t.Fatalf("response=%+v", nativeResponse)
+	}
+	if adaptertest.Next(t, stream, time.Second).Type != protocol.TypeUserInputResolved {
+		t.Fatal("missing resolution")
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("ok", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	_ = adaptertest.Drain(t, stream, time.Second)
+}
+
 func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
