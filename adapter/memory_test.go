@@ -147,6 +147,32 @@ func TestGoldenScript(t *testing.T) {
 	}
 }
 
+// The reference adapter advertises a non-empty capability revision, so every
+// envelope it publishes must repeat it. A consumer such as
+// adaptertest.AssertRunEvents binds events to the descriptor snapshot and
+// rejects a run whose envelopes omit the revision.
+func TestEmittedEnvelopesCarryAdvertisedRevision(t *testing.T) {
+	session := newTestSession(t, 64)
+	runID, stream := submit(t, session)
+	events := drainAvailable(stream)
+	if len(events) == 0 {
+		t.Fatal("no events emitted")
+	}
+	ack, err := session.Cancel(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("cancel not accepted: %+v", ack)
+	}
+	events = append(events, drainAvailable(stream)...)
+	for i, event := range events {
+		if event.CapabilityRevision != CapabilityRevision {
+			t.Fatalf("event %d (%s) capability revision: got %q want %q", i, event.Type, event.CapabilityRevision, CapabilityRevision)
+		}
+	}
+}
+
 func wantEnvelopes(types []protocol.EnvelopeType) []protocol.Envelope {
 	out := make([]protocol.Envelope, len(types))
 	for i, typ := range types {

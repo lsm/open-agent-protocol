@@ -14,6 +14,11 @@ import (
 
 const defaultJournalCapacity = 64
 
+// CapabilityRevision is the advertised reference-adapter revision. Every
+// emitted envelope repeats it so a consumer can bind an event to the
+// descriptor snapshot it was produced under.
+const CapabilityRevision = "reference-memory-v1"
+
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
 // Clock and IDGenerator make every observable value deterministic in tests.
@@ -81,7 +86,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 			Profiles:         []string{protocol.Profile},
 			Features:         features,
 		},
-		CapabilityRevision:         "reference-memory-v1",
+		CapabilityRevision:         CapabilityRevision,
 		Journal:                    JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: m.capacity},
 		MaxActiveRunsPerSession:    1,
 		InteractiveGates:           true,
@@ -527,6 +532,7 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 	envelope.TimestampMS = &now
 	envelope.SessionID = s.state.SessionID
 	envelope.RunID = run.id
+	envelope.CapabilityRevision = CapabilityRevision
 	switch typ {
 	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested:
 		envelope.ToolCallID = run.toolCallID
