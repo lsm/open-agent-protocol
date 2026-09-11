@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -492,6 +493,71 @@ func TestProbeIsConservative(t *testing.T) {
 		t.Fatalf("descriptor=%+v", d)
 	}
 }
+
+// A sparse tool patch (no status) that arrives while the call is still pending
+// must not emit action.call.progress: no started event has occurred, and the
+// progress payload requires a progress member. The patch is retained and
+// surfaces on action.call.started.
+func TestSparseToolUpdateBeforeStartEmitsNoProgress(t *testing.T) {
+	s, f := openTest(t, 64)
+	_, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending"})
+	title := "Read v2"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Title: &title})
+	status := "in_progress"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Status: &status})
+	status = "completed"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Status: &status, RawOutput: json.RawMessage(`{"ok":true}`)})
+	waitCursor(t, s, "4")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeRunCompleted}
+	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
+		t.Fatalf("events=%v", types(events))
+	}
+	var started protocol.ActionCallPayload
+	if err := events[2].DecodePayload(&started); err != nil {
+		t.Fatal(err)
+	}
+	if started.Name != "Read v2" {
+		t.Fatalf("started name = %q, want the retained patch", started.Name)
+	}
+}
+
+// ACP may omit rawInput; the requested event must still carry arguments_json,
+// normalized to the JSON null value.
+func TestToolCallWithoutInputCarriesNullArguments(t *testing.T) {
+	s, f := openTest(t, 64)
+	_, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending"})
+	status := "in_progress"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Status: &status})
+	status = "completed"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Status: &status, RawOutput: json.RawMessage(`{"ok":true}`)})
+	waitCursor(t, s, "4")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	observed := false
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeActionCallRequested {
+			continue
+		}
+		observed = true
+		var requested protocol.ActionCallPayload
+		if err := envelope.DecodePayload(&requested); err != nil {
+			t.Fatal(err)
+		}
+		if string(requested.ArgumentsJSON) != "null" {
+			t.Fatalf("arguments_json = %q, want null", requested.ArgumentsJSON)
+		}
+	}
+	if !observed {
+		t.Fatal("no action.call.requested observed")
+	}
+}
+
 func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	out := make([]protocol.EnvelopeType, len(events))
 	for i, e := range events {

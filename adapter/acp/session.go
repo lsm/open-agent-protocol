@@ -428,7 +428,13 @@ func (s *session) applyToolCall(run *runState, u native.ToolCall) {
 	status := u.Status
 	s.mu.Unlock()
 	if first {
-		_ = s.emit(run, protocol.TypeActionCallRequested, s.toolPayload(t), false)
+		payload := s.toolPayload(t)
+		// ACP may omit rawInput; the envelope must still carry arguments_json,
+		// so a missing input is normalized to the JSON null value.
+		if payload.ArgumentsJSON == nil {
+			payload.ArgumentsJSON = json.RawMessage("null")
+		}
+		_ = s.emit(run, protocol.TypeActionCallRequested, payload, false)
 	}
 	s.applyToolStatus(t, status)
 }
@@ -463,16 +469,22 @@ func (s *session) applyToolUpdate(run *runState, u native.ToolCallUpdate) {
 	if u.Locations != nil {
 		t.locations = rawClone(u.Locations)
 	}
+	started := t.started
 	status := ""
 	if u.Status != nil {
 		status = *u.Status
 	}
 	s.mu.Unlock()
 	if status == "" {
-		_ = s.emit(run, protocol.TypeActionCallProgress, s.toolPayload(t), false)
-	} else {
-		s.applyToolStatus(t, status)
+		// A sparse patch may arrive before execution starts; emitting progress
+		// then would precede action.call.started and carry no progress field.
+		// The patch is retained in the tool state and surfaces when it starts.
+		if started {
+			_ = s.emit(run, protocol.TypeActionCallProgress, s.toolPayload(t), false)
+		}
+		return
 	}
+	s.applyToolStatus(t, status)
 }
 func (s *session) applyToolStatus(t *toolState, status string) {
 	if status == "" || status == "pending" {
