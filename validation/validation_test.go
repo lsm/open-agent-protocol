@@ -298,6 +298,27 @@ func TestPermissionResolutionChoiceMustBeOffered(t *testing.T) {
 	}
 }
 
+// The authoritative resolved event, not just the resolve request, must select
+// an offered choice; otherwise a valid request can be paired with a bogus
+// resolution and still certify.
+func TestPermissionResolutionEventChoiceMustBeOffered(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+		{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"permissions":{"level":"native"}}}},
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"action.permission.requested","id":"perm1","session_id":"s1","run_id":"r1","sequence":2,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","tool_call_id":"t1","title":"T","choices":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}},
+		{` + core + `,"type":"action.permission.resolve.request","id":"pr1","session_id":"s1","run_id":"r1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","choice_id":"a","granted":true}},
+		{` + core + `,"type":"action.permission.resolved","id":"pe1","session_id":"s1","run_id":"r1","sequence":3,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","tool_call_id":"t1","outcome":"resolved","choice_id":"bogus","granted":true}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "permission-event-choice-unoffered"); !got.HasCode(CodeUnmatchedInteraction) {
+		t.Fatalf("want %s for an unoffered resolved-event choice: %+v", CodeUnmatchedInteraction, got.Diagnostics)
+	}
+}
+
 // A state snapshot may not erase a run the trace admitted and has not
 // terminated, which would let a second overlapping admission through.
 func TestStateSnapshotCannotEraseLiveRun(t *testing.T) {

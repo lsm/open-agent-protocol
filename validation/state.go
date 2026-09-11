@@ -854,6 +854,16 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 			s.validateInputAnswers(i, line, e, id, x.questions, p.Answers)
 		}
 	}
+	// A resolved permission event must likewise select a choice the gate
+	// offered; the resolve-request check alone cannot constrain the event that
+	// actually certifies the resolution.
+	if kind == "permission" {
+		var p protocol.PermissionResolvedPayload
+		_ = e.DecodePayload(&p)
+		if p.Outcome == protocol.InteractionResolved && p.ChoiceID != "" && !x.choices[p.ChoiceID] {
+			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/choice_id", "resolution event selects a choice the permission did not offer", "offered choice", p.ChoiceID, string(id))
+		}
+	}
 	x.resolved = true
 }
 func interactionFields(e protocol.Envelope, kind string) (protocol.InteractionID, protocol.ParticipantID, protocol.ParticipantID) {
