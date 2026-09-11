@@ -662,6 +662,16 @@ func TestSelectExtensionRejectsEmptyOptions(t *testing.T) {
 	}
 }
 
+// Structured content requires at least one part; a completed turn with no text
+// or reasoning is represented as empty text, not an empty parts array.
+func TestFallbackContentEmptyUsesEmptyText(t *testing.T) {
+	content := fallbackContent(&runState{})
+	text, ok := content.Text()
+	if !ok || text != "" {
+		t.Fatalf("content = %+v, want empty text", content)
+	}
+}
+
 func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)

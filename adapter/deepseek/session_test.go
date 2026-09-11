@@ -141,6 +141,21 @@ func assistantMessage(turn, step int64, id string, content []native.ContentBlock
 func (f *fakeClient) ev(seq int64, typ string, data any) {
 	f.notify(&native.SessionEventNotification{SessionID: "session", Event: event(seq, typ, data)})
 }
+
+// Structured content requires at least one part; an assistant message with no
+// blocks is represented as empty text, not an empty parts array.
+func TestBlocksContentEmptyUsesEmptyText(t *testing.T) {
+	session, _ := openTest(t)
+	content, err := session.(*Session).blocksContent(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, ok := content.Text()
+	if !ok || text != "" {
+		t.Fatalf("content = %+v, want empty text", content)
+	}
+}
+
 func openTest(t *testing.T) (base.Session, *fakeClient) {
 	t.Helper()
 	f := newFake()

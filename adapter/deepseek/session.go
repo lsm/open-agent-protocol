@@ -800,6 +800,11 @@ func (s *Session) blocksContent(blocks []native.ContentBlock, run *runState) (pr
 	if len(parts) == 1 && parts[0].Type == protocol.ContentText {
 		return protocol.TextContent(parts[0].Text), nil
 	}
+	if len(parts) == 0 {
+		// Structured content requires at least one part; an empty message is
+		// represented as empty text.
+		return protocol.TextContent(""), nil
+	}
 	return protocol.PartsContent(parts), nil
 }
 

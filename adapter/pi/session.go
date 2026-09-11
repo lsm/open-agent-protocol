@@ -1022,6 +1022,11 @@ func fallbackContent(r *runState) protocol.MessageContent {
 	if len(parts) == 1 && parts[0].Type == protocol.ContentText {
 		return protocol.TextContent(parts[0].Text)
 	}
+	if len(parts) == 0 {
+		// Structured content requires at least one part; an empty turn is
+		// represented as empty text.
+		return protocol.TextContent("")
+	}
 	return protocol.PartsContent(parts)
 }
 
