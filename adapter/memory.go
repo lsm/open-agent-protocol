@@ -161,7 +161,7 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	if request.SessionID == "" || len(request.Messages) == 0 {
+	if request.SessionID == "" || len(request.Messages) == 0 || request.Instructions != "" || len(request.ToolChoice) > 0 || len(request.OutputSchema) > 0 {
 		return protocol.MessageSubmitResponse{}, nil, ErrInvalidSubmission
 	}
 	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
@@ -284,9 +284,23 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 			s.mu.Unlock()
 			return ErrInvalidResolution
 		}
+		// The nested request must preserve the stored ownership, and the choice
+		// must be one the scripted gate offered with a matching grant value.
+		if resolution.Permission.RequestedBy != run.requestedBy || resolution.Permission.RespondedBy != run.respondedBy {
+			s.mu.Unlock()
+			return ErrInvalidResolution
+		}
+		if granted, ok := offeredPermissionChoice(resolution.Permission.ChoiceID); !ok || granted != resolution.Permission.Granted {
+			s.mu.Unlock()
+			return ErrInvalidResolution
+		}
 		run.stage = stageInput
 	} else if stage == stageInput {
 		if resolution.Input == nil || resolution.Permission != nil || resolution.Input.InteractionID != run.inputID || resolution.Input.SessionID != s.state.SessionID || resolution.Input.RunID != run.id {
+			s.mu.Unlock()
+			return ErrInvalidResolution
+		}
+		if resolution.Input.RequestedBy != run.requestedBy || resolution.Input.RespondedBy != run.respondedBy {
 			s.mu.Unlock()
 			return ErrInvalidResolution
 		}
@@ -301,6 +315,19 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 		return s.resolvePermission(run, *resolution.Permission)
 	}
 	return s.resolveInput(run, *resolution.Input)
+}
+
+// offeredPermissionChoice reports whether the scripted permission request
+// offered the choice and, if so, the grant value that choice selects.
+func offeredPermissionChoice(choice string) (bool, bool) {
+	switch choice {
+	case "approve":
+		return true, true
+	case "deny":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func (s *memorySession) resolvePermission(run *memoryRun, request protocol.PermissionResolveRequest) error {

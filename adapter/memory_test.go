@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -236,13 +237,13 @@ func TestCompletedCancelReturnsTypedError(t *testing.T) {
 	initial := drainAvailable(stream)
 	var permission protocol.PermissionRequestedPayload
 	_ = initial[3].DecodePayload(&permission)
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, SessionID: "session-1", RunID: runID, Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	middle := drainAvailable(stream)
 	var input protocol.UserInputRequestedPayload
 	_ = middle[3].DecodePayload(&input)
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, SessionID: "session-1", RunID: runID}}); err != nil {
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = drainAvailable(stream)
@@ -262,7 +263,7 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	initial := drainAvailable(stream)
 	var permission protocol.PermissionRequestedPayload
 	_ = initial[3].DecodePayload(&permission)
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, SessionID: "session-1", RunID: runID, Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	middle := drainAvailable(stream)
@@ -272,7 +273,7 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, SessionID: "session-1", RunID: runID}})
+		_ = session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID}})
 	}()
 	go func() { defer wg.Done(); _, _ = session.Cancel(context.Background(), runID) }()
 	wg.Wait()
@@ -374,6 +375,56 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	state, err := session.State(context.Background())
 	if err != nil || state.Status != protocol.SessionIdle || state.CurrentModelID != "" {
 		t.Fatalf("model override reached state: %+v err=%v", state, err)
+	}
+}
+
+// The fixed memory script reads no instructions, tool choice, or output schema,
+// so accepting them would report results from behavior the caller never got.
+func TestSubmitRejectsUnappliedControls(t *testing.T) {
+	session := newTestSession(t, 64)
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
+	for name, request := range map[string]protocol.MessageSubmitRequest{
+		"instructions":  {SessionID: "session-1", Delivery: protocol.DeliveryAuto, Instructions: "be terse", Messages: message},
+		"tool choice":   {SessionID: "session-1", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
+		"output schema": {SessionID: "session-1", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
+	} {
+		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, ErrInvalidSubmission) {
+			t.Fatalf("%s: got %v, want ErrInvalidSubmission", name, err)
+		}
+	}
+}
+
+// A permission resolution must preserve the stored ownership and select a choice
+// the gate actually offered, with a grant value that agrees.
+func TestResolveRejectsInconsistentPermission(t *testing.T) {
+	session := newTestSession(t, 64)
+	runID, stream := submit(t, session)
+	initial := drainAvailable(stream)
+	var permission protocol.PermissionRequestedPayload
+	_ = initial[3].DecodePayload(&permission)
+	valid := protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}
+	for name, mutate := range map[string]func(*protocol.PermissionResolveRequest){
+		"foreign nested requester": func(p *protocol.PermissionResolveRequest) { p.RequestedBy = "intruder" },
+		"foreign nested responder": func(p *protocol.PermissionResolveRequest) { p.RespondedBy = "intruder" },
+		"unoffered choice":         func(p *protocol.PermissionResolveRequest) { p.ChoiceID = "bogus" },
+		"grant disagrees":          func(p *protocol.PermissionResolveRequest) { p.Granted = false },
+	} {
+		request := valid
+		mutate(&request)
+		if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &request}); !errors.Is(err, ErrInvalidResolution) {
+			t.Fatalf("%s: got %v, want ErrInvalidResolution", name, err)
+		}
+	}
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &valid}); err != nil {
+		t.Fatalf("offered resolution rejected: %v", err)
+	}
+	// The input stage enforces the same nested ownership.
+	middle := drainAvailable(stream)
+	var input protocol.UserInputRequestedPayload
+	_ = middle[3].DecodePayload(&input)
+	foreign := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "intruder", RespondedBy: "user", SessionID: "session-1", RunID: runID}
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &foreign}); !errors.Is(err, ErrInvalidResolution) {
+		t.Fatalf("foreign input ownership: got %v, want ErrInvalidResolution", err)
 	}
 }
 
