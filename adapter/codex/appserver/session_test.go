@@ -297,6 +297,41 @@ func TestOpenResumesExplicitNativeThread(t *testing.T) {
 	}
 }
 
+// A consumer editing a published or replayed envelope must not corrupt the
+// retained journal that a later Resume observes.
+func TestPublishedAndReplayedEnvelopesAreDetached(t *testing.T) {
+	client, session, _ := openFake(t)
+	admission, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	client.send(t, native.MethodAgentDelta, native.AgentMessageDeltaNotification{ThreadID: client.threadID, TurnID: client.turnID, ItemID: "message-native", Delta: "hi"})
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	prefix := drainClosed(t, stream)
+	if len(prefix) < 3 {
+		t.Fatalf("prefix=%v", prefix)
+	}
+	target := prefix[len(prefix)-2]
+	originalPayload := append([]byte(nil), target.Payload...)
+	originalSequence := *target.Sequence
+	copy(target.Payload, []byte(`{"tampered":true}`))
+	*target.Sequence = originalSequence + 100
+	_, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: admission.RunID, AfterSequence: originalSequence - 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := false
+	for _, envelope := range drainClosed(t, replay) {
+		if envelope.Sequence != nil && *envelope.Sequence == originalSequence {
+			matched = true
+			if string(envelope.Payload) != string(originalPayload) {
+				t.Fatalf("replayed payload aliased: got %s want %s", envelope.Payload, originalPayload)
+			}
+		}
+	}
+	if !matched {
+		t.Fatalf("sequence %d not replayed", originalSequence)
+	}
+}
+
 func TestLiveStreamOverflowReportsErrorAndResumes(t *testing.T) {
 	client, session, _ := openFake(t)
 	admission, stream := submitFake(t, session)

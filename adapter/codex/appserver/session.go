@@ -450,7 +450,7 @@ func (session *session) Resume(ctx context.Context, request adapter.ResumeReques
 		recovery.ReplayedFrom = *suffix[0].Sequence
 		recovery.ReplayedThrough = *suffix[len(suffix)-1].Sequence
 		for _, envelope := range suffix {
-			stream <- adapter.Result{Envelope: envelope}
+			stream <- adapter.Result{Envelope: cloneEnvelope(envelope)}
 		}
 	}
 	if run.terminal {
@@ -953,6 +953,25 @@ func errorString(err error) string {
 	return err.Error()
 }
 
+// cloneEnvelope detaches an envelope handed to a consumer from the retained
+// journal: the payload slice and the sequence/timestamp pointers must not be
+// shared, or a consumer's edit would corrupt replayed history.
+func cloneEnvelope(envelope protocol.Envelope) protocol.Envelope {
+	cloned := envelope
+	if envelope.Payload != nil {
+		cloned.Payload = append(json.RawMessage(nil), envelope.Payload...)
+	}
+	if envelope.Sequence != nil {
+		sequence := *envelope.Sequence
+		cloned.Sequence = &sequence
+	}
+	if envelope.TimestampMS != nil {
+		timestamp := *envelope.TimestampMS
+		cloned.TimestampMS = &timestamp
+	}
+	return cloned
+}
+
 func (session *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {
 	session.emitMu.Lock()
 	defer session.emitMu.Unlock()
@@ -1008,7 +1027,7 @@ func (session *session) emit(run *runState, typ protocol.EnvelopeType, payload a
 			continue
 		}
 		if len(subscriber.stream) < cap(subscriber.stream)-1 {
-			subscriber.stream <- adapter.Result{Envelope: envelope}
+			subscriber.stream <- adapter.Result{Envelope: cloneEnvelope(envelope)}
 			if terminal {
 				subscriber.detached = true
 				close(subscriber.stream)
