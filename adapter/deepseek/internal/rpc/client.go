@@ -171,6 +171,14 @@ func (client *Client) Notifications() <-chan NotificationMessage {
 	return client.notifications
 }
 func (client *Client) Inbound() <-chan InboundMessage {
+	// Once the ordered stream is active the channel is stable. Taking the route
+	// lock here would deadlock against the reader: a response routed under that
+	// lock blocks in barrier() until an inbound consumer acknowledges it, so a
+	// drain loop that reacquires the channel would wait on the goroutine it
+	// unblocks.
+	if client.routeMode.Load() == 2 {
+		return client.inbound
+	}
 	client.routeMu.Lock()
 	defer client.routeMu.Unlock()
 	if client.routeMode.Load() == 0 {

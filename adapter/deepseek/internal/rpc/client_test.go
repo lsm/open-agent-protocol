@@ -52,6 +52,48 @@ func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
 	}
 }
 
+// A teardown drain reacquires the inbound stream. It must not need the route
+// lock, which the reader holds while it waits for that same consumer to
+// acknowledge a response barrier.
+func TestClientInboundDoesNotBlockWhileReaderWaitsOnBarrier(t *testing.T) {
+	reader, remote := io.Pipe()
+	defer remote.Close()
+	client := NewClient(reader, io.Discard, ClientOptions{})
+	in := client.Inbound()
+	started := make(chan error, 1)
+	done := make(chan error, 1)
+	go func() {
+		var result struct {
+			MessageID string `json:"messageId"`
+		}
+		done <- client.CallStarted(context.Background(), "session/prompt", map[string]string{"sessionId": "s"}, &result, started)
+	}()
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"messageId":"m"}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Consume the barrier without acknowledging it so the reader stays parked in
+	// route(), holding the route lock.
+	select {
+	case message := <-in:
+		if message.Barrier == nil {
+			t.Fatalf("expected response barrier, got %#v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier delivered")
+	}
+	acquired := make(chan struct{})
+	go func() { _ = client.Inbound(); close(acquired) }()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("Inbound blocked while the reader held the route lock")
+	}
+	client.Close()
+}
+
 func TestClientRejectsWriteAfterClose(t *testing.T) {
 	reader, remote := io.Pipe()
 	defer remote.Close()
