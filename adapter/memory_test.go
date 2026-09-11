@@ -362,6 +362,21 @@ func TestSubmitRejectsInvalidRequestBeforeAdmission(t *testing.T) {
 	}
 }
 
+// The deterministic memory script runs no model and Probe advertises no model
+// selection, so a caller ModelID must be refused rather than echoed as the
+// effective model on the state, run, and admission.
+func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+	session := newTestSession(t, 64)
+	request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: "another-model", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}
+	if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, ErrUnsupportedInput) {
+		t.Fatalf("got %v, want ErrUnsupportedInput", err)
+	}
+	state, err := session.State(context.Background())
+	if err != nil || state.Status != protocol.SessionIdle || state.CurrentModelID != "" {
+		t.Fatalf("model override reached state: %+v err=%v", state, err)
+	}
+}
+
 func TestCloseRejectsActiveRun(t *testing.T) {
 	session := newTestSession(t, 64)
 	_, stream := submit(t, session)

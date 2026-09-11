@@ -167,6 +167,12 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", ErrInvalidSubmission, request.Delivery)
 	}
+	// The fixed deterministic script runs no model and Probe advertises no model
+	// selection, so echoing a caller ModelID would attribute the run to a model it
+	// never used.
+	if request.ModelID != "" {
+		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: the memory adapter selects no model", ErrUnsupportedInput)
+	}
 
 	s.mu.Lock()
 	if s.closed {
@@ -195,7 +201,6 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	s.runs[run.id] = run
 	s.state.Status = protocol.SessionRunning
 	s.state.ActiveRunID = run.id
-	s.state.CurrentModelID = request.ModelID
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	s.mu.Unlock()
 
