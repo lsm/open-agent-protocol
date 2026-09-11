@@ -190,6 +190,39 @@ func TestResponseCorrelationCorrections(t *testing.T) {
 			t.Fatalf("offered selection was rejected: %+v", got.Diagnostics)
 		}
 	})
+	t.Run("state request envelope and payload scope must agree", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"session.state.request","id":"state","session_id":"s1","payload":{"session_id":"s2"}},
+			{` + core + `,"type":"session.state.response","id":"stater","in_reply_to":"state","session_id":"s2","payload":{"session_id":"s2","status":"idle"}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "state-request-scope"); !got.HasCode(CodeScopeMismatch) {
+			t.Fatalf("want %s: %+v", CodeScopeMismatch, got.Diagnostics)
+		}
+	})
+	t.Run("error response must answer within the request scope", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"session.open.request","id":"open","session_id":"s1","payload":{"session_id":"s1"}},
+			{` + core + `,"type":"error.response","id":"err","in_reply_to":"open","session_id":"s2","payload":{"error":{"code":"rejected","message":"no"}}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "error-response-scope"); !got.HasCode(CodeScopeMismatch) {
+			t.Fatalf("want %s: %+v", CodeScopeMismatch, got.Diagnostics)
+		}
+	})
+	t.Run("permission envelope and payload tool_call_id must agree", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+			{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{}}},
+			{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+			{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+			{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+			{` + core + `,"type":"action.call.requested","id":"call1","session_id":"s1","run_id":"r1","sequence":2,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","tool_call_id":"t1","requested_by":"agent","execution_owner":"test","name":"run","arguments_json":{}}},
+			{` + core + `,"type":"action.permission.requested","id":"perm1","session_id":"s1","run_id":"r1","sequence":3,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","tool_call_id":"t2","title":"T","choices":[{"id":"a","label":"A"}]}},
+			{` + core + `,"type":"run.failed","id":"fail","session_id":"s1","run_id":"r1","sequence":4,"capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","error":{"code":"x","message":"y"}}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "permission-tool-scope"); !got.HasCode(CodeScopeMismatch) {
+			t.Fatalf("want %s: %+v", CodeScopeMismatch, got.Diagnostics)
+		}
+	})
 }
 
 func TestRunStatusTransitions(t *testing.T) {

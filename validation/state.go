@@ -87,6 +87,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	s.ids[e.ID] = i
 	if isRequest(e.Type) {
 		session, run := requestScope(e)
+		// A request that declares scope in both its envelope and payload must
+		// agree; otherwise its stored correlation scope is self-contradictory.
+		s.checkScope(i, line, e, session, run)
 		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run, interaction: envelopeInteraction(e)}
 	}
 	duplicateResponse := false
@@ -312,6 +315,14 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "successful response must repeat the request capability revision", req.capabilityRevision, string(e.CapabilityRevision), string(e.InReplyTo))
 	}
 	if e.Type == protocol.TypeErrorResponse {
+		// An error still answers a scoped request: any session or run it names
+		// must belong to that request's scope.
+		if req.session != "" && e.SessionID != "" && e.SessionID != req.session {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/session_id", "error response session does not match the request scope", string(req.session), string(e.SessionID), string(e.InReplyTo))
+		}
+		if req.run != "" && e.RunID != "" && e.RunID != req.run {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/run_id", "error response run does not match the request scope", string(req.run), string(e.RunID), string(e.InReplyTo))
+		}
 		return true
 	}
 	// A scoped response must answer within the request's scope: an internally
@@ -675,6 +686,11 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 		requested = p.RequestedBy
 		responded = p.RespondedBy
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
+		// The portable tool binding must not contradict itself between the
+		// envelope and the payload, as is already enforced for action-call events.
+		if e.ToolCallID != p.ToolCallID {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/tool_call_id", "envelope and payload tool_call_id differ", string(e.ToolCallID), string(p.ToolCallID))
+		}
 	} else {
 		var p protocol.UserInputRequestedPayload
 		_ = e.DecodePayload(&p)
