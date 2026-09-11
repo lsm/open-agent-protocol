@@ -511,6 +511,11 @@ func (s *Session) endTool(run *runState, payload *native.ToolCompletePayload) {
 	// free-form result without a discriminator, so every completion projects
 	// as completed (recorded as a ledger mismatch).
 	p.Result = payload.Result
+	// The pinned shape allows result to be omitted; action.call.completed
+	// requires it, so a missing value is normalized to JSON null.
+	if p.Result == nil {
+		p.Result = json.RawMessage("null")
+	}
 	_, _ = s.emitEnvelope(run, protocol.TypeActionCallCompleted, p, false, t.started)
 }
 

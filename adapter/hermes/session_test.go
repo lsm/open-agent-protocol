@@ -317,6 +317,36 @@ func TestAdmissionBothWireOrdersReduceIdentically(t *testing.T) {
 	}
 }
 
+// The pinned tool.complete shape allows result to be omitted; the completion
+// event must still carry the schema-required result, normalized to JSON null.
+func TestToolCompletionWithoutResultCarriesNull(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventToolStart, 2, `{"tool_id":"t1","name":"read","context":"read"}`)
+	f.event(native.EventToolComplete, 3, `{"tool_id":"t1","name":"read"}`)
+	f.event(native.EventMessageComplete, 4, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	observed := false
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeActionCallCompleted {
+			continue
+		}
+		observed = true
+		var completed protocol.ActionCallPayload
+		if err := envelope.DecodePayload(&completed); err != nil {
+			t.Fatal(err)
+		}
+		if string(completed.Result) != "null" {
+			t.Fatalf("result = %q, want null", completed.Result)
+		}
+	}
+	if !observed {
+		t.Fatal("no action.call.completed observed")
+	}
+	validateWithCapabilities(t, got.response, events)
+}
+
 func TestCompletedRunMapsDeltasToolsAndUsage(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)

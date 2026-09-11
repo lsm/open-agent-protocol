@@ -687,6 +687,31 @@ func TestUserInputRoundTrip(t *testing.T) {
 	_ = drainClosed(t, stream)
 }
 
+func TestUserInputEmptyOptionsSurfacesAsText(t *testing.T) {
+	// OAP choice questions require at least one option; a non-nil but empty
+	// Codex options array must be treated as a text question.
+	client, session, _ := openFake(t)
+	_, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	_ = nextEvent(t, stream)
+	empty := []native.UserInputOption{}
+	_, _ = client.request(t, 13, native.MethodUserInput, native.UserInputRequestParams{
+		ThreadID: client.threadID, TurnID: client.turnID, ItemID: "tool-item", IsBlocking: true,
+		Questions: []native.UserInputQuestion{{ID: "choice", Header: "Choice", Question: "Choose", Options: &empty}},
+	})
+	requested := nextEvent(t, stream)
+	_ = nextEvent(t, stream)
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Questions[0].Kind != protocol.InputText || len(payload.Questions[0].Options) != 0 {
+		t.Fatalf("question = %+v", payload.Questions[0])
+	}
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	_ = drainClosed(t, stream)
+}
+
 func TestUserInputIsOtherDoesNotAdvertiseUnsatisfiableOption(t *testing.T) {
 	// OAP's answer oneOf allows either selected options or text, never both, so
 	// Codex's isOther custom-answer capability cannot be represented. It must not

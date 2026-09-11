@@ -567,7 +567,7 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 			seenQuestions[question.ID] = struct{}{}
 			kind := protocol.InputText
 			var options []protocol.InputOption
-			if question.Options != nil {
+			if question.Options != nil && len(*question.Options) > 0 {
 				kind = protocol.InputSingleChoice
 				labels := make(map[string]string, len(*question.Options))
 				options = make([]protocol.InputOption, 0, len(*question.Options))
