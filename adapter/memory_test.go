@@ -289,6 +289,75 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	}
 }
 
+// A user-input request carries the run's tool binding in its payload; the
+// envelope must repeat it, or the validator rejects the trace as a
+// scope_mismatch between the envelope and payload.
+func TestUserInputRequestEnvelopeCarriesToolBinding(t *testing.T) {
+	session := newTestSession(t, 64)
+	runID, stream := submit(t, session)
+	events := drainAvailable(stream)
+	var permission protocol.PermissionRequestedPayload
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			_ = envelope.DecodePayload(&permission)
+		}
+	}
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, envelope := range drainAvailable(stream) {
+		if envelope.Type != protocol.TypeUserInputRequested {
+			continue
+		}
+		found = true
+		var input protocol.UserInputRequestedPayload
+		if err := envelope.DecodePayload(&input); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.ToolCallID != input.ToolCallID || envelope.ToolCallID == "" {
+			t.Fatalf("envelope tool_call_id = %q, payload = %q", envelope.ToolCallID, input.ToolCallID)
+		}
+	}
+	if !found {
+		t.Fatal("no user-input request observed")
+	}
+}
+
+// A consumer that rewrites a received payload must not corrupt the retained
+// replay journal.
+func TestPublishedPayloadDoesNotAliasTheJournal(t *testing.T) {
+	session := newTestSession(t, 64)
+	runID, stream := submit(t, session)
+	events := drainAvailable(stream)
+	index := -1
+	for i := range events {
+		if events[i].Type == protocol.TypeActionPermissionRequested {
+			index = i
+			break
+		}
+	}
+	if index == -1 {
+		t.Fatal("no permission request event")
+	}
+	original := append([]byte(nil), events[index].Payload...)
+	copy(events[index].Payload, []byte(`{"tampered":true}`))
+	_, replay, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sequence := *events[index].Sequence
+	for _, envelope := range drainAvailable(replay) {
+		if envelope.Sequence != nil && *envelope.Sequence == sequence {
+			if string(envelope.Payload) != string(original) {
+				t.Fatalf("published payload aliased the journal: got %s want %s", envelope.Payload, original)
+			}
+			return
+		}
+	}
+	t.Fatalf("sequence %d not replayed", sequence)
+}
+
 func TestResumeRetainedSuffix(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, original := submit(t, session)

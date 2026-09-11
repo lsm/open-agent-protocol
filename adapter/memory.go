@@ -590,7 +590,7 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 	envelope.RunID = run.id
 	envelope.CapabilityRevision = CapabilityRevision
 	switch typ {
-	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested:
+	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeUserInputRequested:
 		envelope.ToolCallID = run.toolCallID
 	}
 	s.journal = append(s.journal, envelope)
@@ -622,7 +622,11 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 	s.mu.Unlock()
 
 	for _, subscriber := range subscribers {
-		subscriber <- Result{Envelope: envelope}
+		// Deliver a copy with a detached payload: the retained journal must not
+		// be mutable through a published envelope.
+		published := envelope
+		published.Payload = append(json.RawMessage(nil), envelope.Payload...)
+		subscriber <- Result{Envelope: published}
 	}
 	if terminal {
 		for _, subscriber := range subscribers {
