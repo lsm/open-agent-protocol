@@ -213,6 +213,11 @@ func submitText(req protocol.MessageSubmitRequest) (string, error) {
 	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return "", base.ErrInvalidSubmission
 	}
+	if req.ModelID != "" {
+		// The native user frame carries no model override, so a per-submit model
+		// cannot be applied; accepting it would silently run a different model.
+		return "", fmt.Errorf("%w: Claude applies a model when the process is launched", base.ErrUnsupportedInput)
+	}
 	message := req.Messages[0]
 	if message.Role != protocol.RoleUser {
 		return "", base.ErrInvalidSubmission

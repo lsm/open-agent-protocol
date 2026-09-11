@@ -157,6 +157,20 @@ func openTest(t *testing.T) (base.Session, *fakeClient) {
 func request() protocol.MessageSubmitRequest {
 	return protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
 }
+
+// The native prompt carries no model, so a per-submit override cannot be
+// applied; it must be refused rather than silently running the session model.
+func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+	s, _ := openTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req := request()
+	req.ModelID = "deepseek-other"
+	if _, _, err := s.Submit(ctx, req); !errors.Is(err, base.ErrUnsupportedInput) {
+		t.Fatalf("got %v, want ErrUnsupportedInput", err)
+	}
+}
+
 func submitAsync(s base.Session) <-chan struct {
 	r   protocol.MessageSubmitResponse
 	st  base.EventStream

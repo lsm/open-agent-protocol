@@ -147,6 +147,12 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// The participant is the recorded responder for every permission gate, so an
+	// empty identity would emit schema-invalid events and admit no valid
+	// resolution. Reject before starting a process.
+	if req.Participant.ID == "" {
+		return nil, base.ErrInvalidParticipant
+	}
 	client, initialized, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err

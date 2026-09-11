@@ -172,6 +172,21 @@ func openWire(t *testing.T) (base.Adapter, base.Session, *wirePeer) {
 	return implementation, session, peer
 }
 
+// The native user frame carries no model override, so a per-submit model cannot
+// be applied; it must be refused rather than silently running the session model.
+func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+	_, session, _ := openWire(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "claude-other",
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	})
+	if !errors.Is(err, base.ErrUnsupportedInput) {
+		t.Fatalf("got %v, want ErrUnsupportedInput", err)
+	}
+}
+
 // submit starts a submit in the background; the caller scripts the wire and
 // then awaits the outcome.
 func submit(session base.Session) chan submitOutcome {

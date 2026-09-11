@@ -138,6 +138,27 @@ func openTestSession(t *testing.T, capacity int, sessionID protocol.SessionID) (
 	}
 	return s, f
 }
+
+// The participant is the recorded responder for every permission gate; an empty
+// identity would emit schema-invalid events that no valid resolution could
+// satisfy, so the open must be refused before any process is started.
+func TestOpenRejectsEmptyParticipant(t *testing.T) {
+	f := newFake()
+	started := 0
+	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, rpc.InitializeResponse, error) {
+		started++
+		return f, rpc.InitializeResponse{ProtocolVersion: 1, AgentCapabilities: rpc.AgentCapabilities{}}, nil
+	}), WorkingDirectory: "/workspace", Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Open(context.Background(), base.OpenRequest{SessionID: "session"}); !errors.Is(err, base.ErrInvalidParticipant) {
+		t.Fatalf("got %v, want ErrInvalidParticipant", err)
+	}
+	if started != 0 {
+		t.Fatalf("factory started for an invalid request: %d", started)
+	}
+}
 func submit(t *testing.T, s base.Session) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
 	r, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})

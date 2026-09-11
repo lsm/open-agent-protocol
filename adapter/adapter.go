@@ -93,6 +93,7 @@ func (g *ReplayGap) Error() string { return "adapter: requested replay cursor is
 var (
 	ErrSessionClosed       = errors.New("adapter: session closed")
 	ErrInvalidParticipant  = errors.New("adapter: participant identity is required")
+	ErrUnsupportedInput    = errors.New("adapter: unsupported input")
 	ErrRunActive           = errors.New("adapter: a run is already active")
 	ErrInvalidSubmission   = errors.New("adapter: invalid submission")
 	ErrRunNotFound         = errors.New("adapter: run not found")

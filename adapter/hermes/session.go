@@ -196,6 +196,12 @@ func submitText(req protocol.MessageSubmitRequest) (string, error) {
 	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return "", base.ErrInvalidSubmission
 	}
+	if req.ModelID != "" {
+		// prompt.submit carries only the session id and text, so a per-submit
+		// model cannot be applied; rejecting beats silently running the
+		// preconfigured model.
+		return "", fmt.Errorf("%w: Hermes fixes a model at session creation", base.ErrUnsupportedInput)
+	}
 	message := req.Messages[0]
 	if message.Role != protocol.RoleUser {
 		return "", base.ErrInvalidSubmission

@@ -181,6 +181,11 @@ func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) ([]native.Cont
 	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return nil, nil, base.ErrInvalidSubmission
 	}
+	if req.ModelID != "" {
+		// The native prompt carries no model, so a per-submit override cannot be
+		// applied; reject it instead of running the session model silently.
+		return nil, nil, fmt.Errorf("%w: DeepSeek applies a model when the runtime is initialized", base.ErrUnsupportedInput)
+	}
 	var blocks []native.ContentBlock
 	ids := make([]protocol.MessageID, len(req.Messages))
 	for i, m := range req.Messages {

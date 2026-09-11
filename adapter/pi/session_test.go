@@ -119,6 +119,27 @@ func openTest(t *testing.T, client *fakeClient, capacity int) *Session {
 	}
 	return got.(*Session)
 }
+
+// Extension dialogs are emitted with the participant as the responder; an empty
+// identity would produce schema-invalid events that no valid resolution could
+// satisfy, so the open must be refused before any process is started.
+func TestOpenRejectsEmptyParticipant(t *testing.T) {
+	started := 0
+	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
+		started++
+		return newFakeClient(), validState(false), nil
+	}), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Open(context.Background(), base.OpenRequest{SessionID: "session"}); !errors.Is(err, base.ErrInvalidParticipant) {
+		t.Fatalf("got %v, want ErrInvalidParticipant", err)
+	}
+	if started != 0 {
+		t.Fatalf("factory started for an invalid request: %d", started)
+	}
+}
+
 func submitTest(t *testing.T, s *Session) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
 	s.client.(*fakeClient).mu.Lock()
@@ -176,7 +197,7 @@ func TestProductionProcessForcesExtensionsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Open(context.Background(), base.OpenRequest{}); err == nil {
+	if _, err := a.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}}); err == nil {
 		t.Fatal("open unexpectedly succeeded")
 	}
 	if len(got.Args) != 2 || got.Args[0] != "--no-extensions" || got.Args[1] != "--no-extensions" {
@@ -199,7 +220,7 @@ func TestProductionProcessKeepsEmptyEnvironmentNonNil(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Open(context.Background(), base.OpenRequest{}); err == nil {
+	if _, err := a.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}}); err == nil {
 		t.Fatal("open unexpectedly succeeded")
 	}
 	if got.Env == nil || len(got.Env) != 0 {
@@ -711,7 +732,7 @@ func TestInitialStreamingRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Open(context.Background(), base.OpenRequest{}); !errors.Is(err, ErrNativeProtocol) {
+	if _, err := a.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}}); !errors.Is(err, ErrNativeProtocol) {
 		t.Fatalf("open err=%v", err)
 	}
 	client.mu.Lock()

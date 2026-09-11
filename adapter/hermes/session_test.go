@@ -191,6 +191,20 @@ func request() protocol.MessageSubmitRequest {
 	return protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
 }
 
+// prompt.submit carries only the session id and text, so a per-submit model
+// cannot be applied; it must be refused rather than silently running the
+// preconfigured model.
+func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+	s, _ := openTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req := request()
+	req.ModelID = "hermes-other"
+	if _, _, err := s.Submit(ctx, req); !errors.Is(err, base.ErrUnsupportedInput) {
+		t.Fatalf("got %v, want ErrUnsupportedInput", err)
+	}
+}
+
 type outcome struct {
 	response protocol.MessageSubmitResponse
 	stream   base.EventStream
