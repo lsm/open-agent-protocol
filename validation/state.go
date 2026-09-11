@@ -91,7 +91,12 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	if isResponse(e.Type) {
 		duplicateResponse = !s.response(i, line, e)
 	}
-	if e.CapabilityRevision != "" && s.currentCapability != "" && string(e.CapabilityRevision) != s.currentCapability && e.Type != protocol.TypeProtocolInitializeRequest && e.Type != protocol.TypeCapabilitiesRequest && e.Type != protocol.TypeErrorResponse {
+	// capabilities.updated is the one operation that legitimately carries a
+	// revision different from the active one: it introduces the next revision.
+	// Its own case below validates continuity and novelty, so the generic
+	// stale check must not reject it here (a transition could otherwise never
+	// be accepted).
+	if e.CapabilityRevision != "" && s.currentCapability != "" && string(e.CapabilityRevision) != s.currentCapability && e.Type != protocol.TypeProtocolInitializeRequest && e.Type != protocol.TypeCapabilitiesRequest && e.Type != protocol.TypeCapabilitiesUpdated && e.Type != protocol.TypeErrorResponse {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "operation uses a stale capability revision", s.currentCapability, e.CapabilityRevision)
 	}
 	if duplicateResponse {

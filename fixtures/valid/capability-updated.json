@@ -1,0 +1,41 @@
+[
+  {
+    "id": "capq",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "v1",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "tools": {
+          "level": "unavailable"
+        }
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "v2",
+    "id": "capu",
+    "payload": {
+      "previous_revision": "v1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "sequence": 1,
+    "type": "capabilities.updated",
+    "version": "0.1"
+  }
+]
