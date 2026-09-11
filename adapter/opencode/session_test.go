@@ -185,6 +185,24 @@ func (f *fakeClient) emit(t *testing.T, seq int64, typ native.Type, payload any)
 	f.events <- native.Event{ID: native.EventID(fmt.Sprintf("evt_fake%04d", seq)), Type: typ, Durable: &native.DurablePosition{AggregateID: string(f.session), Seq: seq, Version: 1}, Data: data}
 }
 
+// Explicit queue/steer delivery is rejected by submitInput, so the descriptor
+// must not advertise it as available.
+func TestProbeReportsExplicitDeliveryUnavailable(t *testing.T) {
+	a, err := New(Config{Endpoint: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := a.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, feature := range []string{"session.message.delivery.queue", "session.message.delivery.steer"} {
+		if got := descriptor.Capabilities.Features[feature].Level; got != protocol.SupportUnavailable {
+			t.Fatalf("%s = %s, want unavailable", feature, got)
+		}
+	}
+}
+
 func openTest(t *testing.T, client *fakeClient, capacity int) (base.Session, *fakeSubscription) {
 	t.Helper()
 	subscription := client.subscription
