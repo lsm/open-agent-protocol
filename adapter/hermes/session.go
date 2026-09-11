@@ -69,10 +69,10 @@ type runState struct {
 	// deferred holds an absorbing settlement that arrived while a gate
 	// resolution was in flight; Resolve flushes it after publishing the
 	// canonical resolution event.
-	deferred *native.MessageCompletePayload
-	subscribers   []chan base.Result
-	startResult   chan error
-	startOnce     sync.Once
+	deferred    *native.MessageCompletePayload
+	subscribers []chan base.Result
+	startResult chan error
+	startOnce   sync.Once
 }
 
 type toolState struct {
