@@ -62,11 +62,11 @@ type state struct {
 	capabilitiesStale bool
 	initialized       bool
 	features          map[string]protocol.SupportLevel
-	recovery          *recoveryExpectation
+	recoveries        map[protocol.SessionID]*recoveryExpectation
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, features: map[string]protocol.SupportLevel{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -176,26 +176,26 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 					recovery.cursorSet = true
 				}
 			}
-			s.recovery = recovery
+			s.recoveries[p.SessionID] = recovery
 		}
 		s.sessions[p.SessionID] = &sessionTrack{status: p.Status}
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
-		if s.recovery != nil && p.SessionID == s.recovery.session {
-			s.recovery.stateSeen = true
-			if s.recovery.gap && p.Recovery == nil {
+		if rec := s.recoveries[p.SessionID]; rec != nil {
+			rec.stateSeen = true
+			if rec.gap && p.Recovery == nil {
 				s.add(CodeUndeclaredReplayGap, i, line, e, "/payload/recovery", "authoritative state after a replay gap must retain recovery metadata")
 			}
-			if !s.recovery.gap && p.ActiveRunID != "" {
-				if s.recovery.run != "" && p.ActiveRunID != s.recovery.run {
-					s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "recovered state names a different active run", string(s.recovery.run), string(p.ActiveRunID))
+			if !rec.gap && p.ActiveRunID != "" {
+				if rec.run != "" && p.ActiveRunID != rec.run {
+					s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "recovered state names a different active run", string(rec.run), string(p.ActiveRunID))
 				}
 				run := s.runs[p.ActiveRunID]
 				if run == nil {
 					next := uint64(1)
-					if s.recovery.cursorSet {
-						next = s.recovery.cursor + 1
+					if rec.cursorSet {
+						next = rec.cursor + 1
 					}
 					s.runs[p.ActiveRunID] = &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: next, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]string{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
 				}
@@ -508,14 +508,14 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	}
 	r.lastIndex = i
 	r.lastLine = line
-	if s.recovery != nil && !s.recovery.gap && !s.recovery.firstReplaySeen && e.RunID == s.recovery.run {
-		s.recovery.firstReplaySeen = true
-		if s.recovery.cursorSet && (e.Sequence == nil || *e.Sequence != s.recovery.cursor+1) {
+	if rec := s.recoveries[r.session]; rec != nil && !rec.gap && !rec.firstReplaySeen && e.RunID == rec.run {
+		rec.firstReplaySeen = true
+		if rec.cursorSet && (e.Sequence == nil || *e.Sequence != rec.cursor+1) {
 			actual := "missing"
 			if e.Sequence != nil {
 				actual = uintString(*e.Sequence)
 			}
-			s.addExpected(CodeSequenceGap, i, line, e, "/sequence", "retained replay must begin immediately after the declared cursor", uintString(s.recovery.cursor+1), actual)
+			s.addExpected(CodeSequenceGap, i, line, e, "/sequence", "retained replay must begin immediately after the declared cursor", uintString(rec.cursor+1), actual)
 		}
 	}
 	if e.SessionID != r.session {
@@ -788,9 +788,11 @@ func (s *state) feature(i, line int, e protocol.Envelope, name string) {
 	s.add(CodeUnavailableCapability, i, line, e, "/type", "optional feature was not affirmatively advertised")
 }
 func (s *state) close(index int) {
-	if s.recovery != nil && s.recovery.gap && !s.recovery.stateSeen {
-		e := protocol.Envelope{Type: protocol.TypeSessionStateResponse, SessionID: s.recovery.session}
-		s.add(CodeUndeclaredReplayGap, s.recovery.openIndex, 0, e, "", "replay gap lacks authoritative session state")
+	for _, rec := range s.recoveries {
+		if rec.gap && !rec.stateSeen {
+			e := protocol.Envelope{Type: protocol.TypeSessionStateResponse, SessionID: rec.session}
+			s.add(CodeUndeclaredReplayGap, rec.openIndex, 0, e, "", "replay gap lacks authoritative session state")
+		}
 	}
 	for id, req := range s.requests {
 		if !req.responded {

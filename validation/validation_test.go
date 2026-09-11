@@ -225,6 +225,25 @@ func TestResponseCorrelationCorrections(t *testing.T) {
 	})
 }
 
+// Two recovered sessions may be opened before either reconciliation completes.
+// Each open declares its own replay-gap expectation, so providing authoritative
+// state for only one of them must still diagnose the other.
+func TestRecoveryExpectationsArePerSession(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"session.open.request","id":"o1","payload":{"session_id":"s1","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"5","reason":"replay_gap"}}},
+		{` + core + `,"type":"session.open.response","id":"o1r","in_reply_to":"o1","session_id":"s1","payload":{"session_id":"s1","status":"idle","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"5","reason":"replay_gap"}}},
+		{` + core + `,"type":"session.open.request","id":"o2","payload":{"session_id":"s2","recovery":{"recovered":true,"previous_run_id":"r2","resume_cursor":"9","reason":"replay_gap"}}},
+		{` + core + `,"type":"session.open.response","id":"o2r","in_reply_to":"o2","session_id":"s2","payload":{"session_id":"s2","status":"idle","recovery":{"recovered":true,"previous_run_id":"r2","resume_cursor":"9","reason":"replay_gap"}}},
+		{` + core + `,"type":"session.state.request","id":"st2","session_id":"s2","payload":{"session_id":"s2"}},
+		{` + core + `,"type":"session.state.response","id":"st2r","in_reply_to":"st2","session_id":"s2","payload":{"session_id":"s2","status":"idle","transcript_cursor":"9","recovery":{"recovered":true,"previous_run_id":"r2","resume_cursor":"9","reason":"replay_gap"}}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "recovery-per-session"); !got.HasCode(CodeUndeclaredReplayGap) {
+		t.Fatalf("want %s for the state-less recovered session: %+v", CodeUndeclaredReplayGap, got.Diagnostics)
+	}
+}
+
 func TestRunStatusTransitions(t *testing.T) {
 	valid := map[protocol.RunStatus][]protocol.RunStatus{
 		protocol.RunQueued:          {protocol.RunRunning, protocol.RunCancelling},
