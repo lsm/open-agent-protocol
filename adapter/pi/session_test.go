@@ -177,6 +177,25 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	}
 }
 
+// A per-submit override is rejected, so the adapter must attribute the run to
+// the native get_state model instead of clearing it with the empty request value.
+func TestRunAttributesNativeModel(t *testing.T) {
+	client := newFakeClient()
+	client.state.Model = json.RawMessage(`{"id":"claude-x","name":"Claude X","provider":"anthropic"}`)
+	s := openTest(t, client, 32)
+	response, _ := submitTest(t, s)
+	if response.ModelID != "anthropic/claude-x" {
+		t.Fatalf("admission model = %q, want %q", response.ModelID, "anthropic/claude-x")
+	}
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CurrentModelID != "anthropic/claude-x" {
+		t.Fatalf("state model = %q, want %q", state.CurrentModelID, "anthropic/claude-x")
+	}
+}
+
 func eventTypes(events []protocol.Envelope) []protocol.EnvelopeType {
 	out := make([]protocol.EnvelopeType, len(events))
 	for i, e := range events {

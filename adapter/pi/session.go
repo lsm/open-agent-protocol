@@ -250,7 +250,10 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
 	s.active, s.runs[run.id] = run, run
-	s.state.Status, s.state.ActiveRunID, s.state.CurrentModelID, s.state.UpdatedAtMS = protocol.SessionRunning, run.id, req.ModelID, s.clock.Now().UnixMilli()
+	// The native get_state model was recorded at open; a per-submit override was
+	// rejected by nativePrompt, so retain it instead of clearing the field.
+	model := s.state.CurrentModelID
+	s.state.Status, s.state.ActiveRunID, s.state.UpdatedAtMS = protocol.SessionRunning, run.id, s.clock.Now().UnixMilli()
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
 	command := native.Command{Type: native.CommandPrompt, Message: &text, Images: images, StreamingBehavior: native.StreamingSteer}
@@ -277,7 +280,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		// reserved run alive for reducer/transport authority and never misreport it.
 		return protocol.MessageSubmitResponse{}, stream, ctx.Err()
 	}
-	response := protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, MessageIDs: messageIDs}
+	response := protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: model, MessageIDs: messageIDs}
 	return response, stream, nil
 }
 
@@ -336,6 +339,27 @@ func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []nat
 		return "", nil, nil, fmt.Errorf("%w: slash-command input", ErrUnsupportedInput)
 	}
 	return text, images, ids, nil
+}
+
+// nativeModelID projects Pi's get_state model object onto OAP's opaque model
+// identity: provider/id when both are present, else id, else name.
+func nativeModelID(raw json.RawMessage) string {
+	var ref struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Provider string `json:"provider"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &ref) != nil {
+		return ""
+	}
+	switch {
+	case ref.ID == "":
+		return ref.Name
+	case ref.Provider == "":
+		return ref.ID
+	default:
+		return ref.Provider + "/" + ref.ID
+	}
 }
 
 func (s *Session) callStrict(ctx context.Context, command native.Command, dst any) error {
