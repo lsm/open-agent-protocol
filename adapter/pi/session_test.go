@@ -639,6 +639,29 @@ func TestExtensionChoiceRejectsAttachedText(t *testing.T) {
 	_ = adaptertest.Drain(t, stream, time.Second)
 }
 
+func TestSelectExtensionRejectsEmptyOptions(t *testing.T) {
+	// The OAP single-choice question requires at least one option; an empty pi
+	// option slice must fail closed rather than surface an invalid interaction.
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	_ = adaptertest.Next(t, stream, time.Second)
+	client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "ui-9", Method: native.ExtensionSelect, Title: "Pick"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	failed, surfaced := false, false
+	for _, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeRunFailed:
+			failed = true
+		case protocol.TypeUserInputRequested:
+			surfaced = true
+		}
+	}
+	if !failed || surfaced {
+		t.Fatalf("failed=%v surfaced=%v events=%v", failed, surfaced, events)
+	}
+}
+
 func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)

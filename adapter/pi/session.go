@@ -1035,6 +1035,21 @@ func (s *Session) applyExtension(r native.ExtensionUIRequest) {
 	default:
 		return
 	}
+	// A select extension must offer at least one non-empty option: the OAP
+	// single-choice question requires an option, and pi's native validator
+	// rejects only a nil option slice.
+	if r.Method == native.ExtensionSelect {
+		if len(r.Options) == 0 {
+			s.failRun(run, "pi_invalid_extension", "select extension offered no options")
+			return
+		}
+		for _, option := range r.Options {
+			if option == "" {
+				s.failRun(run, "pi_invalid_extension", "select extension offered an empty option label")
+				return
+			}
+		}
+	}
 	id := protocol.InteractionID(s.ids.NewID("interaction"))
 	question := protocol.InputQuestion{ID: "value", Prompt: r.Title, Kind: protocol.InputText, Required: true}
 	if r.Method == native.ExtensionSelect {
