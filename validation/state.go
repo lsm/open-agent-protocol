@@ -325,6 +325,10 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		var p protocol.SessionStateRequest
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
+	case protocol.TypeSessionOpenRequest:
+		var p protocol.SessionOpenRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
 	case protocol.TypeRunCancelRequest:
 		var p protocol.RunCancelRequest
 		_ = e.DecodePayload(&p)
@@ -355,6 +359,10 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		return p.SessionID, p.RunID
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeSessionOpenResponse:
+		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
 	case protocol.TypeRunCancelResponse:

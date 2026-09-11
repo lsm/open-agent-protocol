@@ -1,0 +1,26 @@
+[
+  {
+    "id": "openreq",
+    "payload": {
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.request",
+    "version": "0.1"
+  },
+  {
+    "id": "openresp",
+    "in_reply_to": "openreq",
+    "payload": {
+      "session_id": "s2",
+      "status": "idle"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s2",
+    "type": "session.open.response",
+    "version": "0.1"
+  }
+]
