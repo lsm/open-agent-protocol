@@ -101,7 +101,9 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 		_ = p.abortBeforeWait()
 		return nil, fmt.Errorf("%w: %v; stderr: %s", ErrHandshake, ctx.Err(), p.Stderr())
 	}
-	p.Client = newClient(decoder, stdin, ClientOptions{FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, CloseReadWriter: nil})
+	// The client owns the stdout pipe so forced shutdown can release a reader
+	// blocked on a stdout that a descendant still holds open (see killAndRelease).
+	p.Client = newClient(decoder, stdin, ClientOptions{FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, CloseReadWriter: stdout})
 	go p.wait()
 	return p, nil
 }
@@ -198,7 +200,7 @@ func (b *limitedBuffer) String() string {
 	return v
 }
 
-var secretLine = regexp.MustCompile(`(?i)(authorization|x-api-key|api[_-]?key|auth[_-]?token)(\s*[:=]\s*)([^\s,;]+)`)
+var secretLine = regexp.MustCompile(`(?i)(authorization|x-api-key|api[_-]?key|auth[_-]?token)(\s*[:=]\s*)(?:Bearer\s+)?([^\s,;]+)`)
 var secretQuoted = regexp.MustCompile(`(?i)((?:authorization|x-api-key|api[_-]?key|auth[_-]?token|password|secret|token)"?\s*[:=]\s*)"[^"]*"`)
 
 func redact(v string) string {

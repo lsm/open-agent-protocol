@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,20 @@ func TestProcessHelper(t *testing.T) {
 		os.Stderr.WriteString("api_key=secret-value\n" + strings.Repeat("x", 256))
 		os.Stdout.WriteString("noise\n")
 		os.Exit(2)
+	case "ready-descendant":
+		// A descendant that inherits stdout and outlives this process keeps the
+		// parent's read end from reaching EOF after the direct child exits.
+		os.Stdout.WriteString(`{"type":"ready","protocol_version":"1"}` + "\n")
+		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
+		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
+		descendant.Stdout = os.Stdout
+		if err := descendant.Start(); err != nil {
+			os.Exit(20)
+		}
+		os.Exit(0)
+	case "holder":
+		time.Sleep(5 * time.Second)
+		os.Exit(0)
 	case "hang":
 		select {}
 	}
@@ -180,10 +195,46 @@ func TestProcessHandshakeCancellationReaps(t *testing.T) {
 		t.Fatal("child not reaped promptly")
 	}
 }
+
+// A descendant holding stdout open keeps the reader from reaching EOF. A forced
+// shutdown must release the pipe through the client's closer before waiting, or
+// Close blocks forever despite the configured timeout.
+func TestProcessShutdownReleasesDescendantHeldPipe(t *testing.T) {
+	config := helperConfig("ready-descendant")
+	config.ShutdownTimeout = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p, err := Start(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.Close(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "shutdown timed out") {
+			t.Fatalf("got %v, want shutdown timeout", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close blocked while a descendant held stdout open")
+	}
+}
+
 func TestLimitedBuffer(t *testing.T) {
 	b := &limitedBuffer{limit: 3}
 	n, err := b.Write([]byte("abcdef"))
 	if err != nil || n != 6 || b.String() != "abc [truncated]" {
 		t.Fatalf("n=%d err=%v value=%q", n, err, b.String())
+	}
+}
+func TestRedactHidesQuotedAndBearerCredentials(t *testing.T) {
+	for input, want := range map[string]string{
+		"x-api-key=secret":                   "x-api-key=[REDACTED]",
+		"Authorization: Bearer secret-value": "Authorization: [REDACTED]",
+		`{"api_key":"secret-value"}`:         `{"api_key":"[REDACTED]"}`,
+	} {
+		if got := redact(input); got != want {
+			t.Fatalf("redact %q = %q want %q", input, got, want)
+		}
 	}
 }
