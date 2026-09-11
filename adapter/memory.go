@@ -366,6 +366,9 @@ func (s *memorySession) resolvePermission(run *memoryRun, request protocol.Permi
 	if err := s.emit(run, protocol.TypeActionCallStarted, call, false); err != nil {
 		return err
 	}
+	// The completion payload forbids the request-only members; clear the
+	// arguments the start event carried.
+	call.ArgumentsJSON = nil
 	call.Result = json.RawMessage(`{"ok":true}`)
 	if err := s.emit(run, protocol.TypeActionCallCompleted, call, false); err != nil {
 		return err

@@ -289,6 +289,41 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	}
 }
 
+// action.call.completed has additionalProperties:false and does not permit the
+// request-only arguments_json, so the completion must not reuse the start
+// payload's arguments.
+func TestToolCompletionOmitsRequestOnlyArguments(t *testing.T) {
+	session := newTestSession(t, 64)
+	runID, stream := submit(t, session)
+	events := drainAvailable(stream)
+	var permission protocol.PermissionRequestedPayload
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			_ = envelope.DecodePayload(&permission)
+		}
+	}
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+		t.Fatal(err)
+	}
+	observed := false
+	for _, envelope := range drainAvailable(stream) {
+		if envelope.Type != protocol.TypeActionCallCompleted {
+			continue
+		}
+		observed = true
+		var completed protocol.ActionCallPayload
+		if err := envelope.DecodePayload(&completed); err != nil {
+			t.Fatal(err)
+		}
+		if completed.ArgumentsJSON != nil {
+			t.Fatalf("completion carried arguments_json: %s", completed.ArgumentsJSON)
+		}
+	}
+	if !observed {
+		t.Fatal("no action.call.completed observed")
+	}
+}
+
 // A user-input request carries the run's tool binding in its payload; the
 // envelope must repeat it, or the validator rejects the trace as a
 // scope_mismatch between the envelope and payload.

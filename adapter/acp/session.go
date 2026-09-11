@@ -366,7 +366,12 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 		return
 	}
 	<-run.admitted
-	s.applyToolCall(run, p.ToolCall)
+	if !s.applyToolCall(run, p.ToolCall) {
+		// The tool was rejected (e.g. an empty title) and the run settled; do
+		// not dereference a tool entry that was never created.
+		_ = r.RespondError(context.Background(), -32602, "invalid tool call", nil)
+		return
+	}
 	s.mu.Lock()
 	tool := s.tools[p.ToolCall.ToolCallID]
 	id := protocol.InteractionID(s.ids.NewID("interaction"))
@@ -396,17 +401,17 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	}
 }
 
-func (s *session) applyToolCall(run *runState, u native.ToolCall) {
+func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
 	if u.ToolCallID == "" || u.Title == "" {
 		s.failActive("acp_invalid_tool_call", "tool id and title are required")
-		return
+		return false
 	}
 	s.mu.Lock()
 	t := s.tools[u.ToolCallID]
 	if t != nil && t.run != run {
 		s.mu.Unlock()
 		s.failActive("acp_tool_id_reuse", "tool id reused across prompts")
-		return
+		return false
 	}
 	if t == nil {
 		t = &toolState{nativeID: u.ToolCallID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run}
@@ -415,7 +420,7 @@ func (s *session) applyToolCall(run *runState, u native.ToolCall) {
 	if t.terminal {
 		s.mu.Unlock()
 		s.failActive("acp_tool_after_terminal", "tool updated after terminal")
-		return
+		return false
 	}
 	t.title = u.Title
 	t.kind = u.Kind
@@ -437,6 +442,7 @@ func (s *session) applyToolCall(run *runState, u native.ToolCall) {
 		_ = s.emit(run, protocol.TypeActionCallRequested, payload, false)
 	}
 	s.applyToolStatus(t, status)
+	return true
 }
 func (s *session) applyToolUpdate(run *runState, u native.ToolCallUpdate) {
 	s.mu.Lock()

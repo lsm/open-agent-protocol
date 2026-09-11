@@ -607,6 +607,29 @@ func TestToolCompletionWithoutOutputCarriesNullResult(t *testing.T) {
 	}
 }
 
+// A permission request whose tool is rejected (empty title) must settle the run
+// without dereferencing the missing tool entry.
+func TestPermissionRequestWithMalformedToolSettles(t *testing.T) {
+	s, f := openTest(t, 64)
+	_, stream := submit(t, s)
+	<-f.promptStarted
+	params, err := json.Marshal(native.PermissionRequest{SessionID: "native-session", ToolCall: native.ToolCall{ToolCallID: "call-1"}, Options: []native.PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID("perm-1"), native.MethodSessionRequestPermission, params))}
+	events := adaptertest.Drain(t, stream, 2*time.Second)
+	surfaced := false
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			surfaced = true
+		}
+	}
+	if surfaced {
+		t.Fatal("malformed tool surfaced a permission interaction")
+	}
+}
+
 func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	out := make([]protocol.EnvelopeType, len(events))
 	for i, e := range events {
