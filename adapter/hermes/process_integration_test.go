@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,9 +22,10 @@ import (
 
 const (
 	hermesMockSecret = "fixture-hermes-key"
-	// hermesLoopbackModel statically resolves to the "openai" provider in the
-	// pinned catalog (hermes_cli/models.py), whose client reads
-	// OPENAI_BASE_URL and OPENAI_API_KEY from the environment.
+	// hermesLoopbackModel is the pinned catalog model name; the gate serves it
+	// from a custom loopback provider configured in the isolated Hermes home,
+	// because the pinned gateway deliberately ignores OPENAI_BASE_URL for
+	// named providers (agent/auxiliary_client.py:6200-6219).
 	hermesLoopbackModel = "gpt-5.6-sol"
 )
 
@@ -173,6 +175,7 @@ func TestHermesProcessAgainstChatMock(t *testing.T) {
 	root := verifiedHermesRoot(t)
 	isolated := t.TempDir()
 	environment := hermesEnvironment(t, isolated, mock.OpenAIBaseURL())
+	writeHermesLoopbackConfig(t, isolated, mock.OpenAIBaseURL())
 	implementation := newPinnedHermes(t, root, environment, hermesLoopbackModel)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -259,6 +262,34 @@ func TestHermesProcessAgainstChatMock(t *testing.T) {
 // NO_PROXY so nothing but the loopback mock is reachable, unbuffered stdio,
 // and no ambient credentials. The loopback gate injects only the test-owned
 // fixture key and base URL.
+// writeHermesLoopbackConfig points the pinned gateway at the loopback mock
+// through Hermes's own provider configuration. The gateway ignores
+// OPENAI_BASE_URL whenever model.provider names a catalog provider
+// (agent/auxiliary_client.py:6200-6219 treats it as stale env poisoning), so
+// the only faithful redirect is a custom_providers entry selecting the
+// pinned model name against the loopback base URL. The config lives in the
+// isolated home; nothing outside the test's temporary directory is touched.
+func writeHermesLoopbackConfig(t *testing.T, root, baseURL string) {
+	t.Helper()
+	directory := filepath.Join(root, "home", ".hermes")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "model:\n" +
+		"  provider: custom:loopback\n" +
+		"  model: " + hermesLoopbackModel + "\n" +
+		"custom_providers:\n" +
+		"  - name: loopback\n" +
+		"    base_url: " + strconv.Quote(baseURL) + "\n" +
+		"    key_env: OPENAI_API_KEY\n" +
+		"    api_mode: chat\n" +
+		"    models:\n" +
+		"      - " + hermesLoopbackModel + "\n"
+	if err := os.WriteFile(filepath.Join(directory, "config.yaml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func hermesEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 	t.Helper()
 	home := filepath.Join(root, "home")

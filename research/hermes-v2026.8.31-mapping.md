@@ -495,20 +495,25 @@ fail against the old code (`TestMessageCompleteUsageToleratesExtensibleReadouts`
 replay epoch), dual-identity `session.create`, idle state, clean stdin-EOF
 teardown.
 
-### Integration gate: provider redirection is ineffective — recorded
+### Integration gate: PASS (after a provider-redirection fix)
 
-`OAP_HERMES_INTEGRATION=1` no longer fails on decode, but the turn reaches no
-provider: the mock receives zero requests and the run fails
-`hermes_timeout: Connection error`. Cause: for a *named* provider,
-`OPENAI_BASE_URL` is deliberately ignored as stale env poisoning
-(`agent/auxiliary_client.py:6200-6219` warns exactly about this), so the
-model `gpt-5.6-sol` resolves to the built-in `openai` provider and the
-gateway dials the real endpoint. **With the gate's dead-proxy guard removed,
-the request reached the real `api.openai.com` and returned `HTTP 401` — so
-the gate's hermeticity currently rests on those proxy variables, and its
-loopback redirection does not work.**
+`OAP_HERMES_INTEGRATION=1` initially reached no provider: the mock saw zero
+requests and the run failed `hermes_timeout: Connection error`. Cause: for a
+*named* provider, `OPENAI_BASE_URL` is deliberately ignored as stale env
+poisoning (`agent/auxiliary_client.py:6200-6219`), so `gpt-5.6-sol` resolved
+to the built-in `openai` provider and the gateway dialled the real endpoint.
+Removing the gate's dead-proxy guard made that explicit — the request
+reached the real `api.openai.com` and returned `HTTP 401` — so the guard was
+doing real hermeticity work, but the redirection itself was ineffective.
 
-Redirecting this gateway requires configuring a custom provider (base_url +
-models) in Hermes's own config, not an environment variable. Until that is
-implemented the gate stays skip-by-default; the dead-proxy guard must not be
-removed. Recorded, not silently compensated.
+Fix: the gate now writes a Hermes `config.yaml` into its isolated home
+selecting a `custom_providers` entry (`base_url` = loopback mock,
+`key_env: OPENAI_API_KEY`, the pinned model id) and sets
+`model.provider: custom:loopback`. That is the pinned, supported redirect;
+the environment cannot do it. With it the gate **passes** end to end:
+started admission, streamed reasoning and text deltas, `run.completed` with
+`fixture response`, the exact loopback `POST /v1/chat/completions` with the
+pinned model and bearer, post-run idle, clean close. Both gates pass 3x.
+
+The dead-proxy guard is retained and must stay: it is what bounds the child
+to loopback.
