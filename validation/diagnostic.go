@@ -16,6 +16,7 @@ const (
 
 const (
 	CodeMalformedJSON                = "malformed_json"
+	CodeDuplicateKey                 = "duplicate_key"
 	CodeSchemaInvalid                = "schema_invalid"
 	CodePayloadDecode                = "payload_decode"
 	CodeDuplicateEnvelopeID          = "duplicate_envelope_id"

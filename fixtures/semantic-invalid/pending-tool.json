@@ -57,10 +57,8 @@
     "id": "tool1",
     "payload": {
       "arguments_json": {},
-      "arguments_json": {},
       "execution_owner": "agent",
       "name": "shell",
-      "requested_by": "agent",
       "requested_by": "agent",
       "run_id": "r1",
       "session_id": "s1",

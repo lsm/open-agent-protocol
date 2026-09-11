@@ -55,6 +55,14 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: item.line, Message: err.Error()})
 			continue
 		}
+		// encoding/json silently keeps the last value for a repeated key, and
+		// protocol.ParseEnvelope would make the same choice. A frame that other
+		// implementations could read differently must not be certified, so the
+		// raw bytes are examined recursively before schema validation.
+		if key, duplicate := duplicateKey(item.raw); duplicate {
+			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeDuplicateKey, Index: i, Line: item.line, Message: fmt.Sprintf("duplicate object key %q", key)})
+			continue
+		}
 		if err := v.schema.Validate(value); err != nil {
 			diagnostics = append(diagnostics, schemaDiagnostics(err, fixture, i, item.line)...)
 			continue
@@ -87,6 +95,64 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 
 func (v *Validator) ValidateBytes(data []byte, fixture string) Result {
 	return v.Validate(bytes.NewReader(data), fixture)
+}
+
+// duplicateKey returns the first repeated object key in one raw frame, if any.
+// encoding/json resolves duplicates silently (the last value wins) instead of
+// failing, so the bytes must be walked directly to reject an ambiguous frame.
+// Structural anomalies are ignored here: the frame has already decoded, and this
+// check exists only to flag a key a different implementation could read
+// differently.
+func duplicateKey(data []byte) (string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var walk func() (string, bool)
+	walk = func() (string, bool) {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return "", false
+		}
+		switch delim {
+		case '{':
+			seen := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return "", false
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return "", false
+				}
+				if _, repeated := seen[key]; repeated {
+					return key, true
+				}
+				seen[key] = struct{}{}
+				if nested, found := walk(); found {
+					return nested, true
+				}
+			}
+			if _, err := decoder.Token(); err != nil {
+				return "", false
+			}
+		case '[':
+			for decoder.More() {
+				if nested, found := walk(); found {
+					return nested, true
+				}
+			}
+			if _, err := decoder.Token(); err != nil {
+				return "", false
+			}
+		default:
+			return "", false
+		}
+		return "", false
+	}
+	return walk()
 }
 
 func parseTrace(r io.Reader, fixture string) ([]rawEnvelope, *Diagnostic) {

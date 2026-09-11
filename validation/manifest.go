@@ -33,7 +33,7 @@ type FixtureOutcome struct {
 
 func diagnosticCodes() map[string]bool {
 	codes := []string{
-		CodeMalformedJSON, CodeSchemaInvalid, CodePayloadDecode,
+		CodeMalformedJSON, CodeDuplicateKey, CodeSchemaInvalid, CodePayloadDecode,
 		CodeDuplicateEnvelopeID, CodeScopeMismatch, CodeUnmatchedResponse,
 		CodeMissingResponse, CodeDuplicateResponse, CodeSequenceGap,
 		CodeSequenceRegression, CodeIllegalRunTransition, CodeMissingRunStarted,

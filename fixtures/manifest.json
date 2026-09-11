@@ -48,6 +48,7 @@
     {"id":"submit-response-not-accepted","path":"semantic-invalid/submit-response-not-accepted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_run_transition"],"units":["core"],"provenance":["drafts/conformance.md"]},
     {"id":"tool-completed-without-start","path":"semantic-invalid/tool-completed-without-start.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_tool_transition"],"units":["core","tools"],"provenance":["drafts/conformance.md"]},
     {"id":"capability-extra-property","path":"schema-invalid/capability-extra-property.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["capabilities"],"provenance":[]},
+    {"id":"duplicate-key","path":"schema-invalid/duplicate-key.json","kind":"schema-invalid","valid":false,"phase":"decode","codes":["duplicate_key"],"units":["core"],"provenance":[]},
     {"id":"run-extra-property","path":"schema-invalid/run-extra-property.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core"],"provenance":[]},
     {"id":"missing-response","path":"semantic-invalid/missing-response.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["missing_response"],"units":["core"],"provenance":[]}
   ]

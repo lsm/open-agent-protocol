@@ -79,10 +79,8 @@
     "capability_revision": "v1",
     "payload": {
       "arguments_json": {},
-      "arguments_json": {},
       "execution_owner": "agent",
       "name": "shell",
-      "requested_by": "agent",
       "requested_by": "agent",
       "run_id": "r1",
       "session_id": "s1",
@@ -93,7 +91,6 @@
     "run_id": "r1",
     "sequence": 2,
     "session_id": "s1",
-    "capability_revision": "v1",
     "tool_call_id": "t1",
     "type": "action.call.requested",
     "version": "0.1"
@@ -121,7 +118,6 @@
     "run_id": "r1",
     "sequence": 3,
     "session_id": "s1",
-    "capability_revision": "v1",
     "tool_call_id": "t1",
     "type": "action.permission.requested",
     "version": "0.1"
@@ -144,7 +140,6 @@
     "run_id": "r1",
     "sequence": 4,
     "session_id": "s1",
-    "capability_revision": "v1",
     "type": "action.permission.resolved",
     "version": "0.1"
   },
@@ -163,7 +158,6 @@
     "run_id": "r1",
     "sequence": 5,
     "session_id": "s1",
-    "capability_revision": "v1",
     "tool_call_id": "t1",
     "type": "action.call.started",
     "version": "0.1"
@@ -186,7 +180,6 @@
     "run_id": "r1",
     "sequence": 6,
     "session_id": "s1",
-    "capability_revision": "v1",
     "tool_call_id": "t1",
     "type": "action.call.completed",
     "version": "0.1"
