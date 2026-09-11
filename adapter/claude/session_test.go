@@ -625,6 +625,7 @@ func TestResolveValidatesAnswerShapes(t *testing.T) {
 		"unknown option":   {{QuestionID: "decision", SelectedOptionIDs: []string{"maybe"}}},
 		"option list":      {{QuestionID: "decision", SelectedOptionIDs: []string{"allow", "deny"}}},
 		"text answer":      {{QuestionID: "decision", Text: "allow"}},
+		"mixed form":       {{QuestionID: "decision", SelectedOptionIDs: []string{"allow"}, Text: "allow"}},
 		"foreign question": {{QuestionID: "other", SelectedOptionIDs: []string{"allow"}}},
 	} {
 		if err := session.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: "session", Answers: answers}}); err == nil {

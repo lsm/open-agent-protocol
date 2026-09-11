@@ -718,7 +718,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}
-	if len(resolution.Input.Answers) != 1 || len(resolution.Input.Answers[0].SelectedOptionIDs) != 1 || resolution.Input.Answers[0].QuestionID != "decision" {
+	if len(resolution.Input.Answers) != 1 || len(resolution.Input.Answers[0].SelectedOptionIDs) != 1 || resolution.Input.Answers[0].Text != "" || resolution.Input.Answers[0].QuestionID != "decision" {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}

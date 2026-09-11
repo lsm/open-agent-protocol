@@ -430,6 +430,7 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 	for name, answers := range map[string][]protocol.InputAnswer{
 		"empty answers":    nil,
 		"unoffered option": {{QuestionID: "choice", SelectedOptionIDs: []string{"no"}}},
+		"mixed form":       {{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}, Text: "yes"}},
 		"foreign question": {{QuestionID: "other", SelectedOptionIDs: []string{"yes"}}},
 	} {
 		request := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: answers}

@@ -723,17 +723,20 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 				// The native clarify answer field is a single string; the pinned
 				// tool decodes a JSON array (or comma list) back into the full
 				// selection set, so encode every selected choice rather than
-				// silently dropping all but the first. Every selection must be
-				// one the question offered.
-				if len(answer.SelectedOptionIDs) == 0 {
+				// silently dropping all but the first. The answer must use exactly
+				// one form (no text), select only offered choices, and not repeat
+				// one (the schema's selected_option_ids is uniqueItems).
+				if answer.Text != "" || len(answer.SelectedOptionIDs) == 0 {
 					s.reduceMu.Unlock()
 					return base.ErrInvalidResolution
 				}
+				seen := make(map[string]bool, len(answer.SelectedOptionIDs))
 				for _, option := range answer.SelectedOptionIDs {
-					if !offeredOption(binding.questions, question.ID, option) {
+					if seen[option] || !offeredOption(binding.questions, question.ID, option) {
 						s.reduceMu.Unlock()
 						return base.ErrInvalidResolution
 					}
+					seen[option] = true
 				}
 				encoded, err := json.Marshal(answer.SelectedOptionIDs)
 				if err != nil {
@@ -757,7 +760,9 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 			calls = append(calls, respond)
 		}
 	case "sudo", "secret":
-		if len(answers) != 1 || answers[0].Text == "" {
+		// The gate surfaces exactly one required text question ("password" or
+		// "value"); the answer must name it and use the text form only.
+		if len(answers) != 1 || answers[0].QuestionID != binding.questions[0].ID || len(answers[0].SelectedOptionIDs) != 0 || answers[0].Text == "" {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}

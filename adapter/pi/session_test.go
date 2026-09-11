@@ -599,6 +599,46 @@ func TestExtensionInputRejectsMalformedTextAnswers(t *testing.T) {
 	_ = adaptertest.Drain(t, stream, time.Second)
 }
 
+func TestExtensionChoiceRejectsAttachedText(t *testing.T) {
+	// A Confirmed choice answer carrying text must be rejected before the native
+	// response is written: an OAP answer uses exactly one form.
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	_ = adaptertest.Next(t, stream, time.Second)
+	client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "ui-3", Method: native.ExtensionConfirm, Title: "Proceed?", Message: "Continue"})
+	requested := adaptertest.Next(t, stream, time.Second)
+	_ = adaptertest.Next(t, stream, time.Second)
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(a protocol.InputAnswer) error {
+		return s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{a}}})
+	}
+	if err := resolve(protocol.InputAnswer{QuestionID: "value", SelectedOptionIDs: []string{"yes"}, Text: "yes"}); !errors.Is(err, base.ErrInvalidResolution) {
+		t.Fatalf("mixed-form err = %v", err)
+	}
+	client.mu.Lock()
+	wrote := len(client.responses)
+	client.mu.Unlock()
+	if wrote != 0 {
+		t.Fatalf("rejected answer wrote %d native responses", wrote)
+	}
+	if err := resolve(protocol.InputAnswer{QuestionID: "value", SelectedOptionIDs: []string{"yes"}}); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	nativeResponse := client.responses[0]
+	client.mu.Unlock()
+	if nativeResponse.Confirmed == nil || !*nativeResponse.Confirmed {
+		t.Fatalf("response=%+v", nativeResponse)
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("ok", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	_ = adaptertest.Drain(t, stream, time.Second)
+}
+
 func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)

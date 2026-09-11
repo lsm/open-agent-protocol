@@ -854,6 +854,33 @@ func TestResolveParksSettlementUntilGateResolved(t *testing.T) {
 	}
 }
 
+func TestSudoSecretAnswersMustNameTheSurfacedQuestion(t *testing.T) {
+	// The secret gate surfaces one required text question ("value"); an answer
+	// naming another question or mixing in selected options must be rejected
+	// before the secret is delivered natively.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventSecretRequest, 2, `{"request_id":"aaaa1111","prompt":"token?","env_var":"TOKEN"}`)
+	binding := lastInteraction(t, s)
+	for name, answer := range map[string]protocol.InputAnswer{
+		"foreign question": {QuestionID: "other", Text: "hunter2"},
+		"mixed form":       {QuestionID: "value", SelectedOptionIDs: []string{"hunter2"}, Text: "hunter2"},
+	} {
+		if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{answer}}}); !errors.Is(err, base.ErrInvalidResolution) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+	if f.callCount(native.MethodSecretRespond) != 0 {
+		t.Fatal("rejected answer reached secret.respond")
+	}
+	f.queue(native.MethodSecretRespond, reply{result: native.RespondResult{Status: "ok"}})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "value", Text: "hunter2"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	drain(t, (<-ch).stream)
+}
+
 func TestChoiceLessClarifySurfacesAsText(t *testing.T) {
 	// A clarify with no choices is open-ended; OAP choice questions require at
 	// least one option, so it must surface as a text question and accept a text
@@ -917,6 +944,8 @@ func TestClarifyRejectsUnofferedSelection(t *testing.T) {
 		"single text":        {{QuestionID: "q1", Text: "a"}, multi("x")},
 		"single option+text": {{QuestionID: "q1", SelectedOptionIDs: []string{"a"}, Text: "a"}, multi("x")},
 		"multi unoffered":    {single("a"), multi("x", "bogus")},
+		"multi text":         {single("a"), {QuestionID: "q2", SelectedOptionIDs: []string{"x"}, Text: "x"}},
+		"multi duplicate":    {single("a"), multi("x", "x")},
 	}
 	for name, answers := range cases {
 		if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: answers}}); !errors.Is(err, base.ErrInvalidResolution) {

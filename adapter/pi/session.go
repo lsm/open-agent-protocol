@@ -1117,7 +1117,7 @@ func extensionResponse(b *inputState, r protocol.UserInputResolveRequest) (nativ
 	response := native.ExtensionUIResponse{Type: "extension_ui_response", ID: b.nativeID}
 	switch b.method {
 	case native.ExtensionConfirm:
-		if len(a.SelectedOptionIDs) != 1 {
+		if len(a.SelectedOptionIDs) != 1 || a.Text != "" {
 			return response, base.ErrInvalidResolution
 		}
 		v := a.SelectedOptionIDs[0] == "yes"
@@ -1126,7 +1126,7 @@ func extensionResponse(b *inputState, r protocol.UserInputResolveRequest) (nativ
 		}
 		response.Confirmed = &v
 	case native.ExtensionSelect:
-		if len(a.SelectedOptionIDs) != 1 {
+		if len(a.SelectedOptionIDs) != 1 || a.Text != "" {
 			return response, base.ErrInvalidResolution
 		}
 		var n int
