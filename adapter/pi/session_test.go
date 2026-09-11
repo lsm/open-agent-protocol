@@ -139,6 +139,23 @@ func submitTest(t *testing.T, s *Session) (protocol.MessageSubmitResponse, base.
 	}
 	return response, stream
 }
+
+// A requested model cannot be applied: the prompt carries no model selection
+// and no set_model is issued, so the submission must be rejected rather than
+// reporting the request as the effective model (which would misattribute the
+// run to a model Pi never used).
+func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+	s := openTest(t, newFakeClient(), 32)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, _, err := s.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "glm-other",
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	}); !errors.Is(err, ErrUnsupportedInput) {
+		t.Fatalf("got %v, want ErrUnsupportedInput", err)
+	}
+}
+
 func eventTypes(events []protocol.Envelope) []protocol.EnvelopeType {
 	out := make([]protocol.EnvelopeType, len(events))
 	for i, e := range events {

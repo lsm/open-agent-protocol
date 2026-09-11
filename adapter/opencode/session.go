@@ -120,10 +120,13 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	// accepted queued reservation — never an error paired with a dangling
 	// stream.
 	reservation := protocol.MessageSubmitResponse{
-		SessionID:         s.state.SessionID,
-		Accepted:          true,
-		SubmissionID:      protocol.SubmissionID(s.ids.NewID("submission")),
-		RequestedDelivery: req.Delivery,
+		SessionID:    s.state.SessionID,
+		Accepted:     true,
+		SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")),
+		// The zero-value delivery is the accepted spelling of auto, so the
+		// response must report the canonical value rather than the empty string
+		// (the schema's delivery enum rejects "").
+		RequestedDelivery: protocol.DeliveryAuto,
 		EffectiveDelivery: protocol.EffectiveDeliveryQueue,
 		Admission:         protocol.AdmissionQueued,
 		RunID:             run.id,
@@ -184,6 +187,12 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native.Delivery, error) {
 	if req.SessionID == "" || len(req.Messages) != 1 || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return "", "", base.ErrInvalidSubmission
+	}
+	if req.ModelID != "" {
+		// OpenCode applies a model when the session is created and the prompt
+		// request carries no model, so a per-submit override cannot be applied
+		// and must not be reported as effective.
+		return "", "", fmt.Errorf("%w: OpenCode applies a model at session creation only", ErrUnsupported)
 	}
 	message := req.Messages[0]
 	if message.Role != protocol.RoleUser {

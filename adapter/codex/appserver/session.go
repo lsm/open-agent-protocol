@@ -140,8 +140,21 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := session.client.Call(ctx, native.MethodTurnStart, params, &nativeResponse); err != nil {
 		session.mu.Lock()
 		session.active = nil
-		session.state.Status = protocol.SessionIdle
 		session.state.ActiveRunID = ""
+		if session.client.Err() != nil {
+			// The transport was retired while the request may already have been
+			// written (a caller context that expires after the write retires the
+			// client). Codex may be executing the turn, and no native settlement
+			// can arrive on the dead transport, so reporting a clean idle would
+			// invite another submit onto a session that can never settle it.
+			// Retire the session instead.
+			session.closed = true
+			session.state.Status = protocol.SessionClosed
+			close(session.stop)
+		} else {
+			// The request never reached Codex; the reservation is released.
+			session.state.Status = protocol.SessionIdle
+		}
 		session.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("start Codex turn: %w", err)
 	}

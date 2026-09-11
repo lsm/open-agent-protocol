@@ -194,6 +194,36 @@ func submitTest(t *testing.T, session base.Session) (protocol.MessageSubmitRespo
 	return response, stream
 }
 
+// A requested model cannot be applied: the session's model is fixed at creation
+// and the prompt request carries no model, so a per-submit override must be
+// rejected rather than echoed as effective.
+func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+	session, _ := openTest(t, newFakeClient(), 32)
+	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "other-model",
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported", err)
+	}
+}
+
+// The validator accepts the zero-value delivery as auto, so the response must
+// report the canonical value; an empty requested_delivery violates the schema
+// enum and fails canonical trace validation.
+func TestSubmitNormalizesOmittedDelivery(t *testing.T) {
+	session, _ := openTest(t, newFakeClient(), 32)
+	response, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session",
+		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.RequestedDelivery != protocol.DeliveryAuto {
+		t.Fatalf("requested_delivery = %q, want %q", response.RequestedDelivery, protocol.DeliveryAuto)
+	}
+}
+
 func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	out := make([]protocol.EnvelopeType, len(events))
 	for i := range events {

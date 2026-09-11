@@ -52,6 +52,7 @@ type fakeClient struct {
 	done          chan struct{}
 	closeOnce     sync.Once
 	err           error
+	turnStartErr  error
 }
 
 func newFakeClient() *fakeClient {
@@ -70,6 +71,9 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 		response := result.(*native.ThreadResumeResponse)
 		response.Thread.ID = client.threadID
 	case native.MethodTurnStart:
+		if client.turnStartErr != nil {
+			return client.turnStartErr
+		}
 		response := result.(*native.TurnStartResponse)
 		response.Turn.ID = client.turnID
 		response.Turn.Status = native.TurnInProgress
@@ -175,6 +179,46 @@ func nextEvent(t *testing.T, stream adapter.EventStream) protocol.Envelope {
 func drainClosed(t *testing.T, stream adapter.EventStream) []protocol.Envelope {
 	t.Helper()
 	return adaptertest.Drain(t, stream, time.Second)
+}
+
+// A turn/start whose caller context expires after the request was written leaves
+// the outcome ambiguous: the client is retired, Codex may already be running the
+// turn, and no native settlement can arrive. The session must retire rather than
+// advertise an idle that invites another submit.
+func TestAmbiguousTurnStartRetiresSession(t *testing.T) {
+	client, session, _ := openFake(t)
+	ambiguous := errors.New("start Codex turn: context deadline exceeded")
+	client.mu.Lock()
+	client.turnStartErr = ambiguous
+	client.err = ambiguous
+	client.mu.Unlock()
+	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	}); err == nil {
+		t.Fatal("submit unexpectedly succeeded")
+	}
+	if _, err := session.State(context.Background()); !errors.Is(err, adapter.ErrSessionClosed) {
+		t.Fatalf("ambiguous turn start left the session usable: %v", err)
+	}
+}
+
+// A definite rejection (the client is still live, the turn was never sent) must
+// release the reservation and leave the session usable.
+func TestDefiniteTurnStartRejectionLeavesSessionUsable(t *testing.T) {
+	client, session, _ := openFake(t)
+	client.mu.Lock()
+	client.turnStartErr = errors.New("turn/start rejected")
+	client.mu.Unlock()
+	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	}); err == nil {
+		t.Fatal("submit unexpectedly succeeded")
+	}
+	if _, err := session.State(context.Background()); err != nil {
+		t.Fatalf("definite rejection retired the session: %v", err)
+	}
 }
 
 func TestCompletedLifecycle(t *testing.T) {

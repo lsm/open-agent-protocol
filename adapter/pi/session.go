@@ -285,6 +285,12 @@ func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []nat
 	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return "", nil, nil, base.ErrInvalidSubmission
 	}
+	if req.ModelID != "" {
+		// The prompt command carries no model selection and no set_model is
+		// issued, so a requested model cannot be applied; reporting it as
+		// effective would misattribute the run to a model Pi never used.
+		return "", nil, nil, fmt.Errorf("%w: Pi does not apply a requested model to a prompt", ErrUnsupportedInput)
+	}
 	var texts []string
 	var images []native.ImageContent
 	ids := make([]protocol.MessageID, len(req.Messages))
