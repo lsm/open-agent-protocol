@@ -687,7 +687,11 @@ func TestUserInputRoundTrip(t *testing.T) {
 	_ = drainClosed(t, stream)
 }
 
-func TestUserInputOtherAndRequiredAnswers(t *testing.T) {
+func TestUserInputIsOtherDoesNotAdvertiseUnsatisfiableOption(t *testing.T) {
+	// OAP's answer oneOf allows either selected options or text, never both, so
+	// Codex's isOther custom-answer capability cannot be represented. It must not
+	// advertise a synthetic "other" option, and an option paired with text must
+	// be refused rather than projected as a schema-invalid resolution.
 	client, session, _ := openFake(t)
 	admission, stream := submitFake(t, session)
 	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
@@ -703,20 +707,32 @@ func TestUserInputOtherAndRequiredAnswers(t *testing.T) {
 	if err := requested.DecodePayload(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if got := payload.Questions[0].Options; len(got) != 2 || got[1].ID != "other" {
+	if got := payload.Questions[0].Options; len(got) != 1 || got[0].ID != "option-1" {
 		t.Fatalf("options: %+v", got)
 	}
-	partial := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"other"}, Text: "custom"}}}
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &partial}); !errors.Is(err, adapter.ErrInvalidResolution) {
-		t.Fatalf("partial resolution: %v", err)
+	for name, answer := range map[string]protocol.InputAnswer{
+		"option with text": {QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}, Text: "custom"},
+		"other with text":  {QuestionID: "choice", SelectedOptionIDs: []string{"other"}, Text: "custom"},
+		"bare other":       {QuestionID: "choice", SelectedOptionIDs: []string{"other"}},
+	} {
+		resolution := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{answer, {QuestionID: "note", Text: "n"}}}
+		if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &resolution}); !errors.Is(err, adapter.ErrInvalidResolution) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
 	}
-	partial.Answers = append(partial.Answers, protocol.InputAnswer{QuestionID: "note", Text: "complete"})
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &partial}); err != nil {
+	// Every required question must be answered.
+	missing := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}}}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &missing}); !errors.Is(err, adapter.ErrInvalidResolution) {
+		t.Fatalf("missing required answer: %v", err)
+	}
+	// The offered option resolves the gate.
+	valid := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}, {QuestionID: "note", Text: "complete"}}}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &valid}); err != nil {
 		t.Fatal(err)
 	}
 	response := <-nativeResponse
 	var result native.UserInputResponse
-	if err := json.Unmarshal(response.Result, &result); err != nil || len(result.Answers["choice"].Answers) != 1 || result.Answers["choice"].Answers[0] != "custom" {
+	if err := json.Unmarshal(response.Result, &result); err != nil || len(result.Answers["choice"].Answers) != 1 || result.Answers["choice"].Answers[0] != "Known" {
 		t.Fatalf("response=%+v err=%v", result, err)
 	}
 	_ = nextEvent(t, stream)

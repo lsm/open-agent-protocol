@@ -336,25 +336,14 @@ func nativeAnswers(binding *interactionBinding, input []protocol.InputAnswer) (m
 			}
 			values = append(values, answer.Text)
 		} else {
-			if len(answer.SelectedOptionIDs) != 1 {
+			if len(answer.SelectedOptionIDs) != 1 || answer.Text != "" {
 				return nil, adapter.ErrInvalidResolution
 			}
-			optionID := answer.SelectedOptionIDs[0]
-			if optionID == "other" {
-				if !question.IsOther || answer.Text == "" {
-					return nil, adapter.ErrInvalidResolution
-				}
-				values = append(values, answer.Text)
-			} else {
-				if answer.Text != "" {
-					return nil, adapter.ErrInvalidResolution
-				}
-				label, exists := binding.optionLabels[answer.QuestionID][optionID]
-				if !exists {
-					return nil, adapter.ErrInvalidResolution
-				}
-				values = append(values, label)
+			label, exists := binding.optionLabels[answer.QuestionID][answer.SelectedOptionIDs[0]]
+			if !exists {
+				return nil, adapter.ErrInvalidResolution
 			}
+			values = append(values, label)
 		}
 		answers[answer.QuestionID] = native.UserInputAnswer{Answers: values}
 	}
@@ -600,9 +589,11 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 					options = append(options, protocol.InputOption{ID: optionID, Label: option.Label, Description: option.Description})
 					labels[optionID] = option.Label
 				}
-				if question.IsOther {
-					options = append(options, protocol.InputOption{ID: "other", Label: "Other", Description: "Provide a custom answer"})
-				}
+				// Codex's isOther permits an option plus custom text, but the OAP
+				// answer oneOf allows either selected options or text, never both.
+				// The custom-answer capability cannot be represented, so no synthetic
+				// option is advertised; a text-bearing option answer is refused
+				// rather than projected schema-invalid.
 				optionLabels[question.ID] = labels
 			}
 			questions = append(questions, protocol.InputQuestion{ID: question.ID, Prompt: question.Question, Kind: kind, Required: true, Options: options})

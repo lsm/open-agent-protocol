@@ -84,7 +84,7 @@ they do not claim that a capture already exists.
 | `item/commandExecution/requestApproval` | `common.rs`; `CommandExecutionRequestApproval*.json` | permission interaction | normalized | simple decisions: native; rich amendments: unavailable | `command-approval` |
 | `item/fileChange/requestApproval` | `common.rs`; `FileChangeRequestApproval*.json` | permission interaction | lossy (`grantRoot` is not projected) | simple decisions: native | `file-approval` |
 | `item/permissions/requestApproval` | `common.rs`; `PermissionsRequestApproval*.json` | deterministic `-32601` reverse-response; no OAP interaction | unsupported | unavailable | `permissions-approval` |
-| `item/tool/requestUserInput` | `common.rs`; `ToolRequestUserInput*.json` | ordinary user-input interaction | normalized/lossy by question kind | options and free text: degraded; secret input: unavailable | `user-input` |
+| `item/tool/requestUserInput` | `common.rs`; `ToolRequestUserInput*.json` | ordinary user-input interaction | normalized/lossy by question kind | options native; `isOther` custom text unrepresentable (the OAP answer `oneOf` is options-or-text, never both), so no synthetic "other" option is advertised; secret input: unavailable | `user-input` |
 | duplicate native terminal | reducer policy | diagnose and suppress | synthesized safeguard | terminal invariant | `duplicate-terminal` |
 | EOF/process exit before terminal | `app-server` process boundary | one typed `run.failed` | synthesized failure projection | transport failure handling | `process-exit` |
 
