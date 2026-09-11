@@ -263,6 +263,9 @@ func TestLimitedBufferBoundsAndRedacts(t *testing.T) {
 	for input, want := range map[string]string{
 		"x-api-key=secret":                   "x-api-key=[REDACTED]",
 		"Authorization: Bearer secret-value": "Authorization: [REDACTED]",
+		"password=secret-value":              "password=[REDACTED]",
+		"secret: value":                      "secret: [REDACTED]",
+		"token=value":                        "token=[REDACTED]",
 	} {
 		if got := redact(input); got != want {
 			t.Fatalf("redact %q = %q want %q", input, got, want)

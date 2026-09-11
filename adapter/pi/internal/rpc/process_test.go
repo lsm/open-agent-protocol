@@ -250,9 +250,15 @@ func TestProcessEmptyEnvironmentStaysEmpty(t *testing.T) {
 }
 
 func TestRedactBearerCredential(t *testing.T) {
-	value := redact("Authorization: Bearer secret-token")
-	if strings.Contains(value, "secret-token") || !strings.Contains(value, "[REDACTED]") {
-		t.Fatalf("%q", value)
+	for input, want := range map[string]string{
+		"Authorization: Bearer secret-token": "Authorization: [REDACTED]",
+		"password=secret-value":              "password=[REDACTED]",
+		"secret: value":                      "secret: [REDACTED]",
+		"token=value":                        "token=[REDACTED]",
+	} {
+		if got := redact(input); got != want {
+			t.Fatalf("redact %q = %q want %q", input, got, want)
+		}
 	}
 }
 

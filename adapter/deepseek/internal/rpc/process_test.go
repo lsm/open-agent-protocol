@@ -235,6 +235,19 @@ IFS= read -r eof || exit 0
 	}
 }
 
+func TestRedactHidesUnquotedSecrets(t *testing.T) {
+	for input, want := range map[string]string{
+		"Authorization: Bearer secret-token": "Authorization: [REDACTED]",
+		"password=secret-value":              "password=[REDACTED]",
+		"secret: value":                      "secret: [REDACTED]",
+		"token=value":                        "token=[REDACTED]",
+	} {
+		if got := redact(input); got != want {
+			t.Fatalf("redact %q = %q want %q", input, got, want)
+		}
+	}
+}
+
 func writeScript(t *testing.T, dir, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, "fixture.sh")

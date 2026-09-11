@@ -200,7 +200,7 @@ func (b *limitedBuffer) String() string {
 	return v
 }
 
-var secretLine = regexp.MustCompile(`(?i)(authorization|x-api-key|api[_-]?key|auth[_-]?token)(\s*[:=]\s*)(?:Bearer\s+)?([^\s,;]+)`)
+var secretLine = regexp.MustCompile(`(?i)(authorization|x-api-key|api[_-]?key|auth[_-]?token|password|secret|token)(\s*[:=]\s*)(?:Bearer\s+)?([^\s,;]+)`)
 var secretQuoted = regexp.MustCompile(`(?i)((?:authorization|x-api-key|api[_-]?key|auth[_-]?token|password|secret|token)"?\s*[:=]\s*)"[^"]*"`)
 
 func redact(v string) string {

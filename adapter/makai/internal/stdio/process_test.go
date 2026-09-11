@@ -231,6 +231,9 @@ func TestRedactHidesQuotedAndBearerCredentials(t *testing.T) {
 	for input, want := range map[string]string{
 		"x-api-key=secret":                   "x-api-key=[REDACTED]",
 		"Authorization: Bearer secret-value": "Authorization: [REDACTED]",
+		"password=secret-value":              "password=[REDACTED]",
+		"secret: value":                      "secret: [REDACTED]",
+		"token=value":                        "token=[REDACTED]",
 		`{"api_key":"secret-value"}`:         `{"api_key":"[REDACTED]"}`,
 	} {
 		if got := redact(input); got != want {
