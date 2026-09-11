@@ -169,8 +169,13 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		capacity = 64
 	}
 	client := newFakeClient()
+	// Hold wait-idle until every frame has been delivered, so settlement at an
+	// intermediate step boundary cannot race the producer and complete the run
+	// with only the steps seen so far. The gate is released after the feed loop.
+	fed := make(chan struct{})
 	client.mu.Lock()
 	client.historyPage = native.HistoryPage{Events: presetHistory}
+	client.idleGate = fed
 	client.mu.Unlock()
 	if definition.AdmissionRejected {
 		client.promptErr = errors.New("HTTP 409 ConflictError")
@@ -263,6 +268,9 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 			t.Fatalf("unsupported action %q", frame.Action)
 		}
 	}
+	// Every frame is delivered; release wait-idle so settlement can drain the
+	// ordered prefix and derive the terminal from the full run.
+	close(fed)
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
 	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
 	// Decision 0002 made both former mismatch shapes canonical: a queued

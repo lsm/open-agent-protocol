@@ -87,6 +87,11 @@ type fakeClient struct {
 	subscribeCtx     context.Context
 	prompts          []native.PromptRequest
 	closed           bool
+	// idleGate, when set, holds wait-idle until the corpus has delivered the
+	// whole native stream. Real wait-idle returns only once the run is
+	// quiescent, which implies every step event is already durable; returning
+	// immediately would let settlement race the not-yet-delivered later steps.
+	idleGate <-chan struct{}
 }
 
 func newFakeClient() *fakeClient {
@@ -125,10 +130,18 @@ func (f *fakeClient) Interrupt(context.Context, native.SessionID) error {
 	f.interrupts++
 	return nil
 }
-func (f *fakeClient) WaitIdle(context.Context, native.SessionID) error {
+func (f *fakeClient) WaitIdle(ctx context.Context, _ native.SessionID) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.waits++
+	gate := f.idleGate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
 }
 func (f *fakeClient) Active(context.Context) (map[native.SessionID]bool, error) {
