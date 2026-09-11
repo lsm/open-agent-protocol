@@ -574,23 +574,23 @@ func (s *Session) applyOwnedEvent(run *runState, e native.Event) {
 		if v.Turn != run.turn || v.Step != run.step {
 			s.failRun(run, "deepseek_invalid_grammar", "invalid step end")
 		}
-	case "assistant/chunk":
-		var v native.AssistantChunk
+	case "assistant/attempt":
+		var v native.AssistantAttempt
 		_ = e.DataAs(&v)
 		if !s.sameStep(run, v.Turn, v.Step) {
 			return
 		}
-		part, ok := chunkPart(v.Chunk)
-		if !ok {
-			return
-		}
-		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: part}, false)
+		// A settled attempt committed no surface message: its compact stream
+		// is evidence only and must not project as model-visible content.
 	case "assistant/message":
 		var v native.AssistantMessageEvent
 		_ = e.DataAs(&v)
 		if !s.sameStep(run, v.Turn, v.Step) {
 			return
 		}
+		// The settled message carries the compact stream; project its deltas
+		// before the message becomes the assembled content authority.
+		s.emitStreamRecords(run, v.Stream)
 		run.final = &v
 	case "tool/call":
 		var v native.ToolCall
@@ -623,7 +623,11 @@ func (s *Session) applyOwnedEvent(run *runState, e native.Event) {
 	case "user/message", "agent/inbox/spliced", "todo/write", "request/header", "request/context", "session/end-seed":
 		return
 	default:
-		if e.Ignorable != nil && *e.Ignorable {
+		// Events the pin recognises but this adapter does not project are
+		// observed-only evidence mid-run, exactly like an `ignorable` omission:
+		// runtime-context system messages and similar bookkeeping are durable
+		// and non-ignorable at the pin and must not fail a live turn.
+		if native.ObservedOnly(e.Type) || (e.Ignorable != nil && *e.Ignorable) {
 			return
 		}
 		s.failRun(run, "deepseek_unknown_event", fmt.Sprintf("unknown required event %q", e.Type))
@@ -635,6 +639,33 @@ func (s *Session) sameStep(run *runState, t, st int64) bool {
 		return false
 	}
 	return true
+}
+
+// emitStreamRecords expands one settled attempt's compact stream records into
+// content deltas. Packed text/reasoning runs expand in order; a raw chunk
+// projects through the same StreamChunk vocabulary as before. Tool-call runs
+// carry no portable content (tool calls arrive as their own events).
+func (s *Session) emitStreamRecords(run *runState, records []native.AssistantStreamRecord) {
+	for _, record := range records {
+		switch record.Type {
+		case "text-chunks":
+			for _, text := range record.Texts {
+				s.emitDelta(run, protocol.ContentPart{Type: protocol.ContentText, Text: text})
+			}
+		case "reasoning-chunks":
+			for _, text := range record.Texts {
+				s.emitDelta(run, protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: text})
+			}
+		case "chunk":
+			if part, ok := chunkPart(record.Chunk); ok {
+				s.emitDelta(run, part)
+			}
+		}
+	}
+}
+
+func (s *Session) emitDelta(run *runState, part protocol.ContentPart) {
+	_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: part}, false)
 }
 
 // chunkPart projects the pinned StreamChunk union. Only the two delta

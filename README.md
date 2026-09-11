@@ -79,16 +79,19 @@ artifact provenance is required. The gate never downloads an executable and
 passes no ambient credentials to it.
 
 DeepSeek Harness real-process checks follow the same opt-in gate. Provide an
-absolute `dsh-jsonrpc-agent` runtime built from the pinned source commit in
-`OAP_DEEPSEEK_HARNESS_BIN`, then set `OAP_DEEPSEEK_HARNESS_SMOKE=1` for the
-credential-free initialize/shutdown check or
-`OAP_DEEPSEEK_HARNESS_INTEGRATION=1` for the loopback-provider path. The gates
-never download a runtime, pass no ambient credentials to it, and compose their
-own temporary Cordis configuration so stdout stays pure JSON-RPC. The wire
-`serverInfo` version and any release text are runtime-version evidence only;
-the pinned source commit and tree in the mapping ledger remain the provenance.
-Set `OAP_DEEPSEEK_HARNESS_SHA256` to the expected 64-character artifact digest
-when exact artifact provenance is required.
+absolute runtime built from the pinned source commit in
+`OAP_DEEPSEEK_HARNESS_BIN` — the build emits
+`deepseek-harness-sdk-runtime-linux-x64` from the pinned release — then set
+`OAP_DEEPSEEK_HARNESS_SMOKE=1` for the credential-free initialize/shutdown
+check or `OAP_DEEPSEEK_HARNESS_INTEGRATION=1` for the loopback-provider path.
+The gates never download a runtime and pass no ambient credentials. The
+runtime boots the shipped `sdk` profile (`--profile sdk`) against an isolated
+`DSH_HOME`; the loopback gate redirects the stock deepseek provider with
+`DEEPSEEK_BASE_URL`. The wire `serverInfo` version and any release text are
+runtime-version evidence only; the pinned source commit and tree in the
+mapping ledger remain the provenance. Set `OAP_DEEPSEEK_HARNESS_SHA256` to the
+expected 64-character artifact digest when exact artifact provenance is
+required.
 
 Hermes agent real-process checks follow the same opt-in gate. Provide an
 absolute python interpreter in `OAP_HERMES_BIN` (able to import the pinned

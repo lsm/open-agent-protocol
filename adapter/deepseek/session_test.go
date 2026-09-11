@@ -116,6 +116,28 @@ func event(seq int64, typ string, data any) native.Event {
 	return native.Event{Seq: seq, Time: seq, Type: typ, Data: raw}
 }
 func source(kind string) native.MessageSource { return native.MessageSource{Kind: kind} }
+
+// assistantMessageWire builds an assistant/message event payload carrying a
+// compact stream as raw JSON, mirroring the pinned wire where the settled
+// message owns the stream that the adapter projects as content deltas. The
+// stream is passed raw because AssistantStreamRecord has no marshal form.
+type assistantMessageWire struct {
+	Turn    int64                   `json:"turn"`
+	Step    int64                   `json:"step"`
+	Message native.AssistantMessage `json:"message"`
+	Stream  json.RawMessage         `json:"stream"`
+	Usage   *native.TokenUsage      `json:"usage,omitempty"`
+}
+
+func assistantMessage(turn, step int64, id string, content []native.ContentBlock, model native.MessageSource, stream string, usage *native.TokenUsage) assistantMessageWire {
+	return assistantMessageWire{
+		Turn:    turn,
+		Step:    step,
+		Message: native.AssistantMessage{ID: id, Role: "assistant", Content: content, Source: model},
+		Stream:  json.RawMessage(stream),
+		Usage:   usage,
+	}
+}
 func (f *fakeClient) ev(seq int64, typ string, data any) {
 	f.notify(&native.SessionEventNotification{SessionID: "session", Event: event(seq, typ, data)})
 }
@@ -263,8 +285,9 @@ func TestPromptResponseMayFollowEarlyNotifications(t *testing.T) {
 func TestCompletedRunMapsChunksUsageAndSettlement(t *testing.T) {
 	s, f := openTest(t)
 	a, st := admission(t, s, f, "receipt")
-	f.ev(5, "assistant/chunk", native.AssistantChunk{Turn: 1, Step: 1, Chunk: json.RawMessage(`{"type":"text-delta","index":0,"text":"hi"}`)})
-	f.ev(6, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 1, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "hi"}}, Source: native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}}, Usage: &native.TokenUsage{InputTokens: 2, OutputTokens: 1}})
+	// The settled message owns the stream; its raw text-delta record projects
+	// the single content delta the run previously streamed live.
+	f.ev(5, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "hi"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[{"type":"chunk","time":5,"chunk":{"type":"text-delta","index":0,"text":"hi"}}]`, &native.TokenUsage{InputTokens: 2, OutputTokens: 1}))
 	f.ev(7, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 	f.ev(8, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
 	time.Sleep(20 * time.Millisecond)
@@ -297,7 +320,7 @@ func TestChildDelaysParentTerminal(t *testing.T) {
 	s, f := openTest(t)
 	_, st := admission(t, s, f, "r")
 	f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "child"})
-	f.ev(5, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 1, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}, Source: native.MessageSource{Kind: "model", Provider: "p", Model: "m"}}})
+	f.ev(5, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "ok"}}, native.MessageSource{Kind: "model", Provider: "p", Model: "m"}, `[]`, nil))
 	f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
 	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
 	time.Sleep(20 * time.Millisecond)
@@ -386,7 +409,7 @@ func TestPreAdmissionChildNotificationsDefer(t *testing.T) {
 			if got.err != nil {
 				t.Fatalf("pre-receipt child pair failed the submission: %v", got.err)
 			}
-			f.ev(5, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 1, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}, Source: native.MessageSource{Kind: "model", Provider: "p", Model: "m"}}})
+			f.ev(5, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "ok"}}, native.MessageSource{Kind: "model", Provider: "p", Model: "m"}, `[]`, nil))
 			f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
 			f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
 			events := drain(t, got.st)
@@ -482,8 +505,7 @@ func TestEnteredMessageMayArriveInLaterStep(t *testing.T) {
 		f.ev(7, "user/message", native.UserMessage{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")})
 	}
 	settle := func(f *fakeClient) {
-		f.ev(8, "assistant/chunk", native.AssistantChunk{Turn: 1, Step: 2, Chunk: json.RawMessage(`{"type":"text-delta","index":0,"text":"hi"}`)})
-		f.ev(9, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 2, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "hi"}}, Source: native.MessageSource{Kind: "model", Provider: "p", Model: "m"}}, Usage: &native.TokenUsage{InputTokens: 1, OutputTokens: 1}})
+		f.ev(8, "assistant/message", assistantMessage(1, 2, "a", []native.ContentBlock{{Type: "text", Text: "hi"}}, native.MessageSource{Kind: "model", Provider: "p", Model: "m"}, `[{"type":"text-chunks","time0":0,"index":0,"dt":[],"texts":["hi"]}]`, &native.TokenUsage{InputTokens: 1, OutputTokens: 1}))
 		f.ev(10, "step/end", native.StepBoundary{Turn: 1, Step: 2})
 		f.ev(11, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
 		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
@@ -556,7 +578,7 @@ func TestNativeSequenceStartsAtZero(t *testing.T) {
 	if got.r.Admission != protocol.AdmissionStarted {
 		t.Fatalf("admission = %+v", got.r)
 	}
-	f.ev(4, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 1, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "hi"}}, Source: native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}}})
+	f.ev(4, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "hi"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
 	f.ev(5, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
 	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
 	events := drain(t, got.st)
@@ -572,7 +594,7 @@ func TestNativeSequenceRegressionStillRejected(t *testing.T) {
 	s, f := openTest(t)
 	a, st := admission(t, s, f, "receipt")
 	// admission() consumed seq 1..4; repeating seq 4 is a regression.
-	f.ev(4, "assistant/chunk", native.AssistantChunk{Turn: 1, Step: 1, Chunk: json.RawMessage(`{"type":"text-delta","index":0,"text":"hi"}`)})
+	f.ev(4, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "hi"}}, native.MessageSource{Kind: "model", Provider: "p", Model: "m"}, `[]`, nil))
 	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
 	events := drain(t, st)
 	adaptertest.AssertRunTrace(t, a, CapabilityRevision, events)

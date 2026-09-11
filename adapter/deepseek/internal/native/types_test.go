@@ -142,14 +142,39 @@ func TestEventContentBoundaryStrictness(t *testing.T) {
 	}
 }
 
+// assistantAttempt wraps a raw stream-record array in an assistant/attempt
+// envelope, the evidence-only home of the retired assistant/chunk vocabulary.
+func assistantAttempt(stream string) string {
+	return `{"sessionId":"s","event":{"type":"assistant/attempt","seq":1,"time":1,"data":{"turn":1,"step":1,"stream":` + stream + `}}}`
+}
+
+// assistantMessage wraps a raw stream-record array in a full assistant/message
+// envelope: the settled surface message carries assembled content and usage.
+func assistantMessage(stream string) string {
+	return `{"sessionId":"s","event":{"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"stream":` + stream +
+		`,"message":{"id":"a","role":"assistant","content":[{"type":"text","text":"hi"}],"source":{"kind":"model","provider":"p","model":"m"}}}}}`
+}
+
 func TestEventChunkAndReasonStrictness(t *testing.T) {
 	raw := []string{
-		// unknown or incomplete stream chunk variants.
-		`{"sessionId":"s","event":{"type":"assistant/chunk","seq":1,"time":1,"data":{"turn":1,"step":1,"chunk":{"type":"future-chunk"}}}}`,
-		`{"sessionId":"s","event":{"type":"assistant/chunk","seq":1,"time":1,"data":{"turn":1,"step":1,"chunk":{"type":"text-delta"}}}}`,
-		`{"sessionId":"s","event":{"type":"assistant/chunk","seq":1,"time":1,"data":{"turn":1,"step":1,"chunk":{"type":"block-end","index":0,"block":{"type":"text"}}}}}`,
-		`{"sessionId":"s","event":{"type":"assistant/chunk","seq":1,"time":1,"data":{"turn":1,"step":1,"chunk":{"type":"usage"}}}}`,
-		`{"sessionId":"s","event":{"type":"assistant/chunk","seq":1,"time":1,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"stop","failure":{"message":"x","code":"y"}}}}}}`,
+		// unknown or incomplete stream chunk variants inside a raw chunk record.
+		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"future-chunk"}}]`),
+		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"text-delta"}}]`),
+		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"block-end","index":0,"block":{"type":"text"}}}]`),
+		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"usage"}}]`),
+		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"finish","reason":{"kind":"stop","failure":{"message":"x","code":"y"}}}}]`),
+		// compact records stay strict: bad run lengths, unknown variants,
+		// negative indices, empty tool-call identity, and unknown members.
+		// A run of one text carries no inter-chunk gaps, so any dt entry is a
+		// bad run length.
+		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[0,1],"texts":["hi"]}]`),
+		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[],"texts":[]}]`),
+		assistantAttempt(`[{"type":"bogus-record"}]`),
+		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":-1,"dt":[0],"texts":["hi"]}]`),
+		assistantAttempt(`[{"type":"tool-call-chunks","time0":0,"index":0,"dt":[0],"id":"","args":["{}"]}]`),
+		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[0],"texts":["hi"],"extra":true}]`),
+		// assistant/message requires its compact stream.
+		`{"sessionId":"s","event":{"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"a","role":"assistant","content":[{"type":"text","text":"hi"}],"source":{"kind":"model","provider":"p","model":"m"}}}}}`,
 		// turn/end reasons must be structurally complete.
 		`{"sessionId":"s","event":{"type":"turn/end","seq":1,"time":1,"data":{"turn":1,"reason":{"kind":"aborted","reason":"anything"}}}}`,
 		`{"sessionId":"s","event":{"type":"turn/end","seq":1,"time":1,"data":{"turn":1,"reason":{"kind":"aborted","reason":{"kind":"hook"}}}}}`,
@@ -162,10 +187,14 @@ func TestEventChunkAndReasonStrictness(t *testing.T) {
 			t.Fatalf("accepted %q: %v", data, err)
 		}
 	}
-	// Pinned shapes still decode.
+	// Every pinned record variant still decodes, in both envelope homes.
 	valid := []string{
-		`{"sessionId":"s","event":{"type":"assistant/chunk","seq":1,"time":1,"data":{"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"hi"}}}}`,
-		`{"sessionId":"s","event":{"type":"assistant/chunk","seq":2,"time":1,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"stop"}}}}}`,
+		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[],"texts":["hi"]}]`),
+		assistantAttempt(`[{"type":"reasoning-chunks","time0":0,"index":0,"dt":[0],"texts":["a","b"]}]`),
+		assistantAttempt(`[{"type":"tool-call-chunks","time0":0,"index":0,"dt":[],"id":"c","name":"f","args":["{}"]}]`),
+		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"text-delta","index":0,"text":"hi"}}]`),
+		assistantAttempt(`[{"type":"chunk","time":2,"chunk":{"type":"finish","reason":{"kind":"stop"}}}]`),
+		assistantMessage(`[{"type":"chunk","time":1,"chunk":{"type":"text-delta","index":0,"text":"hi"}}]`),
 		`{"sessionId":"s","event":{"type":"turn/end","seq":3,"time":1,"data":{"turn":1,"reason":{"kind":"aborted","reason":{"kind":"user"}}}}}`,
 		`{"sessionId":"s","event":{"type":"turn/end","seq":4,"time":1,"data":{"turn":1,"reason":{"kind":"error","error":{"message":"boom","code":"PROVIDER"}}}}}`,
 		`{"sessionId":"s","event":{"type":"turn/end","seq":5,"time":1,"data":{"turn":1,"reason":{"kind":"max-tokens"}}}}`,

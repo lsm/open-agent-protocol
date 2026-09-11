@@ -19,25 +19,26 @@
   "omissions": "omissions.json",
   "open_error": true,
   "provenance": {
-    "commit": "47f943859bef60e4160492346772ded9b24f765a",
-    "commit_tree": "f904efab9ef435201d6ba4da88a34d6366568272",
+    "commit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
+    "commit_tree": "bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38",
     "repository": "https://github.com/deepseek-ai/deepseek-harness",
     "sources": {
-      "core_agent_inbox_blob": "c6b9204c92f497ae90b4e058fb6e0905427c4c8d",
-      "core_agent_loop_blob": "668ef6582657ed0e1e4420777696ee50251371ad",
-      "core_agent_runtime_types_blob": "7d713f8c77112f8e74150bc060ec677bb5107f90",
-      "core_agent_types_blob": "b54e56ea8f9dc61674167dff98dbbe7dc5c857e4",
-      "core_session_invariant_blob": "da7cd55964b7b49fc00d6bab0a65d50994b4f2c3",
-      "core_session_known_event_types_blob": "d65935f1b86934b1de957aa26f9032c296510d3c",
-      "core_session_surface_blob": "ba6c2dda800f36d64b370a7fac375db3f4486334",
-      "core_session_types_blob": "17aacd1dfc2f3a9d241a2fbdea59263323f57d51",
-      "llm_message_blob": "608b56475df8dfdef72e104f180cf4dd024eb0be",
-      "llm_types_blob": "326db1cb1473cb435ec98425c2df359977eba4fa",
+      "core_agent_inbox_blob": "db89cd3072677ebd6acbd40f7d496bab15c19cef",
+      "core_agent_loop_blob": "06e1f51b57277ba296698b6c8b810f0e455e3695",
+      "core_agent_runtime_types_blob": "31338e8d8da6ccb2e99fd459abbe2238bf5c1736",
+      "core_agent_types_blob": "d0be69ac58747a042ac937a250878705bcbf0d8f",
+      "core_session_invariant_blob": "6ed0b6b3c5abf84dd4129281ed6029880c7e6ad3",
+      "core_session_known_event_types_blob": "dd6411240b0527ec98d5ff51bcfb3e8b5f47e715",
+      "core_session_surface_blob": "5d8ce74fe2461cb2f777a7bc7556795f337f0c03",
+      "core_session_types_blob": "139fccd5a5660a8d0c4e1ef95f4e4d64b274230f",
+      "llm_assistant_stream_blob": "5d878020e8a2eab1a1a84d1867bf2923a409527a",
+      "llm_message_blob": "6f920fe0191d17c0a272fbc881eb7e37f8142815",
+      "llm_types_blob": "bfddde7fc4b2a08144e2f76f8ca59e61a2b4e37f",
       "sdk_protocol_transport_blob": "36574f46bf3e34738be045408e25bb79932ff609",
-      "sdk_protocol_types_blob": "533b5f23c5f019db924647916ffcde4a144541d5",
-      "sdk_server_blob": "195caa908de0343b59244ae966b4b7afe3cf93d2"
+      "sdk_protocol_types_blob": "605b97cc6945397563e6351e03ffde7a9436b23f",
+      "sdk_server_blob": "1cc17059c9254c6bd4f809441bd9e43bc26a7d2d"
     },
-    "tag": "47f9438"
+    "tag": "fb2c4b9"
   },
   "server_mode": "pre-observe",
   "version": 1

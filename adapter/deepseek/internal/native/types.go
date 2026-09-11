@@ -24,6 +24,62 @@ const (
 
 var ErrInvalid = errors.New("deepseek native: invalid pinned message")
 
+// pinnedObservedOnlyEvents is the 0.1.5-rc.2 session-event vocabulary this
+// adapter recognises but does not project. They are durable, non-ignorable
+// events at the pin (packages/core/session/src/known-event-types.ts), so
+// failing closed on them would reject every real turn; they carry no OAP
+// meaning, so they reduce to observed-only evidence.
+var pinnedObservedOnlyEvents = map[string]bool{
+	"agent-preset/selected":                  true,
+	"approval/asked":                         true,
+	"approval/decided":                       true,
+	"approval/policy":                        true,
+	"command/done":                           true,
+	"command/run":                            true,
+	"compaction/end":                         true,
+	"compaction/prune":                       true,
+	"compaction/start":                       true,
+	"compaction/summary":                     true,
+	"deliverables/presented":                 true,
+	"feedback/message-delete":                true,
+	"feedback/message-put":                   true,
+	"feedback/record":                        true,
+	"goal/change":                            true,
+	"hook/invoked":                           true,
+	"hook/result":                            true,
+	"llm/retry":                              true,
+	"llm/retry-started":                      true,
+	"model/selection":                        true,
+	"permission/preset":                      true,
+	"plan/mode":                              true,
+	"sandbox/mode":                           true,
+	"schedule/change":                        true,
+	"session-log-deepseek/delivery-accepted": true,
+	"session/title":                          true,
+	"session/title-llm-request":              true,
+	"subagent/catalog":                       true,
+	"subagent/descriptor":                    true,
+	"subagent/model-selection-policy":        true,
+	"system/message":                         true,
+	"team/member":                            true,
+	"team/message/delivered":                 true,
+	"team/message/queued":                    true,
+	"team/task":                              true,
+	"tool-workflow/agent-end":                true,
+	"tool-workflow/agent-start":              true,
+	"tool-workflow/run-end":                  true,
+	"tool-workflow/run-start":                true,
+	"tool/ptc-dispatch":                      true,
+	"tool/ptc-dispatch-start":                true,
+	"web/deepseek-search-llm-request":        true,
+}
+
+// ObservedOnly reports whether eventType is in the pinned vocabulary this
+// adapter recognises but does not project. Such an event is durable and
+// non-ignorable at the pin, so consumers must reduce it to observed-only
+// evidence rather than fail closed on it as unknown-required.
+func ObservedOnly(eventType string) bool { return pinnedObservedOnlyEvents[eventType] }
+
 type InitializeParams struct {
 	Cwd       string `json:"cwd"`
 	Provider  string `json:"provider"`
@@ -125,16 +181,100 @@ type InboxSpliced struct {
 	Inserted     []UserMessage `json:"inserted"`
 	Outcome      string        `json:"outcome,omitempty"`
 }
-type AssistantChunk struct {
-	Turn  int64           `json:"turn"`
-	Step  int64           `json:"step"`
-	Chunk json.RawMessage `json:"chunk"`
+
+// AssistantAttempt is one model attempt that committed no surface message:
+// the embedded compact stream preserves a failed, retried, cancelled, or
+// stream-error attempt. Its content is never model-visible history.
+type AssistantAttempt struct {
+	Turn   int64                   `json:"turn"`
+	Step   int64                   `json:"step"`
+	Stream []AssistantStreamRecord `json:"stream"`
 }
+
+// AssistantStreamRecord is one compact record of a settled model stream: a
+// packed run of same-index deltas (text-chunks / reasoning-chunks /
+// tool-call-chunks), or a raw StreamChunk. Decoded by variant so each shape
+// stays strict.
+type AssistantStreamRecord struct {
+	Type  string
+	Index int64
+	Texts []string
+	ID    string
+	Name  string
+	Args  []string
+	Chunk json.RawMessage
+}
+
+func (r *AssistantStreamRecord) UnmarshalJSON(data []byte) error {
+	var head struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return err
+	}
+	switch head.Type {
+	case "text-chunks", "reasoning-chunks":
+		var value struct {
+			Type  string   `json:"type"`
+			Time0 int64    `json:"time0"`
+			Index int64    `json:"index"`
+			DT    []int64  `json:"dt"`
+			Texts []string `json:"texts"`
+		}
+		if err := DecodeStrict(data, &value); err != nil {
+			return err
+		}
+		// A packed run stores the first text at time0 and one inter-chunk gap
+		// per subsequent text, so dt has exactly one fewer entry than texts
+		// (assistant-stream AssistantStreamAccumulator.push).
+		if value.Time0 < 0 || value.Index < 0 || len(value.Texts) == 0 || len(value.DT) != len(value.Texts)-1 {
+			return fmt.Errorf("%w: invalid %s record", ErrInvalid, head.Type)
+		}
+		r.Type, r.Index, r.Texts = head.Type, value.Index, value.Texts
+		return nil
+	case "tool-call-chunks":
+		var value struct {
+			Type  string   `json:"type"`
+			Time0 int64    `json:"time0"`
+			Index int64    `json:"index"`
+			DT    []int64  `json:"dt"`
+			ID    string   `json:"id"`
+			Name  string   `json:"name,omitempty"`
+			Args  []string `json:"args"`
+		}
+		if err := DecodeStrict(data, &value); err != nil {
+			return err
+		}
+		if value.Time0 < 0 || value.Index < 0 || value.ID == "" || len(value.Args) == 0 || len(value.DT) != len(value.Args)-1 {
+			return fmt.Errorf("%w: invalid tool-call-chunks record", ErrInvalid)
+		}
+		r.Type, r.Index, r.ID, r.Name, r.Args = head.Type, value.Index, value.ID, value.Name, value.Args
+		return nil
+	case "chunk":
+		var value struct {
+			Type  string          `json:"type"`
+			Time  int64           `json:"time"`
+			Chunk json.RawMessage `json:"chunk"`
+		}
+		if err := DecodeStrict(data, &value); err != nil {
+			return err
+		}
+		if value.Time < 0 || !validStreamChunk(value.Chunk) {
+			return fmt.Errorf("%w: invalid chunk record", ErrInvalid)
+		}
+		r.Type, r.Chunk = head.Type, value.Chunk
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown assistant stream record %q", ErrInvalid, head.Type)
+	}
+}
+
 type AssistantMessageEvent struct {
-	Turn    int64            `json:"turn"`
-	Step    int64            `json:"step"`
-	Message AssistantMessage `json:"message"`
-	Usage   *TokenUsage      `json:"usage,omitempty"`
+	Turn    int64                   `json:"turn"`
+	Step    int64                   `json:"step"`
+	Message AssistantMessage        `json:"message"`
+	Stream  []AssistantStreamRecord `json:"stream"`
+	Usage   *TokenUsage             `json:"usage,omitempty"`
 }
 type AssistantMessage struct {
 	ID      string         `json:"id"`
@@ -145,6 +285,7 @@ type AssistantMessage struct {
 type TokenUsage struct {
 	InputTokens      int64  `json:"inputTokens"`
 	OutputTokens     int64  `json:"outputTokens"`
+	TotalTokens      *int64 `json:"totalTokens,omitempty"`
 	CacheReadTokens  *int64 `json:"cacheReadTokens,omitempty"`
 	CacheWriteTokens *int64 `json:"cacheWriteTokens,omitempty"`
 	ReasoningTokens  *int64 `json:"reasoningTokens,omitempty"`
@@ -213,7 +354,10 @@ func (header EpochHeader) valid() bool {
 		}
 		for _, tool := range tools {
 			var fields map[string]json.RawMessage
-			if DecodeStrict(tool, &fields) != nil || !blockHasKeys(fields, "name", "description", "input_schema") {
+			// The pinned runtime snapshots model-facing tool definitions with
+			// the provider schema key `parameters` (dsh-llm ToolDefinition),
+			// not OAP's own `input_schema`.
+			if DecodeStrict(tool, &fields) != nil || !blockHasKeys(fields, "name", "description", "parameters") {
 				return false
 			}
 		}
@@ -290,6 +434,15 @@ func (event Event) Validate() error {
 	if event.Type == "" || event.Seq < 0 || event.Time < 0 || len(event.Data) == 0 || (event.Ignorable != nil && !*event.Ignorable) {
 		return fmt.Errorf("%w: invalid event envelope", ErrInvalid)
 	}
+	// An event this adapter recognises but does not project is observed-only
+	// evidence, exactly like an `ignorable` omission: it carries no projection
+	// obligation, so neither its envelope metadata nor its payload is
+	// interpreted. The pin appends runtime-context system messages to the
+	// transcript surface (`surfaceOp` append/replace, agent-loop/runtime-context),
+	// so validating surface bookkeeping here would reject every real turn.
+	if pinnedObservedOnlyEvents[event.Type] {
+		return nil
+	}
 	surface := event.Type == "user/message" || event.Type == "assistant/message" || event.Type == "tool/result"
 	if !surface && (event.SourceEventSeqs != nil || len(event.SurfaceOp) > 0) {
 		return fmt.Errorf("%w: surface metadata on non-surface event", ErrInvalid)
@@ -314,8 +467,8 @@ func (event Event) Validate() error {
 		target = &UserMessage{}
 	case "agent/inbox/spliced":
 		target = &InboxSpliced{}
-	case "assistant/chunk":
-		target = &AssistantChunk{}
+	case "assistant/attempt":
+		target = &AssistantAttempt{}
 	case "assistant/message":
 		target = &AssistantMessageEvent{}
 	case "tool/call":
@@ -331,6 +484,13 @@ func (event Event) Validate() error {
 	case "session/end-seed":
 		target = &struct{}{}
 	default:
+		// Events the pin recognises but this adapter deliberately does not
+		// project are observed-only evidence, exactly like an `ignorable`
+		// omission: they must not fail the run. Anything outside both sets is
+		// unknown-required and fails closed.
+		if pinnedObservedOnlyEvents[event.Type] {
+			return nil
+		}
 		if event.Ignorable != nil && *event.Ignorable {
 			return nil
 		}
@@ -360,9 +520,9 @@ func (event Event) Validate() error {
 		if data.Turn <= 0 || data.Step <= 0 {
 			return fmt.Errorf("%w: invalid step boundary", ErrInvalid)
 		}
-	case *AssistantChunk:
-		if data.Turn <= 0 || data.Step <= 0 || !validStreamChunk(data.Chunk) {
-			return fmt.Errorf("%w: invalid assistant/chunk", ErrInvalid)
+	case *AssistantAttempt:
+		if data.Turn <= 0 || data.Step <= 0 {
+			return fmt.Errorf("%w: invalid assistant/attempt", ErrInvalid)
 		}
 	case *UserMessage:
 		fields := object()
@@ -398,7 +558,10 @@ func (event Event) Validate() error {
 				validContent = blocksOf(messageFields["content"])
 			}
 		}
-		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "assistant" || data.Message.Source.Kind != "model" || !validSource(data.Message.Source) || !validContent || (data.Usage != nil && !validUsage(*data.Usage)) {
+		// The compact stream is required: assistant/message carries the settled
+		// model stream, so a frame without it cannot be projected faithfully.
+		_, hasStream := fields["stream"]
+		if data.Turn <= 0 || data.Step <= 0 || !hasStream || data.Message.ID == "" || data.Message.Role != "assistant" || data.Message.Source.Kind != "model" || !validSource(data.Message.Source) || !validContent || (data.Usage != nil && !validUsage(*data.Usage)) {
 			return fmt.Errorf("%w: invalid assistant/message", ErrInvalid)
 		}
 	case *ToolCall:
@@ -549,7 +712,7 @@ func validUsage(usage TokenUsage) bool {
 	if usage.InputTokens < 0 || usage.OutputTokens < 0 {
 		return false
 	}
-	for _, value := range []*int64{usage.CacheReadTokens, usage.CacheWriteTokens, usage.ReasoningTokens} {
+	for _, value := range []*int64{usage.TotalTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.ReasoningTokens} {
 		if value != nil && *value < 0 {
 			return false
 		}

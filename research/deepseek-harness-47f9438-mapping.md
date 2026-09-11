@@ -69,44 +69,44 @@ Implementation status:
 ## Provenance
 
 - Repository: `https://github.com/deepseek-ai/deepseek-harness`
-- Implementation target commit: `47f943859bef60e4160492346772ded9b24f765a`
-- Exact commit title: `Merge pull request #2519 from deepseek-harness/feat/npm-public`
-- Commit date: 2026-08-13
-- Commit tree: `f904efab9ef435201d6ba4da88a34d6366568272`
-- Commit body records release `dsh@0.1.0-rc.5` and public publication of the
-  dsh package family. That release text is not the commit title.
-- Newer inspected candidate: `82a5fd61a7cf5c293cec4bdff68f455398d685e9`
-  (2026-09-07, release `0.1.3-alpha.2`) — design signal only; the target
-  commit above is normative.
+- Implementation target: release `dsh-v0.1.5-rc.2`
+- Tag commit: `fb2c4b9e698e30edb738bca4cf0618587db7d203`
+  (`Merge pull request #3978 from deepseek-harness/worktree/release-dsh-0.1.5-rc.2`)
+- Tag date: 2026-09-10
+- Tag commit tree: `bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38`
+- Prior pin, retained below as superseded evidence:
+  `47f943859bef60e4160492346772ded9b24f765a` (2026-08-13, tree
+  `f904efab9ef435201d6ba4da88a34d6366568272`).
 
 Reproduce the pin:
 
 ```sh
 git clone https://github.com/deepseek-ai/deepseek-harness.git dsh
-git -C dsh checkout 47f943859bef60e4160492346772ded9b24f765a
+git -C dsh checkout fb2c4b9e698e30edb738bca4cf0618587db7d203
 git -C dsh show -s --format='%H%n%s%n%T' HEAD
-# 47f943859bef60e4160492346772ded9b24f765a
-# Merge pull request #2519 from deepseek-harness/feat/npm-public
-# f904efab9ef435201d6ba4da88a34d6366568272
+# fb2c4b9e698e30edb738bca4cf0618587db7d203
+# Merge pull request #3978 from deepseek-harness/worktree/release-dsh-0.1.5-rc.2
+# bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38
 ```
 
-Normative inspected sources and exact blobs:
+Normative inspected sources and exact blobs at the 0.1.5-rc.2 pin:
 
 | Source | Blob | Contract evidence |
 |---|---|---|
-| `packages/sdk/protocol/src/types.ts` | `533b5f23c5f019db924647916ffcde4a144541d5` | request, result, and notification wire types |
-| `packages/sdk/protocol/src/transport.ts` | `36574f46bf3e34738be045408e25bb79932ff609` | native newline JSON-RPC transport |
-| `packages/sdk/server/src/server.ts` | `195caa908de0343b59244ae966b4b7afe3cf93d2` | dispatch, lazy sessions, prompt receipt, notifications, teardown |
-| `packages/core/session/src/types.ts` | `17aacd1dfc2f3a9d241a2fbdea59263323f57d51` | durable session-event envelope and turn/step lifecycle |
-| `packages/core/session/src/known-event-types.ts` | `d65935f1b86934b1de957aa26f9032c296510d3c` | recognized event vocabulary and unknown-event rule |
-| `packages/core/agent/src/types.ts` | `b54e56ea8f9dc61674167dff98dbbe7dc5c857e4` | durable `agent/inbox/spliced` event |
-| `packages/core/agent/src/inbox.ts` | `c6b9204c92f497ae90b4e058fb6e0905427c4c8d` | synchronous append, claim deletion, and live notifications |
-| `packages/core/agent/src/runtime-types.ts` | `7d713f8c77112f8e74150bc060ec677bb5107f90` | runtime-only `agent/inbox/claimed` event |
-| `packages/core/agent-loop/src/agent.ts` | `668ef6582657ed0e1e4420777696ee50251371ad` | status, turn ordering, step entry, and terminal reasons |
-| `packages/llm/llm/src/message.ts` | `608b56475df8dfdef72e104f180cf4dd024eb0be` | stable message identity and direct-user source shape |
-| `packages/llm/llm/src/types.ts` | `326db1cb1473cb435ec98425c2df359977eba4fa` | content, finish, and usage vocabulary |
-| `packages/core/session/src/invariant.ts` | `da7cd55964b7b49fc00d6bab0a65d50994b4f2c3` | turn/step/call relational validation |
-| `packages/core/session/src/surface.ts` | `ba6c2dda800f36d64b370a7fac375db3f4486334` | append-surface message projection |
+| `packages/sdk/protocol/src/types.ts` | `605b97cc6945397563e6351e03ffde7a9436b23f` | request, result, and notification wire types; adds `reasoningEffort`, image blocks |
+| `packages/sdk/protocol/src/transport.ts` | `36574f46bf3e34738be045408e25bb79932ff609` | native newline JSON-RPC transport (unchanged) |
+| `packages/sdk/server/src/server.ts` | `1cc17059c9254c6bd4f809441bd9e43bc26a7d2d` | dispatch, initialize validation, lazy sessions, prompt receipt, notifications |
+| `packages/core/session/src/types.ts` | `139fccd5a5660a8d0c4e1ef95f4e4d64b274230f` | durable session-event envelope; `assistant/attempt`, `assistant/message.stream` |
+| `packages/core/session/src/known-event-types.ts` | `dd6411240b0527ec98d5ff51bcfb3e8b5f47e715` | recognized event vocabulary; `assistant/chunk` retired |
+| `packages/core/agent/src/types.ts` | `d0be69ac58747a042ac937a250878705bcbf0d8f` | durable `agent/inbox/spliced` event |
+| `packages/core/agent-loop/src/inbox.ts` | `db89cd3072677ebd6acbd40f7d496bab15c19cef` | synchronous append and claim deletion (moved from `core/agent/src/`) |
+| `packages/core/agent/src/runtime-types.ts` | `31338e8d8da6ccb2e99fd459abbe2238bf5c1736` | runtime-only `agent/inbox/claimed` event |
+| `packages/core/agent-loop/src/agent.ts` | `06e1f51b57277ba296698b6c8b810f0e455e3695` | status, turn ordering, step entry, attempt settlement, terminal reasons |
+| `packages/llm/llm/src/message.ts` | `6f920fe0191d17c0a272fbc881eb7e37f8142815` | stable message identity and direct-user source shape |
+| `packages/llm/llm/src/types.ts` | `bfddde7fc4b2a08144e2f76f8ca59e61a2b4e37f` | content, finish, and usage vocabulary |
+| `packages/llm/llm/src/assistant-stream.ts` | `5d878020e8a2eab1a1a84d1867bf2923a409527a` | `AssistantStreamRecord` compact union (new) |
+| `packages/core/session/src/invariant.ts` | `6ed0b6b3c5abf84dd4129281ed6029880c7e6ad3` | turn/step/call relational validation |
+| `packages/core/session/src/surface.ts` | `5d8ce74fe2461cb2f777a7bc7556795f337f0c03` | append-surface message projection |
 
 The project is a Cordis plugin runtime ("everything is a plugin") in developer
 preview with declared compatibility-breaking changes. The commit, tree, and
@@ -181,8 +181,9 @@ carries a per-session monotonic `seq` and epoch-ms `time`. The core vocabulary
 includes:
 
 - `turn/start`, `turn/end { reason }`, `step/start`, and `step/end`;
-- `user/message`, raw `assistant/chunk`, assembled `assistant/message` with
-  optional usage, `tool/call`, and `tool/result`;
+- `user/message`, assembled `assistant/message` with a compact `stream` and
+  optional usage, evidence-only `assistant/attempt`, `tool/call`, and
+  `tool/result`;
 - `agent/inbox/spliced`, the durable pending-inbox mutation;
 - log snapshots including `todo/write`, `request/header`, and
   `request/context`, plus `session/end-seed`;
@@ -259,7 +260,8 @@ merely from adjacency, `session.status running`, or a deletion splice.
 | successful first `initialize` | endpoint ready with frozen descriptor | emulated freeze over mutable native method |
 | prompt receipt plus synchronous insertion | submission accepted/enqueued | normalized; not started or independently durable |
 | buffered `turn/start`, matching `step/start` + direct-user `user/message` | owned `run.started` and successful started admission | normalized, fail-closed proof |
-| `assistant/chunk` | content delta | native token-level event |
+| `assistant/message.stream` | content delta | native; settlement-batched compact records |
+| `assistant/attempt` | (no content projection) | evidence only; never model-visible |
 | `assistant/message` | assembled output and optional usage | native |
 | `tool/call` then `tool/result` | action requested then terminal | degraded; no native started/progress observation |
 | `turn/end { reason: completed }` | successful terminal candidate | native candidate only |
@@ -399,3 +401,108 @@ correctly); the pinned runtime's model-invocation path is not reached in any
 composition exercised here. Not an adapter defect. Follow-up needed to
 determine the required driver step or carrier before this gate can assert a
 full turn. The gate remains skip-by-default and CI-safe.
+
+## Re-pin to 0.1.5-rc.2 (2026-09-10)
+
+Eleven of the thirteen previously pinned sources changed, one moved, and the
+streaming wire changed shape. Findings that alter the adapter contract:
+
+1. **`assistant/chunk` is retired; streaming settles per attempt.** The
+   recognized vocabulary drops `assistant/chunk` and adds `assistant/attempt`
+   (`{turn, step, stream: AssistantStreamRecord[]}`). `assistant/message` gains
+   a required `stream` member of the same type. `AssistantStreamRecord` is a
+   lossless compact union of packed delta runs — `text-chunks` /
+   `reasoning-chunks` (`time0`, `index`, `dt[]`, `texts[]`),
+   `tool-call-chunks` (`time0`, `index`, `dt[]`, `id`, `name?`, `args[]`), and
+   a raw `chunk` for every other `StreamChunk` — appended once when the
+   attempt settles (`packages/core/agent-loop/src/agent.ts`). The SDK server
+   forwards durable `session/event` frames only, so **there is no live
+   per-token event on this boundary**; the adapter derives deltas from the
+   settled attempt/message stream. `run.streaming` is therefore genuinely
+   "native but settlement-batched", not live-token streaming.
+2. **`initialize` is now stateful and validated.** `reasoningEffort`
+   (optional non-empty string) joins `maxTokens`; the server resolves the
+   provider/model/reasoning route up front and requires initialize before
+   `session/prompt` ("SDK server is not initialized"). The adapter's one-shot
+   initialize remains correct; it may now surface a route error at open.
+3. **`session/prompt` accepts inline images.** `contentBlocks` is now
+   `ContentBlock | SdkEncodedImageBlock` (`{type:'image', data, mimeType}`),
+   admitted into the runtime's attachment store. The adapter's text-only
+   surface is unchanged; an image block from an OAP caller stays unsupported.
+4. **New durable event vocabulary** beyond the chunk rename:
+   `deliverables/presented`, `feedback/message-put`, `feedback/message-delete`,
+   `model/selection`, `session-log-deepseek/delivery-accepted`,
+   `tool/ptc-dispatch`, `tool/ptc-dispatch-start`, plus the subagent/team/
+   tool-workflow families. Unknown-event policy is unchanged: `ignorable`
+   still gates omission.
+5. **Source relocation:** `core/agent/src/inbox.ts` moved to
+   `core/agent-loop/src/inbox.ts`; the `agent/inbox/spliced` event and the
+   synchronous append/claim semantics the admission proof relies on are
+   unchanged.
+
+The adapter, its corpus, and the process gates were re-pinned accordingly.
+
+## Launch contract change at 0.1.5-rc.2
+
+The process boundary changed and the adapter/gate were updated to match:
+
+- **Positional cordis.yml is gone.** The runtime is now a profile launcher:
+  `dsh --profile <name>` boots "an ordered stack of plugin-bundle patch
+  layers" under `$DSH_HOME/profiles`, with repeatable `--patch <path>`
+  overlays. The pinned SDK boundary is the shipped **`sdk` profile** —
+  `@deepseek-ai/dsh-base` patched by `@deepseek-ai/dsh-sdk-app`, which mounts
+  `dsh-sdk-jsonrpc-server` (its `cordis.patch.yml` states "Stdout belongs
+  exclusively to JSON-RPC"). Verified live: `--profile sdk` answers
+  `initialize` with `serverInfo.name = deepseek-harness-sdk-runtime`,
+  `version 0.0.1` — unchanged.
+- **`$DSH_HOME` is now part of the boundary.** The gate isolates it, along
+  with `DSH_CWD` and `DSH_SESSION_ROOT`.
+- **Loopback redirection works through the stock provider.** The built-in
+  deepseek adapter reads `DEEPSEEK_BASE_URL`/`DEEPSEEK_API_KEY`; setting
+  `DEEPSEEK_BASE_URL` to the loopback mock makes the runtime POST
+  `/v1/chat/completions`. This is the vendor's own keyless-smoke recipe. It
+  replaces the old `dsh-llm-pi-ai` composition, which the runtime never drove.
+- **Artifact renamed.** The build now emits
+  `deepseek-harness-sdk-runtime-linux-x64` (plus a `-rg` sibling) instead of
+  `dsh-jsonrpc-agent-pkg-linux-x64`.
+
+With the new profile launch, **the integration gate completes a full turn**:
+initialize, admission, streamed content deltas, `assistant/message`,
+`turn/end {completed}`, idle — the model-invocation stall recorded against the
+previous pin does not reproduce at 0.1.5-rc.2.
+
+## Codec corrections found by the live gate (2026-09-11)
+
+The re-pin's hand-authored corpus and the production codec had diverged from
+the pinned runtime. Because the Go transport strictly decodes every inbound
+notification, the first divergence aborted the process rather than surfacing as
+a decode error: the frame after `step/start` is a `system/message`
+observed-only event carrying `surfaceOp:"append"`, which the codec rejected as
+"surface metadata on non-surface event". The decode error closed the client
+pipes, the runtime's next notification died on `EPIPE`, and the child exited 1
+— so the mock saw zero requests and the gate read as a stall. Corrected:
+
+1. **Observed-only events tolerate surface metadata.** The pin attaches
+   surface coordinates (`append` and `{op:"replace",startSeq,endSeq}`) to
+   events that are never projected. `Event.Validate` now returns after the
+   envelope check for any type in the pinned vocabulary (`ObservedOnly`), and
+   the reducer's default branch tolerates the same set instead of failing the
+   run with `deepseek_unknown_event`.
+2. **`dt` are gaps, not members.** `validateRun` in
+   `packages/llm/llm/src/assistant-stream.ts` requires
+   `len(dt) == len(texts) - 1` for `text-chunks`/`reasoning-chunks` and
+   `len(dt) == len(args) - 1` for `tool-call-chunks`. The codec had required
+   equality. `dt` is never consumed by the reducer, so no OAP mapping changed,
+   but the corpus was not byte-faithful to the harness.
+3. **Tool snapshots key `parameters`, not `input_schema`.** The runtime's
+   `epoch/header` tool snapshot uses a different schema field name than OAP's
+   own type; strict decoding rejected every tool snapshot.
+4. **`TokenUsage` carries `totalTokens`.** The runtime emits it; strict
+   decoding rejected it. It is now an optional, evidence-only field.
+5. **The gate asserted with the wrong content reader.** `Content.Parts()`
+   cannot succeed on the lone-text-part shape that both the adapter and the
+   corpus canonicalize to a bare string; the gate now uses `Content.Text()`.
+   This was a harness bug, not an adapter defect.
+
+Outcome: both gates PASS at `fb2c4b9e69`, and the DeepSeek package, its
+corpus, and the repository acceptance run are green under Go 1.27.

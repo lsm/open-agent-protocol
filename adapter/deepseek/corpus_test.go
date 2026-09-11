@@ -29,23 +29,24 @@ import (
 // and source blobs frozen in research/deepseek-harness-47f9438-mapping.md.
 const (
 	dshCorpusRepository = "https://github.com/deepseek-ai/deepseek-harness"
-	dshCorpusTag        = "47f9438"
-	dshCorpusCommit     = "47f943859bef60e4160492346772ded9b24f765a"
-	dshCorpusCommitTree = "f904efab9ef435201d6ba4da88a34d6366568272"
+	dshCorpusTag        = "fb2c4b9"
+	dshCorpusCommit     = "fb2c4b9e698e30edb738bca4cf0618587db7d203"
+	dshCorpusCommitTree = "bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38"
 
-	dshBlobSDKProtocolTypes     = "533b5f23c5f019db924647916ffcde4a144541d5"
+	dshBlobSDKProtocolTypes     = "605b97cc6945397563e6351e03ffde7a9436b23f"
 	dshBlobSDKProtocolTransport = "36574f46bf3e34738be045408e25bb79932ff609"
-	dshBlobSDKServer            = "195caa908de0343b59244ae966b4b7afe3cf93d2"
-	dshBlobCoreSessionTypes     = "17aacd1dfc2f3a9d241a2fbdea59263323f57d51"
-	dshBlobCoreKnownEvents      = "d65935f1b86934b1de957aa26f9032c296510d3c"
-	dshBlobCoreAgentTypes       = "b54e56ea8f9dc61674167dff98dbbe7dc5c857e4"
-	dshBlobCoreAgentInbox       = "c6b9204c92f497ae90b4e058fb6e0905427c4c8d"
-	dshBlobCoreAgentRuntime     = "7d713f8c77112f8e74150bc060ec677bb5107f90"
-	dshBlobCoreAgentLoop        = "668ef6582657ed0e1e4420777696ee50251371ad"
-	dshBlobLLMMessage           = "608b56475df8dfdef72e104f180cf4dd024eb0be"
-	dshBlobLLMTypes             = "326db1cb1473cb435ec98425c2df359977eba4fa"
-	dshBlobCoreSessionInvariant = "da7cd55964b7b49fc00d6bab0a65d50994b4f2c3"
-	dshBlobCoreSessionSurface   = "ba6c2dda800f36d64b370a7fac375db3f4486334"
+	dshBlobSDKServer            = "1cc17059c9254c6bd4f809441bd9e43bc26a7d2d"
+	dshBlobCoreSessionTypes     = "139fccd5a5660a8d0c4e1ef95f4e4d64b274230f"
+	dshBlobCoreKnownEvents      = "dd6411240b0527ec98d5ff51bcfb3e8b5f47e715"
+	dshBlobCoreAgentTypes       = "d0be69ac58747a042ac937a250878705bcbf0d8f"
+	dshBlobCoreAgentInbox       = "db89cd3072677ebd6acbd40f7d496bab15c19cef"
+	dshBlobCoreAgentRuntime     = "31338e8d8da6ccb2e99fd459abbe2238bf5c1736"
+	dshBlobCoreAgentLoop        = "06e1f51b57277ba296698b6c8b810f0e455e3695"
+	dshBlobLLMMessage           = "6f920fe0191d17c0a272fbc881eb7e37f8142815"
+	dshBlobLLMTypes             = "bfddde7fc4b2a08144e2f76f8ca59e61a2b4e37f"
+	dshBlobLLMAssistantStream   = "5d878020e8a2eab1a1a84d1867bf2923a409527a"
+	dshBlobCoreSessionInvariant = "6ed0b6b3c5abf84dd4129281ed6029880c7e6ad3"
+	dshBlobCoreSessionSurface   = "5d8ce74fe2461cb2f777a7bc7556795f337f0c03"
 )
 
 // Every label required by the ledger's "Required evidence corpus" section.
@@ -83,6 +84,7 @@ type dshCorpusSources struct {
 	CoreAgentLoop        string `json:"core_agent_loop_blob"`
 	LLMMessage           string `json:"llm_message_blob"`
 	LLMTypes             string `json:"llm_types_blob"`
+	LLMAssistantStream   string `json:"llm_assistant_stream_blob"`
 	CoreSessionInvariant string `json:"core_session_invariant_blob"`
 	CoreSessionSurface   string `json:"core_session_surface_blob"`
 }
@@ -164,6 +166,7 @@ func pinnedDSHSources() dshCorpusSources {
 		CoreAgentLoop:        dshBlobCoreAgentLoop,
 		LLMMessage:           dshBlobLLMMessage,
 		LLMTypes:             dshBlobLLMTypes,
+		LLMAssistantStream:   dshBlobLLMAssistantStream,
 		CoreSessionInvariant: dshBlobCoreSessionInvariant,
 		CoreSessionSurface:   dshBlobCoreSessionSurface,
 	}
@@ -1140,14 +1143,22 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 			}
 			ok = hasDSHTurnEndKind(decoded, "error") && hasDSHTurnEndKind(decoded, "aborted") && failedRuns >= 2
 		case "streaming-chunks":
-			chunks, mapped := 0, true
+			// Streaming now settles per attempt: the packed text/reasoning runs
+			// and raw chunk ride in the assistant/message stream and project as
+			// content deltas before the completed terminal.
+			records, mapped := 0, true
 			for i := range decoded {
-				if decoded[i].Event != nil && decoded[i].Event.Type == "assistant/chunk" {
-					chunks++
-					mapped = mapped && frames[i].Classification == "mapped" && hasDSHEnvelopeType(*execution, protocol.TypeContentDelta)
+				if decoded[i].Event == nil || decoded[i].Event.Type != "assistant/message" {
+					continue
 				}
+				var message native.AssistantMessageEvent
+				if native.DecodeStrict(decoded[i].Event.Data, &message) != nil || len(message.Stream) == 0 {
+					continue
+				}
+				records += len(message.Stream)
+				mapped = mapped && frames[i].Classification == "mapped"
 			}
-			ok = chunks > 0 && mapped && hasDSHEnvelopeType(*execution, protocol.TypeRunCompleted)
+			ok = records > 0 && mapped && hasDSHEnvelopeType(*execution, protocol.TypeContentDelta) && hasDSHEnvelopeType(*execution, protocol.TypeRunCompleted)
 		case "tool-lifecycle":
 			ok = hasDSHEvent(decoded, "tool/call") && hasDSHEvent(decoded, "tool/result") && hasDSHEnvelopeType(*execution, protocol.TypeActionCallRequested) && hasDSHEnvelopeType(*execution, protocol.TypeActionCallStarted) && hasDSHEnvelopeType(*execution, protocol.TypeActionCallCompleted)
 		case "tool-failed":
@@ -1424,7 +1435,7 @@ func TestDSHCorpusPinConstants(t *testing.T) {
 	if dshCorpusTag == "" || dshCorpusCommit == "" || dshCorpusCommitTree == "" || CapabilityRevision == "" || PinnedVersion == "" {
 		t.Fatal("missing DeepSeek corpus pin")
 	}
-	if dshBlobSDKProtocolTypes == "" || dshBlobSDKProtocolTransport == "" || dshBlobSDKServer == "" || dshBlobCoreSessionTypes == "" || dshBlobCoreKnownEvents == "" || dshBlobCoreAgentTypes == "" || dshBlobCoreAgentInbox == "" || dshBlobCoreAgentRuntime == "" || dshBlobCoreAgentLoop == "" || dshBlobLLMMessage == "" || dshBlobLLMTypes == "" || dshBlobCoreSessionInvariant == "" || dshBlobCoreSessionSurface == "" {
+	if dshBlobSDKProtocolTypes == "" || dshBlobSDKProtocolTransport == "" || dshBlobSDKServer == "" || dshBlobCoreSessionTypes == "" || dshBlobCoreKnownEvents == "" || dshBlobCoreAgentTypes == "" || dshBlobCoreAgentInbox == "" || dshBlobCoreAgentRuntime == "" || dshBlobCoreAgentLoop == "" || dshBlobLLMMessage == "" || dshBlobLLMTypes == "" || dshBlobLLMAssistantStream == "" || dshBlobCoreSessionInvariant == "" || dshBlobCoreSessionSurface == "" {
 		t.Fatal("missing DeepSeek corpus source pin")
 	}
 }

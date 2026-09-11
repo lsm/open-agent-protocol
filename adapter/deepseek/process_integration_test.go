@@ -22,12 +22,21 @@ import (
 )
 
 const (
-	deepseekMockSecret    = "fixture-deepseek-key"
-	deepseekRoute         = "oap-loopback"
-	deepseekModel         = "fixture-model"
+	deepseekMockSecret = "fixture-deepseek-key"
+	// The pinned SDK boundary is the shipped `sdk` profile, which stacks the
+	// dsh-base bundle with the dsh-sdk-app patch layer that mounts
+	// dsh-sdk-jsonrpc-server. The stock deepseek provider reads
+	// DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY, which is how the loopback gate
+	// redirects it.
+	deepseekRoute         = "deepseek-official"
+	deepseekModel         = "deepseek-v4-pro"
 	deepseekSmokeProvider = "deepseek-official"
-	deepseekSmokeModel    = "deepseek-chat"
+	deepseekSmokeModel    = "deepseek-v4-pro"
 )
+
+// deepseekProfileArgs is the pinned launch contract: the runtime boots a
+// profile under $DSH_HOME/profiles rather than a positional composition file.
+func deepseekProfileArgs() []string { return []string{"--profile", "sdk"} }
 
 // TestDeepSeekProcessSmoke is credential-free runtime evidence that a supplied
 // executable starts as the pinned dsh-jsonrpc-agent runtime and completes the
@@ -42,8 +51,7 @@ func TestDeepSeekProcessSmoke(t *testing.T) {
 	}
 	binary := verifiedDeepSeekBinary(t)
 	root := t.TempDir()
-	composition := writeHarnessComposition(t, root, "")
-	implementation := newPinnedDeepSeek(t, binary, root, deepseekEnvironment(t, root, ""), []string{composition}, deepseekSmokeProvider, deepseekSmokeModel)
+	implementation := newPinnedDeepSeek(t, binary, root, deepseekEnvironment(t, root, ""), deepseekProfileArgs(), deepseekSmokeProvider, deepseekSmokeModel)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -89,11 +97,10 @@ func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 	}
 	binary := verifiedDeepSeekBinary(t)
 	mock := providertest.New(t, providertest.Config{OpenAIKey: deepseekMockSecret})
-	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+	mock.Enqueue(providertest.OpenAIChatCompletion, providertest.Success)
 
 	root := t.TempDir()
-	composition := writeHarnessComposition(t, root, mock.OpenAIBaseURL())
-	implementation := newPinnedDeepSeek(t, binary, root, deepseekEnvironment(t, root, deepseekMockSecret), []string{composition}, deepseekRoute, deepseekModel)
+	implementation := newPinnedDeepSeek(t, binary, root, deepseekEnvironment(t, root, mock.OpenAIBaseURL()), deepseekProfileArgs(), deepseekRoute, deepseekModel)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -150,16 +157,19 @@ func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 	if err := events[len(events)-1].DecodePayload(&completed); err != nil {
 		t.Fatal(err)
 	}
-	parts, ok := completed.FinalResponse.Content.Parts()
-	if !ok || len(parts) != 1 || parts[0].Text != providertest.FixtureText {
+	// A lone text part is normalized to bare-string content (the shape the
+	// deepseek corpus fixtures pin), so assert through the text reader rather
+	// than the parts reader.
+	text, ok := completed.FinalResponse.Content.Text()
+	if !ok || text != providertest.FixtureText {
 		t.Fatalf("final response=%s", completed.FinalResponse.Content)
 	}
 	if streamed.String() != providertest.FixtureText {
 		t.Fatalf("streamed response=%q", streamed.String())
 	}
-	requests := mock.RequestsFor(providertest.OpenAIResponses)
-	if len(requests) != 1 || requests[0].Path != providertest.ResponsesPath || requests[0].Model != deepseekModel {
-		t.Fatalf("Responses requests=%d: %+v", len(requests), requests)
+	requests := mock.RequestsFor(providertest.OpenAIChatCompletion)
+	if len(requests) != 1 || requests[0].Path != providertest.ChatCompletionPath || requests[0].Model != deepseekModel {
+		t.Fatalf("chat-completions requests=%d: %+v", len(requests), requests)
 	}
 	if requests[0].Header.Get("Authorization") != "Bearer "+deepseekMockSecret {
 		t.Fatal("unexpected mock authorization")
@@ -221,56 +231,6 @@ func verifiedDeepSeekBinary(t *testing.T) string {
 	return binary
 }
 
-// writeHarnessComposition generates the temporary Cordis composition for one
-// gated run. The pinned runtime has no --config flag: the composition path is
-// the single positional argv element. No console/stdout logger is ever
-// composed so stdout stays pure JSON-RPC; the spine stays tool-free.
-func writeHarnessComposition(t *testing.T, root, providerBaseURL string) string {
-	t.Helper()
-	// The pinned composition format is a top-level YAML sequence of plugin
-	// rows (id/name/config), matching examples/jsonrpc-agent/*.cordis.yml at
-	// the pinned commit.
-	var composition strings.Builder
-	composition.WriteString("- id: sdk-jsonrpc-server\n")
-	composition.WriteString("  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'\n")
-	composition.WriteString("  config:\n")
-	composition.WriteString("    maxTokensAsSuccess: false\n")
-	if providerBaseURL != "" {
-		composition.WriteString("- id: llm-loopback\n")
-		composition.WriteString("  name: '@deepseek-ai/dsh-llm-pi-ai'\n")
-		composition.WriteString("  config:\n")
-		composition.WriteString("    providers:\n")
-		composition.WriteString(fmt.Sprintf("      %s:\n", deepseekRoute))
-		composition.WriteString("        displayName: OAP Loopback Fixture\n")
-		composition.WriteString("        apiKeyEnv: LOOPBACK_API_KEY\n")
-		composition.WriteString("        api: openai-responses\n")
-		composition.WriteString(fmt.Sprintf("        baseURL: %q\n", providerBaseURL))
-		composition.WriteString("        models:\n")
-		composition.WriteString(fmt.Sprintf("          - id: %s\n", deepseekModel))
-		composition.WriteString("            name: OAP loopback fixture\n")
-		composition.WriteString("            contextWindow: 8192\n")
-		composition.WriteString("            maxTokens: 1024\n")
-		composition.WriteString("            input: [text]\n")
-	}
-	composition.WriteString("- id: agent-spine\n")
-	composition.WriteString("  name: '@deepseek-ai/dsh-agent-spine-demo'\n")
-	composition.WriteString("  config:\n")
-	composition.WriteString("    includeHarnessIdentity: false\n")
-	composition.WriteString("    includeRuntimeContext: false\n")
-	composition.WriteString("    persona: ''\n")
-	composition.WriteString("    workspaceContext: false\n")
-	composition.WriteString("    skills:\n")
-	composition.WriteString("      enabled: false\n")
-	composition.WriteString("    toolBash: false\n")
-	composition.WriteString("    toolJobs: false\n")
-	composition.WriteString("    goals: false\n")
-	path := filepath.Join(root, "cordis-composition.yml")
-	if err := os.WriteFile(path, []byte(composition.String()), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func newPinnedDeepSeek(t *testing.T, binary, root string, environment, args []string, provider, model string) *Adapter {
 	t.Helper()
 	workspace := filepath.Join(root, "workspace")
@@ -307,7 +267,7 @@ func newPinnedDeepSeek(t *testing.T, binary, root string, environment, args []st
 // loopback-only NO_PROXY so nothing but the loopback mock is reachable; and no
 // ambient credentials. Only the fixed non-secret placeholder key is injected
 // for the loopback gate.
-func deepseekEnvironment(t *testing.T, root, secret string) []string {
+func deepseekEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 	t.Helper()
 	home := filepath.Join(root, "home")
 	configDir := filepath.Join(root, "config")
@@ -332,12 +292,23 @@ func deepseekEnvironment(t *testing.T, root, secret string) []string {
 		"HTTPS_PROXY=http://127.0.0.1:1",
 		"ALL_PROXY=http://127.0.0.1:1",
 		"NO_PROXY=127.0.0.1,localhost",
+		// The runtime boots a profile under $DSH_HOME/profiles and writes
+		// sessions under $DSH_SESSION_ROOT; both stay inside the isolated
+		// temporary root.
+		"DSH_HOME=" + filepath.Join(root, "dsh-home"),
+		"DSH_CWD=" + root,
+		"DSH_SESSION_ROOT=" + filepath.Join(root, "dsh-sessions"),
 	}
 	if path := os.Getenv("PATH"); path != "" {
 		environment = append(environment, "PATH="+path)
 	}
-	if secret != "" {
-		environment = append(environment, fmt.Sprintf("LOOPBACK_API_KEY=%s", secret))
+	if loopbackBaseURL != "" {
+		// The stock deepseek provider reads these; the pinned runtime appends
+		// /chat/completions to the base URL.
+		environment = append(environment,
+			"DEEPSEEK_API_KEY="+deepseekMockSecret,
+			"DEEPSEEK_BASE_URL="+loopbackBaseURL,
+		)
 	}
 	return environment
 }
