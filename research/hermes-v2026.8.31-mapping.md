@@ -459,3 +459,56 @@ a `not_interrupted` result.
 Post-fix verification: full package suite, 10/10 corpus stress,
 120/120 malformed-frame stress, race x2, and the full repository battery
 green.
+
+## Live-gate findings (2026-09-10)
+
+The pinned checkout was provisioned (release commit
+`29112bef099274229cadff79cdff7bf7b99c4b77`, tree
+`daaffc303ae437041b7f76be17c5f61b14f2ce99`; `tui_gateway/entry.py` blob
+`27fd051b8aff7cb6e6ddd9103eb14c06d7b2c0e8` — all re-verified) with its core
+dependencies installed into a virtualenv, and both gates were run live for
+the first time.
+
+### Fixed: two strict-decode defects that failed every real turn
+
+1. **`usage` is an extensible status-bar readout.** The pinned gateway adds
+   `active_subagents` (server.py:7351), and may add `avg_latency_s`,
+   `avg_tps`, `dev_credits_spent_micros`, each guarded so it "must never
+   break usage reporting". The adapter strict-decoded the dict, so the first
+   real `message.complete` failed the run with
+   `unknown field "active_subagents"`. `Usage` now has a tolerant
+   `UnmarshalJSON` and models `active_subagents`; the rest of the payload
+   stays strict.
+2. **`error_surface` carries the failing provider and model.**
+   `build_error_surface_*` captures them (`error_surface.py:145-151`) and
+   the adapter's struct modelled only `layer`/`code`/`retryable`, so an
+   error turn failed the transport with `unknown field "provider"`.
+   `ErrorSurface` now models `provider` and `model`.
+
+Both are pinned by `adapter/hermes/internal/native` regression tests that
+fail against the old code (`TestMessageCompleteUsageToleratesExtensibleReadouts`,
+`TestErrorSurfaceCarriesProviderIdentity`).
+
+### Smoke gate: PASS
+
+`OAP_HERMES_SMOKE=1`: credential-free `gateway.ready` handshake (fresh
+replay epoch), dual-identity `session.create`, idle state, clean stdin-EOF
+teardown.
+
+### Integration gate: provider redirection is ineffective — recorded
+
+`OAP_HERMES_INTEGRATION=1` no longer fails on decode, but the turn reaches no
+provider: the mock receives zero requests and the run fails
+`hermes_timeout: Connection error`. Cause: for a *named* provider,
+`OPENAI_BASE_URL` is deliberately ignored as stale env poisoning
+(`agent/auxiliary_client.py:6200-6219` warns exactly about this), so the
+model `gpt-5.6-sol` resolves to the built-in `openai` provider and the
+gateway dials the real endpoint. **With the gate's dead-proxy guard removed,
+the request reached the real `api.openai.com` and returned `HTTP 401` — so
+the gate's hermeticity currently rests on those proxy variables, and its
+loopback redirection does not work.**
+
+Redirecting this gateway requires configuring a custom provider (base_url +
+models) in Hermes's own config, not an environment variable. Until that is
+implemented the gate stays skip-by-default; the dead-proxy guard must not be
+removed. Recorded, not silently compensated.

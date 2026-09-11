@@ -90,6 +90,11 @@ type ErrorSurface struct {
 	Layer     string `json:"layer"`
 	Code      string `json:"code"`
 	Retryable bool   `json:"retryable"`
+	// Provider and Model name the failing session's identity, captured at
+	// classification time (error_surface.py:145-151); present only when
+	// non-empty.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // Usage is the pinned usage dict; the context fields appear only when a
@@ -107,6 +112,24 @@ type Usage struct {
 	ContextMax     *int64 `json:"context_max,omitempty"`
 	ContextPercent *int64 `json:"context_percent,omitempty"`
 	Compressions   *int64 `json:"compressions,omitempty"`
+	// ActiveSubagents is the live background/async subagent count the pinned
+	// gateway adds as a status-bar readout (server.py:7351).
+	ActiveSubagents *int64 `json:"active_subagents,omitempty"`
+}
+
+// UnmarshalJSON tolerates unknown keys in the usage dict. The pinned gateway
+// builds it as an extensible status-bar readout — avg_latency_s, avg_tps,
+// active_subagents, dev_credits_spent_micros — each addition guarded so it
+// "must never break usage reporting". Strict decoding here would fail an
+// entire run on a key the gateway itself treats as advisory.
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usageAlias Usage
+	var value usageAlias
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*u = Usage(value)
+	return nil
 }
 
 type UsageTickPayload struct {

@@ -298,3 +298,20 @@ deterministic no-agent fixture. The real-process gate therefore does not claim
 to prove extension discovery behavior. Production `--no-extensions` enforcement
 and rejection of caller extension flags are instead unit-tested at the adapter
 argv/config boundary.
+
+## Live-gate outcome (2026-09-10)
+
+Both gates were run live against the released `pi-linux-x64` artifact for
+v0.85.1, whose `pi` launcher is a self-contained ELF binary.
+
+- Artifact digest: `pi-linux-x64.tar.gz`
+  = `494e498f47d74d21f40b3386f6a5e921a3d49531a169cab55bbdaca0ea1fe25a`,
+  matching the release's published `SHA256SUMS`.
+- `OAP_PI_SMOKE=1`: **PASS** — credential-free startup and readiness.
+- `OAP_PI_INTEGRATION=1`: **PASS** — one prompt through the public adapter
+  against the in-process loopback Responses mock; started admission,
+  streamed output, terminal settlement, exact loopback request, clean close.
+- Repeated 3x back to back: PASS.
+
+No adapter defect surfaced. Pi is the first tranche whose real-process gates
+were fully exercised without finding a mismatch.
