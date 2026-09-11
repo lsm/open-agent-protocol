@@ -260,8 +260,13 @@ func TestLimitedBufferBoundsAndRedacts(t *testing.T) {
 	if err != nil || written != len(input) || !strings.Contains(buffer.String(), "truncated") {
 		t.Fatalf("write=%d err=%v value=%q", written, err, buffer.String())
 	}
-	if got := redact("x-api-key=secret"); got != "x-api-key=[REDACTED]" {
-		t.Fatalf("redact: %q", got)
+	for input, want := range map[string]string{
+		"x-api-key=secret":                   "x-api-key=[REDACTED]",
+		"Authorization: Bearer secret-value": "Authorization: [REDACTED]",
+	} {
+		if got := redact(input); got != want {
+			t.Fatalf("redact %q = %q want %q", input, got, want)
+		}
 	}
 }
 

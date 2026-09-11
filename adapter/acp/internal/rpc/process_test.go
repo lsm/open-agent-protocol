@@ -258,7 +258,7 @@ func TestLimitedBufferBoundsAndRedacts(t *testing.T) {
 		t.Fatalf("write=%d err=%v value=%q", written, err, buffer.String())
 	}
 	for input, want := range map[string]string{
-		"x-api-key=secret": "x-api-key=[REDACTED]", "Authorization: Bearer": "Authorization: [REDACTED]", "auth_token = abc": "auth_token = [REDACTED]",
+		"x-api-key=secret": "x-api-key=[REDACTED]", "Authorization: Bearer": "Authorization: [REDACTED]", "Authorization: Bearer secret-value": "Authorization: [REDACTED]", "auth_token = abc": "auth_token = [REDACTED]",
 		// Structured error records quote the key and value; the quote after the
 		// key must not defeat redaction.
 		`{"api_key":"secret-value"}`:           `{"api_key":"[REDACTED]"}`,
