@@ -28,6 +28,7 @@ type interactionState struct {
 	allowCancel              bool
 	choices                  map[string]bool
 	questions                []protocol.InputQuestion
+	toolCallID               protocol.ToolCallID
 	resolved                 bool
 }
 type recoveryExpectation struct {
@@ -709,12 +710,14 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	var allowCancel bool
 	var choices map[string]bool
 	var questions []protocol.InputQuestion
+	var toolCallID protocol.ToolCallID
 	if kind == "permission" {
 		var p protocol.PermissionRequestedPayload
 		_ = e.DecodePayload(&p)
 		id = p.InteractionID
 		requested = p.RequestedBy
 		responded = p.RespondedBy
+		toolCallID = p.ToolCallID
 		choices = make(map[string]bool, len(p.Choices))
 		for _, choice := range p.Choices {
 			if choice.ID != "" {
@@ -735,6 +738,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 		responded = p.RespondedBy
 		allowCancel = p.AllowCancel
 		questions = p.Questions
+		toolCallID = p.ToolCallID
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
 		// A tool-bound prompt must not contradict itself between the envelope and
 		// the payload, as is already enforced for permission requests.
@@ -748,7 +752,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	if _, ok := r.interactions[id]; ok {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction id was requested more than once")
 	}
-	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices, questions: questions}
+	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices, questions: questions, toolCallID: toolCallID}
 }
 func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, kind string) {
 	id, requested, responded := interactionFields(e, kind)
@@ -862,6 +866,16 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 		_ = e.DecodePayload(&p)
 		if p.Outcome == protocol.InteractionResolved && p.ChoiceID != "" && !x.choices[p.ChoiceID] {
 			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/choice_id", "resolution event selects a choice the permission did not offer", "offered choice", p.ChoiceID, string(id))
+		}
+		// The authoritative resolution must keep the request's tool binding; a
+		// present field that names a different tool has reassigned it. An omitted
+		// field carries no binding and is judged only through the request's own
+		// envelope/payload agreement.
+		if e.ToolCallID != "" && e.ToolCallID != x.toolCallID {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/tool_call_id", "resolution envelope reassigns the request's tool binding", string(x.toolCallID), string(e.ToolCallID))
+		}
+		if p.ToolCallID != "" && p.ToolCallID != x.toolCallID {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/tool_call_id", "resolution payload reassigns the request's tool binding", string(x.toolCallID), string(p.ToolCallID))
 		}
 	}
 	x.resolved = true
