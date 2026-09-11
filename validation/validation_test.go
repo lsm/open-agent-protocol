@@ -116,6 +116,62 @@ func TestTransitionCodes(t *testing.T) {
 	}
 }
 
+func TestResponseCorrelationCorrections(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	t.Run("submit requested_delivery must repeat the request", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"session.message.submit.request","id":"submit","session_id":"s1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+			{` + core + `,"type":"session.message.submit.response","id":"admit","in_reply_to":"submit","session_id":"s1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"queue","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+			{` + core + `,"type":"run.started","id":"start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+			{` + core + `,"type":"run.completed","id":"done","session_id":"s1","run_id":"r1","sequence":2,"payload":{"session_id":"s1","run_id":"r1","final_response":{"role":"assistant","content":"ok"},"stop_reason":"end_turn"}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "submit-delivery-mismatch"); !got.HasCode(CodeScopeMismatch) {
+			t.Fatalf("want %s: %+v", CodeScopeMismatch, got.Diagnostics)
+		}
+	})
+	t.Run("resolution response must name the requested interaction", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+			{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"user_input":{"level":"native"}}}},
+			{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+			{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+			{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+			{` + core + `,"type":"user.input.requested","id":"input1","session_id":"s1","run_id":"r1","sequence":2,"capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","title":"Q","questions":[{"id":"q1","kind":"text","prompt":"Continue?"}]}},
+			{` + core + `,"type":"user.input.resolve.request","id":"rr1","session_id":"s1","run_id":"r1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","answers":[{"question_id":"q1","text":"yes"}]}},
+			{` + core + `,"type":"user.input.resolve.response","id":"rr2","in_reply_to":"rr1","session_id":"s1","run_id":"r1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i2","accepted":true}},
+			{` + core + `,"type":"user.input.resolved","id":"input2","session_id":"s1","run_id":"r1","sequence":3,"capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","status":"submitted","answers":[{"question_id":"q1","text":"yes"}]}},
+			{` + core + `,"type":"run.completed","id":"ev-done","session_id":"s1","run_id":"r1","sequence":4,"payload":{"session_id":"s1","run_id":"r1","final_response":{"role":"assistant","content":"ok"},"stop_reason":"end_turn"}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "resolution-interaction-mismatch"); !got.HasCode(CodeScopeMismatch) {
+			t.Fatalf("want %s: %+v", CodeScopeMismatch, got.Diagnostics)
+		}
+	})
+	t.Run("obsolete revision on a discovery request is not pinned to its response", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+			{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{}}},
+			{` + core + `,"type":"capabilities.request","id":"capq2","capability_revision":"v0","payload":{}},
+			{` + core + `,"type":"capabilities.response","id":"capr2","in_reply_to":"capq2","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{}}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "stale-discovery-revision"); len(got.Diagnostics) != 0 {
+			t.Fatalf("discovery response was pinned to a stale request revision: %+v", got.Diagnostics)
+		}
+	})
+	t.Run("canonical delivery feature key is recognized", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+			{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"session.message.delivery.queue":{"level":"native"}}}},
+			{` + core + `,"type":"session.message.submit.request","id":"submit","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"queue"}},
+			{` + core + `,"type":"session.message.submit.response","id":"admit","in_reply_to":"submit","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"queue","effective_delivery":"queue","admission":"queued","run_id":"r1","status":"queued"}},
+			{` + core + `,"type":"run.failed","id":"fail","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","error":{"code":"harness_conflict","message":"conflict"}}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "canonical-delivery-feature"); len(got.Diagnostics) != 0 {
+			t.Fatalf("canonical delivery feature was not recognized: %+v", got.Diagnostics)
+		}
+	})
+}
+
 func TestRunStatusTransitions(t *testing.T) {
 	valid := map[protocol.RunStatus][]protocol.RunStatus{
 		protocol.RunQueued:          {protocol.RunRunning, protocol.RunCancelling},

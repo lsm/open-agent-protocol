@@ -43,6 +43,7 @@ type requestState struct {
 	capabilityRevision string
 	session            protocol.SessionID
 	run                protocol.RunID
+	interaction        protocol.InteractionID
 }
 type sessionTrack struct {
 	status protocol.SessionStatus
@@ -85,7 +86,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	s.ids[e.ID] = i
 	if isRequest(e.Type) {
 		session, run := requestScope(e)
-		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run}
+		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run, interaction: envelopeInteraction(e)}
 	}
 	duplicateResponse := false
 	if isResponse(e.Type) {
@@ -295,7 +296,10 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 		return false
 	}
 	req.responded = true
-	if e.Type != protocol.TypeErrorResponse && req.capabilityRevision != "" && string(e.CapabilityRevision) != req.capabilityRevision {
+	// Discovery requests may legitimately carry an obsolete revision (the field
+	// is ignored so recovery cannot deadlock), so their successful response is
+	// not required to repeat it; only the authoritative current revision counts.
+	if e.Type != protocol.TypeErrorResponse && req.typ != protocol.TypeProtocolInitializeRequest && req.typ != protocol.TypeCapabilitiesRequest && req.capabilityRevision != "" && string(e.CapabilityRevision) != req.capabilityRevision {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "successful response must repeat the request capability revision", req.capabilityRevision, string(e.CapabilityRevision), string(e.InReplyTo))
 	}
 	if e.Type == protocol.TypeErrorResponse {
@@ -310,7 +314,45 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	if req.run != "" && run != "" && run != req.run {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/run_id", "response run does not match the request scope", string(req.run), string(run), string(e.InReplyTo))
 	}
+	// A resolution response must name the same interaction the request resolved;
+	// session and run alone cannot distinguish two gates on one run.
+	if req.interaction != "" {
+		if got := envelopeInteraction(e); got != "" && got != req.interaction {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/interaction_id", "response interaction does not match the request scope", string(req.interaction), string(got), string(e.InReplyTo))
+		}
+	}
 	return true
+}
+
+// envelopeInteraction reports the interaction a resolution request or response
+// names in its payload. Non-resolution envelopes yield the zero value.
+func envelopeInteraction(e protocol.Envelope) protocol.InteractionID {
+	switch e.Type {
+	case protocol.TypeActionPermissionResolveRequest, protocol.TypeActionPermissionResolveResponse:
+		if e.Type == protocol.TypeActionPermissionResolveResponse {
+			var p protocol.PermissionResolveResponse
+			_ = e.DecodePayload(&p)
+			return p.InteractionID
+		}
+		var p protocol.PermissionResolveRequest
+		_ = e.DecodePayload(&p)
+		return p.InteractionID
+	case protocol.TypeUserInputResolveRequest, protocol.TypeUserInputResolveResponse, protocol.TypeUserInputCancelRequest, protocol.TypeUserInputCancelResponse:
+		if e.Type == protocol.TypeUserInputResolveRequest {
+			var p protocol.UserInputResolveRequest
+			_ = e.DecodePayload(&p)
+			return p.InteractionID
+		}
+		if e.Type == protocol.TypeUserInputCancelRequest {
+			var p protocol.UserInputCancelRequest
+			_ = e.DecodePayload(&p)
+			return p.InteractionID
+		}
+		var p protocol.UserInputResolveResponse
+		_ = e.DecodePayload(&p)
+		return p.InteractionID
+	}
+	return ""
 }
 
 // requestScope reports the session/run scope a request declares in its payload.
@@ -384,6 +426,15 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	var p protocol.MessageSubmitResponse
 	_ = e.DecodePayload(&p)
 	s.checkScope(i, line, e, p.SessionID, p.RunID)
+	// requested_delivery must repeat the submission's request value; a response
+	// that silently changes it would misreport what the client asked for.
+	if req := s.requests[e.InReplyTo]; req != nil {
+		var request protocol.MessageSubmitRequest
+		_ = req.envelope.DecodePayload(&request)
+		if p.RequestedDelivery != request.Delivery {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/requested_delivery", "submit response must repeat the requested delivery", string(request.Delivery), string(p.RequestedDelivery), string(e.InReplyTo))
+		}
+	}
 	if !p.Accepted {
 		// conformance.md:78-83: a rejected request receives exactly one
 		// correlated error.response, so a submit.response carrying
@@ -700,7 +751,7 @@ func (s *state) feature(i, line int, e protocol.Envelope, name string) {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "optional feature must cite the active capability descriptor", s.currentCapability, string(e.CapabilityRevision))
 		return
 	}
-	for _, key := range []string{name, "agent_control." + name, "action." + name} {
+	for _, key := range []string{name, "session.message." + name, "agent_control." + name, "action." + name} {
 		if level, ok := s.features[key]; ok {
 			if level != protocol.SupportUnavailable {
 				return
