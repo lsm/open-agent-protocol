@@ -442,6 +442,48 @@ func TestCrossKindResolutionEventRejected(t *testing.T) {
 	}
 }
 
+// Reopening a session that still has a nonterminal run must not clear the
+// tracked run, or a second submission could be admitted over it.
+func TestSessionReopenKeepsNonterminalRun(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+		{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{}}},
+		{` + core + `,"type":"session.open.request","id":"o1","payload":{"session_id":"s1"}},
+		{` + core + `,"type":"session.open.response","id":"o1r","in_reply_to":"o1","session_id":"s1","payload":{"session_id":"s1","status":"idle"}},
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"session.open.request","id":"o2","payload":{"session_id":"s1"}},
+		{` + core + `,"type":"session.open.response","id":"o2r","in_reply_to":"o2","session_id":"s1","payload":{"session_id":"s1","status":"idle"}},
+		{` + core + `,"type":"session.message.submit.request","id":"req2","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"again"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp2","in_reply_to":"req2","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub2","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r2","status":"running"}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "reopen-nonterminal"); !got.HasCode(CodeIllegalRunTransition) {
+		t.Fatalf("want %s for admitting a second run over a nonterminal one: %+v", CodeIllegalRunTransition, got.Diagnostics)
+	}
+}
+
+// The execution owner required on every action-call payload must not change
+// across a tool's lifecycle.
+func TestToolExecutionOwnerMustStayStable(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+		{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{}}},
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"action.call.requested","id":"call1","session_id":"s1","run_id":"r1","sequence":2,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","tool_call_id":"t1","requested_by":"agent","execution_owner":"agent","name":"run","arguments_json":{}}},
+		{` + core + `,"type":"action.call.started","id":"call2","session_id":"s1","run_id":"r1","sequence":3,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","tool_call_id":"t1","requested_by":"agent","execution_owner":"intruder","name":"run"}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "tool-owner-rebind"); !got.HasCode(CodeScopeMismatch) {
+		t.Fatalf("want %s for a reassigned execution owner: %+v", CodeScopeMismatch, got.Diagnostics)
+	}
+}
+
 func TestRunStatusTransitions(t *testing.T) {
 	valid := map[protocol.RunStatus][]protocol.RunStatus{
 		protocol.RunQueued:          {protocol.RunRunning, protocol.RunCancelling},

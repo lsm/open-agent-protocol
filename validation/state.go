@@ -19,7 +19,7 @@ type runState struct {
 	cancelAccepted              bool
 	status                      protocol.RunStatus
 	admittedModel               string
-	tools                       map[protocol.ToolCallID]string
+	tools                       map[protocol.ToolCallID]toolTrack
 	interactions                map[protocol.InteractionID]*interactionState
 }
 type interactionState struct {
@@ -55,6 +55,13 @@ type requestState struct {
 type sessionTrack struct {
 	status protocol.SessionStatus
 	active protocol.RunID
+}
+
+// toolTrack retains a tool call's lifecycle status and the execution owner that
+// opened it; the owner must not change mid-lifecycle.
+type toolTrack struct {
+	status string
+	owner  protocol.ParticipantID
 }
 type state struct {
 	fixture           string
@@ -184,7 +191,14 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			}
 			s.recoveries[p.SessionID] = recovery
 		}
-		s.sessions[p.SessionID] = &sessionTrack{status: p.Status}
+		// Reopening a known session must not clear a tracked nonterminal run:
+		// that would let a later admission overlap it unseen.
+		st := s.sessions[p.SessionID]
+		if st == nil {
+			st = &sessionTrack{}
+			s.sessions[p.SessionID] = st
+		}
+		st.status = p.Status
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
@@ -204,7 +218,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 					if rec.cursorSet {
 						next = rec.cursor + 1
 					}
-					s.runs[p.ActiveRunID] = &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: next, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]string{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
+					s.runs[p.ActiveRunID] = &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: next, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
 				}
 			}
 		}
@@ -510,7 +524,7 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		s.sessions[p.SessionID] = st
 	}
 	st.active = p.RunID
-	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, tools: map[protocol.ToolCallID]string{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunQueued}
+	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunQueued}
 }
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
@@ -522,7 +536,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	r := s.runs[e.RunID]
 	if r == nil {
 		s.add(CodeIllegalRunTransition, i, line, e, "/run_id", "run event has no accepted admission")
-		r = &runState{id: e.RunID, session: e.SessionID, next: 1, tools: map[protocol.ToolCallID]string{}, interactions: map[protocol.InteractionID]*interactionState{}}
+		r = &runState{id: e.RunID, session: e.SessionID, next: 1, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}}
 		s.runs[e.RunID] = r
 	}
 	r.lastIndex = i
@@ -630,8 +644,8 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 			s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.cancelled requires accepted cancellation")
 		}
 		for id, st := range r.tools {
-			if !toolTerminal(st) {
-				s.addExpected(CodePendingToolAtTerminal, i, line, e, "/type", "run terminated with a pending tool call", "terminal tool", st, string(id))
+			if !toolTerminal(st.status) {
+				s.addExpected(CodePendingToolAtTerminal, i, line, e, "/type", "run terminated with a pending tool call", "terminal tool", st.status, string(id))
 			}
 		}
 		for id, x := range r.interactions {
@@ -671,7 +685,8 @@ func (s *state) tool(i, line int, e protocol.Envelope, next string) {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/tool_call_id", "envelope and payload tool_call_id differ", string(e.ToolCallID), string(p.ToolCallID))
 	}
 	r := s.runs[e.RunID]
-	current, ok := r.tools[p.ToolCallID]
+	track, ok := r.tools[p.ToolCallID]
+	current := track.status
 	valid := false
 	switch next {
 	case "requested":
@@ -697,7 +712,16 @@ func (s *state) tool(i, line int, e protocol.Envelope, next string) {
 		}
 		s.add(code, i, line, e, "/tool_call_id", "illegal tool-call lifecycle transition")
 	}
-	r.tools[p.ToolCallID] = next
+	// execution_owner is required on every action-call payload and must not be
+	// reassigned mid-lifecycle.
+	if ok && track.owner != "" && p.ExecutionOwner != track.owner {
+		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/execution_owner", "tool execution owner changed mid-lifecycle", string(track.owner), string(p.ExecutionOwner))
+	}
+	if !ok {
+		track.owner = p.ExecutionOwner
+	}
+	track.status = next
+	r.tools[p.ToolCallID] = track
 }
 func (s *state) participant(i, line int, e protocol.Envelope, id protocol.ParticipantID, pointer string) {
 	if s.initialized && !s.participants[id] {
