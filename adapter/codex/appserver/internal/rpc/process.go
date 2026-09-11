@@ -161,6 +161,11 @@ func (process *Process) WaitError() error {
 }
 
 func (process *Process) wait() {
+	// Drain stdout before reaping. Cmd.Wait closes the stdout pipe, so the
+	// reader must finish delivering every frame already buffered there before
+	// shutdown fails the pending calls; otherwise a response the child wrote
+	// immediately before exiting is reported as a process-exit error.
+	<-process.Client.ReadDone()
 	err := process.command.Wait()
 	<-process.stderrDone
 	process.waitMu.Lock()

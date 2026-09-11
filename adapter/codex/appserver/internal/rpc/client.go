@@ -99,6 +99,7 @@ type Client struct {
 	notifications chan NotificationMessage
 	diagnostics   chan error
 	done          chan struct{}
+	readDone      chan struct{}
 }
 
 type ClientOptions struct {
@@ -128,6 +129,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 		notifications:     make(chan NotificationMessage, capacity),
 		diagnostics:       make(chan error, capacity),
 		done:              make(chan struct{}),
+		readDone:          make(chan struct{}),
 	}
 	client.nextID.Store(options.FirstRequestID)
 	go client.writeLoop()
@@ -139,6 +141,11 @@ func (client *Client) Requests() <-chan *IncomingRequest         { return client
 func (client *Client) Notifications() <-chan NotificationMessage { return client.notifications }
 func (client *Client) Diagnostics() <-chan error                 { return client.diagnostics }
 func (client *Client) Done() <-chan struct{}                     { return client.done }
+
+// ReadDone closes once the reader goroutine has stopped, after every frame
+// already buffered on the input has been decoded and delivered. A process
+// owner must wait for it before reaping the child or failing pending calls.
+func (client *Client) ReadDone() <-chan struct{} { return client.readDone }
 
 func (client *Client) Err() error {
 	client.mu.Lock()
@@ -225,6 +232,7 @@ func (client *Client) closeWith(reason error) {
 }
 
 func (client *Client) readLoop() {
+	defer close(client.readDone)
 	for {
 		message, err := client.decoder.Decode()
 		if err != nil {

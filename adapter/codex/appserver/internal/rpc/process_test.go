@@ -56,6 +56,13 @@ func TestHelperProcess(t *testing.T) {
 			os.Exit(0)
 		}
 		if message.Kind == MessageRequest {
+			if mode == "large-response" {
+				// A frame far larger than the pipe buffer keeps the reader busy
+				// past the child's exit, which is the window this exercises.
+				blob := strings.Repeat("x", 1<<20)
+				_ = NewEncoder(os.Stdout).Encode(Response(message.ID, json.RawMessage(`{"ok":true,"blob":"`+blob+`"}`)))
+				os.Exit(0)
+			}
 			_ = NewEncoder(os.Stdout).Encode(Response(message.ID, json.RawMessage(`{"ok":true}`)))
 			if mode == "stay-alive" {
 				continue
@@ -94,6 +101,30 @@ func TestStartPerformsHandshakeAndCalls(t *testing.T) {
 	}
 	if err := process.Close(context.Background()); err != nil && !strings.Contains(err.Error(), "process exited") && !strings.Contains(err.Error(), "shutdown timed out") {
 		t.Fatal(err)
+	}
+}
+
+// The helper writes each response and then exits immediately. The reader must
+// be allowed to drain the buffered frame before the process owner fails
+// pending calls, otherwise this call races the child's exit and intermittently
+// reports a process-exit error for a response that was already written.
+func TestCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
+	for iteration := range 10 {
+		process, err := Start(context.Background(), helperConfig("large-response"))
+		if err != nil {
+			t.Fatalf("iteration %d: start: %v", iteration, err)
+		}
+		var result struct {
+			OK   bool   `json:"ok"`
+			Blob string `json:"blob"`
+		}
+		if err := process.Client.Call(context.Background(), "thread/start", map[string]any{}, &result); err != nil {
+			t.Fatalf("iteration %d: call failed despite a written response: %v", iteration, err)
+		}
+		if !result.OK || len(result.Blob) != 1<<20 {
+			t.Fatalf("iteration %d: response was not fully decoded", iteration)
+		}
+		_ = process.Close(context.Background())
 	}
 }
 
