@@ -496,6 +496,7 @@ func (s *session) applyToolStatus(t *toolState, status string) {
 		return
 	}
 	typ := protocol.TypeActionCallProgress
+	synthesizeStart := false
 	switch status {
 	case "in_progress":
 		if !t.started {
@@ -504,9 +505,13 @@ func (s *session) applyToolStatus(t *toolState, status string) {
 		}
 	case "completed":
 		typ = protocol.TypeActionCallCompleted
+		synthesizeStart = !t.started
+		t.started = true
 		t.terminal = true
 	case "failed":
 		typ = protocol.TypeActionCallFailed
+		synthesizeStart = !t.started
+		t.started = true
 		t.terminal = true
 	default:
 		s.mu.Unlock()
@@ -515,12 +520,29 @@ func (s *session) applyToolStatus(t *toolState, status string) {
 	}
 	t.status = status
 	s.mu.Unlock()
+	if synthesizeStart {
+		// A native snapshot may first report the terminal. The validator admits
+		// a tool terminal only after action.call.started, so synthesize the
+		// boundary; started forbids the terminal-only members.
+		started := s.toolPayload(t)
+		started.Progress = nil
+		started.Result = nil
+		started.Error = nil
+		_ = s.emit(t.run, protocol.TypeActionCallStarted, started, false)
+	}
 	payload := s.toolPayload(t)
 	switch typ {
 	case protocol.TypeActionCallStarted:
 		payload.Progress = nil
+		payload.Result = nil
+		payload.Error = nil
 	case protocol.TypeActionCallCompleted:
 		payload.ArgumentsJSON = nil
+		// completed requires result; a completion without native output is
+		// normalized to the JSON null value.
+		if payload.Result == nil {
+			payload.Result = json.RawMessage("null")
+		}
 	case protocol.TypeActionCallFailed:
 		payload.ArgumentsJSON = nil
 		payload.Result = nil

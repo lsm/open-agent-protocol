@@ -558,6 +558,55 @@ func TestToolCallWithoutInputCarriesNullArguments(t *testing.T) {
 	}
 }
 
+// A native snapshot may first report a tool terminal. The adapter must still
+// emit an action.call.started boundary, which the validator requires.
+func TestToolTerminalWithoutProgressSynthesizesStart(t *testing.T) {
+	s, f := openTest(t, 64)
+	_, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "completed", RawInput: json.RawMessage(`{"path":"x"}`), RawOutput: json.RawMessage(`{"ok":true}`)})
+	waitCursor(t, s, "4")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeRunCompleted}
+	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
+		t.Fatalf("events=%v", types(events))
+	}
+}
+
+// action.call.completed requires result; a completion without native output is
+// normalized to the JSON null value.
+func TestToolCompletionWithoutOutputCarriesNullResult(t *testing.T) {
+	s, f := openTest(t, 64)
+	_, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending"})
+	status := "in_progress"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Status: &status})
+	status = "completed"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Status: &status})
+	waitCursor(t, s, "4")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	observed := false
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeActionCallCompleted {
+			continue
+		}
+		observed = true
+		var completed protocol.ActionCallPayload
+		if err := envelope.DecodePayload(&completed); err != nil {
+			t.Fatal(err)
+		}
+		if string(completed.Result) != "null" {
+			t.Fatalf("result = %q, want null", completed.Result)
+		}
+	}
+	if !observed {
+		t.Fatal("no action.call.completed observed")
+	}
+}
+
 func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	out := make([]protocol.EnvelopeType, len(events))
 	for i, e := range events {
