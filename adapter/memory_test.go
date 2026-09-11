@@ -173,6 +173,16 @@ func TestEmittedEnvelopesCarryAdvertisedRevision(t *testing.T) {
 	}
 }
 
+// The participant is the recorded responder for every permission and
+// user-input gate, so an empty identity must be refused rather than silently
+// producing schema-invalid events with an empty responded_by.
+func TestOpenRejectsEmptyParticipant(t *testing.T) {
+	memory := NewMemory(Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 8})
+	if _, err := memory.Open(context.Background(), OpenRequest{SessionID: "session-1"}); !errors.Is(err, ErrInvalidParticipant) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func wantEnvelopes(types []protocol.EnvelopeType) []protocol.Envelope {
 	out := make([]protocol.Envelope, len(types))
 	for i, typ := range types {

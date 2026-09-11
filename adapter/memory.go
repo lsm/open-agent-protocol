@@ -99,6 +99,12 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// The participant is the recorded responder for every permission and
+	// user-input gate this adapter raises, so an empty identity would both
+	// violate the schema and make those gates unresolvable.
+	if request.Participant.ID == "" {
+		return nil, fmt.Errorf("%w: open requires a non-empty participant id", ErrInvalidParticipant)
+	}
 	id := request.SessionID
 	if id == "" {
 		id = protocol.SessionID(m.ids.NewID("session"))
