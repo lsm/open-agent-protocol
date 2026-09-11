@@ -14,9 +14,18 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/adapter/opencode/internal/native"
 )
+
+// subscribeEstablishGrace bounds how long Subscribe waits for response headers
+// before returning the subscription anyway. The pinned server defers
+// session-scoped SSE response headers until the stream carries an event, so a
+// fresh, silent session would otherwise block the caller until its context
+// expires. Immediate failures (HTTP errors, refused connections) still arrive
+// well inside this window and surface synchronously.
+const subscribeEstablishGrace = 250 * time.Millisecond
 
 const DefaultQueueCapacity = 256
 
@@ -282,18 +291,49 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after 
 	if c.password != "" {
 		request.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.username+":"+c.password)))
 	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		_ = response.Body.Close()
-		return nil, native.DecodeAPIError(response.StatusCode, payload)
-	}
 	sub := &Subscription{events: make(chan native.Event, c.queue), done: make(chan struct{})}
-	go sub.pump(response, c.frame)
-	return sub, nil
+	type outcome struct {
+		response *http.Response
+		err      error
+	}
+	settled := make(chan outcome, 1)
+	go func() {
+		response, err := c.http.Do(request)
+		settled <- outcome{response: response, err: err}
+	}()
+	consume := func(result outcome) error {
+		if result.err != nil {
+			return result.err
+		}
+		if result.response.StatusCode != http.StatusOK {
+			payload, _ := io.ReadAll(io.LimitReader(result.response.Body, 1<<20))
+			_ = result.response.Body.Close()
+			return native.DecodeAPIError(result.response.StatusCode, payload)
+		}
+		go sub.pump(result.response, c.frame)
+		return nil
+	}
+	timer := time.NewTimer(subscribeEstablishGrace)
+	defer timer.Stop()
+	select {
+	case result := <-settled:
+		if err := consume(result); err != nil {
+			return nil, err
+		}
+		return sub, nil
+	case <-timer.C:
+		// Headers are deferred until the stream has an event; hand the
+		// pending request to the pump and let any eventual failure surface
+		// through Done/Err rather than blocking the caller.
+		go func() {
+			if err := consume(<-settled); err != nil {
+				sub.fail(err)
+			}
+		}()
+		return sub, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (c *Client) Close() error {

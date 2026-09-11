@@ -343,8 +343,20 @@ so the obvious substitute is not free: its frames use a different envelope —
 `durable`/`data` members — so switching endpoints requires its own decoder
 and reconciliation.
 
-This is a verified interoperability defect. Resolving it needs a deliberate
-choice (subscribe globally with a global-stream decoder, or make the
-session-scoped subscription non-blocking with deferred error surfacing),
-after which the corpus and this ledger must be updated. Recorded here; not
-silently compensated. The gate remains skip-by-default and CI-safe.
+This is a verified interoperability defect. **Resolved (2026-09-10):**
+`Client.Subscribe` now starts the request concurrently and returns the
+subscription after a short establishment grace
+(`subscribeEstablishGrace = 250ms`) if headers have not arrived. Immediate
+failures — HTTP status errors, refused connections — still return
+synchronously from `Subscribe` exactly as before (the pinned
+`TestSubscribeSurfacesHTTPErrors` contract is unchanged); only the
+deferred-header case becomes asynchronous, and any later failure surfaces
+through `Subscription.Done`/`Err`, which the reducer already projects as
+transport failure. No change was needed to the global-stream envelope path.
+
+Regression coverage: `TestSubscribeReturnsWhenHeadersAreDeferred` in
+`adapter/opencode/internal/httpapi` fails against the old blocking code
+(`context deadline exceeded`, matching the live gate error) and passes after.
+The live server gate `OAP_OPENCODE_INTEGRATION=1` now passes end to end
+against the pinned v1.18.29 binary. The gate remains skip-by-default and
+CI-safe.

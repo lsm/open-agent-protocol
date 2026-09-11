@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -227,5 +228,51 @@ func TestSubscribeSurfacesHTTPErrors(t *testing.T) {
 	var apiErr *native.APIError
 	if !errors.As(err, &apiErr) || !apiErr.IsSessionNotFound() {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// TestSubscribeReturnsWhenHeadersAreDeferred pins the live server behavior:
+// the pinned session-scoped SSE endpoint withholds response headers until the
+// stream carries an event. Subscribe must not block the caller waiting for
+// them; the subscription becomes usable and events arrive once the stream
+// starts. Before the fix this blocked until the caller context expired.
+func TestSubscribeReturnsWhenHeadersAreDeferred(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseNow) // never leave the deferred handler blocking server Close
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/session/ses_a/event" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		<-release // defer response headers until an event is ready
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, `data: {"id":"evt_1","type":"session.next.prompted","durable":{"aggregateID":"ses_a","seq":1,"version":1},"data":{"timestamp":1,"sessionID":"ses_a","messageID":"msg_1","prompt":{"text":"hi"},"delivery":"steer"}}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}), Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	subscription, err := client.Subscribe(ctx, "ses_a", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Subscribe blocked for %v awaiting deferred headers", elapsed)
+	}
+	// The deferred stream is still live: once the server flushes, the event
+	// must arrive through the subscription.
+	releaseNow()
+	select {
+	case event := <-subscription.Events():
+		if event.Type != native.TypePrompted || event.Durable.Seq != 1 {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred stream never delivered its event")
 	}
 }
