@@ -288,8 +288,10 @@ func (buffer *limitedBuffer) String() string {
 }
 
 var secretLine = regexp.MustCompile(`(?i)(authorization|x-api-key|api[_-]?key|auth[_-]?token)(\s*[:=]\s*)([^\s,;]+)`)
+var secretQuoted = regexp.MustCompile(`(?i)((?:authorization|x-api-key|api[_-]?key|auth[_-]?token|password|secret|token)"?\s*[:=]\s*)"[^"]*"`)
 
 func redact(value string) string {
+	value = secretQuoted.ReplaceAllString(value, `$1"[REDACTED]"`)
 	return strings.TrimSpace(secretLine.ReplaceAllString(value, `$1$2[REDACTED]`))
 }
 func cloneMap(source ClientCapabilities) ClientCapabilities {

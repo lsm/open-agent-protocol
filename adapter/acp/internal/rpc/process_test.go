@@ -259,6 +259,11 @@ func TestLimitedBufferBoundsAndRedacts(t *testing.T) {
 	}
 	for input, want := range map[string]string{
 		"x-api-key=secret": "x-api-key=[REDACTED]", "Authorization: Bearer": "Authorization: [REDACTED]", "auth_token = abc": "auth_token = [REDACTED]",
+		// Structured error records quote the key and value; the quote after the
+		// key must not defeat redaction.
+		`{"api_key":"secret-value"}`:           `{"api_key":"[REDACTED]"}`,
+		`{"Authorization":"Bearer secret"}`:    `{"Authorization":"[REDACTED]"}`,
+		`{"error":{"auth_token":"abc","x":1}}`: `{"error":{"auth_token":"[REDACTED]","x":1}}`,
 	} {
 		if got := redact(input); got != want {
 			t.Errorf("redact %q = %q want %q", input, got, want)
