@@ -734,15 +734,17 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return base.ErrInvalidResolution
 	}
 	gate.resolved = true
-	s.reduceMu.Unlock()
-
+	// Keep the reducer serialized through the native answer and the canonical
+	// resolution emissions. Releasing the lock in between would let a terminal
+	// the CLI emits immediately after reading the answer settle the run while
+	// the gate is marked resolved but unreported: sweepRun would skip it, the
+	// resolved event would lose to the terminal, and the stream would end with
+	// an unresolved interaction.
 	if err := gate.control.Respond(ctx, answer); err != nil {
-		s.reduceMu.Lock()
 		gate.resolved = false
 		s.reduceMu.Unlock()
 		return err
 	}
-	s.reduceMu.Lock()
 	_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, gate.requested)
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	// A resolved gate is terminal: retire it so later asks are findable.

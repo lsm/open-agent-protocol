@@ -172,6 +172,74 @@ func openWire(t *testing.T) (base.Adapter, base.Session, *wirePeer) {
 	return implementation, session, peer
 }
 
+// gateWriter blocks the adapter's next write once armed until unblocked, so a
+// test can hold the native answer mid-write while it injects a racing frame.
+type gateWriter struct {
+	inner   io.Writer
+	mu      sync.Mutex
+	blocked bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gateWriter) arm() {
+	g.mu.Lock()
+	g.blocked = true
+	g.mu.Unlock()
+}
+func (g *gateWriter) unblock() {
+	g.mu.Lock()
+	g.blocked = false
+	g.mu.Unlock()
+	close(g.release)
+}
+func (g *gateWriter) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	blocked := g.blocked
+	g.mu.Unlock()
+	if blocked {
+		select {
+		case g.entered <- struct{}{}:
+		default:
+		}
+		<-g.release
+	}
+	return g.inner.Write(p)
+}
+
+func openWireBlocking(t *testing.T) (base.Session, *wirePeer, *gateWriter) {
+	t.Helper()
+	upstreamRead, upstreamWrite := io.Pipe()
+	downstreamRead, downstreamWrite := io.Pipe()
+	gated := &gateWriter{inner: downstreamWrite, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	client := rpc.NewClient(upstreamRead, gated, rpc.ClientOptions{CloseReadWriter: &pipePair{read: upstreamRead, write: downstreamWrite}})
+	t.Cleanup(func() { _ = client.Close() })
+	frames := make(chan rpc.Message, 64)
+	go func() {
+		reader := bufio.NewReader(downstreamRead)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				close(frames)
+				return
+			}
+			message, err := rpc.ParseMessage([]byte(strings.TrimSuffix(line, "\n")))
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- message
+		}
+	}()
+	peer := &wirePeer{t: t, client: client, writeIn: upstreamWrite, frames: frames}
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	return session, peer, gated
+}
+
 // The native user frame carries no model override, so a per-submit model cannot
 // be applied; it must be refused rather than silently running the session model.
 func TestSubmitRejectsUnappliedModelID(t *testing.T) {
@@ -951,6 +1019,71 @@ func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 	// The abandoned ask is answered so the CLI is never left blocked.
 	if _, raw := peer.written(); !strings.Contains(string(raw), `"error"`) {
 		t.Fatalf("gate answer = %s", raw)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveSerializesGateBeforeTerminal(t *testing.T) {
+	// The CLI can emit its terminal result immediately after reading the control
+	// response. If Resolve releases the reducer between marking the gate resolved
+	// and emitting user.input.resolved, the terminal settles the run and the
+	// resolved event is dropped, leaving an unresolved interaction at
+	// terminality. Hold the native answer mid-write across a terminal to prove
+	// the resolution is serialized first.
+	session, peer, writer := openWireBlocking(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_g","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"ag"}`)
+	peer.send(`{"type":"control_request","request_id":"ask-g","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_g"}}`)
+	gate := openGate(t, session, uuid)
+
+	writer.arm()
+	resolved := make(chan error, 1)
+	go func() {
+		resolved <- session.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "decision", SelectedOptionIDs: []string{"allow"}}}}})
+	}()
+	select {
+	case <-writer.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("native answer was never written")
+	}
+	// The answer is mid-write; race the terminal against it. Delivery happens
+	// on a separate goroutine and the pause gives the reader time to route the
+	// terminal into the reducer's queue before the answer is released, so the
+	// terminal is genuinely contending for the reducer when the bug would let
+	// it settle first.
+	sent := make(chan struct{})
+	go func() {
+		peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+		close(sent)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	writer.unblock()
+	<-sent
+	if err := <-resolved; err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+	resolvedIdx, terminalIdx := -1, -1
+	for index, event := range events {
+		switch event.Type {
+		case protocol.TypeUserInputResolved:
+			if resolvedIdx == -1 {
+				resolvedIdx = index
+			}
+		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+			if terminalIdx == -1 {
+				terminalIdx = index
+			}
+		}
+	}
+	if resolvedIdx == -1 {
+		t.Fatalf("gate resolution was dropped at terminality: %v", eventTypes(events))
+	}
+	if terminalIdx != -1 && resolvedIdx > terminalIdx {
+		t.Fatalf("resolution index %d after terminal index %d", resolvedIdx, terminalIdx)
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
