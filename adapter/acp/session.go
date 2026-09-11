@@ -75,7 +75,10 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	if req.SessionID == "" || len(req.Messages) == 0 {
+	// ACP's session/prompt carries only message content: instructions, tool
+	// choice, and an output schema have no native mapping, so accepting them
+	// would silently run with controls the caller believes are applied.
+	if req.SessionID == "" || len(req.Messages) == 0 || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return protocol.MessageSubmitResponse{}, nil, base.ErrInvalidSubmission
 	}
 	if req.Delivery != "" && req.Delivery != protocol.DeliveryAuto {
@@ -553,6 +556,13 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	if res.RespondedBy != s.participant || res.Permission.RespondedBy != s.participant {
 		s.mu.Unlock()
 		return base.ErrWrongResponder
+	}
+	// The pending permission was emitted with requester "agent"; a resolution
+	// that names a different requester is ownership-inconsistent and must not
+	// resolve the native gate.
+	if res.Permission.RequestedBy != "" && res.Permission.RequestedBy != "agent" {
+		s.mu.Unlock()
+		return base.ErrInvalidResolution
 	}
 	option, ok := p.options[res.Permission.ChoiceID]
 	if !ok {

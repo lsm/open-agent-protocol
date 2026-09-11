@@ -12,6 +12,7 @@ import (
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/adapter/acp/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/acp/internal/rpc"
+	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
@@ -510,6 +511,54 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	})
 	if !errors.Is(err, ErrUnsupportedInput) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// ACP's session/prompt has no mapping for instructions, tool choice, or an
+// output schema, so accepting them would silently run with controls the caller
+// believes are applied.
+func TestSubmitRejectsUnappliedControls(t *testing.T) {
+	s, _ := openTest(t, 64)
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}}
+	for name, request := range map[string]protocol.MessageSubmitRequest{
+		"instructions":  {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: "be terse", Messages: message},
+		"tool choice":   {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
+		"output schema": {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
+	} {
+		if _, _, err := s.Submit(context.Background(), request); !errors.Is(err, base.ErrInvalidSubmission) {
+			t.Fatalf("%s: got %v, want ErrInvalidSubmission", name, err)
+		}
+	}
+}
+
+// The pending permission was emitted with requester "agent"; a resolution that
+// names a different requester is ownership-inconsistent and must not resolve
+// the native gate.
+func TestPermissionResolveRejectsForeignRequester(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	params, err := json.Marshal(native.PermissionRequest{SessionID: "native-session", ToolCall: native.ToolCall{ToolCallID: "call-1", Title: "Act"}, Options: []native.PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID("perm-1"), native.MethodSessionRequestPermission, params))}
+	var requested protocol.PermissionRequestedPayload
+	for requested.InteractionID == "" {
+		envelope := adaptertest.Next(t, stream, 2*time.Second)
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			if err := envelope.DecodePayload(&requested); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	resolution := base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: "intruder", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true}}
+	if err := s.Resolve(context.Background(), resolution); !errors.Is(err, base.ErrInvalidResolution) {
+		t.Fatalf("foreign requester: got %v, want ErrInvalidResolution", err)
+	}
+	resolution.Permission.RequestedBy = "agent"
+	if err := s.Resolve(context.Background(), resolution); err != nil {
+		t.Fatalf("valid requester rejected after foreign one: %v", err)
 	}
 }
 
