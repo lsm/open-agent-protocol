@@ -81,6 +81,13 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if req.Delivery != "" && req.Delivery != protocol.DeliveryAuto {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", base.ErrInvalidSubmission, req.Delivery)
 	}
+	// ACP's session/prompt carries no model selection and this adapter performs
+	// no session configuration mutation, so a requested model cannot be applied.
+	// Echoing it back as effective would attribute the run to a model the agent
+	// never used, so an explicit request is refused instead.
+	if req.ModelID != "" {
+		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: ACP cannot apply a requested model", ErrUnsupportedInput)
+	}
 	prompt, messageIDs, err := s.promptContent(req.Messages)
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err

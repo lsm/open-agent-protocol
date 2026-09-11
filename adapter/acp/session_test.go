@@ -478,6 +478,20 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	return out
 }
 
+// ACP's session/prompt cannot carry a model selection and the adapter performs
+// no session configuration mutation, so a requested model cannot be applied. It
+// must be refused rather than echoed back as the effective model.
+func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+	s, _ := openTest(t, 64)
+	_, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "another-model",
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}},
+	})
+	if !errors.Is(err, ErrUnsupportedInput) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 // ACP v1 declares session/new's mcpServers as a required array. A nil Go slice
 // marshals to null, which the official client SDK's own param validator rejects
 // ("mcpServers is required") with -32602 Invalid params; the real docker/cagent
