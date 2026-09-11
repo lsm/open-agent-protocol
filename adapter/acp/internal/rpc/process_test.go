@@ -13,7 +13,15 @@ import (
 )
 
 func TestACPHelperProcess(t *testing.T) {
+	// Activated either by environment or by an explicit argument, so the
+	// empty-allowlist fixture can be spawned with no environment at all.
 	mode := os.Getenv("OAP_ACP_RPC_HELPER")
+	if strings.Contains(strings.Join(os.Args, "\x00"), "--acp-emptyenv") {
+		if os.Getenv("ACP_ENV_PROBE") != "" {
+			os.Exit(13)
+		}
+		mode = "emptyenv"
+	}
 	if mode == "" {
 		return
 	}
@@ -74,6 +82,30 @@ func helperConfig(mode string) ProcessConfig {
 		Env:                append(os.Environ(), "OAP_ACP_RPC_HELPER="+mode),
 		ClientInfo:         &Implementation{Name: "open-agent-protocol", Version: "0.1"},
 		ClientCapabilities: ClientCapabilities{}, ShutdownTimeout: time.Second,
+	}
+}
+
+// envlessHelperConfig spawns the helper with an explicitly empty allowlist, so
+// the child sees no parent variables at all.
+func envlessHelperConfig() ProcessConfig {
+	return ProcessConfig{
+		Path: os.Args[0], Args: []string{"-test.run=TestACPHelperProcess", "--", "--acp-emptyenv"},
+		Env:                []string{},
+		ClientInfo:         &Implementation{Name: "open-agent-protocol", Version: "0.1"},
+		ClientCapabilities: ClientCapabilities{}, ShutdownTimeout: 5 * time.Second,
+	}
+}
+
+// An explicitly empty allowlist must reach the child as an empty environment,
+// not collapse to nil and inherit the parent's variables.
+func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
+	t.Setenv("ACP_ENV_PROBE", "ambient-value")
+	process, err := Start(context.Background(), envlessHelperConfig())
+	if err != nil {
+		t.Fatalf("empty environment did not stay empty: %v", err)
+	}
+	if err := process.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

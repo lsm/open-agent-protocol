@@ -170,6 +170,26 @@ func TestProductionProcessForcesExtensionsDisabled(t *testing.T) {
 	}
 }
 
+// An explicitly empty Environment is an empty allowlist, not "inherit". The
+// adapter must forward it non-nil so rpc.Start installs an empty environment.
+func TestProductionProcessKeepsEmptyEnvironmentNonNil(t *testing.T) {
+	var got rpc.ProcessConfig
+	factory := ProcessFactoryFunc(func(_ context.Context, config rpc.ProcessConfig) (ProcessBridge, error) {
+		got = config
+		return nil, errors.New("stop after config capture")
+	})
+	a, err := New(Config{ProcessFactory: factory, Executable: "/usr/bin/pi", WorkingDirectory: "/tmp", Environment: []string{}, Args: []string{"--no-extensions"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Open(context.Background(), base.OpenRequest{}); err == nil {
+		t.Fatal("open unexpectedly succeeded")
+	}
+	if got.Env == nil || len(got.Env) != 0 {
+		t.Fatalf("empty environment did not stay non-nil: %#v", got.Env)
+	}
+}
+
 func TestProductionProcessRejectsStandaloneFlagTerminatorWithoutSideEffects(t *testing.T) {
 	starts := 0
 	factory := ProcessFactoryFunc(func(context.Context, rpc.ProcessConfig) (ProcessBridge, error) {

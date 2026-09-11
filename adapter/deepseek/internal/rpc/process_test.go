@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"os"
@@ -12,6 +13,38 @@ import (
 
 	"github.com/lsm/open-agent-protocol/adapter/deepseek/internal/native"
 )
+
+// TestDeepseekProcessHelper is the spawned child for the drain regression: it
+// answers initialize, then answers one probe with an oversized frame and exits
+// immediately, leaving the response buffered while the reader is still busy.
+// The client assigns deterministic integer ids, so initialize is id 1 and the
+// probe is id 2.
+func TestDeepseekProcessHelper(t *testing.T) {
+	if os.Getenv("OAP_DSH_RPC_HELPER") == "" {
+		return
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		os.Exit(11)
+	}
+	os.Stdout.WriteString(`{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}` + "\n")
+	if !scanner.Scan() {
+		os.Exit(12)
+	}
+	blob := strings.Repeat("x", 1<<20)
+	os.Stdout.WriteString(`{"jsonrpc":"2.0","id":2,"result":{"ok":true,"blob":"` + blob + `"}}` + "\n")
+	os.Exit(0)
+}
+
+func deepseekHelperConfig(dir string) ProcessConfig {
+	return ProcessConfig{
+		Path:            os.Args[0],
+		Args:            []string{"-test.run=TestDeepseekProcessHelper", "--"},
+		Env:             append(os.Environ(), "OAP_DSH_RPC_HELPER=1"),
+		ShutdownTimeout: 2 * time.Second,
+		Initialize:      native.InitializeParams{Cwd: dir, Provider: "p", Model: "m"},
+	}
+}
 
 func TestProcessInitializeEnvAndShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -134,6 +167,71 @@ IFS= read -r eof || exit 0
 	case <-p.Done():
 	default:
 		t.Fatal("child not reaped")
+	}
+}
+
+// The helper writes its response and then exits immediately. The reader must be
+// allowed to drain the buffered frame before the process owner reaps the child,
+// otherwise this call races the exit and reports a process-exit error for a
+// response that was already written.
+func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
+	for iteration := range 10 {
+		p, err := Start(context.Background(), deepseekHelperConfig(t.TempDir()))
+		if err != nil {
+			t.Fatalf("iteration %d: start: %v", iteration, err)
+		}
+		// A matched response is ordered behind an inbound barrier the consumer
+		// must acknowledge, so model the adapter's own draining loop.
+		go func() {
+			for {
+				select {
+				case message := <-p.Client.Inbound():
+					if message.Barrier != nil {
+						close(message.Barrier)
+					}
+				case <-p.Client.Done():
+					return
+				}
+			}
+		}()
+		var result struct {
+			OK   bool   `json:"ok"`
+			Blob string `json:"blob"`
+		}
+		if err := p.Client.Call(context.Background(), "session/probe", nil, &result); err != nil {
+			t.Fatalf("iteration %d: call failed despite a written response: %v", iteration, err)
+		}
+		if !result.OK || len(result.Blob) != 1<<20 {
+			t.Fatalf("iteration %d: response was not fully decoded", iteration)
+		}
+		_ = p.Close(context.Background())
+	}
+}
+
+// An explicitly empty allowlist must reach the child as an empty environment,
+// not collapse to nil and inherit the parent's variables.
+func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "env")
+	script := writeScript(t, dir, `printf '%s' "${DSH_ENV_PROBE-unset}" > "$1"
+IFS= read -r init
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}'
+IFS= read -r eof || exit 0
+`)
+	t.Setenv("DSH_ENV_PROBE", "ambient-value")
+	p, err := Start(context.Background(), ProcessConfig{Path: script, Args: []string{envFile}, Env: []string{}, Initialize: native.InitializeParams{Cwd: dir, Provider: "p", Model: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ := os.ReadFile(envFile)
+	if string(probe) != "unset" {
+		t.Fatalf("ambient env leaked into the child: %q", string(probe))
 	}
 }
 

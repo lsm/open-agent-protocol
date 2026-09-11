@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +19,11 @@ const defaultStderrLimit = 64 << 10
 var ErrHandshake = errors.New("makai stdio: ready handshake failed")
 
 type ProcessConfig struct {
-	Path               string
-	Args               []string
-	Dir                string
+	Path string
+	Args []string
+	Dir  string
+	// Env nil inherits the parent environment; non-nil replaces it verbatim.
+	// An empty non-nil slice is a valid empty allowlist.
 	Env                []string
 	FrameLimit         int
 	QueueCapacity      int
@@ -50,7 +53,9 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	args = append(args, "--stdio")
 	cmd := exec.Command(config.Path, args...)
 	cmd.Dir = config.Dir
-	cmd.Env = append([]string(nil), config.Env...)
+	// slices.Clone preserves non-nilness: an explicitly empty allowlist stays
+	// empty instead of collapsing to nil and inheriting the parent.
+	cmd.Env = slices.Clone(config.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -110,11 +115,11 @@ func (p *Process) Close(ctx context.Context) error {
 		case <-p.waitDone:
 			p.closeErr = p.WaitError()
 		case <-ctx.Done():
-			_ = p.command.Process.Kill()
+			p.killAndRelease()
 			<-p.waitDone
 			p.closeErr = ctx.Err()
 		case <-timer.C:
-			_ = p.command.Process.Kill()
+			p.killAndRelease()
 			<-p.waitDone
 			p.closeErr = errors.New("makai stdio: shutdown timed out")
 		}
@@ -124,6 +129,11 @@ func (p *Process) Close(ctx context.Context) error {
 }
 func (p *Process) WaitError() error { p.waitMu.Lock(); defer p.waitMu.Unlock(); return p.waitErr }
 func (p *Process) wait() {
+	// Drain stdout before reaping. Cmd.Wait closes the stdout pipe, so the
+	// reader must finish routing every frame already buffered there before the
+	// pipe is closed; otherwise a response the child wrote immediately before
+	// exiting is reported as a process-exit failure on the pending call.
+	<-p.Client.ReadDone()
 	err := p.command.Wait()
 	<-p.stderrDone
 	p.waitMu.Lock()
@@ -132,6 +142,15 @@ func (p *Process) wait() {
 	_ = p.stdin.Close()
 	p.Client.shutdown(processExitError(err))
 	close(p.waitDone)
+}
+
+// killAndRelease kills the child and retires the client before reaping. Reaping
+// waits for the reader to drain (see wait), but a reader blocked on a stdout a
+// descendant still holds open would never reach EOF. Retiring the client closes
+// the pipe so the drain completes instead of stalling teardown.
+func (p *Process) killAndRelease() {
+	_ = p.command.Process.Kill()
+	p.Client.closeWith(processExitError(nil))
 }
 func (p *Process) abortBeforeWait() error {
 	_ = p.command.Process.Kill()

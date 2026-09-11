@@ -61,6 +61,7 @@ type Client struct {
 	inbound     chan Inbound
 	diagnostics chan error
 	done        chan struct{}
+	readDone    chan struct{}
 	closeOnce   sync.Once
 }
 
@@ -76,7 +77,7 @@ func newClient(decoder *Decoder, writer io.Writer, options ClientOptions) *Clien
 	if wcap <= 0 {
 		wcap = cap
 	}
-	c := &Client{decoder: decoder, encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter, pending: map[native.MessageID]pendingCall{}, seen: map[native.MessageID]struct{}{}, sent: map[native.MessageID]native.Envelope{}, sequences: map[native.SessionID]uint64{}, writes: make(chan writeRequest, wcap), inbound: make(chan Inbound, cap), diagnostics: make(chan error, cap), done: make(chan struct{})}
+	c := &Client{decoder: decoder, encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter, pending: map[native.MessageID]pendingCall{}, seen: map[native.MessageID]struct{}{}, sent: map[native.MessageID]native.Envelope{}, sequences: map[native.SessionID]uint64{}, writes: make(chan writeRequest, wcap), inbound: make(chan Inbound, cap), diagnostics: make(chan error, cap), done: make(chan struct{}), readDone: make(chan struct{})}
 	go c.writeLoop()
 	go c.readLoop()
 	return c
@@ -85,6 +86,13 @@ func (c *Client) Inbound() <-chan Inbound   { return c.inbound }
 func (c *Client) Diagnostics() <-chan error { return c.diagnostics }
 func (c *Client) Done() <-chan struct{}     { return c.done }
 func (c *Client) Err() error                { c.mu.Lock(); defer c.mu.Unlock(); return c.err }
+
+// ReadDone closes once the reader goroutine has stopped, after every frame
+// already buffered on the input has been decoded and routed. A process owner
+// must wait for it before reaping the child: Cmd.Wait closes the stdout pipe,
+// so a response written immediately before exit would otherwise be lost to a
+// closed read end and reported as a process-exit failure.
+func (c *Client) ReadDone() <-chan struct{} { return c.readDone }
 
 func (c *Client) Call(ctx context.Context, request native.Envelope, accepted ...native.Type) (native.Envelope, error) {
 	if len(accepted) == 0 {
@@ -179,6 +187,7 @@ func firstError(a, b error) error {
 }
 
 func (c *Client) readLoop() {
+	defer close(c.readDone)
 	for {
 		frame, err := c.decoder.Decode()
 		if err != nil {

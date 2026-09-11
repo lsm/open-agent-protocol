@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,34 @@ import (
 	"testing"
 	"time"
 )
+
+// TestClaudeProcessHelper is the spawned child for the drain regression: it
+// answers one control_request with an oversized frame and exits immediately,
+// leaving the response buffered in the pipe when the reader is still busy.
+func TestClaudeProcessHelper(t *testing.T) {
+	if os.Getenv("OAP_CLAUDE_RPC_HELPER") == "" {
+		return
+	}
+	message, err := NewDecoder(os.Stdin, DefaultFrameLimit).Decode()
+	if err != nil || message.Kind != KindControlRequest || message.RequestID == "" {
+		os.Exit(11)
+	}
+	blob := strings.Repeat("x", 1<<20)
+	response := json.RawMessage(`{"subtype":"success","request_id":"` + message.RequestID + `","response":{"ok":true,"blob":"` + blob + `"}}`)
+	if err := NewEncoder(os.Stdout).Encode(ControlResponseMessage(response)); err != nil {
+		os.Exit(12)
+	}
+	os.Exit(0)
+}
+
+func claudeHelperConfig() ProcessConfig {
+	return ProcessConfig{
+		Path:        os.Args[0],
+		Args:        []string{"-test.run=TestClaudeProcessHelper", "--"},
+		Env:         append(os.Environ(), "OAP_CLAUDE_RPC_HELPER=1"),
+		ExitTimeout: 2 * time.Second,
+	}
+}
 
 func TestProcessSpawnObservesAndEOFTearsDown(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -172,6 +201,44 @@ while IFS= read -r line; do :; done
 func TestProcessRequiresExecutable(t *testing.T) {
 	if _, err := Start(context.Background(), ProcessConfig{}); err == nil {
 		t.Fatal("missing executable accepted")
+	}
+}
+
+// The helper writes its response and then exits immediately. The reader must be
+// allowed to drain the buffered frame before the process owner reaps the child,
+// otherwise this call races the exit and reports a process-exit error for a
+// response that was already written.
+func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
+	for iteration := range 10 {
+		process, err := Start(context.Background(), claudeHelperConfig())
+		if err != nil {
+			t.Fatalf("iteration %d: start: %v", iteration, err)
+		}
+		// A matched response is ordered behind an inbound barrier the consumer
+		// must acknowledge, so model the adapter's own draining loop.
+		go func() {
+			for {
+				select {
+				case message := <-process.Client.Inbound():
+					if message.Barrier != nil {
+						close(message.Barrier)
+					}
+				case <-process.Client.Done():
+					return
+				}
+			}
+		}()
+		var result struct {
+			OK   bool   `json:"ok"`
+			Blob string `json:"blob"`
+		}
+		if err := process.Client.Call(context.Background(), map[string]any{"subtype": "probe"}, &result); err != nil {
+			t.Fatalf("iteration %d: call failed despite a written response: %v", iteration, err)
+		}
+		if !result.OK || len(result.Blob) != 1<<20 {
+			t.Fatalf("iteration %d: response was not fully decoded", iteration)
+		}
+		_ = process.Close(context.Background())
 	}
 }
 

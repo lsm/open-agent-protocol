@@ -138,6 +138,7 @@ type Client struct {
 	writes    chan writeRequest
 	inbound   chan InboundMessage
 	done      chan struct{}
+	readDone  chan struct{}
 	closeOnce sync.Once
 }
 
@@ -165,7 +166,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 		closer: options.CloseReadWriter, queueCapacity: capacity,
 		pending: make(map[string]chan controlResult), incoming: make(map[string]*IncomingControl),
 		writes: make(chan writeRequest, writeCapacity), inbound: make(chan InboundMessage, capacity),
-		done: make(chan struct{}),
+		done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	go client.writeLoop()
 	go client.readLoop()
@@ -177,6 +178,13 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 // channel close has observed every frame the wire delivered before death.
 func (client *Client) Inbound() <-chan InboundMessage { return client.inbound }
 func (client *Client) Done() <-chan struct{}          { return client.done }
+
+// ReadDone closes once the reader goroutine has stopped, after every frame
+// already buffered on the input has been decoded and routed. A process owner
+// must wait for it before reaping the child: Cmd.Wait closes the stdout pipe,
+// so a response written immediately before exit would otherwise be lost to a
+// closed read end and reported as a process-exit failure.
+func (client *Client) ReadDone() <-chan struct{} { return client.readDone }
 
 func (client *Client) Err() error {
 	client.mu.Lock()
@@ -273,6 +281,7 @@ func (client *Client) mintID() string {
 }
 
 func (client *Client) readLoop() {
+	defer close(client.readDone)
 	// The reader is the only producer of the inbound stream, so its exit is
 	// the stream's end: consumers drain deterministically to retirement
 	// instead of parking on a channel nobody will ever close.

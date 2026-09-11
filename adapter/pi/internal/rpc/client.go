@@ -77,6 +77,7 @@ type Client struct {
 	writes    chan writeRequest
 	inbound   chan Inbound
 	done      chan struct{}
+	readDone  chan struct{}
 	closeOnce sync.Once
 }
 
@@ -91,7 +92,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	}
 	client := &Client{
 		decoder: NewDecoder(reader, options.FrameLimit), encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter,
-		pending: map[string]pendingCall{}, sent: map[string]struct{}{}, writes: make(chan writeRequest, writeCapacity), inbound: make(chan Inbound, capacity), done: make(chan struct{}),
+		pending: map[string]pendingCall{}, sent: map[string]struct{}{}, writes: make(chan writeRequest, writeCapacity), inbound: make(chan Inbound, capacity), done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	client.nextID.Store(options.FirstRequestID)
 	go client.writeLoop()
@@ -102,6 +103,13 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 func (c *Client) Inbound() <-chan Inbound { return c.inbound }
 func (c *Client) Done() <-chan struct{}   { return c.done }
 func (c *Client) Err() error              { c.mu.Lock(); defer c.mu.Unlock(); return c.err }
+
+// ReadDone closes once the reader goroutine has stopped, after every frame
+// already buffered on the input has been decoded and routed. A process owner
+// must wait for it before reaping the child: Cmd.Wait closes the stdout pipe,
+// so a response written immediately before exit would otherwise be lost to a
+// closed read end and reported as a process-exit failure.
+func (c *Client) ReadDone() <-chan struct{} { return c.readDone }
 
 func (c *Client) Call(ctx context.Context, command native.Command, result any) error {
 	if command.ID == "" {
@@ -194,6 +202,7 @@ func firstError(a, b error) error {
 }
 
 func (c *Client) readLoop() {
+	defer close(c.readDone)
 	for {
 		frame, err := c.decoder.Decode()
 		if err != nil {

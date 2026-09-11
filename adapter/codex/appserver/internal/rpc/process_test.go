@@ -14,7 +14,16 @@ import (
 )
 
 func TestHelperProcess(t *testing.T) {
-	if os.Getenv("OAP_CODEX_RPC_HELPER") == "" {
+	// Activated either by environment or by an explicit argument, so the
+	// empty-allowlist fixture can be spawned with no environment at all.
+	mode := os.Getenv("OAP_CODEX_RPC_HELPER")
+	if strings.Contains(strings.Join(os.Args, "\x00"), "--codex-emptyenv") {
+		if os.Getenv("CODEX_ENV_PROBE") != "" {
+			os.Exit(14)
+		}
+		mode = "emptyenv"
+	}
+	if mode == "" {
 		return
 	}
 	args := os.Args
@@ -32,7 +41,6 @@ func TestHelperProcess(t *testing.T) {
 	if json.Unmarshal(message.Params, &initialize) != nil || initialize.ClientInfo.Name != "open-agent-protocol" || initialize.ClientInfo.Version != "0.1" {
 		os.Exit(13)
 	}
-	mode := os.Getenv("OAP_CODEX_RPC_HELPER")
 	if mode == "stderr-error" {
 		_, _ = fmt.Fprintln(os.Stderr, "Authorization: secret-value")
 		_ = NewEncoder(os.Stdout).Encode(ErrorResponse(message.ID, ErrorObject{Code: -32000, Message: "no"}))
@@ -79,6 +87,31 @@ func helperConfig(mode string) ProcessConfig {
 		Env:             append(os.Environ(), "OAP_CODEX_RPC_HELPER="+mode),
 		ClientInfo:      ClientInfo{Name: "open-agent-protocol", Version: "0.1"},
 		ShutdownTimeout: time.Second,
+	}
+}
+
+// envlessHelperConfig spawns the helper with an explicitly empty allowlist, so
+// the child sees no parent variables at all.
+func envlessHelperConfig() ProcessConfig {
+	return ProcessConfig{
+		Path:            os.Args[0],
+		Args:            []string{"-test.run=TestHelperProcess", "--", "--codex-emptyenv"},
+		Env:             []string{},
+		ClientInfo:      ClientInfo{Name: "open-agent-protocol", Version: "0.1"},
+		ShutdownTimeout: 5 * time.Second,
+	}
+}
+
+// An explicitly empty allowlist must reach the child as an empty environment,
+// not collapse to nil and inherit the parent's variables.
+func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
+	t.Setenv("CODEX_ENV_PROBE", "ambient-value")
+	process, err := Start(context.Background(), envlessHelperConfig())
+	if err != nil {
+		t.Fatalf("empty environment did not stay empty: %v", err)
+	}
+	if err := process.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -58,8 +59,10 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	command.Dir = config.Dir
 	// A nil environment inherits the complete parent environment. A supplied
 	// slice is installed verbatim so callers can provide a complete hermetic one.
+	// slices.Clone preserves non-nilness, so an explicitly empty allowlist stays
+	// empty instead of collapsing to nil and inheriting the parent.
 	if config.Env != nil {
-		command.Env = append([]string(nil), config.Env...)
+		command.Env = slices.Clone(config.Env)
 	}
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -176,11 +179,11 @@ func (p *Process) Close(ctx context.Context) error {
 		case <-p.waitDone:
 			p.closeErr = p.WaitError()
 		case <-ctx.Done():
-			_ = p.command.Process.Kill()
+			p.killAndRelease()
 			<-p.waitDone
 			p.closeErr = ctx.Err()
 		case <-timer.C:
-			_ = p.command.Process.Kill()
+			p.killAndRelease()
 			<-p.waitDone
 			p.closeErr = errors.New("pi rpc: shutdown timed out")
 		}
@@ -189,6 +192,11 @@ func (p *Process) Close(ctx context.Context) error {
 	return p.closeErr
 }
 func (p *Process) wait() {
+	// Drain stdout before reaping. Cmd.Wait closes the stdout pipe, so the
+	// reader must finish routing every frame already buffered there before the
+	// pipe is closed; otherwise a response the child wrote immediately before
+	// exiting is reported as a process-exit failure on the pending call.
+	<-p.Client.ReadDone()
 	err := p.command.Wait()
 	<-p.stderrDone
 	p.waitMu.Lock()
@@ -198,7 +206,16 @@ func (p *Process) wait() {
 	p.Client.shutdown(processExitError(err))
 	close(p.waitDone)
 }
-func (p *Process) abort() error { _ = p.command.Process.Kill(); <-p.waitDone; return p.WaitError() }
+func (p *Process) abort() error { p.killAndRelease(); <-p.waitDone; return p.WaitError() }
+
+// killAndRelease kills the child and retires the client before reaping. Reaping
+// waits for the reader to drain (see wait), but a reader blocked on a stdout a
+// descendant still holds open would never reach EOF. Retiring the client closes
+// the pipe so the drain completes instead of stalling teardown.
+func (p *Process) killAndRelease() {
+	_ = p.command.Process.Kill()
+	p.Client.closeWith(processExitError(nil))
+}
 func processExitError(err error) error {
 	if err == nil {
 		return errors.New("pi rpc: process exited")

@@ -123,6 +123,7 @@ type Client struct {
 	inbound       chan InboundMessage
 	diagnostics   chan error
 	done          chan struct{}
+	readDone      chan struct{}
 	closeOnce     sync.Once
 }
 
@@ -155,7 +156,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 		pending: make(map[RequestID]chan callResult), incoming: make(map[RequestID]*IncomingRequest),
 		writes: make(chan writeRequest, writeCapacity), requests: make(chan *IncomingRequest, capacity),
 		notifications: make(chan NotificationMessage, capacity), inbound: make(chan InboundMessage, capacity), diagnostics: make(chan error, capacity),
-		done: make(chan struct{}),
+		done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	client.nextID.Store(options.FirstRequestID)
 	go client.writeLoop()
@@ -204,6 +205,13 @@ func (client *Client) activateLegacy() {
 
 func (client *Client) Diagnostics() <-chan error { return client.diagnostics }
 func (client *Client) Done() <-chan struct{}     { return client.done }
+
+// ReadDone closes once the reader goroutine has stopped, after every frame
+// already buffered on the input has been decoded and routed. A process owner
+// must wait for it before reaping the child: Cmd.Wait closes the stdout pipe,
+// so a response written immediately before exit would otherwise be lost to a
+// closed read end and reported as a process-exit failure.
+func (client *Client) ReadDone() <-chan struct{} { return client.readDone }
 
 func (client *Client) Err() error {
 	client.mu.Lock()
@@ -306,6 +314,7 @@ func (client *Client) closeWith(reason error) {
 }
 
 func (client *Client) readLoop() {
+	defer close(client.readDone)
 	for {
 		message, err := client.decoder.Decode()
 		if err != nil {

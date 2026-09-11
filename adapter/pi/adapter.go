@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -133,7 +134,9 @@ func New(config Config) (*Adapter, error) {
 		// after caller arguments so discovered extensions cannot consume a prompt
 		// without producing agent_start.
 		args := append(append([]string(nil), config.Args...), "--no-extensions")
-		pc := rpc.ProcessConfig{Path: config.Executable, Args: args, Dir: config.WorkingDirectory, Env: append([]string(nil), config.Environment...), FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ShutdownTimeout: config.ShutdownTimeout}
+		// slices.Clone preserves non-nilness: an explicitly empty allowlist must
+		// reach rpc.Start as non-nil or it collapses to "inherit the parent".
+		pc := rpc.ProcessConfig{Path: config.Executable, Args: args, Dir: config.WorkingDirectory, Env: slices.Clone(config.Environment), FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ShutdownTimeout: config.ShutdownTimeout}
 		config.Factory = ClientFactoryFunc(func(ctx context.Context) (Client, native.SessionState, error) {
 			bridge, err := config.ProcessFactory.Start(ctx, pc)
 			if err != nil {

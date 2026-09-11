@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,9 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	args = append(args, "app-server", "--listen", "stdio://")
 	command := exec.Command(config.Path, args...)
 	command.Dir = config.Dir
-	command.Env = append([]string(nil), config.Env...)
+	// slices.Clone preserves non-nilness: an explicitly empty allowlist stays
+	// empty instead of collapsing to nil and inheriting the parent.
+	command.Env = slices.Clone(config.Env)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return nil, err
