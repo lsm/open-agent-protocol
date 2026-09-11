@@ -280,6 +280,24 @@ func TestCancelRejectedWhenNotAllowed(t *testing.T) {
 	}
 }
 
+// A permission resolution must select a choice the gate offered.
+func TestPermissionResolutionChoiceMustBeOffered(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+		{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"permissions":{"level":"native"}}}},
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"action.permission.requested","id":"perm1","session_id":"s1","run_id":"r1","sequence":2,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","tool_call_id":"t1","title":"T","choices":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}},
+		{` + core + `,"type":"action.permission.resolve.request","id":"pr1","session_id":"s1","run_id":"r1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","choice_id":"bogus","granted":true}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "permission-choice-unoffered"); !got.HasCode(CodeUnmatchedInteraction) {
+		t.Fatalf("want %s for an unoffered choice: %+v", CodeUnmatchedInteraction, got.Diagnostics)
+	}
+}
+
 func TestRunStatusTransitions(t *testing.T) {
 	valid := map[protocol.RunStatus][]protocol.RunStatus{
 		protocol.RunQueued:          {protocol.RunRunning, protocol.RunCancelling},

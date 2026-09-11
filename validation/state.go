@@ -25,6 +25,7 @@ type interactionState struct {
 	kind                     string
 	requestedBy, respondedBy protocol.ParticipantID
 	allowCancel              bool
+	choices                  map[string]bool
 	resolved                 bool
 }
 type recoveryExpectation struct {
@@ -683,12 +684,19 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	var id protocol.InteractionID
 	var requested, responded protocol.ParticipantID
 	var allowCancel bool
+	var choices map[string]bool
 	if kind == "permission" {
 		var p protocol.PermissionRequestedPayload
 		_ = e.DecodePayload(&p)
 		id = p.InteractionID
 		requested = p.RequestedBy
 		responded = p.RespondedBy
+		choices = make(map[string]bool, len(p.Choices))
+		for _, choice := range p.Choices {
+			if choice.ID != "" {
+				choices[choice.ID] = true
+			}
+		}
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
 		// The portable tool binding must not contradict itself between the
 		// envelope and the payload, as is already enforced for action-call events.
@@ -710,7 +718,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	if _, ok := r.interactions[id]; ok {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction id was requested more than once")
 	}
-	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel}
+	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices}
 }
 func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, kind string) {
 	id, requested, responded := interactionFields(e, kind)
@@ -725,6 +733,14 @@ func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, k
 	// A prompt that declared allow_cancel:false may not be withdrawn.
 	if e.Type == protocol.TypeUserInputCancelRequest && !x.allowCancel {
 		s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "interaction was not opened for cancellation")
+	}
+	// A permission resolution must select a choice the gate offered.
+	if e.Type == protocol.TypeActionPermissionResolveRequest {
+		var p protocol.PermissionResolveRequest
+		_ = e.DecodePayload(&p)
+		if p.ChoiceID != "" && !x.choices[p.ChoiceID] {
+			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/choice_id", "resolution selects a choice the permission did not offer", "offered choice", p.ChoiceID, string(id))
+		}
 	}
 	if responded != x.respondedBy || (requested != "" && requested != x.requestedBy) {
 		s.addExpected(CodeWrongInteractionResponder, i, line, e, "/payload/responded_by", "only the declared responder may resolve an interaction", string(x.respondedBy), string(responded), string(id))
