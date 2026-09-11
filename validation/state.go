@@ -24,6 +24,7 @@ type runState struct {
 type interactionState struct {
 	kind                     string
 	requestedBy, respondedBy protocol.ParticipantID
+	allowCancel              bool
 	resolved                 bool
 }
 type recoveryExpectation struct {
@@ -32,6 +33,7 @@ type recoveryExpectation struct {
 	gap             bool
 	openIndex       int
 	stateSeen       bool
+	stateChecked    bool
 	cursor          uint64
 	cursorSet       bool
 	firstReplaySeen bool
@@ -182,7 +184,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
-		if rec := s.recoveries[p.SessionID]; rec != nil {
+		if rec := s.recoveries[p.SessionID]; rec != nil && !rec.stateChecked {
+			rec.stateChecked = true
 			rec.stateSeen = true
 			if rec.gap && p.Recovery == nil {
 				s.add(CodeUndeclaredReplayGap, i, line, e, "/payload/recovery", "authoritative state after a replay gap must retain recovery metadata")
@@ -679,6 +682,7 @@ func (s *state) participant(i, line int, e protocol.Envelope, id protocol.Partic
 func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind string) {
 	var id protocol.InteractionID
 	var requested, responded protocol.ParticipantID
+	var allowCancel bool
 	if kind == "permission" {
 		var p protocol.PermissionRequestedPayload
 		_ = e.DecodePayload(&p)
@@ -697,6 +701,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 		id = p.InteractionID
 		requested = p.RequestedBy
 		responded = p.RespondedBy
+		allowCancel = p.AllowCancel
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
 	}
 	s.participant(i, line, e, requested, "/payload/requested_by")
@@ -705,7 +710,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	if _, ok := r.interactions[id]; ok {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction id was requested more than once")
 	}
-	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded}
+	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel}
 }
 func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, kind string) {
 	id, requested, responded := interactionFields(e, kind)
@@ -716,6 +721,10 @@ func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, k
 	}
 	if x.kind != kind {
 		s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution has the wrong interaction kind")
+	}
+	// A prompt that declared allow_cancel:false may not be withdrawn.
+	if e.Type == protocol.TypeUserInputCancelRequest && !x.allowCancel {
+		s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "interaction was not opened for cancellation")
 	}
 	if responded != x.respondedBy || (requested != "" && requested != x.requestedBy) {
 		s.addExpected(CodeWrongInteractionResponder, i, line, e, "/payload/responded_by", "only the declared responder may resolve an interaction", string(x.respondedBy), string(responded), string(id))

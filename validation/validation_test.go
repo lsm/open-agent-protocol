@@ -244,6 +244,42 @@ func TestRecoveryExpectationsArePerSession(t *testing.T) {
 	}
 }
 
+// A recovery expectation is satisfied by the first authoritative snapshot; an
+// ordinary later state update must not be re-checked against the old recovery.
+func TestRecoveryExpectationConsumedAfterSnapshot(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"session.open.request","id":"o1","payload":{"session_id":"s1","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"5","reason":"replay_gap"}}},
+		{` + core + `,"type":"session.open.response","id":"o1r","in_reply_to":"o1","session_id":"s1","payload":{"session_id":"s1","status":"idle","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"5","reason":"replay_gap"}}},
+		{` + core + `,"type":"session.state.request","id":"st1","session_id":"s1","payload":{"session_id":"s1"}},
+		{` + core + `,"type":"session.state.response","id":"st1r","in_reply_to":"st1","session_id":"s1","payload":{"session_id":"s1","status":"idle","transcript_cursor":"5","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"5","reason":"replay_gap"}}},
+		{` + core + `,"type":"session.state.request","id":"st2","session_id":"s1","payload":{"session_id":"s1"}},
+		{` + core + `,"type":"session.state.response","id":"st2r","in_reply_to":"st2","session_id":"s1","payload":{"session_id":"s1","status":"idle"}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "recovery-consumed"); got.HasCode(CodeUndeclaredReplayGap) {
+		t.Fatalf("a later ordinary state update was re-checked against the recovery: %+v", got.Diagnostics)
+	}
+}
+
+// A prompt that declared allow_cancel:false may not be withdrawn.
+func TestCancelRejectedWhenNotAllowed(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+		{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"user_input":{"level":"native"}}}},
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"user.input.requested","id":"input1","session_id":"s1","run_id":"r1","sequence":2,"capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","title":"Q","allow_cancel":false,"questions":[{"id":"q1","kind":"text","prompt":"Continue?"}]}},
+		{` + core + `,"type":"user.input.cancel.request","id":"cancel1","session_id":"s1","run_id":"r1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","reason":"withdrawn"}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "cancel-not-allowed"); !got.HasCode(CodeUnmatchedInteraction) {
+		t.Fatalf("want %s for a non-cancellable prompt: %+v", CodeUnmatchedInteraction, got.Diagnostics)
+	}
+}
+
 func TestRunStatusTransitions(t *testing.T) {
 	valid := map[protocol.RunStatus][]protocol.RunStatus{
 		protocol.RunQueued:          {protocol.RunRunning, protocol.RunCancelling},
