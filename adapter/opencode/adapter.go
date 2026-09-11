@@ -158,8 +158,15 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("create OpenCode session: %w", err)
 	}
-	subscription, err := client.Subscribe(ctx, info.ID, -1)
+	// The durable subscription outlives the Open call. If it reused the
+	// caller's ctx, a normal `defer cancel()` would tear down the SSE request
+	// as soon as Open returned, leaving the session unusable. Give it a
+	// session-owned context that Close cancels. One-shot calls such as
+	// CreateSession and Prompt keep the caller's ctx.
+	subCtx, subCancel := context.WithCancel(context.Background())
+	subscription, err := client.Subscribe(subCtx, info.ID, -1)
 	if err != nil {
+		subCancel()
 		_ = client.Close()
 		return nil, fmt.Errorf("subscribe OpenCode session events: %w", err)
 	}
@@ -184,6 +191,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		tools:        map[string]*toolState{},
 		reduced:      map[int64]bool{},
 		stop:         make(chan struct{}),
+		subCancel:    subCancel,
 	}
 	go s.dispatch()
 	return s, nil

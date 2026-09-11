@@ -83,6 +83,8 @@ type fakeClient struct {
 	waits            int
 	historyErr       error
 	historyPage      native.HistoryPage
+	lastPromptID     native.MessageID
+	subscribeCtx     context.Context
 	prompts          []native.PromptRequest
 	closed           bool
 }
@@ -108,6 +110,7 @@ func (f *fakeClient) Prompt(_ context.Context, session native.SessionID, request
 	if f.foreignAdmission {
 		return native.Admitted{AdmittedSeq: 1, ID: "msg_foreign", SessionID: session, Prompt: request.Prompt, Delivery: request.Delivery, TimeCreated: 1}, nil
 	}
+	f.lastPromptID = request.ID
 	f.prompts = append(f.prompts, request)
 	var promoted *int64
 	if f.promoted {
@@ -145,7 +148,10 @@ func (f *fakeClient) History(_ context.Context, _ native.SessionID, after int64,
 	}
 	return page, nil
 }
-func (f *fakeClient) Subscribe(context.Context, native.SessionID, int64) (Subscription, error) {
+func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID, _ int64) (Subscription, error) {
+	f.mu.Lock()
+	f.subscribeCtx = ctx
+	f.mu.Unlock()
 	return f.subscription, nil
 }
 func (f *fakeClient) Close() error {
@@ -499,5 +505,125 @@ func TestReplayGapAndTerminalReplay(t *testing.T) {
 	events := adaptertest.Drain(t, replay, time.Second)
 	if recovery.ReplayedThrough != 4 || len(events) != 2 || events[1].Type != protocol.TypeRunCompleted {
 		t.Fatalf("recovery=%+v events=%v", recovery, types(events))
+	}
+}
+
+// TestOpenSubscriptionSurvivesOpenContextCancel pins that the durable
+// subscription owns its context instead of borrowing the Open call's. A caller
+// doing `ctx, cancel := context.WithTimeout(...); defer cancel()` must not tear
+// the SSE request down when Open returns. Before the fix the subscription
+// reused the Open context and the returned session became unusable.
+func TestOpenSubscriptionSurvivesOpenContextCancel(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	session, err := adapter.Open(ctx, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	cancel()
+	client.mu.Lock()
+	subCtx := client.subscribeCtx
+	client.mu.Unlock()
+	if subCtx == nil {
+		t.Fatal("subscription did not receive a context")
+	}
+	if subCtx.Err() != nil {
+		t.Fatalf("subscription reused the cancelled Open context: %v", subCtx.Err())
+	}
+	// The returned session is still usable end to end.
+	response, stream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepEnded, native.StepEndedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	if len(events) == 0 || events[0].Type != protocol.TypeRunStarted {
+		t.Fatalf("events=%v", types(events))
+	}
+}
+
+// gatedPromptClient blocks Prompt until release, letting a test deliver the
+// prompted SSE event before the prompt HTTP response returns.
+type gatedPromptClient struct {
+	*fakeClient
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedPromptClient) Prompt(ctx context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error) {
+	g.mu.Lock()
+	g.lastPromptID = request.ID
+	g.mu.Unlock()
+	close(g.entered)
+	<-g.release
+	return g.fakeClient.Prompt(ctx, session, request)
+}
+
+// TestPromptedEventBeforePromptResponseStartsRun pins that the pending mapping
+// is installed before Prompt is issued. The server may publish
+// session.next.prompted before the prompt HTTP response arrives; that event
+// must still resolve to the reserved run and emit run.started. Before the fix
+// the mapping was installed only after Prompt returned and the early event was
+// discarded, so no run.started was ever emitted.
+func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = false
+	gated := &gatedPromptClient{fakeClient: client, entered: make(chan struct{}), release: make(chan struct{})}
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return gated, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := adapter.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close(context.Background()) })
+	submitted := make(chan struct {
+		response protocol.MessageSubmitResponse
+		stream   base.EventStream
+		err      error
+	}, 1)
+	go func() {
+		response, stream, err := sess.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		submitted <- struct {
+			response protocol.MessageSubmitResponse
+			stream   base.EventStream
+			err      error
+		}{response, stream, err}
+	}()
+	<-gated.entered // Prompt is in flight; the response has not returned
+	client.mu.Lock()
+	messageID := client.lastPromptID
+	client.mu.Unlock()
+	// Deliver the prompted event, then a sentinel no-op event. If the prompted
+	// event is handled by its own turn (before the fix) the sentinel's sequence
+	// is reduced promptly; after the fix the handler blocks on admission, so
+	// the sentinel is not reduced until the prompt response arrives.
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeAgentSwitched, nil)
+	concrete := sess.(*session)
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		concrete.mu.Lock()
+		handled := concrete.reduced[2]
+		concrete.mu.Unlock()
+		if handled {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(gated.release)
+	result := <-submitted
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	events := adaptertest.Drain(t, result.stream, time.Second)
+	if len(events) == 0 || events[0].Type != protocol.TypeRunStarted {
+		t.Fatalf("events=%v", types(events))
 	}
 }

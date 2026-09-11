@@ -44,6 +44,7 @@ type session struct {
 	lastSeq      int64
 	stop         chan struct{}
 	stopOnce     sync.Once
+	subCancel    context.CancelFunc
 	settleCtx    context.Context
 	settleCancel context.CancelFunc
 }
@@ -139,25 +140,34 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		return reservation, stream, nil
 	}
 	run.nativeMessageID = nativeMessage
+	// Register the reservation before issuing the prompt: the server may
+	// publish session.next.prompted on the SSE stream before the prompt HTTP
+	// response arrives, and the event is matched by native message id. Every
+	// definite admission failure removes the entry so a failed admission never
+	// leaves a stale mapping (the success path leaves it for the prompted event
+	// to consume).
+	s.mu.Lock()
+	s.pending[nativeMessage] = run
+	s.mu.Unlock()
 	admitted, err := s.client.Prompt(ctx, s.nativeID, native.PromptRequest{ID: nativeMessage, Prompt: native.Prompt{Text: promptText}, Delivery: delivery})
 	if err != nil {
 		s.mu.Lock()
+		delete(s.pending, nativeMessage)
 		s.unusable = true
 		s.mu.Unlock()
 		close(run.admitted)
 		s.failRun(run, "opencode_admission_ambiguous", err.Error())
 		return reservation, stream, nil
 	}
-	s.mu.Lock()
 	if admitted.ID != nativeMessage {
+		s.mu.Lock()
+		delete(s.pending, nativeMessage)
 		s.unusable = true
 		s.mu.Unlock()
 		close(run.admitted)
 		s.failRun(run, "opencode_foreign_admission", fmt.Sprintf("server admitted %s for request %s", admitted.ID, nativeMessage))
 		return reservation, stream, nil
 	}
-	s.pending[admitted.ID] = run
-	s.mu.Unlock()
 	reservation.MessageIDs = []protocol.MessageID{protocol.MessageID(admitted.ID)}
 	if admitted.PromotedSeq != nil {
 		reservation.Admission = protocol.AdmissionStarted
@@ -811,10 +821,14 @@ func (s *session) Close(ctx context.Context) error {
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	subscribers := s.allSubscribersLocked()
 	cancel := s.settleCancel
+	subCancel := s.subCancel
 	s.mu.Unlock()
 	s.stopOnce.Do(func() { close(s.stop) })
 	if cancel != nil {
 		cancel()
+	}
+	if subCancel != nil {
+		subCancel()
 	}
 	_ = s.subscription.Close()
 	err := s.client.Close()

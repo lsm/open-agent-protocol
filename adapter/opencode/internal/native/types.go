@@ -546,7 +546,7 @@ func DecodeData(e Event, dst any) error {
 }
 
 func decodeStrict(data []byte, dst any, unknown bool) error {
-	if err := rejectDuplicateKeys(data); err != nil {
+	if err := RejectDuplicateKeys(data); err != nil {
 		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -566,7 +566,10 @@ func decodeStrict(data []byte, dst any, unknown bool) error {
 	return nil
 }
 
-func rejectDuplicateKeys(data []byte) error {
+// RejectDuplicateKeys walks data and rejects any object that repeats a key.
+// encoding/json would otherwise silently keep the last occurrence, so callers
+// that require strict decoding invoke this before json.Decode.
+func RejectDuplicateKeys(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	var walk func() error
 	walk = func() error {

@@ -231,6 +231,76 @@ func TestSubscribeSurfacesHTTPErrors(t *testing.T) {
 	}
 }
 
+// TestCreateSessionRejectsDuplicateKeys pins strict decoding: encoding/json
+// silently keeps the last duplicate key, so the duplicate walker must reject
+// the body. Before the fix the duplicate top-level "data" key was accepted.
+func TestCreateSessionRejectsDuplicateKeys(t *testing.T) {
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":` + sessionInfo + `,"data":` + sessionInfo + `}`))
+	}), Options{})
+	_, err := client.CreateSession(context.Background(), CreateSessionRequest{})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate key accepted: err=%v", err)
+	}
+}
+
+// TestSubscriptionCloseInterruptsBlockedRead pins that Close tears down an idle
+// SSE stream instead of leaking the pump goroutine and connection. The server
+// flushes headers then sends nothing; Close must cancel the request so the
+// blocked Decode returns and the server observes the disconnect. Before the
+// fix Close only closed done, the pump stayed blocked in Decode, and the
+// server's request context was never cancelled.
+func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseNow) // never leave the handler blocking server Close
+	handlerDone := make(chan struct{})
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+		close(handlerDone)
+	}), Options{})
+	// The stream context lets cleanup force teardown even when Close fails to
+	// (before the fix), so a leaked connection cannot hang httptest.Server.
+	streamCtx, cancelStream := context.WithCancel(context.Background())
+	t.Cleanup(cancelStream)
+	subscription, err := client.Subscribe(streamCtx, "ses_a", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Subscribe returns once the headers are flushed; let the pump goroutine
+	// reach and park in Decode so Close must interrupt the read rather than
+	// racing the done check. Without this the pump can observe done before its
+	// first Decode and its deferred Body.Close() would tear the connection
+	// down even without the fix.
+	time.Sleep(100 * time.Millisecond)
+	start := time.Now()
+	if err := subscription.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Close blocked for %v", elapsed)
+	}
+	// The server only observes its request context end (or a client
+	// disconnect) once the HTTP request carrying the idle stream is torn
+	// down. That teardown is what closes the response body the pump is
+	// blocked reading, so its firing proves the blocked Decode was
+	// interrupted and the goroutine can exit.
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not disconnect the idle SSE request")
+	}
+}
+
 // TestSubscribeReturnsWhenHeadersAreDeferred pins the live server behavior:
 // the pinned session-scoped SSE endpoint withholds response headers until the
 // stream carries an event. Subscribe must not block the caller waiting for

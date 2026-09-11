@@ -141,6 +141,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 
 // decodeStrict rejects duplicate keys, unknown fields, and trailing values.
 func decodeStrict(data []byte, out any) error {
+	if err := native.RejectDuplicateKeys(data); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {
@@ -283,15 +286,19 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after 
 	}
 	target := c.endpoint.JoinPath("/api/session/" + url.PathEscape(string(session)) + "/event")
 	target.RawQuery = query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	// The request carries its own cancellable context so Close can interrupt
+	// a pump blocked in Decode on an idle stream; ctx still gates establishment.
+	requestCtx, cancel := context.WithCancel(ctx)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.String(), nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	request.Header.Set("Accept", "text/event-stream")
 	if c.password != "" {
 		request.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.username+":"+c.password)))
 	}
-	sub := &Subscription{events: make(chan native.Event, c.queue), done: make(chan struct{})}
+	sub := &Subscription{events: make(chan native.Event, c.queue), done: make(chan struct{}), cancel: cancel}
 	type outcome struct {
 		response *http.Response
 		err      error
@@ -318,6 +325,7 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after 
 	select {
 	case result := <-settled:
 		if err := consume(result); err != nil {
+			cancel()
 			return nil, err
 		}
 		return sub, nil
@@ -332,6 +340,7 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after 
 		}()
 		return sub, nil
 	case <-ctx.Done():
+		cancel()
 		return nil, ctx.Err()
 	}
 }
@@ -351,6 +360,7 @@ func (c *Client) Close() error {
 type Subscription struct {
 	events    chan native.Event
 	done      chan struct{}
+	cancel    context.CancelFunc
 	closeOnce sync.Once
 	err       error
 	mu        sync.Mutex
@@ -371,7 +381,15 @@ func (s *Subscription) Err() error {
 }
 
 func (s *Subscription) Close() error {
-	s.closeOnce.Do(func() { close(s.done) })
+	s.closeOnce.Do(func() {
+		close(s.done)
+		// Cancelling the request context aborts the response body so a pump
+		// blocked in Decode on an idle stream unblocks and exits instead of
+		// leaking the goroutine and connection for the process lifetime.
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
 	return nil
 }
 
