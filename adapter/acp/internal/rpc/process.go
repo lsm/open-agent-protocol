@@ -176,10 +176,14 @@ func (process *Process) Close(ctx context.Context) error {
 			process.closeErr = process.WaitError()
 		case <-ctx.Done():
 			_ = process.command.Process.Kill()
+			// A surviving descendant could still hold stdout open, which would
+			// block the drain; closing the pipes forces the reader to finish.
+			_ = process.pipes.Close()
 			<-process.waitDone
 			process.closeErr = ctx.Err()
 		case <-timer.C:
 			_ = process.command.Process.Kill()
+			_ = process.pipes.Close()
 			<-process.waitDone
 			process.closeErr = errors.New("acp rpc: shutdown timed out")
 		}
@@ -195,6 +199,11 @@ func (process *Process) WaitError() error {
 }
 
 func (process *Process) wait() {
+	// Drain stdout before reaping. Cmd.Wait closes the stdout pipe, so the
+	// reader must finish routing every frame already buffered there before the
+	// pipes are closed; otherwise a response the child wrote immediately before
+	// exiting becomes a closed-pipe error on the pending call.
+	<-process.Client.ReadDone()
 	err := process.command.Wait()
 	<-process.stderrDone
 	process.waitMu.Lock()

@@ -53,6 +53,13 @@ func TestACPHelperProcess(t *testing.T) {
 			return
 		}
 		if message.Kind == MessageRequest {
+			if mode == "large-response" {
+				// A frame far larger than the pipe buffer keeps the reader busy
+				// past the child's exit, which is the window this exercises.
+				blob := strings.Repeat("x", 1<<20)
+				_ = writer.Encode(Response(message.ID, json.RawMessage(`{"ok":true,"blob":"`+blob+`"}`)))
+				return
+			}
 			_ = writer.Encode(Response(message.ID, json.RawMessage(`{"ok":true}`)))
 			if mode != "stay-alive" {
 				return
@@ -116,6 +123,30 @@ func TestStartReportsRedactedBoundedStderr(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret-value") || !strings.Contains(err.Error(), "[REDACTED]") {
 		t.Fatalf("not redacted: %v", err)
+	}
+}
+
+// The helper writes its response and then exits immediately. The process owner
+// must let the reader drain the buffered frame before closing the pipes and
+// failing pending calls, or a response that was already written becomes a
+// closed-pipe error on the pending call.
+func TestCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
+	for iteration := range 10 {
+		process, err := Start(context.Background(), helperConfig("large-response"))
+		if err != nil {
+			t.Fatalf("iteration %d: start: %v", iteration, err)
+		}
+		var result struct {
+			OK   bool   `json:"ok"`
+			Blob string `json:"blob"`
+		}
+		if err := process.Client.Call(context.Background(), "session/prompt", map[string]any{}, &result); err != nil {
+			t.Fatalf("iteration %d: call failed despite a written response: %v", iteration, err)
+		}
+		if !result.OK || len(result.Blob) != 1<<20 {
+			t.Fatalf("iteration %d: response was not fully decoded", iteration)
+		}
+		_ = process.Close(context.Background())
 	}
 }
 
