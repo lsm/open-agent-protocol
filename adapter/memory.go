@@ -254,6 +254,16 @@ func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error
 	return s.state, nil
 }
 
+// goldenInputQuestions is the deterministic prompt the reference adapter
+// offers. The same questions validate a resolution, so the advertised and
+// accepted shapes cannot drift.
+func goldenInputQuestions() []protocol.InputQuestion {
+	return []protocol.InputQuestion{{
+		ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+		Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+	}}
+}
+
 func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResolution) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -306,8 +316,9 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 		}
 		// The scripted prompt offers exactly one required single-choice question
 		// ("choice" with the single option "yes"); anything else cannot be
-		// reported as a submitted resolution.
-		if len(resolution.Input.Answers) != 1 || len(resolution.Input.Answers[0].SelectedOptionIDs) != 1 || resolution.Input.Answers[0].Text != "" || resolution.Input.Answers[0].QuestionID != "choice" || resolution.Input.Answers[0].SelectedOptionIDs[0] != "yes" {
+		// reported as a submitted resolution. Validation reuses the offered
+		// question so the accepted and advertised shapes cannot drift.
+		if len(resolution.Input.Answers) != 1 || ValidateInputAnswer(goldenInputQuestions()[0], resolution.Input.Answers[0]) != nil {
 			s.mu.Unlock()
 			return ErrInvalidResolution
 		}
@@ -359,7 +370,7 @@ func (s *memorySession) resolvePermission(run *memoryRun, request protocol.Permi
 	if err := s.emit(run, protocol.TypeActionCallCompleted, call, false); err != nil {
 		return err
 	}
-	input := protocol.UserInputRequestedPayload{InteractionID: run.inputID, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Title: "Golden input", Description: "Choose the deterministic answer.", Questions: []protocol.InputQuestion{{ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true, Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}}}}, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy}
+	input := protocol.UserInputRequestedPayload{InteractionID: run.inputID, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Title: "Golden input", Description: "Choose the deterministic answer.", Questions: goldenInputQuestions(), RequestedBy: run.requestedBy, RespondedBy: run.respondedBy}
 	if err := s.emit(run, protocol.TypeUserInputRequested, input, false); err != nil {
 		return err
 	}

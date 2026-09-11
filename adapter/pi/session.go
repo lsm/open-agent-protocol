@@ -1110,38 +1110,29 @@ func (s *Session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	return nil
 }
 func extensionResponse(b *inputState, r protocol.UserInputResolveRequest) (native.ExtensionUIResponse, error) {
-	if len(r.Answers) != 1 || r.Answers[0].QuestionID != "value" {
+	if len(r.Answers) != 1 || len(b.questions) != 1 {
 		return native.ExtensionUIResponse{}, base.ErrInvalidResolution
 	}
-	a := r.Answers[0]
+	question, a := b.questions[0], r.Answers[0]
+	if err := base.ValidateInputAnswer(question, a); err != nil {
+		return native.ExtensionUIResponse{}, err
+	}
 	response := native.ExtensionUIResponse{Type: "extension_ui_response", ID: b.nativeID}
 	switch b.method {
 	case native.ExtensionConfirm:
-		if len(a.SelectedOptionIDs) != 1 || a.Text != "" {
-			return response, base.ErrInvalidResolution
-		}
 		v := a.SelectedOptionIDs[0] == "yes"
 		if !v && a.SelectedOptionIDs[0] != "no" {
 			return response, base.ErrInvalidResolution
 		}
 		response.Confirmed = &v
 	case native.ExtensionSelect:
-		if len(a.SelectedOptionIDs) != 1 || a.Text != "" {
-			return response, base.ErrInvalidResolution
-		}
 		var n int
-		if _, err := fmt.Sscanf(a.SelectedOptionIDs[0], "option-%d", &n); err != nil || n < 1 || n > len(b.questions[0].Options) {
+		if _, err := fmt.Sscanf(a.SelectedOptionIDs[0], "option-%d", &n); err != nil || n < 1 || n > len(question.Options) {
 			return response, base.ErrInvalidResolution
 		}
-		v := b.questions[0].Options[n-1].Label
+		v := question.Options[n-1].Label
 		response.Value = &v
 	default:
-		// ExtensionInput/ExtensionEditor surface a required text question; an
-		// empty value or a choice-form answer would be written natively as an
-		// empty string yet later projected as the submitted answer.
-		if len(a.SelectedOptionIDs) != 0 || a.Text == "" {
-			return response, base.ErrInvalidResolution
-		}
 		v := a.Text
 		response.Value = &v
 	}

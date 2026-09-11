@@ -98,6 +98,7 @@ type gateState struct {
 	control   *rpc.IncomingControl
 	ask       *native.CanUseToolRequest
 	run       *runState
+	questions []protocol.InputQuestion
 	resolved  bool
 	requested protocol.EnvelopeID
 }
@@ -636,8 +637,6 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 		return
 	}
 	id := protocol.InteractionID(s.ids.NewID("interaction"))
-	gate := &gateState{id: id, control: control, ask: ask, run: run}
-	s.interactions[id] = gate
 	title := ask.Title
 	if title == "" {
 		title = fmt.Sprintf("Use %s", ask.ToolName)
@@ -657,6 +656,8 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 			{ID: "deny", Label: "Deny"},
 		},
 	}}
+	gate := &gateState{id: id, control: control, ask: ask, run: run, questions: questions}
+	s.interactions[id] = gate
 	requested, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: questions, AllowCancel: true}, false, "")
 	if emitErr != nil {
 		_ = control.RespondError(context.Background(), "claude adapter: gate could not be surfaced")
@@ -718,7 +719,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}
-	if len(resolution.Input.Answers) != 1 || len(resolution.Input.Answers[0].SelectedOptionIDs) != 1 || resolution.Input.Answers[0].Text != "" || resolution.Input.Answers[0].QuestionID != "decision" {
+	if len(resolution.Input.Answers) != 1 || len(gate.questions) != 1 || base.ValidateInputAnswer(gate.questions[0], resolution.Input.Answers[0]) != nil {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}

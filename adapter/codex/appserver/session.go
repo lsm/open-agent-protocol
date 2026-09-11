@@ -82,7 +82,7 @@ type interactionBinding struct {
 	respondedBy       protocol.ParticipantID
 	request           *rpc.IncomingRequest
 	resolved          bool
-	questions         []native.UserInputQuestion
+	questions         []protocol.InputQuestion
 	optionLabels      map[string]map[string]string
 	permissionChoices map[string]bool
 }
@@ -316,39 +316,26 @@ func permissionDecision(choiceID string, available map[string]bool) (bool, proto
 }
 
 func nativeAnswers(binding *interactionBinding, input []protocol.InputAnswer) (map[string]native.UserInputAnswer, error) {
-	questions := make(map[string]native.UserInputQuestion, len(binding.questions))
-	for _, question := range binding.questions {
-		questions[question.ID] = question
+	indexed, err := adapter.IndexInputAnswers(binding.questions, input)
+	if err != nil {
+		return nil, adapter.ErrInvalidResolution
+	}
+	// Codex requires every surfaced question to be answered.
+	if len(indexed) != len(binding.questions) {
+		return nil, adapter.ErrInvalidResolution
 	}
 	answers := make(map[string]native.UserInputAnswer, len(input))
-	for _, answer := range input {
-		question, exists := questions[answer.QuestionID]
+	for _, question := range binding.questions {
+		answer := indexed[question.ID]
+		if len(question.Options) == 0 {
+			answers[question.ID] = native.UserInputAnswer{Answers: []string{answer.Text}}
+			continue
+		}
+		label, exists := binding.optionLabels[question.ID][answer.SelectedOptionIDs[0]]
 		if !exists {
 			return nil, adapter.ErrInvalidResolution
 		}
-		if _, duplicate := answers[answer.QuestionID]; duplicate {
-			return nil, adapter.ErrInvalidResolution
-		}
-		values := make([]string, 0, len(answer.SelectedOptionIDs)+1)
-		if question.Options == nil {
-			if len(answer.SelectedOptionIDs) != 0 || answer.Text == "" {
-				return nil, adapter.ErrInvalidResolution
-			}
-			values = append(values, answer.Text)
-		} else {
-			if len(answer.SelectedOptionIDs) != 1 || answer.Text != "" {
-				return nil, adapter.ErrInvalidResolution
-			}
-			label, exists := binding.optionLabels[answer.QuestionID][answer.SelectedOptionIDs[0]]
-			if !exists {
-				return nil, adapter.ErrInvalidResolution
-			}
-			values = append(values, label)
-		}
-		answers[answer.QuestionID] = native.UserInputAnswer{Answers: values}
-	}
-	if len(answers) != len(questions) {
-		return nil, adapter.ErrInvalidResolution
+		answers[question.ID] = native.UserInputAnswer{Answers: []string{label}}
 	}
 	return answers, nil
 }
@@ -600,7 +587,7 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 		}
 		session.mu.Lock()
 		interactionID := protocol.InteractionID(session.ids.NewID("interaction"))
-		binding := &interactionBinding{kind: inputInteraction, runID: run.id, toolCallID: protocol.ToolCallID(params.ItemID), requestedBy: "agent", respondedBy: session.participant, request: request, questions: params.Questions, optionLabels: optionLabels}
+		binding := &interactionBinding{kind: inputInteraction, runID: run.id, toolCallID: protocol.ToolCallID(params.ItemID), requestedBy: "agent", respondedBy: session.participant, request: request, questions: questions, optionLabels: optionLabels}
 		session.interactions[interactionID] = binding
 		run.status = protocol.RunWaitingForInput
 		session.state.Status = protocol.SessionWaitingForInput

@@ -695,49 +695,34 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	var calls []native.RespondParams
 	switch binding.kind {
 	case "approval":
-		if len(answers) != 1 || answers[0].QuestionID != "choice" || len(answers[0].SelectedOptionIDs) != 1 || !offeredOption(binding.questions, "choice", answers[0].SelectedOptionIDs[0]) {
+		if len(answers) != 1 || len(binding.questions) != 1 || base.ValidateInputAnswer(binding.questions[0], answers[0]) != nil {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
 		approval = &native.ApprovalRespondParams{SessionID: s.nativeID, Choice: answers[0].SelectedOptionIDs[0]}
 	case "clarify":
+		// Exactly one answer per surfaced question; each must satisfy the OAP
+		// answer shape, which the shared validator enforces (one form, offered
+		// and unique options, non-empty text).
 		if len(answers) != len(binding.questions) {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
+		indexed, err := base.IndexInputAnswers(binding.questions, answers)
+		if err != nil {
+			s.reduceMu.Unlock()
+			return base.ErrInvalidResolution
+		}
 		for _, question := range binding.questions {
-			answer, ok := findAnswer(answers, question.ID)
-			if !ok {
-				s.reduceMu.Unlock()
-				return base.ErrInvalidResolution
-			}
+			answer := indexed[question.ID]
 			var value string
 			switch question.Kind {
 			case protocol.InputText:
-				if len(answer.SelectedOptionIDs) != 0 || answer.Text == "" {
-					s.reduceMu.Unlock()
-					return base.ErrInvalidResolution
-				}
 				value = answer.Text
 			case protocol.InputMultiChoice:
 				// The native clarify answer field is a single string; the pinned
 				// tool decodes a JSON array (or comma list) back into the full
-				// selection set, so encode every selected choice rather than
-				// silently dropping all but the first. The answer must use exactly
-				// one form (no text), select only offered choices, and not repeat
-				// one (the schema's selected_option_ids is uniqueItems).
-				if answer.Text != "" || len(answer.SelectedOptionIDs) == 0 {
-					s.reduceMu.Unlock()
-					return base.ErrInvalidResolution
-				}
-				seen := make(map[string]bool, len(answer.SelectedOptionIDs))
-				for _, option := range answer.SelectedOptionIDs {
-					if seen[option] || !offeredOption(binding.questions, question.ID, option) {
-						s.reduceMu.Unlock()
-						return base.ErrInvalidResolution
-					}
-					seen[option] = true
-				}
+				// selection set.
 				encoded, err := json.Marshal(answer.SelectedOptionIDs)
 				if err != nil {
 					s.reduceMu.Unlock()
@@ -745,12 +730,6 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 				}
 				value = string(encoded)
 			default:
-				// A single-value native answer cannot carry more than one
-				// selection, and the selection must be one the question offered.
-				if len(answer.SelectedOptionIDs) != 1 || answer.Text != "" || !offeredOption(binding.questions, question.ID, answer.SelectedOptionIDs[0]) {
-					s.reduceMu.Unlock()
-					return base.ErrInvalidResolution
-				}
 				value = answer.SelectedOptionIDs[0]
 			}
 			respond := native.RespondParams{RequestID: binding.requestID, Answer: value}
@@ -761,8 +740,9 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		}
 	case "sudo", "secret":
 		// The gate surfaces exactly one required text question ("password" or
-		// "value"); the answer must name it and use the text form only.
-		if len(answers) != 1 || answers[0].QuestionID != binding.questions[0].ID || len(answers[0].SelectedOptionIDs) != 0 || answers[0].Text == "" {
+		// "value"); the shared validator requires the text form and that the
+		// answer names it.
+		if len(answers) != 1 || len(binding.questions) != 1 || base.ValidateInputAnswer(binding.questions[0], answers[0]) != nil {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
@@ -863,33 +843,6 @@ func (s *Session) flushDeferred(run *runState) {
 	payload := run.deferred
 	run.deferred = nil
 	s.settleRun(run, payload)
-}
-
-// offeredOption reports whether the question with the given id offered the
-// option id. A gate answer must target an offered question and option before it
-// reaches the native registry.
-func offeredOption(questions []protocol.InputQuestion, questionID, optionID string) bool {
-	for _, question := range questions {
-		if question.ID != questionID {
-			continue
-		}
-		for _, option := range question.Options {
-			if option.ID == optionID {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// findAnswer locates the answer for one surfaced question.
-func findAnswer(answers []protocol.InputAnswer, question string) (protocol.InputAnswer, bool) {
-	for _, answer := range answers {
-		if answer.QuestionID == question {
-			return answer, true
-		}
-	}
-	return protocol.InputAnswer{}, false
 }
 
 func respondMethod(kind string) string {
