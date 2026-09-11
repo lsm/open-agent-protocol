@@ -66,6 +66,10 @@ type runState struct {
 	submittedText  string
 	messageID      protocol.MessageID
 
+	// model is the session model snapshot at admission: the admission response
+	// and run.started must attribute the run to the same model.
+	model string
+
 	// deferred holds a terminal candidate blocked on deferring children; the
 	// closing evidence (child settlement, a successor result, or the idle
 	// signal) publishes it.
@@ -154,7 +158,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.promptMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	run := &runState{status: protocol.RunQueued, next: 1, submissionUUID: submissionUUID, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), startResult: make(chan error, 1), children: map[string]bool{}}
+	run := &runState{status: protocol.RunQueued, next: 1, submissionUUID: submissionUUID, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), model: s.state.CurrentModelID, startResult: make(chan error, 1), children: map[string]bool{}}
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
 	s.pending = run
@@ -202,10 +206,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			return protocol.MessageSubmitResponse{}, nil, startErr
 		}
 	}
-	s.mu.Lock()
-	model := s.state.CurrentModelID
-	s.mu.Unlock()
-	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(run.messageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: model, MessageIDs: []protocol.MessageID{run.messageID}}, stream, nil
+	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(run.messageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, MessageIDs: []protocol.MessageID{run.messageID}}, stream, nil
 }
 
 // submitText validates the conservative v1 surface: one user text message.
@@ -526,7 +527,7 @@ func (s *Session) startRun(run *runState) {
 	replay := run.buffered
 	run.buffered = nil
 	s.mu.Unlock()
-	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		run.signalStart(err)
 		return
 	}
