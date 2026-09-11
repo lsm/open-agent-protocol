@@ -18,6 +18,7 @@ type runState struct {
 	lastIndex, lastLine         int
 	cancelAccepted              bool
 	status                      protocol.RunStatus
+	admittedModel               string
 	tools                       map[protocol.ToolCallID]string
 	interactions                map[protocol.InteractionID]*interactionState
 }
@@ -26,6 +27,7 @@ type interactionState struct {
 	requestedBy, respondedBy protocol.ParticipantID
 	allowCancel              bool
 	choices                  map[string]bool
+	questions                []protocol.InputQuestion
 	resolved                 bool
 }
 type recoveryExpectation struct {
@@ -507,7 +509,7 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		s.sessions[p.SessionID] = st
 	}
 	st.active = p.RunID
-	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]string{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunQueued}
+	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, tools: map[protocol.ToolCallID]string{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunQueued}
 }
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
@@ -566,6 +568,15 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		} else {
 			r.started = true
 			r.status = protocol.RunRunning
+		}
+		// The admitted model is authoritative for the run: a started event naming
+		// a different model would misattribute the same execution.
+		if r.admittedModel != "" {
+			var p protocol.RunStartedPayload
+			_ = e.DecodePayload(&p)
+			if p.ModelID != "" && p.ModelID != r.admittedModel {
+				s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/model_id", "run.started model disagrees with the admitted model", string(r.admittedModel), string(p.ModelID), string(r.id))
+			}
 		}
 		return
 	}
@@ -697,6 +708,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	var requested, responded protocol.ParticipantID
 	var allowCancel bool
 	var choices map[string]bool
+	var questions []protocol.InputQuestion
 	if kind == "permission" {
 		var p protocol.PermissionRequestedPayload
 		_ = e.DecodePayload(&p)
@@ -722,6 +734,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 		requested = p.RequestedBy
 		responded = p.RespondedBy
 		allowCancel = p.AllowCancel
+		questions = p.Questions
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
 	}
 	s.participant(i, line, e, requested, "/payload/requested_by")
@@ -730,7 +743,7 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	if _, ok := r.interactions[id]; ok {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction id was requested more than once")
 	}
-	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices}
+	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices, questions: questions}
 }
 func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, kind string) {
 	id, requested, responded := interactionFields(e, kind)
@@ -754,10 +767,67 @@ func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, k
 			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/choice_id", "resolution selects a choice the permission did not offer", "offered choice", p.ChoiceID, string(id))
 		}
 	}
+	// A resolution must answer the prompt's questions as offered.
+	if e.Type == protocol.TypeUserInputResolveRequest {
+		var p protocol.UserInputResolveRequest
+		_ = e.DecodePayload(&p)
+		s.validateInputAnswers(i, line, e, id, x.questions, p.Answers)
+	}
 	if responded != x.respondedBy || (requested != "" && requested != x.requestedBy) {
 		s.addExpected(CodeWrongInteractionResponder, i, line, e, "/payload/responded_by", "only the declared responder may resolve an interaction", string(x.respondedBy), string(responded), string(id))
 	}
 }
+
+// validateInputAnswers checks a resolution against the questions the prompt
+// offered: every answer must name an offered question, match its kind, select
+// only offered options, and every required question must be answered.
+func (s *state) validateInputAnswers(i, line int, e protocol.Envelope, id protocol.InteractionID, questions []protocol.InputQuestion, answers []protocol.InputAnswer) {
+	offered := make(map[string]protocol.InputQuestion, len(questions))
+	for _, question := range questions {
+		offered[question.ID] = question
+	}
+	answered := make(map[string]bool, len(answers))
+	for _, answer := range answers {
+		question, ok := offered[answer.QuestionID]
+		if !ok {
+			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "answer names a question the prompt did not offer", "offered question", answer.QuestionID, string(id))
+			continue
+		}
+		if answered[answer.QuestionID] {
+			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "question was answered more than once", "one answer per question", answer.QuestionID, string(id))
+			continue
+		}
+		answered[answer.QuestionID] = true
+		options := make(map[string]bool, len(question.Options))
+		for _, option := range question.Options {
+			options[option.ID] = true
+		}
+		switch question.Kind {
+		case protocol.InputText:
+			if answer.Text == "" {
+				s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "text answer carries no text", "non-empty text", "", string(id))
+			}
+		case protocol.InputSingleChoice, protocol.InputMultiChoice:
+			if len(answer.SelectedOptionIDs) == 0 {
+				s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "choice answer selects no option", "offered option", "", string(id))
+			}
+			if question.Kind == protocol.InputSingleChoice && len(answer.SelectedOptionIDs) > 1 {
+				s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "single-choice answer selects more than one option", "one option", fmt.Sprintf("%d", len(answer.SelectedOptionIDs)), string(id))
+			}
+			for _, option := range answer.SelectedOptionIDs {
+				if !options[option] {
+					s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "answer selects an option the question did not offer", "offered option", option, string(id))
+				}
+			}
+		}
+	}
+	for _, question := range questions {
+		if question.Required && !answered[question.ID] {
+			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "required question was not answered", question.ID, "missing", string(id))
+		}
+	}
+}
+
 func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind string) {
 	id, requested, responded := interactionFields(e, kind)
 	x := s.lookupInteraction(e.RunID, id)
