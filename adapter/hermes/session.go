@@ -173,11 +173,13 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			return protocol.MessageSubmitResponse{}, nil, startErr
 		}
 	case <-ctx.Done():
-		// Cancellation and the opening frame can race; a run that already
-		// started is authoritative, otherwise release the reservation.
 		s.reduceMu.Lock()
 		if !run.started && !run.terminal {
-			s.abortPreStartUnlocked(run, ctx.Err())
+			// The gateway already answered prompt.submit with status streaming, so
+			// native acceptance is confirmed and the run is authoritative.
+			// Cancellation is now ambiguous to this caller; keep the reservation
+			// alive for the reducer to settle rather than reverting the session to
+			// idle while the accepted native turn may still execute.
 			s.reduceMu.Unlock()
 			return protocol.MessageSubmitResponse{}, nil, ctx.Err()
 		}
@@ -654,6 +656,13 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		responder = resolution.Input.RespondedBy
 	}
 	if responder != "" && responder != s.participant {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	// The pending gate was emitted with requester "agent"; a nested request that
+	// names a different requester is ownership-inconsistent and must not reach the
+	// native gate (the resolved event also hardcodes the stored requester).
+	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != "agent" {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}

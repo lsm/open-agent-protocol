@@ -503,6 +503,7 @@ func TestResolveRejectsForeignOwnership(t *testing.T) {
 		"foreign responded_by": {RespondedBy: "someone-else", Input: &protocol.UserInputResolveRequest{InteractionID: id, SessionID: "session", Answers: answer}},
 		"foreign session":      {Input: &protocol.UserInputResolveRequest{InteractionID: id, SessionID: "other-session", Answers: answer}},
 		"foreign run":          {Input: &protocol.UserInputResolveRequest{InteractionID: id, SessionID: "session", RunID: "run-other", Answers: answer}},
+		"foreign requester":    {Input: &protocol.UserInputResolveRequest{InteractionID: id, SessionID: "session", RequestedBy: "someone-else", Answers: answer}},
 	}
 	for name, resolution := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -578,7 +579,11 @@ func TestCancelIssuesInterruptAndSettlesFailed(t *testing.T) {
 	}
 }
 
-func TestSubmitCancellationReleasesReservation(t *testing.T) {
+// After the gateway accepts a prompt (status streaming) the native turn is
+// authoritative: a caller cancellation is ambiguous, so the reservation must
+// stay alive rather than reverting to idle while the accepted turn may still
+// execute (which would let a retry overlap it and make its events foreign).
+func TestSubmitCancellationAfterAcceptanceKeepsReservation(t *testing.T) {
 	s, f := openTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -587,7 +592,6 @@ func TestSubmitCancellationReleasesReservation(t *testing.T) {
 		response, stream, err := s.Submit(ctx, request())
 		ch <- outcome{response, stream, err}
 	}()
-	// Accept the submission but never open the turn; then cancel.
 	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}})
 	f.awaitCall(t, native.MethodPromptSubmit)
 	cancel()
@@ -596,13 +600,19 @@ func TestSubmitCancellationReleasesReservation(t *testing.T) {
 		t.Fatalf("err = %v", got.err)
 	}
 	if got.stream != nil {
-		for range got.stream {
-		}
+		go func() {
+			for range got.stream {
+			}
+		}()
 	}
-	state, err := s.State(context.Background())
-	if err != nil || state.Status != protocol.SessionIdle {
-		t.Fatalf("state=%+v err=%v", state, err)
+	// A retry must be refused: the accepted native turn still owns the session.
+	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("overlapping submit: err=%v, want ErrRunActive", err)
 	}
+	// The reservation is still reducible: opening the turn promotes it and the
+	// run settles normally, so the session is not wedged.
+	f.event(native.EventMessageStart, 1, "")
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("session wedged: %v", err)
 	}
