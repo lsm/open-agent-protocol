@@ -87,6 +87,24 @@ func TestParseMessageRejectsInvalidShapes(t *testing.T) {
 	}
 }
 
+// A repeated key would otherwise be collapsed with last-value-wins before any
+// shape check runs, which can change response correlation, so the raw frame
+// must be rejected first.
+func TestParseMessageRejectsDuplicateKeys(t *testing.T) {
+	t.Parallel()
+	inputs := []string{
+		`{"jsonrpc":"2.0","id":1,"id":2,"result":null}`,
+		`{"jsonrpc":"2.0","id":1,"result":null,"result":{"ok":true}}`,
+		`{"jsonrpc":"2.0","method":"x","params":{"a":1,"a":2}}`,
+		`{"jsonrpc":"2.0","id":1,"error":{"code":1,"code":2,"message":"bad"}}`,
+	}
+	for _, input := range inputs {
+		if _, err := ParseMessage([]byte(input)); !errors.Is(err, ErrInvalidMessage) {
+			t.Errorf("%s: got %v, want ErrInvalidMessage", input, err)
+		}
+	}
+}
+
 func TestEncodedMessagesRequireJSONRPC(t *testing.T) {
 	t.Parallel()
 	messages := []Message{

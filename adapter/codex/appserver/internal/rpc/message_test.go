@@ -77,6 +77,24 @@ func TestParseMessageRejectsAmbiguousOrForeignFrames(t *testing.T) {
 	}
 }
 
+// A repeated key would otherwise be collapsed with last-value-wins before any
+// shape check runs, which can route or decode a response differently from the
+// sender's interpretation, so the raw frame must be rejected first.
+func TestParseMessageRejectsDuplicateKeys(t *testing.T) {
+	t.Parallel()
+	inputs := []string{
+		`{"id":1,"id":2,"result":null}`,
+		`{"id":1,"result":null,"result":{"ok":true}}`,
+		`{"method":"x","params":{"a":1,"a":2}}`,
+		`{"id":1,"error":{"code":1,"code":2,"message":"bad"}}`,
+	}
+	for _, input := range inputs {
+		if _, err := ParseMessage([]byte(input)); !errors.Is(err, ErrInvalidMessage) {
+			t.Errorf("%s: got %v, want ErrInvalidMessage", input, err)
+		}
+	}
+}
+
 func TestEncodedMessagesOmitJSONRPC(t *testing.T) {
 	t.Parallel()
 	messages := []Message{
