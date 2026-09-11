@@ -225,6 +225,10 @@ func processExitError(err error) error {
 }
 func (process *Process) abort() error {
 	_ = process.command.Process.Kill()
+	// A descendant that inherited stdout keeps the reader's drain blocked, so
+	// wait() would never finish; release the pipes before waiting, exactly as
+	// the bounded shutdown paths do.
+	_ = process.pipes.Close()
 	<-process.waitDone
 	return process.WaitError()
 }

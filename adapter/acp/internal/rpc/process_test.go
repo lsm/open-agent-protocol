@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,12 @@ import (
 )
 
 func TestACPHelperProcess(t *testing.T) {
+	// The descendant that inherits the pipes and outlives the direct child only
+	// needs to hold them open for longer than the test's guard.
+	if os.Getenv("OAP_ACP_RPC_HOLDER") == "1" {
+		time.Sleep(5 * time.Second)
+		os.Exit(0)
+	}
 	// Activated either by environment or by an explicit argument, so the
 	// empty-allowlist fixture can be spawned with no environment at all.
 	mode := os.Getenv("OAP_ACP_RPC_HELPER")
@@ -44,8 +51,19 @@ func TestACPHelperProcess(t *testing.T) {
 		responseID = IntegerID(99)
 	}
 	version := 1
-	if mode == "wrong-version" {
+	if mode == "wrong-version" || mode == "wrong-version-hold" {
 		version = 2
+	}
+	if mode == "wrong-version-hold" {
+		// Spawn a descendant that inherits stdout/stderr and outlives this
+		// process, so the pipes stay open after the direct child exits.
+		descendant := exec.Command(os.Args[0], "-test.run=TestACPHelperProcess", "--")
+		descendant.Env = append(os.Environ(), "OAP_ACP_RPC_HOLDER=1")
+		descendant.Stdout = os.Stdout
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(20)
+		}
 	}
 	result, _ := json.Marshal(InitializeResponse{
 		ProtocolVersion: version, AgentCapabilities: AgentCapabilities{},
@@ -106,6 +124,25 @@ func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
 	}
 	if err := process.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A handshake validation failure aborts the process. If a descendant inherited
+// stdout, the reader's drain never observes EOF, so abort must release the
+// pipes before waiting rather than hang Start indefinitely.
+func TestHandshakeAbortBoundsWhenDescendantHoldsPipes(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		_, err := Start(context.Background(), helperConfig("wrong-version-hold"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrHandshake) {
+			t.Fatalf("got %v, want ErrHandshake", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start hung in abort while a descendant held the pipes open")
 	}
 }
 
