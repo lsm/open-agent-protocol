@@ -214,8 +214,20 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if p.ActiveRunID != "" && p.Status == protocol.SessionIdle {
 			s.add(CodeSessionStateMismatch, i, line, e, "/payload/status", "idle session cannot have an active run")
 		}
+		// A snapshot may not erase a run the trace has admitted and not terminated:
+		// that would allow an overlapping second admission on one session. Keep the
+		// tracked run when the snapshot contradicts it.
+		contradiction := false
+		if prev := st.active; prev != "" {
+			if r := s.runs[prev]; r != nil && !r.terminal && p.ActiveRunID != prev {
+				contradiction = true
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
+			}
+		}
 		st.status = p.Status
-		st.active = p.ActiveRunID
+		if !contradiction {
+			st.active = p.ActiveRunID
+		}
 	case protocol.TypeSessionMessageSubmitRequest:
 		var p protocol.MessageSubmitRequest
 		_ = e.DecodePayload(&p)

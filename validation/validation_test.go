@@ -298,6 +298,22 @@ func TestPermissionResolutionChoiceMustBeOffered(t *testing.T) {
 	}
 }
 
+// A state snapshot may not erase a run the trace admitted and has not
+// terminated, which would let a second overlapping admission through.
+func TestStateSnapshotCannotEraseLiveRun(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"session.state.request","id":"st1","session_id":"s1","payload":{"session_id":"s1"}},
+		{` + core + `,"type":"session.state.response","id":"st1r","in_reply_to":"st1","session_id":"s1","payload":{"session_id":"s1","status":"idle"}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "snapshot-erases-run"); !got.HasCode(CodeSessionStateMismatch) {
+		t.Fatalf("want %s for an idle snapshot over a live run: %+v", CodeSessionStateMismatch, got.Diagnostics)
+	}
+}
+
 func TestRunStatusTransitions(t *testing.T) {
 	valid := map[protocol.RunStatus][]protocol.RunStatus{
 		protocol.RunQueued:          {protocol.RunRunning, protocol.RunCancelling},
