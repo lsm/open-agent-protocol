@@ -813,8 +813,10 @@ func hmFindInteraction(t *testing.T, session base.Session, kind string) *inputSt
 	if !ok {
 		t.Fatal("session is not the Hermes reducer")
 	}
-	impl.mu.Lock()
-	defer impl.mu.Unlock()
+	// The reducer owns the interaction table under reduceMu (see Resolve);
+	// reading it under mu races with reducer writes.
+	impl.reduceMu.Lock()
+	defer impl.reduceMu.Unlock()
 	var found *inputState
 	for _, binding := range impl.interactions {
 		if binding.kind == kind && !binding.resolved {

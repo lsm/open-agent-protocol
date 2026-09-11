@@ -466,8 +466,11 @@ func TestApprovalGateRoundTrip(t *testing.T) {
 func lastInteraction(t *testing.T, s base.Session) protocol.InteractionID {
 	t.Helper()
 	session := s.(*Session)
-	session.mu.Lock()
-	defer session.mu.Unlock()
+	// The reducer owns the interaction table under reduceMu, the same lock
+	// Resolve uses. Reading it under mu both races and can observe the table
+	// before a reducer write is visible, yielding an empty id.
+	session.reduceMu.Lock()
+	defer session.reduceMu.Unlock()
 	var last protocol.InteractionID
 	for id := range session.interactions {
 		last = id
