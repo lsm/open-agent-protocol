@@ -524,3 +524,59 @@ func TestEnteredMessageMayArriveInLaterStep(t *testing.T) {
 	t.Run("retrospective proof at the reply", func(t *testing.T) { runCase(t, false) })
 	t.Run("live proof during dispatch", func(t *testing.T) { runCase(t, true) })
 }
+
+// TestNativeSequenceStartsAtZero pins the live-runtime convention: the pinned
+// harness numbers a session's events from zero, and the first event (the
+// synchronous inbox insertion) is seq=0. A lastSeq initialized to the zero
+// value with a <= check rejects the legitimate first event of every session.
+func TestNativeSequenceStartsAtZero(t *testing.T) {
+	s, f := openTest(t)
+	ch := submitAsync(s)
+	<-f.started
+	// The runtime inserts the user message synchronously before the prompt
+	// response returns, and that insertion is seq=0.
+	f.ev(0, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")}}})
+	f.prompts <- promptReply{id: "receipt"}
+	f.ev(1, "turn/start", native.TurnStart{Turn: 1})
+	f.ev(2, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+	f.ev(3, "user/message", native.UserMessage{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")})
+	var got struct {
+		r   protocol.MessageSubmitResponse
+		st  base.EventStream
+		err error
+	}
+	select {
+	case got = <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("admission timed out")
+	}
+	if got.err != nil {
+		t.Fatalf("seq=0 admission failed: %v", got.err)
+	}
+	if got.r.Admission != protocol.AdmissionStarted {
+		t.Fatalf("admission = %+v", got.r)
+	}
+	f.ev(4, "assistant/message", native.AssistantMessageEvent{Turn: 1, Step: 1, Message: native.AssistantMessage{ID: "a", Role: "assistant", Content: []native.ContentBlock{{Type: "text", Text: "hi"}}, Source: native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}}})
+	f.ev(5, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	events := drain(t, got.st)
+	adaptertest.AssertRunTrace(t, got.r, CapabilityRevision, events)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal = %s payload=%s", events[len(events)-1].Type, events[len(events)-1].Payload)
+	}
+}
+
+// TestNativeSequenceRegressionStillRejected confirms the monotonic guard keeps
+// its teeth once seq=0 is admissible: a repeated or lower sequence fails.
+func TestNativeSequenceRegressionStillRejected(t *testing.T) {
+	s, f := openTest(t)
+	a, st := admission(t, s, f, "receipt")
+	// admission() consumed seq 1..4; repeating seq 4 is a regression.
+	f.ev(4, "assistant/chunk", native.AssistantChunk{Turn: 1, Step: 1, Chunk: json.RawMessage(`{"type":"text-delta","index":0,"text":"hi"}`)})
+	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	events := drain(t, st)
+	adaptertest.AssertRunTrace(t, a, CapabilityRevision, events)
+	if events[len(events)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("regressed sequence produced %s", events[len(events)-1].Type)
+	}
+}

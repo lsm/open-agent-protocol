@@ -349,3 +349,53 @@ A gated live-process test may drive a caller-supplied executable over stdio with
 a hermetic provider. It must not download at test time, and runtime version text
 alone cannot prove this source pin; strong artifact identity requires a
 caller-supplied digest or equivalently pinned build provenance.
+
+## Live-gate findings (2026-09-10)
+
+Both gates were run live against a runtime built from this exact pin
+(`47f943859bef60e4160492346772ded9b24f765a`, tree
+`f904efab9ef435201d6ba4da88a34d6366568272`) via the pinned build script
+(`scripts/build-exe-for-python-sdk.ts`, single-file `dsh-jsonrpc-agent-pkg-linux-x64`).
+
+### Fixed: the runtime numbers a session's events from zero
+
+The reducer rejected the first native event of every session. The runtime's
+per-session `seq` starts at **0** — the synchronous `agent/inbox/spliced`
+insertion that precedes the prompt response — while the adapter's `lastSeq`
+zero-initialized to `0` and rejected with `Seq <= lastSeq`. Every native event
+of every real session would have failed the run with
+`deepseek_invalid_sequence`. The hermetic corpus never caught it because every
+recorded fixture was authored with `seq` starting at `1`.
+
+Fix: `Session.seqSeen` separates "nothing observed yet" from a legitimate
+`seq` of zero (`adapter/deepseek/session.go`). Regression tests
+`TestNativeSequenceStartsAtZero` (fails before the fix) and
+`TestNativeSequenceRegressionStillRejected` (guard still rejects a repeat)
+pin both directions.
+
+### Smoke gate: PASS
+
+`OAP_DEEPSEEK_HARNESS_SMOKE=1` with the pinned runtime: credential-free
+initialize, idle state, clean shutdown. Confirms the transport, the
+`serverInfo` identity assertion, and teardown.
+
+### Integration gate: turn does not complete — recorded, not yet resolved
+
+`OAP_DEEPSEEK_HARNESS_INTEGRATION=1` now reaches owned admission and settlement
+ordering (the `seq=0` fix), then stalls: the runtime emits
+`agent/inbox/spliced(0)`, `session.status running`, `turn/start(1)`,
+`agent/inbox/spliced(2)`, `step/start(3)`, `user/message(4)` and then **never
+invokes the model**. The loopback mock records zero provider requests (and zero
+connections: a deliberately dead `DEEPSEEK_BASE_URL` produces no error either,
+so no call is attempted).
+
+Reproduced across: the gate's synthetic `dsh-llm-pi-ai`/`openai-responses`
+composition; the gate composition plus persistence/checkpoint plugins; the
+repo's own `examples/jsonrpc-agent/minimal.cordis.yml`; and the bundled
+`python/sdk-runtime/.../runtime/cordis.yml` — and with and without the gate's
+proxy variables, and with `DEEPSEEK_BASE_URL` at both the mock root and
+`/v1`. The stall is upstream of the adapter (admission and correlation behave
+correctly); the pinned runtime's model-invocation path is not reached in any
+composition exercised here. Not an adapter defect. Follow-up needed to
+determine the required driver step or carrier before this gate can assert a
+full turn. The gate remains skip-by-default and CI-safe.

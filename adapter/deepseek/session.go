@@ -40,7 +40,11 @@ type Session struct {
 	tools    map[string]*toolState
 	children map[string]*childState
 	journal  []protocol.Envelope
+	// lastSeq is the highest native session seq observed; seqSeen separates
+	// "nothing observed" from a legitimate seq of zero, which is the pinned
+	// runtime's first event of every session.
 	lastSeq  int64
+	seqSeen  bool
 	stop     chan struct{}
 	stopOnce sync.Once
 }
@@ -282,10 +286,11 @@ func (s *Session) applyNative(run *runState, n rpc.NotificationMessage) {
 			s.failRun(run, "deepseek_session_mismatch", "session.event for foreign session")
 			return
 		}
-		if v.Event.Seq <= s.lastSeq {
+		if s.seqSeen && v.Event.Seq <= s.lastSeq {
 			s.failRun(run, "deepseek_invalid_sequence", "non-monotonic native event sequence")
 			return
 		}
+		s.seqSeen = true
 		s.lastSeq = v.Event.Seq
 		if !run.started {
 			s.observeCandidate(run, v.Event)
