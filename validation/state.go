@@ -736,6 +736,11 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 		allowCancel = p.AllowCancel
 		questions = p.Questions
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
+		// A tool-bound prompt must not contradict itself between the envelope and
+		// the payload, as is already enforced for permission requests.
+		if e.ToolCallID != p.ToolCallID {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/tool_call_id", "envelope and payload tool_call_id differ", string(e.ToolCallID), string(p.ToolCallID))
+		}
 	}
 	s.participant(i, line, e, requested, "/payload/requested_by")
 	s.participant(i, line, e, responded, "/payload/responded_by")
@@ -840,6 +845,14 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 	}
 	if responded != x.respondedBy || requested != x.requestedBy {
 		s.addExpected(CodeWrongInteractionResponder, i, line, e, "/payload/responded_by", "resolution ownership differs from request", string(x.respondedBy), string(responded), string(id))
+	}
+	// The authoritative resolution payload must answer the offered questions.
+	if kind == "input" {
+		var p protocol.UserInputResolvedPayload
+		_ = e.DecodePayload(&p)
+		if p.Status == protocol.InputSubmitted {
+			s.validateInputAnswers(i, line, e, id, x.questions, p.Answers)
+		}
 	}
 	x.resolved = true
 }

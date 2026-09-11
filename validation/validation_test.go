@@ -346,6 +346,41 @@ func TestInputResolutionMustAnswerOfferedQuestions(t *testing.T) {
 	}
 }
 
+// A tool-bound user-input prompt must not contradict its own tool binding.
+func TestUserInputRequestToolBindingMustAgree(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+		{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"user_input":{"level":"native"}}}},
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"user.input.requested","id":"input1","session_id":"s1","run_id":"r1","sequence":2,"tool_call_id":"t1","capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","tool_call_id":"t2","title":"Q","questions":[{"id":"q1","kind":"text","prompt":"Continue?"}]}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "input-tool-blind"); !got.HasCode(CodeScopeMismatch) {
+		t.Fatalf("want %s for a contradictory input tool binding: %+v", CodeScopeMismatch, got.Diagnostics)
+	}
+}
+
+// The authoritative resolution event must answer the offered questions too.
+func TestInputResolutionEventAnswersMustBeOffered(t *testing.T) {
+	v := MustNew()
+	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
+	stream := `[
+		{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
+		{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"user_input":{"level":"native"}}}},
+		{` + core + `,"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
+		{` + core + `,"type":"user.input.requested","id":"input1","session_id":"s1","run_id":"r1","sequence":2,"capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","title":"Q","questions":[{"id":"q1","kind":"single_choice","prompt":"Pick","required":true,"options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}]}},
+		{` + core + `,"type":"user.input.resolved","id":"input2","session_id":"s1","run_id":"r1","sequence":3,"capability_revision":"v1","payload":{"session_id":"s1","run_id":"r1","interaction_id":"i1","requested_by":"agent","responded_by":"user","status":"submitted","answers":[{"question_id":"nope","selected_option_ids":["z"]}]}}
+	]`
+	if got := v.ValidateBytes([]byte(stream), "input-resolved-answers"); !got.HasCode(CodeUnmatchedInteraction) {
+		t.Fatalf("want %s for resolution answers the prompt never offered: %+v", CodeUnmatchedInteraction, got.Diagnostics)
+	}
+}
+
 func TestRunStatusTransitions(t *testing.T) {
 	valid := map[protocol.RunStatus][]protocol.RunStatus{
 		protocol.RunQueued:          {protocol.RunRunning, protocol.RunCancelling},
