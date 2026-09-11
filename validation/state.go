@@ -41,6 +41,8 @@ type requestState struct {
 	index, line        int
 	envelope           protocol.Envelope
 	capabilityRevision string
+	session            protocol.SessionID
+	run                protocol.RunID
 }
 type sessionTrack struct {
 	status protocol.SessionStatus
@@ -82,13 +84,20 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	}
 	s.ids[e.ID] = i
 	if isRequest(e.Type) {
-		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision)}
+		session, run := requestScope(e)
+		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run}
 	}
+	duplicateResponse := false
 	if isResponse(e.Type) {
-		s.response(i, line, e)
+		duplicateResponse = !s.response(i, line, e)
 	}
 	if e.CapabilityRevision != "" && s.currentCapability != "" && string(e.CapabilityRevision) != s.currentCapability && e.Type != protocol.TypeProtocolInitializeRequest && e.Type != protocol.TypeCapabilitiesRequest && e.Type != protocol.TypeErrorResponse {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "operation uses a stale capability revision", s.currentCapability, e.CapabilityRevision)
+	}
+	if duplicateResponse {
+		// The envelope is already rejected as a duplicate; interpreting its
+		// payload again would only pile cascading diagnostics onto it.
+		return
 	}
 	switch e.Type {
 	case protocol.TypeProtocolInitializeRequest:
@@ -262,30 +271,111 @@ func collectFeatures(dst map[string]protocol.SupportLevel, src map[string]protoc
 		dst[name] = support.Level
 	}
 }
-func (s *state) response(i, line int, e protocol.Envelope) {
+
+// response correlates a response with its request. It reports false only when
+// the envelope is rejected as a duplicate response, so the caller can skip
+// payload interpretation for an envelope that is already diagnosed.
+func (s *state) response(i, line int, e protocol.Envelope) bool {
 	req := s.requests[e.InReplyTo]
 	if req == nil {
 		s.add(CodeUnmatchedResponse, i, line, e, "/in_reply_to", "response does not match an earlier request")
-		return
+		return true
 	}
 	if expected := expectedResponse(req.typ); e.Type != expected && e.Type != protocol.TypeErrorResponse {
 		s.addExpected(CodeUnmatchedResponse, i, line, e, "/type", "response type does not match request", string(expected), string(e.Type), string(e.InReplyTo))
-		return
+		return true
 	}
 	if req.responded {
 		s.add(CodeDuplicateResponse, i, line, e, "/in_reply_to", "request already has a response")
-		return
+		return false
 	}
 	req.responded = true
 	if e.Type != protocol.TypeErrorResponse && req.capabilityRevision != "" && string(e.CapabilityRevision) != req.capabilityRevision {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "successful response must repeat the request capability revision", req.capabilityRevision, string(e.CapabilityRevision), string(e.InReplyTo))
 	}
+	if e.Type == protocol.TypeErrorResponse {
+		return true
+	}
+	// A scoped response must answer within the request's scope: an internally
+	// consistent response for another session or run cannot answer this request.
+	session, run := responseScope(e)
+	if req.session != "" && session != "" && session != req.session {
+		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "response session does not match the request scope", string(req.session), string(session), string(e.InReplyTo))
+	}
+	if req.run != "" && run != "" && run != req.run {
+		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/run_id", "response run does not match the request scope", string(req.run), string(run), string(e.InReplyTo))
+	}
+	return true
+}
+
+// requestScope reports the session/run scope a request declares in its payload.
+// Requests that carry no payload scope yield zero values.
+func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
+	switch e.Type {
+	case protocol.TypeSessionMessageSubmitRequest:
+		var p protocol.MessageSubmitRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeSessionStateRequest:
+		var p protocol.SessionStateRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeRunCancelRequest:
+		var p protocol.RunCancelRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeActionPermissionResolveRequest:
+		var p protocol.PermissionResolveRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeUserInputResolveRequest:
+		var p protocol.UserInputResolveRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeUserInputCancelRequest:
+		var p protocol.UserInputCancelRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	}
+	return "", ""
+}
+
+// responseScope reports the session/run scope a response declares in its
+// payload, mirroring requestScope so the two can be correlated.
+func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
+	switch e.Type {
+	case protocol.TypeSessionMessageSubmitResponse:
+		var p protocol.MessageSubmitResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
+		var p protocol.SessionState
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeRunCancelResponse:
+		var p protocol.RunCancelResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeActionPermissionResolveResponse:
+		var p protocol.PermissionResolveResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeUserInputResolveResponse, protocol.TypeUserInputCancelResponse:
+		var p protocol.UserInputResolveResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	}
+	return "", ""
 }
 func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	var p protocol.MessageSubmitResponse
 	_ = e.DecodePayload(&p)
 	s.checkScope(i, line, e, p.SessionID, p.RunID)
 	if !p.Accepted {
+		// conformance.md:78-83: a rejected request receives exactly one
+		// correlated error.response, so a submit.response carrying
+		// accepted:false is non-canonical and must not silently pass.
+		s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/accepted", "rejected submission must be reported as a correlated error.response, not a submit.response", string(protocol.TypeErrorResponse), string(e.Type), string(e.InReplyTo))
 		return
 	}
 	// Decision 0002: an accepted submission resolves to exactly one of the
@@ -478,8 +568,15 @@ func (s *state) tool(i, line int, e protocol.Envelope, next string) {
 		valid = ok && current == "requested"
 	case "progress":
 		valid = ok && (current == "started" || current == "progress")
-	default:
+	case "cancelled":
+		// conformance.md:143-146 permits a call cancelled or denied before
+		// execution starts, so cancellation from requested stays valid; a
+		// terminal call cannot terminate twice.
 		valid = ok && !toolTerminal(current)
+	default:
+		// completed / failed require execution to have begun: conformance.md:145
+		// emits exactly one terminal event for each *started* tool call.
+		valid = ok && (current == "started" || current == "progress")
 	}
 	if !valid {
 		code := CodeIllegalToolTransition

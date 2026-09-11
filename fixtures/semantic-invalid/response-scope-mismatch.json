@@ -1,0 +1,26 @@
+[
+  {
+    "id": "streq",
+    "payload": {
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.state.request",
+    "version": "0.1"
+  },
+  {
+    "id": "stresp",
+    "in_reply_to": "streq",
+    "payload": {
+      "session_id": "s2",
+      "status": "idle"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s2",
+    "type": "session.state.response",
+    "version": "0.1"
+  }
+]
