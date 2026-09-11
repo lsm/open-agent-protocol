@@ -687,6 +687,29 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInteractionNotFound
 	}
+	// Validate the caller-supplied identity and scope against the pending gate
+	// before writing the native answer: a mismatched participant or scope would
+	// otherwise approve the tool call and leave an invalid ownership trail.
+	if resolution.RunID != "" && resolution.RunID != run.id {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	if resolution.Input.SessionID != "" && resolution.Input.SessionID != s.state.SessionID {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	if resolution.Input.RunID != "" && resolution.Input.RunID != run.id {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	responder := resolution.RespondedBy
+	if responder == "" {
+		responder = resolution.Input.RespondedBy
+	}
+	if responder != "" && responder != s.participant {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
 	if len(resolution.Input.Answers) != 1 || len(resolution.Input.Answers[0].SelectedOptionIDs) != 1 || resolution.Input.Answers[0].QuestionID != "decision" {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
@@ -712,11 +735,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return err
 	}
 	s.reduceMu.Lock()
-	respondedBy := resolution.RespondedBy
-	if respondedBy == "" {
-		respondedBy = s.participant
-	}
-	_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, gate.requested)
+	_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, gate.requested)
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	// A resolved gate is terminal: retire it so later asks are findable.
 	delete(s.interactions, gate.id)

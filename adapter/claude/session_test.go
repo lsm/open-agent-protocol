@@ -581,6 +581,45 @@ func TestResolveValidatesAnswerShapes(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsForeignOwnership(t *testing.T) {
+	_, session, peer := openWire(t)
+	impl := session.(*Session)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_04","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a4"}`)
+	peer.send(`{"type":"control_request","request_id":"ask-4","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_04"}}`)
+	gate := openGate(t, session, uuid)
+	allow := func() []protocol.InputAnswer {
+		return []protocol.InputAnswer{{QuestionID: "decision", SelectedOptionIDs: []string{"allow"}}}
+	}
+	// A caller who knows the gate id must not be able to approve as another
+	// participant or against a foreign scope.
+	for name, resolution := range map[string]base.InteractionResolution{
+		"foreign top-level run":   {RunID: "other-run", Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, Answers: allow()}},
+		"foreign top responder":   {RespondedBy: "intruder", Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, Answers: allow()}},
+		"foreign session":         {Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: "other-session", Answers: allow()}},
+		"foreign input run":       {Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, RunID: "other-run", Answers: allow()}},
+		"foreign input responder": {Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, RespondedBy: "intruder", Answers: allow()}},
+	} {
+		if err := session.Resolve(context.Background(), resolution); !errors.Is(err, base.ErrInvalidResolution) {
+			t.Fatalf("%s: got %v, want ErrInvalidResolution", name, err)
+		}
+	}
+	// The gate stays resolvable for the declared participant and scope.
+	if err := session.Resolve(context.Background(), base.InteractionResolution{RunID: gate.run.id, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, RunID: gate.run.id, RespondedBy: "user", Answers: allow()}}); err != nil {
+		t.Fatalf("valid resolution rejected after foreign ones: %v", err)
+	}
+	if _, raw := peer.written(); !strings.Contains(string(raw), `"allow"`) {
+		t.Fatalf("final decision = %s", raw)
+	}
+	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_04","type":"tool_result","content":"done","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u5"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCancelSettlesOnlyOnAbortedTerminalReason(t *testing.T) {
 	_, session, peer := openWire(t)
 	uuid, outcome := admit(t, session, peer)
