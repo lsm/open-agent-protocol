@@ -850,6 +850,11 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 	if responded != x.respondedBy || requested != x.requestedBy {
 		s.addExpected(CodeWrongInteractionResponder, i, line, e, "/payload/responded_by", "resolution ownership differs from request", string(x.respondedBy), string(responded), string(id))
 	}
+	// A resolution event must match the pending interaction's kind; a
+	// permission event cannot resolve a pending input (or the converse).
+	if x.kind != kind {
+		s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution event has the wrong interaction kind", x.kind, kind, string(id))
+	}
 	// The authoritative resolution payload must answer the offered questions.
 	if kind == "input" {
 		var p protocol.UserInputResolvedPayload
