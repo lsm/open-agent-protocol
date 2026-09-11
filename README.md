@@ -28,7 +28,7 @@ Protocol artifacts:
 - `fixtures/`: normative executable conformance traces
 - `schema/v0.1/`: JSON Schema bundle for the agent-control core
 
-Executable core (Go 1.24 or later):
+Executable core (Go 1.27 or later):
 
 ```sh
 go run ./cmd/oap check
