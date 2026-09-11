@@ -267,7 +267,32 @@ func admit(t *testing.T, s base.Session, f *fakeClient, responseFirst bool) <-ch
 	if responseFirst {
 		open()
 	}
+	// Return only once the run has started. Otherwise a gate or tool frame the
+	// caller sends next can be buffered by reserveObservation instead of
+	// reduced against the started run, and tests that read the registration
+	// (e.g. lastInteraction) race the promotion.
+	waitStarted(t, s)
 	return ch
+}
+
+func waitStarted(t *testing.T, s base.Session) {
+	t.Helper()
+	session := s.(*Session)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session.mu.Lock()
+		run := session.pending
+		if run == nil {
+			run = session.active
+		}
+		started := run != nil && run.started
+		session.mu.Unlock()
+		if started {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("run did not reach started after admission")
 }
 
 func TestAdmissionBothWireOrdersReduceIdentically(t *testing.T) {
