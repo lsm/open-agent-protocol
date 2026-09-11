@@ -710,6 +710,13 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}
+	// The gate was emitted with requester "agent"; a nested request that names a
+	// different requester is ownership-inconsistent and must not reach the native
+	// allow/deny response (the resolved event also hardcodes the stored requester).
+	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != "agent" {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
 	if len(resolution.Input.Answers) != 1 || len(resolution.Input.Answers[0].SelectedOptionIDs) != 1 || resolution.Input.Answers[0].QuestionID != "decision" {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution

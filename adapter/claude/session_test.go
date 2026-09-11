@@ -599,6 +599,7 @@ func TestResolveRejectsForeignOwnership(t *testing.T) {
 		"foreign session":         {Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: "other-session", Answers: allow()}},
 		"foreign input run":       {Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, RunID: "other-run", Answers: allow()}},
 		"foreign input responder": {Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, RespondedBy: "intruder", Answers: allow()}},
+		"foreign requester":       {Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, RequestedBy: "intruder", Answers: allow()}},
 	} {
 		if err := session.Resolve(context.Background(), resolution); !errors.Is(err, base.ErrInvalidResolution) {
 			t.Fatalf("%s: got %v, want ErrInvalidResolution", name, err)
