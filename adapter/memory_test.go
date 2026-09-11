@@ -358,6 +358,41 @@ func TestPublishedPayloadDoesNotAliasTheJournal(t *testing.T) {
 	t.Fatalf("sequence %d not replayed", sequence)
 }
 
+// A consumer that edits a replayed envelope must not corrupt retained history
+// (payload slice, sequence, or timestamp storage).
+func TestReplayedEnvelopeDoesNotAliasTheJournal(t *testing.T) {
+	session := newTestSession(t, 64)
+	runID, stream := submit(t, session)
+	_ = drainAvailable(stream)
+	_, replay, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := drainAvailable(replay)
+	if len(replayed) == 0 {
+		t.Fatal("no replay")
+	}
+	originalPayload := append([]byte(nil), replayed[0].Payload...)
+	originalSequence, originalTimestamp := *replayed[0].Sequence, *replayed[0].TimestampMS
+	copy(replayed[0].Payload, []byte(`{"tampered":true}`))
+	*replayed[0].Sequence = originalSequence + 100
+	*replayed[0].TimestampMS = originalTimestamp + 100
+	_, second, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := drainAvailable(second)
+	if len(again) == 0 {
+		t.Fatal("no second replay")
+	}
+	if string(again[0].Payload) != string(originalPayload) {
+		t.Fatalf("payload aliased: got %s want %s", again[0].Payload, originalPayload)
+	}
+	if *again[0].Sequence != originalSequence || *again[0].TimestampMS != originalTimestamp {
+		t.Fatalf("sequence/timestamp aliased: got %d/%d want %d/%d", *again[0].Sequence, *again[0].TimestampMS, originalSequence, originalTimestamp)
+	}
+}
+
 func TestResumeRetainedSuffix(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, original := submit(t, session)

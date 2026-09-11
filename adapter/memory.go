@@ -515,7 +515,7 @@ func (s *memorySession) Resume(ctx context.Context, request ResumeRequest) (Reco
 	stream := make(chan Result, len(suffix)+32)
 	if !gap {
 		for _, envelope := range suffix {
-			stream <- Result{Envelope: envelope}
+			stream <- Result{Envelope: cloneEnvelope(envelope)}
 		}
 		if !run.terminal {
 			run.subscribers = append(run.subscribers, stream)
@@ -622,11 +622,7 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 	s.mu.Unlock()
 
 	for _, subscriber := range subscribers {
-		// Deliver a copy with a detached payload: the retained journal must not
-		// be mutable through a published envelope.
-		published := envelope
-		published.Payload = append(json.RawMessage(nil), envelope.Payload...)
-		subscriber <- Result{Envelope: published}
+		subscriber <- Result{Envelope: cloneEnvelope(envelope)}
 	}
 	if terminal {
 		for _, subscriber := range subscribers {
@@ -634,6 +630,25 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 		}
 	}
 	return nil
+}
+
+// cloneEnvelope detaches an envelope handed to a consumer from the retained
+// journal: the payload slice and the sequence/timestamp pointers must not be
+// shared, or a consumer's edit would corrupt replayed history.
+func cloneEnvelope(envelope protocol.Envelope) protocol.Envelope {
+	cloned := envelope
+	if envelope.Payload != nil {
+		cloned.Payload = append(json.RawMessage(nil), envelope.Payload...)
+	}
+	if envelope.Sequence != nil {
+		sequence := *envelope.Sequence
+		cloned.Sequence = &sequence
+	}
+	if envelope.TimestampMS != nil {
+		timestamp := *envelope.TimestampMS
+		cloned.TimestampMS = &timestamp
+	}
+	return cloned
 }
 
 type wallClock struct{}
