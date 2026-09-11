@@ -1,0 +1,4 @@
+{"direction":"dsh-to-host","classification":"observed-only","fidelity":"native","action":"decode-error","raw":"{\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"sessionId\":\"session\",\"status\":\"idle\"}}\r"}
+{"direction":"dsh-to-host","classification":"observed-only","fidelity":"native","action":"decode-error","raw":" {\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"sessionId\":\"session\",\"status\":\"idle\"}}"}
+{"direction":"dsh-to-host","classification":"observed-only","fidelity":"native","action":"decode-error-unterminated","raw":"{\"jsonrpc\":\"2.0\",\"method\":\"session.status\"}"}
+{"direction":"dsh-to-host","classification":"observed-only","fidelity":"native","action":"decode-error","raw":"ok"}

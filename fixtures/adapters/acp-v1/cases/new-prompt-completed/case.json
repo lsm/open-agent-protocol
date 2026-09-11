@@ -1,0 +1,28 @@
+{
+  "advertised_capabilities": {
+    "protocol.initialize": "emulated",
+    "run.cancel": "degraded",
+    "run.replay": "degraded",
+    "run.streaming": "native",
+    "session.open": "native"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "new-prompt-completed",
+  "identity_map": {
+    "native-message": "acp-message-native-message",
+    "native-session": "session",
+    "native-tool": "tool-call-e",
+    "prompt-request-3": "run-c"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "272bf799f35a258c6a4107a0410ed361e83683d3",
+    "release": "v1.7.0",
+    "repository": "https://github.com/agentclientprotocol/agent-client-protocol",
+    "schema_release": "1.21.0",
+    "schema_tree_sha256": "135854daf9d2b934c9498771d8084d3bf3174c6cf1db29b9d1a3ad1ec8a8dff3"
+  },
+  "version": 1
+}

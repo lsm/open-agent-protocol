@@ -74,8 +74,12 @@
         }
       },
       "agent_control": {
-        "delivery_modes": [
+        "requested_delivery_modes": [
           "auto",
+          "queue"
+        ],
+        "effective_delivery_modes": [
+          "start",
           "queue"
         ],
         "features": {

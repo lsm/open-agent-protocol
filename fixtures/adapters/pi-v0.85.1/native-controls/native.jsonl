@@ -1,0 +1,16 @@
+{"direction":"host-to-pi","classification":"required-unmapped","fidelity":"unsupported","action":"outbound-only","raw":{"type":"steer","message":"adjust"}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"steer","success":true}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"observe","raw":{"type":"queue_update","steering":["adjust"],"followUp":[]}}
+{"direction":"host-to-pi","classification":"required-unmapped","fidelity":"unsupported","action":"outbound-only","raw":{"type":"follow_up","message":"next"}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"follow_up","success":true}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"observe","raw":{"type":"queue_update","steering":[],"followUp":["next"]}}
+{"direction":"host-to-pi","classification":"mapped","fidelity":"normalized","action":"state","raw":{"type":"get_state"}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"get_state","success":true,"data":{"thinkingLevel":"medium","isStreaming":true,"isCompacting":false,"steeringMode":"all","followUpMode":"all","sessionId":"native-session","autoCompactionEnabled":true,"messageCount":1,"pendingMessageCount":2}}}
+{"direction":"host-to-pi","classification":"required-unmapped","fidelity":"unsupported","action":"outbound-only","raw":{"type":"get_entries","since":"entry-1"}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"get_entries","success":true,"data":{"entries":[]}}}
+{"direction":"host-to-pi","classification":"required-unmapped","fidelity":"unsupported","action":"outbound-only","raw":{"type":"switch_session","sessionPath":"/tmp/session.jsonl"}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"switch_session","success":true}}
+{"direction":"host-to-pi","classification":"required-unmapped","fidelity":"unsupported","action":"outbound-only","raw":{"type":"fork","entryId":"entry-1"}}
+{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"fork","success":true}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"controls recorded"}],"api":"messages","provider":"fixture","model":"model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1}],"willRetry":false}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"observe","raw":{"type":"agent_settled"}}

@@ -1,0 +1,9 @@
+[
+  {
+    "index": 1,
+    "type": "codec-error",
+    "direction": "host-to-pi",
+    "classification": "required-unmapped",
+    "fidelity": "unsupported"
+  }
+]

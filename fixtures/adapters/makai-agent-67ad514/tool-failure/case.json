@@ -1,0 +1,26 @@
+{
+  "advertised_capabilities": {
+    "action.tools": "degraded",
+    "run.replay": "degraded",
+    "run.streaming": "native"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "tool-failure",
+  "identity_map": {
+    "native.message_id": "private_frame_id",
+    "native.session_id": "oap.session_id",
+    "native.tool_call_id": "oap.tool_call_id"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "agent_protocol_tree": "0a21997a9bc6d4358a8ca549bb2f31c623f4583b",
+    "commit": "67ad51420c3f4d7918218573366fde7db8c35b9c",
+    "commit_tree": "27d32e64ff5efed88c1302de0e25c1acdb9373b2",
+    "execution_client_blob": "d3a1e9d6c28372f271c33501d33a9290c55a3a91",
+    "makai_tool_blob": "feccd54dde57fa2a5eafec97dd880bf8c63121c0",
+    "repository": "https://github.com/lsm/makai"
+  },
+  "version": 1
+}

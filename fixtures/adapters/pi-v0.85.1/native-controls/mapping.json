@@ -1,0 +1,117 @@
+[
+   {
+      "classification" : "required-unmapped",
+      "direction" : "host-to-pi",
+      "fidelity" : "unsupported",
+      "index" : 1,
+      "type" : "steer"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 2,
+      "type" : "response:steer"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 3,
+      "type" : "queue_update"
+   },
+   {
+      "classification" : "required-unmapped",
+      "direction" : "host-to-pi",
+      "fidelity" : "unsupported",
+      "index" : 4,
+      "type" : "follow_up"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 5,
+      "type" : "response:follow_up"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 6,
+      "type" : "queue_update"
+   },
+   {
+      "classification" : "mapped",
+      "direction" : "host-to-pi",
+      "fidelity" : "normalized",
+      "index" : 7,
+      "oap" : "adapter projection",
+      "type" : "get_state"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 8,
+      "type" : "response:get_state"
+   },
+   {
+      "classification" : "required-unmapped",
+      "direction" : "host-to-pi",
+      "fidelity" : "unsupported",
+      "index" : 9,
+      "type" : "get_entries"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 10,
+      "type" : "response:get_entries"
+   },
+   {
+      "classification" : "required-unmapped",
+      "direction" : "host-to-pi",
+      "fidelity" : "unsupported",
+      "index" : 11,
+      "type" : "switch_session"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 12,
+      "type" : "response:switch_session"
+   },
+   {
+      "classification" : "required-unmapped",
+      "direction" : "host-to-pi",
+      "fidelity" : "unsupported",
+      "index" : 13,
+      "type" : "fork"
+   },
+   {
+      "classification" : "observed-only",
+      "direction" : "pi-to-host",
+      "fidelity" : "native",
+      "index" : 14,
+      "type" : "response:fork"
+   },
+   {
+      "classification" : "mapped",
+      "direction" : "pi-to-host",
+      "fidelity" : "normalized",
+      "index" : 15,
+      "oap" : "adapter projection",
+      "type" : "agent_end"
+   },
+   {
+      "classification" : "mapped",
+      "direction" : "pi-to-host",
+      "fidelity" : "normalized",
+      "index" : 16,
+      "oap" : "adapter projection",
+      "type" : "agent_settled"
+   }
+]

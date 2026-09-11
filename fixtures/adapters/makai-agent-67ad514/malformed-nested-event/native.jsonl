@@ -1,0 +1,1 @@
+{"action":"decode-error","classification":"required-unmapped","direction":"agent-to-client","fidelity":"unsupported","raw":{"message_id":"00000000000000000000000102","payload":{"event_json":"{\"type\":\"message_update\",\"event\":"},"sequence":2,"session_id":"Abcdefghijklmnopqrstu","timestamp":2,"type":"agent_event","version":1}}

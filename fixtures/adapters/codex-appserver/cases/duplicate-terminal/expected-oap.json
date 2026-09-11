@@ -1,0 +1,43 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-05",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "status": "running",
+      "model_id": "glm-test",
+      "started_at_ms": 4
+    },
+    "sequence": 1,
+    "timestamp_ms": 5,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-06",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "final_response": {
+        "id": "message-03",
+        "role": "assistant",
+        "content": ""
+      },
+      "stop_reason": "end_turn"
+    },
+    "sequence": 2,
+    "timestamp_ms": 6,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+  }
+]

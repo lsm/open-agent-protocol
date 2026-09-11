@@ -1,0 +1,4 @@
+[
+  {"index":5,"type":"event/session.usage","reason":"usage tick; final usage rides on message.complete"},
+  {"index":8,"type":"event/session.info","reason":"settled session.info; post-terminal corroboration only"}
+]

@@ -1,8 +1,15 @@
 # Open Agent Protocol Examples
 
-These fixtures are illustrative JSON bindings for the draft protocol. They are
-not conformance tests yet, but they are shaped so future tests can load them as
-complete protocol envelopes.
+These files are illustrative JSON bindings for the draft protocol, not
+conformance tests. Normative executable traces live in `../fixtures/` and are
+listed by `../fixtures/manifest.json`.
+
+`core-run-stream.json`, `capability-refresh.json`, and `core-user-input.json`
+are source material for corrected normative fixtures. The broader capability
+files and `agent-control-run-stream.json` use staging concepts that are not all
+part of executable v0.1. In particular, nested `scope`/`trace` fields do not
+replace the flat core envelope, and `model.content.delta` belongs to a future
+model-IO boundary rather than the core `content.delta` stream.
 
 - `core-run-stream.json`: ordered agent-control core stream for a simple
   message/final-response run, including message submission, admission, run

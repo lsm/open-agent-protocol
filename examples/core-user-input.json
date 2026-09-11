@@ -28,7 +28,7 @@
     "session_id": "session-01J7INPUT",
     "run_id": "run-01J7INPUT",
     "payload": {
-      "input_request_id": "input-01J7INPUT",
+      "interaction_id": "input-01J7INPUT",
       "session_id": "session-01J7INPUT",
       "run_id": "run-01J7INPUT",
       "tool_call_id": "tool-call-ask-user-01J7INPUT",
@@ -67,7 +67,7 @@
     "session_id": "session-01J7INPUT",
     "run_id": "run-01J7INPUT",
     "payload": {
-      "input_request_id": "input-01J7INPUT",
+      "interaction_id": "input-01J7INPUT",
       "session_id": "session-01J7INPUT",
       "run_id": "run-01J7INPUT",
       "answers": [
@@ -91,7 +91,7 @@
     "session_id": "session-01J7INPUT",
     "run_id": "run-01J7INPUT",
     "payload": {
-      "input_request_id": "input-01J7INPUT",
+      "interaction_id": "input-01J7INPUT",
       "session_id": "session-01J7INPUT",
       "run_id": "run-01J7INPUT",
       "status": "submitted",

@@ -1,0 +1,22 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.failed",
+    "id": "event-5",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-1",
+      "error": {
+        "code": "opencode_admission_ambiguous",
+        "message": "HTTP 409 ConflictError"
+      }
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-1",
+    "capability_revision": "opencode-v1.18.29-oap-v1"
+  }
+]

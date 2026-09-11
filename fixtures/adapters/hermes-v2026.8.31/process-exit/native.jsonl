@@ -1,0 +1,8 @@
+{"action":"submit","classification":"mapped","direction":"host-to-gateway","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","method":"prompt.submit","params":{"session_id":"sess0001","text":"hello"}}}
+{"action":"reply","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"id":2,"jsonrpc":"2.0","result":{"status":"streaming"}}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"native","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.start","session_id":"sess0001","seq":1}}}
+{"action":"wait-submit","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"harness_sync","op":"wait-submit"}}
+{"action":"observe","classification":"mapped","direction":"gateway-to-host","fidelity":"normalized","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"sess0001","seq":2,"payload":{"text":"Hi"}}}}
+{"action":"process-exit","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"process_exit","error":"gateway died"}}
+{"action":"wait-submit","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"harness_sync","op":"wait-submit"}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"close"}}

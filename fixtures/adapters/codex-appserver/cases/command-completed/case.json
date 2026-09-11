@@ -1,0 +1,8 @@
+{
+  "expected_oap": "expected-oap.json",
+  "id": "command-completed",
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "version": 1
+}

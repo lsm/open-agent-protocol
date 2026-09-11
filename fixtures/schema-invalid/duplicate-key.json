@@ -1,0 +1,11 @@
+[
+  {
+    "id": "capq",
+    "payload": {},
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  }
+]

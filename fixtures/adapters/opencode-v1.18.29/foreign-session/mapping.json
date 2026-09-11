@@ -1,0 +1,3 @@
+[
+    {"index": 1, "type": "session.next.prompted", "source": "stream", "classification": "mapped", "fidelity": "synthesized", "oap": "run.failed"}
+]

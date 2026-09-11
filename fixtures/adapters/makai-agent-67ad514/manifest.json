@@ -1,0 +1,89 @@
+{
+  "adapter": "makai-agent-stdio",
+  "agent_protocol_tree": "0a21997a9bc6d4358a8ca549bb2f31c623f4583b",
+  "cases": [
+    {
+      "id": "completed-result-before-end",
+      "ledger_fixtures": [
+        "initialize-minimal",
+        "session-start",
+        "message-admitted",
+        "completed-text",
+        "result-before-agent-end",
+        "completion-wins-race"
+      ],
+      "path": "completed-result-before-end"
+    },
+    {
+      "id": "max-turns",
+      "ledger_fixtures": [
+        "max-turns",
+        "second-message-same-session"
+      ],
+      "path": "max-turns"
+    },
+    {
+      "id": "tool-progress-completion",
+      "ledger_fixtures": [
+        "multi-turn-tools",
+        "tool-completed",
+        "tool-progress"
+      ],
+      "path": "tool-progress-completion"
+    },
+    {
+      "id": "tool-failure",
+      "ledger_fixtures": [
+        "tool-failed"
+      ],
+      "path": "tool-failure"
+    },
+    {
+      "id": "unfinished-child",
+      "ledger_fixtures": [
+        "unfinished-child"
+      ],
+      "path": "unfinished-child"
+    },
+    {
+      "id": "agent-error",
+      "ledger_fixtures": [
+        "error-plus-agent-end"
+      ],
+      "path": "agent-error"
+    },
+    {
+      "id": "confirmed-destructive-cancel",
+      "ledger_fixtures": [
+        "cancel-confirmed"
+      ],
+      "path": "confirmed-destructive-cancel"
+    },
+    {
+      "id": "process-exit",
+      "ledger_fixtures": [
+        "process-exit"
+      ],
+      "path": "process-exit"
+    },
+    {
+      "id": "malformed-nested-event",
+      "ledger_fixtures": [
+        "malformed-nested-event"
+      ],
+      "path": "malformed-nested-event"
+    },
+    {
+      "id": "replay-degradation",
+      "ledger_fixtures": [
+        "no-implied-native-replay"
+      ],
+      "path": "replay-degradation"
+    }
+  ],
+  "commit": "67ad51420c3f4d7918218573366fde7db8c35b9c",
+  "commit_tree": "27d32e64ff5efed88c1302de0e25c1acdb9373b2",
+  "execution_client_blob": "d3a1e9d6c28372f271c33501d33a9290c55a3a91",
+  "makai_tool_blob": "feccd54dde57fa2a5eafec97dd880bf8c63121c0",
+  "version": 1
+}

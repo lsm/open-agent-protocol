@@ -1,0 +1,2 @@
+{"direction":"server_to_client","kind":"notification","method":"turn/started","classification":"mapped","fidelity":"native","params":{"threadId":"native-thread","turn":{"id":"native-turn","status":"inProgress"}}}
+{"direction":"server_to_client","kind":"notification","method":"turn/completed","classification":"mapped","fidelity":"normalized","params":{"threadId":"native-thread","turn":{"error":{"message":"fixture failure"},"id":"native-turn","status":"failed"}}}

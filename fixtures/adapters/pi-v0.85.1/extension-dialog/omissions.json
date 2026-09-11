@@ -1,0 +1,7 @@
+[
+  {
+    "index": 2,
+    "type": "turn_start",
+    "reason": "Fixture action resolves the preceding dialog; turn boundary is observed-only"
+  }
+]

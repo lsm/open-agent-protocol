@@ -1,0 +1,7 @@
+[
+  {
+    "index": 1,
+    "type": "prompt",
+    "reason": "Native prompt failure rejects the submission before agent_start; no canonical run event exists."
+  }
+]

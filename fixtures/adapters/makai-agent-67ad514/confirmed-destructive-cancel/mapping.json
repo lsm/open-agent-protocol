@@ -1,0 +1,9 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 1,
+    "oap": "adapter reducer projection",
+    "type": "agent_stopped"
+  }
+]

@@ -1,0 +1,12 @@
+[
+  {"index":1,"type":"request:prompt.submit","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.message.submit(auto→start)"},
+  {"index":2,"type":"response:prompt.submit","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"admission receipt (status-only)"},
+  {"index":3,"type":"event/message.start","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.started (by construction)"},
+  {"index":4,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":5,"type":"event/message.complete","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.completed(usage)"},
+  {"index":6,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":7,"type":"oap_control:assert-state","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"reducer-owned session state"},
+  {"index":8,"type":"event/message.delta","direction":"gateway-to-host","classification":"required-unmapped","fidelity":"unsupported"},
+  {"index":9,"type":"oap_control:submit-closed","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"restart-reset seq fails the contiguous fencing"},
+  {"index":10,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session close via stdin EOF"}
+]

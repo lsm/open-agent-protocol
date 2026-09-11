@@ -29,6 +29,19 @@ Reviewed revisions:
   `b4428e1f8529fe726039437c8e54a7e7319986eb`
 - Cline (`cline/cline`): `6d5a9793fce68e825ed22626f6247970d943e122`
 
+These were the survey-era revisions. Implementation-target pins supersede
+them per boundary in the pin-specific ledgers:
+
+- Codex app-server: `codex-app-server-8d7cc24-mapping.md`
+- ACP v1.7.0 / schema v1.21.0: `acp-v1.7.0-mapping.md`
+- Makai `67ad514`: `makai-agent-67ad514-mapping.md`
+- Claude Code / Agent SDK `2.1.263`:
+  `claude-code-agent-sdk-2.1.263-mapping.md`
+- Pi `v0.85.1`: `pi-v0.85.1-mapping.md`
+- OpenCode `v1.18.29`: `opencode-v1.18.29-mapping.md`
+- Hermes `v2026.8.31`: `hermes-v2026.8.31-mapping.md`
+- DeepSeek Harness `47f9438`: `deepseek-harness-47f9438-mapping.md`
+
 ### Additional-harness selection
 
 Claude Agent SDK, Codex, and OpenCode were requested directly. Gemini CLI,

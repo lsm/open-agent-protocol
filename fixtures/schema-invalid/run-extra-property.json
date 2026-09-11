@@ -1,0 +1,1 @@
+[{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"bad","session_id":"s","run_id":"r","sequence":1,"payload":{"session_id":"s","run_id":"r","status":"running","unexpected":true}}]

@@ -18,7 +18,8 @@ the core unless they prove necessary across multiple independent control layers
 and agent-control implementations.
 
 Profile and conformance-unit claims are described in the
-[Conformance Draft](conformance.md).
+[Conformance Draft](conformance.md). The implemented v0.1 subset is frozen by
+[Decision 0001](../decisions/0001-agent-control-v0.1-executable-core.md).
 
 ## Design Rule
 
@@ -84,6 +85,20 @@ Optional fields:
   Freshness below.
 - `extensions`: extension object for non-core fields.
 
+The flat envelope is normative for v0.1. Nested `scope` or `trace` objects do
+not substitute for the direct scope fields. OAP identifiers are opaque but
+belong to distinct domains: envelope, participant, endpoint, session,
+submission, run, message, tool call, and interaction IDs are not
+interchangeable. `in_reply_to` references an envelope request ID only. When a
+scope ID appears in both the envelope and payload, the values must agree.
+Native identifiers may be retained under namespaced `extensions`, but do not
+become portable OAP identities.
+
+Every run-scoped event carries a positive, contiguous `sequence` in one ordering
+domain for its `run_id`. Request and response envelopes do not consume that
+sequence. Deltas append; snapshots replace the state they identify; terminal
+values are final.
+
 ## Transport
 
 The core is transport agnostic. The same envelopes can move over in-process
@@ -140,10 +155,13 @@ Kinds:
 | event | `run.started` | not a response | Emit when admitted work starts executing as a run. |
 | event | `run.status.updated` | not a response | Emit for meaningful run lifecycle changes. |
 | event | `content.delta` | not a response | Stream assistant-visible output. |
-| event | `run.completed`, `run.failed`, or `run.cancelled` | not a response | Emit exactly one terminal event for every started run. |
+| event | `run.completed`, `run.failed`, or `run.cancelled` | not a response | Emit exactly one terminal event for every accepted run. |
 
-Each started run must end with exactly one terminal run event:
-`run.completed`, `run.failed`, or `run.cancelled`.
+Each accepted run must end with exactly one terminal run event:
+`run.completed`, `run.failed`, or `run.cancelled`. These are the complete v0.1
+terminal vocabulary. `run.orphaned` requires a later negotiated revision.
+Background or session activity that outlives foreground completion must not be
+attributed to the terminal run.
 
 ## Core Data Shapes
 
@@ -193,11 +211,12 @@ the time the request is admitted. An idle session normally resolves `auto` to
 `start`. An active session may resolve it to `queue`, `steer`, or `btw`
 according to authoritative configuration and supported capabilities.
 
-Core conformance requires `auto`. `queue`, `steer`, and `btw` are optional and
-must be advertised through capabilities before a control layer depends on them.
-An implementation that receives an unsupported explicit delivery mode should
-return a typed unsupported-feature error rather than silently treating it as
-another mode.
+Core conformance requires `auto`. The executable v0.1 subset permits one
+nonterminal foreground run per session and resolves `auto` to `start` only.
+`queue`, `steer`, and `btw` are optional and must be advertised through
+capabilities before a control layer depends on them. An implementation that
+receives an unsupported explicit delivery mode should return a typed
+unsupported-feature error rather than silently treating it as another mode.
 
 Core fields:
 
@@ -236,9 +255,16 @@ optimistic input, correlate retries, and recover if the stream connection
 reconnects before `run.started` arrives.
 
 Core run statuses are `queued`, `running`, `waiting_for_input`, `cancelling`,
-`completed`, `failed`, and `cancelled`. `run.status.updated` should be emitted
-for meaningful lifecycle changes so control layers and presentation layers can
-track status without inferring it from provider-specific events.
+`completed`, `failed`, and `cancelled`. The executable subset uses `running`,
+`waiting_for_input`, `cancelling`, and terminal states; `queued` belongs to the
+optional queue unit. `run.status.updated` should be emitted for meaningful
+lifecycle changes so control layers and presentation layers can track status
+without inferring it from provider-specific events.
+
+`run.cancel.response` acknowledges cancellation intent; it is not terminal.
+Only authoritative settlement emits `run.cancelled`. Completion or failure may
+win a race with cancellation. Repeated cancellation must be idempotent, and a
+stale cancellation must not affect a later run.
 
 ### Session State And Transcript Sync
 
@@ -265,6 +291,15 @@ should include `sync_cursor` when the endpoint can provide one.
 transcript rows; it is distinct from `content.delta`, which is the live
 assistant stream and may arrive before persistence.
 
+Resume, reconciliation, and replay are separate capabilities. Resume restores
+an attachment to execution or conversation state. Reconciliation returns an
+authoritative state snapshot. Replay returns historical canonical OAP events
+from a cursor. A transcript reconstructed after resume is not event replay.
+When a requested replay cursor cannot be satisfied, an implementation must
+report an explicit gap and return authoritative state rather than silently
+claim continuity. The reference implementation's bounded process-memory journal
+is degraded replay, not durable persistence.
+
 The core does not define a generic live-query language. A binding or
 implementation can offer one, but control layers should not need it for the
 common chat/session surface.
@@ -290,14 +325,22 @@ and the normalized `action.call.*` lifecycle, not the private hosting mechanism.
 
 ### Permissions
 
-Permission prompts are explicit events. A control layer resolves them by
-sending `action.permission.resolve.request` with:
+Permission prompts are explicit correlated interactions. They carry a stable
+`interaction_id`, `requested_by`, `responded_by`, `session_id`, and `run_id`.
+A control layer resolves them by sending `action.permission.resolve.request`
+with:
 
-- `permission_id`
+- `interaction_id`
+- `interaction_id`
 - `choice_id`
 - `granted`
 - `reason`
 - `updated_arguments_json`
+
+Only the declared responder may resolve an interaction, and every interaction
+has at most one resolution. Tool descriptors and calls identify their execution
+owner. Permission and user-input interactions remain distinct even though they
+share ownership and correlation rules.
 
 `updated_arguments_json` covers the common case where the control or policy layer
 allows a tool call only after narrowing or rewriting its arguments.
@@ -310,7 +353,10 @@ needs to continue.
 
 `user.input.requested` carries:
 
-- `input_request_id`
+- `interaction_id`
+- `interaction_id`
+- `requested_by`
+- `responded_by`
 - `session_id`
 - `run_id`
 - `tool_call_id`
@@ -381,6 +427,13 @@ Support levels are:
 - `degraded`
 - `unavailable`
 
+A descriptor may additionally state semantic fidelity such as submission
+receipt type, streaming level, cancellation scope, resume/reconciliation/replay
+level, approval scopes, maximum active runs per session, and unknown-event
+handling. Boolean feature flags are insufficient when those guarantees differ.
+The selected native surface and effective capability revision must remain fixed
+for an admitted run.
+
 The control layer should enable controls from capabilities, not from
 implementation names.
 
@@ -434,7 +487,7 @@ An implementation is core-conformant if it can:
 5. accept a message submit and return `session.message.submit.response`;
 6. stream assistant text through `content.delta`;
 7. emit run status updates for meaningful lifecycle changes;
-8. end every started run with one terminal run event;
+8. end every accepted run with one terminal run event;
 9. cancel a running run or report cancellation as unavailable;
 10. return correlated `error.response` envelopes for unsupported commands and
     invalid requests.
@@ -473,7 +526,7 @@ These are deliberately outside the core for now:
 - telemetry, cost accounting, rate-limit events, and retry detail;
 - context compaction controls;
 - full provider-native model stream passthrough;
-- generated JSON Schema bundles and conformance test suites.
+- durable cross-process replay and full stream-convergence protocols.
 
 Each of these can become an optional profile once the core event model feels
 right.

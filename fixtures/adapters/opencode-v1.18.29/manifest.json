@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "adapter": "opencode-http-sse",
+  "tag": "v1.18.29",
+  "commit": "16747470f976aca3d362ad730bcd3fe82ecc2c9a",
+  "commit_tree": "6d8cc725d9c0945d7259b78e2f60cdec6c493a26",
+  "cases": [
+{"id": "completed-text", "path": "completed-text", "ledger_fixtures": ["initialize-minimal","session-create","message-admitted","completed-text","settlement"]},{"id": "text-streaming", "path": "text-streaming", "ledger_fixtures": ["streaming-deltas"]},{"id": "reasoning-text", "path": "reasoning-text", "ledger_fixtures": ["reasoning-deltas"]},{"id": "tool-lifecycle", "path": "tool-lifecycle", "ledger_fixtures": ["tool-lifecycle"]},{"id": "tool-failed", "path": "tool-failed", "ledger_fixtures": ["tool-failed"]},{"id": "multi-step", "path": "multi-step", "ledger_fixtures": ["multi-step","no-implied-run-id"]},{"id": "step-failure", "path": "step-failure", "ledger_fixtures": ["step-failure"]},{"id": "cancel-active", "path": "cancel-active", "ledger_fixtures": ["interrupt-active"]},{"id": "queued-admission", "path": "queued-admission", "ledger_fixtures": ["queued-admission"]},{"id": "history-fence", "path": "history-fence", "ledger_fixtures": ["history-page","history-fence"]},{"id": "foreign-session", "path": "foreign-session", "ledger_fixtures": ["foreign-session"]},{"id": "stream-exit", "path": "stream-exit", "ledger_fixtures": ["process-exit"]},{"id": "observed-only", "path": "observed-only", "ledger_fixtures": ["observed-only"]},{"id": "message-conflict", "path": "message-conflict", "ledger_fixtures": ["message-conflict"]},{"id": "interrupt-idle", "path": "interrupt-idle", "ledger_fixtures": ["interrupt-idle"]}
+  ]
+}

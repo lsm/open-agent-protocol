@@ -1,0 +1,126 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"capq","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"user_input":{"level":"native"}}}},
+  {
+    "id": "req1",
+    "payload": {
+      "delivery": "auto",
+      "messages": [
+        {
+          "content": "go",
+          "role": "user"
+        }
+      ],
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.request",
+    "version": "0.1"
+  },
+  {
+    "id": "resp1",
+    "in_reply_to": "req1",
+    "payload": {
+      "accepted": true,
+      "admission": "started",
+      "effective_delivery": "start",
+      "requested_delivery": "auto",
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "running",
+      "submission_id": "sub1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.response",
+    "version": "0.1"
+  },
+  {
+    "id": "ev-start",
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "running"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "sequence": 1,
+    "session_id": "s1",
+    "type": "run.started",
+    "version": "0.1"
+  },
+  {
+    "id": "input1",
+    "payload": {
+      "interaction_id": "i1",
+      "questions": [
+        {
+          "id": "q1",
+          "kind": "text",
+          "prompt": "Continue?"
+        }
+      ],
+      "requested_by": "agent",
+      "responded_by": "user",
+      "run_id": "r1",
+      "session_id": "s1",
+      "title": "Question"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "sequence": 2,
+    "session_id": "s1",
+    "capability_revision": "v1",
+    "type": "user.input.requested",
+    "version": "0.1"
+  },
+  {
+    "id": "input2",
+    "payload": {
+      "answers": [
+        {
+          "question_id": "q1",
+          "text": "yes"
+        }
+      ],
+      "interaction_id": "i1",
+      "requested_by": "agent",
+      "responded_by": "intruder",
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "submitted"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "sequence": 3,
+    "session_id": "s1",
+    "capability_revision": "v1",
+    "type": "user.input.resolved",
+    "version": "0.1"
+  },
+  {
+    "id": "ev-done",
+    "payload": {
+      "final_response": {
+        "content": "ok",
+        "role": "assistant"
+      },
+      "run_id": "r1",
+      "session_id": "s1",
+      "stop_reason": "end_turn"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "sequence": 4,
+    "session_id": "s1",
+    "type": "run.completed",
+    "version": "0.1"
+  }
+]

@@ -130,8 +130,14 @@
         }
       },
       "agent_control": {
-        "delivery_modes": [
+        "requested_delivery_modes": [
           "auto",
+          "queue",
+          "steer",
+          "btw"
+        ],
+        "effective_delivery_modes": [
+          "start",
           "queue",
           "steer",
           "btw"

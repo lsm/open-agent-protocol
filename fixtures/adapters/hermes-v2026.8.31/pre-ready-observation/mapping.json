@@ -1,0 +1,5 @@
+[
+  {"index":1,"type":"event/message.delta","direction":"gateway-to-host","classification":"required-unmapped","fidelity":"unsupported"},
+  {"index":2,"type":"open","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.open attempt (never written: handshake fails first)"},
+  {"index":3,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session close via stdin EOF"}
+]

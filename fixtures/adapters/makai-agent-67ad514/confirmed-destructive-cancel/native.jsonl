@@ -1,0 +1,1 @@
+{"action":"cancel","classification":"mapped","direction":"agent-to-client","fidelity":"normalized","raw":{"message_id":"00000000000000000000000102","payload":{"reason":"cancelled","session_id":"Abcdefghijklmnopqrstu"},"sequence":2,"session_id":"Abcdefghijklmnopqrstu","timestamp":2,"type":"agent_stopped","version":1}}

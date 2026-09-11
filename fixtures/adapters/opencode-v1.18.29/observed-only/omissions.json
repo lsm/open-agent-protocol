@@ -1,0 +1,5 @@
+[
+    {"index": 2, "type": "session.next.agent.switched", "reason": "session-scope observation; no core OAP claim"},
+    {"index": 3, "type": "session.next.compaction.started", "reason": "context maintenance; no core OAP claim"},
+    {"index": 4, "type": "session.next.step.started", "reason": "step accounting only; no core OAP event"}
+]

@@ -1,0 +1,6 @@
+[
+  {"index":5,"type":"event/subagent.spawn_requested","reason":"parent-sid subagent frame; no child projection in v1"},
+  {"index":6,"type":"event/subagent.progress","reason":"parent-sid subagent frame; no child projection in v1"},
+  {"index":7,"type":"event/subagent.tool","reason":"parent-sid subagent frame; no child projection in v1"},
+  {"index":8,"type":"event/subagent.complete","reason":"failed child completion; observed-only on the parent stream"}
+]
