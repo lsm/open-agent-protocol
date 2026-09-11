@@ -471,6 +471,30 @@ func TestPreAdmissionChildNotificationsDefer(t *testing.T) {
 // and the run is authoritative: a caller cancellation must not release the
 // reservation while the accepted turn may still execute (which would let a retry
 // overlap it and make its later observations foreign).
+// A successful prompt RPC that names no message may still have executed; the
+// session must be retired rather than released for a retry to overlap it.
+func TestPromptReceiptWithoutMessageIDRetiresSession(t *testing.T) {
+	s, f := openTest(t)
+	settled := make(chan error, 1)
+	go func() {
+		_, _, err := s.Submit(context.Background(), request())
+		settled <- err
+	}()
+	<-f.started
+	f.prompts <- promptReply{id: ""}
+	select {
+	case err := <-settled:
+		if !errors.Is(err, ErrNativeProtocol) {
+			t.Fatalf("got %v, want ErrNativeProtocol", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("submit did not settle")
+	}
+	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("retry: got %v, want ErrSessionClosed", err)
+	}
+}
+
 func TestSubmitCancellationAfterReceiptKeepsReservation(t *testing.T) {
 	s, f := openTest(t)
 	ctx, cancel := context.WithCancel(context.Background())

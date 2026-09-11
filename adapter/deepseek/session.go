@@ -141,6 +141,12 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.reduceMu.Lock()
 	if err != nil || result.MessageID == "" {
 		if err == nil {
+			// The prompt RPC succeeded but named no message, so the harness may
+			// still execute it: native admission is ambiguous. Retire the session
+			// so a retry cannot overlap, then settle the reservation.
+			s.mu.Lock()
+			s.unusable = true
+			s.mu.Unlock()
 			err = fmt.Errorf("%w: prompt response omitted messageId", ErrNativeProtocol)
 		}
 		s.reduceMu.Unlock()
