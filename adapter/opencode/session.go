@@ -714,6 +714,13 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	if err := ctx.Err(); err != nil {
 		return protocol.RunCancelResponse{}, err
 	}
+	// Serialize with the reducer's prompted transition. The reducer emits
+	// run.started and only then records prompted, so a caller that cancels as
+	// soon as it observes run.started could otherwise read prompted=false and
+	// drop the cancelling status update. Holding the transition lock makes the
+	// emit-and-record pair atomic to Cancel.
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
 	s.mu.Lock()
 	if s.closed || s.unusable {
 		s.mu.Unlock()
