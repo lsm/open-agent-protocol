@@ -463,6 +463,34 @@ func TestApprovalGateRoundTrip(t *testing.T) {
 	validateWithCapabilities(t, got.response, events)
 }
 
+// A caller that knows the interaction id must still match the declared
+// responder and scope, and a rejected resolution must not reach the native gate.
+func TestResolveRejectsForeignOwnership(t *testing.T) {
+	s, f := openTest(t)
+	_ = admit(t, s, f, true)
+	f.event(native.EventApprovalRequest, 2, `{"command":"rm","choices":["once","deny"]}`)
+	id := lastInteraction(t, s)
+	if id == "" {
+		t.Fatal("approval gate was not registered")
+	}
+	answer := []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"once"}}}
+	cases := map[string]base.InteractionResolution{
+		"foreign responded_by": {RespondedBy: "someone-else", Input: &protocol.UserInputResolveRequest{InteractionID: id, SessionID: "session", Answers: answer}},
+		"foreign session":      {Input: &protocol.UserInputResolveRequest{InteractionID: id, SessionID: "other-session", Answers: answer}},
+		"foreign run":          {Input: &protocol.UserInputResolveRequest{InteractionID: id, SessionID: "session", RunID: "run-other", Answers: answer}},
+	}
+	for name, resolution := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := s.Resolve(context.Background(), resolution); !errors.Is(err, base.ErrInvalidResolution) {
+				t.Fatalf("got %v, want ErrInvalidResolution", err)
+			}
+		})
+	}
+	if f.callCount(native.MethodApprovalRespond) != 0 {
+		t.Fatal("a rejected resolution must not reach the native gate")
+	}
+}
+
 func lastInteraction(t *testing.T, s base.Session) protocol.InteractionID {
 	t.Helper()
 	session := s.(*Session)

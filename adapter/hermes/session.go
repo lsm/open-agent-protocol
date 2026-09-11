@@ -634,6 +634,29 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInteractionNotFound
 	}
+	// Validate the caller-supplied ownership before touching the native gate: a
+	// mismatched participant or scope would otherwise resolve it and leave a
+	// semantically invalid ownership trail.
+	if resolution.RunID != "" && resolution.RunID != run.id {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	if resolution.Input.SessionID != "" && resolution.Input.SessionID != s.state.SessionID {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	if resolution.Input.RunID != "" && resolution.Input.RunID != run.id {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	responder := resolution.RespondedBy
+	if responder == "" {
+		responder = resolution.Input.RespondedBy
+	}
+	if responder != "" && responder != s.participant {
+		s.reduceMu.Unlock()
+		return base.ErrInvalidResolution
+	}
 	answers := resolution.Input.Answers
 	var approval *native.ApprovalRespondParams
 	var calls []native.RespondParams
