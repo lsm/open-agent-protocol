@@ -138,6 +138,29 @@ func (client *fakeClient) request(t *testing.T, id int64, method string, payload
 	return request, response
 }
 
+// Approval and user-input events copy the participant into responded_by; an
+// empty identity would emit schema-invalid events that no valid resolution could
+// satisfy, so the open must be refused before any process is started.
+func TestOpenRejectsEmptyParticipant(t *testing.T) {
+	started := 0
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) {
+			started++
+			return newFakeClient(), nil
+		}),
+		Clock: &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session"}); !errors.Is(err, adapter.ErrInvalidParticipant) {
+		t.Fatalf("got %v, want ErrInvalidParticipant", err)
+	}
+	if started != 0 {
+		t.Fatalf("factory started for an invalid request: %d", started)
+	}
+}
+
 func openFake(t *testing.T) (*fakeClient, adapter.Session, adapter.Descriptor) {
 	t.Helper()
 	client := newFakeClient()

@@ -161,6 +161,12 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// Approval and user-input events copy the participant into responded_by, so
+	// an empty identity would emit schema-invalid events that no valid resolution
+	// could satisfy. Reject before starting a process.
+	if request.Participant.ID == "" {
+		return nil, adapter.ErrInvalidParticipant
+	}
 	client, err := implementation.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err

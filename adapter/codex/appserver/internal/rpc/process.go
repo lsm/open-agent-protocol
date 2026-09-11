@@ -59,6 +59,8 @@ type Process struct {
 
 	command    *exec.Cmd
 	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	stderrPipe io.ReadCloser
 	stderr     *limitedBuffer
 	stderrDone chan struct{}
 	waitDone   chan struct{}
@@ -107,7 +109,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	}()
 
 	process := &Process{
-		command: command, stdin: stdin, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}),
+		command: command, stdin: stdin, stdout: stdout, stderrPipe: stderrPipe, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}),
 		timeout: config.ShutdownTimeout,
 	}
 	if process.timeout <= 0 {
@@ -144,11 +146,11 @@ func (process *Process) Close(ctx context.Context) error {
 		case <-process.waitDone:
 			process.closeErr = process.WaitError()
 		case <-ctx.Done():
-			_ = process.command.Process.Kill()
+			process.killAndRelease()
 			<-process.waitDone
 			process.closeErr = ctx.Err()
 		case <-timer.C:
-			_ = process.command.Process.Kill()
+			process.killAndRelease()
 			<-process.waitDone
 			process.closeErr = fmt.Errorf("codex app-server rpc: shutdown timed out")
 		}
@@ -187,9 +189,26 @@ func processExitError(err error) error {
 }
 
 func (process *Process) abort() error {
-	_ = process.command.Process.Kill()
+	process.killAndRelease()
 	<-process.waitDone
 	return process.WaitError()
+}
+
+// killAndRelease kills the child and closes the read pipes before reaping.
+// wait() drains stdout before Cmd.Wait and then waits for stderr EOF, but a
+// descendant that inherited either pipe keeps its write end open after the
+// direct child exits, so neither drain would return and Close would block on
+// waitDone past its configured timeout. Closing the read ends forces both
+// drains to finish so the timeout still bounds teardown.
+func (process *Process) killAndRelease() {
+	_ = process.command.Process.Kill()
+	if process.stdout != nil {
+		_ = process.stdout.Close()
+	}
+	if process.stderrPipe != nil {
+		_ = process.stderrPipe.Close()
+	}
+	process.Client.closeWith(processExitError(nil))
 }
 
 type limitedBuffer struct {

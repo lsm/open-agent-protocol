@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,12 @@ import (
 )
 
 func TestHelperProcess(t *testing.T) {
+	// The descendant that inherits the pipes and outlives the direct child only
+	// needs to hold them open for longer than the shutdown timeout.
+	if os.Getenv("OAP_CODEX_RPC_HOLDER") == "1" {
+		time.Sleep(5 * time.Second)
+		os.Exit(0)
+	}
 	// Activated either by environment or by an explicit argument, so the
 	// empty-allowlist fixture can be spawned with no environment at all.
 	mode := os.Getenv("OAP_CODEX_RPC_HELPER")
@@ -54,6 +61,18 @@ func TestHelperProcess(t *testing.T) {
 	initialized, err := reader.Decode()
 	if err != nil || initialized.Kind != MessageNotification || initialized.Method != "initialized" || len(initialized.Params) != 0 {
 		os.Exit(12)
+	}
+	if mode == "hold-stdout" {
+		// Spawn a descendant that inherits stdout and stderr and outlives this
+		// process, so the pipes stay open after the direct child exits.
+		descendant := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--")
+		descendant.Env = append(os.Environ(), "OAP_CODEX_RPC_HOLDER=1")
+		descendant.Stdout = os.Stdout
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(20)
+		}
+		os.Exit(0)
 	}
 	for {
 		message, err = reader.Decode()
@@ -158,6 +177,28 @@ func TestCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 			t.Fatalf("iteration %d: response was not fully decoded", iteration)
 		}
 		_ = process.Close(context.Background())
+	}
+}
+
+// A descendant that inherited stdout/stderr keeps the pipes open after the
+// direct child exits, so the reader drains never observe EOF. Forced shutdown
+// must still return within its bound instead of blocking forever on waitDone.
+func TestCloseBoundsForcedShutdownWhenDescendantHoldsPipes(t *testing.T) {
+	config := helperConfig("hold-stdout")
+	config.ShutdownTimeout = 300 * time.Millisecond
+	process, err := Start(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- process.Close(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the forced shutdown to report a timeout")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked while a descendant held the pipes open")
 	}
 }
 
