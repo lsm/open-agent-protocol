@@ -588,12 +588,15 @@ func TestSubmitCancellationAfterAcceptanceKeepsReservation(t *testing.T) {
 	s, f := openTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// Script the reply before launching the submission: the reducer may issue
+	// prompt.submit as soon as the goroutine runs, and a reply queued after
+	// that races the fake into "no scripted reply".
+	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}})
 	ch := make(chan outcome, 1)
 	go func() {
 		response, stream, err := s.Submit(ctx, request())
 		ch <- outcome{response, stream, err}
 	}()
-	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}})
 	f.awaitCall(t, native.MethodPromptSubmit)
 	cancel()
 	got := <-ch
