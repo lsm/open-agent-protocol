@@ -66,6 +66,10 @@ type runState struct {
 	messageID     protocol.MessageID
 	final         *native.MessageCompletePayload
 	terminalKind  string
+	// deferred holds an absorbing settlement that arrived while a gate
+	// resolution was in flight; Resolve flushes it after publishing the
+	// canonical resolution event.
+	deferred *native.MessageCompletePayload
 	subscribers   []chan base.Result
 	startResult   chan error
 	startOnce     sync.Once
@@ -91,6 +95,10 @@ type inputState struct {
 	run       *runState
 	questions []protocol.InputQuestion
 	resolved  bool
+	// settling is set while Resolve is issuing the native answer and before the
+	// canonical resolution event is published. An absorbing settlement is
+	// parked behind a settling gate so the resolution cannot lose to terminality.
+	settling bool
 	// answers maps question id → native answer member.
 	answers   map[string]string
 	requested protocol.EnvelopeID
@@ -608,7 +616,7 @@ func decodeRequestID(payload json.RawMessage) string {
 
 func (s *Session) expireInteraction(run *runState, payload *native.ExpirePayload) {
 	for _, binding := range s.interactions {
-		if binding.run != run || binding.resolved || binding.requestID != payload.RequestID {
+		if binding.run != run || binding.resolved || binding.settling || binding.requestID != payload.RequestID {
 			continue
 		}
 		binding.resolved = true
@@ -631,7 +639,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	}
 	s.reduceMu.Lock()
 	binding := s.interactions[resolution.Input.InteractionID]
-	if binding == nil || binding.resolved {
+	if binding == nil || binding.resolved || binding.settling {
 		s.reduceMu.Unlock()
 		return base.ErrInteractionNotFound
 	}
@@ -746,12 +754,24 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return errUnavailable
 	}
-	binding.resolved = true
+	// Mark the gate settling, not resolved: a settlement that arrives while the
+	// native answer is in flight must be parked (see settleRun) rather than
+	// settled with the resolution still unpublished.
+	binding.settling = true
 	s.reduceMu.Unlock()
 
 	unresolve := func() {
 		s.reduceMu.Lock()
+		binding.settling = false
 		binding.resolved = false
+		if run.deferred != nil && !run.terminal {
+			// The answer could not be delivered but a settlement is parked
+			// behind this gate; withdraw the gate so the terminal does not
+			// strand a pending interaction.
+			binding.resolved = true
+			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
+		}
+		s.flushDeferred(run)
 		s.reduceMu.Unlock()
 	}
 	if approval != nil {
@@ -781,14 +801,45 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		}
 	}
 	s.reduceMu.Lock()
+	binding.settling = false
 	respondedBy := resolution.RespondedBy
 	if respondedBy == "" {
 		respondedBy = s.participant
 	}
-	_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, binding.requested)
-	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+	if !run.terminal {
+		binding.resolved = true
+		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, binding.requested)
+		_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+	}
+	// A settlement the gateway emitted around the answer was parked behind this
+	// resolution; now that the canonical event is published, project it.
+	s.flushDeferred(run)
 	s.reduceMu.Unlock()
 	return nil
+}
+
+// gatesSettling reports whether any gate on the run is mid-resolution. The
+// canonical user.input.resolved event must precede the run's absorbing
+// terminal, so a settlement arriving in that window is parked until Resolve
+// flushes it.
+func (s *Session) gatesSettling(run *runState) bool {
+	for _, binding := range s.interactions {
+		if binding.run == run && binding.settling {
+			return true
+		}
+	}
+	return false
+}
+
+// flushDeferred projects a settlement parked behind an in-flight resolution,
+// once no gate on the run is still settling.
+func (s *Session) flushDeferred(run *runState) {
+	if run.deferred == nil || s.gatesSettling(run) {
+		return
+	}
+	payload := run.deferred
+	run.deferred = nil
+	s.settleRun(run, payload)
 }
 
 // findAnswer locates the answer for one surfaced question.
@@ -822,6 +873,15 @@ func (s *Session) settleRun(run *runState, payload *native.MessageCompletePayloa
 		// reserved run has no started trace to fail. Release the reservation
 		// with the native error; this is a protocol-order violation.
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: settlement before the turn opened", ErrNativeProtocol))
+		return
+	}
+	if s.gatesSettling(run) {
+		// A gate resolution is mid-flight. Emitting the absorbing terminal now
+		// would make the canonical user.input.resolved event unemittable
+		// (terminality wins) and strand a pending interaction at terminality.
+		// Park the settlement; the resolving Resolve flushes it after its own
+		// emissions.
+		run.deferred = payload
 		return
 	}
 	if payload.Status == "" {

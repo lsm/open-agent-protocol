@@ -783,6 +783,48 @@ func TestBatchClarifyResolvesEveryQuestion(t *testing.T) {
 	validateWithCapabilities(t, got.response, events)
 }
 
+func TestResolveParksSettlementUntilGateResolved(t *testing.T) {
+	// The gateway can emit message.complete around the successful gate response:
+	// the response barrier orders it before the response reaches Resolve. If the
+	// terminal settles while Resolve is inside the native call, the canonical
+	// user.input.resolved event becomes unemittable and the trace ends with a
+	// pending interaction. The settlement must be parked until the resolution
+	// is published.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
+	binding := lastInteraction(t, s)
+	f.queue(native.MethodApprovalRespond, reply{
+		result: native.ApprovalRespondResult{Resolved: true},
+		before: func() { f.event(native.EventMessageComplete, 3, settleFrame("complete", "")) },
+	})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"once"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	got := <-ch
+	events := drain(t, got.stream)
+	validateWithCapabilities(t, got.response, events)
+	resolvedIdx, terminalIdx := -1, -1
+	for index, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeUserInputResolved:
+			if resolvedIdx == -1 {
+				resolvedIdx = index
+			}
+		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+			if terminalIdx == -1 {
+				terminalIdx = index
+			}
+		}
+	}
+	if resolvedIdx == -1 {
+		t.Fatalf("gate resolution dropped at terminality (%d events)", len(events))
+	}
+	if terminalIdx == -1 || resolvedIdx > terminalIdx {
+		t.Fatalf("resolution index %d, terminal index %d", resolvedIdx, terminalIdx)
+	}
+}
+
 func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
 	// A multi_select clarify advertises multi_choice; the native answer field
 	// is one string, and the pinned tool decodes a JSON array back into the
