@@ -558,11 +558,15 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 				binding.questions = append(binding.questions, protocol.InputQuestion{ID: question.Qid, Prompt: question.Question, Kind: kind, Required: true, Options: options})
 			}
 		} else {
+			kind := protocol.InputSingleChoice
+			if payload.MultiSelect {
+				kind = protocol.InputMultiChoice
+			}
 			options := make([]protocol.InputOption, len(payload.Choices))
 			for i, choice := range payload.Choices {
 				options[i] = protocol.InputOption{ID: choice, Label: choice}
 			}
-			binding.questions = []protocol.InputQuestion{{ID: "answer", Prompt: payload.Question, Kind: protocol.InputSingleChoice, Required: true, Options: options}}
+			binding.questions = []protocol.InputQuestion{{ID: "answer", Prompt: payload.Question, Kind: kind, Required: true, Options: options}}
 		}
 	case native.EventSudoRequest:
 		binding.kind = "sudo"
@@ -682,8 +686,41 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 			return base.ErrInvalidResolution
 		}
 		for _, question := range binding.questions {
-			_, value, ok := answerFor(answers, question.ID)
-			if !ok || value == "" {
+			answer, ok := findAnswer(answers, question.ID)
+			if !ok {
+				s.reduceMu.Unlock()
+				return base.ErrInvalidResolution
+			}
+			var value string
+			if question.Kind == protocol.InputMultiChoice {
+				// The native clarify answer field is a single string; the pinned
+				// tool decodes a JSON array (or comma list) back into the full
+				// selection set, so encode every selected choice rather than
+				// silently dropping all but the first.
+				if len(answer.SelectedOptionIDs) == 0 {
+					s.reduceMu.Unlock()
+					return base.ErrInvalidResolution
+				}
+				encoded, err := json.Marshal(answer.SelectedOptionIDs)
+				if err != nil {
+					s.reduceMu.Unlock()
+					return base.ErrInvalidResolution
+				}
+				value = string(encoded)
+			} else {
+				if len(answer.SelectedOptionIDs) > 1 {
+					// A single-value native answer cannot carry more than one
+					// selection; reject instead of dropping extras.
+					s.reduceMu.Unlock()
+					return base.ErrInvalidResolution
+				}
+				if len(answer.SelectedOptionIDs) == 1 {
+					value = answer.SelectedOptionIDs[0]
+				} else {
+					value = answer.Text
+				}
+			}
+			if value == "" {
 				s.reduceMu.Unlock()
 				return base.ErrInvalidResolution
 			}
@@ -754,19 +791,14 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	return nil
 }
 
-// answerFor locates the answer for one question and reduces it to the native
-// value member: a selected option id when present, else the text form.
-func answerFor(answers []protocol.InputAnswer, question string) (protocol.InputAnswer, string, bool) {
+// findAnswer locates the answer for one surfaced question.
+func findAnswer(answers []protocol.InputAnswer, question string) (protocol.InputAnswer, bool) {
 	for _, answer := range answers {
-		if answer.QuestionID != question {
-			continue
+		if answer.QuestionID == question {
+			return answer, true
 		}
-		if len(answer.SelectedOptionIDs) > 0 {
-			return answer, answer.SelectedOptionIDs[0], true
-		}
-		return answer, answer.Text, true
 	}
-	return protocol.InputAnswer{}, "", false
+	return protocol.InputAnswer{}, false
 }
 
 func respondMethod(kind string) string {

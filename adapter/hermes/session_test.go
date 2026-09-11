@@ -783,6 +783,56 @@ func TestBatchClarifyResolvesEveryQuestion(t *testing.T) {
 	validateWithCapabilities(t, got.response, events)
 }
 
+func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
+	// A multi_select clarify advertises multi_choice; the native answer field
+	// is one string, and the pinned tool decodes a JSON array back into the
+	// full selection set. Every selected option must reach the native gate,
+	// not just the first.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"which?","choices":["a","b","c"],"multi_select":true}`)
+	binding := lastInteraction(t, s)
+	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a", "c"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.callCount(native.MethodClarifyRespond); got != 1 {
+		t.Fatalf("clarify.respond calls = %d", got)
+	}
+	var respond native.RespondParams
+	found := false
+	f.callsMu.Lock()
+	for _, call := range f.calls {
+		if call.method == native.MethodClarifyRespond {
+			respond, found = call.params.(native.RespondParams)
+		}
+	}
+	f.callsMu.Unlock()
+	if !found || respond.Answer != `["a","c"]` {
+		t.Fatalf("multi-select respond = %+v (found=%v)", respond, found)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	var kind protocol.InputQuestionKind
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeUserInputRequested {
+			continue
+		}
+		var p protocol.UserInputRequestedPayload
+		if err := envelope.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Questions) == 1 {
+			kind = p.Questions[0].Kind
+		}
+	}
+	if kind != protocol.InputMultiChoice {
+		t.Fatalf("advertised question kind = %q, want %q", kind, protocol.InputMultiChoice)
+	}
+	validateWithCapabilities(t, got.response, events)
+}
+
 func TestRespondFailureDoesNotProjectSubmitted(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)

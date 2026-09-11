@@ -223,6 +223,16 @@ treats the rest as observed-only or ignorable per the classification policy.
 | `session.reclaimed` | `{session_id, stored_session_id, reason∈{idle_timeout,lru_evict,ws_orphan_reap}}` | global |
 | `skin.changed`, `pet.changed`, `sessions.changed`, `cron.changed`, `platforms.changed`, `pairing.changed`, `bot_relay.outbox.pending` | various | global, no seq, ignorable |
 
+Gate answer encoding: `clarify.respond`/`sudo.respond`/`secret.respond` store the
+`answer`/`password`/`value` member verbatim (`_respond`, `server.py:14032`), and
+the clarify tool decodes a `multi_select` answer with
+`_parse_multi_select_response` (`tools/clarify_tool.py`), which accepts a JSON
+array string, a list, or a comma-separated list of choice labels. A multi-select
+answer is therefore written as the JSON array string of the selected labels
+(`["a","c"]`); a single-value gate takes the bare label. The adapter never
+collapses a multi-select answer to one label, and rejects a multi-option answer
+to a single-value gate rather than dropping the extras.
+
 Child watch-session mirror: when a client holds a child watch session, the
 gateway translates subagent frames into native frames on the child sid
 (`subagent.thinking`→`reasoning.delta`, `subagent.text`→`message.delta`,
