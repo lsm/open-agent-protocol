@@ -170,6 +170,26 @@ func TestResponseCorrelationCorrections(t *testing.T) {
 			t.Fatalf("canonical delivery feature was not recognized: %+v", got.Diagnostics)
 		}
 	})
+	t.Run("initialize response must select an offered version and profile", func(t *testing.T) {
+		// The response payload is schema-fixed to 0.1 / the core profile, so an
+		// unoffered selection is only observable when the request offers neither.
+		stream := `[
+			{` + core + `,"type":"protocol.initialize.request","id":"init","payload":{"protocol_versions":["9.9"],"profiles":["open-agent-protocol.other"]}},
+			{` + core + `,"type":"protocol.initialize.response","id":"initr","in_reply_to":"init","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"agent"}}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "initialize-unoffered-selection"); !got.HasCode(CodeScopeMismatch) {
+			t.Fatalf("want %s: %+v", CodeScopeMismatch, got.Diagnostics)
+		}
+	})
+	t.Run("initialize response selecting an offered pair is accepted", func(t *testing.T) {
+		stream := `[
+			{` + core + `,"type":"protocol.initialize.request","id":"init","payload":{"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"]}},
+			{` + core + `,"type":"protocol.initialize.response","id":"initr","in_reply_to":"init","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"agent"}}}
+		]`
+		if got := v.ValidateBytes([]byte(stream), "initialize-offered-selection"); len(got.Diagnostics) != 0 {
+			t.Fatalf("offered selection was rejected: %+v", got.Diagnostics)
+		}
+	})
 }
 
 func TestRunStatusTransitions(t *testing.T) {

@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -123,6 +124,14 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			_ = req.envelope.DecodePayload(&request)
 			if request.Participant != nil {
 				s.participants[request.Participant.ID] = true
+			}
+			// A negotiation must select from what the request offered; a response
+			// naming an unoffered version or profile proves no mutual capability.
+			if len(request.ProtocolVersions) > 0 && !slices.Contains(request.ProtocolVersions, p.ProtocolVersion) {
+				s.addExpected(CodeScopeMismatch, i, line, e, "/payload/protocol_version", "initialize response selects a protocol version the request did not offer", strings.Join(request.ProtocolVersions, ","), p.ProtocolVersion, string(e.InReplyTo))
+			}
+			if len(request.Profiles) > 0 && !slices.Contains(request.Profiles, p.Profile) {
+				s.addExpected(CodeScopeMismatch, i, line, e, "/payload/profile", "initialize response selects a profile the request did not offer", strings.Join(request.Profiles, ","), p.Profile, string(e.InReplyTo))
 			}
 		}
 	case protocol.TypeCapabilitiesResponse:
