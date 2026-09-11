@@ -304,6 +304,13 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 			s.mu.Unlock()
 			return ErrInvalidResolution
 		}
+		// The scripted prompt offers exactly one required single-choice question
+		// ("choice" with the single option "yes"); anything else cannot be
+		// reported as a submitted resolution.
+		if len(resolution.Input.Answers) != 1 || len(resolution.Input.Answers[0].SelectedOptionIDs) != 1 || resolution.Input.Answers[0].QuestionID != "choice" || resolution.Input.Answers[0].SelectedOptionIDs[0] != "yes" {
+			s.mu.Unlock()
+			return ErrInvalidResolution
+		}
 		run.stage = stageTerminal
 	} else {
 		s.mu.Unlock()

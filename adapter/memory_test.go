@@ -243,7 +243,7 @@ func TestCompletedCancelReturnsTypedError(t *testing.T) {
 	middle := drainAvailable(stream)
 	var input protocol.UserInputRequestedPayload
 	_ = middle[3].DecodePayload(&input)
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID}}); err != nil {
+	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = drainAvailable(stream)
@@ -273,7 +273,7 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID}})
+		_ = session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}})
 	}()
 	go func() { defer wg.Done(); _, _ = session.Cancel(context.Background(), runID) }()
 	wg.Wait()
@@ -418,13 +418,24 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &valid}); err != nil {
 		t.Fatalf("offered resolution rejected: %v", err)
 	}
-	// The input stage enforces the same nested ownership.
+	// The input stage enforces the same nested ownership and the offered answer.
 	middle := drainAvailable(stream)
 	var input protocol.UserInputRequestedPayload
 	_ = middle[3].DecodePayload(&input)
-	foreign := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "intruder", RespondedBy: "user", SessionID: "session-1", RunID: runID}
+	validAnswer := []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}
+	foreign := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "intruder", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: validAnswer}
 	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &foreign}); !errors.Is(err, ErrInvalidResolution) {
 		t.Fatalf("foreign input ownership: got %v, want ErrInvalidResolution", err)
+	}
+	for name, answers := range map[string][]protocol.InputAnswer{
+		"empty answers":    nil,
+		"unoffered option": {{QuestionID: "choice", SelectedOptionIDs: []string{"no"}}},
+		"foreign question": {{QuestionID: "other", SelectedOptionIDs: []string{"yes"}}},
+	} {
+		request := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: answers}
+		if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &request}); !errors.Is(err, ErrInvalidResolution) {
+			t.Fatalf("%s: got %v, want ErrInvalidResolution", name, err)
+		}
 	}
 }
 
