@@ -225,10 +225,15 @@ func (client *Client) Close() error {
 }
 
 func (client *Client) closeWith(reason error) {
+	// Record the caller's reason before closing the transport. Closing the
+	// closer unblocks the read loop's Decode, which reports the resulting
+	// "read/write on closed pipe" through shutdown; because shutdown is
+	// first-wins, closing first would let that incidental error overwrite the
+	// intended reason (cancellation, ErrClosed, or a shutdown timeout).
+	client.shutdown(reason)
 	if client.closer != nil {
 		_ = client.closer.Close()
 	}
-	client.shutdown(reason)
 }
 
 func (client *Client) readLoop() {

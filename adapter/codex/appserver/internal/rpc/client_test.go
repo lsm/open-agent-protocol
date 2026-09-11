@@ -181,6 +181,26 @@ func TestClientCancellationAfterWriteClosesTransport(t *testing.T) {
 	}
 }
 
+// Close reports ErrClosed, not the incidental "read/write on closed pipe" the
+// read loop observes once the transport is torn down. shutdown is first-wins, so
+// recording the close reason after closing the closer lets the pipe error win.
+func TestClientCloseReportsErrClosedNotPipeError(t *testing.T) {
+	for iteration := range 100 {
+		client, _, _ := clientPipes(t, 8)
+		if err := client.Close(); err != nil {
+			t.Fatalf("iteration %d: %v", iteration, err)
+		}
+		select {
+		case <-client.Done():
+			if !errors.Is(client.Err(), ErrClosed) {
+				t.Fatalf("iteration %d: client error: %v", iteration, client.Err())
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: close did not finish", iteration)
+		}
+	}
+}
+
 func TestClientQueueOverflowIsTerminal(t *testing.T) {
 	client, _, writer := clientPipes(t, 1)
 	writeWire(t, writer, Notification("one", nil))
