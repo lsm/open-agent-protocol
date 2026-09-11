@@ -92,6 +92,8 @@ type fakeClient struct {
 	// quiescent, which implies every step event is already durable; returning
 	// immediately would let settlement race the not-yet-delivered later steps.
 	idleGate <-chan struct{}
+	// model is the native session model CreateSession echoes to the adapter.
+	model *native.ModelRef
 }
 
 func newFakeClient() *fakeClient {
@@ -100,7 +102,7 @@ func newFakeClient() *fakeClient {
 }
 
 func (f *fakeClient) CreateSession(_ context.Context, _ httpapi.CreateSessionRequest) (native.SessionInfo, error) {
-	return native.SessionInfo{ID: f.session, ProjectID: "prj_fake", Time: struct {
+	return native.SessionInfo{ID: f.session, ProjectID: "prj_fake", Model: f.model, Time: struct {
 		Created  int64  `json:"created"`
 		Updated  int64  `json:"updated"`
 		Archived *int64 `json:"archived,omitempty"`
@@ -234,6 +236,31 @@ func TestSubmitNormalizesOmittedDelivery(t *testing.T) {
 	}
 	if response.RequestedDelivery != protocol.DeliveryAuto {
 		t.Fatalf("requested_delivery = %q, want %q", response.RequestedDelivery, protocol.DeliveryAuto)
+	}
+}
+
+// A per-submit override is rejected, so the adapter must retain the native
+// session model instead of clearing attribution with the empty request value.
+func TestSessionRetainsNativeModel(t *testing.T) {
+	client := newFakeClient()
+	client.model = &native.ModelRef{ID: "claude-sonnet", ProviderID: "anthropic"}
+	session, _ := openTest(t, client, 32)
+	response, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ModelID != "anthropic/claude-sonnet" {
+		t.Fatalf("admission model = %q, want %q", response.ModelID, "anthropic/claude-sonnet")
+	}
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CurrentModelID != "anthropic/claude-sonnet" {
+		t.Fatalf("state model = %q, want %q", state.CurrentModelID, "anthropic/claude-sonnet")
 	}
 }
 

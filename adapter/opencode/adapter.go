@@ -175,6 +175,12 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
+	// The native session reports the model CreateSession selected; fall back to
+	// the configured value when the server echoes none.
+	model := normalizeModelRef(info.Model)
+	if model == "" {
+		model = normalizeModelRef(a.config.Model)
+	}
 	s := &session{
 		client:       client,
 		subscription: subscription,
@@ -185,7 +191,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		historyLimit: a.config.HistoryLimit,
 		nativeID:     info.ID,
 		participant:  req.Participant.ID,
-		state:        protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now},
+		state:        protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now},
 		runs:         map[protocol.RunID]*runState{},
 		pending:      map[native.MessageID]*runState{},
 		tools:        map[string]*toolState{},

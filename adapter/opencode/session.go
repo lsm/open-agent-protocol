@@ -111,7 +111,9 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.runs[run.id] = run
 	s.state.Status = protocol.SessionRunning
 	s.state.ActiveRunID = run.id
-	s.state.CurrentModelID = req.ModelID
+	// The session model was fixed at creation; a per-submit override was
+	// rejected by submitInput, so retain the native model instead of clearing it.
+	model := s.state.CurrentModelID
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	s.mu.Unlock()
 	// The reservation response (decision 0002): the run identity is reserved
@@ -131,7 +133,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		Admission:         protocol.AdmissionQueued,
 		RunID:             run.id,
 		Status:            protocol.RunQueued,
-		ModelID:           req.ModelID,
+		ModelID:           model,
 	}
 	nativeMessage := native.MessageID(s.ids.NewID("opencode-message"))
 	if !nativeMessage.Valid() {
@@ -900,6 +902,18 @@ func (s *session) transportFailed() {
 		}
 		s.failRun(run, "opencode_stream_failed", err.Error())
 	}
+}
+
+// normalizeModelRef projects OpenCode's native model reference onto OAP's
+// opaque model identity: provider/id when both are present, else id.
+func normalizeModelRef(ref *native.ModelRef) string {
+	if ref == nil || ref.ID == "" {
+		return ""
+	}
+	if ref.ProviderID != "" {
+		return ref.ProviderID + "/" + ref.ID
+	}
+	return ref.ID
 }
 
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {
