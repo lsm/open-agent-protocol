@@ -177,6 +177,47 @@ func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
 	client.Close()
 }
 
+// A relay acquires the ordered inbound stream lazily. If it needed the route
+// lock, it would deadlock against a reader parked in a response barrier, which
+// holds that lock while it waits for the relay to acknowledge the barrier.
+func TestClientInboundDoesNotBlockWhileReaderWaitsOnBarrier(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	// Activate the ordered stream up front, as the process handshake does when
+	// it consumes the ready frame.
+	inbound := client.Inbound()
+	results := make(chan error, 1)
+	go func() {
+		results <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil)
+	}()
+	if _, err := io.ReadFull(serverReader, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Consume the barrier without acknowledging it, so the reader stays parked
+	// inside route() holding the route lock.
+	select {
+	case message := <-inbound:
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	acquired := make(chan struct{})
+	go func() { _ = client.Inbound(); close(acquired) }()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("Inbound blocked while the reader held the route lock")
+	}
+	client.Close()
+}
+
 func TestClientFailsClosedOnUnmatchedResponse(t *testing.T) {
 	reader, writer := io.Pipe()
 	client := NewClient(reader, writer, ClientOptions{})
