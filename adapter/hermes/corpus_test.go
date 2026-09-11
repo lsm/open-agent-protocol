@@ -698,6 +698,7 @@ func (c *hmCorpusClient) Call(_ context.Context, method string, params any, resu
 }
 func (c *hmCorpusClient) Inbound() <-chan rpc.InboundMessage { return c.in }
 func (c *hmCorpusClient) Done() <-chan struct{}              { return c.done }
+func (c *hmCorpusClient) ReadDone() <-chan struct{}          { return c.done }
 func (c *hmCorpusClient) Err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

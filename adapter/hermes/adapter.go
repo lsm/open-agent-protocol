@@ -28,6 +28,9 @@ type Client interface {
 	Call(context.Context, string, any, any) error
 	Inbound() <-chan rpc.InboundMessage
 	Done() <-chan struct{}
+	// ReadDone closes once the reader has stopped routing decoded frames. A relay
+	// must wait for it before finishing so no already-decoded frame is dropped.
+	ReadDone() <-chan struct{}
 	Err() error
 	Close() error
 }
@@ -123,46 +126,7 @@ func New(config Config) (*Adapter, error) {
 			// so a call returning while wire-earlier events sit in the relay
 			// is a legal interleaving, not a reordering.
 			relay := make(chan rpc.InboundMessage, relayCapacity)
-			go func() {
-				// Closing the relay marks the inbound stream finished: the
-				// reducer drains it to completion before settling a transport
-				// failure, so evidence ordering at death is deterministic.
-				defer close(relay)
-				inbound := client.Inbound()
-				forward := func(message rpc.InboundMessage) {
-					if message.Barrier != nil {
-						close(message.Barrier)
-						return
-					}
-					relay <- message
-				}
-				for {
-					var message rpc.InboundMessage
-					var ok bool
-					select {
-					case message, ok = <-inbound:
-						if !ok {
-							return
-						}
-					case <-client.Done():
-						// Drain observations the reader already routed before
-						// retiring: the reducer settles from ordered evidence
-						// ahead of the failure terminal, deterministically.
-						for {
-							select {
-							case message, ok = <-inbound:
-								if !ok {
-									return
-								}
-								forward(message)
-							default:
-								return
-							}
-						}
-					}
-					forward(message)
-				}
-			}()
+			go relayInbound(client, relay)
 			// The runtime session id is native-minted by session.create; the
 			// ready handshake already completed inside the process start.
 			var created native.SessionCreateResult
@@ -178,6 +142,56 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
+}
+
+// relayInbound forwards the transport's ordered inbound stream into the session
+// relay, acknowledging ordering barriers in wire order. Closing the relay marks
+// the stream finished: the reducer drains it to completion before settling a
+// transport failure. On retirement the relay keeps forwarding until the reader
+// has stopped and the already-decoded frames are drained — the reader may still
+// be routing frames it decoded before death, and dropping them would let the
+// session settle without the ordered evidence the reducer requires.
+func relayInbound(client Client, relay chan rpc.InboundMessage) {
+	defer close(relay)
+	inbound := client.Inbound()
+	forward := func(message rpc.InboundMessage) {
+		if message.Barrier != nil {
+			close(message.Barrier)
+			return
+		}
+		relay <- message
+	}
+	for {
+		select {
+		case message, ok := <-inbound:
+			if !ok {
+				return
+			}
+			forward(message)
+		case <-client.Done():
+			for {
+				select {
+				case message, ok := <-inbound:
+					if !ok {
+						return
+					}
+					forward(message)
+				case <-client.ReadDone():
+					for {
+						select {
+						case message, ok := <-inbound:
+							if !ok {
+								return
+							}
+							forward(message)
+						default:
+							return
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 type rpcProcess struct{ *rpc.Process }

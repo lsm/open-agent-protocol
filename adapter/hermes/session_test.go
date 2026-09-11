@@ -120,6 +120,7 @@ func (f *fakeClient) Call(ctx context.Context, method string, params, result any
 
 func (f *fakeClient) Inbound() <-chan rpc.InboundMessage { return f.in }
 func (f *fakeClient) Done() <-chan struct{}              { return f.done }
+func (f *fakeClient) ReadDone() <-chan struct{}          { return f.done }
 func (f *fakeClient) Err() error                         { return errors.New("EOF") }
 func (f *fakeClient) Close() error {
 	f.mu.Lock()
