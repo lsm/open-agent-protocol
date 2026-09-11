@@ -158,12 +158,13 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			return protocol.MessageSubmitResponse{}, stream, startErr
 		}
 	case <-ctx.Done():
-		// Cancellation and admission can race; an admission that already
-		// resolved is authoritative. Otherwise release the reservation so the
-		// session stays usable instead of wedging on an abandoned run.
 		s.reduceMu.Lock()
 		if !run.started && !run.terminal {
-			s.abortPreStartUnlocked(run, ctx.Err())
+			// The prompt response already carried a messageId, so native
+			// acceptance is confirmed and the run is authoritative. Cancellation
+			// is now ambiguous to this caller; keep the reservation alive for the
+			// reducer to settle rather than reverting to idle while the accepted
+			// native turn may still execute.
 			s.reduceMu.Unlock()
 			return protocol.MessageSubmitResponse{}, stream, ctx.Err()
 		}

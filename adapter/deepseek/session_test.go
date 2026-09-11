@@ -467,7 +467,11 @@ func TestPreAdmissionChildNotificationsDefer(t *testing.T) {
 	})
 }
 
-func TestSubmitCancellationReleasesReservation(t *testing.T) {
+// After the prompt response carries a messageId, native acceptance is confirmed
+// and the run is authoritative: a caller cancellation must not release the
+// reservation while the accepted turn may still execute (which would let a retry
+// overlap it and make its later observations foreign).
+func TestSubmitCancellationAfterReceiptKeepsReservation(t *testing.T) {
 	s, f := openTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -487,19 +491,31 @@ func TestSubmitCancellationReleasesReservation(t *testing.T) {
 	<-f.started
 	cancel()
 	f.prompts <- promptReply{id: "receipt"}
+	var st base.EventStream
 	select {
 	case got := <-ch:
 		if !errors.Is(got.err, context.Canceled) {
 			t.Fatalf("err = %v, want context.Canceled", got.err)
 		}
-		for range got.st {
-		}
+		st = got.st
 	case <-time.After(time.Second):
 		t.Fatal("submit did not settle")
 	}
-	state, err := s.State(context.Background())
-	if err != nil || state.Status != protocol.SessionIdle {
-		t.Fatalf("abandoned reservation leaked: state=%+v err=%v", state, err)
+	// A retry must be refused: the accepted native turn still owns the session.
+	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("overlapping submit: err=%v, want ErrRunActive", err)
+	}
+	// The retained reservation is still reducible: native ownership evidence
+	// promotes it and the turn settles, so the session is not wedged.
+	f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")}}})
+	f.ev(2, "turn/start", native.TurnStart{Turn: 1})
+	f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+	f.ev(4, "user/message", native.UserMessage{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")})
+	f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+	f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	if st != nil {
+		drain(t, st)
 	}
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("session wedged after abandoned submission: %v", err)
