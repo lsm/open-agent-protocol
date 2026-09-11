@@ -854,6 +854,87 @@ func TestResolveParksSettlementUntilGateResolved(t *testing.T) {
 	}
 }
 
+func TestChoiceLessClarifySurfacesAsText(t *testing.T) {
+	// A clarify with no choices is open-ended; OAP choice questions require at
+	// least one option, so it must surface as a text question and accept a text
+	// answer rather than emit a schema-invalid single_choice with no options.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"why?","choices":[]}`)
+	binding := lastInteraction(t, s)
+	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", Text: "because"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	var respond native.RespondParams
+	f.callsMu.Lock()
+	for _, call := range f.calls {
+		if call.method == native.MethodClarifyRespond {
+			respond, _ = call.params.(native.RespondParams)
+		}
+	}
+	f.callsMu.Unlock()
+	if respond.Answer != "because" {
+		t.Fatalf("native answer = %q", respond.Answer)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	var kind protocol.InputQuestionKind
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeUserInputRequested {
+			continue
+		}
+		var p protocol.UserInputRequestedPayload
+		if err := envelope.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Questions) == 1 {
+			kind = p.Questions[0].Kind
+		}
+	}
+	if kind != protocol.InputText {
+		t.Fatalf("advertised kind = %q, want %q", kind, protocol.InputText)
+	}
+	validateWithCapabilities(t, got.response, events)
+}
+
+func TestClarifyRejectsUnofferedSelection(t *testing.T) {
+	// A clarify resolution may only select choices the surfaced question offered,
+	// for both single- and multi-choice questions.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"pick","choices":["a","b"]},{"qid":"q2","question":"many","choices":["x","y"],"multi_select":true}]}`)
+	binding := lastInteraction(t, s)
+	single := func(id string) protocol.InputAnswer {
+		return protocol.InputAnswer{QuestionID: "q1", SelectedOptionIDs: []string{id}}
+	}
+	multi := func(ids ...string) protocol.InputAnswer {
+		return protocol.InputAnswer{QuestionID: "q2", SelectedOptionIDs: ids}
+	}
+	cases := map[string][]protocol.InputAnswer{
+		"single unoffered":   {single("bogus"), multi("x")},
+		"single text":        {{QuestionID: "q1", Text: "a"}, multi("x")},
+		"single option+text": {{QuestionID: "q1", SelectedOptionIDs: []string{"a"}, Text: "a"}, multi("x")},
+		"multi unoffered":    {single("a"), multi("x", "bogus")},
+	}
+	for name, answers := range cases {
+		if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: answers}}); !errors.Is(err, base.ErrInvalidResolution) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+	if f.callCount(native.MethodClarifyRespond) != 0 {
+		t.Fatal("rejected selection reached clarify.respond")
+	}
+	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
+	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{single("b"), multi("x", "y")}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	drain(t, (<-ch).stream)
+}
+
 func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
 	// A multi_select clarify advertises multi_choice; the native answer field
 	// is one string, and the pinned tool decodes a JSON array back into the

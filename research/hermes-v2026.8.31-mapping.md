@@ -231,7 +231,10 @@ array string, a list, or a comma-separated list of choice labels. A multi-select
 answer is therefore written as the JSON array string of the selected labels
 (`["a","c"]`); a single-value gate takes the bare label. The adapter never
 collapses a multi-select answer to one label, and rejects a multi-option answer
-to a single-value gate rather than dropping the extras.
+to a single-value gate rather than dropping the extras. A clarify question with
+no choices is open-ended and surfaces as an OAP text question (choice questions
+require at least one option); a selected option outside the surfaced choices is
+rejected before any native call.
 
 Child watch-session mirror: when a client holds a child watch session, the
 gateway translates subagent frames into native frames on the child sid

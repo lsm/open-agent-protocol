@@ -559,9 +559,16 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 				if question.MultiSelect {
 					kind = protocol.InputMultiChoice
 				}
-				options := make([]protocol.InputOption, len(question.Choices))
-				for i, choice := range question.Choices {
-					options[i] = protocol.InputOption{ID: choice, Label: choice}
+				var options []protocol.InputOption
+				if len(question.Choices) == 0 {
+					// A choice-less clarify is open-ended; OAP choice questions
+					// require at least one option, so it surfaces as text.
+					kind = protocol.InputText
+				} else {
+					options = make([]protocol.InputOption, len(question.Choices))
+					for i, choice := range question.Choices {
+						options[i] = protocol.InputOption{ID: choice, Label: choice}
+					}
 				}
 				binding.questions = append(binding.questions, protocol.InputQuestion{ID: question.Qid, Prompt: question.Question, Kind: kind, Required: true, Options: options})
 			}
@@ -570,9 +577,14 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 			if payload.MultiSelect {
 				kind = protocol.InputMultiChoice
 			}
-			options := make([]protocol.InputOption, len(payload.Choices))
-			for i, choice := range payload.Choices {
-				options[i] = protocol.InputOption{ID: choice, Label: choice}
+			var options []protocol.InputOption
+			if len(payload.Choices) == 0 {
+				kind = protocol.InputText
+			} else {
+				options = make([]protocol.InputOption, len(payload.Choices))
+				for i, choice := range payload.Choices {
+					options[i] = protocol.InputOption{ID: choice, Label: choice}
+				}
 			}
 			binding.questions = []protocol.InputQuestion{{ID: "answer", Prompt: payload.Question, Kind: kind, Required: true, Options: options}}
 		}
@@ -700,14 +712,28 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 				return base.ErrInvalidResolution
 			}
 			var value string
-			if question.Kind == protocol.InputMultiChoice {
+			switch question.Kind {
+			case protocol.InputText:
+				if len(answer.SelectedOptionIDs) != 0 || answer.Text == "" {
+					s.reduceMu.Unlock()
+					return base.ErrInvalidResolution
+				}
+				value = answer.Text
+			case protocol.InputMultiChoice:
 				// The native clarify answer field is a single string; the pinned
 				// tool decodes a JSON array (or comma list) back into the full
 				// selection set, so encode every selected choice rather than
-				// silently dropping all but the first.
+				// silently dropping all but the first. Every selection must be
+				// one the question offered.
 				if len(answer.SelectedOptionIDs) == 0 {
 					s.reduceMu.Unlock()
 					return base.ErrInvalidResolution
+				}
+				for _, option := range answer.SelectedOptionIDs {
+					if !offeredOption(binding.questions, question.ID, option) {
+						s.reduceMu.Unlock()
+						return base.ErrInvalidResolution
+					}
 				}
 				encoded, err := json.Marshal(answer.SelectedOptionIDs)
 				if err != nil {
@@ -715,22 +741,14 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 					return base.ErrInvalidResolution
 				}
 				value = string(encoded)
-			} else {
-				if len(answer.SelectedOptionIDs) > 1 {
-					// A single-value native answer cannot carry more than one
-					// selection; reject instead of dropping extras.
+			default:
+				// A single-value native answer cannot carry more than one
+				// selection, and the selection must be one the question offered.
+				if len(answer.SelectedOptionIDs) != 1 || answer.Text != "" || !offeredOption(binding.questions, question.ID, answer.SelectedOptionIDs[0]) {
 					s.reduceMu.Unlock()
 					return base.ErrInvalidResolution
 				}
-				if len(answer.SelectedOptionIDs) == 1 {
-					value = answer.SelectedOptionIDs[0]
-				} else {
-					value = answer.Text
-				}
-			}
-			if value == "" {
-				s.reduceMu.Unlock()
-				return base.ErrInvalidResolution
+				value = answer.SelectedOptionIDs[0]
 			}
 			respond := native.RespondParams{RequestID: binding.requestID, Answer: value}
 			if len(binding.questions) > 1 {
