@@ -239,15 +239,19 @@ func settleFrame(status string, extra string) string {
 // open-then-response converge on the same run.started emission.
 func admit(t *testing.T, s base.Session, f *fakeClient, responseFirst bool) <-chan outcome {
 	t.Helper()
-	ch := submitAsync(s)
 	open := func() { f.event(native.EventMessageStart, 1, "") }
+	// Script the reply before the submission goroutine can issue the call. The
+	// fake has no reply until one is queued, so queueing after submitAsync races
+	// the reducer and intermittently fails with "no scripted reply".
 	if responseFirst {
 		f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}})
-		f.awaitCall(t, native.MethodPromptSubmit)
-		open()
 	} else {
 		f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}, before: open})
-		f.awaitCall(t, native.MethodPromptSubmit)
+	}
+	ch := submitAsync(s)
+	f.awaitCall(t, native.MethodPromptSubmit)
+	if responseFirst {
+		open()
 	}
 	return ch
 }
@@ -360,8 +364,8 @@ func TestChildMirrorSettlementNeverTerminatesParent(t *testing.T) {
 func TestBusyStatusesAreAdmissionFailures(t *testing.T) {
 	for _, status := range []string{native.SubmitSteered, native.SubmitRedirected, native.SubmitQueued} {
 		s, f := openTest(t)
-		ch := submitAsync(s)
 		f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: status}})
+		ch := submitAsync(s)
 		f.awaitCall(t, native.MethodPromptSubmit)
 		got := <-ch
 		if got.err == nil {
@@ -587,13 +591,13 @@ func TestEventsBeforeConvergenceBufferAndReplay(t *testing.T) {
 	// run-scoped observations arriving before the convergence point buffer
 	// and replay in wire order once the run starts.
 	s, f := openTest(t)
-	ch := submitAsync(s)
 	// Wire order: message.start, a delta, then the streaming response.
 	open := func() {
 		f.event(native.EventMessageStart, 1, "")
 		f.event(native.EventMessageDelta, 2, `{"text":"Hi"}`)
 	}
 	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}, before: open})
+	ch := submitAsync(s)
 	f.awaitCall(t, native.MethodPromptSubmit)
 	got := <-ch
 	if got.err != nil {
