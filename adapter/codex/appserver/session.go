@@ -159,10 +159,15 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("start Codex turn: %w", err)
 	}
 	if nativeResponse.Turn.ID == "" {
+		// turn/start succeeded but named no turn, so Codex may already be
+		// executing a turn that could never be correlated through session.turns.
+		// Retire the session rather than release it for another submission.
 		session.mu.Lock()
 		session.active = nil
-		session.state.Status = protocol.SessionIdle
+		session.closed = true
+		session.state.Status = protocol.SessionClosed
 		session.state.ActiveRunID = ""
+		close(session.stop)
 		session.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: turn/start returned no turn id", ErrNativeProtocol)
 	}

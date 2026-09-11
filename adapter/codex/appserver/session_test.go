@@ -369,6 +369,22 @@ func TestTurnStartResponseIsAdmissionOnly(t *testing.T) {
 	}
 }
 
+// A successful turn/start that names no turn may already have started a native
+// turn; the session must be retired rather than released for another submit.
+func TestTurnStartWithoutTurnIDRetiresSession(t *testing.T) {
+	client, session, _ := openFake(t)
+	client.turnID = ""
+	request := func() protocol.MessageSubmitRequest {
+		return protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
+	}
+	if _, _, err := session.Submit(context.Background(), request()); !errors.Is(err, ErrNativeProtocol) {
+		t.Fatalf("got %v, want ErrNativeProtocol", err)
+	}
+	if _, _, err := session.Submit(context.Background(), request()); !errors.Is(err, adapter.ErrSessionClosed) {
+		t.Fatalf("retry: got %v, want ErrSessionClosed", err)
+	}
+}
+
 func TestFailedAndInterruptedTerminals(t *testing.T) {
 	for _, test := range []struct {
 		name   string
