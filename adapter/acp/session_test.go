@@ -517,6 +517,22 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 // ACP's session/prompt has no mapping for instructions, tool choice, or an
 // output schema, so accepting them would silently run with controls the caller
 // believes are applied.
+// A completed prompt write is authoritative even when the caller's context
+// expires at the same instant: the run start boundary must not be discarded in
+// favour of the cancellation arm.
+func TestAwaitAdmissionPrefersCompletedWrite(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		started := make(chan error, 1)
+		started <- nil
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err, done := awaitAdmission(started, ctx)
+		if !done || err != nil {
+			t.Fatalf("iteration %d: completed write discarded (done=%v err=%v)", i, done, err)
+		}
+	}
+}
+
 func TestSubmitRejectsUnappliedControls(t *testing.T) {
 	s, _ := openTest(t, 64)
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}}

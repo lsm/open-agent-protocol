@@ -124,29 +124,28 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	// remains the sole owner of native settlement.
 	started := make(chan error, 1)
 	go s.prompt(run, prompt, started)
-	select {
-	case err := <-started:
-		if err != nil {
-			s.mu.Lock()
-			run.terminal = true
-			run.status = protocol.RunFailed
-			delete(s.runs, run.id)
-			if s.active == run {
-				s.active = nil
-			}
-			s.state.Status = protocol.SessionIdle
-			s.state.ActiveRunID = ""
-			s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
-			run.subscribers = nil
-			s.mu.Unlock()
-			close(stream)
-			return protocol.MessageSubmitResponse{}, stream, err
-		}
-	case <-ctx.Done():
-		// The write may already have happened. Keep the reservation until the native
-		// prompt settles, but unblock its terminal reducer.
+	writeErr, writeDone := awaitAdmission(started, ctx)
+	if !writeDone {
+		// Keep the reservation until the native prompt settles, but unblock its
+		// terminal reducer.
 		close(run.admitted)
 		return protocol.MessageSubmitResponse{}, stream, ctx.Err()
+	}
+	if writeErr != nil {
+		s.mu.Lock()
+		run.terminal = true
+		run.status = protocol.RunFailed
+		delete(s.runs, run.id)
+		if s.active == run {
+			s.active = nil
+		}
+		s.state.Status = protocol.SessionIdle
+		s.state.ActiveRunID = ""
+		s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+		run.subscribers = nil
+		s.mu.Unlock()
+		close(stream)
+		return protocol.MessageSubmitResponse{}, stream, writeErr
 	}
 	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
@@ -156,6 +155,25 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	close(run.admitted)
 	return response, stream, nil
 }
+
+// awaitAdmission reports the prompt-write outcome, preferring a completed write
+// even when the caller's context expires at the same moment: a confirmed native
+// admission must publish the run start boundary rather than be discarded as a
+// cancellation, which would release queued observations without run.started.
+func awaitAdmission(started <-chan error, ctx context.Context) (error, bool) {
+	select {
+	case err := <-started:
+		return err, true
+	case <-ctx.Done():
+		select {
+		case err := <-started:
+			return err, true
+		default:
+			return ctx.Err(), false
+		}
+	}
+}
+
 func (s *session) newMessageID() protocol.MessageID {
 	return protocol.MessageID(string(s.state.SessionID) + "/" + s.ids.NewID("message"))
 }
