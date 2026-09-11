@@ -70,7 +70,10 @@ Devin CLI `3000.6.14` and launches it as `devin acp`. This is evidence for the
 registry format and Devin CLI as an ACP **agent**, not source code or a wire
 trace of Devin Desktop as the ACP **client**.
 
-Devin Desktop is proprietary. Its exact initialize payload, filesystem
+Devin Desktop is proprietary, and the Devin CLI it launches (`devin acp`) is
+separately licensed `"license": "proprietary"` in the official registry; see
+"Process-gate status" below for why that rules it out as gate evidence. Its
+exact initialize payload, filesystem
 capabilities, authentication behavior, process reuse, timeouts, stderr policy,
 load/resume support, permission persistence, and model-option UI are unknown.
 Third-party reverse engineering and probes are useful compatibility candidates,
@@ -513,14 +516,76 @@ replay, or automatic compatibility with newer ACP/Devin releases.
 Each deferred feature requires new pinned evidence, explicit capability claims,
 and executable native-to-OAP fixtures before implementation.
 
-## Process-gate status (2026-09-10)
+## Process-gate status (2026-09-11)
 
-ACP is the one adapter with **no real-process gate**. The pinned boundary is
-the ACP v1 specification plus documented Devin Desktop behavior, and Devin
-Desktop is proprietary (see "Devin Desktop evidence boundary" above): there
-is no redistributable pinned ACP *agent* binary to spawn, and the adapter is
-an ACP client. The adapter's process layer is therefore exercised only by
-its hermetic corpus (a scripted in-process client over the production codec)
-and unit tests. A gated process test would require a caller-supplied
-conforming ACP agent; none is pinned at this revision. Recorded so the
-coverage gap is explicit rather than implied.
+The adapter previously had **no real-process gate**: Devin Desktop is
+proprietary and the adapter is an ACP *client*, so there was no
+redistributable pinned ACP *agent* to spawn. That gap is now closed with an
+independent open-source peer.
+
+### Pinned agent: docker/cagent
+
+- Repository `https://github.com/docker/cagent`, module
+  `github.com/docker/docker-agent`, license Apache-2.0.
+- Tag `v1.138.0`, commit `c06bb46bd00815c795f8bca4e162c4632fb7825d`, tree
+  `07a063266984d5158b6ee3b8e49aa4236d6e13b7` (2026-09-10).
+- Native ACP server, not a bridge: `docker-agent serve acp <agent.yaml>` over
+  stdio, implemented in `pkg/acp/` on the official `coder/acp-go-sdk v0.13.5`
+  — the same SDK surface the adapter targets. `acp.Run` wires
+  `NewAgentSideConnection(agent, stdout, stdin)`.
+- Selected because it is open source (buildable from source, unlike Devin
+  CLI), Go-native, and provider-neutral via a `base_url`/`token_key` provider
+  block, which makes a hermetic loopback gate possible.
+- Requires Go 1.27; the repository toolchain was moved to Go 1.27 to match.
+
+Devin CLI advertises ACP too, but the official registry entry
+(`devin/agent.json`, version 3000.10.21, `args: ["acp"]`) declares
+`"license": "proprietary"` with `license_url` pointing at Cognition's platform
+terms, and distributes prebuilt archives only. It therefore cannot be pinned,
+built, or redistributed as gate evidence.
+
+### Findings from the first live process gate
+
+Driving the real server through the production adapter exposed two defects that
+the hermetic corpus could not, because both are wire-shape mismatches against
+an independent implementation rather than reducer logic:
+
+1. **`session/new` sent `mcpServers: null`.** ACP v1 types the field as a
+   required array; the official client SDK validates `mcpServers is required`
+   and the real server answered `-32602 Invalid params`. Cause: a nil Go slice
+   with no `omitempty`. Fixed by always emitting the empty array; pinned by
+   `TestSessionNewSendsRequiredMCPServersArray` (fails before the fix).
+2. **Defined-but-non-lifecycle session updates were fatal.** The tolerated set
+   enumerated 8 of the 13 stable `sessionUpdate` variants. cagent emits
+   `available_commands_update` immediately after `session/prompt` is written,
+   which the adapter classified as an unknown stable update and turned into
+   `run.failed`. Fixed: the full defined non-lifecycle set
+   (`user_message_chunk`, `agent_thought_chunk`, `plan`, `plan_update`,
+   `plan_removed`, `available_commands_update`, `current_mode_update`,
+   `config_option_update`, `session_info_update`, `usage_update`) is
+   observed-only, while a discriminator outside the set stays fatal so a stale
+   pin still fails loudly. Pinned by
+   `TestDefinedNonLifecycleUpdatesAreObservedOnly` (fails before the fix).
+
+Neither finding changes OAP core or schema; both are adapter-internal
+conformance fixes to the already-pinned ACP v1 surface.
+
+### Gate variables
+
+Both gates are skip-by-default and never enabled by credential presence.
+
+- `OAP_ACP_SMOKE=1` with absolute `OAP_ACP_BIN`: credential-free
+  `initialize` / `session/new` / teardown against the pinned server.
+- `OAP_ACP_INTEGRATION=1` with absolute `OAP_ACP_BIN`: one prompt through the
+  production adapter against an in-process loopback chat-completions mock,
+  asserting streamed deltas, a single `run.completed` terminal, the exact
+  final response, and exactly one authorized `/v1/chat/completions` request.
+- `OAP_ACP_SHA256` optionally binds the artifact to a 64-hex digest. The
+  locally built artifact at the pinned commit was
+  `a933e662cb257babe1c110cd4210ac483101e988d50e3f22819e131796d271b6`.
+
+The agent file is generated per run against the loopback endpoint; the
+checked-in real-provider examples are never reused, and the child environment
+is fully replaced (isolated `HOME`, `TELEMETRY_ENABLED=false`, dead-loopback
+proxies with loopback-only `NO_PROXY`, and only a fixed non-secret placeholder
+token).

@@ -302,7 +302,15 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 			return
 		}
 		s.applyToolUpdate(run, u)
-	case "agent_thought_chunk", "plan", "usage_update", "config_option_update", "current_mode_update":
+	// ACP v1 defines more stable session updates than carry run lifecycle. Only
+	// agent_message_chunk, tool_call, and tool_call_update are mapped; the rest
+	// are presentation affordances (commands, plans, modes, config, usage,
+	// session info) that a conforming agent may emit at any point, including
+	// mid-run. They are observed-only. A discriminator outside this set is still
+	// fatal so a stale pin fails loudly instead of silently dropping state.
+	case "user_message_chunk", "agent_thought_chunk", "plan", "plan_update", "plan_removed",
+		"available_commands_update", "current_mode_update", "config_option_update",
+		"session_info_update", "usage_update":
 		return
 	default:
 		if len(h.SessionUpdate) > 0 && h.SessionUpdate[0] == '_' {

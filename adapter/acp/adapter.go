@@ -155,8 +155,12 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: initialize selected version %d or omitted capabilities", ErrNativeProtocol, initialized.ProtocolVersion)
 	}
+	// ACP v1 types mcpServers as a required array, not a nullable field. A nil
+	// slice would marshal as null and a conforming agent rejects the request
+	// with -32602 Invalid params, so always send the empty array.
+	mcpServers := append([]native.MCPServer{}, a.config.MCPServers...)
 	var opened native.SessionNewResult
-	if err := client.Call(ctx, native.MethodSessionNew, native.SessionNewParams{Cwd: a.config.WorkingDirectory, MCPServers: append([]native.MCPServer(nil), a.config.MCPServers...)}, &opened); err != nil {
+	if err := client.Call(ctx, native.MethodSessionNew, native.SessionNewParams{Cwd: a.config.WorkingDirectory, MCPServers: mcpServers}, &opened); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("create ACP session: %w", err)
 	}

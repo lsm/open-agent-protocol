@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,6 +54,7 @@ type fakeClient struct {
 	notifies      []string
 	notifyErr     error
 	closed        bool
+	sessionNew    native.SessionNewParams
 }
 
 func newFake() *fakeClient {
@@ -61,6 +63,9 @@ func newFake() *fakeClient {
 func (f *fakeClient) Call(_ context.Context, m string, p, r any) error {
 	switch m {
 	case native.MethodSessionNew:
+		f.mu.Lock()
+		f.sessionNew, _ = p.(native.SessionNewParams)
+		f.mu.Unlock()
 		*r.(*native.SessionNewResult) = native.SessionNewResult{SessionID: "native-session"}
 		return nil
 	case native.MethodSessionPrompt:
@@ -471,4 +476,75 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 		out[i] = e.Type
 	}
 	return out
+}
+
+// ACP v1 declares session/new's mcpServers as a required array. A nil Go slice
+// marshals to null, which the official client SDK's own param validator rejects
+// ("mcpServers is required") with -32602 Invalid params; the real docker/cagent
+// server did exactly that. Assert the encoded wire shape, not the Go value.
+func TestSessionNewSendsRequiredMCPServersArray(t *testing.T) {
+	_, f := openTest(t, 64)
+	f.mu.Lock()
+	params := f.sessionNew
+	f.mu.Unlock()
+	if params.MCPServers == nil {
+		t.Fatal("session/new sent a nil mcpServers slice; ACP requires the field as an array")
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"mcpServers":[]`) {
+		t.Fatalf("session/new params did not encode mcpServers as an empty array: %s", encoded)
+	}
+}
+
+// ACP defines more stable session updates than carry run lifecycle. A
+// conforming agent may interleave the presentation-affordance variants with an
+// active run; they must be observed-only, not fatal. docker/cagent emits
+// available_commands_update immediately after session/prompt is written.
+func TestDefinedNonLifecycleUpdatesAreObservedOnly(t *testing.T) {
+	updates := []map[string]any{
+		{"sessionUpdate": "available_commands_update", "availableCommands": []any{}},
+		{"sessionUpdate": "session_info_update", "title": "fixture"},
+		{"sessionUpdate": "plan", "entries": []any{}},
+		{"sessionUpdate": "plan_update", "entries": []any{}},
+		{"sessionUpdate": "plan_removed", "ids": []any{}},
+		{"sessionUpdate": "current_mode_update", "currentModeId": "default"},
+		{"sessionUpdate": "config_option_update", "options": []any{}},
+		{"sessionUpdate": "usage_update", "size": 0, "used": 0},
+		{"sessionUpdate": "agent_thought_chunk", "content": map[string]any{"type": "text", "text": "thinking"}},
+		{"sessionUpdate": "user_message_chunk", "content": map[string]any{"type": "text", "text": "echo"}},
+	}
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	for _, update := range updates {
+		f.update(t, update)
+	}
+	f.update(t, native.AgentMessageChunk{SessionUpdate: "agent_message_chunk", Content: native.ContentBlock{Type: "text", Text: "hello"}})
+	// Only run.started and one content delta are OAP-visible, so reaching cursor
+	// 2 proves every observed-only update was already reduced.
+	waitCursor(t, s, "2")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+	if len(events) != len(want) {
+		t.Fatalf("events=%v", types(events))
+	}
+	for i, e := range events {
+		if e.Type != want[i] {
+			t.Fatalf("event %d=%s want %s", i, e.Type, want[i])
+		}
+		if e.RunID != admission.RunID {
+			t.Fatal("run identity changed")
+		}
+	}
+	var completed protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if text, _ := completed.FinalResponse.Content.Text(); text != "hello" {
+		t.Fatalf("final text=%q", text)
+	}
 }

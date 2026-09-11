@@ -116,6 +116,19 @@ initialize control exchange, and teardown evidence is stdin EOF. Set
 `OAP_CLAUDE_SHA256` to the expected 64-character binary digest when exact
 artifact provenance is required.
 
+ACP real-process checks follow the same opt-in gate, driven against an
+independent open-source ACP agent rather than a Devin product. Provide an
+absolute `docker-agent` binary built from the pinned docker/cagent release
+(Apache-2.0, tag `v1.138.0`) in `OAP_ACP_BIN`, then set `OAP_ACP_SMOKE=1` for
+the credential-free `initialize`/`session/new`/teardown check or
+`OAP_ACP_INTEGRATION=1` for one prompt through the production adapter against
+an in-process loopback chat-completions mock. The generated agent file points
+`base_url` at the loopback endpoint; the checked-in real-provider examples are
+never reused. Building cagent needs Go 1.27. Set `OAP_ACP_SHA256` to the
+expected 64-character artifact digest when exact artifact provenance is
+required. Devin CLI also speaks ACP (`devin acp`) but is proprietary and
+prebuilt-only, so it cannot be pinned as evidence.
+
 ### Real-process gate coverage
 
 CI runs `gofmt`, `go vet`, the full and race suites, and `oap check` on every
@@ -134,7 +147,7 @@ download anything.
 | DeepSeek Harness | `OAP_DEEPSEEK_HARNESS_SMOKE` / `_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 | Hermes | `OAP_HERMES_SMOKE` / `OAP_HERMES_INTEGRATION`, `_BIN`, `_ROOT`, `_SHA256` | skipped |
 | Claude Code | `OAP_CLAUDE_SMOKE` / `OAP_CLAUDE_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
-| ACP / Devin | none — no process gate (see the ACP ledger) | n/a |
+| ACP (docker/cagent) | `OAP_ACP_SMOKE` / `OAP_ACP_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 
 Each adapter additionally has a hermetic corpus that runs in CI: it decodes
 sanitized native frames through the production codec and drives the
