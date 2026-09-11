@@ -113,6 +113,31 @@ initialize control exchange, and teardown evidence is stdin EOF. Set
 `OAP_CLAUDE_SHA256` to the expected 64-character binary digest when exact
 artifact provenance is required.
 
+### Real-process gate coverage
+
+CI runs `gofmt`, `go vet`, the full and race suites, and `oap check` on every
+push and pull request. The real-process gates above are **not** run in CI:
+they need pinned third-party binaries, are skip-by-default, and require an
+explicit opt-in variable plus an absolute binary path (and optionally a
+64-hex digest). Credential presence alone never enables them, and they never
+download anything.
+
+| Adapter | Gate variables | CI |
+| --- | --- | --- |
+| Codex app-server | `OAP_CODEX_INTEGRATION`, `_BIN`, `_COMMIT` | skipped |
+| Makai | `OAP_MAKAI_INTEGRATION`, `_BIN`, `_COMMIT` | skipped |
+| OpenCode | `OAP_OPENCODE_INTEGRATION`, `_BIN` | skipped |
+| pi | `OAP_PI_SMOKE` / `OAP_PI_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
+| DeepSeek Harness | `OAP_DEEPSEEK_HARNESS_SMOKE` / `_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
+| Hermes | `OAP_HERMES_SMOKE` / `OAP_HERMES_INTEGRATION`, `_BIN`, `_ROOT`, `_SHA256` | skipped |
+| Claude Code | `OAP_CLAUDE_SMOKE` / `OAP_CLAUDE_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
+| ACP / Devin | none — no process gate (see the ACP ledger) | n/a |
+
+Each adapter additionally has a hermetic corpus that runs in CI: it decodes
+sanitized native frames through the production codec and drives the
+production reducer, so codec and reducer regressions are caught without any
+external process.
+
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool
 source, or SDK adapter can implement the protocol without project-specific

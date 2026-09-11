@@ -512,3 +512,15 @@ replay, or automatic compatibility with newer ACP/Devin releases.
 
 Each deferred feature requires new pinned evidence, explicit capability claims,
 and executable native-to-OAP fixtures before implementation.
+
+## Process-gate status (2026-09-10)
+
+ACP is the one adapter with **no real-process gate**. The pinned boundary is
+the ACP v1 specification plus documented Devin Desktop behavior, and Devin
+Desktop is proprietary (see "Devin Desktop evidence boundary" above): there
+is no redistributable pinned ACP *agent* binary to spawn, and the adapter is
+an ACP client. The adapter's process layer is therefore exercised only by
+its hermetic corpus (a scripted in-process client over the production codec)
+and unit tests. A gated process test would require a caller-supplied
+conforming ACP agent; none is pinned at this revision. Recorded so the
+coverage gap is explicit rather than implied.

@@ -316,3 +316,35 @@ this adapter:
 
 A gated live-server test (`opencode serve` on a loopback port with a
 hermetic provider) follows the Makai/Codex integration-gate pattern.
+
+## Live-gate finding (2026-09-10)
+
+The gated server gate (`OAP_OPENCODE_INTEGRATION=1`, binary
+`opencode` v1.18.29 linux-x64 from the pinned release) was run live and
+exposed a blocking transport mismatch.
+
+**The pinned server defers SSE response headers on the session-scoped event
+endpoint until the first event exists.** `GET /api/session/<id>/event` on a
+fresh, silent session emits **no response headers** until an event occurs —
+verified with `curl` (no bytes within 3s; the connection is accepted but no
+status line is sent), with and without `Accept: text/event-stream` and with
+and without `?after=`. Once a prompt has produced events, the same endpoint
+flushes immediately and replays from the cursor.
+
+Because `adapter/opencode/internal/httpapi` `Client.Subscribe` performs a
+blocking `http.Client.Do`, `Adapter.Open` (via `client.Subscribe(ctx,
+info.ID, -1)`) blocks on a fresh session until the caller context expires:
+the gate fails with `subscribe OpenCode session events: context deadline
+exceeded`. This is an adapter/server contract mismatch, not a test defect.
+
+The global `GET /event` stream does flush immediately (`server.connected`),
+so the obvious substitute is not free: its frames use a different envelope —
+`{"id","type","properties"}` flattened, without the session-scoped stream's
+`durable`/`data` members — so switching endpoints requires its own decoder
+and reconciliation.
+
+This is a verified interoperability defect. Resolving it needs a deliberate
+choice (subscribe globally with a global-stream decoder, or make the
+session-scoped subscription non-blocking with deferred error surfacing),
+after which the corpus and this ledger must be updated. Recorded here; not
+silently compensated. The gate remains skip-by-default and CI-safe.
