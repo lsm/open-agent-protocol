@@ -683,7 +683,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	var calls []native.RespondParams
 	switch binding.kind {
 	case "approval":
-		if len(answers) != 1 || len(answers[0].SelectedOptionIDs) != 1 {
+		if len(answers) != 1 || answers[0].QuestionID != "choice" || len(answers[0].SelectedOptionIDs) != 1 || !offeredOption(binding.questions, "choice", answers[0].SelectedOptionIDs[0]) {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
@@ -840,6 +840,23 @@ func (s *Session) flushDeferred(run *runState) {
 	payload := run.deferred
 	run.deferred = nil
 	s.settleRun(run, payload)
+}
+
+// offeredOption reports whether the question with the given id offered the
+// option id. A gate answer must target an offered question and option before it
+// reaches the native registry.
+func offeredOption(questions []protocol.InputQuestion, questionID, optionID string) bool {
+	for _, question := range questions {
+		if question.ID != questionID {
+			continue
+		}
+		for _, option := range question.Options {
+			if option.ID == optionID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // findAnswer locates the answer for one surfaced question.

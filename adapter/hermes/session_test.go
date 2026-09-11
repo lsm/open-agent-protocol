@@ -783,6 +783,35 @@ func TestBatchClarifyResolvesEveryQuestion(t *testing.T) {
 	validateWithCapabilities(t, got.response, events)
 }
 
+func TestResolveRejectsUnofferedApprovalAnswer(t *testing.T) {
+	// An approval gate offers question "choice" with the advertised options. An
+	// answer naming another question or an option the gate never offered must be
+	// rejected before it reaches approval.respond.
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
+	binding := lastInteraction(t, s)
+	for name, answer := range map[string]protocol.InputAnswer{
+		"unknown question": {QuestionID: "other", SelectedOptionIDs: []string{"once"}},
+		"unoffered option": {QuestionID: "choice", SelectedOptionIDs: []string{"always"}},
+		"empty option":     {QuestionID: "choice", SelectedOptionIDs: []string{""}},
+	} {
+		if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{answer}}}); !errors.Is(err, base.ErrInvalidResolution) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+	if f.callCount(native.MethodApprovalRespond) != 0 {
+		t.Fatal("rejected answer reached approval.respond")
+	}
+	// The gate stays resolvable with an offered option.
+	f.queue(native.MethodApprovalRespond, reply{result: native.ApprovalRespondResult{Resolved: true}})
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	drain(t, (<-ch).stream)
+}
+
 func TestResolveParksSettlementUntilGateResolved(t *testing.T) {
 	// The gateway can emit message.complete around the successful gate response:
 	// the response barrier orders it before the response reaches Resolve. If the
