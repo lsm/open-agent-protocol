@@ -749,6 +749,9 @@ func TestClientReplayGapSignal(t *testing.T) {
 	if gap.RequestedAfter != 1 || gap.OldestAvailable != 11 || gap.LatestAvailable != 12 {
 		t.Fatalf("gap signal %+v, want after 1 retained 11..12", gap)
 	}
+	if gap.RunID != gapRun {
+		t.Fatalf("gap signal run %q, want %q", gap.RunID, gapRun)
+	}
 
 	// A consumer that accepts the loss resumes at oldest_available - 1 and
 	// still sees the retained suffix.
@@ -948,6 +951,65 @@ func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
 	}
 	if !strings.Contains(malformed.Error(), "no sequence") {
 		t.Fatalf("malformed detail %q, want the sequence requirement", malformed.Error())
+	}
+}
+
+func TestClientRejectsZeroSequence(t *testing.T) {
+	// Sequences start at one: a present-but-zero sequence is schema-invalid
+	// and would leave the cursor disabled, admitting further defects.
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-zero"), protocol.RunStatusUpdatedPayload{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := uint64(0)
+	envelope.Sequence = &zero
+	data, err := envelope.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := defectServer(t, fmt.Sprintf("data: %s\n\n", data))
+	stream := openDefectSession(t, c).Events(context.Background())
+	_, err = stream.Next()
+	var malformed *MalformedFrameError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("error %v (%T), want MalformedFrameError", err, err)
+	}
+}
+
+func TestClientValidationAppliesToEveryErrorResponse(t *testing.T) {
+	// The validation option promises every inbound envelope; the listing and
+	// stream-opening paths read error responses directly and must validate
+	// them too, not only request exchanges.
+	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","payload":{"error":{"code":"unknown_session","message":"nope"}}}`
+	validate := WithEnvelopeValidation()
+
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, raw)
+	}, validate)
+	if _, err := c.Adapters(context.Background()); err == nil || !strings.Contains(err.Error(), "schema validation") {
+		t.Fatalf("adapters listing error: %v", err)
+	}
+
+	streaming := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, raw)
+	}, validate)
+	session := &Session{client: streaming, id: "wire", adapter: "memory"}
+	if _, err := session.Events(context.Background()).Next(); err == nil || !strings.Contains(err.Error(), "schema validation") {
+		t.Fatalf("stream opening error: %v", err)
+	}
+
+	closing := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, raw)
+	}, validate)
+	closingSession := &Session{client: closing, id: "wire", adapter: "memory"}
+	if err := closingSession.Close(context.Background()); err == nil || !strings.Contains(err.Error(), "schema validation") {
+		t.Fatalf("close error: %v", err)
 	}
 }
 

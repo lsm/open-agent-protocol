@@ -252,7 +252,7 @@ func (es *EventStream) open(after string) (*http.Response, error) {
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
 		response.Body.Close()
-		if err := statusError(response, body); err != nil {
+		if err := es.session.client.failureError(response, body); err != nil {
 			return nil, err
 		}
 		// A 2xx that is not a stream — a proxy's 204, an incompatible
@@ -323,7 +323,7 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 			if err != nil {
 				failure = err
 			} else {
-				failure = &ReplayGapError{RequestedAfter: signal.RequestedAfter, OldestAvailable: signal.OldestAvailable, LatestAvailable: signal.LatestAvailable, Message: signal.Message}
+				failure = &ReplayGapError{RunID: es.runID, RequestedAfter: signal.RequestedAfter, OldestAvailable: signal.OldestAvailable, LatestAvailable: signal.LatestAvailable, Message: signal.Message}
 			}
 			return false
 		case "message":
@@ -365,8 +365,8 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 	// Every envelope on this stream is a sequenced run event; one without a
 	// sequence cannot be positioned, and delivering it would leave the cursor
 	// behind it — a later resume would replay it without any way to detect
-	// the duplicate.
-	if envelope.Sequence == nil {
+	// the duplicate. Sequences start at one.
+	if envelope.Sequence == nil || *envelope.Sequence == 0 {
 		return &MalformedFrameError{Detail: "event envelope carries no sequence"}
 	}
 	if f.hasID {
@@ -494,8 +494,9 @@ func (e *OverflowError) Error() string {
 // ReplayGapError is the daemon's oap-replay-gap signal: the requested cursor
 // is no longer retained. OldestAvailable and LatestAvailable bound what is;
 // a consumer that accepts the loss resumes with a cursor at or after
-// OldestAvailable - 1.
+// OldestAvailable - 1, bound to RunID when the stream knew it.
 type ReplayGapError struct {
+	RunID           protocol.RunID
 	RequestedAfter  uint64
 	OldestAvailable uint64
 	LatestAvailable uint64

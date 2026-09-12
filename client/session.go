@@ -135,7 +135,7 @@ func (s *Session) Close(ctx context.Context) error {
 		return fmt.Errorf("client: read close response: %w", err)
 	}
 	if response.StatusCode != http.StatusNoContent {
-		if err := statusError(response, body); err != nil {
+		if err := s.client.failureError(response, body); err != nil {
 			return err
 		}
 		// The close contract is exactly 204 No Content: any other success —

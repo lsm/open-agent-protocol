@@ -149,7 +149,7 @@ func (c *Client) Adapters(ctx context.Context) ([]AdapterInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("client: read adapter listing: %w", err)
 	}
-	if err := statusError(response, body); err != nil {
+	if err := c.failureError(response, body); err != nil {
 		return nil, err
 	}
 	var listing struct {
@@ -288,24 +288,13 @@ func (c *Client) exchange(ctx context.Context, method, path string, request *pro
 	if response.StatusCode == http.StatusNoContent {
 		return protocol.Envelope{}, fmt.Errorf("client: %s returned no content where %s was expected", path, want)
 	}
-	if err := statusError(response, raw); err != nil {
-		// An error.response gets the same scrutiny a successful response
-		// gets: with dev-mode validation on it must satisfy the schema, and
-		// when the request is known it must cite the request's id — an
+	if err := c.failureError(response, raw); err != nil {
+		// A parsed error.response must also cite the request it answers: an
 		// envelope correlated elsewhere is a protocol violation, not this
 		// operation's answer.
 		var serverErr *ServerError
-		if errors.As(err, &serverErr) && serverErr.Envelope.Type == protocol.TypeErrorResponse {
-			// Presence is the envelope's type, not its id: statusError only
-			// records an envelope that parsed as an error response, and one
-			// that omits its own required id is exactly the invalid envelope
-			// these checks exist to catch.
-			if err := c.checkEnvelope(serverErr.Envelope, raw); err != nil {
-				return protocol.Envelope{}, err
-			}
-			if request != nil && serverErr.Envelope.InReplyTo != request.ID {
-				return protocol.Envelope{}, fmt.Errorf("client: %s error response cites correlation %q, want the request id %q", path, serverErr.Envelope.InReplyTo, request.ID)
-			}
+		if errors.As(err, &serverErr) && serverErr.Envelope.Type == protocol.TypeErrorResponse && request != nil && serverErr.Envelope.InReplyTo != request.ID {
+			return protocol.Envelope{}, fmt.Errorf("client: %s error response cites correlation %q, want the request id %q", path, serverErr.Envelope.InReplyTo, request.ID)
 		}
 		return protocol.Envelope{}, err
 	}
@@ -326,6 +315,26 @@ func (c *Client) exchange(ctx context.Context, method, path string, request *pro
 		return protocol.Envelope{}, fmt.Errorf("client: %s response cites correlation %q, want the request id %q", path, envelope.InReplyTo, request.ID)
 	}
 	return envelope, nil
+}
+
+// failureError converts a non-2xx response into a ServerError and applies
+// dev-mode validation to a parsed error envelope, so every path that reads a
+// daemon response validates what it surfaces. Presence is the envelope's
+// type, not its id: statusError only records an envelope that parsed as an
+// error response, and one that omits its own required id is exactly the
+// invalid envelope validation exists to catch.
+func (c *Client) failureError(response *http.Response, body []byte) error {
+	err := statusError(response, body)
+	if err == nil {
+		return nil
+	}
+	var serverErr *ServerError
+	if c.validate && errors.As(err, &serverErr) && serverErr.Envelope.Type == protocol.TypeErrorResponse {
+		if err := c.checkEnvelope(serverErr.Envelope, body); err != nil {
+			return err
+		}
+	}
+	return err
 }
 
 // statusError converts a non-2xx response into a ServerError, keeping the
