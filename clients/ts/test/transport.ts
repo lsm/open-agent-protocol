@@ -141,6 +141,7 @@ export interface TestEnvelopeInput {
   sequence?: number;
   sessionId?: string;
   runId?: string;
+  toolCallId?: string;
   inReplyTo?: string;
   capabilityRevision?: string;
   payload?: Record<string, unknown>;
@@ -161,6 +162,7 @@ export function testEnvelope(input: TestEnvelopeInput): Envelope {
   if (input.sequence !== undefined) envelope.sequence = input.sequence;
   if (input.sessionId !== undefined) envelope.session_id = input.sessionId;
   if (input.runId !== undefined) envelope.run_id = input.runId;
+  if (input.toolCallId !== undefined) envelope.tool_call_id = input.toolCallId;
   if (input.inReplyTo !== undefined) envelope.in_reply_to = input.inReplyTo;
   if (input.capabilityRevision !== undefined) envelope.capability_revision = input.capabilityRevision;
   return envelope;

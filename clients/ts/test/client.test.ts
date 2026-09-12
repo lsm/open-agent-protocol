@@ -448,6 +448,60 @@ test('a successful response scoped to another session is refused', async () => {
   );
 });
 
+test('a response payload naming another session is refused', async () => {
+  const transport = new FakeTransport([
+    {
+      match: '/submit',
+      body: (call) =>
+        JSON.stringify(
+          testEnvelope({
+            type: EnvelopeType.SessionMessageSubmitResponse,
+            id: 'resp-1',
+            inReplyTo: sentEnvelopeId(call),
+            sessionId: 's-1',
+            runId: 'r-1',
+            payload: { session_id: 's-other' },
+          }),
+        ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(
+    session.submit({ messages: [{ role: 'user', content: 'x' }], delivery: 'auto' }),
+    /submit response payload names session "s-other", envelope "s-1"/,
+  );
+});
+
+test('a resolution answered for the wrong interaction is refused', async () => {
+  const transport = new FakeTransport([
+    {
+      match: '/resolve',
+      body: (call) =>
+        JSON.stringify(
+          testEnvelope({
+            type: EnvelopeType.ActionPermissionResolveResponse,
+            id: 'resp-1',
+            inReplyTo: sentEnvelopeId(call),
+            sessionId: 's-1',
+            runId: 'r-1',
+            payload: { interaction_id: 'i-other', session_id: 's-1', run_id: 'r-1', accepted: true },
+          }),
+        ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(
+    session.resolvePermission({
+      interaction_id: 'i-1',
+      requested_by: 'user',
+      run_id: 'r-1',
+      choice_id: 'approve',
+      granted: true,
+    }),
+    /names interaction "i-other", want "i-1"/,
+  );
+});
+
 test('a non-envelope error body still reports the status', async () => {
   const transport = new FakeTransport([{ match: '/adapters', status: 502, body: '<html>bad gateway</html>' }]);
   const client = dial(BASE, { fetch: transport.fetch });

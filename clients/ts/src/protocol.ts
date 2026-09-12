@@ -247,14 +247,18 @@ export type EffectiveDeliveryMode = 'start' | 'queue' | 'steer' | 'btw';
 
 export interface CapabilityLayer {
   features?: Record<string, FeatureSupport>;
-  requested_delivery_modes?: RequestedDeliveryMode[];
-  effective_delivery_modes?: EffectiveDeliveryMode[];
+  /** At least one mode when present: the schema refuses an empty list. */
+  requested_delivery_modes?: [RequestedDeliveryMode, ...RequestedDeliveryMode[]];
+  /** At least one mode when present: the schema refuses an empty list. */
+  effective_delivery_modes?: [EffectiveDeliveryMode, ...EffectiveDeliveryMode[]];
   tools?: ToolDefinition[];
 }
 
 export interface InitializeRequest {
-  protocol_versions: string[];
-  profiles: string[];
+  /** At least one version: the schema refuses an empty list. */
+  protocol_versions: [string, ...string[]];
+  /** At least one profile: the schema refuses an empty list. */
+  profiles: [string, ...string[]];
   participant?: Participant;
 }
 
@@ -269,8 +273,10 @@ export type CapabilitiesRequest = Record<never, string>;
 /** One adapter's capability snapshot; every envelope the adapter emits repeats the revision. */
 export interface CapabilityDescriptor {
   endpoint: EndpointDescriptor;
-  protocol_versions?: string[];
-  profiles?: string[];
+  /** At least one version when present: the schema refuses an empty list. */
+  protocol_versions?: [string, ...string[]];
+  /** At least one profile when present: the schema refuses an empty list. */
+  profiles?: [string, ...string[]];
   bindings?: Binding[];
   features?: Record<string, FeatureSupport>;
   layers?: Record<string, CapabilityLayer>;

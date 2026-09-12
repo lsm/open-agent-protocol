@@ -365,6 +365,28 @@ export class EventStream implements AsyncIterable<Envelope> {
         `envelope for session "${envelope.session_id ?? ''}" on the "${this.session.id}" stream`,
       );
     }
+    // The payload must agree with the envelope that carries it: a payload
+    // naming another session, run, or tool call is a semantic scope
+    // violation, and the documented gate flow reads these identifiers from
+    // the payload — it would resolve the wrong run.
+    const payloadScope = envelope.payload as { session_id?: unknown; run_id?: unknown; tool_call_id?: unknown };
+    if (payloadScope.session_id !== undefined && payloadScope.session_id !== envelope.session_id) {
+      throw new MalformedFrameError(
+        `payload names session "${String(payloadScope.session_id)}", envelope "${envelope.session_id}"`,
+      );
+    }
+    if (payloadScope.run_id !== undefined && payloadScope.run_id !== envelope.run_id) {
+      throw new MalformedFrameError(`payload names run "${String(payloadScope.run_id)}", envelope "${envelope.run_id ?? ''}"`);
+    }
+    if (
+      payloadScope.tool_call_id !== undefined &&
+      envelope.tool_call_id !== undefined &&
+      payloadScope.tool_call_id !== envelope.tool_call_id
+    ) {
+      throw new MalformedFrameError(
+        `payload names tool call "${String(payloadScope.tool_call_id)}", envelope "${envelope.tool_call_id}"`,
+      );
+    }
     // Every envelope on this stream is a sequenced run event; one without a
     // sequence cannot be positioned, and delivering it would leave the
     // cursor behind it — a later resume would replay it without any way to

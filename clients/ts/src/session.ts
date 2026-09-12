@@ -14,12 +14,14 @@ import {
   type MessageSubmitRequest,
   type MessageSubmitResponse,
   type PermissionResolveRequest,
+  type PermissionResolveResponse,
   type RunCancelRequest,
   type RunCancelResponse,
   type RunCompletedPayload,
   type SessionOpenRequest,
   type SessionState,
   type UserInputResolveRequest,
+  type UserInputResolveResponse,
 } from './protocol.js';
 
 /** submit() input: the payload session_id is optional and filled from the session. */
@@ -78,7 +80,9 @@ export class OapSession {
       envelope,
       EnvelopeType.SessionMessageSubmitResponse,
     );
-    return payload<MessageSubmitResponse>(response);
+    const admission = payload<MessageSubmitResponse>(response);
+    crossCheckPayload('submit response', admission, response);
+    return admission;
   }
 
   /**
@@ -91,12 +95,19 @@ export class OapSession {
     const envelope = this.client.envelope(EnvelopeType.ActionPermissionResolveRequest, scoped);
     envelope.session_id = this.sessionId;
     envelope.run_id = scoped.run_id;
-    await this.client.exchange(
+    const response = await this.client.exchange(
       'POST',
       this.path('/resolve'),
       envelope,
       EnvelopeType.ActionPermissionResolveResponse,
     );
+    const resolved = payload<PermissionResolveResponse>(response);
+    crossCheckPayload('permission resolve response', resolved, response);
+    if (resolved.interaction_id !== scoped.interaction_id) {
+      throw new Error(
+        `client: permission resolve response names interaction "${resolved.interaction_id}", want "${scoped.interaction_id}"`,
+      );
+    }
   }
 
   /**
@@ -109,7 +120,14 @@ export class OapSession {
     const envelope = this.client.envelope(EnvelopeType.UserInputResolveRequest, scoped);
     envelope.session_id = this.sessionId;
     envelope.run_id = scoped.run_id;
-    await this.client.exchange('POST', this.path('/resolve'), envelope, EnvelopeType.UserInputResolveResponse);
+    const response = await this.client.exchange('POST', this.path('/resolve'), envelope, EnvelopeType.UserInputResolveResponse);
+    const resolved = payload<UserInputResolveResponse>(response);
+    crossCheckPayload('input resolve response', resolved, response);
+    if (resolved.interaction_id !== scoped.interaction_id) {
+      throw new Error(
+        `client: input resolve response names interaction "${resolved.interaction_id}", want "${scoped.interaction_id}"`,
+      );
+    }
   }
 
   /**
@@ -133,7 +151,9 @@ export class OapSession {
     envelope.session_id = this.sessionId;
     envelope.run_id = runId;
     const response = await this.client.exchange('POST', this.path('/cancel'), envelope, EnvelopeType.RunCancelResponse);
-    return payload<RunCancelResponse>(response);
+    const ack = payload<RunCancelResponse>(response);
+    crossCheckPayload('cancel response', ack, response);
+    return ack;
   }
 
   /** Reads the session's authoritative state. */
@@ -231,6 +251,26 @@ export class OapSession {
 
 /** One session.open request payload, re-exported for callers minting custom opens. */
 export type { SessionOpenRequest };
+
+/**
+ * Verifies that a response payload's scope fields agree with the envelope the
+ * exchange already correlated and scope-checked: a payload naming another
+ * session or run is another operation's answer, not this one's.
+ */
+function crossCheckPayload(
+  what: string,
+  responsePayload: { session_id?: unknown; run_id?: unknown },
+  envelope: Envelope,
+): void {
+  if (responsePayload.session_id !== undefined && responsePayload.session_id !== envelope.session_id) {
+    throw new Error(
+      `client: ${what} payload names session "${responsePayload.session_id}", envelope "${envelope.session_id ?? ''}"`,
+    );
+  }
+  if (responsePayload.run_id !== undefined && responsePayload.run_id !== envelope.run_id) {
+    throw new Error(`client: ${what} payload names run "${responsePayload.run_id}", envelope "${envelope.run_id ?? ''}"`);
+  }
+}
 
 /**
  * Returns the final-response text of a run.completed envelope, or null for

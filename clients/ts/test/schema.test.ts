@@ -579,6 +579,12 @@ test('the schema exclusivity rules are compile-time errors', () => {
   const failedWithArguments: protocol.ActionCallFailedPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', error: { code: 'x', message: 'boom' }, arguments_json: {} };
   // @ts-expect-error a cancelled call carries none of the exclusive fields
   const cancelledWithError: protocol.ActionCallCancelledPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', error: { code: 'x', message: 'boom' } };
+  // @ts-expect-error an initialize request needs at least one version
+  const noVersions: protocol.InitializeRequest = { protocol_versions: [], profiles: ['open-agent-protocol.agent-control-core'] };
+  // @ts-expect-error a capability snapshot needs at least one profile when present
+  const noProfiles: protocol.CapabilityDescriptor = { endpoint: { id: 'e-1' }, profiles: [] };
+  // @ts-expect-error a layer needs at least one delivery mode when present
+  const noModes: protocol.CapabilityLayer = { requested_delivery_modes: [] };
   void badImage;
   void dataOnly;
   void emptyParts;
@@ -597,6 +603,9 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void progressWithResult;
   void failedWithArguments;
   void cancelledWithError;
+  void noVersions;
+  void noProfiles;
+  void noModes;
   // The two legal shapes still type-check.
   const urlImage: ImageContent = { url: 'https://example.test/i.png' };
   const inlineImage: ImageContent = { data: 'aGk=', media_type: 'text/plain' };

@@ -15,7 +15,7 @@ envelope stream the Go client sees.
 ## Install
 
 The package is not published to npm — that is intentional (see below). Use it
-from a checkout, e.g. via a `file:` or Git dependency:
+from a checkout as a `file:` dependency:
 
 ```json
 {
@@ -25,9 +25,13 @@ from a checkout, e.g. via a `file:` or Git dependency:
 }
 ```
 
+(A Git remote cannot select a package subdirectory — npm resolves it at the
+repository root, where this repo has no `package.json` — so advertise and use
+the `file:` form.)
+
 The package builds itself when installed as a dependency: npm runs the
-`prepare` script (which runs `build`) for `file:` and Git dependencies, so
-`dist/` exists before the first import. In a bare checkout, `npm install`
+`prepare` script (which runs `build`) for `file:` dependencies, so `dist/`
+exists before the first import. In a bare checkout, `npm install`
 prepares the same way, or run `npm run build` directly.
 
 ## Canonical lifecycle

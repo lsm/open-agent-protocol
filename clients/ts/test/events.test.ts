@@ -294,6 +294,43 @@ test('an envelope without a run id is malformed', { timeout: 10000 }, async () =
   );
 });
 
+test('a payload naming another session, run, or tool call is malformed', { timeout: 10000 }, async () => {
+  const foreignSession = testEnvelope({
+    type: EnvelopeType.RunStarted,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: 's-other', run_id: RUN },
+  });
+  const first = sessionWith([{ match: LIVE, chunks: [eventFrame(foreignSession)] }]);
+  await rejectsWith(collect(first.session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /payload names session "s-other"/),
+  );
+  const foreignRun = testEnvelope({
+    type: EnvelopeType.ContentDelta,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: 'r-other' },
+  });
+  const second = sessionWith([{ match: LIVE, chunks: [eventFrame(foreignRun)] }]);
+  await rejectsWith(collect(second.session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /payload names run "r-other"/),
+  );
+  const foreignToolCall = testEnvelope({
+    type: EnvelopeType.ActionCallStarted,
+    sequence: 3,
+    sessionId: SESSION,
+    runId: RUN,
+    toolCallId: 'tc-1',
+    payload: { session_id: SESSION, run_id: RUN, tool_call_id: 'tc-other', execution_owner: 'user', name: 'echo' },
+  });
+  const third = sessionWith([{ match: LIVE, chunks: [eventFrame(foreignToolCall)] }]);
+  await rejectsWith(collect(third.session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /payload names tool call "tc-other"/),
+  );
+});
+
 test('a frame id disagreeing with its envelope sequence is malformed', { timeout: 10000 }, async () => {
   const envelope = testEnvelope({
     type: EnvelopeType.RunStarted,
