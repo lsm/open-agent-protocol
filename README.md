@@ -59,9 +59,15 @@ inherited by a child process unless their variable was listed.
 
 The daemon binds `127.0.0.1` by default and has no authentication: v0 is a
 single-user local service, and pointing it at an external interface is
-explicitly unsupported. Restarts kill every session — run child processes are
-per-session and no adapter here survives a daemon restart — and no session
-state persists across restarts.
+explicitly unsupported. On a loopback bind the daemon serves only requests
+whose `Host` header names a loopback host, which closes the browser-borne
+cross-origin and DNS-rebinding vectors against an unauthenticated local
+service; binding a non-loopback `--addr` deliberately opts out of the
+single-user trust model. Restarts kill every session — run child processes
+are per-session and no adapter here survives a daemon restart — and no session
+state persists across restarts. Session entries accumulate for the daemon's
+lifetime (closed sessions stay listed with their final state); there is no
+eviction in v0.
 
 OAP operations exchange verbatim schema/v0.1 envelopes (rejected input gets a
 correlated `error.response`; `GET /capabilities` responses cite a
@@ -94,7 +100,10 @@ connection delivered; reconnect with a cursor after it), and
 `event: oap-replay-gap` reports `adapter.ReplayGap` — the requested cursor is
 no longer retained (`oldest_available`/`latest_available` bound what is;
 reconnect with a cursor at or after `oldest_available - 1`). A stream also
-ends when the client closes the connection or the session closes.
+ends when the client closes the connection; a stream that is open when the
+session closes receives the events already in flight and then ends, and a
+connection made to an already-closed session is refused with
+`409 session_closed` rather than parking.
 
 On SIGINT/SIGTERM the daemon stops accepting, terminates in-flight streams,
 and closes every session inside a bounded window — active runs that refuse

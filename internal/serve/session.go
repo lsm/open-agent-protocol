@@ -69,7 +69,10 @@ type serverSession struct {
 	// runID is the run whose stream most recently drove the hub; a replay
 	// cursor always maps onto this run.
 	runID protocol.RunID
-	subs  map[*subscriber]struct{}
+	// closed records a successful adapter close: no further run can drive
+	// the hub, so a live subscriber arriving afterwards must not park.
+	closed bool
+	subs   map[*subscriber]struct{}
 }
 
 func newServerSession(id protocol.SessionID, adapterName string, session base.Session) *serverSession {
@@ -102,13 +105,27 @@ func (sub *subscriber) stop(overflowed bool) {
 }
 
 // subscribe registers a live-events mailbox. A subscriber that connects while
-// no run is active simply parks until the next submit.
-func (ss *serverSession) subscribe(queue int) *subscriber {
+// no run is active simply parks until the next submit; one that arrives after
+// the session closed is refused — nothing will ever finish it, so parking
+// would hang the connection. The check shares the hub lock with markClosed,
+// closing the arrive/finish race.
+func (ss *serverSession) subscribe(queue int) (*subscriber, bool) {
 	sub := newSubscriber(queue)
 	ss.mu.Lock()
+	if ss.closed {
+		ss.mu.Unlock()
+		return nil, false
+	}
 	ss.subs[sub] = struct{}{}
 	ss.mu.Unlock()
-	return sub
+	return sub, true
+}
+
+// isClosed reports whether the adapter session was closed through the daemon.
+func (ss *serverSession) isClosed() bool {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.closed
 }
 
 func (ss *serverSession) unsubscribe(sub *subscriber) {
@@ -132,10 +149,14 @@ func (ss *serverSession) startRun(runID protocol.RunID, stream base.EventStream)
 	ss.mu.Lock()
 	ss.runID = runID
 	ss.mu.Unlock()
-	go ss.readRun(stream)
+	go ss.readRun(runID, stream)
 }
 
-func (ss *serverSession) readRun(stream base.EventStream) {
+// readRun drains one run's adapter stream. When the stream ends it finishes
+// subscribers only if a newer run has not taken over the hub: a stale
+// finishSubs from run N must not terminate subscribers already receiving
+// run N+1.
+func (ss *serverSession) readRun(runID protocol.RunID, stream base.EventStream) {
 	for result := range stream {
 		if result.Error != nil {
 			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
@@ -148,7 +169,12 @@ func (ss *serverSession) readRun(stream base.EventStream) {
 		}
 		ss.publish(result.Envelope)
 	}
-	ss.finishSubs(false)
+	ss.mu.Lock()
+	current := ss.runID
+	ss.mu.Unlock()
+	if current == runID {
+		ss.finishSubs(false)
+	}
 }
 
 // publish delivers one envelope to every subscriber, terminating (not
@@ -186,8 +212,22 @@ func (ss *serverSession) finishSubs(overflow bool) {
 }
 
 // markClosed records a successful adapter close and ends every live stream.
+// It is only called from the close endpoint, which succeeds solely when no
+// run is active, so no reader can still be queueing final events.
 func (ss *serverSession) markClosed() {
+	ss.mu.Lock()
+	ss.closed = true
+	ss.mu.Unlock()
 	ss.finishSubs(false)
+}
+
+// setClosed records a successful adapter close without touching
+// subscribers: a shutdown close may race a reader still draining the run's
+// final events, and in-flight request contexts end those streams anyway.
+func (ss *serverSession) setClosed() {
+	ss.mu.Lock()
+	ss.closed = true
+	ss.mu.Unlock()
 }
 
 // close cancels any active run and then closes the adapter session: active
@@ -195,14 +235,17 @@ func (ss *serverSession) markClosed() {
 // where the adapter supports it.
 func (ss *serverSession) close(ctx context.Context) error {
 	err := ss.session.Close(ctx)
-	if !errors.Is(err, base.ErrRunActive) {
-		return err
+	if errors.Is(err, base.ErrRunActive) {
+		state, stateErr := ss.session.State(ctx)
+		if stateErr == nil && state.ActiveRunID != "" {
+			_, _ = ss.session.Cancel(ctx, state.ActiveRunID)
+		}
+		err = ss.session.Close(ctx)
 	}
-	state, stateErr := ss.session.State(ctx)
-	if stateErr == nil && state.ActiveRunID != "" {
-		_, _ = ss.session.Cancel(ctx, state.ActiveRunID)
+	if err == nil {
+		ss.setClosed()
 	}
-	return ss.session.Close(ctx)
+	return err
 }
 
 // SSE stream names for daemon-side terminal signals. They are transport
@@ -214,8 +257,10 @@ const (
 )
 
 // streamLive serves one SSE connection from the hub until the run reaches a
-// terminal event, the connection overflows, or the request context ends.
-func streamLive(w io.Writer, flusher http.Flusher, sub *subscriber, ctx context.Context, runID protocol.RunID) {
+// terminal event, the connection overflows, or the request context ends. The
+// session is consulted at signal time so a subscriber parked before the run
+// started still reports the run that overflowed it.
+func streamLive(w io.Writer, flusher http.Flusher, sub *subscriber, ctx context.Context, entry *serverSession) {
 	last := uint64(0)
 	for {
 		select {
@@ -236,6 +281,7 @@ func streamLive(w io.Writer, flusher http.Flusher, sub *subscriber, ctx context.
 					flusher.Flush()
 				default:
 					if sub.overflow.Load() {
+						runID, _ := entry.currentRun()
 						writeSSESignal(w, flusher, sseEventOverflow, map[string]any{
 							"run_id": string(runID), "last_sequence": last,
 							"message": "event stream consumer fell behind; reconnect with a cursor after this sequence",
@@ -262,6 +308,13 @@ func streamReplay(w io.Writer, flusher http.Flusher, replay base.EventStream, ct
 				return
 			}
 			if result.Error != nil {
+				// Keep draining the abandoned stream so an adapter that
+				// reports the error but keeps its channel open cannot block
+				// its own later emits on this dead consumer.
+				go func(stream base.EventStream) {
+					for range stream {
+					}
+				}(replay)
 				if errors.Is(result.Error, base.ErrEventStreamOverflow) {
 					writeSSESignal(w, flusher, sseEventOverflow, map[string]any{
 						"run_id": string(runID), "last_sequence": last,

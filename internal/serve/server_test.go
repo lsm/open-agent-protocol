@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -310,6 +311,11 @@ func (stream *sseStream) envelope() protocol.Envelope {
 	envelope, err := protocol.ParseEnvelope([]byte(event.data))
 	if err != nil {
 		stream.t.Fatalf("parse sse envelope: %v (%s)", err, event.data)
+	}
+	// The SSE id line is the cursor contract: it must carry the envelope's
+	// own sequence so Last-Event-ID reconnect maps onto Resume.AfterSequence.
+	if envelope.Sequence != nil && event.id != strconv.FormatUint(*envelope.Sequence, 10) {
+		stream.t.Fatalf("sse id %q does not match envelope sequence %d", event.id, *envelope.Sequence)
 	}
 	return envelope
 }
@@ -849,4 +855,43 @@ func TestCancelRejections(t *testing.T) {
 	terminal := requestEnvelope(t, protocol.TypeRunCancelRequest, "cancel-terminal", protocol.RunCancelRequest{SessionID: "cancel-reject", RunID: runID}, "cancel-reject", string(runID), "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/cancel-reject/cancel", terminal)
 	requireErrorResponse(t, status, http.StatusConflict, errorEnvelope, "run_terminal")
+}
+
+func TestHostAllowlist(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(0), Options{HostAllowlist: []string{"localhost", "127.0.0.1", "::1"}})
+
+	// A rebinned or cross-origin request names a foreign Host and is
+	// refused before any route runs.
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/adapters", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "evil.example.com"
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign host status %d: %s", response.StatusCode, data)
+	}
+
+	// The loopback names (with any port) still serve.
+	for _, host := range []string{"localhost", "127.0.0.1"} {
+		request, err := http.NewRequest(http.MethodGet, server.URL+"/adapters", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = host + ":9999"
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ = io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("host %q status %d: %s", host, response.StatusCode, data)
+		}
+	}
 }

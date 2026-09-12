@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -47,6 +48,13 @@ type Options struct {
 	// Logger receives lifecycle diagnostics. Envelope payloads and resolved
 	// environment values are never written to it.
 	Logger *log.Logger
+	// HostAllowlist, when non-empty, restricts serving to requests whose
+	// Host header names one of these hostnames (port-insensitive). The CLI
+	// sets it to the loopback names, which closes the browser-borne
+	// cross-origin and DNS-rebinding vectors against the default
+	// unauthenticated loopback bind; an operator binding a non-loopback
+	// address opts out by leaving it empty.
+	HostAllowlist []string
 }
 
 // Server serves one adapter registry over local HTTP + SSE. OAP operations
@@ -58,6 +66,7 @@ type Server struct {
 	queue       int
 	logger      *log.Logger
 	schema      *jsonschema.Schema
+	allowHosts  map[string]bool
 	nextIDValue atomic.Uint64
 }
 
@@ -75,13 +84,18 @@ func New(registry *Registry, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
+	allowHosts := make(map[string]bool, len(options.HostAllowlist))
+	for _, host := range options.HostAllowlist {
+		allowHosts[strings.ToLower(strings.TrimSpace(host))] = true
+	}
 	return &Server{
 		registry: registry, sessions: newSessionRegistry(),
-		queue: queue, logger: logger, schema: schema,
+		queue: queue, logger: logger, schema: schema, allowHosts: allowHosts,
 	}, nil
 }
 
-// Handler returns the daemon's HTTP routes.
+// Handler returns the daemon's HTTP routes, wrapped in the host restriction
+// when one is configured.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /adapters", s.handleAdapters)
@@ -94,7 +108,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sessions/{id}/resolve", s.handleResolve)
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)
-	return mux
+	if len(s.allowHosts) == 0 {
+		return mux
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := strings.ToLower(strings.TrimSpace(r.Host))
+		if name, _, err := net.SplitHostPort(host); err == nil {
+			host = strings.ToLower(name)
+		}
+		if !s.allowHosts[host] {
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "unrecognized Host header; this daemon serves loopback clients only",
+			})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // CloseSessions settles and closes every registered session, bounded by ctx:
@@ -137,7 +166,7 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 		implementation, _ := s.registry.Lookup(name)
 		descriptor, err := implementation.Probe(r.Context())
 		if err != nil {
-			info.Error = err.Error()
+			info.Error = trimMessage(err.Error())
 		} else {
 			info.CapabilityRevision = descriptor.CapabilityRevision
 			info.Capabilities = &descriptor.Capabilities
@@ -482,6 +511,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A closed session can neither deliver live events nor replay: refusing
+	// up front keeps a live connection from parking forever and reports the
+	// closed state for cursor requests that would otherwise surface the
+	// missing run instead.
+	if entry.isClosed() {
+		s.writeError(w, http.StatusConflict, "session_closed", "the session is closed", protocol.Envelope{SessionID: entry.id})
+		return
+	}
 	flusher, canFlush := w.(http.Flusher)
 	if !canFlush {
 		s.writeError(w, http.StatusInternalServerError, "internal", "streaming is not supported on this connection", protocol.Envelope{SessionID: entry.id})
@@ -492,11 +529,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		cursor = r.Header.Get("Last-Event-ID")
 	}
 	if cursor == "" {
-		sub := entry.subscribe(s.queue)
+		sub, open := entry.subscribe(s.queue)
+		if !open {
+			s.writeError(w, http.StatusConflict, "session_closed", "the session is closed", protocol.Envelope{SessionID: entry.id})
+			return
+		}
 		defer entry.unsubscribe(sub)
 		startSSE(w, flusher)
-		runID, _ := entry.currentRun()
-		streamLive(w, flusher, sub, r.Context(), runID)
+		streamLive(w, flusher, sub, r.Context(), entry)
 		return
 	}
 	after, err := strconv.ParseUint(cursor, 10, 64)
@@ -543,7 +583,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...protocol.EnvelopeType) (protocol.Envelope, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
-		s.writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds the daemon limit", protocol.Envelope{})
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			s.writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds the daemon limit", protocol.Envelope{})
+		} else {
+			s.writeError(w, http.StatusBadRequest, "request_read", "request body could not be read", protocol.Envelope{})
+		}
 		return protocol.Envelope{}, false
 	}
 	envelope, err := protocol.ParseEnvelope(body)

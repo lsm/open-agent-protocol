@@ -186,34 +186,29 @@ func TestServeLifecycleOverRealListener(t *testing.T) {
 func TestServeSessionsClosedOnShutdown(t *testing.T) {
 	address, cancel, done := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
 
-	submit := func() *http.Response {
-		t.Helper()
-		envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "serve-close-open", protocol.SessionOpenRequest{SessionID: "serve-close"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, _ := json.Marshal(envelope)
-		response, err := http.Post(address+"/adapters/memory/sessions", "application/json", bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, _ := io.ReadAll(response.Body)
-		response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			t.Fatalf("open: %d %s", response.StatusCode, data)
-		}
-		return response
+	// An open session exists on the still-running daemon; the shutdown
+	// sweep itself (cancel-then-close) is covered by the internal
+	// TestCloseSessionsSettlesActiveRuns.
+	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "serve-close-open", protocol.SessionOpenRequest{SessionID: "serve-close"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	submit()
+	body, _ := json.Marshal(envelope)
+	response, err := http.Post(address+"/adapters/memory/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("open: %d %s", response.StatusCode, data)
+	}
 
-	// An open session must be closed by the shutdown sweep; the state
-	// endpoint on the still-running daemon confirms the session exists
-	// before shutdown and is unreachable after.
 	state, err := http.Get(address + "/sessions")
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := io.ReadAll(state.Body)
+	data, _ = io.ReadAll(state.Body)
 	state.Body.Close()
 	if !strings.Contains(string(data), "serve-close") {
 		t.Fatalf("session listing lacks opened session: %s", data)

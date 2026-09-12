@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/internal/serve"
 )
@@ -49,13 +50,17 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	daemon, err := serve.New(registry, serve.Options{Logger: log.New(stderr, "oap: ", 0)})
+	daemon, err := serve.New(registry, serve.Options{
+		Logger: log.New(stderr, "oap: ", 0), HostAllowlist: loopbackHosts(*addr),
+	})
 	if err != nil {
 		return err
 	}
 	httpServer := &http.Server{
-		Handler:     daemon.Handler(),
-		BaseContext: func(net.Listener) context.Context { return signals },
+		Handler:           daemon.Handler(),
+		BaseContext:       func(net.Listener) context.Context { return signals },
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 	listener, listenErr := net.Listen("tcp", *addr)
 	if listenErr != nil {
@@ -73,16 +78,35 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	case <-signals.Done():
 	}
 
-	// A fresh context bounds shutdown: the request contexts are already
-	// canceled through the signal context, and closing each adapter session
-	// settles child processes rather than orphaning them.
+	// The HTTP sweep and the session sweep get independent budgets: a
+	// stalled SSE client can consume the whole HTTP window inside its write,
+	// and handing the session sweep an already-expired context would skip
+	// adapter Close entirely, orphaning child agent processes.
 	fmt.Fprintln(stderr, "oap: shutting down")
-	shutdown, cancel := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
-	defer cancel()
-	if err := httpServer.Shutdown(shutdown); err != nil {
+	httpShutdown, cancelHTTP := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
+	defer cancelHTTP()
+	if err := httpServer.Shutdown(httpShutdown); err != nil {
 		fmt.Fprintf(stderr, "oap: http shutdown: %v\n", err)
 	}
-	daemon.CloseSessions(shutdown)
+	sessionShutdown, cancelSessions := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
+	defer cancelSessions()
+	daemon.CloseSessions(sessionShutdown)
 	fmt.Fprintln(stderr, "oap: stopped")
 	return nil
+}
+
+// loopbackHosts returns the Host-header names a loopback bind serves, or nil
+// when the operator bound a non-loopback address and thereby opted out of the
+// single-user trust model.
+func loopbackHosts(addr string) []string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	switch host {
+	case "", "localhost", "127.0.0.1", "::1":
+		return []string{"localhost", "127.0.0.1", "::1"}
+	default:
+		return nil
+	}
 }

@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 
@@ -260,8 +261,11 @@ func TestSSEOverflowSignalReplay(t *testing.T) {
 
 func TestHubSubscriberQueueOverflow(t *testing.T) {
 	entry := newServerSession("hub", "memory", nil)
-	slow := entry.subscribe(2)
-	fast := entry.subscribe(64)
+	slow, ok := entry.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	fast, _ := entry.subscribe(64)
 	for sequence := uint64(1); sequence <= 5; sequence++ {
 		envelope, err := protocol.NewEnvelope(protocol.TypeContentDelta, protocol.EnvelopeID(fmt.Sprintf("hub-event-%d", sequence)), protocol.ContentDeltaPayload{})
 		if err != nil {
@@ -366,4 +370,46 @@ func fakeRegistry(capacity, liveOverflowAt, replayOverflowAt int) *Registry {
 		panic(err)
 	}
 	return registry
+}
+
+func TestSSEOnClosedSession(t *testing.T) {
+	// A live connection arriving after the session closed must be refused
+	// promptly — parking would hang the stream forever — and a cursor
+	// request must report the closed state rather than a missing run.
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "sse-closed")
+	response, data := post(t, server, "/sessions/sse-closed/close", "", nil)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("close status %d: %s", response.StatusCode, data)
+	}
+
+	events, err := server.Client().Get(server.URL + "/sessions/sse-closed/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, _ := io.ReadAll(events.Body)
+	events.Body.Close()
+	if events.StatusCode != http.StatusConflict {
+		t.Fatalf("closed live stream status %d: %s", events.StatusCode, closed)
+	}
+	envelope, err := protocol.ParseEnvelope(closed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireErrorResponse(t, events.StatusCode, http.StatusConflict, envelope, "session_closed")
+
+	cursor, err := server.Client().Get(server.URL + "/sessions/sse-closed/events?after=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorData, _ := io.ReadAll(cursor.Body)
+	cursor.Body.Close()
+	if cursor.StatusCode != http.StatusConflict {
+		t.Fatalf("closed cursor stream status %d: %s", cursor.StatusCode, cursorData)
+	}
+	cursorEnvelope, err := protocol.ParseEnvelope(cursorData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireErrorResponse(t, cursor.StatusCode, http.StatusConflict, cursorEnvelope, "session_closed")
 }
