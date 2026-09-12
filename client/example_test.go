@@ -8,8 +8,9 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/client"
-	"github.com/lsm/open-agent-protocol/internal/serve"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
+	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
 
 // Example drives the canonical lifecycle against a local daemon: discover,
@@ -23,7 +24,8 @@ func Example() {
 		fmt.Println("register:", err)
 		return
 	}
-	daemon, err := serve.New(registry, serve.Options{})
+	hub := serve.New(registry, serve.Options{})
+	daemon, err := servehttp.New(hub, servehttp.Options{})
 	if err != nil {
 		fmt.Println("daemon:", err)
 		return
@@ -143,7 +145,8 @@ func ExampleSession_EventsAfter() {
 		fmt.Println("register:", err)
 		return
 	}
-	daemon, err := serve.New(registry, serve.Options{})
+	hub := serve.New(registry, serve.Options{})
+	daemon, err := servehttp.New(hub, servehttp.Options{})
 	if err != nil {
 		fmt.Println("daemon:", err)
 		return

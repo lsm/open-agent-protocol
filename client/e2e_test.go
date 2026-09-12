@@ -13,8 +13,9 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
-	"github.com/lsm/open-agent-protocol/internal/serve"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
+	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
 
 const testTimeout = 5 * time.Second
@@ -22,7 +23,8 @@ const testTimeout = 5 * time.Second
 // newDaemon serves one registry over the real daemon handler on loopback.
 func newDaemon(t *testing.T, registry *serve.Registry) *httptest.Server {
 	t.Helper()
-	daemon, err := serve.New(registry, serve.Options{})
+	hub := serve.New(registry, serve.Options{})
+	daemon, err := servehttp.New(hub, servehttp.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

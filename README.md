@@ -42,7 +42,9 @@ a durable persistence implementation.
 ### Local daemon (`oap serve`)
 
 `oap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
-client — not only Go hosts — can drive any OAP adapter:
+client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
+HTTP+SSE codec (`serve/servehttp`) over the embeddable `serve` package; its
+wire behavior is the contract the `client` package proves:
 
 ```sh
 oap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
@@ -112,6 +114,54 @@ On SIGINT/SIGTERM the daemon stops accepting, terminates in-flight streams,
 and closes every session inside a bounded window — active runs that refuse
 Close are cancelled first — so child agent processes are settled rather than
 orphaned.
+
+### Embedding the registry (`serve`)
+
+The `serve` package is the transport-neutral core the daemon is built on: a
+Go host that wants the full registry semantics in process — several adapters,
+many concurrent sessions, per-session subscriptions with cursor replay —
+embeds it directly with no HTTP hop. `serve/servehttp` (the daemon) is one
+codec over this same hub.
+
+```go
+registry, _ := serve.DefaultRegistry()           // or serve.LoadRegistry(path, os.LookupEnv)
+hub := serve.New(registry, serve.Options{})
+
+session, _ := hub.Open(ctx, "memory", adapter.OpenRequest{SessionID: "demo"})
+sub, _ := hub.Subscribe(ctx, session.ID())        // subscribe before submitting
+session.Submit(ctx, protocol.MessageSubmitRequest{
+	SessionID: session.ID(), Delivery: protocol.DeliveryAuto,
+	Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}},
+})
+for {
+	envelope, err := sub.Next()
+	if err == io.EOF {
+		break // the run reached its terminal event
+	}
+	if err != nil {
+		break // fell behind: resume per the error's cursor
+	}
+	// resolve gates and collect content as events arrive
+}
+```
+
+Subscriptions are the daemon's SSE connections without the socket: any number
+per session, bounded per-subscription buffers, and the same typed terminal
+signals — `*serve.OverflowError` carries the resume cursor (re-subscribe with
+`serve.After(err.LastSequence)`), and an expired cursor fails `Subscribe` with
+`*adapter.ReplayGap` naming what is still retained. `hub.Sessions(ctx)` lists
+every session with its adapter and lifecycle status (closed entries stay
+listed with their final state), and `hub.CloseSessions(ctx)` settles every
+session for shutdown — in-process hosts own their lifetime, since the
+restart-kills-sessions property of the daemon is a process boundary, not a
+library one. The hub adds no protocol semantics of its own and never
+validates envelopes; hosts forwarding untrusted input validate at their own
+boundary, exactly as `servehttp` does against the bundled schema.
+
+Pick the tier that fits: `adapter.Session` directly for one embedded session
+(a single run stream with a single consumer, replay through `Resume`);
+`serve` for multi-adapter, multi-session hosts in process; `oap serve` plus
+`client` for out-of-process or non-Go consumers over HTTP + SSE.
 
 ### Go client (`client`)
 

@@ -3,12 +3,15 @@ package serve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
 )
+
+const testTimeout = 5 * time.Second
 
 func hubEnvelope(t *testing.T, typ protocol.EnvelopeType, sequence uint64) protocol.Envelope {
 	t.Helper()
@@ -25,7 +28,7 @@ func hubEnvelope(t *testing.T, typ protocol.EnvelopeType, sequence uint64) proto
 // so a close that lands while the reader still holds final events must not
 // finish subscribers before those events are delivered.
 func TestMarkClosedDefersFinishToReader(t *testing.T) {
-	entry := newServerSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -35,7 +38,7 @@ func TestMarkClosedDefersFinishToReader(t *testing.T) {
 	entry.startRun("run-1", stream)
 
 	entry.markClosed()
-	if !entry.isClosed() {
+	if !entry.IsClosed() {
 		t.Fatal("session should record closed immediately")
 	}
 	// The queued event must still be delivered, and the subscriber must not
@@ -78,7 +81,7 @@ func TestMarkClosedDefersFinishToReader(t *testing.T) {
 // TestMarkClosedFinishesImmediatelyWithoutReader covers the idle path: a
 // session closed with no run draining ends parked subscribers at once.
 func TestMarkClosedFinishesImmediatelyWithoutReader(t *testing.T) {
-	entry := newServerSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(4)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -132,15 +135,15 @@ func (s *stubSession) Close(context.Context) error {
 // leaving the session (and its child process) unclosed.
 func TestCloseRetriesThroughAsyncCancel(t *testing.T) {
 	stub := &stubSession{settleAfter: 2}
-	entry := newServerSession("stub", "stub", stub)
+	entry := newSession("stub", "stub", stub)
 	start := time.Now()
-	if err := entry.close(context.Background()); err != nil {
+	if err := entry.closeForShutdown(context.Background()); err != nil {
 		t.Fatalf("close did not settle: %v", err)
 	}
 	if stub.cancels != 2 {
 		t.Fatalf("close settled after %d cancels, want 2", stub.cancels)
 	}
-	if !entry.isClosed() {
+	if !entry.IsClosed() {
 		t.Fatal("session did not record the close")
 	}
 	if elapsed := time.Since(start); elapsed > testTimeout {
@@ -152,11 +155,11 @@ func TestCloseRetriesThroughAsyncCancel(t *testing.T) {
 // wedge shutdown: the retry loop yields at the context deadline.
 func TestCloseStopsAtContextDeadline(t *testing.T) {
 	stub := &stubSession{settleAfter: 1000}
-	entry := newServerSession("stub", "stub", stub)
+	entry := newSession("stub", "stub", stub)
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if err := entry.close(ctx); !errors.Is(err, base.ErrRunActive) {
+	if err := entry.closeForShutdown(ctx); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("unsettled session must report run-active, got %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > testTimeout {
@@ -188,13 +191,10 @@ func (s *blockingSession) Close(ctx context.Context) error {
 // cannot starve the rest of the sweep: the first session blocks through its
 // own share of the window and the second still closes on a live context.
 func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
-	daemon, err := New(NewRegistry(), Options{ShutdownTimeout: 600 * time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
+	daemon := New(NewRegistry(), Options{ShutdownTimeout: 600 * time.Millisecond})
 	blocker := &blockingSession{stubSession: stubSession{}, unblocked: make(chan struct{})}
-	blockerEntry := newServerSession("blocker", "stub", blocker)
-	quickEntry := newServerSession("quick", "stub", &stubSession{})
+	blockerEntry := newSession("blocker", "stub", blocker)
+	quickEntry := newSession("quick", "stub", &stubSession{})
 	if err := daemon.sessions.add(blockerEntry); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,42 @@ func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
 	if !blocker.sawLive {
 		t.Fatal("first session closed on an already-dead context")
 	}
-	if !quickEntry.isClosed() {
+	if !quickEntry.IsClosed() {
 		t.Fatal("second session was never closed")
+	}
+}
+
+func TestHubSubscriberQueueOverflow(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	slow, ok := entry.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	fast, _ := entry.subscribe(64)
+	for sequence := uint64(1); sequence <= 5; sequence++ {
+		envelope, err := protocol.NewEnvelope(protocol.TypeContentDelta, protocol.EnvelopeID(fmt.Sprintf("hub-event-%d", sequence)), protocol.ContentDeltaPayload{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := sequence
+		envelope.Sequence = &value
+		entry.publish(envelope)
+	}
+	if !slow.overflow.Load() {
+		t.Fatal("slow subscriber was not marked overflowed")
+	}
+	select {
+	case <-slow.finish:
+	default:
+		t.Fatal("slow subscriber was not finished")
+	}
+	if len(fast.ch) != 5 {
+		t.Fatalf("fast subscriber queued %d envelopes, want 5", len(fast.ch))
+	}
+	entry.finishSubs(false)
+	select {
+	case <-fast.finish:
+	default:
+		t.Fatal("fast subscriber was not finished at run end")
 	}
 }

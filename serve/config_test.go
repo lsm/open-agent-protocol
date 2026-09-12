@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	base "github.com/lsm/open-agent-protocol/adapter"
 )
 
 func writeConfig(t *testing.T, document string) string {
@@ -21,6 +23,10 @@ func staticEnviron(values map[string]string) func(string) (string, bool) {
 		value, ok := values[name]
 		return value, ok
 	}
+}
+
+func mustMemory() base.Adapter {
+	return base.NewMemory(base.Config{})
 }
 
 func TestLoadRegistryMemory(t *testing.T) {

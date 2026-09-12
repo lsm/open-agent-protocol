@@ -1,14 +1,14 @@
-package serve
+package servehttp
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
 )
 
 func TestSSEEnvelopeOrderAndSequences(t *testing.T) {
@@ -259,41 +259,6 @@ func TestSSEOverflowSignalReplay(t *testing.T) {
 	stream.expectEnd()
 }
 
-func TestHubSubscriberQueueOverflow(t *testing.T) {
-	entry := newServerSession("hub", "memory", nil)
-	slow, ok := entry.subscribe(2)
-	if !ok {
-		t.Fatal("subscribe on an open session was refused")
-	}
-	fast, _ := entry.subscribe(64)
-	for sequence := uint64(1); sequence <= 5; sequence++ {
-		envelope, err := protocol.NewEnvelope(protocol.TypeContentDelta, protocol.EnvelopeID(fmt.Sprintf("hub-event-%d", sequence)), protocol.ContentDeltaPayload{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		value := sequence
-		envelope.Sequence = &value
-		entry.publish(envelope)
-	}
-	if !slow.overflow.Load() {
-		t.Fatal("slow subscriber was not marked overflowed")
-	}
-	select {
-	case <-slow.finish:
-	default:
-		t.Fatal("slow subscriber was not finished")
-	}
-	if len(fast.ch) != 5 {
-		t.Fatalf("fast subscriber queued %d envelopes, want 5", len(fast.ch))
-	}
-	entry.finishSubs(false)
-	select {
-	case <-fast.finish:
-	default:
-		t.Fatal("fast subscriber was not finished at run end")
-	}
-}
-
 // fakeAdapter wraps the memory reference adapter with scripted stream-error
 // injection. The adapters' own ClientFactory/ProcessFactory interfaces carry
 // internal RPC types, so daemon-side tests inject at the adapter boundary the
@@ -364,8 +329,8 @@ func inject(stream base.EventStream, overflowAt int) base.EventStream {
 	return out
 }
 
-func fakeRegistry(capacity, liveOverflowAt, replayOverflowAt int) *Registry {
-	registry := NewRegistry()
+func fakeRegistry(capacity, liveOverflowAt, replayOverflowAt int) *serve.Registry {
+	registry := serve.NewRegistry()
 	if err := registry.Register("fake", newFakeAdapter(capacity, liveOverflowAt, replayOverflowAt)); err != nil {
 		panic(err)
 	}
