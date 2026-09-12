@@ -135,7 +135,15 @@ func (s *Session) Close(ctx context.Context) error {
 		return fmt.Errorf("client: read close response: %w", err)
 	}
 	if response.StatusCode != http.StatusNoContent {
-		return statusError(response, body)
+		if err := statusError(response, body); err != nil {
+			return err
+		}
+		// The close contract is exactly 204 No Content: any other success —
+		// a proxy page, an incompatible daemon — is not a confirmation.
+		return &ServerError{
+			Status:  response.StatusCode,
+			Message: fmt.Sprintf("close returned status %d, want %d No Content", response.StatusCode, http.StatusNoContent),
+		}
 	}
 	return nil
 }

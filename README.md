@@ -143,9 +143,10 @@ for {
 `Session.Events` resumes invisibly: when the SSE connection drops, the client
 reconnects with the last observed sequence as the `Last-Event-ID` / `?after=`
 cursor, the daemon replays the suffix, and the stream continues with no
-duplicates — the same sequence delivered twice is surfaced as an error, never
-silently skipped. `WithStrictResume` turns resume off and reports the drop as a
-`DisconnectError` carrying the cursor. The daemon's terminal signal events
+duplicates — a repeated or skipped sequence within a run is surfaced as an
+error, never silently accepted. `WithStrictResume` turns resume off and reports
+the drop as a `DisconnectError` carrying the cursor. The daemon's terminal
+signal events
 surface as typed errors: `OverflowError` (reconnect with
 `Session.EventsAfter(LastSequence)`) and `ReplayGapError` (the requested cursor
 expired; `OldestAvailable`/`LatestAvailable` bound what is retained). Daemon

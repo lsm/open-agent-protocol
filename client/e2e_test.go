@@ -833,16 +833,39 @@ func TestClientRejectsDuplicateSequence(t *testing.T) {
 }
 
 func TestClientRejectsBadResumeSuffix(t *testing.T) {
+	// A cursor at 4 must be continued at 5 exactly; a suffix that starts at
+	// 9 skipped five envelopes and is surfaced, not accepted.
 	envelope := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 9)
 	c := defectServer(t, fmt.Sprintf("id: 9\ndata: %s\n\n", envelope))
 	stream := openDefectSession(t, c).EventsAfter(context.Background(), 4)
 	_, err := stream.Next()
-	var mismatch *ResumeMismatchError
-	if !errors.As(err, &mismatch) {
-		t.Fatalf("error %v (%T), want ResumeMismatchError", err, err)
+	var gap *SequenceGapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("error %v (%T), want SequenceGapError", err, err)
 	}
-	if mismatch.AfterSequence != 4 || mismatch.ObservedSequence != 9 {
-		t.Fatalf("mismatch %+v, want after 4 observed 9", mismatch)
+	if gap.Expected != 5 || gap.Observed != 9 {
+		t.Fatalf("gap %+v, want expected 5 observed 9", gap)
+	}
+}
+
+func TestClientRejectsLiveSequenceGap(t *testing.T) {
+	// A gap within a run on a live connection means an envelope was lost in
+	// flight or never published; the client surfaces it instead of silently
+	// advancing its cursor past the hole.
+	first := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 1)
+	third := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 3)
+	c := defectServer(t, fmt.Sprintf("id: 1\ndata: %s\n\nid: 3\ndata: %s\n\n", first, third))
+	stream := openDefectSession(t, c).Events(context.Background())
+	if _, err := stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := stream.Next()
+	var gap *SequenceGapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("error %v (%T), want SequenceGapError", err, err)
+	}
+	if gap.Expected != 2 || gap.Observed != 3 {
+		t.Fatalf("gap %+v, want expected 2 observed 3", gap)
 	}
 }
 
@@ -939,5 +962,82 @@ func TestClientValidationRejectsInvalidEnvelope(t *testing.T) {
 	stream := session.Events(context.Background())
 	if _, err := stream.Next(); err == nil || !strings.Contains(err.Error(), "schema validation") {
 		t.Fatalf("validation error: %v", err)
+	}
+}
+
+// requestStub serves one canned response for every request, for daemon
+// misbehavior the real server never exhibits on the request surface.
+func requestStub(t *testing.T, respond func(w http.ResponseWriter)) *Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respond(w)
+	}))
+	t.Cleanup(server.Close)
+	return New(server.URL)
+}
+
+func TestClientRejectsUncorrelatedResponse(t *testing.T) {
+	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID("stale-response"), protocol.SessionOpenResponse{
+		SessionID: "wire", Status: protocol.SessionIdle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.InReplyTo = "someone-elses-request"
+	body, err := response.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+	_, err = c.Open(context.Background(), "memory", "wire")
+	if err == nil || !strings.Contains(err.Error(), "correlation") {
+		t.Fatalf("uncorrelated open error: %v", err)
+	}
+}
+
+func TestClientRejectsNon204Close(t *testing.T) {
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "<html>proxy page</html>")
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	err := session.Close(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "204") {
+		t.Fatalf("non-204 close error: %v", err)
+	}
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("error %v (%T), want ServerError", err, err)
+	}
+	if code, ok := ErrorCode(err); ok {
+		t.Fatalf("plain-body close error reports code %q, %v; want none", code, ok)
+	}
+}
+
+func TestClientErrorCodeAbsentForPlainFailures(t *testing.T) {
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, "upstream melted")
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	_, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+		Delivery: protocol.DeliveryAuto,
+	})
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("error %v (%T), want ServerError", err, err)
+	}
+	if serverErr.Status != http.StatusBadGateway || serverErr.Code != "" || serverErr.Message != "upstream melted" {
+		t.Fatalf("plain failure error %+v", serverErr)
+	}
+	if code, ok := ErrorCode(err); ok {
+		t.Fatalf("ErrorCode on an untyped failure: %q, %v; want absent", code, ok)
 	}
 }

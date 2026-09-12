@@ -216,10 +216,12 @@ func (e *ServerError) Error() string {
 	return fmt.Sprintf("client: server error %s (status %d): %s", e.Code, e.Status, e.Message)
 }
 
-// ErrorCode reports the daemon error code carried by err, if any.
+// ErrorCode reports the daemon error code carried by err, if any. It returns
+// false when err carries no ServerError or the daemon answered with a
+// non-envelope body, in which case there is no code to branch on.
 func ErrorCode(err error) (string, bool) {
 	var serverErr *ServerError
-	if errors.As(err, &serverErr) {
+	if errors.As(err, &serverErr) && serverErr.Code != "" {
 		return serverErr.Code, true
 	}
 	return "", false
@@ -278,6 +280,12 @@ func (c *Client) exchange(ctx context.Context, method, path string, request *pro
 	}
 	if envelope.Type != want {
 		return protocol.Envelope{}, fmt.Errorf("client: %s returned %s, want %s", path, envelope.Type, want)
+	}
+	if request != nil && envelope.InReplyTo != request.ID {
+		// OAP correlation: a response must cite the request envelope it
+		// answers. Anything else is a stale or misrouted envelope, and
+		// decoding it would attribute another operation's answer to this one.
+		return protocol.Envelope{}, fmt.Errorf("client: %s response cites correlation %q, want the request id %q", path, envelope.InReplyTo, request.ID)
 	}
 	return envelope, nil
 }

@@ -357,9 +357,6 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 		if es.runID != "" && envelope.RunID != es.runID {
 			return &ResumeMismatchError{AfterSequence: es.lastSeq, ExpectedRunID: es.runID, ObservedRunID: envelope.RunID, ObservedSequence: *envelope.Sequence}
 		}
-		if *envelope.Sequence != es.lastSeq+1 {
-			return &ResumeMismatchError{AfterSequence: es.lastSeq, ExpectedRunID: es.runID, ObservedRunID: envelope.RunID, ObservedSequence: *envelope.Sequence}
-		}
 	}
 	if envelope.RunID != es.runID {
 		// Sequences are per-run: a new run starts a fresh sequence space.
@@ -370,8 +367,17 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 		es.terminal = true
 	}
 	if envelope.Sequence != nil {
-		if es.lastSeq > 0 && *envelope.Sequence <= es.lastSeq {
-			return &DuplicateSequenceError{RunID: envelope.RunID, Sequence: *envelope.Sequence}
+		// Run sequences are contiguous: within one run every envelope carries
+		// the previous sequence plus one. A regression is a replay defect, and
+		// a skip means an envelope was lost — advancing past it would hide it
+		// from the consumer and from a later cursor resume, so both surface.
+		if es.lastSeq > 0 {
+			switch {
+			case *envelope.Sequence <= es.lastSeq:
+				return &DuplicateSequenceError{RunID: envelope.RunID, Sequence: *envelope.Sequence}
+			case *envelope.Sequence != es.lastSeq+1:
+				return &SequenceGapError{RunID: envelope.RunID, Expected: es.lastSeq + 1, Observed: *envelope.Sequence}
+			}
 		}
 		es.lastSeq = *envelope.Sequence
 	}
@@ -494,6 +500,19 @@ type DuplicateSequenceError struct {
 
 func (e *DuplicateSequenceError) Error() string {
 	return fmt.Sprintf("client: duplicate sequence %d in run %s", e.Sequence, e.RunID)
+}
+
+// SequenceGapError reports an envelope that skipped one or more sequences in
+// its run: an envelope was lost in transit or never published, and advancing
+// the cursor past the hole would silently drop it.
+type SequenceGapError struct {
+	RunID    protocol.RunID
+	Expected uint64
+	Observed uint64
+}
+
+func (e *SequenceGapError) Error() string {
+	return fmt.Sprintf("client: run %s skipped from sequence %d to %d", e.RunID, e.Expected, e.Observed)
 }
 
 // ResumeMismatchError reports a replayed suffix that does not continue the
