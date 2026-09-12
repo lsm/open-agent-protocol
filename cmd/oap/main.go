@@ -32,6 +32,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return usage(stderr)
 	}
 	switch args[0] {
+	case "serve":
+		return runServe(ctx, args[1:], stdout, stderr)
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)
 	case "fixtures":
@@ -48,7 +50,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func usage(w io.Writer) error {
-	fmt.Fprintln(w, "usage: oap <validate|fixtures|demo|check|providers> [arguments]")
+	fmt.Fprintln(w, "usage: oap <serve|validate|fixtures|demo|check|providers> [arguments]")
 	return errors.New("invalid command")
 }
 
