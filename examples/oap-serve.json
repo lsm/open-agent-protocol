@@ -1,0 +1,53 @@
+{
+  "adapters": {
+    "memory": {
+      "type": "memory",
+      "journal_capacity": 64
+    },
+    "claude": {
+      "type": "claude",
+      "executable": "/absolute/path/to/claude",
+      "environment": ["ANTHROPIC_API_KEY"],
+      "working_directory": "/absolute/project/path",
+      "model": "sonnet-5"
+    },
+    "codex": {
+      "type": "codex",
+      "executable": "/absolute/path/to/codex",
+      "working_directory": "/absolute/project/path"
+    },
+    "hermes": {
+      "type": "hermes",
+      "executable": "/absolute/path/to/python",
+      "working_directory": "/absolute/path/to/hermes-agent",
+      "model": "glm-5.3"
+    },
+    "deepseek": {
+      "type": "deepseek",
+      "executable": "/absolute/path/to/deepseek-harness-runtime",
+      "working_directory": "/absolute/project/path",
+      "provider": "deepseek",
+      "model": "deepseek-chat"
+    },
+    "makai": {
+      "type": "makai",
+      "executable": "/absolute/path/to/makai",
+      "working_directory": "/absolute/project/path",
+      "agent_config": {}
+    },
+    "pi": {
+      "type": "pi",
+      "executable": "/absolute/path/to/pi",
+      "working_directory": "/absolute/project/path"
+    },
+    "acp": {
+      "type": "acp",
+      "executable": "/absolute/path/to/docker-agent",
+      "working_directory": "/absolute/project/path"
+    },
+    "opencode": {
+      "type": "opencode",
+      "endpoint": "http://127.0.0.1:4096"
+    }
+  }
+}

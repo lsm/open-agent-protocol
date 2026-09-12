@@ -39,6 +39,80 @@ in-memory reference adapter. The reference adapter proves the public adapter
 boundary and bounded process-memory recovery; it is not a production harness or
 a durable persistence implementation.
 
+### Local daemon (`oap serve`)
+
+`oap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
+client — not only Go hosts — can drive any OAP adapter:
+
+```sh
+oap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
+```
+
+Without `--config` the daemon serves the built-in memory reference adapter
+only. The registry document maps names to in-repo adapter configurations
+(`examples/oap-serve.json` shows every entry type); constructor requirements
+(absolute working directories, provider settings) surface at startup. The
+`environment` list of an entry is an explicit allowlist: a bare `NAME`
+forwards the value the daemon itself carries (unset names are omitted) and
+`NAME=value` passes through literally — ambient credentials are never
+inherited by a child process unless their variable was listed.
+
+The daemon binds `127.0.0.1` by default and has no authentication: v0 is a
+single-user local service, and pointing it at an external interface is
+explicitly unsupported. On a loopback bind the daemon serves only requests
+whose `Host` header names a loopback host, which closes the browser-borne
+cross-origin and DNS-rebinding vectors against an unauthenticated local
+service; binding a non-loopback `--addr` deliberately opts out of the
+single-user trust model. Restarts kill every session — run child processes
+are per-session and no adapter here survives a daemon restart — and no session
+state persists across restarts. Session entries accumulate for the daemon's
+lifetime (closed sessions stay listed with their final state); there is no
+eviction in v0.
+
+OAP operations exchange verbatim schema/v0.1 envelopes (rejected input gets a
+correlated `error.response`; `GET /capabilities` responses cite a
+daemon-minted correlation id a client can pair with its own request envelope):
+
+| Endpoint | Operation |
+| --- | --- |
+| `POST /adapters/{name}/sessions` | `session.open.request` → `session.open.response` |
+| `GET /adapters/{name}/capabilities` | `capabilities.response` (probed descriptor) |
+| `POST /sessions/{id}/submit` | `session.message.submit.request` → admission response |
+| `GET /sessions/{id}/events` | SSE stream of run-event envelopes |
+| `POST /sessions/{id}/resolve` | `action.permission.resolve.request` or `user.input.resolve.request` → response |
+| `POST /sessions/{id}/cancel` | `run.cancel.request` → `run.cancel.response` |
+| `GET /sessions/{id}/state` | `session.state.response` |
+| `POST /sessions/{id}/close` | Close (v0.1 defines no close envelope; returns 204) |
+| `GET /adapters`, `GET /sessions` | daemon-management listings, plain JSON |
+
+The daemon acts as participant `user`: interactive gates opened over a
+session resolve with `responded_by: "user"`.
+
+`GET /sessions/{id}/events` streams envelopes with `data:` carrying the
+envelope JSON and `id:` carrying the envelope sequence, so an SSE
+Last-Event-ID reconnect (or an explicit `?after=` cursor) maps directly onto
+`Resume.AfterSequence` for the session's current run: the daemon drives the
+adapter `Resume` and streams the replayed suffix, then live events, and ends
+the stream at the run's terminal event. Two terminal signals are transport
+framing, not envelopes: `event: oap-overflow` reports that the connection's
+bounded buffer fell behind (`last_sequence` names the last sequence this
+connection delivered; reconnect with a cursor after it), and
+`event: oap-replay-gap` reports `adapter.ReplayGap` — the requested cursor is
+no longer retained (`oldest_available`/`latest_available` bound what is;
+reconnect with a cursor at or after `oldest_available - 1`). A stream also
+ends when the client closes the connection; a stream that is open when the
+session closes receives the events already in flight and then ends, and a
+connection made to an already-closed session is refused with
+`409 session_closed` rather than parking. Sequence numbers are per-run: a
+connection that happens to span an immediate resubmit (a second run admitted
+inside the settle window of the first) continues into the new run, and
+clients keying on the envelope `run_id` see each run's own sequence space.
+
+On SIGINT/SIGTERM the daemon stops accepting, terminates in-flight streams,
+and closes every session inside a bounded window — active runs that refuse
+Close are cancelled first — so child agent processes are settled rather than
+orphaned.
+
 Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
