@@ -787,6 +787,7 @@ func validEventEnvelope(t *testing.T, typ protocol.EnvelopeType, sequence uint64
 	if err != nil {
 		t.Fatal(err)
 	}
+	envelope.RunID = "wire-run"
 	envelope.Sequence = &sequence
 	data, err := envelope.MarshalJSON()
 	if err != nil {
@@ -834,7 +835,9 @@ func TestClientRejectsDuplicateSequence(t *testing.T) {
 
 func TestClientRejectsBadResumeSuffix(t *testing.T) {
 	// A cursor at 4 must be continued at 5 exactly; a suffix that starts at
-	// 9 skipped five envelopes and is surfaced, not accepted.
+	// 9 skipped five envelopes and is surfaced, not accepted. The envelope
+	// carries its run id: the first replayed envelope establishes the run the
+	// cursor belongs to without relaxing the sequence expectation.
 	envelope := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 9)
 	c := defectServer(t, fmt.Sprintf("id: 9\ndata: %s\n\n", envelope))
 	stream := openDefectSession(t, c).EventsAfter(context.Background(), 4)
@@ -845,6 +848,74 @@ func TestClientRejectsBadResumeSuffix(t *testing.T) {
 	}
 	if gap.Expected != 5 || gap.Observed != 9 {
 		t.Fatalf("gap %+v, want expected 5 observed 9", gap)
+	}
+}
+
+func TestClientRejectsNon200StreamStatus(t *testing.T) {
+	// A 2xx that is not a stream (a proxy's 204) must surface as an error,
+	// not be dereferenced as a response with a stream body.
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	stream := session.Events(context.Background())
+	_, err := stream.Next()
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("error %v (%T), want ServerError", err, err)
+	}
+	if serverErr.Status != http.StatusNoContent {
+		t.Fatalf("stream status error %+v, want 204", serverErr)
+	}
+	if _, err := stream.Next(); err == nil || errors.Is(err, io.EOF) {
+		t.Fatalf("repeated Next returned %v, want the sticky error", err)
+	}
+}
+
+func TestClientRejectsUncorrelatedErrorEnvelope(t *testing.T) {
+	response, err := protocol.NewEnvelope(protocol.TypeErrorResponse, protocol.EnvelopeID("err-1"), protocol.ErrorResponse{
+		Error: protocol.ProtocolError{Code: "unknown_session", Message: "no such session"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.InReplyTo = "someone-elses-request"
+	body, err := response.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(body)
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	_, err = session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+		Delivery: protocol.DeliveryAuto,
+	})
+	if err == nil || !strings.Contains(err.Error(), "correlation") {
+		t.Fatalf("uncorrelated error envelope: %v", err)
+	}
+}
+
+func TestClientValidationRejectsInvalidErrorEnvelope(t *testing.T) {
+	// Parses as an envelope, typed error.response, but the payload violates
+	// the schema (no error member): dev-mode validation must flag it instead
+	// of typing it as this operation's refusal.
+	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"err-2","payload":{}}`
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, raw)
+	}, WithEnvelopeValidation())
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	_, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+		Delivery: protocol.DeliveryAuto,
+	})
+	if err == nil || !strings.Contains(err.Error(), "schema validation") {
+		t.Fatalf("invalid error envelope: %v", err)
 	}
 }
 
@@ -967,13 +1038,13 @@ func TestClientValidationRejectsInvalidEnvelope(t *testing.T) {
 
 // requestStub serves one canned response for every request, for daemon
 // misbehavior the real server never exhibits on the request surface.
-func requestStub(t *testing.T, respond func(w http.ResponseWriter)) *Client {
+func requestStub(t *testing.T, respond func(w http.ResponseWriter), opts ...Option) *Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respond(w)
 	}))
 	t.Cleanup(server.Close)
-	return New(server.URL)
+	return New(server.URL, opts...)
 }
 
 func TestClientRejectsUncorrelatedResponse(t *testing.T) {

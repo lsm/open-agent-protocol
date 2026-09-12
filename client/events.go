@@ -225,7 +225,9 @@ func (es *EventStream) cursor() (cursor string, speculative bool) {
 }
 
 // open performs one GET on the session's event stream with the cursor both as
-// the Last-Event-ID header and as the explicit ?after= query parameter.
+// the Last-Event-ID header and as the explicit ?after= query parameter. The
+// stream contract is exactly 200 OK; every other status, success or failure,
+// is an error, so a returned response is always usable.
 func (es *EventStream) open(after string) (*http.Response, error) {
 	path := es.session.path("/events")
 	if after != "" {
@@ -246,7 +248,16 @@ func (es *EventStream) open(after string) (*http.Response, error) {
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
 		response.Body.Close()
-		return nil, statusError(response, body)
+		if err := statusError(response, body); err != nil {
+			return nil, err
+		}
+		// A 2xx that is not a stream — a proxy's 204, an incompatible
+		// daemon — must not pass as one: the caller would dereference a
+		// response that carries no stream body.
+		return nil, &ServerError{
+			Status:  response.StatusCode,
+			Message: fmt.Sprintf("event stream returned status %d, want %d OK", response.StatusCode, http.StatusOK),
+		}
 	}
 	return response, nil
 }
@@ -349,7 +360,8 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 			return &MalformedFrameError{Detail: fmt.Sprintf("frame id %d disagrees with envelope sequence %d", id, *envelope.Sequence)}
 		}
 	}
-	if es.resumed {
+	resumed := es.resumed
+	if resumed {
 		es.resumed = false
 		if envelope.Sequence == nil {
 			return &MalformedFrameError{Detail: "a resumed stream must deliver sequenced envelopes"}
@@ -359,10 +371,19 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 		}
 	}
 	if envelope.RunID != es.runID {
-		// Sequences are per-run: a new run starts a fresh sequence space.
-		es.runID = envelope.RunID
-		es.lastSeq = 0
-		es.terminal = isTerminal(envelope.Type)
+		if resumed && es.runID == "" {
+			// The first envelope of a cursor-carrying stream names the run
+			// the cursor belongs to: the run is adopted, and the sequence
+			// expectation stays bound to the cursor.
+			es.runID = envelope.RunID
+			es.terminal = isTerminal(envelope.Type)
+		} else {
+			// Sequences are per-run: a live transition to a new run starts a
+			// fresh sequence space.
+			es.runID = envelope.RunID
+			es.lastSeq = 0
+			es.terminal = isTerminal(envelope.Type)
+		}
 	} else if isTerminal(envelope.Type) {
 		es.terminal = true
 	}

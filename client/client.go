@@ -269,6 +269,20 @@ func (c *Client) exchange(ctx context.Context, method, path string, request *pro
 		return protocol.Envelope{}, fmt.Errorf("client: %s returned no content where %s was expected", path, want)
 	}
 	if err := statusError(response, raw); err != nil {
+		// An error.response gets the same scrutiny a successful response
+		// gets: with dev-mode validation on it must satisfy the schema, and
+		// when the request is known it must cite the request's id — an
+		// envelope correlated elsewhere is a protocol violation, not this
+		// operation's answer.
+		var serverErr *ServerError
+		if errors.As(err, &serverErr) && serverErr.Envelope.ID != "" {
+			if err := c.checkEnvelope(serverErr.Envelope, raw); err != nil {
+				return protocol.Envelope{}, err
+			}
+			if request != nil && serverErr.Envelope.InReplyTo != request.ID {
+				return protocol.Envelope{}, fmt.Errorf("client: %s error response cites correlation %q, want the request id %q", path, serverErr.Envelope.InReplyTo, request.ID)
+			}
+		}
 		return protocol.Envelope{}, err
 	}
 	envelope, err := protocol.ParseEnvelope(raw)
