@@ -555,12 +555,24 @@ test('the schema exclusivity rules are compile-time errors', () => {
   const bareAnswer: InputAnswer = { question_id: 'q-1' };
   // @ts-expect-error a choice answer needs at least one selected option
   const noSelection: InputAnswer = { question_id: 'q-1', selected_option_ids: [] };
+  // @ts-expect-error a submission needs at least one message
+  const noMessages: protocol.MessageSubmitRequest = { session_id: 's-1', messages: [], delivery: 'auto' };
+  // @ts-expect-error an input resolution needs at least one answer
+  const noAnswers: protocol.UserInputResolveRequest = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', answers: [] };
+  // @ts-expect-error a permission request needs at least one choice
+  const noChoices: protocol.PermissionRequestedPayload = { interaction_id: 'i-1', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', title: 'Allow tool', choices: [] };
+  // @ts-expect-error an input request needs at least one question
+  const noQuestions: protocol.UserInputRequestedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', title: 'Golden input', questions: [] };
   void badImage;
   void dataOnly;
   void emptyParts;
   void bothAnswer;
   void bareAnswer;
   void noSelection;
+  void noMessages;
+  void noAnswers;
+  void noChoices;
+  void noQuestions;
   // The two legal shapes still type-check.
   const urlImage: ImageContent = { url: 'https://example.test/i.png' };
   const inlineImage: ImageContent = { data: 'aGk=', media_type: 'text/plain' };

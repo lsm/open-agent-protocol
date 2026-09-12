@@ -314,7 +314,8 @@ export interface SessionState {
 
 export interface MessageSubmitRequest {
   session_id: string;
-  messages: Message[];
+  /** At least one message: the schema refuses an empty submission. */
+  messages: [Message, ...Message[]];
   delivery: RequestedDeliveryMode;
   model_id?: string;
   instructions?: string;
@@ -470,7 +471,8 @@ export interface PermissionRequestedPayload {
   tool_call_id?: string;
   title: string;
   description?: string;
-  choices: PermissionChoice[];
+  /** At least one choice: the schema refuses an empty permission request. */
+  choices: [PermissionChoice, ...PermissionChoice[]];
   arguments_json?: unknown;
 }
 
@@ -521,7 +523,8 @@ export interface InputQuestion {
   prompt: string;
   kind: InputQuestionKind;
   required?: boolean;
-  options?: InputOption[];
+  /** At least one option when present: choice questions refuse an empty list. */
+  options?: [InputOption, ...InputOption[]];
 }
 
 /** A text answer to one question. */
@@ -550,7 +553,8 @@ export interface UserInputRequestedPayload {
   tool_call_id?: string;
   title: string;
   description?: string;
-  questions: InputQuestion[];
+  /** At least one question: the schema refuses an empty input request. */
+  questions: [InputQuestion, ...InputQuestion[]];
   allow_cancel?: boolean;
   draft_answers?: InputAnswer[];
 }
@@ -561,7 +565,8 @@ export interface UserInputResolveRequest {
   responded_by: string;
   session_id: string;
   run_id: string;
-  answers: InputAnswer[];
+  /** At least one answer: the schema refuses an empty resolution. */
+  answers: [InputAnswer, ...InputAnswer[]];
 }
 
 export interface UserInputResolveResponse {
@@ -578,7 +583,8 @@ export interface UserInputResolvedPayload {
   session_id: string;
   run_id: string;
   status: 'submitted' | 'cancelled';
-  answers?: InputAnswer[];
+  /** At least one answer when present: a submitted resolution is never empty. */
+  answers?: [InputAnswer, ...InputAnswer[]];
 }
 
 export interface UserInputCancelRequest {
