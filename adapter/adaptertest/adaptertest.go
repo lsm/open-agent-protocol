@@ -222,6 +222,13 @@ func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.
 	}
 	response.SessionID = admission.SessionID
 	response.InReplyTo = submit.ID
+	if descriptor.CapabilityRevision != "" {
+		// A non-auto delivery makes the submit request itself an
+		// optional-feature envelope: it must cite the active descriptor
+		// revision, and the response must repeat it.
+		submit.CapabilityRevision = descriptor.CapabilityRevision
+		response.CapabilityRevision = descriptor.CapabilityRevision
+	}
 	trace = append(trace, submit, response)
 	if cut := cancelExchangeCut(events); cut >= 0 {
 		request, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
