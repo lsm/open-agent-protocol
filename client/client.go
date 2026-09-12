@@ -18,15 +18,19 @@ package client
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 	"github.com/lsm/open-agent-protocol/validation"
@@ -47,6 +51,11 @@ type Client struct {
 	participant protocol.ParticipantID
 	strict      bool
 	validate    bool
+
+	// idPrefix makes this client's envelope ids unique in any trace that
+	// combines traffic from several clients: OAP envelope ids are trace-
+	// unique, and a per-instance counter alone would collide across clients.
+	idPrefix string
 
 	schemaOnce sync.Once
 	schema     *jsonschema.Schema
@@ -93,6 +102,7 @@ func New(addr string, opts ...Option) *Client {
 	c := &Client{
 		http:        http.DefaultClient,
 		participant: DefaultParticipant,
+		idPrefix:    uniquePrefix(),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -104,6 +114,15 @@ func New(addr string, opts ...Option) *Client {
 		c.base = "http://" + addr
 	}
 	return c
+}
+
+// uniquePrefix mints one per-client component for envelope ids.
+func uniquePrefix() string {
+	var buffer [4]byte
+	if _, err := crand.Read(buffer[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(buffer[:])
 }
 
 // AdapterInfo is one adapter-listing entry. A probing adapter reports its
@@ -227,9 +246,10 @@ func ErrorCode(err error) (string, bool) {
 	return "", false
 }
 
-// envelope mints one request envelope with a fresh correlation id.
+// envelope mints one request envelope with a fresh correlation id unique to
+// this client.
 func (c *Client) envelope(typ protocol.EnvelopeType, payload any) (protocol.Envelope, error) {
-	id := protocol.EnvelopeID(fmt.Sprintf("client-request-%d", c.ids.Add(1)))
+	id := protocol.EnvelopeID(fmt.Sprintf("client-%s-%d", c.idPrefix, c.ids.Add(1)))
 	envelope, err := protocol.NewEnvelope(typ, id, payload)
 	if err != nil {
 		return protocol.Envelope{}, fmt.Errorf("client: build %s: %w", typ, err)

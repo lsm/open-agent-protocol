@@ -564,7 +564,7 @@ func TestClientStrictResumeReportsDrop(t *testing.T) {
 	}
 
 	// Manual resume replays the suffix and finishes the run.
-	resumed := session.EventsAfter(ctx, 4)
+	resumed := session.EventsAfter(ctx, runID, 4)
 	middle := readUntil(t, resumed, typeStop(protocol.TypeRunStatusUpdated))
 	resolveGate(t, session, envelopeOfType(t, middle, protocol.TypeUserInputRequested))
 	final := readUntil(t, resumed, typeStop(protocol.TypeRunCompleted))
@@ -659,7 +659,7 @@ func TestClientEventsAfterSuffix(t *testing.T) {
 	session := openMemorySession(t, c, "suffix")
 	runID := driveToCompletion(t, session, "complete quietly")
 
-	stream := session.EventsAfter(ctx, 9)
+	stream := session.EventsAfter(ctx, runID, 9)
 	replayed := readUntil(t, stream, typeStop(protocol.TypeRunCompleted))
 	if len(replayed) != 3 {
 		t.Fatalf("replayed %d envelopes, want 3", len(replayed))
@@ -738,9 +738,9 @@ func TestClientReplayGapSignal(t *testing.T) {
 	defer cancel()
 
 	session := openMemorySession(t, c, "gap")
-	driveToCompletion(t, session, "expire the cursor")
+	gapRun := driveToCompletion(t, session, "expire the cursor")
 
-	stream := session.EventsAfter(ctx, 1)
+	stream := session.EventsAfter(ctx, gapRun, 1)
 	_, err := stream.Next()
 	var gap *ReplayGapError
 	if !errors.As(err, &gap) {
@@ -752,7 +752,7 @@ func TestClientReplayGapSignal(t *testing.T) {
 
 	// A consumer that accepts the loss resumes at oldest_available - 1 and
 	// still sees the retained suffix.
-	recovered := session.EventsAfter(ctx, gap.OldestAvailable-1)
+	recovered := session.EventsAfter(ctx, gapRun, gap.OldestAvailable-1)
 	replayed := readUntil(t, recovered, typeStop(protocol.TypeRunCompleted))
 	if len(replayed) != 2 {
 		t.Fatalf("recovered replay %d envelopes, want 2", len(replayed))
@@ -845,7 +845,7 @@ func TestClientRejectsBadResumeSuffix(t *testing.T) {
 	// cursor belongs to without relaxing the sequence expectation.
 	envelope := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 9)
 	c := defectServer(t, fmt.Sprintf("id: 9\ndata: %s\n\n", envelope))
-	stream := openDefectSession(t, c).EventsAfter(context.Background(), 4)
+	stream := openDefectSession(t, c).EventsAfter(context.Background(), "wire-run", 4)
 	_, err := stream.Next()
 	var gap *SequenceGapError
 	if !errors.As(err, &gap) {
@@ -853,6 +853,76 @@ func TestClientRejectsBadResumeSuffix(t *testing.T) {
 	}
 	if gap.Expected != 5 || gap.Observed != 9 {
 		t.Fatalf("gap %+v, want expected 5 observed 9", gap)
+	}
+}
+
+func TestClientRejectsGapAfterZeroCursor(t *testing.T) {
+	// A cursor of zero requests the run from its beginning — unlike a fresh
+	// live subscription that may join mid-run — so the first replayed
+	// envelope must be sequence 1.
+	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "wire-run", 2)
+	c := defectServer(t, fmt.Sprintf("id: 2\ndata: %s\n\n", envelope))
+	stream := openDefectSession(t, c).EventsAfter(context.Background(), "wire-run", 0)
+	_, err := stream.Next()
+	var gap *SequenceGapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("error %v (%T), want SequenceGapError", err, err)
+	}
+	if gap.Expected != 1 || gap.Observed != 2 {
+		t.Fatalf("gap %+v, want expected 1 observed 2", gap)
+	}
+}
+
+func TestClientRejectsRunMismatchOnManualResume(t *testing.T) {
+	// A manual resume bound to a run must not silently adopt whichever run
+	// the daemon applied the cursor to: a first envelope from another run
+	// surfaces a mismatch instead of mixing two runs into one recovery.
+	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "other-run", 5)
+	c := defectServer(t, fmt.Sprintf("id: 5\ndata: %s\n\n", envelope))
+	stream := openDefectSession(t, c).EventsAfter(context.Background(), "bound-run", 4)
+	_, err := stream.Next()
+	var mismatch *ResumeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("error %v (%T), want ResumeMismatchError", err, err)
+	}
+	if mismatch.ExpectedRunID != "bound-run" || mismatch.ObservedRunID != "other-run" {
+		t.Fatalf("mismatch %+v, want bound-run -> other-run", mismatch)
+	}
+	if mismatch.AfterSequence != 4 || mismatch.ObservedSequence != 5 {
+		t.Fatalf("mismatch %+v, want after 4 observed 5", mismatch)
+	}
+}
+
+func TestClientRequestIDsUniqueAcrossClients(t *testing.T) {
+	// OAP envelope ids are trace-unique: two clients in one process must not
+	// mint the same request id, or a combined trace reports duplicates and
+	// in_reply_to values become ambiguous.
+	var mu sync.Mutex
+	var ids []string
+	submit := func(c *Client, sessionID string) {
+		session := &Session{client: c, id: protocol.SessionID(sessionID), adapter: "memory"}
+		_, _ = session.Submit(context.Background(), protocol.MessageSubmitRequest{
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+			Delivery: protocol.DeliveryAuto,
+		})
+	}
+	for index := range 2 {
+		c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if envelope, err := protocol.ParseEnvelope(body); err == nil {
+				mu.Lock()
+				ids = append(ids, string(envelope.ID))
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		submit(c, fmt.Sprintf("wire-%d", index))
+	}
+	if len(ids) != 2 {
+		t.Fatalf("captured %d request ids, want 2", len(ids))
+	}
+	if ids[0] == ids[1] {
+		t.Fatalf("two clients minted the same request id %q", ids[0])
 	}
 }
 
@@ -884,7 +954,7 @@ func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
 func TestClientRejectsNon200StreamStatus(t *testing.T) {
 	// A 2xx that is not a stream (a proxy's 204) must surface as an error,
 	// not be dereferenced as a response with a stream body.
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	session := &Session{client: c, id: "wire", adapter: "memory"}
@@ -906,7 +976,7 @@ func TestClientRejectsNonEventStreamContentType(t *testing.T) {
 	// A 200 with an HTML or JSON body is not an event stream; parsing it as
 	// one would masquerade as drops or park forever. The endpoint must
 	// declare text/event-stream.
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "<html>proxy login page</html>")
@@ -963,7 +1033,7 @@ func TestClientValidationRejectsIdlessErrorEnvelope(t *testing.T) {
 	// id: the presence test must not key on the id, or this invalid envelope
 	// skips validation entirely.
 	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","payload":{"error":{"code":"unknown_session","message":"nope"}}}`
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, raw)
@@ -990,7 +1060,7 @@ func TestClientRejectsUncorrelatedErrorEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write(body)
@@ -1010,7 +1080,7 @@ func TestClientValidationRejectsInvalidErrorEnvelope(t *testing.T) {
 	// the schema (no error member): dev-mode validation must flag it instead
 	// of typing it as this operation's refusal.
 	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"err-2","payload":{}}`
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, raw)
@@ -1070,7 +1140,7 @@ func TestClientRunChangedUnderCursor(t *testing.T) {
 	// past its permission gate so its journal holds sequence 5 onward.
 	settleRun(t, session, initial[len(initial)-1])
 	second := submitGolden(t, session, "second run")
-	secondEvents := session.EventsAfter(ctx, 0)
+	secondEvents := session.EventsAfter(ctx, second, 0)
 	secondInitial := readUntil(t, secondEvents, typeStop(protocol.TypeActionPermissionRequested))
 	resolveGate(t, session, secondInitial[len(secondInitial)-1])
 
@@ -1144,10 +1214,10 @@ func TestClientValidationRejectsInvalidEnvelope(t *testing.T) {
 
 // requestStub serves one canned response for every request, for daemon
 // misbehavior the real server never exhibits on the request surface.
-func requestStub(t *testing.T, respond func(w http.ResponseWriter), opts ...Option) *Client {
+func requestStub(t *testing.T, respond func(w http.ResponseWriter, r *http.Request), opts ...Option) *Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		respond(w)
+		respond(w, r)
 	}))
 	t.Cleanup(server.Close)
 	return New(server.URL, opts...)
@@ -1165,7 +1235,7 @@ func TestClientRejectsUncorrelatedResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
@@ -1177,7 +1247,7 @@ func TestClientRejectsUncorrelatedResponse(t *testing.T) {
 }
 
 func TestClientRejectsNon204Close(t *testing.T) {
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "<html>proxy page</html>")
@@ -1197,7 +1267,7 @@ func TestClientRejectsNon204Close(t *testing.T) {
 }
 
 func TestClientErrorCodeAbsentForPlainFailures(t *testing.T) {
-	c := requestStub(t, func(w http.ResponseWriter) {
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = io.WriteString(w, "upstream melted")

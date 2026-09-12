@@ -56,9 +56,12 @@ func (s *Session) Events(ctx context.Context) *EventStream {
 // EventsAfter returns the event stream replayed from a cursor: the current
 // run's envelopes after the given sequence first, then live events. It is the
 // manual resume path for consumers holding a cursor from an OverflowError,
-// ReplayGapError, or DisconnectError.
-func (s *Session) EventsAfter(ctx context.Context, after uint64) *EventStream {
-	stream := &EventStream{session: s, ctx: ctx, strict: s.client.strict, startAfter: &after, lastSeq: after}
+// ReplayGapError, or DisconnectError — pass the error's RunID so the replay is
+// bound to the run the cursor belongs to; if the daemon's current run no
+// longer matches, the stream surfaces a ResumeMismatchError instead of
+// silently mixing runs. An empty runID binds to whichever run is current.
+func (s *Session) EventsAfter(ctx context.Context, runID protocol.RunID, after uint64) *EventStream {
+	stream := &EventStream{session: s, ctx: ctx, strict: s.client.strict, startAfter: &after, lastSeq: after, runID: runID}
 	stream.establish()
 	return stream
 }
@@ -380,6 +383,13 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 		es.resumed = false
 		if es.runID != "" && envelope.RunID != es.runID {
 			return &ResumeMismatchError{AfterSequence: es.lastSeq, ExpectedRunID: es.runID, ObservedRunID: envelope.RunID, ObservedSequence: *envelope.Sequence}
+		}
+		// A cursor-bearing connection — including one replaying after zero —
+		// requests the run from a known position, unlike a fresh live
+		// subscription that may join mid-run: its first envelope must
+		// continue the cursor exactly, or envelopes were skipped.
+		if *envelope.Sequence != es.lastSeq+1 {
+			return &SequenceGapError{RunID: envelope.RunID, Expected: es.lastSeq + 1, Observed: *envelope.Sequence}
 		}
 	}
 	if envelope.RunID != es.runID {

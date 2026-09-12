@@ -160,12 +160,13 @@ func ExampleSession_EventsAfter() {
 	}
 	// A helper consumes one full run so the journal holds a terminal run;
 	// see Example for the gate-resolving loop this elides.
-	if err := runGolden(ctx, session); err != nil {
+	runID, err := runGolden(ctx, session)
+	if err != nil {
 		fmt.Println("run:", err)
 		return
 	}
 
-	stream := session.EventsAfter(ctx, 10)
+	stream := session.EventsAfter(ctx, runID, 10)
 	for {
 		envelope, err := stream.Next()
 		if err == io.EOF {
@@ -183,39 +184,40 @@ func ExampleSession_EventsAfter() {
 }
 
 // runGolden drives one scripted run to completion on a helper subscription.
-func runGolden(ctx context.Context, session *client.Session) error {
+func runGolden(ctx context.Context, session *client.Session) (protocol.RunID, error) {
 	stream := session.Events(ctx)
-	if _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, err := session.Submit(ctx, protocol.MessageSubmitRequest{
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run the golden script")}},
 		Delivery: protocol.DeliveryAuto,
-	}); err != nil {
-		return err
+	})
+	if err != nil {
+		return "", err
 	}
 	for {
 		envelope, err := stream.Next()
 		if err == io.EOF {
-			return nil
+			return admission.RunID, nil
 		}
 		if err != nil {
-			return err
+			return "", err
 		}
 		switch envelope.Type {
 		case protocol.TypeActionPermissionRequested:
 			var requested protocol.PermissionRequestedPayload
 			if err := envelope.DecodePayload(&requested); err != nil {
-				return err
+				return "", err
 			}
 			if err := session.ResolvePermission(ctx, protocol.PermissionResolveRequest{
 				InteractionID: requested.InteractionID, RequestedBy: requested.RequestedBy,
 				RespondedBy: requested.RespondedBy, SessionID: requested.SessionID,
 				RunID: requested.RunID, ChoiceID: "approve", Granted: true,
 			}); err != nil {
-				return err
+				return "", err
 			}
 		case protocol.TypeUserInputRequested:
 			var requested protocol.UserInputRequestedPayload
 			if err := envelope.DecodePayload(&requested); err != nil {
-				return err
+				return "", err
 			}
 			if err := session.ResolveInput(ctx, protocol.UserInputResolveRequest{
 				InteractionID: requested.InteractionID, RequestedBy: requested.RequestedBy,
@@ -223,7 +225,7 @@ func runGolden(ctx context.Context, session *client.Session) error {
 				RunID:   requested.RunID,
 				Answers: []protocol.InputAnswer{{QuestionID: requested.Questions[0].ID, SelectedOptionIDs: []string{"yes"}}},
 			}); err != nil {
-				return err
+				return "", err
 			}
 		}
 	}

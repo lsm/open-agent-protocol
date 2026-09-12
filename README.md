@@ -148,7 +148,7 @@ error, never silently accepted. `WithStrictResume` turns resume off and reports
 the drop as a `DisconnectError` carrying the cursor. The daemon's terminal
 signal events
 surface as typed errors: `OverflowError` (reconnect with
-`Session.EventsAfter(LastSequence)`) and `ReplayGapError` (the requested cursor
+`Session.EventsAfter(RunID, LastSequence)`) and `ReplayGapError` (the requested cursor
 expired; `OldestAvailable`/`LatestAvailable` bound what is retained). Daemon
 refusals arrive as `ServerError` with the correlated `error.response` code.
 
