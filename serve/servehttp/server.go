@@ -218,7 +218,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			open.Metadata[key] = value
 		}
 	}
-	session, err := s.hub.Open(r.Context(), name, open)
+	_, state, err := s.hub.Open(r.Context(), name, open)
 	if err != nil {
 		status, code := http.StatusBadGateway, "open_failed"
 		switch {
@@ -230,11 +230,10 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, status, code, adapterMessage(err), envelope)
 		return
 	}
-	state, err := session.State(r.Context())
-	if err != nil && !errors.Is(err, base.ErrSessionClosed) {
-		s.writeError(w, http.StatusBadGateway, "open_failed", adapterMessage(err), envelope)
-		return
-	}
+	// The response is built from the state the open itself confirmed:
+	// re-reading state here could fail after registration (an expired
+	// request context, a flaky adapter probe) and report a successful open
+	// as 502 while the session stays live in the hub.
 	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), protocol.SessionOpenResponse{
 		SessionID: state.SessionID, Status: state.Status,
 	})

@@ -97,33 +97,38 @@ func New(registry *Registry, options Options) *Hub {
 // Registry returns the adapter registry the hub was built over.
 func (h *Hub) Registry() *Registry { return h.registry }
 
-// Open opens one session on the named adapter. A request with no participant
-// is opened as DefaultParticipant; a request with an explicit session id is
-// honoured, and reopening an id the hub already tracks fails with
-// *SessionExistsError (the duplicate adapter session is closed again before
-// the error returns). The adapter's own open failure surfaces verbatim.
-func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenRequest) (*Session, error) {
+// Open opens one session on the named adapter and returns it together with
+// the adapter-reported state that confirmed the open — callers build their
+// response from that state rather than re-reading it, so a session that
+// opened successfully can never be reported as failed by a second state
+// read (leaving it live in the hub while the caller believes the open
+// failed). A request with no participant is opened as DefaultParticipant; a
+// request with an explicit session id is honoured, and reopening an id the
+// hub already tracks fails with *SessionExistsError (the duplicate adapter
+// session is closed again before the error returns). The adapter's own open
+// failure surfaces verbatim.
+func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenRequest) (*Session, protocol.SessionState, error) {
 	implementation, ok := h.registry.Lookup(adapterName)
 	if !ok {
-		return nil, &UnknownAdapterError{Name: adapterName}
+		return nil, protocol.SessionState{}, &UnknownAdapterError{Name: adapterName}
 	}
 	if request.Participant.ID == "" {
 		request.Participant.ID = DefaultParticipant
 	}
 	session, err := implementation.Open(ctx, request)
 	if err != nil {
-		return nil, err
+		return nil, protocol.SessionState{}, err
 	}
 	state, err := session.State(ctx)
 	if err != nil && !errors.Is(err, base.ErrSessionClosed) {
-		return nil, err
+		return nil, protocol.SessionState{}, err
 	}
 	entry := newSession(state.SessionID, adapterName, session)
 	if err := h.sessions.add(entry); err != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
-		return nil, &SessionExistsError{ID: entry.id}
+		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
-	return entry, nil
+	return entry, state, nil
 }
 
 // Session returns the session registered under id. Entries survive Close —

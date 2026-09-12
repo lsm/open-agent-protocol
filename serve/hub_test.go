@@ -171,7 +171,7 @@ func openMemorySession(t *testing.T, hub *serve.Hub, id string) *serve.Session {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	session, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: protocol.SessionID(id)})
+	session, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: protocol.SessionID(id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestHubOpenRejections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	if _, err := hub.Open(ctx, "ghost", base.OpenRequest{}); !errors.Is(err, serve.ErrUnknownAdapter) {
+	if _, _, err := hub.Open(ctx, "ghost", base.OpenRequest{}); !errors.Is(err, serve.ErrUnknownAdapter) {
 		t.Fatalf("unknown adapter error %v", err)
 	}
 	if _, err := hub.Session("ghost"); !errors.Is(err, serve.ErrUnknownSession) {
@@ -305,7 +305,7 @@ func TestHubOpenRejections(t *testing.T) {
 	}
 
 	session := openMemorySession(t, hub, "dup")
-	if _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "dup"}); !errors.Is(err, serve.ErrSessionExists) {
+	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "dup"}); !errors.Is(err, serve.ErrSessionExists) {
 		t.Fatalf("duplicate open error %v", err)
 	}
 	// The duplicate open must not disturb the tracked session.
@@ -336,7 +336,7 @@ func TestHubOpenDefaultsParticipant(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	session, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "default-participant"})
+	session, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "default-participant"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestHubFansOutToSubscribers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	session, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "fan-out"})
+	session, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "fan-out"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestHubSubscriptionQueueOverflow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	session, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "overflow"})
+	session, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "overflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +480,7 @@ func TestHubAdapterStreamOverflow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	session, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "adapter-overflow"})
+	session, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "adapter-overflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +552,7 @@ func TestHubLiveStreamErrorSurfaces(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	session, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "stream-error"})
+	session, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "stream-error"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -742,11 +742,11 @@ func TestHubSessionsListingAcrossAdapters(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	listed, err := hub.Open(ctx, "alpha", base.OpenRequest{SessionID: "list-a"})
+	listed, _, err := hub.Open(ctx, "alpha", base.OpenRequest{SessionID: "list-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	running, err := hub.Open(ctx, "beta", base.OpenRequest{SessionID: "list-b"})
+	running, _, err := hub.Open(ctx, "beta", base.OpenRequest{SessionID: "list-b"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -888,7 +888,7 @@ func TestHubConcurrentSessions(t *testing.T) {
 			defer cancel()
 			id := protocol.SessionID(fmt.Sprintf("concurrent-%d", index))
 
-			session, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: id})
+			session, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: id})
 			if err != nil {
 				t.Errorf("session %d open: %v", index, err)
 				return
