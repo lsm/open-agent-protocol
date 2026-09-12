@@ -16,7 +16,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/adapter/claude/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 type testClock struct {
@@ -333,55 +332,17 @@ func eventTypes(events []protocol.Envelope) []string {
 	return out
 }
 
+// assertValidTrace runs the shared protocol assertion with the adapter's live
+// descriptor. assertCancelledTrace is the variant for runs the test itself
+// cancelled: it splices the harness-side exchange the cancellation implies.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
-	capReq, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptor := testDescriptor(t)
-	capRes, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capRes.InReplyTo, capRes.CapabilityRevision = capReq.ID, descriptor.CapabilityRevision
-	submitReq, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	submitReq.SessionID = admission.SessionID
-	submitRes, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	if err != nil {
-		t.Fatal(err)
-	}
-	submitRes.SessionID, submitRes.InReplyTo = admission.SessionID, submitReq.ID
-	trace := []protocol.Envelope{capReq, capRes, submitReq, submitRes}
-	if len(events) > 0 && events[len(events)-1].Type == protocol.TypeRunCancelled {
-		// OAP requires an accepted cancellation behind a run.cancelled
-		// terminal; the adapter's interrupt exchange supplies it.
-		cancelReq, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		cancelReq.SessionID, cancelReq.RunID = admission.SessionID, admission.RunID
-		cancelRes, err := protocol.NewEnvelope(protocol.TypeRunCancelResponse, "cancel-response", protocol.RunCancelResponse{SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelling})
-		if err != nil {
-			t.Fatal(err)
-		}
-		cancelRes.SessionID, cancelRes.RunID, cancelRes.InReplyTo = admission.SessionID, admission.RunID, cancelReq.ID
-		trace = append(trace, events[:len(events)-1]...)
-		trace = append(trace, cancelReq, cancelRes, events[len(events)-1])
-	} else {
-		trace = append(trace, events...)
-	}
-	data, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(data, "claude-test"); !result.Valid() {
-		t.Fatalf("trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, data)
-	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+}
+
+func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
 }
 
 func testDescriptor(t *testing.T) base.Descriptor {
@@ -708,7 +669,7 @@ func TestCancelSettlesOnlyOnAbortedTerminalReason(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u3"}`)
 	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r2"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertCancelledTrace(t, outcome.admission, events)
 	last := terminalOf(events)
 	if last.Type != protocol.TypeRunCancelled {
 		t.Fatalf("terminal = %s (%v)", last.Type, eventTypes(events))
@@ -1013,7 +974,7 @@ func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u10"}`)
 	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r10"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertCancelledTrace(t, outcome.admission, events)
 	if terminalOf(events).Type != protocol.TypeRunCancelled {
 		t.Fatalf("terminal = %s", terminalOf(events).Type)
 	}

@@ -20,7 +20,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/pi/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/pi/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 const (
@@ -274,7 +273,6 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 		}
 	}
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
-	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
 	validatePiTrace(t, admission, descriptor, events, definition.Cancel, resolutionTrace)
 	if definition.Noncanonical != "" {
 		t.Logf("case %s: explicit production-boundary mismatch: %s", entry.ID, definition.Noncanonical)
@@ -515,74 +513,6 @@ func assertPiClassifications(t *testing.T, frames []piCorpusFrame, decoded []rpc
 	}
 }
 
-func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool, resolutionTrace []protocol.Envelope) {
-	t.Helper()
-	capReq, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	capRes, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
-	capRes.InReplyTo, capRes.CapabilityRevision = capReq.ID, descriptor.CapabilityRevision
-	submitReq, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	submitReq.SessionID = admission.SessionID
-	submitRes, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	submitRes.SessionID, submitRes.InReplyTo = admission.SessionID, submitReq.ID
-	trace := []protocol.Envelope{capReq, capRes, submitReq, submitRes}
-	if cancelled {
-		anchor := -1
-		for i, e := range events {
-			if e.Type == protocol.TypeRunStatusUpdated {
-				anchor = i
-				break
-			}
-		}
-		if anchor < 0 {
-			t.Fatal("cancel trace lacks cancelling status")
-		}
-		req, _ := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
-		req.SessionID, req.RunID = admission.SessionID, admission.RunID
-		res, _ := protocol.NewEnvelope(protocol.TypeRunCancelResponse, "cancel-response", protocol.RunCancelResponse{SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelling})
-		res.SessionID, res.RunID, res.InReplyTo = admission.SessionID, admission.RunID, req.ID
-		trace = append(trace, events[:anchor]...)
-		trace = append(trace, req, res)
-		trace = append(trace, events[anchor:]...)
-	} else {
-		trace = append(trace, events...)
-	}
-	if len(resolutionTrace) > 0 {
-		// The injected-client case cannot pass capability-aware semantic validation:
-		// production truthfully advertises user input unavailable. Still construct
-		// and check the canonical request/response portion and its ordering/identity.
-		anchor := -1
-		var requested protocol.UserInputRequestedPayload
-		for i, event := range trace {
-			if event.Type == protocol.TypeUserInputRequested {
-				anchor = i + 1
-				if err := event.DecodePayload(&requested); err != nil {
-					t.Fatal(err)
-				}
-				break
-			}
-		}
-		if anchor < 0 || len(resolutionTrace) != 2 || resolutionTrace[0].Type != protocol.TypeUserInputResolveRequest || resolutionTrace[1].Type != protocol.TypeUserInputResolveResponse || resolutionTrace[1].InReplyTo != resolutionTrace[0].ID {
-			t.Fatal("invalid injected interaction request/response trace")
-		}
-		var request protocol.UserInputResolveRequest
-		var response protocol.UserInputResolveResponse
-		if err := resolutionTrace[0].DecodePayload(&request); err != nil {
-			t.Fatal(err)
-		}
-		if err := resolutionTrace[1].DecodePayload(&response); err != nil {
-			t.Fatal(err)
-		}
-		if request.InteractionID != requested.InteractionID || response.InteractionID != requested.InteractionID || request.SessionID != admission.SessionID || response.SessionID != admission.SessionID || request.RunID != admission.RunID || response.RunID != admission.RunID || !response.Accepted {
-			t.Fatal("injected interaction identity or acceptance mismatch")
-		}
-		trace = append(trace[:anchor], append(resolutionTrace, trace[anchor:]...)...)
-		return
-	}
-	encoded, _ := json.Marshal(trace)
-	if result := validation.MustNew().ValidateBytes(encoded, "pi-corpus"); !result.Valid() {
-		t.Fatalf("corpus trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, encoded)
-	}
-}
 func assertPiReplay(t *testing.T, session base.Session, runID protocol.RunID, after uint64, events []protocol.Envelope) {
 	t.Helper()
 	recovery, replay, err := session.Resume(context.Background(), base.ResumeRequest{RunID: runID, AfterSequence: after})
@@ -693,5 +623,48 @@ func piCorpusRoot(t *testing.T) string {
 func TestPiCorpusPinConstants(t *testing.T) {
 	if PinnedVersion == "" || PinnedCommit == "" || piCommitTree == "" || piRPCTypesBlob == "" || piRPCModeBlob == "" || piAgentSessionBlob == "" || piSessionMgrBlob == "" || piAgentTypesBlob == "" || piRPCEntryBlob == "" || piCLIArgsBlob == "" || CapabilityRevision == "" {
 		t.Fatal("missing Pi corpus pin")
+	}
+}
+
+// validatePiTrace runs the shared protocol assertion over a corpus run. The
+// injectable-client extension case cannot pass capability-aware validation —
+// production truthfully advertises user input unavailable — so its canonical
+// resolve exchange is checked structurally instead.
+func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool, resolutionTrace []protocol.Envelope) {
+	t.Helper()
+	if len(resolutionTrace) == 0 {
+		if cancelled {
+			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+		} else {
+			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+		}
+		return
+	}
+	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
+	var requested protocol.UserInputRequestedPayload
+	found := false
+	for _, event := range events {
+		if event.Type != protocol.TypeUserInputRequested {
+			continue
+		}
+		if err := event.DecodePayload(&requested); err != nil {
+			t.Fatal(err)
+		}
+		found = true
+		break
+	}
+	if !found || len(resolutionTrace) != 2 || resolutionTrace[0].Type != protocol.TypeUserInputResolveRequest || resolutionTrace[1].Type != protocol.TypeUserInputResolveResponse || resolutionTrace[1].InReplyTo != resolutionTrace[0].ID {
+		t.Fatal("invalid injected interaction request/response trace")
+	}
+	var request protocol.UserInputResolveRequest
+	var response protocol.UserInputResolveResponse
+	if err := resolutionTrace[0].DecodePayload(&request); err != nil {
+		t.Fatal(err)
+	}
+	if err := resolutionTrace[1].DecodePayload(&response); err != nil {
+		t.Fatal(err)
+	}
+	if request.InteractionID != requested.InteractionID || response.InteractionID != requested.InteractionID || request.SessionID != admission.SessionID || response.SessionID != admission.SessionID || request.RunID != admission.RunID || response.RunID != admission.RunID || !response.Accepted {
+		t.Fatal("injected interaction identity or acceptance mismatch")
 	}
 }

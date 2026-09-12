@@ -22,7 +22,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/acp/internal/rpc"
 	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 const (
@@ -267,7 +266,6 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 		}
 	}
 	events := append(prefix, adaptertest.Drain(t, stream, time.Second)...)
-	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
 	validateACPTrace(t, admission, descriptor, events, containsAction(frames, "cancel"), containsAction(frames, "permission"))
 	if definition.ReplayAfter != nil {
 		assertReplayEvidence(t, session, admission.RunID, *definition.ReplayAfter, events)
@@ -341,75 +339,6 @@ func containsAction(frames []acpCorpusFrame, action string) bool {
 	}
 	return false
 }
-
-func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled, permission bool) {
-	t.Helper()
-	request, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	capabilities, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
-	capabilities.InReplyTo = request.ID
-	capabilities.CapabilityRevision = descriptor.CapabilityRevision
-	submitRequest, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("fixture")}}})
-	submitRequest.SessionID = admission.SessionID
-	submitResponse, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	submitResponse.SessionID = admission.SessionID
-	submitResponse.InReplyTo = submitRequest.ID
-	trace := []protocol.Envelope{request, capabilities, submitRequest, submitResponse}
-	if permission {
-		for _, event := range events {
-			if event.Type == protocol.TypeActionPermissionRequested {
-				var requested protocol.PermissionRequestedPayload
-				if err := event.DecodePayload(&requested); err != nil {
-					t.Fatal(err)
-				}
-				resolveRequest, _ := protocol.NewEnvelope(protocol.TypeActionPermissionResolveRequest, "permission-resolve-request", protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true})
-				resolveRequest.SessionID, resolveRequest.RunID = admission.SessionID, admission.RunID
-				resolveRequest.CapabilityRevision = descriptor.CapabilityRevision
-				resolveResponse, _ := protocol.NewEnvelope(protocol.TypeActionPermissionResolveResponse, "permission-resolve-response", protocol.PermissionResolveResponse{InteractionID: requested.InteractionID, SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true})
-				resolveResponse.SessionID, resolveResponse.RunID, resolveResponse.InReplyTo = admission.SessionID, admission.RunID, resolveRequest.ID
-				resolveResponse.CapabilityRevision = descriptor.CapabilityRevision
-				requestedIndex := 0
-				for i, candidate := range events {
-					if candidate.Type == protocol.TypeActionPermissionRequested {
-						requestedIndex = i + 1
-						break
-					}
-				}
-				trace = append(trace, events[:requestedIndex]...)
-				trace = append(trace, resolveRequest, resolveResponse)
-				trace = append(trace, events[requestedIndex:]...)
-				break
-			}
-		}
-	} else if cancelled {
-		cancelIndex := -1
-		for i, event := range events {
-			if event.Type == protocol.TypeRunStatusUpdated {
-				cancelIndex = i
-				break
-			}
-		}
-		if cancelIndex < 0 {
-			t.Fatal("cancel case emitted no cancelling status")
-		}
-		cancelRequest, _ := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
-		cancelRequest.SessionID, cancelRequest.RunID = admission.SessionID, admission.RunID
-		cancelResponse, _ := protocol.NewEnvelope(protocol.TypeRunCancelResponse, "cancel-response", protocol.RunCancelResponse{SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelling})
-		cancelResponse.SessionID, cancelResponse.RunID, cancelResponse.InReplyTo = admission.SessionID, admission.RunID, cancelRequest.ID
-		trace = append(trace, events[:cancelIndex]...)
-		trace = append(trace, cancelRequest, cancelResponse)
-		trace = append(trace, events[cancelIndex:]...)
-	} else {
-		trace = append(trace, events...)
-	}
-	encoded, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(encoded, "acp-corpus"); !result.Valid() {
-		t.Fatalf("corpus trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, encoded)
-	}
-}
-
 func acpLoadFrames(t *testing.T, filename string) ([]acpCorpusFrame, []rpc.Message) {
 	t.Helper()
 	file, err := os.Open(filename)
@@ -580,5 +509,57 @@ func acpCorpusRoot(t *testing.T) string {
 func TestACPCorpusPinConstants(t *testing.T) {
 	if acpCommitSHA256 == "" || acpSpecTreeSHA256 == "" || acpSchemaTreeSHA256 == "" || CapabilityRevision == "" {
 		t.Fatal("missing ACP corpus pin")
+	}
+}
+
+// validateACPTrace runs the shared protocol assertion over a corpus run. A
+// permission case additionally splices the harness-side resolve exchange the
+// session already performed, so the validator certifies the client half of
+// the interaction, not only the adapter's events.
+func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled, permission bool) {
+	t.Helper()
+	if !permission {
+		if cancelled {
+			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+		} else {
+			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+		}
+		return
+	}
+	var requested protocol.PermissionRequestedPayload
+	cut := -1
+	for index, event := range events {
+		if event.Type != protocol.TypeActionPermissionRequested {
+			continue
+		}
+		if err := event.DecodePayload(&requested); err != nil {
+			t.Fatal(err)
+		}
+		cut = index + 1
+		break
+	}
+	if cut < 0 {
+		t.Fatal("permission case emitted no permission gate")
+	}
+	resolveRequest, err := protocol.NewEnvelope(protocol.TypeActionPermissionResolveRequest, "permission-resolve-request", protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolveRequest.SessionID, resolveRequest.RunID = admission.SessionID, admission.RunID
+	resolveRequest.CapabilityRevision = descriptor.CapabilityRevision
+	resolveResponse, err := protocol.NewEnvelope(protocol.TypeActionPermissionResolveResponse, "permission-resolve-response", protocol.PermissionResolveResponse{InteractionID: requested.InteractionID, SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolveResponse.SessionID, resolveResponse.RunID, resolveResponse.InReplyTo = admission.SessionID, admission.RunID, resolveRequest.ID
+	resolveResponse.CapabilityRevision = descriptor.CapabilityRevision
+	spliced := make([]protocol.Envelope, 0, len(events)+2)
+	spliced = append(spliced, events[:cut]...)
+	spliced = append(spliced, resolveRequest, resolveResponse)
+	spliced = append(spliced, events[cut:]...)
+	if cancelled {
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, spliced)
+	} else {
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, spliced)
 	}
 }

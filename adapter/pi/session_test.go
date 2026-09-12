@@ -161,6 +161,37 @@ func submitTest(t *testing.T, s *Session) (protocol.MessageSubmitResponse, base.
 	return response, stream
 }
 
+func testDescriptor(t *testing.T) base.Descriptor {
+	t.Helper()
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
+		return nil, native.SessionState{}, errors.New("probe only")
+	}), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+// assertValidTrace runs the shared protocol assertion with the adapter's live
+// descriptor. assertCancelledTrace is the variant for runs the test itself
+// cancelled: it splices the harness-side exchange the cancellation implies.
+// Extension-dialog runs are exempt from both: production truthfully advertises
+// user input unavailable, so their traces cannot pass capability-aware
+// validation.
+func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+}
+
+func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
+}
+
 // A requested model cannot be applied: the prompt carries no model selection
 // and no set_model is issued, so the submission must be rejected rather than
 // reporting the request as the effective model (which would misattribute the
@@ -311,7 +342,8 @@ func TestPromptAdmissionDoesNotSynthesizeStartAndPreservesEarlyEvents(t *testing
 	}
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("early", "stop")}, "willRetry": false})
 	client.emit(t, map[string]any{"type": "agent_settled"})
-	_ = adaptertest.Drain(t, stream, time.Second)
+	settled := adaptertest.Drain(t, stream, time.Second)
+	assertValidTrace(t, response, append(events, settled...))
 }
 
 func TestSlashCommandRejectedWithoutNativeSideEffect(t *testing.T) {
@@ -405,6 +437,7 @@ func TestCancelBeforeAgentStartPreservesCanonicalOrdering(t *testing.T) {
 			t.Fatalf("event %d sequence=%v", i, event.Sequence)
 		}
 	}
+	assertCancelledTrace(t, result.response, events)
 }
 
 func TestSubmitContextBeforeStartDoesNotMisreportAdmission(t *testing.T) {
@@ -467,21 +500,23 @@ func TestSubmitTransportFailureBeforeStartReturnsError(t *testing.T) {
 func TestFinalMessageAuthoritativeAndRetryEndNonterminal(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
-	_, stream := submitTest(t, s)
+	admission, stream := submitTest(t, s)
 	client.emit(t, map[string]any{"type": "message_update", "usage": map[string]any{}, "assistantMessageEvent": map[string]any{"type": "thinking_delta", "contentIndex": 0, "delta": "why"}})
 	client.emit(t, map[string]any{"type": "message_update", "usage": map[string]any{}, "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 1, "delta": "draft"}})
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("ignored", "error")}, "willRetry": true})
+	var trace []protocol.Envelope
 	select {
 	case e := <-stream:
 		if e.Envelope.Type == protocol.TypeRunCompleted || e.Envelope.Type == protocol.TypeRunFailed {
 			t.Fatal("retry candidate settled")
 		}
+		trace = append(trace, e.Envelope)
 	default:
 	}
 	client.emit(t, map[string]any{"type": "message_end", "message": assistant("final", "stop")})
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("final", "stop")}, "willRetry": false})
 	client.emit(t, map[string]any{"type": "agent_settled"})
-	events := adaptertest.Drain(t, stream, time.Second)
+	events := append(trace, adaptertest.Drain(t, stream, time.Second)...)
 	last := events[len(events)-1]
 	if last.Type != protocol.TypeRunCompleted {
 		t.Fatalf("events=%v", eventTypes(events))
@@ -494,12 +529,13 @@ func TestFinalMessageAuthoritativeAndRetryEndNonterminal(t *testing.T) {
 	if !ok || len(parts) != 1 || parts[0].Text != "final" {
 		t.Fatalf("final=%s", p.FinalResponse.Content)
 	}
+	assertValidTrace(t, admission, events)
 }
 
 func TestToolsKeyedByIDAndSettleBeforeParent(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
-	_, stream := submitTest(t, s)
+	admission, stream := submitTest(t, s)
 	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "a", "toolName": "read", "args": map[string]any{"path": "a"}})
 	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "b", "toolName": "read", "args": map[string]any{"path": "b"}})
 	client.emit(t, map[string]any{"type": "tool_execution_update", "toolCallId": "a", "toolName": "read", "args": map[string]any{"path": "a"}, "partialResult": map[string]any{"text": "half"}})
@@ -515,6 +551,7 @@ func TestToolsKeyedByIDAndSettleBeforeParent(t *testing.T) {
 	if events[1].ToolCallID == "a" || events[3].ToolCallID == "b" || events[1].ToolCallID == events[3].ToolCallID {
 		t.Fatalf("mapped ids=%s,%s", events[1].ToolCallID, events[3].ToolCallID)
 	}
+	assertValidTrace(t, admission, events)
 }
 
 func TestExtensionConfirmIsGenericInput(t *testing.T) {
@@ -676,7 +713,7 @@ func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	_ = adaptertest.Next(t, stream, time.Second)
+	started := adaptertest.Next(t, stream, time.Second)
 	client.onCall = func(c native.Command) {
 		if c.Type == native.CommandAbort {
 			client.emit(t, map[string]any{"type": "message_end", "message": assistant("naturally done", "stop")})
@@ -692,13 +729,14 @@ func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	if events[len(events)-1].Type != protocol.TypeRunCompleted {
 		t.Fatalf("events=%v cancel=%+v", eventTypes(events), cancel)
 	}
+	assertCancelledTrace(t, response, append([]protocol.Envelope{started}, events...))
 }
 
 func TestAbortSettlementCancelsWhenNoNaturalCandidate(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	_ = adaptertest.Next(t, stream, time.Second)
+	started := adaptertest.Next(t, stream, time.Second)
 	client.onCall = func(c native.Command) {
 		if c.Type == native.CommandAbort {
 			client.emit(t, map[string]any{"type": "agent_settled"})
@@ -712,12 +750,13 @@ func TestAbortSettlementCancelsWhenNoNaturalCandidate(t *testing.T) {
 	if events[len(events)-1].Type != protocol.TypeRunCancelled || (cancel.Status != protocol.RunCancelled && cancel.Status != protocol.RunCancelling) {
 		t.Fatalf("events=%v cancel=%+v", eventTypes(events), cancel)
 	}
+	assertCancelledTrace(t, response, append([]protocol.Envelope{started}, events...))
 }
 
 func TestProcessExitFailsActiveOnce(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
-	_, stream := submitTest(t, s)
+	admission, stream := submitTest(t, s)
 	client.mu.Lock()
 	client.err = errors.New("exit 9")
 	client.mu.Unlock()
@@ -732,7 +771,7 @@ func TestProcessExitFailsActiveOnce(t *testing.T) {
 	if terminals != 1 || events[len(events)-1].Type != protocol.TypeRunFailed {
 		t.Fatalf("events=%v", eventTypes(events))
 	}
-	_ = s
+	assertValidTrace(t, admission, events)
 }
 
 func TestReplayGapAndOverflow(t *testing.T) {

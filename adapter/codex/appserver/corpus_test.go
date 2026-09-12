@@ -21,7 +21,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/adapter/codex/appserver/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 const codexSchemaTreeSHA256 = "d31125f254f93a9c6300e50c86ffbd3cc6ad388ef5b8833ecbd0a47371a344b6"
@@ -191,13 +190,16 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 		}
 	}
 	events := append(prefix, adaptertest.Drain(t, stream, time.Second)...)
-	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
+	if entry.ID == "interrupted-turn" {
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+	} else {
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	}
 	expected := loadJSON[[]protocol.Envelope](t, paths.expectedOAP)
 	if len(expected) == 0 {
 		writeExpected(t, paths.expectedOAP, events)
 		expected = events
 	}
-	validateCorpusTrace(t, admission, descriptor, events, entry.ID == "interrupted-turn")
 	want, err := json.Marshal(expected)
 	if err != nil {
 		t.Fatal(err)
@@ -294,55 +296,6 @@ func runCorpusRequest(t *testing.T, client *fakeClient, session adapter.Session,
 func jsonEqual(left, right []byte) bool {
 	var leftValue, rightValue any
 	return json.Unmarshal(left, &leftValue) == nil && json.Unmarshal(right, &rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
-}
-
-func validateCorpusTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) {
-	t.Helper()
-	request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities.InReplyTo = request.ID
-	capabilities.CapabilityRevision = descriptor.CapabilityRevision
-	submit, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("fixture")}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	submit.SessionID = admission.SessionID
-	response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.SessionID = admission.SessionID
-	response.InReplyTo = submit.ID
-	trace := []protocol.Envelope{request, capabilities, submit, response}
-	if cancelled {
-		cancelRequest, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		cancelRequest.SessionID, cancelRequest.RunID = admission.SessionID, admission.RunID
-		cancelResponse, err := protocol.NewEnvelope(protocol.TypeRunCancelResponse, "cancel-response", protocol.RunCancelResponse{SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelling})
-		if err != nil {
-			t.Fatal(err)
-		}
-		cancelResponse.SessionID, cancelResponse.RunID, cancelResponse.InReplyTo = admission.SessionID, admission.RunID, cancelRequest.ID
-		trace = append(trace, events[0], cancelRequest, cancelResponse)
-		trace = append(trace, events[1:]...)
-	} else {
-		trace = append(trace, events...)
-	}
-	encoded, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(encoded, "codex-corpus"); !result.Valid() {
-		t.Fatalf("corpus trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, encoded)
-	}
 }
 
 func casePaths(t *testing.T, dir string, definition corpusCase) corpusCasePaths {

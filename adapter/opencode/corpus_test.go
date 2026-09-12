@@ -20,7 +20,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/adapter/opencode/internal/native"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 const (
@@ -272,16 +271,18 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	// ordered prefix and derive the terminal from the full run.
 	close(fed)
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
-	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
 	// Decision 0002 made both former mismatch shapes canonical: a queued
 	// reservation that promotes via run.started, and an accepted run whose
 	// first and only event is a pre-start terminal. Non-terminal events
 	// before run.started remain invalid.
 	canonical := len(events) > 0 && (events[0].Type == protocol.TypeRunStarted || events[0].Type == protocol.TypeRunFailed || events[0].Type == protocol.TypeRunCancelled)
-	if canonical {
-		validateOpenCodeTrace(t, admission, descriptor, events, definition.Cancel)
-	} else {
+	if !canonical {
 		t.Fatalf("case %s: trace has no canonical first event", entry.ID)
+	}
+	if definition.Cancel {
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+	} else {
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
 	}
 	if definition.ReplayAfter != nil {
 		assertOpenCodeReplay(t, session, admission.RunID, *definition.ReplayAfter, events)
@@ -371,56 +372,6 @@ func assertOpenCodeClassifications(t *testing.T, frames []opencodeCorpusFrame, m
 		default:
 			t.Fatalf("invalid fidelity %q", frame.Fidelity)
 		}
-	}
-}
-
-func validateOpenCodeTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool) {
-	t.Helper()
-	capRequest, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	capResponse, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
-	capResponse.InReplyTo, capResponse.CapabilityRevision = capRequest.ID, descriptor.CapabilityRevision
-	submitRequest, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	submitRequest.SessionID = admission.SessionID
-	submitResponse, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	submitResponse.SessionID, submitResponse.InReplyTo = admission.SessionID, submitRequest.ID
-	trace := []protocol.Envelope{capRequest, capResponse, submitRequest, submitResponse}
-	if cancelled {
-		anchor := -1
-		for i := range events {
-			if events[i].Type == protocol.TypeRunStatusUpdated {
-				anchor = i
-				break
-			}
-		}
-		if anchor < 0 {
-			// Cancel acknowledged before run.started carries no status
-			// event; anchor the exchange before the terminal instead.
-			for i := len(events) - 1; i >= 0; i-- {
-				switch events[i].Type {
-				case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
-					anchor = i
-				}
-			}
-		}
-		if anchor < 0 {
-			t.Fatal("cancel case has no anchoring event")
-		}
-		cancelRequest, _ := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
-		cancelRequest.SessionID, cancelRequest.RunID = admission.SessionID, admission.RunID
-		cancelResponse, _ := protocol.NewEnvelope(protocol.TypeRunCancelResponse, "cancel-response", protocol.RunCancelResponse{SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelling})
-		cancelResponse.SessionID, cancelResponse.RunID, cancelResponse.InReplyTo = admission.SessionID, admission.RunID, cancelRequest.ID
-		trace = append(trace, events[:anchor]...)
-		trace = append(trace, cancelRequest, cancelResponse)
-		trace = append(trace, events[anchor:]...)
-	} else {
-		trace = append(trace, events...)
-	}
-	encoded, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(encoded, "opencode-corpus"); !result.Valid() {
-		t.Fatalf("corpus trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, encoded)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/protocol"
 	"github.com/lsm/open-agent-protocol/provider"
 	"github.com/lsm/open-agent-protocol/validation"
@@ -270,6 +271,9 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 	if err := validateEventLifecycle(events, admission.RunID); err != nil {
 		return err
 	}
+	if err := validateDemoTrace(admission, descriptor, events, false); err != nil {
+		return err
+	}
 	recovery, replay, err := session.Resume(ctx, adapter.ResumeRequest{RunID: admission.RunID, AfterSequence: 9})
 	if err != nil {
 		return err
@@ -293,7 +297,7 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 }
 
 func cancellationDemo(ctx context.Context, stdout io.Writer) error {
-	_, session, err := openDemo(ctx, 2)
+	descriptor, session, err := openDemo(ctx, 2)
 	if err != nil {
 		return err
 	}
@@ -318,6 +322,9 @@ func cancellationDemo(ctx context.Context, stdout io.Writer) error {
 	}
 	events := append(initial, settlement...)
 	if err := validateEventLifecycle(events, admission.RunID); err != nil {
+		return err
+	}
+	if err := validateDemoTrace(admission, descriptor, events, ack.Accepted); err != nil {
 		return err
 	}
 	if events[len(events)-1].Type != protocol.TypeRunCancelled {
@@ -397,6 +404,28 @@ func validateEventLifecycle(events []protocol.Envelope, runID protocol.RunID) er
 	}
 	if terminals != 1 {
 		return fmt.Errorf("adapter emitted %d terminal events", terminals)
+	}
+	return nil
+}
+
+// validateDemoTrace runs the executable OAP schema and state machine over the
+// demo's own adapter trace, assembling it with the same shared builder the
+// adapter test suite uses, so `oap check` certifies the reference adapter's
+// emission rather than only its lifecycle shape. The cancellation demo passes
+// the acknowledgement of the Cancel it actually issued as evidence.
+func validateDemoTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) error {
+	var trace []byte
+	var err error
+	if cancelled {
+		trace, err = adaptertest.ProtocolTraceWithCancellation(admission, descriptor, events)
+	} else {
+		trace, err = adaptertest.ProtocolTrace(admission, descriptor, events)
+	}
+	if err != nil {
+		return err
+	}
+	if result := validation.MustNew().ValidateBytes(trace, "oap-demo"); !result.Valid() {
+		return fmt.Errorf("demo trace failed OAP validation: %v", result.Diagnostics)
 	}
 	return nil
 }
