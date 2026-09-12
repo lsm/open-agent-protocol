@@ -202,7 +202,11 @@ func runMakaiCorpusCase(t *testing.T, root string, entry makaiCorpusManifestCase
 		}
 	}
 	events := adaptertest.Drain(t, stream, time.Second)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	if containsMakaiAction(frames, "cancel") {
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+	} else {
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	}
 	if definition.ReplayAfter != nil {
 		assertMakaiReplay(t, session, admission.RunID, *definition.ReplayAfter, events)
 	}

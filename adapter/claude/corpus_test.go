@@ -525,8 +525,11 @@ func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	}
 	events := adaptertest.Drain(t, stream, 5*time.Second)
 	if len(events) > 0 {
-		adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
-		assertValidTrace(t, admission, events)
+		if e.cancelAccepted {
+			assertCancelledTrace(t, admission, events)
+		} else {
+			assertValidTrace(t, admission, events)
+		}
 		e.runs = append(e.runs, events)
 	} else {
 		e.runs = append(e.runs, nil)

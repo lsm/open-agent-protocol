@@ -68,7 +68,7 @@ func Drain(t testing.TB, stream adapter.EventStream, timeout time.Duration) []pr
 // use no optional features.
 func AssertRunTrace(t testing.TB, admission protocol.MessageSubmitResponse, revision string, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertProtocolValid(t, admission, adapter.Descriptor{}, revision, envelopes)
+	assertProtocolValid(t, admission, adapter.Descriptor{}, revision, envelopes, false)
 }
 
 // AssertProtocolValid runs the executable OAP schema and state machine over the
@@ -77,22 +77,33 @@ func AssertRunTrace(t testing.TB, admission protocol.MessageSubmitResponse, revi
 // non-auto delivery need AssertProtocolValidWithDescriptor.
 func AssertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	assertProtocolValid(t, admission, adapter.Descriptor{}, "", events)
+	assertProtocolValid(t, admission, adapter.Descriptor{}, "", events, false)
 }
 
 // AssertProtocolValidWithDescriptor prefixes the canonical trace with the
 // adapter's live capability descriptor exchange so optional-feature envelopes
 // (tools, permissions, user input, non-auto delivery) are certified against
-// what the adapter actually advertises.
+// what the adapter actually advertises. The trace carries no cancellation
+// exchange: a run.cancelled terminal without caller evidence is reported as
+// the unsolicited cancellation it is.
 func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
-	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events)
+	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, false)
 }
 
-func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, revision string, events []protocol.Envelope) {
+// AssertProtocolValidWithCancellation additionally splices the harness-side
+// cancel exchange for a cancellation the caller actually issued and the
+// adapter accepted, so a legitimately cancelled run validates while an
+// unsolicited run.cancelled still fails the state machine.
+func AssertProtocolValidWithCancellation(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
+	t.Helper()
+	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, true)
+}
+
+func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, revision string, events []protocol.Envelope, cancelled bool) {
 	t.Helper()
 	assertRunInvariants(t, admission, revision, events)
-	trace, err := ProtocolTrace(admission, descriptor, events)
+	trace, err := protocolTrace(admission, descriptor, events, cancelled)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,11 +199,23 @@ func AssertInitialState(t testing.TB, implementation adapter.Adapter, request ad
 
 // ProtocolTrace serializes the canonical wire trace for an adapter-observed
 // run: the capability exchange when the descriptor names a revision, the
-// submit/admission exchange that admitted the run, the cancel exchange a
-// run.cancelled terminal implies, and the adapter's envelopes. The bytes are
-// valid input for validation.Validator.ValidateBytes, so test assertions and
-// non-test binaries (oap check's demo) assemble exactly one trace shape.
+// submit/admission exchange that admitted the run, and the adapter's
+// envelopes. The bytes are valid input for
+// validation.Validator.ValidateBytes, so test assertions and non-test
+// binaries (oap check's demo) assemble exactly one trace shape. The trace
+// carries no cancellation exchange: a run.cancelled terminal without caller
+// evidence is left for the state machine to report.
 func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
+	return protocolTrace(admission, descriptor, events, false)
+}
+
+// ProtocolTraceWithCancellation additionally splices the harness-side cancel
+// exchange for a cancellation the caller issued and the adapter accepted.
+func ProtocolTraceWithCancellation(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
+	return protocolTrace(admission, descriptor, events, true)
+}
+
+func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
 	var trace []protocol.Envelope
 	if descriptor.CapabilityRevision != "" {
 		request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
@@ -230,7 +253,7 @@ func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.
 		response.CapabilityRevision = descriptor.CapabilityRevision
 	}
 	trace = append(trace, submit, response)
-	if cut := cancelExchangeCut(events); cut >= 0 {
+	if cancelled {
 		request, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
 		if err != nil {
 			return nil, err
@@ -241,6 +264,7 @@ func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.
 			return nil, err
 		}
 		ack.SessionID, ack.RunID, ack.InReplyTo = admission.SessionID, admission.RunID, request.ID
+		cut := cancelExchangeCut(events)
 		trace = append(trace, events[:cut]...)
 		trace = append(trace, request, ack)
 		trace = append(trace, events[cut:]...)
@@ -250,25 +274,14 @@ func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.
 	return json.Marshal(trace)
 }
 
-// cancelExchangeCut reports where the harness-side cancel exchange belongs in
-// an event stream that settled as run.cancelled: ahead of the first cancelling
-// status update when the adapter reported one, otherwise directly before the
-// terminal. Streams that did not settle cancelled need no exchange and yield
-// -1. The state machine requires an accepted cancellation before a
-// run.cancelled terminal; run.cancel.response also sets the cancelling status,
-// and cancelling-to-cancelling is a legal identity transition, so either side
-// of the adapter's own update is valid.
+// cancelExchangeCut reports where a caller-issued cancel exchange belongs:
+// ahead of the first cancelling status update when the adapter reported one,
+// otherwise directly before the terminal event, and otherwise at the end of
+// the stream. The state machine requires an accepted cancellation before a
+// run.cancelled terminal; run.cancel.response also sets the cancelling
+// status, and cancelling-to-cancelling is a legal identity transition, so
+// either side of the adapter's own update is valid.
 func cancelExchangeCut(events []protocol.Envelope) int {
-	settled := false
-	for _, event := range events {
-		if event.Type == protocol.TypeRunCancelled {
-			settled = true
-			break
-		}
-	}
-	if !settled {
-		return -1
-	}
 	for index, event := range events {
 		if event.Type != protocol.TypeRunStatusUpdated {
 			continue
@@ -284,7 +297,7 @@ func cancelExchangeCut(events []protocol.Envelope) int {
 			return index
 		}
 	}
-	return -1
+	return len(events)
 }
 
 func AssertTypes(t testing.TB, envelopes []protocol.Envelope, want ...protocol.EnvelopeType) {

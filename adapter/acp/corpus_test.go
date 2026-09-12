@@ -266,7 +266,7 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 		}
 	}
 	events := append(prefix, adaptertest.Drain(t, stream, time.Second)...)
-	validateACPTrace(t, admission, descriptor, events, containsAction(frames, "permission"))
+	validateACPTrace(t, admission, descriptor, events, containsAction(frames, "cancel"), containsAction(frames, "permission"))
 	if definition.ReplayAfter != nil {
 		assertReplayEvidence(t, session, admission.RunID, *definition.ReplayAfter, events)
 	}
@@ -516,10 +516,14 @@ func TestACPCorpusPinConstants(t *testing.T) {
 // permission case additionally splices the harness-side resolve exchange the
 // session already performed, so the validator certifies the client half of
 // the interaction, not only the adapter's events.
-func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, permission bool) {
+func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled, permission bool) {
 	t.Helper()
 	if !permission {
-		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+		if cancelled {
+			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+		} else {
+			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+		}
 		return
 	}
 	var requested protocol.PermissionRequestedPayload
@@ -553,5 +557,9 @@ func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, de
 	spliced = append(spliced, events[:cut]...)
 	spliced = append(spliced, resolveRequest, resolveResponse)
 	spliced = append(spliced, events[cut:]...)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, spliced)
+	if cancelled {
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, spliced)
+	} else {
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, spliced)
+	}
 }

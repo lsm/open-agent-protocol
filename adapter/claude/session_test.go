@@ -333,11 +333,16 @@ func eventTypes(events []protocol.Envelope) []string {
 }
 
 // assertValidTrace runs the shared protocol assertion with the adapter's live
-// descriptor; the shared trace assembly supplies the cancel exchange a
-// run.cancelled terminal implies.
+// descriptor. assertCancelledTrace is the variant for runs the test itself
+// cancelled: it splices the harness-side exchange the cancellation implies.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+}
+
+func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
 }
 
 func testDescriptor(t *testing.T) base.Descriptor {
@@ -664,7 +669,7 @@ func TestCancelSettlesOnlyOnAbortedTerminalReason(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u3"}`)
 	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r2"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertCancelledTrace(t, outcome.admission, events)
 	last := terminalOf(events)
 	if last.Type != protocol.TypeRunCancelled {
 		t.Fatalf("terminal = %s (%v)", last.Type, eventTypes(events))
@@ -969,7 +974,7 @@ func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u10"}`)
 	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r10"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertCancelledTrace(t, outcome.admission, events)
 	if terminalOf(events).Type != protocol.TypeRunCancelled {
 		t.Fatalf("terminal = %s", terminalOf(events).Type)
 	}

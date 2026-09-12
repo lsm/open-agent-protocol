@@ -177,13 +177,19 @@ func testDescriptor(t *testing.T) base.Descriptor {
 }
 
 // assertValidTrace runs the shared protocol assertion with the adapter's live
-// descriptor; the shared trace assembly supplies the cancel exchange a
-// run.cancelled terminal implies. Extension-dialog runs are exempt: production
-// truthfully advertises user input unavailable, so their traces cannot pass
-// capability-aware validation.
+// descriptor. assertCancelledTrace is the variant for runs the test itself
+// cancelled: it splices the harness-side exchange the cancellation implies.
+// Extension-dialog runs are exempt from both: production truthfully advertises
+// user input unavailable, so their traces cannot pass capability-aware
+// validation.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+}
+
+func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
 }
 
 // A requested model cannot be applied: the prompt carries no model selection
@@ -431,7 +437,7 @@ func TestCancelBeforeAgentStartPreservesCanonicalOrdering(t *testing.T) {
 			t.Fatalf("event %d sequence=%v", i, event.Sequence)
 		}
 	}
-	assertValidTrace(t, result.response, events)
+	assertCancelledTrace(t, result.response, events)
 }
 
 func TestSubmitContextBeforeStartDoesNotMisreportAdmission(t *testing.T) {
@@ -723,7 +729,7 @@ func TestAbortIntentNaturalCompletionCanWin(t *testing.T) {
 	if events[len(events)-1].Type != protocol.TypeRunCompleted {
 		t.Fatalf("events=%v cancel=%+v", eventTypes(events), cancel)
 	}
-	assertValidTrace(t, response, append([]protocol.Envelope{started}, events...))
+	assertCancelledTrace(t, response, append([]protocol.Envelope{started}, events...))
 }
 
 func TestAbortSettlementCancelsWhenNoNaturalCandidate(t *testing.T) {
@@ -744,7 +750,7 @@ func TestAbortSettlementCancelsWhenNoNaturalCandidate(t *testing.T) {
 	if events[len(events)-1].Type != protocol.TypeRunCancelled || (cancel.Status != protocol.RunCancelled && cancel.Status != protocol.RunCancelling) {
 		t.Fatalf("events=%v cancel=%+v", eventTypes(events), cancel)
 	}
-	assertValidTrace(t, response, append([]protocol.Envelope{started}, events...))
+	assertCancelledTrace(t, response, append([]protocol.Envelope{started}, events...))
 }
 
 func TestProcessExitFailsActiveOnce(t *testing.T) {

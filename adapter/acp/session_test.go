@@ -219,11 +219,16 @@ func testDescriptor(t *testing.T) base.Descriptor {
 }
 
 // assertValidTrace runs the shared protocol assertion with the adapter's live
-// descriptor; the shared trace assembly supplies the cancel exchange a
-// run.cancelled terminal implies.
+// descriptor. assertCancelledTrace is the variant for runs the test itself
+// cancelled: it splices the harness-side exchange the cancellation implies.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+}
+
+func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
 }
 
 func TestCompletedPromptMapsChunksToolsAndSequence(t *testing.T) {
@@ -298,7 +303,11 @@ func TestOneActivePromptAndCancellationRaces(t *testing.T) {
 			if events[len(events)-1].Type != tc.want {
 				t.Fatalf("terminal=%s", events[len(events)-1].Type)
 			}
-			assertValidTrace(t, admission, events)
+			if tc.want == protocol.TypeRunCancelled {
+				assertCancelledTrace(t, admission, events)
+			} else {
+				assertValidTrace(t, admission, events)
+			}
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if len(f.notifies) != 1 || f.notifies[0] != native.MethodSessionCancel {

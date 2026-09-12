@@ -279,7 +279,11 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	if !canonical {
 		t.Fatalf("case %s: trace has no canonical first event", entry.ID)
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	if definition.Cancel {
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+	} else {
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	}
 	if definition.ReplayAfter != nil {
 		assertOpenCodeReplay(t, session, admission.RunID, *definition.ReplayAfter, events)
 	}

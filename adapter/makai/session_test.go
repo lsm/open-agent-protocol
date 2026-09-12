@@ -279,7 +279,7 @@ func TestCancellationRequiresAuthoritativeEnd(t *testing.T) {
 	if events[len(events)-1].Type != protocol.TypeRunCancelled {
 		t.Fatalf("events=%v", types(events))
 	}
-	assertValidTrace(t, response, events)
+	adaptertest.AssertProtocolValidWithCancellation(t, response, testDescriptor(t), events)
 }
 
 func TestReplayGapAndTerminalReplay(t *testing.T) {

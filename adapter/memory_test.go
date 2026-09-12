@@ -251,7 +251,7 @@ func TestCancelAndDuplicateCancel(t *testing.T) {
 	}
 	events := drainAvailable(stream)
 	assertTypesAndSequence(t, events, []protocol.EnvelopeType{protocol.TypeRunStatusUpdated, protocol.TypeActionPermissionResolved, protocol.TypeActionCallCancelled, protocol.TypeRunCancelled}, 5)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), append(append([]protocol.Envelope(nil), initial...), events...))
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), append(append([]protocol.Envelope(nil), initial...), events...))
 	ack, err = session.Cancel(context.Background(), runID)
 	if err != nil || !ack.Accepted || ack.Status != protocol.RunCancelled {
 		t.Fatalf("duplicate cancel: %+v, %v", ack, err)
@@ -303,11 +303,22 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 		defer wg.Done()
 		_ = session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}})
 	}()
-	go func() { defer wg.Done(); _, _ = session.Cancel(context.Background(), runID) }()
+	cancelAck := make(chan protocol.RunCancelResponse, 1)
+	go func() {
+		defer wg.Done()
+		ack, _ := session.Cancel(context.Background(), runID)
+		cancelAck <- ack
+	}()
 	wg.Wait()
 	events := drainAvailable(stream)
 	combined := append(append([]protocol.Envelope(nil), initial...), middle...)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), append(combined, events...))
+	// The raced cancel may or may not win; its acknowledgement is the
+	// caller-side evidence for the cancel exchange.
+	if ack := <-cancelAck; ack.Accepted {
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), append(combined, events...))
+	} else {
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), append(combined, events...))
+	}
 	terminals := 0
 	for _, event := range events {
 		if event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed || event.Type == protocol.TypeRunCancelled {

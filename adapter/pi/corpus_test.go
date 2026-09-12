@@ -273,7 +273,7 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 		}
 	}
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
-	validatePiTrace(t, admission, descriptor, events, resolutionTrace)
+	validatePiTrace(t, admission, descriptor, events, definition.Cancel, resolutionTrace)
 	if definition.Noncanonical != "" {
 		t.Logf("case %s: explicit production-boundary mismatch: %s", entry.ID, definition.Noncanonical)
 	}
@@ -630,10 +630,14 @@ func TestPiCorpusPinConstants(t *testing.T) {
 // injectable-client extension case cannot pass capability-aware validation —
 // production truthfully advertises user input unavailable — so its canonical
 // resolve exchange is checked structurally instead.
-func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, resolutionTrace []protocol.Envelope) {
+func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool, resolutionTrace []protocol.Envelope) {
 	t.Helper()
 	if len(resolutionTrace) == 0 {
-		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+		if cancelled {
+			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+		} else {
+			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+		}
 		return
 	}
 	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)

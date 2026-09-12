@@ -271,7 +271,7 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 	if err := validateEventLifecycle(events, admission.RunID); err != nil {
 		return err
 	}
-	if err := validateDemoTrace(admission, descriptor, events); err != nil {
+	if err := validateDemoTrace(admission, descriptor, events, false); err != nil {
 		return err
 	}
 	recovery, replay, err := session.Resume(ctx, adapter.ResumeRequest{RunID: admission.RunID, AfterSequence: 9})
@@ -324,7 +324,7 @@ func cancellationDemo(ctx context.Context, stdout io.Writer) error {
 	if err := validateEventLifecycle(events, admission.RunID); err != nil {
 		return err
 	}
-	if err := validateDemoTrace(admission, descriptor, events); err != nil {
+	if err := validateDemoTrace(admission, descriptor, events, ack.Accepted); err != nil {
 		return err
 	}
 	if events[len(events)-1].Type != protocol.TypeRunCancelled {
@@ -411,9 +411,16 @@ func validateEventLifecycle(events []protocol.Envelope, runID protocol.RunID) er
 // validateDemoTrace runs the executable OAP schema and state machine over the
 // demo's own adapter trace, assembling it with the same shared builder the
 // adapter test suite uses, so `oap check` certifies the reference adapter's
-// emission rather than only its lifecycle shape.
-func validateDemoTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) error {
-	trace, err := adaptertest.ProtocolTrace(admission, descriptor, events)
+// emission rather than only its lifecycle shape. The cancellation demo passes
+// the acknowledgement of the Cancel it actually issued as evidence.
+func validateDemoTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) error {
+	var trace []byte
+	var err error
+	if cancelled {
+		trace, err = adaptertest.ProtocolTraceWithCancellation(admission, descriptor, events)
+	} else {
+		trace, err = adaptertest.ProtocolTrace(admission, descriptor, events)
+	}
 	if err != nil {
 		return err
 	}
