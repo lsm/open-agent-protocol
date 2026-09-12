@@ -1,0 +1,24 @@
+{
+  "name": "oap-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for the oap serve daemon: Open Agent Protocol agent-control-core over HTTP + SSE",
+  "license": "CC0-1.0",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "files": [
+    "dist/src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "typescript": "^5.9.3"
+  }
+}
