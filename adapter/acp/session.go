@@ -655,12 +655,15 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 		return errTerminalWon
 	}
 	p.resolved = true
+	// The dispatcher records the request event id after publishing the gate;
+	// read it under the lock so the correlation cannot race that write.
+	requestEventID := p.requestEventID
 	s.mu.Unlock()
 	out := protocol.InteractionRejected
 	if granted {
 		out = protocol.InteractionResolved
 	}
-	_, err := s.emitEnvelope(p.run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: p.run.id, ToolCallID: p.tool.id, Outcome: out, ChoiceID: option.OptionID, Granted: &granted}, false, p.requestEventID)
+	_, err := s.emitEnvelope(p.run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: p.run.id, ToolCallID: p.tool.id, Outcome: out, ChoiceID: option.OptionID, Granted: &granted}, false, requestEventID)
 	return err
 }
 func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCancelResponse, error) {
@@ -791,12 +794,18 @@ func (s *session) Close(ctx context.Context) error {
 
 func (s *session) settleChildren(run *runState, cancel bool) {
 	s.mu.Lock()
-	var permissions []*permissionState
+	type settledPermission struct {
+		gate           *permissionState
+		requestEventID protocol.EnvelopeID
+	}
+	var permissions []settledPermission
 	var tools []*toolState
 	for _, p := range s.interactions {
 		if p.run == run && !p.resolved {
 			p.resolved = true
-			permissions = append(permissions, p)
+			// Snapshot the correlation under the lock: the dispatcher
+			// records it after publishing the gate.
+			permissions = append(permissions, settledPermission{gate: p, requestEventID: p.requestEventID})
 		}
 	}
 	for _, t := range s.tools {
@@ -806,10 +815,11 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		}
 	}
 	s.mu.Unlock()
-	for _, p := range permissions {
+	for _, pending := range permissions {
+		p := pending.gate
 		_ = p.request.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
 		reason := protocol.ProtocolError{Code: "run_settled", Message: "parent run settled the permission request"}
-		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, p.requestEventID)
+		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID)
 	}
 	for _, t := range tools {
 		typ := protocol.TypeActionCallFailed
