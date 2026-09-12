@@ -113,6 +113,50 @@ and closes every session inside a bounded window — active runs that refuse
 Close are cancelled first — so child agent processes are settled rather than
 orphaned.
 
+### Go client (`client`)
+
+The `client` package is the far-side conformance proof for that wire: a public
+Go client that drives `oap serve` over HTTP + SSE, and the template later
+clients (TypeScript) copy. It speaks verbatim schema/v0.1 envelopes, consumes
+the event stream through a real `text/event-stream` parser, and resolves
+interactive gates as participant `user` by default:
+
+```go
+c := client.New("127.0.0.1:6270")
+
+session, _ := c.Open(ctx, "memory", "demo")
+stream := session.Events(ctx)          // subscribe before submitting
+session.Submit(ctx, protocol.MessageSubmitRequest{
+	Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}},
+	Delivery: protocol.DeliveryAuto,
+})
+for {
+	envelope, err := stream.Next()
+	if err == io.EOF {
+		break // the run reached its terminal event
+	}
+	// resolve action.permission.requested / user.input.requested as they
+	// arrive, or collect content.delta / run.completed envelopes
+}
+```
+
+`Session.Events` resumes invisibly: when the SSE connection drops, the client
+reconnects with the last observed sequence as the `Last-Event-ID` / `?after=`
+cursor, the daemon replays the suffix, and the stream continues with no
+duplicates — the same sequence delivered twice is surfaced as an error, never
+silently skipped. `WithStrictResume` turns resume off and reports the drop as a
+`DisconnectError` carrying the cursor. The daemon's terminal signal events
+surface as typed errors: `OverflowError` (reconnect with
+`Session.EventsAfter(LastSequence)`) and `ReplayGapError` (the requested cursor
+expired; `OldestAvailable`/`LatestAvailable` bound what is retained). Daemon
+refusals arrive as `ServerError` with the correlated `error.response` code.
+
+`WithHTTPClient` injects the underlying transport, `WithParticipant` overrides
+the responder identity, and `WithEnvelopeValidation` turns on dev-mode
+validation of every inbound envelope against the bundled schema (off by
+default). The client logs nothing. See `example_test.go` for the canonical
+lifecycle and the package documentation for the full surface.
+
 Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
