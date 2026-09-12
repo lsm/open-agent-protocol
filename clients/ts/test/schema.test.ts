@@ -585,6 +585,12 @@ test('the schema exclusivity rules are compile-time errors', () => {
   const noProfiles: protocol.CapabilityDescriptor = { endpoint: { id: 'e-1' }, profiles: [] };
   // @ts-expect-error a layer needs at least one delivery mode when present
   const noModes: protocol.CapabilityLayer = { requested_delivery_modes: [] };
+  // @ts-expect-error a required JSON field cannot be undefined (stringify would drop it)
+  const undefinedArguments: protocol.ToolCallPart = { type: 'tool_call', tool_call_id: 't-1', name: 'echo', arguments_json: undefined };
+  // @ts-expect-error a required JSON result cannot be undefined either
+  const undefinedResult: protocol.ToolResultPart = { type: 'tool_result', tool_call_id: 't-1', result: undefined };
+  // @ts-expect-error an empty request payload allows no fields
+  const loadedEmptyRequest: protocol.CapabilitiesRequest = { unexpected: 'value' };
   void badImage;
   void dataOnly;
   void emptyParts;
@@ -606,6 +612,16 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void noVersions;
   void noProfiles;
   void noModes;
+  void undefinedArguments;
+  void undefinedResult;
+  void loadedEmptyRequest;
+  // Legal JSON values still type-check on the required fields.
+  const jsonArguments: protocol.ToolCallPart = { type: 'tool_call', tool_call_id: 't-2', name: 'echo', arguments_json: { cmd: ['ls', '-l'] } };
+  const nullResult: protocol.ToolResultPart = { type: 'tool_result', tool_call_id: 't-2', result: null };
+  const emptyRequest: protocol.CapabilitiesRequest = {};
+  void jsonArguments;
+  void nullResult;
+  void emptyRequest;
   // The two legal shapes still type-check.
   const urlImage: ImageContent = { url: 'https://example.test/i.png' };
   const inlineImage: ImageContent = { data: 'aGk=', media_type: 'text/plain' };

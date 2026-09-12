@@ -294,6 +294,49 @@ test('an envelope without a run id is malformed', { timeout: 10000 }, async () =
   );
 });
 
+test('session-scoped events deliver without disturbing the run cursor', { timeout: 10000 }, async () => {
+  // session.state.updated is schema-valid with sequence but no run id, and
+  // appears in the spec's own core-run-stream example; the stream must
+  // deliver it and continue the run's sequence space right where it was.
+  const stateUpdated = testEnvelope({
+    type: EnvelopeType.SessionStateUpdated,
+    sequence: 4,
+    sessionId: SESSION,
+    payload: { session_id: SESSION, status: 'waiting_for_input' },
+  });
+  const { session } = sessionWith([
+    {
+      match: LIVE,
+      chunks: [...goldenFrames(SESSION, RUN, 1, 3), eventFrame(stateUpdated), ...goldenFrames(SESSION, RUN, 4, 12)],
+    },
+  ]);
+  const envelopes = await collect(session.events());
+  assert.equal(envelopes.length, 13);
+  assert.equal(envelopes[3].type, EnvelopeType.SessionStateUpdated);
+  assert.deepEqual(
+    envelopes.filter((envelope) => envelope.run_id !== undefined).map((envelope) => envelope.sequence),
+    Array.from({ length: 12 }, (_, index) => index + 1),
+  );
+});
+
+test('a session-scoped event may open the stream before any run', { timeout: 10000 }, async () => {
+  const stateUpdated = testEnvelope({
+    type: EnvelopeType.SessionStateUpdated,
+    sequence: 1,
+    sessionId: SESSION,
+    payload: { session_id: SESSION, status: 'idle' },
+  });
+  const { session } = sessionWith([
+    { match: LIVE, chunks: [eventFrame(stateUpdated), ...goldenFrames(SESSION, RUN, 1, 12)] },
+  ]);
+  const envelopes = await collect(session.events());
+  assert.equal(envelopes.length, 13);
+  assert.deepEqual(
+    envelopes.filter((envelope) => envelope.run_id !== undefined).map((envelope) => envelope.sequence),
+    Array.from({ length: 12 }, (_, index) => index + 1),
+  );
+});
+
 test('a payload naming another session, run, or tool call is malformed', { timeout: 10000 }, async () => {
   const foreignSession = testEnvelope({
     type: EnvelopeType.RunStarted,

@@ -25,6 +25,32 @@ import type { OapSession } from './session.js';
 const SIGNAL_OVERFLOW = 'oap-overflow';
 const SIGNAL_GAP = 'oap-replay-gap';
 
+/**
+ * The envelope types whose schema defs are run-scoped ($defs/runEvent: they
+ * require session_id, run_id, and sequence). Every other event type —
+ * session.state.updated, capabilities.updated — is session- or
+ * protocol-scoped: schema-valid without a run id, delivered without
+ * touching the run cursor.
+ */
+const RUN_EVENT_TYPES: ReadonlySet<string> = new Set([
+  EnvelopeType.RunStarted,
+  EnvelopeType.RunStatusUpdated,
+  EnvelopeType.ContentDelta,
+  EnvelopeType.RunCompleted,
+  EnvelopeType.RunFailed,
+  EnvelopeType.RunCancelled,
+  EnvelopeType.ActionCallRequested,
+  EnvelopeType.ActionCallStarted,
+  EnvelopeType.ActionCallProgress,
+  EnvelopeType.ActionCallCompleted,
+  EnvelopeType.ActionCallFailed,
+  EnvelopeType.ActionCallCancelled,
+  EnvelopeType.ActionPermissionRequested,
+  EnvelopeType.ActionPermissionResolved,
+  EnvelopeType.UserInputRequested,
+  EnvelopeType.UserInputResolved,
+]);
+
 /** The first wait between reconnect attempts after a transport failure; it doubles up to the cap. */
 const INITIAL_RECONNECT_BACKOFF_MS = 100;
 const MAX_RECONNECT_BACKOFF_MS = 1_000;
@@ -387,17 +413,10 @@ export class EventStream implements AsyncIterable<Envelope> {
         `payload names tool call "${String(payloadScope.tool_call_id)}", envelope "${envelope.tool_call_id}"`,
       );
     }
-    // Every envelope on this stream is a sequenced run event; one without a
-    // sequence cannot be positioned, and delivering it would leave the
-    // cursor behind it — a later resume would replay it without any way to
-    // detect the duplicate. Sequences start at one. The same holds for the
-    // run: adopting an empty run id would leave the stream with no observed
-    // run, and a later disconnect would replay from zero instead of the
-    // last delivered sequence.
-    const runId = envelope.run_id;
-    if (typeof runId !== 'string' || runId === '') {
-      throw new MalformedFrameError('event envelope carries no run id');
-    }
+    // Every envelope on this stream is sequenced; one without a sequence
+    // cannot be positioned, and delivering it would leave the cursor behind
+    // it — a later resume would replay it without any way to detect the
+    // duplicate. Sequences start at one.
     const sequence = envelope.sequence;
     if (typeof sequence !== 'number' || !Number.isInteger(sequence) || sequence <= 0) {
       throw new MalformedFrameError('event envelope carries no sequence');
@@ -410,6 +429,22 @@ export class EventStream implements AsyncIterable<Envelope> {
       if (sequence !== id) {
         throw new MalformedFrameError(`frame id ${id} disagrees with envelope sequence ${sequence}`);
       }
+    }
+    // Session-scoped events (session.state.updated, capabilities.updated)
+    // carry sequence but no run: they are delivered without requiring or
+    // replacing the run cursor, exactly as the schema shapes them. Only the
+    // run-scoped event types participate in the cursor machinery.
+    if (!RUN_EVENT_TYPES.has(envelope.type)) {
+      this.connEvents += 1;
+      return;
+    }
+    // A run event without a run id cannot be positioned: adopting an empty
+    // run id would leave the stream with no observed run, and a later
+    // disconnect would replay from zero instead of the last delivered
+    // sequence.
+    const runId = envelope.run_id;
+    if (typeof runId !== 'string' || runId === '') {
+      throw new MalformedFrameError('event envelope carries no run id');
     }
     let resumed = this.resumed;
     if (resumed) {

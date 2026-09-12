@@ -107,6 +107,14 @@ export function payload<T>(envelope: Envelope): T {
 
 export type MessageRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool';
 
+/**
+ * A JSON value: what the wire's JSON-typed fields carry. `undefined` is
+ * excluded deliberately — JSON.stringify silently drops it, which would turn
+ * a required field into a schema violation on the wire — and so are the
+ * other non-serializable values.
+ */
+export type JSONValue = null | boolean | number | string | JSONValue[] | { [key: string]: JSONValue };
+
 export type SupportLevel = 'native' | 'emulated' | 'degraded' | 'unavailable';
 
 /** An image carried by URL alone. */
@@ -145,13 +153,13 @@ export interface ToolCallPart {
   type: 'tool_call';
   tool_call_id: string;
   name: string;
-  arguments_json: unknown;
+  arguments_json: JSONValue;
 }
 
 export interface ToolResultPart {
   type: 'tool_result';
   tool_call_id: string;
-  result: unknown;
+  result: JSONValue;
   is_error?: boolean;
 }
 
@@ -268,7 +276,12 @@ export interface InitializeResponse {
   endpoint: EndpointDescriptor;
 }
 
-export type CapabilitiesRequest = Record<never, string>;
+/** An empty request payload: the schema's empty-object defs allow no fields (additionalProperties: false). */
+export interface EmptyRequestPayload {
+  readonly [key: string]: never;
+}
+
+export type CapabilitiesRequest = EmptyRequestPayload;
 
 /** One adapter's capability snapshot; every envelope the adapter emits repeats the revision. */
 export interface CapabilityDescriptor {
@@ -416,7 +429,7 @@ export interface RunCancelledPayload {
 
 // --- action.schema.json ---
 
-export type ToolsListRequest = Record<never, string>;
+export type ToolsListRequest = EmptyRequestPayload;
 
 export interface ToolsListResponse {
   tools: ToolDefinition[];
@@ -437,7 +450,7 @@ interface ActionCallBase {
 export interface ActionCallRequestedPayload extends ActionCallBase {
   requested_by: string;
   name: string;
-  arguments_json: unknown;
+  arguments_json: JSONValue;
   progress?: undefined;
   result?: undefined;
   error?: undefined;
@@ -452,14 +465,14 @@ export interface ActionCallStartedPayload extends ActionCallBase {
 }
 
 export interface ActionCallProgressPayload extends ActionCallBase {
-  progress: unknown;
+  progress: JSONValue;
   arguments_json?: undefined;
   result?: undefined;
   error?: undefined;
 }
 
 export interface ActionCallCompletedPayload extends ActionCallBase {
-  result: unknown;
+  result: JSONValue;
   arguments_json?: undefined;
   progress?: undefined;
   error?: undefined;
