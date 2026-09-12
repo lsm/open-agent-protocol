@@ -74,6 +74,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"run.resume":                    {Level: protocol.SupportDegraded, Reason: "reattachment and replay use a bounded process-memory journal"},
 		"run.reconciliation":            {Level: protocol.SupportNative},
 		"run.replay":                    {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
+		"action.tools":                  {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
 		"action.tools.execute":          {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
 		"action.permissions":            {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		"user_input":                    {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},

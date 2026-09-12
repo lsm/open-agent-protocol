@@ -1,4 +1,4 @@
-package adapter
+package adapter_test
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
@@ -37,17 +39,23 @@ func (g *fixedIDs) NewID(kind string) string {
 	return fmt.Sprintf("%s-%02d", kind, g.n)
 }
 
-func newTestSession(t *testing.T, capacity int) Session {
+func newTestSession(t *testing.T, capacity int) adapter.Session {
 	t.Helper()
-	memory := NewMemory(Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: capacity})
-	session, err := memory.Open(context.Background(), OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}})
+	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: capacity})
+	session, err := memory.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return session
 }
 
-func submit(t *testing.T, session Session) (protocol.RunID, EventStream) {
+func submit(t *testing.T, session adapter.Session) (protocol.RunID, adapter.EventStream) {
+	t.Helper()
+	admission, stream := submitAdmission(t, session)
+	return admission.RunID, stream
+}
+
+func submitAdmission(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream) {
 	t.Helper()
 	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
 	if err != nil {
@@ -56,10 +64,22 @@ func submit(t *testing.T, session Session) (protocol.RunID, EventStream) {
 	if !admission.Accepted || admission.Admission != protocol.AdmissionStarted {
 		t.Fatalf("unexpected admission: %+v", admission)
 	}
-	return admission.RunID, stream
+	return admission, stream
 }
 
-func drainAvailable(stream EventStream) []protocol.Envelope {
+// testDescriptor probes the reference adapter's live capability descriptor so
+// the shared protocol assertion can certify optional-feature envelopes.
+func testDescriptor(t *testing.T) adapter.Descriptor {
+	t.Helper()
+	implementation := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 64})
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+func drainAvailable(stream adapter.EventStream) []protocol.Envelope {
 	var result []protocol.Envelope
 	for {
 		select {
@@ -79,10 +99,12 @@ func drainAvailable(stream EventStream) []protocol.Envelope {
 
 func TestGoldenScript(t *testing.T) {
 	session := newTestSession(t, 64)
-	runID, stream := submit(t, session)
+	admission, stream := submitAdmission(t, session)
+	runID := admission.RunID
 	events := drainAvailable(stream)
 	wantInitial := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeActionCallRequested, protocol.TypeActionPermissionRequested}
 	assertTypesAndSequence(t, events, wantInitial, 1)
+	trace := append([]protocol.Envelope(nil), events...)
 
 	var requested protocol.PermissionRequestedPayload
 	if err := events[3].DecodePayload(&requested); err != nil {
@@ -91,12 +113,13 @@ func TestGoldenScript(t *testing.T) {
 	if requested.RequestedBy != "agent" || requested.RespondedBy != "user" {
 		t.Fatalf("ownership omitted: %+v", requested)
 	}
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, SessionID: "session-1", RunID: runID, RequestedBy: "agent", RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, SessionID: "session-1", RunID: runID, RequestedBy: "agent", RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	events = drainAvailable(stream)
 	wantApproval := []protocol.EnvelopeType{protocol.TypeActionPermissionResolved, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeUserInputRequested, protocol.TypeRunStatusUpdated}
 	assertTypesAndSequence(t, events, wantApproval, 5)
+	trace = append(trace, events...)
 
 	var status protocol.RunStatusUpdatedPayload
 	if err := events[4].DecodePayload(&status); err != nil {
@@ -112,7 +135,7 @@ func TestGoldenScript(t *testing.T) {
 	if input.RequestedBy != "agent" || input.RespondedBy != "user" {
 		t.Fatalf("ownership omitted: %+v", input)
 	}
-	resolution := InteractionResolution{
+	resolution := adapter.InteractionResolution{
 		RunID:       runID,
 		RespondedBy: "user",
 		Input: &protocol.UserInputResolveRequest{
@@ -130,6 +153,8 @@ func TestGoldenScript(t *testing.T) {
 	events = drainAvailable(stream)
 	wantFinal := []protocol.EnvelopeType{protocol.TypeUserInputResolved, protocol.TypeContentDelta, protocol.TypeRunCompleted}
 	assertTypesAndSequence(t, events, wantFinal, 10)
+	trace = append(trace, events...)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), trace)
 	terminals := 0
 	for _, event := range append(append([]protocol.Envelope{}, wantEnvelopes(wantInitial)...), append(wantEnvelopes(wantApproval), wantEnvelopes(wantFinal)...)...) {
 		if event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed || event.Type == protocol.TypeRunCancelled {
@@ -168,8 +193,8 @@ func TestEmittedEnvelopesCarryAdvertisedRevision(t *testing.T) {
 	}
 	events = append(events, drainAvailable(stream)...)
 	for i, event := range events {
-		if event.CapabilityRevision != CapabilityRevision {
-			t.Fatalf("event %d (%s) capability revision: got %q want %q", i, event.Type, event.CapabilityRevision, CapabilityRevision)
+		if event.CapabilityRevision != adapter.CapabilityRevision {
+			t.Fatalf("event %d (%s) capability revision: got %q want %q", i, event.Type, event.CapabilityRevision, adapter.CapabilityRevision)
 		}
 	}
 }
@@ -178,8 +203,8 @@ func TestEmittedEnvelopesCarryAdvertisedRevision(t *testing.T) {
 // user-input gate, so an empty identity must be refused rather than silently
 // producing schema-invalid events with an empty responded_by.
 func TestOpenRejectsEmptyParticipant(t *testing.T) {
-	memory := NewMemory(Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 8})
-	if _, err := memory.Open(context.Background(), OpenRequest{SessionID: "session-1"}); !errors.Is(err, ErrInvalidParticipant) {
+	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 8})
+	if _, err := memory.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1"}); !errors.Is(err, adapter.ErrInvalidParticipant) {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -214,8 +239,9 @@ func assertTypesAndSequence(t *testing.T, events []protocol.Envelope, want []pro
 
 func TestCancelAndDuplicateCancel(t *testing.T) {
 	session := newTestSession(t, 64)
-	runID, stream := submit(t, session)
-	_ = drainAvailable(stream)
+	admission, stream := submitAdmission(t, session)
+	runID := admission.RunID
+	initial := drainAvailable(stream)
 	ack, err := session.Cancel(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)
@@ -225,6 +251,7 @@ func TestCancelAndDuplicateCancel(t *testing.T) {
 	}
 	events := drainAvailable(stream)
 	assertTypesAndSequence(t, events, []protocol.EnvelopeType{protocol.TypeRunStatusUpdated, protocol.TypeActionPermissionResolved, protocol.TypeActionCallCancelled, protocol.TypeRunCancelled}, 5)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), append(append([]protocol.Envelope(nil), initial...), events...))
 	ack, err = session.Cancel(context.Background(), runID)
 	if err != nil || !ack.Accepted || ack.Status != protocol.RunCancelled {
 		t.Fatalf("duplicate cancel: %+v, %v", ack, err)
@@ -237,21 +264,21 @@ func TestCompletedCancelReturnsTypedError(t *testing.T) {
 	initial := drainAvailable(stream)
 	var permission protocol.PermissionRequestedPayload
 	_ = initial[3].DecodePayload(&permission)
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	middle := drainAvailable(stream)
 	var input protocol.UserInputRequestedPayload
 	_ = middle[3].DecodePayload(&input)
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = drainAvailable(stream)
 	_, err := session.Cancel(context.Background(), runID)
-	if !errors.Is(err, ErrRunAlreadyTerminal) {
+	if !errors.Is(err, adapter.ErrRunAlreadyTerminal) {
 		t.Fatalf("got %v", err)
 	}
-	var terminal *RunTerminalError
+	var terminal *adapter.RunTerminalError
 	if !errors.As(err, &terminal) || terminal.Status != protocol.RunCompleted {
 		t.Fatalf("unexpected typed error: %#v", err)
 	}
@@ -259,11 +286,12 @@ func TestCompletedCancelReturnsTypedError(t *testing.T) {
 
 func TestTerminalGuardUnderRace(t *testing.T) {
 	session := newTestSession(t, 64)
-	runID, stream := submit(t, session)
+	admission, stream := submitAdmission(t, session)
+	runID := admission.RunID
 	initial := drainAvailable(stream)
 	var permission protocol.PermissionRequestedPayload
 	_ = initial[3].DecodePayload(&permission)
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	middle := drainAvailable(stream)
@@ -273,11 +301,13 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}})
+		_ = session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}})
 	}()
 	go func() { defer wg.Done(); _, _ = session.Cancel(context.Background(), runID) }()
 	wg.Wait()
 	events := drainAvailable(stream)
+	combined := append(append([]protocol.Envelope(nil), initial...), middle...)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), append(combined, events...))
 	terminals := 0
 	for _, event := range events {
 		if event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed || event.Type == protocol.TypeRunCancelled {
@@ -302,7 +332,7 @@ func TestToolCompletionOmitsRequestOnlyArguments(t *testing.T) {
 			_ = envelope.DecodePayload(&permission)
 		}
 	}
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	observed := false
@@ -337,7 +367,7 @@ func TestUserInputRequestEnvelopeCarriesToolBinding(t *testing.T) {
 			_ = envelope.DecodePayload(&permission)
 		}
 	}
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	found := false
@@ -377,7 +407,7 @@ func TestPublishedPayloadDoesNotAliasTheJournal(t *testing.T) {
 	}
 	original := append([]byte(nil), events[index].Payload...)
 	copy(events[index].Payload, []byte(`{"tampered":true}`))
-	_, replay, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 2})
+	_, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +429,7 @@ func TestReplayedEnvelopeDoesNotAliasTheJournal(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
 	_ = drainAvailable(stream)
-	_, replay, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 2})
+	_, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +442,7 @@ func TestReplayedEnvelopeDoesNotAliasTheJournal(t *testing.T) {
 	copy(replayed[0].Payload, []byte(`{"tampered":true}`))
 	*replayed[0].Sequence = originalSequence + 100
 	*replayed[0].TimestampMS = originalTimestamp + 100
-	_, second, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 2})
+	_, second, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +462,7 @@ func TestResumeRetainedSuffix(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, original := submit(t, session)
 	_ = drainAvailable(original)
-	recovery, replay, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 2})
+	recovery, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,8 +480,8 @@ func TestResumeGapReturnsAuthoritativeState(t *testing.T) {
 	session := newTestSession(t, 2)
 	runID, stream := submit(t, session)
 	_ = drainAvailable(stream)
-	recovery, replay, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 0})
-	var gap *ReplayGap
+	recovery, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 0})
+	var gap *adapter.ReplayGap
 	if !errors.As(err, &gap) {
 		t.Fatalf("got %v", err)
 	}
@@ -469,7 +499,7 @@ func TestResumeGapReturnsAuthoritativeState(t *testing.T) {
 func TestNoDeadlockWithSlowSubscriber(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, _ := submit(t, session) // deliberately never consume the original stream
-	_, replay, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 4})
+	_, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,8 +519,8 @@ func TestSubmitRejectsInvalidRequestBeforeAdmission(t *testing.T) {
 		{SessionID: "session-1", Delivery: protocol.DeliveryAuto},
 		{Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}, Delivery: protocol.DeliveryAuto},
 	} {
-		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, ErrInvalidSubmission) {
-			t.Fatalf("got %v, want ErrInvalidSubmission", err)
+		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, adapter.ErrInvalidSubmission) {
+			t.Fatalf("got %v, want adapter.ErrInvalidSubmission", err)
 		}
 	}
 	state, err := session.State(context.Background())
@@ -508,8 +538,8 @@ func TestSubmitRejectsInvalidRequestBeforeAdmission(t *testing.T) {
 func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	session := newTestSession(t, 64)
 	request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: "another-model", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}
-	if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, ErrUnsupportedInput) {
-		t.Fatalf("got %v, want ErrUnsupportedInput", err)
+	if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, adapter.ErrUnsupportedInput) {
+		t.Fatalf("got %v, want adapter.ErrUnsupportedInput", err)
 	}
 	state, err := session.State(context.Background())
 	if err != nil || state.Status != protocol.SessionIdle || state.CurrentModelID != "" {
@@ -527,8 +557,8 @@ func TestSubmitRejectsUnappliedControls(t *testing.T) {
 		"tool choice":   {SessionID: "session-1", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
 		"output schema": {SessionID: "session-1", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
 	} {
-		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, ErrInvalidSubmission) {
-			t.Fatalf("%s: got %v, want ErrInvalidSubmission", name, err)
+		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, adapter.ErrInvalidSubmission) {
+			t.Fatalf("%s: got %v, want adapter.ErrInvalidSubmission", name, err)
 		}
 	}
 }
@@ -550,11 +580,11 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 	} {
 		request := valid
 		mutate(&request)
-		if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &request}); !errors.Is(err, ErrInvalidResolution) {
-			t.Fatalf("%s: got %v, want ErrInvalidResolution", name, err)
+		if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &request}); !errors.Is(err, adapter.ErrInvalidResolution) {
+			t.Fatalf("%s: got %v, want adapter.ErrInvalidResolution", name, err)
 		}
 	}
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &valid}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &valid}); err != nil {
 		t.Fatalf("offered resolution rejected: %v", err)
 	}
 	// The input stage enforces the same nested ownership and the offered answer.
@@ -563,8 +593,8 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 	_ = middle[3].DecodePayload(&input)
 	validAnswer := []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}
 	foreign := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "intruder", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: validAnswer}
-	if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &foreign}); !errors.Is(err, ErrInvalidResolution) {
-		t.Fatalf("foreign input ownership: got %v, want ErrInvalidResolution", err)
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &foreign}); !errors.Is(err, adapter.ErrInvalidResolution) {
+		t.Fatalf("foreign input ownership: got %v, want adapter.ErrInvalidResolution", err)
 	}
 	for name, answers := range map[string][]protocol.InputAnswer{
 		"empty answers":    nil,
@@ -573,8 +603,8 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 		"foreign question": {{QuestionID: "other", SelectedOptionIDs: []string{"yes"}}},
 	} {
 		request := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: answers}
-		if err := session.Resolve(context.Background(), InteractionResolution{RunID: runID, RespondedBy: "user", Input: &request}); !errors.Is(err, ErrInvalidResolution) {
-			t.Fatalf("%s: got %v, want ErrInvalidResolution", name, err)
+		if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &request}); !errors.Is(err, adapter.ErrInvalidResolution) {
+			t.Fatalf("%s: got %v, want adapter.ErrInvalidResolution", name, err)
 		}
 	}
 }
@@ -582,8 +612,8 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 func TestCloseRejectsActiveRun(t *testing.T) {
 	session := newTestSession(t, 64)
 	_, stream := submit(t, session)
-	if err := session.Close(context.Background()); !errors.Is(err, ErrRunActive) {
-		t.Fatalf("got %v, want ErrRunActive", err)
+	if err := session.Close(context.Background()); !errors.Is(err, adapter.ErrRunActive) {
+		t.Fatalf("got %v, want adapter.ErrRunActive", err)
 	}
 	if events := drainAvailable(stream); len(events) == 0 {
 		t.Fatal("active run stream was closed")
@@ -594,8 +624,8 @@ func TestResumeRejectsFutureCursor(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
 	_ = drainAvailable(stream)
-	if _, _, err := session.Resume(context.Background(), ResumeRequest{RunID: runID, AfterSequence: 99}); !errors.Is(err, ErrReplayCursorFuture) {
-		t.Fatalf("got %v, want ErrReplayCursorFuture", err)
+	if _, _, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 99}); !errors.Is(err, adapter.ErrReplayCursorFuture) {
+		t.Fatalf("got %v, want adapter.ErrReplayCursorFuture", err)
 	}
 }
 
@@ -614,8 +644,8 @@ func TestResumeReportsWhollyEvictedRun(t *testing.T) {
 
 	runB, streamB := submit(t, session)
 	_ = drainAvailable(streamB)
-	_, _, err := session.Resume(context.Background(), ResumeRequest{RunID: runA, AfterSequence: 0})
-	var gap *ReplayGap
+	_, _, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runA, AfterSequence: 0})
+	var gap *adapter.ReplayGap
 	if !errors.As(err, &gap) {
 		t.Fatalf("got %v, want replay gap after run %s evicted by %s", err, runA, runB)
 	}
@@ -625,7 +655,7 @@ func TestResumeReportsWhollyEvictedRun(t *testing.T) {
 }
 
 func TestDescriptorTruthful(t *testing.T) {
-	descriptor, err := NewMemory(Config{JournalCapacity: 7}).Probe(context.Background())
+	descriptor, err := adapter.NewMemory(adapter.Config{JournalCapacity: 7}).Probe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,5 +664,19 @@ func TestDescriptorTruthful(t *testing.T) {
 	}
 	if descriptor.MaxActiveRunsPerSession != 1 || !descriptor.InteractiveGates || descriptor.CancellationTarget != "run" || descriptor.CancellationImplementation != "session_emulated" {
 		t.Fatalf("descriptor: %+v", descriptor)
+	}
+}
+
+// The golden script emits action.call.* events, so the descriptor must
+// affirmatively advertise the feature key the state machine consults for them.
+// Advertising only "action.tools.execute" left the reference adapter's own
+// tool lifecycle rejected as an unadvertised optional feature.
+func TestDescriptorAdvertisesEmittedOptionalFeatures(t *testing.T) {
+	descriptor := testDescriptor(t)
+	for _, feature := range []string{"action.tools", "action.permissions", "user_input"} {
+		support, ok := descriptor.Capabilities.Features[feature]
+		if !ok || support.Level == protocol.SupportUnavailable {
+			t.Fatalf("feature %q is not affirmatively advertised: %+v", feature, support)
+		}
 	}
 }
