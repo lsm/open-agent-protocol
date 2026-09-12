@@ -275,7 +275,11 @@ func (c *Client) exchange(ctx context.Context, method, path string, request *pro
 		// envelope correlated elsewhere is a protocol violation, not this
 		// operation's answer.
 		var serverErr *ServerError
-		if errors.As(err, &serverErr) && serverErr.Envelope.ID != "" {
+		if errors.As(err, &serverErr) && serverErr.Envelope.Type == protocol.TypeErrorResponse {
+			// Presence is the envelope's type, not its id: statusError only
+			// records an envelope that parsed as an error response, and one
+			// that omits its own required id is exactly the invalid envelope
+			// these checks exist to catch.
 			if err := c.checkEnvelope(serverErr.Envelope, raw); err != nil {
 				return protocol.Envelope{}, err
 			}

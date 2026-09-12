@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"time"
@@ -259,6 +260,16 @@ func (es *EventStream) open(after string) (*http.Response, error) {
 			Message: fmt.Sprintf("event stream returned status %d, want %d OK", response.StatusCode, http.StatusOK),
 		}
 	}
+	if mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type")); err != nil || mediaType != "text/event-stream" {
+		// A 200 with some other body would parse as an empty or garbage
+		// stream — read errors that masquerade as drops, or a connection
+		// that parks forever. The endpoint must declare the event stream.
+		response.Body.Close()
+		return nil, &ServerError{
+			Status:  response.StatusCode,
+			Message: fmt.Sprintf("event stream content type %q, want text/event-stream", response.Header.Get("Content-Type")),
+		}
+	}
 	return response, nil
 }
 
@@ -348,24 +359,25 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 // deliver applies the stream's cursor integrity rules to one envelope and
 // records its position.
 func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
+	// Every envelope on this stream is a sequenced run event; one without a
+	// sequence cannot be positioned, and delivering it would leave the cursor
+	// behind it — a later resume would replay it without any way to detect
+	// the duplicate.
+	if envelope.Sequence == nil {
+		return &MalformedFrameError{Detail: "event envelope carries no sequence"}
+	}
 	if f.hasID {
 		id, err := strconv.ParseUint(f.lastID, 10, 64)
 		if err != nil {
 			return &MalformedFrameError{Detail: fmt.Sprintf("frame id %q is not a sequence", f.lastID), Cause: err}
 		}
-		switch {
-		case envelope.Sequence == nil:
-			return &MalformedFrameError{Detail: fmt.Sprintf("frame id %d frames an envelope with no sequence", id)}
-		case *envelope.Sequence != id:
+		if *envelope.Sequence != id {
 			return &MalformedFrameError{Detail: fmt.Sprintf("frame id %d disagrees with envelope sequence %d", id, *envelope.Sequence)}
 		}
 	}
 	resumed := es.resumed
 	if resumed {
 		es.resumed = false
-		if envelope.Sequence == nil {
-			return &MalformedFrameError{Detail: "a resumed stream must deliver sequenced envelopes"}
-		}
 		if es.runID != "" && envelope.RunID != es.runID {
 			return &ResumeMismatchError{AfterSequence: es.lastSeq, ExpectedRunID: es.runID, ObservedRunID: envelope.RunID, ObservedSequence: *envelope.Sequence}
 		}
@@ -377,9 +389,21 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 			// expectation stays bound to the cursor.
 			es.runID = envelope.RunID
 			es.terminal = isTerminal(envelope.Type)
+		} else if es.runID == "" {
+			// The stream's first observed envelope may join a run in
+			// progress: sequences before the join were never deliverable to
+			// this subscription, so the join position becomes the baseline.
+			es.runID = envelope.RunID
+			es.lastSeq = 0
+			es.terminal = isTerminal(envelope.Type)
 		} else {
-			// Sequences are per-run: a live transition to a new run starts a
-			// fresh sequence space.
+			// A live transition to a new run starts a fresh sequence space,
+			// and this stream was attached throughout, so it must witness
+			// the run from its first envelope: anything later means the
+			// opening events were lost.
+			if *envelope.Sequence != 1 {
+				return &SequenceGapError{RunID: envelope.RunID, Expected: 1, Observed: *envelope.Sequence}
+			}
 			es.runID = envelope.RunID
 			es.lastSeq = 0
 			es.terminal = isTerminal(envelope.Type)
@@ -387,21 +411,19 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 	} else if isTerminal(envelope.Type) {
 		es.terminal = true
 	}
-	if envelope.Sequence != nil {
-		// Run sequences are contiguous: within one run every envelope carries
-		// the previous sequence plus one. A regression is a replay defect, and
-		// a skip means an envelope was lost — advancing past it would hide it
-		// from the consumer and from a later cursor resume, so both surface.
-		if es.lastSeq > 0 {
-			switch {
-			case *envelope.Sequence <= es.lastSeq:
-				return &DuplicateSequenceError{RunID: envelope.RunID, Sequence: *envelope.Sequence}
-			case *envelope.Sequence != es.lastSeq+1:
-				return &SequenceGapError{RunID: envelope.RunID, Expected: es.lastSeq + 1, Observed: *envelope.Sequence}
-			}
+	// Run sequences are contiguous: within one run every envelope carries the
+	// previous sequence plus one. A regression is a replay defect, and a skip
+	// means an envelope was lost — advancing past it would hide it from the
+	// consumer and from a later cursor resume, so both surface.
+	if es.lastSeq > 0 {
+		switch {
+		case *envelope.Sequence <= es.lastSeq:
+			return &DuplicateSequenceError{RunID: envelope.RunID, Sequence: *envelope.Sequence}
+		case *envelope.Sequence != es.lastSeq+1:
+			return &SequenceGapError{RunID: envelope.RunID, Expected: es.lastSeq + 1, Observed: *envelope.Sequence}
 		}
-		es.lastSeq = *envelope.Sequence
 	}
+	es.lastSeq = *envelope.Sequence
 	es.connEvents++
 	return nil
 }

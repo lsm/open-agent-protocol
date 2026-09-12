@@ -783,11 +783,16 @@ func openDefectSession(t *testing.T, c *Client) *Session {
 
 func validEventEnvelope(t *testing.T, typ protocol.EnvelopeType, sequence uint64) []byte {
 	t.Helper()
-	envelope, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(fmt.Sprintf("wire-%d", sequence)), protocol.RunStatusUpdatedPayload{})
+	return validRunEnvelope(t, typ, "wire-run", sequence)
+}
+
+func validRunEnvelope(t *testing.T, typ protocol.EnvelopeType, runID string, sequence uint64) []byte {
+	t.Helper()
+	envelope, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(fmt.Sprintf("wire-%s-%d", runID, sequence)), protocol.RunStatusUpdatedPayload{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope.RunID = "wire-run"
+	envelope.RunID = protocol.RunID(runID)
 	envelope.Sequence = &sequence
 	data, err := envelope.MarshalJSON()
 	if err != nil {
@@ -851,6 +856,31 @@ func TestClientRejectsBadResumeSuffix(t *testing.T) {
 	}
 }
 
+func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
+	// A message frame with neither an id field nor an envelope sequence
+	// cannot be positioned: delivering it would leave the cursor behind it,
+	// so a reconnect would replay it. The stream contract is sequenced run
+	// events; anything else is malformed.
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-noseq"), protocol.RunStatusUpdatedPayload{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := envelope.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := defectServer(t, fmt.Sprintf("data: %s\n\n", data))
+	stream := openDefectSession(t, c).Events(context.Background())
+	_, err = stream.Next()
+	var malformed *MalformedFrameError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("error %v (%T), want MalformedFrameError", err, err)
+	}
+	if !strings.Contains(malformed.Error(), "no sequence") {
+		t.Fatalf("malformed detail %q, want the sequence requirement", malformed.Error())
+	}
+}
+
 func TestClientRejectsNon200StreamStatus(t *testing.T) {
 	// A 2xx that is not a stream (a proxy's 204) must surface as an error,
 	// not be dereferenced as a response with a stream body.
@@ -869,6 +899,82 @@ func TestClientRejectsNon200StreamStatus(t *testing.T) {
 	}
 	if _, err := stream.Next(); err == nil || errors.Is(err, io.EOF) {
 		t.Fatalf("repeated Next returned %v, want the sticky error", err)
+	}
+}
+
+func TestClientRejectsNonEventStreamContentType(t *testing.T) {
+	// A 200 with an HTML or JSON body is not an event stream; parsing it as
+	// one would masquerade as drops or park forever. The endpoint must
+	// declare text/event-stream.
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "<html>proxy login page</html>")
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	stream := session.Events(context.Background())
+	_, err := stream.Next()
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("error %v (%T), want ServerError", err, err)
+	}
+	if !strings.Contains(serverErr.Message, "text/event-stream") {
+		t.Fatalf("content type error %+v", serverErr)
+	}
+}
+
+func TestClientMidRunJoinAccepted(t *testing.T) {
+	// The stream's first observed envelope may join a run in progress: a
+	// subscription opened mid-run legitimately starts at the join position.
+	c := defectServer(t, fmt.Sprintf("id: 5\ndata: %s\n\n", validRunEnvelope(t, protocol.TypeRunStatusUpdated, "joined-run", 5)))
+	stream := openDefectSession(t, c).Events(context.Background())
+	envelope, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Sequence == nil || *envelope.Sequence != 5 {
+		t.Fatalf("joined envelope sequence %v, want 5", envelope.Sequence)
+	}
+}
+
+func TestClientRejectsLateRunStart(t *testing.T) {
+	// A live transition to a new run must begin at sequence 1: the stream
+	// was attached throughout, so a first envelope later than the run's
+	// opening means events were lost.
+	joined := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "first-run", 5)
+	late := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "second-run", 3)
+	c := defectServer(t, fmt.Sprintf("id: 5\ndata: %s\n\nid: 3\ndata: %s\n\n", joined, late))
+	stream := openDefectSession(t, c).Events(context.Background())
+	if _, err := stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := stream.Next()
+	var gap *SequenceGapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("error %v (%T), want SequenceGapError", err, err)
+	}
+	if gap.Expected != 1 || gap.Observed != 3 {
+		t.Fatalf("gap %+v, want expected 1 observed 3", gap)
+	}
+}
+
+func TestClientValidationRejectsIdlessErrorEnvelope(t *testing.T) {
+	// Parses and is typed error.response, but omits the required top-level
+	// id: the presence test must not key on the id, or this invalid envelope
+	// skips validation entirely.
+	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","payload":{"error":{"code":"unknown_session","message":"nope"}}}`
+	c := requestStub(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, raw)
+	}, WithEnvelopeValidation())
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	_, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+		Delivery: protocol.DeliveryAuto,
+	})
+	if err == nil || !strings.Contains(err.Error(), "schema validation") {
+		t.Fatalf("idless error envelope: %v", err)
 	}
 }
 
