@@ -630,6 +630,57 @@ func TestHubReplayGap(t *testing.T) {
 	}
 }
 
+// TestHubCloseReplaySubscriptionEndsPromptly pins the Close contract on a
+// replay subscription whose adapter stream is still open: the run is parked
+// at its gate, the replayed suffix is consumed, and Close must end the
+// subscription at once instead of waiting for the parked run to settle.
+func TestHubCloseReplaySubscriptionEndsPromptly(t *testing.T) {
+	hub := memoryHub(t, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	session := openMemorySession(t, hub, "close-replay")
+	live, err := hub.Subscribe(ctx, "close-replay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	submitGolden(t, session, "park at the gate")
+	initial := nextUntil(t, live, typeStop(protocol.TypeActionPermissionRequested))
+
+	resumed, err := hub.Subscribe(ctx, "close-replay", serve.After(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := nextUntil(t, resumed, typeStop(protocol.TypeActionPermissionRequested))
+	if len(replayed) != 2 {
+		t.Fatalf("replayed suffix %d envelopes, want 2", len(replayed))
+	}
+	resumed.Close()
+	// The run stays parked, so only the subscription's own teardown can end
+	// this Next.
+	done := make(chan error, 1)
+	go func() {
+		_, err := resumed.Next()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("post-Close Next error %v, want io.EOF", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("post-Close Next did not end while the run was parked")
+	}
+	// Close is idempotent, and the parked run is unaffected: resolving the
+	// gate still settles it for the live subscription.
+	resumed.Close()
+	resolveGate(t, session, initial[len(initial)-1])
+	middle := nextUntil(t, live, typeStop(protocol.TypeRunStatusUpdated))
+	resolveGate(t, session, envelopeOfType(t, middle, protocol.TypeUserInputRequested))
+	nextUntil(t, live, typeStop(protocol.TypeRunCompleted))
+}
+
 // --- listing and close semantics ---
 
 func TestHubSessionsListingAcrossAdapters(t *testing.T) {

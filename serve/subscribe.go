@@ -59,7 +59,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		if !open {
 			return nil, &SessionClosedError{ID: id}
 		}
-		return &Subscription{session: entry, ctx: ctx, sub: sub}, nil
+		return &Subscription{session: entry, ctx: ctx, sub: sub, stop: make(chan struct{})}, nil
 	}
 	if entry.IsClosed() {
 		return nil, &SessionClosedError{ID: id}
@@ -76,7 +76,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	if err != nil {
 		return nil, err
 	}
-	return &Subscription{session: entry, ctx: ctx, replay: replay, run: runID}, nil
+	return &Subscription{session: entry, ctx: ctx, replay: replay, run: runID, stop: make(chan struct{})}, nil
 }
 
 // Subscription is one ordered run-event consumer, the in-process counterpart
@@ -102,7 +102,10 @@ type Subscription struct {
 	// spaces into the overflow cursor.
 	last    uint64
 	lastRun protocol.RunID
-
+	// stop closes exactly once, on Close: a Next parked on a replay stream
+	// that no longer has a consumer ends at once instead of competing with
+	// the background drainer until the run settles.
+	stop      chan struct{}
 	closeOnce sync.Once
 	finished  bool
 	err       error
@@ -125,10 +128,11 @@ func (s *Subscription) Next() (protocol.Envelope, error) {
 	return s.nextReplay()
 }
 
-// Close detaches the subscription from the hub. Envelopes already queued to
-// it are dropped; subsequent Next calls return io.EOF. Close is idempotent
-// and must not race with Next — cancel the Subscribe context to stop a
-// blocked consumer instead.
+// Close detaches the subscription from the hub. Subsequent Next calls
+// return io.EOF — promptly, even on a replay subscription whose adapter
+// stream is still open (a few already-queued live envelopes may still be
+// delivered first). Close is idempotent and must not race with Next —
+// cancel the Subscribe context to stop a blocked consumer instead.
 func (s *Subscription) Close() {
 	s.closeOnce.Do(s.detach)
 }
@@ -191,6 +195,11 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 		}
 		s.last = observedSequence(result.Envelope, s.last)
 		return result.Envelope, nil
+	case <-s.stop:
+		// A closed subscription must not keep racing its background drainer
+		// for the replay stream: delivery ends here, whatever the run does.
+		s.finished = true
+		return protocol.Envelope{}, io.EOF
 	case <-s.ctx.Done():
 		s.Close()
 		s.finished, s.err = true, s.ctx.Err()
@@ -215,6 +224,7 @@ func (s *Subscription) observe(envelope protocol.Envelope) {
 // consumer. Draining an already-closed channel exits at once. detach runs
 // exactly once, under Close's guard.
 func (s *Subscription) detach() {
+	close(s.stop)
 	if s.sub != nil {
 		s.session.unsubscribe(s.sub)
 		s.sub.stop(false)
