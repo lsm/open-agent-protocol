@@ -35,24 +35,17 @@ interface GoToolchain {
 
 /**
  * Resolves the go toolchain: the OAP_GO override, then PATH, then the
- * pinned runtime location this repo's environment documents.
+ * runtime locations this repo's environment documents. No GOTOOLCHAIN
+ * pinning: a candidate older than go.mod's requirement must be free to
+ * select the module's toolchain the way a bare `go build` would.
  */
 function findGo(): GoToolchain | null {
-  const candidates: Array<{ binary: string; env?: NodeJS.ProcessEnv }> = [];
-  if (process.env.OAP_GO) candidates.push({ binary: process.env.OAP_GO });
-  candidates.push({ binary: 'go' });
-  const pinned = '/tmp/runtimes/go1.27/bin/go';
-  if (spawnSync('go', ['version'], { stdio: 'ignore' }).status !== 0) {
-    if (spawnSync(pinned, ['version'], { stdio: 'ignore' }).status === 0) {
-      candidates.push({
-        binary: pinned,
-        env: { ...process.env, GOROOT: '/tmp/runtimes/go1.27', GOTOOLCHAIN: 'local' },
-      });
-    }
-  }
-  for (const candidate of candidates) {
-    const probe = spawnSync(candidate.binary, ['version'], { stdio: 'ignore', env: candidate.env });
-    if (probe.status === 0 && !probe.error) return { binary: candidate.binary, env: candidate.env ?? process.env };
+  const candidates: string[] = [];
+  if (process.env.OAP_GO) candidates.push(process.env.OAP_GO);
+  candidates.push('go', '/tmp/runtimes/go1.27/bin/go', '/tmp/go/bin/go');
+  for (const binary of candidates) {
+    const probe = spawnSync(binary, ['version'], { stdio: 'ignore' });
+    if (probe.status === 0 && !probe.error) return { binary, env: process.env };
   }
   return null;
 }

@@ -109,12 +109,22 @@ export type MessageRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool'
 
 export type SupportLevel = 'native' | 'emulated' | 'degraded' | 'unavailable';
 
-/** An image part: either a URL, or inline data with its media type. */
-export interface ImageContent {
-  url?: string;
-  data?: string;
-  media_type?: string;
+/** An image carried by URL alone. */
+export interface UrlImage {
+  url: string;
+  data?: undefined;
+  media_type?: undefined;
 }
+
+/** An image carried as inline data with its media type. */
+export interface InlineImage {
+  data: string;
+  media_type: string;
+  url?: undefined;
+}
+
+/** An image part: exactly one of a URL, or inline data with its media type. */
+export type ImageContent = UrlImage | InlineImage;
 
 export interface TextPart {
   type: 'text';
@@ -148,13 +158,13 @@ export interface ToolResultPart {
 export type ContentPart = TextPart | ReasoningPart | ImagePart | ToolCallPart | ToolResultPart;
 
 /** Message content is either a plain string or a non-empty list of parts. */
-export type MessageContent = string | ContentPart[];
+export type MessageContent = string | [ContentPart, ...ContentPart[]];
 
 export function textContent(content: MessageContent): string | null {
   return typeof content === 'string' ? content : null;
 }
 
-export function partsContent(content: MessageContent): ContentPart[] | null {
+export function partsContent(content: MessageContent): [ContentPart, ...ContentPart[]] | null {
   return Array.isArray(content) ? content : null;
 }
 
@@ -514,11 +524,22 @@ export interface InputQuestion {
   options?: InputOption[];
 }
 
-export interface InputAnswer {
+/** A text answer to one question. */
+export interface TextAnswer {
   question_id: string;
-  text?: string;
-  selected_option_ids?: string[];
+  text: string;
+  selected_option_ids?: undefined;
 }
+
+/** A choice answer to one question: one or more selected option ids. */
+export interface SelectedOptionsAnswer {
+  question_id: string;
+  selected_option_ids: [string, ...string[]];
+  text?: undefined;
+}
+
+/** One answered question: a text answer or selected option ids, exactly one of the two. */
+export type InputAnswer = TextAnswer | SelectedOptionsAnswer;
 
 export interface UserInputRequestedPayload {
   interaction_id: string;

@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import * as protocol from '../src/protocol.js';
+import type { ImageContent, InputAnswer, MessageContent } from '../src/protocol.js';
 import { findRepoRoot } from './transport.js';
 
 const schemaDir = join(findRepoRoot(dirname(fileURLToPath(import.meta.url))), 'schema', 'v0.1');
@@ -536,4 +537,39 @@ test('every envelope type maps to the payload def its schema declares', () => {
   assert.equal(payloadDefOf.get('action.permission.resolve.request'), 'action.schema.json:permissionResolveRequest');
   assert.equal(payloadDefOf.get('user.input.resolve.request'), 'interaction.schema.json:resolveRequest');
   assert.equal(envelopeFileOf.get('error.response'), 'errorResponse');
+});
+
+// Compile-time assertions of the schema's exclusive choices: each suppressed
+// line below fails the build if the interface ever accepts a value the
+// daemon's schema gate would reject.
+test('the schema exclusivity rules are compile-time errors', () => {
+  // @ts-expect-error url and inline data are mutually exclusive image forms
+  const badImage: ImageContent = { url: 'https://example.test/i.png', data: 'aGk=', media_type: 'text/plain' };
+  // @ts-expect-error an image with data requires its media type
+  const dataOnly: ImageContent = { data: 'aGk=' };
+  // @ts-expect-error an empty parts list is not message content
+  const emptyParts: MessageContent = [];
+  // @ts-expect-error an answer carries text or selections, not both
+  const bothAnswer: InputAnswer = { question_id: 'q-1', text: 'hi', selected_option_ids: ['yes'] };
+  // @ts-expect-error an answer must carry exactly one value
+  const bareAnswer: InputAnswer = { question_id: 'q-1' };
+  // @ts-expect-error a choice answer needs at least one selected option
+  const noSelection: InputAnswer = { question_id: 'q-1', selected_option_ids: [] };
+  void badImage;
+  void dataOnly;
+  void emptyParts;
+  void bothAnswer;
+  void bareAnswer;
+  void noSelection;
+  // The two legal shapes still type-check.
+  const urlImage: ImageContent = { url: 'https://example.test/i.png' };
+  const inlineImage: ImageContent = { data: 'aGk=', media_type: 'text/plain' };
+  const parts: MessageContent = [{ type: 'text', text: 'hi' }];
+  const textAnswer: InputAnswer = { question_id: 'q-1', text: 'hi' };
+  const choiceAnswer: InputAnswer = { question_id: 'q-1', selected_option_ids: ['yes'] };
+  void urlImage;
+  void inlineImage;
+  void parts;
+  void textAnswer;
+  void choiceAnswer;
 });

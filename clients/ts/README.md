@@ -25,8 +25,10 @@ from a checkout, e.g. via a `file:` or Git dependency:
 }
 ```
 
-`npm install` in this directory builds nothing; consumers run the compiled
-`dist/` that `npm prepare`/`npm run build` produces from `src/`.
+The package builds itself when installed as a dependency: npm runs the
+`prepare` script (which runs `build`) for `file:` and Git dependencies, so
+`dist/` exists before the first import. In a bare checkout, `npm install`
+prepares the same way, or run `npm run build` directly.
 
 ## Canonical lifecycle
 
