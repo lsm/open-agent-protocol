@@ -63,13 +63,40 @@ func Drain(t testing.TB, stream adapter.EventStream, timeout time.Duration) []pr
 }
 
 // AssertRunTrace checks scope, sequence, capability revision, terminality, and
-// the executable OAP schema/state machine for an admitted run.
+// the executable OAP schema/state machine for an admitted run. The trace
+// carries no capability descriptor, so it certifies only runs whose envelopes
+// use no optional features.
 func AssertRunTrace(t testing.TB, admission protocol.MessageSubmitResponse, revision string, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertRunInvariants(t, admission, revision, envelopes)
-	trace := canonicalTrace(t, admission, envelopes)
-	result := validation.MustNew().ValidateBytes(trace, "adaptertest")
-	if !result.Valid() {
+	assertProtocolValid(t, admission, adapter.Descriptor{}, revision, envelopes)
+}
+
+// AssertProtocolValid runs the executable OAP schema and state machine over the
+// canonical trace of an admitted run without a capability descriptor, so the
+// envelopes must use no optional features. Traces with tools, interactions, or
+// non-auto delivery need AssertProtocolValidWithDescriptor.
+func AssertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	assertProtocolValid(t, admission, adapter.Descriptor{}, "", events)
+}
+
+// AssertProtocolValidWithDescriptor prefixes the canonical trace with the
+// adapter's live capability descriptor exchange so optional-feature envelopes
+// (tools, permissions, user input, non-auto delivery) are certified against
+// what the adapter actually advertises.
+func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
+	t.Helper()
+	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events)
+}
+
+func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, revision string, events []protocol.Envelope) {
+	t.Helper()
+	assertRunInvariants(t, admission, revision, events)
+	trace, err := ProtocolTrace(admission, descriptor, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().ValidateBytes(trace, "adaptertest"); !result.Valid() {
 		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
 	}
 }
@@ -86,12 +113,26 @@ func assertRunInvariants(t testing.TB, admission protocol.MessageSubmitResponse,
 	if !admission.Accepted || admission.RunID == "" {
 		t.Fatalf("invalid admission: %+v", admission)
 	}
-	terminals := 0
+	// Harness-fabricated control exchanges (interaction resolves a caller
+	// spliced into the stream) carry no adapter sequence and no adapter-owned
+	// identity; only the validator judges those.
+	last := -1
 	for index, envelope := range envelopes {
+		if !isControlExchange(envelope.Type) {
+			last = index
+		}
+	}
+	terminals := 0
+	emitted := 0
+	for index, envelope := range envelopes {
+		if isControlExchange(envelope.Type) {
+			continue
+		}
+		emitted++
 		if envelope.SessionID != admission.SessionID || envelope.RunID != admission.RunID {
 			t.Fatalf("event %d scope: %+v", index, envelope)
 		}
-		wantSequence := uint64(index + 1)
+		wantSequence := uint64(emitted)
 		if envelope.Sequence == nil || *envelope.Sequence != wantSequence {
 			t.Fatalf("event %d sequence: got %v want %d", index, envelope.Sequence, wantSequence)
 		}
@@ -100,7 +141,7 @@ func assertRunInvariants(t testing.TB, admission protocol.MessageSubmitResponse,
 		}
 		if isTerminal(envelope.Type) {
 			terminals++
-			if index != len(envelopes)-1 {
+			if index != last {
 				t.Fatalf("terminal event at index %d of %d", index, len(envelopes))
 			}
 		}
@@ -108,6 +149,23 @@ func assertRunInvariants(t testing.TB, admission protocol.MessageSubmitResponse,
 	if terminals != 1 {
 		t.Fatalf("got %d terminal events", terminals)
 	}
+}
+
+// isControlExchange reports whether an envelope type belongs to a harness-side
+// request/response exchange rather than the adapter's event stream. Adapters
+// publish events only, so a control envelope in a validated stream was
+// fabricated by the test harness.
+func isControlExchange(typ protocol.EnvelopeType) bool {
+	switch typ {
+	case protocol.TypeCapabilitiesRequest, protocol.TypeCapabilitiesResponse,
+		protocol.TypeSessionMessageSubmitRequest, protocol.TypeSessionMessageSubmitResponse,
+		protocol.TypeRunCancelRequest, protocol.TypeRunCancelResponse,
+		protocol.TypeActionPermissionResolveRequest, protocol.TypeActionPermissionResolveResponse,
+		protocol.TypeUserInputResolveRequest, protocol.TypeUserInputResolveResponse,
+		protocol.TypeUserInputCancelRequest, protocol.TypeUserInputCancelResponse:
+		return true
+	}
+	return false
 }
 
 // AssertInitialState verifies that opening a session preserves the requested ID
@@ -128,29 +186,98 @@ func AssertInitialState(t testing.TB, implementation adapter.Adapter, request ad
 	return session
 }
 
-func canonicalTrace(t testing.TB, admission protocol.MessageSubmitResponse, events []protocol.Envelope) []byte {
-	t.Helper()
-	request, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "adaptertest-submit", protocol.MessageSubmitRequest{
+// ProtocolTrace serializes the canonical wire trace for an adapter-observed
+// run: the capability exchange when the descriptor names a revision, the
+// submit/admission exchange that admitted the run, the cancel exchange a
+// run.cancelled terminal implies, and the adapter's envelopes. The bytes are
+// valid input for validation.Validator.ValidateBytes, so test assertions and
+// non-test binaries (oap check's demo) assemble exactly one trace shape.
+func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
+	var trace []protocol.Envelope
+	if descriptor.CapabilityRevision != "" {
+		request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
+		if err != nil {
+			return nil, err
+		}
+		response, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
+		if err != nil {
+			return nil, err
+		}
+		response.InReplyTo = request.ID
+		response.CapabilityRevision = descriptor.CapabilityRevision
+		trace = append(trace, request, response)
+	}
+	submit, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{
 		SessionID: admission.SessionID,
 		Delivery:  admission.RequestedDelivery,
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("adaptertest")}},
 	})
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	request.SessionID = admission.SessionID
-	response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "adaptertest-admission", admission)
+	submit.SessionID = admission.SessionID
+	response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	response.SessionID = admission.SessionID
-	response.InReplyTo = request.ID
-	trace := append([]protocol.Envelope{request, response}, events...)
-	encoded, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
+	response.InReplyTo = submit.ID
+	trace = append(trace, submit, response)
+	if cut := cancelExchangeCut(events); cut >= 0 {
+		request, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
+		if err != nil {
+			return nil, err
+		}
+		request.SessionID, request.RunID = admission.SessionID, admission.RunID
+		ack, err := protocol.NewEnvelope(protocol.TypeRunCancelResponse, "cancel-response", protocol.RunCancelResponse{SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelling})
+		if err != nil {
+			return nil, err
+		}
+		ack.SessionID, ack.RunID, ack.InReplyTo = admission.SessionID, admission.RunID, request.ID
+		trace = append(trace, events[:cut]...)
+		trace = append(trace, request, ack)
+		trace = append(trace, events[cut:]...)
+	} else {
+		trace = append(trace, events...)
 	}
-	return encoded
+	return json.Marshal(trace)
+}
+
+// cancelExchangeCut reports where the harness-side cancel exchange belongs in
+// an event stream that settled as run.cancelled: ahead of the first cancelling
+// status update when the adapter reported one, otherwise directly before the
+// terminal. Streams that did not settle cancelled need no exchange and yield
+// -1. The state machine requires an accepted cancellation before a
+// run.cancelled terminal; run.cancel.response also sets the cancelling status,
+// and cancelling-to-cancelling is a legal identity transition, so either side
+// of the adapter's own update is valid.
+func cancelExchangeCut(events []protocol.Envelope) int {
+	settled := false
+	for _, event := range events {
+		if event.Type == protocol.TypeRunCancelled {
+			settled = true
+			break
+		}
+	}
+	if !settled {
+		return -1
+	}
+	for index, event := range events {
+		if event.Type != protocol.TypeRunStatusUpdated {
+			continue
+		}
+		var payload protocol.RunStatusUpdatedPayload
+		if err := event.DecodePayload(&payload); err == nil && payload.Status == protocol.RunCancelling {
+			return index
+		}
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		switch events[index].Type {
+		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+			return index
+		}
+	}
+	return -1
 }
 
 func AssertTypes(t testing.TB, envelopes []protocol.Envelope, want ...protocol.EnvelopeType) {
