@@ -314,9 +314,9 @@ export class EventStream implements AsyncIterable<Envelope> {
   private handleFrame(frame: SSEFrame): Envelope | undefined {
     switch (frame.event) {
       case SIGNAL_OVERFLOW: {
-        const signal = decodeSignal<OverflowSignal>(frame);
-        let runId = signal.run_id ?? '';
-        let lastSequence = signal.last_sequence ?? 0;
+        const signal = decodeSignal(frame);
+        let runId = signalString(signal, 'run_id');
+        let lastSequence = signalSequence(signal, 'last_sequence');
         if (this.runId !== '') {
           // The hub names the run current at signal time, which can be a
           // newer run than the one this connection was consuming while
@@ -326,16 +326,16 @@ export class EventStream implements AsyncIterable<Envelope> {
           runId = this.runId;
           lastSequence = this.lastSeq;
         }
-        throw new OverflowError(runId, lastSequence, signal.message ?? '');
+        throw new OverflowError(runId, lastSequence, signalString(signal, 'message'));
       }
       case SIGNAL_GAP: {
-        const signal = decodeSignal<GapSignal>(frame);
+        const signal = decodeSignal(frame);
         throw new ReplayGapError(
           this.runId,
-          signal.requested_after ?? 0,
-          signal.oldest_available ?? 0,
-          signal.latest_available ?? 0,
-          signal.message ?? '',
+          signalSequence(signal, 'requested_after'),
+          signalSequence(signal, 'oldest_available'),
+          signalSequence(signal, 'latest_available'),
+          signalString(signal, 'message'),
         );
       }
       case 'message': {
@@ -442,30 +442,38 @@ export class EventStream implements AsyncIterable<Envelope> {
   }
 }
 
-interface OverflowSignal {
-  run_id?: string;
-  last_sequence?: number;
-  message?: string;
-}
-
-interface GapSignal {
-  requested_after?: number;
-  oldest_available?: number;
-  latest_available?: number;
-  message?: string;
-}
-
-function decodeSignal<Signal extends OverflowSignal | GapSignal>(frame: SSEFrame): Signal {
+/**
+ * Decodes one signal frame's payload: JSON, an object, never an array. A
+ * signal of any other shape is a stream defect, not a typed error with
+ * fabricated fields — the cursor an error carries must be real or absent.
+ */
+function decodeSignal(frame: SSEFrame): Record<string, unknown> {
   let value: unknown;
   try {
     value = JSON.parse(frame.data);
   } catch (err) {
     throw new MalformedFrameError('signal frame payload did not decode', err);
   }
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new MalformedFrameError('signal frame payload did not decode');
   }
-  return value as Signal;
+  return value as Record<string, unknown>;
+}
+
+/** Reads one signal string field: a wrong-typed field is a defect, a missing one stays empty. */
+function signalString(signal: Record<string, unknown>, field: string): string {
+  const value = signal[field];
+  if (typeof value === 'string') return value;
+  if (value === undefined) return '';
+  throw new MalformedFrameError(`signal field ${field} is not a string`);
+}
+
+/** Reads one signal sequence field: a non-negative integer, with missing meaning zero. */
+function signalSequence(signal: Record<string, unknown>, field: string): number {
+  const value = signal[field];
+  if (value === undefined) return 0;
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value;
+  throw new MalformedFrameError(`signal field ${field} is not a sequence`);
 }
 
 /** Wraps the read error (clean end included) that ended one SSE connection: the stream may resume from its cursor. */

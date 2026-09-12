@@ -322,6 +322,49 @@ test('an undecodable signal payload is malformed', { timeout: 10000 }, async () 
   );
 });
 
+test('a signal that is not a JSON object is malformed', { timeout: 10000 }, async () => {
+  const { session } = sessionWith([{ match: LIVE, chunks: ['event: oap-overflow\ndata: []\n\n'] }]);
+  await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /signal frame payload did not decode/),
+  );
+});
+
+test('a wrong-typed signal field is malformed, never a fabricated cursor', { timeout: 10000 }, async () => {
+  const overflow = sessionWith([
+    {
+      match: LIVE,
+      chunks: [
+        ...goldenFrames(SESSION, RUN, 1, 2),
+        'event: oap-overflow\ndata: {"run_id": 7, "last_sequence": 5, "message": "fell behind"}\n\n',
+      ],
+    },
+  ]);
+  await rejectsWith(collect(overflow.session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /signal field run_id is not a string/),
+  );
+  const gap = sessionWith([
+    {
+      match: /after=2$/,
+      chunks: ['event: oap-replay-gap\ndata: {"requested_after": "2", "oldest_available": 9}\n\n'],
+    },
+  ]);
+  await rejectsWith(collect(gap.session.eventsAfter(RUN, 2)), MalformedFrameError, (err) =>
+    assert.match(err.detail, /signal field requested_after is not a sequence/),
+  );
+});
+
+test('a fractional signal sequence is malformed', { timeout: 10000 }, async () => {
+  const { session } = sessionWith([
+    {
+      match: LIVE,
+      chunks: ['event: oap-overflow\ndata: {"run_id": "r-9", "last_sequence": 1.5, "message": "fell behind"}\n\n'],
+    },
+  ]);
+  await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /signal field last_sequence is not a sequence/),
+  );
+});
+
 test('unknown named events are skipped, keeping the stream forward-compatible', { timeout: 10000 }, async () => {
   const { session } = sessionWith([
     {

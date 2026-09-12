@@ -314,6 +314,25 @@ test('a 204 where an envelope was expected is an error', async () => {
   await assert.rejects(session.state(), /no content where session.state.response was expected/);
 });
 
+test('a state response scoped to another session is refused', async () => {
+  const transport = new FakeTransport([
+    {
+      match: '/state',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.SessionStateResponse,
+          id: 'resp-2',
+          inReplyTo: 'oap-request-2',
+          sessionId: 's-other',
+          payload: { session_id: 's-other', status: 'idle' },
+        }),
+      ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(session.state(), /scoped to session "s-other", want "s-1"/);
+});
+
 test('a wrong response type is refused', async () => {
   const transport = new FakeTransport([
     {

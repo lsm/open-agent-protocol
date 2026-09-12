@@ -139,6 +139,14 @@ export class OapSession {
   /** Reads the session's authoritative state. */
   async state(): Promise<SessionState> {
     const response = await this.client.exchange('GET', this.path('/state'), null, EnvelopeType.SessionStateResponse);
+    // The GET carries no request envelope, so the exchange's request-based
+    // scope check never runs: verify the response names this session before
+    // treating it as this session's authoritative state.
+    if (response.session_id !== this.sessionId) {
+      throw new Error(
+        `client: ${this.path('/state')} response is scoped to session "${response.session_id ?? ''}", want "${this.sessionId}"`,
+      );
+    }
     return payload<SessionState>(response);
   }
 
