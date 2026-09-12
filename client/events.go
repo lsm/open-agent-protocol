@@ -314,9 +314,18 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 			signal, err := decodeSignal[overflowSignal](f.data)
 			if err != nil {
 				failure = err
-			} else {
-				failure = &OverflowError{RunID: protocol.RunID(signal.RunID), LastSequence: signal.LastSequence, Message: signal.Message}
+				return false
 			}
+			runID, last := protocol.RunID(signal.RunID), signal.LastSequence
+			if es.runID != "" {
+				// The hub names the run current at signal time, which can be
+				// a newer run than the one this connection was consuming
+				// while last_sequence counts the consumed run's envelopes.
+				// The stream's own cursor is the pair it actually delivered,
+				// so recovery resumes the run that overflowed.
+				runID, last = es.runID, es.lastSeq
+			}
+			failure = &OverflowError{RunID: runID, LastSequence: last, Message: signal.Message}
 			return false
 		case signalGap:
 			signal, err := decodeSignal[gapSignal](f.data)
@@ -362,6 +371,12 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 // deliver applies the stream's cursor integrity rules to one envelope and
 // records its position.
 func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
+	// An envelope naming another session never belongs on this stream: a
+	// misrouted stream must not deliver another session's content and
+	// interaction requests as this one's.
+	if envelope.SessionID != es.session.id {
+		return &MalformedFrameError{Detail: fmt.Sprintf("envelope for session %q on the %q stream", envelope.SessionID, es.session.id)}
+	}
 	// Every envelope on this stream is a sequenced run event; one without a
 	// sequence cannot be positioned, and delivering it would leave the cursor
 	// behind it — a later resume would replay it without any way to detect

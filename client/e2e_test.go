@@ -795,6 +795,7 @@ func validRunEnvelope(t *testing.T, typ protocol.EnvelopeType, runID string, seq
 	if err != nil {
 		t.Fatal(err)
 	}
+	envelope.SessionID = "wire"
 	envelope.RunID = protocol.RunID(runID)
 	envelope.Sequence = &sequence
 	data, err := envelope.MarshalJSON()
@@ -896,6 +897,83 @@ func TestClientRejectsRunMismatchOnManualResume(t *testing.T) {
 	}
 }
 
+func TestClientOverflowCursorTracksConsumedRun(t *testing.T) {
+	// The hub's overflow signal names the run current at signal time, which
+	// can be a newer run than the one this connection consumed; the error
+	// must carry the stream's own cursor so recovery resumes the run that
+	// actually overflowed.
+	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "consumed-run", 1)
+	body := fmt.Sprintf("id: 1\ndata: %s\n\nevent: oap-overflow\ndata: {\"run_id\":\"newer-run\",\"last_sequence\":1,\"message\":\"fell behind\"}\n\n", envelope)
+	c := defectServer(t, body)
+	stream := openDefectSession(t, c).Events(context.Background())
+	if _, err := stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := stream.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("error %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "consumed-run" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want consumed-run at 1", overflow)
+	}
+}
+
+func TestClientRejectsForeignSessionEvents(t *testing.T) {
+	// An envelope naming another session never belongs on this stream: a
+	// misrouted stream must not deliver another session's content as this
+	// one's, whatever its sequence numbers say.
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-foreign"), protocol.RunStatusUpdatedPayload{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope.SessionID = "other-session"
+	one := uint64(1)
+	envelope.Sequence = &one
+	data, err := envelope.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := defectServer(t, fmt.Sprintf("data: %s\n\n", data))
+	stream := openDefectSession(t, c).Events(context.Background())
+	_, err = stream.Next()
+	var malformed *MalformedFrameError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("error %v (%T), want MalformedFrameError", err, err)
+	}
+	if !strings.Contains(malformed.Error(), "other-session") {
+		t.Fatalf("malformed detail %q, want the foreign session named", malformed.Error())
+	}
+}
+
+func TestClientRejectsOutOfScopeResponse(t *testing.T) {
+	// A correlated response scoped to another session is another operation's
+	// answer: the protocol validator rejects such pairs, and so must the
+	// client.
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID("scoped-response"), protocol.SessionOpenResponse{
+			SessionID: "other-session", Status: protocol.SessionIdle,
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if request, err := protocol.ParseEnvelope(body); err == nil {
+			response.InReplyTo = request.ID
+		}
+		response.SessionID = "other-session"
+		encoded, _ := response.MarshalJSON()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(encoded)
+	})
+	_, err := c.Open(context.Background(), "memory", "wire")
+	if err == nil || !strings.Contains(err.Error(), "other-session") {
+		t.Fatalf("out-of-scope response error: %v", err)
+	}
+}
+
 func TestClientRequestIDsUniqueAcrossClients(t *testing.T) {
 	// OAP envelope ids are trace-unique: two clients in one process must not
 	// mint the same request id, or a combined trace reports duplicates and
@@ -938,6 +1016,7 @@ func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	envelope.SessionID = "wire"
 	data, err := envelope.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
@@ -963,6 +1042,7 @@ func TestClientRejectsZeroSequence(t *testing.T) {
 	}
 	zero := uint64(0)
 	envelope.Sequence = &zero
+	envelope.SessionID = "wire"
 	data, err := envelope.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)

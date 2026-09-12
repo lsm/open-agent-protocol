@@ -314,6 +314,18 @@ func (c *Client) exchange(ctx context.Context, method, path string, request *pro
 		// decoding it would attribute another operation's answer to this one.
 		return protocol.Envelope{}, fmt.Errorf("client: %s response cites correlation %q, want the request id %q", path, envelope.InReplyTo, request.ID)
 	}
+	if request != nil {
+		// A correlated response must also stay in the request's scope: the
+		// protocol validator rejects responses whose session or run scope
+		// differs from the request, and per-envelope schema validation cannot
+		// see the pairing.
+		if request.SessionID != "" && envelope.SessionID != request.SessionID {
+			return protocol.Envelope{}, fmt.Errorf("client: %s response is scoped to session %q, want %q", path, envelope.SessionID, request.SessionID)
+		}
+		if request.RunID != "" && envelope.RunID != request.RunID {
+			return protocol.Envelope{}, fmt.Errorf("client: %s response is scoped to run %q, want %q", path, envelope.RunID, request.RunID)
+		}
+	}
 	return envelope, nil
 }
 
