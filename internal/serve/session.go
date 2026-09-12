@@ -72,7 +72,13 @@ type serverSession struct {
 	// closed records a successful adapter close: no further run can drive
 	// the hub, so a live subscriber arriving afterwards must not park.
 	closed bool
-	subs   map[*subscriber]struct{}
+	// readers counts run streams still being drained. A close must not
+	// finish subscribers while a reader may still be queueing final events,
+	// so it either finishes immediately (no readers) or defers to the last
+	// reader's exit.
+	readers          int
+	finishAfterDrain bool
+	subs             map[*subscriber]struct{}
 }
 
 func newServerSession(id protocol.SessionID, adapterName string, session base.Session) *serverSession {
@@ -148,14 +154,16 @@ func (ss *serverSession) currentRun() (protocol.RunID, bool) {
 func (ss *serverSession) startRun(runID protocol.RunID, stream base.EventStream) {
 	ss.mu.Lock()
 	ss.runID = runID
+	ss.readers++
 	ss.mu.Unlock()
 	go ss.readRun(runID, stream)
 }
 
 // readRun drains one run's adapter stream. When the stream ends it finishes
-// subscribers only if a newer run has not taken over the hub: a stale
-// finishSubs from run N must not terminate subscribers already receiving
-// run N+1.
+// subscribers only when it is the last reader and a newer run has not taken
+// over the hub: a stale finishSubs from run N must not terminate subscribers
+// already receiving run N+1, and a close that deferred its finish must not
+// fire while run N+1's reader still has events queued.
 func (ss *serverSession) readRun(runID protocol.RunID, stream base.EventStream) {
 	for result := range stream {
 		if result.Error != nil {
@@ -164,15 +172,23 @@ func (ss *serverSession) readRun(runID protocol.RunID, stream base.EventStream) 
 				continue
 			}
 			// Any other stream error ends delivery for this run; the
-			// documented reconnect path is the replay cursor.
+			// documented reconnect path is the replay cursor. The stream is
+			// still drained so an adapter that reports an error but keeps
+			// its channel open cannot block its own later emits.
+			go func(stream base.EventStream) {
+				for range stream {
+				}
+			}(stream)
 			break
 		}
 		ss.publish(result.Envelope)
 	}
 	ss.mu.Lock()
+	ss.readers--
 	current := ss.runID
+	finish := ss.readers == 0 && (current == runID || ss.finishAfterDrain)
 	ss.mu.Unlock()
-	if current == runID {
+	if finish {
 		ss.finishSubs(false)
 	}
 }
@@ -212,38 +228,45 @@ func (ss *serverSession) finishSubs(overflow bool) {
 }
 
 // markClosed records a successful adapter close and ends every live stream.
-// It is only called from the close endpoint, which succeeds solely when no
-// run is active, so no reader can still be queueing final events.
+// An adapter reports its run terminal once the terminal envelope is queued,
+// not once a consumer drained it, so a reader may still hold final events:
+// with no reader draining, subscribers finish immediately; otherwise the
+// finish waits for the last reader so no terminal envelope is lost.
 func (ss *serverSession) markClosed() {
 	ss.mu.Lock()
 	ss.closed = true
+	if ss.readers > 0 {
+		ss.finishAfterDrain = true
+		ss.mu.Unlock()
+		return
+	}
 	ss.mu.Unlock()
 	ss.finishSubs(false)
 }
 
-// setClosed records a successful adapter close without touching
-// subscribers: a shutdown close may race a reader still draining the run's
-// final events, and in-flight request contexts end those streams anyway.
-func (ss *serverSession) setClosed() {
-	ss.mu.Lock()
-	ss.closed = true
-	ss.mu.Unlock()
-}
-
 // close cancels any active run and then closes the adapter session: active
 // runs refuse Close by contract, so shutdown settles them through Cancel
-// where the adapter supports it.
+// where the adapter supports it. Some adapters acknowledge a cancel before
+// the run settles, so the refused Close is retried briefly — a shutdown that
+// gave up here would leave the session's child process orphaned.
 func (ss *serverSession) close(ctx context.Context) error {
 	err := ss.session.Close(ctx)
-	if errors.Is(err, base.ErrRunActive) {
+	for attempt := 0; errors.Is(err, base.ErrRunActive) && attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
 		state, stateErr := ss.session.State(ctx)
 		if stateErr == nil && state.ActiveRunID != "" {
 			_, _ = ss.session.Cancel(ctx, state.ActiveRunID)
 		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(100 * time.Millisecond):
+		}
 		err = ss.session.Close(ctx)
 	}
 	if err == nil {
-		ss.setClosed()
+		ss.markClosed()
 	}
 	return err
 }
@@ -262,11 +285,20 @@ const (
 // started still reports the run that overflowed it.
 func streamLive(w io.Writer, flusher http.Flusher, sub *subscriber, ctx context.Context, entry *serverSession) {
 	last := uint64(0)
+	var lastRun protocol.RunID
 	for {
 		select {
 		case envelope := <-sub.ch:
 			if err := writeSSE(w, envelope); err != nil {
 				return
+			}
+			// Sequences are per-run: a connection that spans runs (a
+			// resubmit landing in the settle window of the previous run)
+			// must not mix their independent sequence spaces into the
+			// overflow cursor.
+			if envelope.RunID != lastRun {
+				lastRun = envelope.RunID
+				last = 0
 			}
 			last = observedSequence(envelope, last)
 			flusher.Flush()
@@ -276,6 +308,10 @@ func streamLive(w io.Writer, flusher http.Flusher, sub *subscriber, ctx context.
 				case envelope := <-sub.ch:
 					if err := writeSSE(w, envelope); err != nil {
 						return
+					}
+					if envelope.RunID != lastRun {
+						lastRun = envelope.RunID
+						last = 0
 					}
 					last = observedSequence(envelope, last)
 					flusher.Flush()
@@ -300,6 +336,19 @@ func streamLive(w io.Writer, flusher http.Flusher, sub *subscriber, ctx context.
 // replayed suffix first, then live events, ending when the adapter closes the
 // stream at terminality.
 func streamReplay(w io.Writer, flusher http.Flusher, replay base.EventStream, ctx context.Context, runID protocol.RunID) {
+	// Whatever ends this connection — completion, a client disconnect, a
+	// stream error, or context cancellation — the adapter stream keeps being
+	// drained until the adapter closes it, so an adapter whose bounded
+	// replay buffer would otherwise fill cannot block its own later emits on
+	// this dead consumer. Draining an already-closed channel exits at once;
+	// against a run that never settles the drainers accumulate only until
+	// the session closes.
+	defer func() {
+		go func(stream base.EventStream) {
+			for range stream {
+			}
+		}(replay)
+	}()
 	last := uint64(0)
 	for {
 		select {
@@ -308,13 +357,6 @@ func streamReplay(w io.Writer, flusher http.Flusher, replay base.EventStream, ct
 				return
 			}
 			if result.Error != nil {
-				// Keep draining the abandoned stream so an adapter that
-				// reports the error but keeps its channel open cannot block
-				// its own later emits on this dead consumer.
-				go func(stream base.EventStream) {
-					for range stream {
-					}
-				}(replay)
 				if errors.Is(result.Error, base.ErrEventStreamOverflow) {
 					writeSSESignal(w, flusher, sseEventOverflow, map[string]any{
 						"run_id": string(runID), "last_sequence": last,
@@ -329,12 +371,6 @@ func streamReplay(w io.Writer, flusher http.Flusher, replay base.EventStream, ct
 			last = observedSequence(result.Envelope, last)
 			flusher.Flush()
 		case <-ctx.Done():
-			// Keep draining so the adapter's bounded replay buffer never
-			// blocks the session on an abandoned connection.
-			go func(stream base.EventStream) {
-				for range stream {
-				}
-			}(replay)
 			return
 		}
 	}

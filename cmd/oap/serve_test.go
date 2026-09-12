@@ -217,3 +217,19 @@ func TestServeSessionsClosedOnShutdown(t *testing.T) {
 	cancel()
 	expectServeExit(t, done)
 }
+
+func TestLoopbackHosts(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:6270", "localhost:6270", "[::1]:6270"} {
+		if got := loopbackHosts(addr); got == nil {
+			t.Fatalf("loopback addr %q did not enable the host allowlist", addr)
+		}
+	}
+	// A wildcard or external bind opts out: a Host allowlist is worthless
+	// when any interface is reachable and non-browser clients choose their
+	// own Host header.
+	for _, addr := range []string{":6270", "0.0.0.0:6270", "example.org:80", "[::]:6270"} {
+		if got := loopbackHosts(addr); got != nil {
+			t.Fatalf("non-loopback addr %q kept an allowlist: %v", addr, got)
+		}
+	}
+}

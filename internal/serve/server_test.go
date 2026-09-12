@@ -3,7 +3,9 @@ package serve
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -894,4 +896,45 @@ func TestHostAllowlist(t *testing.T) {
 			t.Fatalf("host %q status %d: %s", host, response.StatusCode, data)
 		}
 	}
+}
+
+func TestCapabilitiesRequiresDescriptorRevision(t *testing.T) {
+	// A programmatically registered adapter that probes without a revision
+	// must not be relayed into a schema-invalid capabilities response.
+	registry := NewRegistry()
+	if err := registry.Register("bare", bareAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	response, err := server.Client().Get(server.URL + "/adapters/bare/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("bare descriptor status %d: %s", response.StatusCode, data)
+	}
+	envelope, err := protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireErrorResponse(t, response.StatusCode, http.StatusInternalServerError, envelope, "probe_failed")
+
+	var listing struct {
+		Adapters []adapterInfo `json:"adapters"`
+	}
+	getJSON(t, server, "/adapters", &listing)
+	if len(listing.Adapters) != 1 || listing.Adapters[0].Name != "bare" || listing.Adapters[0].Capabilities != nil {
+		t.Fatalf("bare adapter listing: %+v", listing.Adapters)
+	}
+}
+
+type bareAdapter struct{}
+
+func (bareAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "bare"}}}, nil
+}
+func (bareAdapter) Open(context.Context, base.OpenRequest) (base.Session, error) {
+	return nil, errors.New("not used")
 }

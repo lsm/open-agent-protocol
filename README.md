@@ -103,7 +103,10 @@ reconnect with a cursor at or after `oldest_available - 1`). A stream also
 ends when the client closes the connection; a stream that is open when the
 session closes receives the events already in flight and then ends, and a
 connection made to an already-closed session is refused with
-`409 session_closed` rather than parking.
+`409 session_closed` rather than parking. Sequence numbers are per-run: a
+connection that happens to span an immediate resubmit (a second run admitted
+inside the settle window of the first) continues into the new run, and
+clients keying on the envelope `run_id` see each run's own sequence space.
 
 On SIGINT/SIGTERM the daemon stops accepting, terminates in-flight streams,
 and closes every session inside a bounded window — active runs that refuse

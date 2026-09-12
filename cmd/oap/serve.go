@@ -74,6 +74,11 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 
 	select {
 	case err := <-serveDone:
+		// The accept loop died on its own: still settle any sessions that
+		// were opened before returning the error.
+		settle, cancelSettle := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
+		defer cancelSettle()
+		daemon.CloseSessions(settle)
 		return err
 	case <-signals.Done():
 	}
@@ -96,17 +101,20 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 }
 
 // loopbackHosts returns the Host-header names a loopback bind serves, or nil
-// when the operator bound a non-loopback address and thereby opted out of the
-// single-user trust model.
+// when the operator bound a non-loopback or wildcard address and thereby
+// opted out of the single-user trust model.
 func loopbackHosts(addr string) []string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr
 	}
 	switch host {
-	case "", "localhost", "127.0.0.1", "::1":
+	case "localhost", "127.0.0.1", "::1":
 		return []string{"localhost", "127.0.0.1", "::1"}
 	default:
+		// The empty host binds every interface, and a Host allowlist is
+		// worthless against non-browser clients who choose their own Host;
+		// only an explicit loopback bind keeps the restriction meaningful.
 		return nil
 	}
 }

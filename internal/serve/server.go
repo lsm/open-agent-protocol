@@ -55,6 +55,10 @@ type Options struct {
 	// unauthenticated loopback bind; an operator binding a non-loopback
 	// address opts out by leaving it empty.
 	HostAllowlist []string
+	// ShutdownTimeout bounds the session-closing sweep and is split across
+	// the open sessions so one lingering child cannot consume the whole
+	// window. Zero means DefaultShutdownTimeout.
+	ShutdownTimeout time.Duration
 }
 
 // Server serves one adapter registry over local HTTP + SSE. OAP operations
@@ -64,6 +68,7 @@ type Server struct {
 	registry    *Registry
 	sessions    *sessionRegistry
 	queue       int
+	shutdown    time.Duration
 	logger      *log.Logger
 	schema      *jsonschema.Schema
 	allowHosts  map[string]bool
@@ -88,9 +93,13 @@ func New(registry *Registry, options Options) (*Server, error) {
 	for _, host := range options.HostAllowlist {
 		allowHosts[strings.ToLower(strings.TrimSpace(host))] = true
 	}
+	shutdown := options.ShutdownTimeout
+	if shutdown <= 0 {
+		shutdown = DefaultShutdownTimeout
+	}
 	return &Server{
 		registry: registry, sessions: newSessionRegistry(),
-		queue: queue, logger: logger, schema: schema, allowHosts: allowHosts,
+		queue: queue, shutdown: shutdown, logger: logger, schema: schema, allowHosts: allowHosts,
 	}, nil
 }
 
@@ -128,12 +137,25 @@ func (s *Server) Handler() http.Handler {
 
 // CloseSessions settles and closes every registered session, bounded by ctx:
 // active runs refuse Close by contract, so each is cancelled first where the
-// adapter supports cancellation.
+// adapter supports cancellation. The sweep budget is split per session — a
+// child that lingers through its own share cannot starve the remaining
+// sessions into skipping Close entirely, which would orphan their children.
 func (s *Server) CloseSessions(ctx context.Context) {
-	for _, entry := range s.sessions.list() {
-		if err := entry.close(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, base.ErrSessionClosed) {
+	entries := s.sessions.list()
+	share := s.shutdown / time.Duration(max(len(entries), 1))
+	if share < 500*time.Millisecond {
+		share = 500 * time.Millisecond
+	}
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			s.logger.Printf("serve: shutdown budget exhausted before closing session %s", entry.id)
+			break
+		}
+		sweep, cancel := context.WithTimeout(ctx, share)
+		if err := entry.close(sweep); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, base.ErrSessionClosed) {
 			s.logger.Printf("serve: close session %s: %v", entry.id, err)
 		}
+		cancel()
 	}
 }
 
@@ -165,9 +187,14 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 		info := adapterInfo{Name: name}
 		implementation, _ := s.registry.Lookup(name)
 		descriptor, err := implementation.Probe(r.Context())
-		if err != nil {
+		switch {
+		case err != nil:
 			info.Error = trimMessage(err.Error())
-		} else {
+		case descriptor.CapabilityRevision == "":
+			// The envelope contract requires a revision on every capability
+			// exchange; a descriptor without one cannot be relayed.
+			info.Error = "adapter descriptor carries no capability revision"
+		default:
 			info.CapabilityRevision = descriptor.CapabilityRevision
 			info.Capabilities = &descriptor.Capabilities
 		}
@@ -188,6 +215,13 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	descriptor, err := implementation.Probe(r.Context())
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "probe_failed", err.Error(), protocol.Envelope{})
+		return
+	}
+	if descriptor.CapabilityRevision == "" {
+		// The capabilities response schema requires a non-empty revision;
+		// an adapter that probes without one must not be relayed into a
+		// schema-invalid envelope.
+		s.writeError(w, http.StatusInternalServerError, "probe_failed", "adapter descriptor carries no capability revision", protocol.Envelope{})
 		return
 	}
 	response, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, s.nextID("response"), descriptor.Capabilities)
