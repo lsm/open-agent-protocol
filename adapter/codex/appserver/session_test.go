@@ -255,7 +255,7 @@ func TestCompletedLifecycle(t *testing.T) {
 	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
 	events := drainClosed(t, stream)
 	adaptertest.AssertTypes(t, events, protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted)
-	adaptertest.AssertRunTrace(t, admission, descriptor.CapabilityRevision, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
 	for index, event := range events {
 		if event.RunID != admission.RunID || event.Sequence == nil || *event.Sequence != uint64(index+1) || event.CapabilityRevision != descriptor.CapabilityRevision {
 			t.Fatalf("event %d: %+v", index, event)

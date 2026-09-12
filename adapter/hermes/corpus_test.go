@@ -22,7 +22,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/hermes/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/hermes/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 // The Hermes evidence corpus pins the exact repository, release, commit, tree,
@@ -593,7 +592,6 @@ func (e *hmExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	}
 	events := adaptertest.Drain(t, stream, 5*time.Second)
 	if len(events) > 0 {
-		adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
 		e.validate(t, admission, events)
 		e.runs = append(e.runs, events)
 	} else {
@@ -602,27 +600,11 @@ func (e *hmExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	e.envelopes = append(e.envelopes, events...)
 }
 
-// validate runs the executable OAP schema and state machine over one admitted
-// run. A capability descriptor pair from the probed adapter precedes the submit
-// exchange so optional features (tools, interactions) carry current
-// capabilities.
+// validate runs the shared protocol assertion over one admitted run with the
+// adapter's live descriptor prefixed.
 func (e *hmExecution) validate(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	capReq, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	capRes, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", e.descriptor.Capabilities)
-	capRes.InReplyTo, capRes.CapabilityRevision = capReq.ID, e.descriptor.CapabilityRevision
-	submitReq, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	submitReq.SessionID = admission.SessionID
-	submitRes, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	submitRes.SessionID, submitRes.InReplyTo = admission.SessionID, submitReq.ID
-	trace := append([]protocol.Envelope{capReq, capRes, submitReq, submitRes}, events...)
-	data, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(data, "hermes-corpus"); !result.Valid() {
-		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, data)
-	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, e.descriptor, events)
 }
 
 // hmCorpusClient is the deterministic in-process Hermes client used by the

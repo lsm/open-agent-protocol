@@ -14,7 +14,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/hermes/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/hermes/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 type testClock struct {
@@ -667,10 +666,10 @@ func TestOverlapRejectedBeforeNativeWrite(t *testing.T) {
 	drain(t, got.stream)
 }
 
-// validateWithCapabilities runs the executable schema over an optional-
-// feature trace (tools, interactions) with a current capability descriptor
-// pair prefixed, mirroring the corpus harness: the validator requires a
-// descriptor before optional-feature events.
+// validateWithCapabilities runs the shared protocol assertion over an
+// optional-feature trace (tools, interactions) with the adapter's live
+// descriptor prefixed: the validator requires a current capability descriptor
+// before optional-feature events.
 func validateWithCapabilities(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return nil, "", errors.New("probe only") })})
@@ -681,22 +680,7 @@ func validateWithCapabilities(t *testing.T, admission protocol.MessageSubmitResp
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
-	capReq, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	capRes, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
-	capRes.InReplyTo, capRes.CapabilityRevision = capReq.ID, descriptor.CapabilityRevision
-	submitReq, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	submitReq.SessionID = admission.SessionID
-	submitRes, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	submitRes.SessionID, submitRes.InReplyTo = admission.SessionID, submitReq.ID
-	trace := append([]protocol.Envelope{capReq, capRes, submitReq, submitRes}, events...)
-	data, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(data, "hermes-test"); !result.Valid() {
-		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, data)
-	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
 }
 
 func TestEventsBeforeConvergenceBufferAndReplay(t *testing.T) {

@@ -21,7 +21,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/makai/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/makai/internal/stdio"
 	"github.com/lsm/open-agent-protocol/protocol"
-	"github.com/lsm/open-agent-protocol/validation"
 )
 
 const (
@@ -203,8 +202,7 @@ func runMakaiCorpusCase(t *testing.T, root string, entry makaiCorpusManifestCase
 		}
 	}
 	events := adaptertest.Drain(t, stream, time.Second)
-	adaptertest.AssertRunEvents(t, admission, descriptor.CapabilityRevision, events)
-	validateMakaiTrace(t, admission, descriptor, events, containsMakaiAction(frames, "cancel"))
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
 	if definition.ReplayAfter != nil {
 		assertMakaiReplay(t, session, admission.RunID, *definition.ReplayAfter, events)
 	}
@@ -293,46 +291,6 @@ func assertMakaiClassifications(t *testing.T, frames []makaiCorpusFrame, decoded
 		default:
 			t.Fatalf("invalid fidelity %q", frame.Fidelity)
 		}
-	}
-}
-
-func validateMakaiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool) {
-	t.Helper()
-	capRequest, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
-	capResponse, _ := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
-	capResponse.InReplyTo, capResponse.CapabilityRevision = capRequest.ID, descriptor.CapabilityRevision
-	submitRequest, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{SessionID: admission.SessionID, Delivery: admission.RequestedDelivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-	submitRequest.SessionID = admission.SessionID
-	submitResponse, _ := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "submit-response", admission)
-	submitResponse.SessionID, submitResponse.InReplyTo = admission.SessionID, submitRequest.ID
-	trace := []protocol.Envelope{capRequest, capResponse, submitRequest, submitResponse}
-	if cancelled {
-		statusIndex := -1
-		for i := range events {
-			if events[i].Type == protocol.TypeRunStatusUpdated {
-				statusIndex = i
-				break
-			}
-		}
-		if statusIndex < 0 {
-			t.Fatal("cancel case emitted no cancelling status")
-		}
-		cancelRequest, _ := protocol.NewEnvelope(protocol.TypeRunCancelRequest, "cancel-request", protocol.RunCancelRequest{SessionID: admission.SessionID, RunID: admission.RunID})
-		cancelRequest.SessionID, cancelRequest.RunID = admission.SessionID, admission.RunID
-		cancelResponse, _ := protocol.NewEnvelope(protocol.TypeRunCancelResponse, "cancel-response", protocol.RunCancelResponse{SessionID: admission.SessionID, RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelled})
-		cancelResponse.SessionID, cancelResponse.RunID, cancelResponse.InReplyTo = admission.SessionID, admission.RunID, cancelRequest.ID
-		trace = append(trace, events[:statusIndex]...)
-		trace = append(trace, cancelRequest, cancelResponse)
-		trace = append(trace, events[statusIndex:]...)
-	} else {
-		trace = append(trace, events...)
-	}
-	encoded, err := json.Marshal(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(encoded, "makai-corpus"); !result.Valid() {
-		t.Fatalf("corpus trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, encoded)
 	}
 }
 
