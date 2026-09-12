@@ -29,9 +29,13 @@ from a checkout as a `file:` dependency:
 repository root, where this repo has no `package.json` — so advertise and use
 the `file:` form.)
 
-The package builds itself when installed as a dependency: npm runs the
-`prepare` script (which runs `build`) for `file:` dependencies, so `dist/`
-exists before the first import. In a bare checkout, `npm install`
+Prepare the checkout once before consumers install it: run `npm install` in
+`clients/ts`, which builds `dist/`. npm does not install a local-path
+package's own dependencies, so a `file:` install of an unprepared checkout
+cannot build and fails; the `prepare` script therefore skips the build
+whenever `dist/` already exists — a prepared checkout installs cleanly
+without the dev toolchain, while a Git dependency (whose dev dependencies
+npm does install) still builds from scratch. In a bare checkout, `npm install`
 prepares the same way, or run `npm run build` directly.
 
 ## Canonical lifecycle
