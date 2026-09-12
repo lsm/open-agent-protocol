@@ -538,6 +538,52 @@ func TestHubSubscriptionContextCancel(t *testing.T) {
 	}
 }
 
+// TestHubLiveStreamErrorSurfaces pins the live-path contract for a failing
+// run stream: the queued envelopes are still delivered, then the adapter's
+// error — not a clean io.EOF — terminates the subscription, matching the
+// replay path's handling of stream errors.
+func TestHubLiveStreamErrorSurfaces(t *testing.T) {
+	manual := &manualAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	session, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "stream-error"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription, err := hub.Subscribe(ctx, "stream-error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	submitGolden(t, session, "fail mid-run")
+	active := manual.active(t)
+	streamFailure := errors.New("adapter stream died")
+	active.emit(t, 1)
+	active.emit(t, 2)
+	active.fail(t, streamFailure)
+	active.endRun()
+
+	for sequence := uint64(1); sequence <= 2; sequence++ {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.Sequence == nil || *envelope.Sequence != sequence {
+			t.Fatalf("envelope %d: sequence %v error %v", sequence, envelope.Sequence, err)
+		}
+	}
+	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
+		t.Fatalf("terminal error %v (%T), want the adapter stream error", err, err)
+	}
+	// The error is terminal for the subscription.
+	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
+		t.Fatalf("repeated Next error %v, want the sticky stream error", err)
+	}
+}
+
 // --- cursor resume and gaps ---
 
 // TestHubResumeFromCursorMidStream pins the resume contract mid-run: a

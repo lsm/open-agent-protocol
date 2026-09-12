@@ -163,15 +163,23 @@ type subscriber struct {
 	finish     chan struct{}
 	finishOnce sync.Once
 	overflow   atomic.Bool
+	// cause is the run stream's terminal error, when the run ended on one:
+	// a live consumer must see the adapter's failure, not a clean end.
+	cause atomic.Pointer[error]
 }
 
 func newSubscriber(queue int) *subscriber {
 	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{})}
 }
 
-func (sub *subscriber) stop(overflowed bool) {
+// stop terminates the subscriber: overflowed marks the fell-behind signal
+// and a non-nil cause becomes its terminal error; neither ends it cleanly.
+func (sub *subscriber) stop(overflowed bool, cause error) {
 	if overflowed {
 		sub.overflow.Store(true)
+	}
+	if cause != nil {
+		sub.cause.Store(&cause)
 	}
 	sub.finishOnce.Do(func() { close(sub.finish) })
 }
@@ -222,8 +230,11 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 // subscribers only when it is the last reader and a newer run has not taken
 // over the hub: a stale finishSubs from run N must not terminate subscribers
 // already receiving run N+1, and a close that deferred its finish must not
-// fire while run N+1's reader still has events queued.
+// fire while run N+1's reader still has events queued. A stream that ends on
+// an error other than overflow carries that error to every subscriber as its
+// terminal error — a failed run must not read as a clean end.
 func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
+	var streamErr error
 	for result := range stream {
 		if result.Error != nil {
 			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
@@ -234,6 +245,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 			// documented reconnect path is the replay cursor. The stream is
 			// still drained so an adapter that reports an error but keeps
 			// its channel open cannot block its own later emits.
+			streamErr = result.Error
 			go func(stream base.EventStream) {
 				for range stream {
 				}
@@ -248,7 +260,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	finish := s.readers == 0 && (current == runID || s.finishAfterDrain)
 	s.mu.Unlock()
 	if finish {
-		s.finishSubs(false)
+		s.finishSubs(false, streamErr)
 	}
 }
 
@@ -261,7 +273,7 @@ func (s *Session) publish(envelope protocol.Envelope) {
 		case sub.ch <- envelope:
 		default:
 			delete(s.subs, sub)
-			sub.stop(true)
+			sub.stop(true, nil)
 		}
 	}
 	s.mu.Unlock()
@@ -270,10 +282,12 @@ func (s *Session) publish(envelope protocol.Envelope) {
 // signalOverflow terminates every subscriber with the overflow signal after
 // the adapter itself reported an event-stream overflow.
 func (s *Session) signalOverflow() {
-	s.finishSubs(true)
+	s.finishSubs(true, nil)
 }
 
-func (s *Session) finishSubs(overflow bool) {
+// finishSubs detaches every subscriber and terminates it: with the overflow
+// signal, with cause as its terminal error, or cleanly.
+func (s *Session) finishSubs(overflow bool, cause error) {
 	s.mu.Lock()
 	subs := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
@@ -282,7 +296,7 @@ func (s *Session) finishSubs(overflow bool) {
 	s.subs = make(map[*subscriber]struct{})
 	s.mu.Unlock()
 	for _, sub := range subs {
-		sub.stop(overflow)
+		sub.stop(overflow, cause)
 	}
 }
 
@@ -300,7 +314,7 @@ func (s *Session) markClosed() {
 		return
 	}
 	s.mu.Unlock()
-	s.finishSubs(false)
+	s.finishSubs(false, nil)
 }
 
 // closeForShutdown cancels any active run and then closes the adapter

@@ -225,29 +225,42 @@ func (h *Hub) Sessions(ctx context.Context) []SessionStatus {
 	return statuses
 }
 
-// CloseSessions settles and closes every registered session, bounded by ctx:
-// active runs refuse Close by contract, so each is cancelled first where the
-// adapter supports cancellation. The sweep budget is split per session — a
-// child that lingers through its own share cannot starve the remaining
-// sessions into skipping Close entirely, which would orphan their children.
-// In-process hosts own their shutdown; calling this before discarding a Hub
-// settles every child process it opened.
+// CloseSessions settles and closes every registered session, bounded by ctx
+// and by the configured shutdown timeout: active runs refuse Close by
+// contract, so each is cancelled first where the adapter supports
+// cancellation. The timeout bounds the whole sweep — each session's share is
+// carved from the budget still remaining, so many lingering children cannot
+// overrun the window the host set. Within that window the split is per
+// session: a child that lingers through its own share cannot starve the
+// remaining sessions into skipping Close entirely, which would orphan their
+// children. In-process hosts own their shutdown; calling this before
+// discarding a Hub settles every child process it opened.
 func (h *Hub) CloseSessions(ctx context.Context) {
 	entries := h.sessions.list()
-	share := h.shutdown / time.Duration(max(len(entries), 1))
-	if share < 500*time.Millisecond {
-		share = 500 * time.Millisecond
-	}
-	for _, entry := range entries {
-		if ctx.Err() != nil {
+	sweep, cancelSweep := context.WithTimeout(ctx, h.shutdown)
+	defer cancelSweep()
+	for index, entry := range entries {
+		if sweep.Err() != nil {
 			h.logger.Printf("serve: shutdown budget exhausted before closing session %s", entry.id)
 			break
 		}
-		sweep, cancel := context.WithTimeout(ctx, share)
-		if err := entry.closeForShutdown(sweep); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, base.ErrSessionClosed) {
+		deadline, _ := sweep.Deadline()
+		remaining := time.Until(deadline)
+		share := remaining / time.Duration(len(entries)-index)
+		// A session needs a real window to settle, but never more than the
+		// budget still has: the floor only applies while the whole sweep
+		// stays inside the configured timeout.
+		if share < 500*time.Millisecond {
+			share = 500 * time.Millisecond
+		}
+		if share > remaining {
+			share = remaining
+		}
+		perSession, cancelSession := context.WithTimeout(sweep, share)
+		if err := entry.closeForShutdown(perSession); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, base.ErrSessionClosed) {
 			h.logger.Printf("serve: close session %s: %v", entry.id, err)
 		}
-		cancel()
+		cancelSession()
 	}
 }
 

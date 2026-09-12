@@ -218,6 +218,33 @@ func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
 	}
 }
 
+// TestCloseSessionsBoundsTotalSweep proves the configured timeout bounds the
+// WHOLE sweep: sessions that never settle each burn only their share of the
+// remaining budget, so four stuck sessions under a 600ms window cannot run
+// the per-session 500ms floor into a two-second sweep.
+func TestCloseSessionsBoundsTotalSweep(t *testing.T) {
+	daemon := New(NewRegistry(), Options{ShutdownTimeout: 600 * time.Millisecond})
+	for index := range 4 {
+		if err := daemon.sessions.add(newSession(protocol.SessionID(fmt.Sprintf("stuck-%d", index)), "stub", &stubSession{settleAfter: 1000})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan struct{})
+	start := time.Now()
+	go func() { daemon.CloseSessions(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("CloseSessions wedged")
+	}
+	// The old floor-per-session behavior ran ~4x500ms; the bounded sweep
+	// stays inside roughly twice the configured window even with scheduler
+	// noise between sessions.
+	if elapsed := time.Since(start); elapsed > 1200*time.Millisecond {
+		t.Fatalf("CloseSessions ran %v for four stuck sessions, outside the 600ms budget", elapsed)
+	}
+}
+
 func TestHubSubscriberQueueOverflow(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	slow, ok := entry.subscribe(2)
@@ -245,7 +272,7 @@ func TestHubSubscriberQueueOverflow(t *testing.T) {
 	if len(fast.ch) != 5 {
 		t.Fatalf("fast subscriber queued %d envelopes, want 5", len(fast.ch))
 	}
-	entry.finishSubs(false)
+	entry.finishSubs(false, nil)
 	select {
 	case <-fast.finish:
 	default:
