@@ -379,6 +379,53 @@ test('an error response citing another correlation is a protocol violation', asy
   );
 });
 
+test('an error response scoped to another session is a protocol violation', async () => {
+  const transport = new FakeTransport([
+    {
+      match: '/submit',
+      status: 409,
+      body: (call) => {
+        const envelope = JSON.parse(
+          JSON.stringify(
+            testEnvelope({
+              type: EnvelopeType.ErrorResponse,
+              payload: { error: { code: 'run_active', message: 'busy' } },
+            }),
+          ),
+        ) as Record<string, unknown>;
+        envelope.in_reply_to = sentEnvelopeId(call);
+        envelope.session_id = 's-other'; // correlated correctly, scoped elsewhere
+        return JSON.stringify(envelope);
+      },
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(
+    session.submit({ messages: [{ role: 'user', content: 'x' }], delivery: 'auto' }),
+    /error response is scoped to session "s-other", want "s-1"/,
+  );
+});
+
+test('an open response whose payload names another session is refused', async () => {
+  const transport = new FakeTransport([
+    {
+      match: '/sessions',
+      body: (call) =>
+        JSON.stringify(
+          testEnvelope({
+            type: EnvelopeType.SessionOpenResponse,
+            id: 'resp-1',
+            inReplyTo: sentEnvelopeId(call),
+            sessionId: 's-9',
+            payload: { session_id: 's-other', status: 'idle' },
+          }),
+        ),
+    },
+  ]);
+  const client = dial(BASE, { fetch: transport.fetch });
+  await assert.rejects(client.open('memory'), /payload names session "s-other", envelope "s-9"/);
+});
+
 test('a successful response scoped to another session is refused', async () => {
   const transport = new FakeTransport([
     {

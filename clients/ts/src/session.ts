@@ -147,7 +147,16 @@ export class OapSession {
         `client: ${this.path('/state')} response is scoped to session "${response.session_id ?? ''}", want "${this.sessionId}"`,
       );
     }
-    return payload<SessionState>(response);
+    const state = payload<SessionState>(response);
+    // The payload and the envelope naming it are individually schema-valid;
+    // the protocol binds them to one scope, so a payload naming another
+    // session is not this session's state.
+    if (state.session_id !== response.session_id) {
+      throw new Error(
+        `client: ${this.path('/state')} payload names session "${state.session_id}", envelope "${response.session_id}"`,
+      );
+    }
+    return state;
   }
 
   /** Closes the session. An active run refuses the close; cancel it first. */

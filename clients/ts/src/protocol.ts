@@ -416,8 +416,8 @@ export interface ToolsListResponse {
   tools: ToolDefinition[];
 }
 
-/** Fields shared by the action.call.* event payloads; each event requires its own subset. */
-interface ActionCallFields {
+/** The fields every action.call.* payload shares; the variants below each declare their own exclusive fields. */
+interface ActionCallBase {
   interaction_id?: string;
   session_id: string;
   run_id: string;
@@ -426,35 +426,52 @@ interface ActionCallFields {
   responded_by?: string;
   execution_owner: string;
   name?: string;
-  arguments_json?: unknown;
-  progress?: unknown;
-  result?: unknown;
-  error?: ProtocolError;
 }
 
-export interface ActionCallRequestedPayload extends ActionCallFields {
+export interface ActionCallRequestedPayload extends ActionCallBase {
   requested_by: string;
   name: string;
   arguments_json: unknown;
+  progress?: undefined;
+  result?: undefined;
+  error?: undefined;
 }
 
-export interface ActionCallStartedPayload extends ActionCallFields {
+export interface ActionCallStartedPayload extends ActionCallBase {
   name: string;
+  arguments_json?: unknown;
+  progress?: undefined;
+  result?: undefined;
+  error?: undefined;
 }
 
-export interface ActionCallProgressPayload extends ActionCallFields {
+export interface ActionCallProgressPayload extends ActionCallBase {
   progress: unknown;
+  arguments_json?: undefined;
+  result?: undefined;
+  error?: undefined;
 }
 
-export interface ActionCallCompletedPayload extends ActionCallFields {
+export interface ActionCallCompletedPayload extends ActionCallBase {
   result: unknown;
+  arguments_json?: undefined;
+  progress?: undefined;
+  error?: undefined;
 }
 
-export interface ActionCallFailedPayload extends ActionCallFields {
+export interface ActionCallFailedPayload extends ActionCallBase {
   error: ProtocolError;
+  arguments_json?: undefined;
+  progress?: undefined;
+  result?: undefined;
 }
 
-export type ActionCallCancelledPayload = ActionCallFields;
+export interface ActionCallCancelledPayload extends ActionCallBase {
+  arguments_json?: undefined;
+  progress?: undefined;
+  result?: undefined;
+  error?: undefined;
+}
 
 export interface PermissionChoice {
   id: string;

@@ -178,6 +178,14 @@ export class OapClient {
     if (!opened.session_id) {
       throw new Error('client: open response carries no session id');
     }
+    // The envelope and its payload are individually schema-valid objects;
+    // the protocol binds them to one scope. A payload naming another
+    // session must not become this client's session identity.
+    if (opened.session_id !== envelope.session_id) {
+      throw new Error(
+        `client: open response payload names session "${opened.session_id}", envelope "${envelope.session_id ?? ''}"`,
+      );
+    }
     return new OapSession(this, opened.session_id, adapter, options.participant ?? this.participant);
   }
 
@@ -222,18 +230,33 @@ export class OapClient {
     }
     const failure = this.failureError(response.status, body);
     if (failure) {
-      // A parsed error.response must also cite the request it answers: an
-      // envelope correlated elsewhere is a protocol violation, not this
-      // operation's answer.
+      // A parsed error.response must also cite the request it answers and
+      // stay in its scope: an envelope correlated elsewhere, or scoped to
+      // another session or run, is a protocol violation, not this
+      // operation's answer — surfacing it would attribute another
+      // operation's refusal to this one.
       if (
         failure instanceof ServerError &&
-        failure.envelope?.type === EnvelopeType.ErrorResponse &&
-        request &&
-        failure.envelope.in_reply_to !== request.id
+        failure.envelope &&
+        failure.envelope.type === EnvelopeType.ErrorResponse &&
+        request
       ) {
-        throw new Error(
-          `client: ${path} error response cites correlation "${failure.envelope.in_reply_to ?? ''}", want the request id ${request.id}`,
-        );
+        const envelope = failure.envelope;
+        if (envelope.in_reply_to !== request.id) {
+          throw new Error(
+            `client: ${path} error response cites correlation "${envelope.in_reply_to ?? ''}", want the request id ${request.id}`,
+          );
+        }
+        if (request.session_id && envelope.session_id !== request.session_id) {
+          throw new Error(
+            `client: ${path} error response is scoped to session "${envelope.session_id ?? ''}", want "${request.session_id}"`,
+          );
+        }
+        if (request.run_id && envelope.run_id !== request.run_id) {
+          throw new Error(
+            `client: ${path} error response is scoped to run "${envelope.run_id ?? ''}", want "${request.run_id}"`,
+          );
+        }
       }
       throw failure;
     }

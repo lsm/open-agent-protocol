@@ -571,6 +571,14 @@ test('the schema exclusivity rules are compile-time errors', () => {
   const submittedWithoutAnswers: protocol.UserInputResolvedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', status: 'submitted' };
   // @ts-expect-error a cancelled resolution carries no answers
   const cancelledWithAnswers: protocol.UserInputResolvedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', status: 'cancelled', answers: [{ question_id: 'q-1', text: 'hi' }] };
+  // @ts-expect-error a completed call carries no progress field
+  const completedWithProgress: protocol.ActionCallCompletedPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', result: { ok: true }, progress: { percent: 1 } };
+  // @ts-expect-error a progress event carries no result field
+  const progressWithResult: protocol.ActionCallProgressPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', progress: { percent: 1 }, result: { ok: true } };
+  // @ts-expect-error a failed call carries no arguments field
+  const failedWithArguments: protocol.ActionCallFailedPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', error: { code: 'x', message: 'boom' }, arguments_json: {} };
+  // @ts-expect-error a cancelled call carries none of the exclusive fields
+  const cancelledWithError: protocol.ActionCallCancelledPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', error: { code: 'x', message: 'boom' } };
   void badImage;
   void dataOnly;
   void emptyParts;
@@ -585,6 +593,10 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void choiceWithoutOptions;
   void submittedWithoutAnswers;
   void cancelledWithAnswers;
+  void completedWithProgress;
+  void progressWithResult;
+  void failedWithArguments;
+  void cancelledWithError;
   // The two legal shapes still type-check.
   const urlImage: ImageContent = { url: 'https://example.test/i.png' };
   const inlineImage: ImageContent = { data: 'aGk=', media_type: 'text/plain' };
