@@ -10,6 +10,7 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/adapter/makai/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/makai/internal/stdio"
 	"github.com/lsm/open-agent-protocol/protocol"
@@ -143,6 +144,27 @@ func collect(t *testing.T, stream base.EventStream) []protocol.Envelope {
 	return events
 }
 
+func testDescriptor(t *testing.T) base.Descriptor {
+	t.Helper()
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return nil, errors.New("probe only") }), WorkingDirectory: "/workspace", AgentConfig: json.RawMessage(`{"model":"test"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+// assertValidTrace runs the shared protocol assertion with the adapter's live
+// descriptor; the shared trace assembly supplies the cancel exchange a
+// run.cancelled terminal implies.
+func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+}
+
 func TestFirstMessageUsesNativeSequenceTwo(t *testing.T) {
 	session, client := openTest(t, 32)
 	_, _ = submitTest(t, session)
@@ -191,11 +213,13 @@ func TestCompletedTextWaitsForAgentEnd(t *testing.T) {
 	response, stream := submitTest(t, session)
 	client.event(t, 2, map[string]any{"type": "message_update", "event": map[string]any{"type": "text_delta", "content_index": 0, "delta": "hello"}})
 	client.result(t, 3, map[string]any{"type": "result", "stop_reason": "stop", "model": "test", "api": "messages", "provider": "test", "timestamp": 1, "input": 2, "output": 1, "cache_read": 0, "cache_write": 0, "content": []any{map[string]any{"type": "text", "text": "hello"}}})
+	var trace []protocol.Envelope
 	select {
 	case result := <-stream:
 		if result.Envelope.Type != protocol.TypeRunStarted {
 			t.Fatalf("first=%s", result.Envelope.Type)
 		}
+		trace = append(trace, result.Envelope)
 	case <-time.After(time.Second):
 		t.Fatal("missing run.started")
 	}
@@ -204,6 +228,7 @@ func TestCompletedTextWaitsForAgentEnd(t *testing.T) {
 		if result.Envelope.Type != protocol.TypeContentDelta {
 			t.Fatalf("second=%s", result.Envelope.Type)
 		}
+		trace = append(trace, result.Envelope)
 	case <-time.After(time.Second):
 		t.Fatal("missing content delta")
 	}
@@ -220,11 +245,12 @@ func TestCompletedTextWaitsForAgentEnd(t *testing.T) {
 	if response.RunID == "" {
 		t.Fatal("missing run id")
 	}
+	assertValidTrace(t, response, append(trace, events...))
 }
 
 func TestToolSettlesBeforeParentTerminal(t *testing.T) {
 	session, client := openTest(t, 32)
-	_, stream := submitTest(t, session)
+	admission, stream := submitTest(t, session)
 	client.event(t, 2, map[string]any{"type": "tool_execution_start", "tool_call_id": "tool-1", "tool_name": "demo", "args_json": "{}"})
 	client.event(t, 3, map[string]any{"type": "agent_end", "stop_reason": "stop"})
 	events := collect(t, stream)
@@ -233,6 +259,7 @@ func TestToolSettlesBeforeParentTerminal(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
+	assertValidTrace(t, admission, events)
 }
 
 func TestCancellationRequiresAuthoritativeEnd(t *testing.T) {
@@ -252,6 +279,7 @@ func TestCancellationRequiresAuthoritativeEnd(t *testing.T) {
 	if events[len(events)-1].Type != protocol.TypeRunCancelled {
 		t.Fatalf("events=%v", types(events))
 	}
+	assertValidTrace(t, response, events)
 }
 
 func TestReplayGapAndTerminalReplay(t *testing.T) {
