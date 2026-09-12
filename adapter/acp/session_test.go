@@ -203,6 +203,29 @@ func collect(t *testing.T, stream base.EventStream) []protocol.Envelope {
 	}
 }
 
+func testDescriptor(t *testing.T) base.Descriptor {
+	t.Helper()
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, rpc.InitializeResponse, error) {
+		return nil, rpc.InitializeResponse{}, errors.New("probe only")
+	}), WorkingDirectory: "/workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+// assertValidTrace runs the shared protocol assertion with the adapter's live
+// descriptor; the shared trace assembly supplies the cancel exchange a
+// run.cancelled terminal implies.
+func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+}
+
 func TestCompletedPromptMapsChunksToolsAndSequence(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -246,6 +269,7 @@ func TestCompletedPromptMapsChunksToolsAndSequence(t *testing.T) {
 	if completed.FinalResponse.ID != lastChunk.MessageID {
 		t.Fatalf("final message id %q != streamed id %q", completed.FinalResponse.ID, lastChunk.MessageID)
 	}
+	assertValidTrace(t, admission, events)
 	state, err := s.State(context.Background())
 	if err != nil || state.Status != protocol.SessionIdle || state.ActiveRunID != "" {
 		t.Fatalf("state=%+v err=%v", state, err)
@@ -274,6 +298,7 @@ func TestOneActivePromptAndCancellationRaces(t *testing.T) {
 			if events[len(events)-1].Type != tc.want {
 				t.Fatalf("terminal=%s", events[len(events)-1].Type)
 			}
+			assertValidTrace(t, admission, events)
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if len(f.notifies) != 1 || f.notifies[0] != native.MethodSessionCancel {
@@ -294,6 +319,7 @@ func TestArbitraryPostCancelErrorIsFailure(t *testing.T) {
 	if got := events[len(events)-1].Type; got != protocol.TypeRunFailed {
 		t.Fatalf("terminal=%s", got)
 	}
+	assertValidTrace(t, a, events)
 }
 func TestTransportFailureSettlesRunOnce(t *testing.T) {
 	s, f := openTest(t, 64)
@@ -500,7 +526,7 @@ func TestProbeIsConservative(t *testing.T) {
 // surfaces on action.call.started.
 func TestSparseToolUpdateBeforeStartEmitsNoProgress(t *testing.T) {
 	s, f := openTest(t, 64)
-	_, stream := submit(t, s)
+	admission, stream := submit(t, s)
 	<-f.promptStarted
 	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending"})
 	title := "Read v2"
@@ -523,13 +549,14 @@ func TestSparseToolUpdateBeforeStartEmitsNoProgress(t *testing.T) {
 	if started.Name != "Read v2" {
 		t.Fatalf("started name = %q, want the retained patch", started.Name)
 	}
+	assertValidTrace(t, admission, events)
 }
 
 // ACP may omit rawInput; the requested event must still carry arguments_json,
 // normalized to the JSON null value.
 func TestToolCallWithoutInputCarriesNullArguments(t *testing.T) {
 	s, f := openTest(t, 64)
-	_, stream := submit(t, s)
+	admission, stream := submit(t, s)
 	<-f.promptStarted
 	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending"})
 	status := "in_progress"
@@ -556,13 +583,14 @@ func TestToolCallWithoutInputCarriesNullArguments(t *testing.T) {
 	if !observed {
 		t.Fatal("no action.call.requested observed")
 	}
+	assertValidTrace(t, admission, events)
 }
 
 // A native snapshot may first report a tool terminal. The adapter must still
 // emit an action.call.started boundary, which the validator requires.
 func TestToolTerminalWithoutProgressSynthesizesStart(t *testing.T) {
 	s, f := openTest(t, 64)
-	_, stream := submit(t, s)
+	admission, stream := submit(t, s)
 	<-f.promptStarted
 	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "completed", RawInput: json.RawMessage(`{"path":"x"}`), RawOutput: json.RawMessage(`{"ok":true}`)})
 	waitCursor(t, s, "4")
@@ -572,13 +600,14 @@ func TestToolTerminalWithoutProgressSynthesizesStart(t *testing.T) {
 	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
 		t.Fatalf("events=%v", types(events))
 	}
+	assertValidTrace(t, admission, events)
 }
 
 // action.call.completed requires result; a completion without native output is
 // normalized to the JSON null value.
 func TestToolCompletionWithoutOutputCarriesNullResult(t *testing.T) {
 	s, f := openTest(t, 64)
-	_, stream := submit(t, s)
+	admission, stream := submit(t, s)
 	<-f.promptStarted
 	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending"})
 	status := "in_progress"
@@ -605,13 +634,53 @@ func TestToolCompletionWithoutOutputCarriesNullResult(t *testing.T) {
 	if !observed {
 		t.Fatal("no action.call.completed observed")
 	}
+	assertValidTrace(t, admission, events)
 }
 
 // A permission request whose tool is rejected (empty title) must settle the run
 // without dereferencing the missing tool entry.
+// A sparse patch that arrives while a tool is executing emits progress; the
+// callProgress schema forbids the request-only and terminal-only members, so
+// the projection must strip them even though the retained tool state carries
+// both the input and any output observed so far.
+func TestSparsePatchInProgressEmitsBareProgress(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending", RawInput: json.RawMessage(`{"path":"x"}`), RawOutput: json.RawMessage(`{"early":true}`)})
+	status := "in_progress"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Status: &status})
+	title := "Read v2"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Title: &title})
+	waitCursor(t, s, "4")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	var progress *protocol.ActionCallPayload
+	for index, envelope := range events {
+		if envelope.Type == protocol.TypeActionCallProgress {
+			if progress != nil {
+				t.Fatal("more than one progress event")
+			}
+			var payload protocol.ActionCallPayload
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			progress = &payload
+			_ = index
+		}
+	}
+	if progress == nil {
+		t.Fatalf("no progress event: %v", types(events))
+	}
+	if progress.ArgumentsJSON != nil || progress.Result != nil || progress.Error != nil {
+		t.Fatalf("progress carried forbidden members: %+v", progress)
+	}
+	assertValidTrace(t, admission, events)
+}
+
 func TestPermissionRequestWithMalformedToolSettles(t *testing.T) {
 	s, f := openTest(t, 64)
-	_, stream := submit(t, s)
+	admission, stream := submit(t, s)
 	<-f.promptStarted
 	params, err := json.Marshal(native.PermissionRequest{SessionID: "native-session", ToolCall: native.ToolCall{ToolCallID: "call-1"}, Options: []native.PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}}})
 	if err != nil {
@@ -628,6 +697,7 @@ func TestPermissionRequestWithMalformedToolSettles(t *testing.T) {
 	if surfaced {
 		t.Fatal("malformed tool surfaced a permission interaction")
 	}
+	assertValidTrace(t, admission, events)
 }
 
 func types(events []protocol.Envelope) []protocol.EnvelopeType {

@@ -434,6 +434,12 @@ func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
 	s.mu.Unlock()
 	if first {
 		payload := s.toolPayload(t)
+		// requested is the request-only boundary: the schema forbids the
+		// started-only and terminal-only members, even when the first native
+		// sighting is already a completed snapshot carrying output.
+		payload.Progress = nil
+		payload.Result = nil
+		payload.Error = nil
 		// ACP may omit rawInput; the envelope must still carry arguments_json,
 		// so a missing input is normalized to the JSON null value.
 		if payload.ArgumentsJSON == nil {
@@ -486,7 +492,12 @@ func (s *session) applyToolUpdate(run *runState, u native.ToolCallUpdate) {
 		// then would precede action.call.started and carry no progress field.
 		// The patch is retained in the tool state and surfaces when it starts.
 		if started {
-			_ = s.emit(run, protocol.TypeActionCallProgress, s.toolPayload(t), false)
+			progress := s.toolPayload(t)
+			// callProgress forbids the request-only and terminal-only members.
+			progress.ArgumentsJSON = nil
+			progress.Result = nil
+			progress.Error = nil
+			_ = s.emit(run, protocol.TypeActionCallProgress, progress, false)
 		}
 		return
 	}
@@ -803,8 +814,15 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 	for _, t := range tools {
 		typ := protocol.TypeActionCallFailed
 		p := s.toolPayload(t)
+		// Both terminal branches forbid the request-only and execution-time
+		// members: failed carries the error discriminator, cancelled carries
+		// the scope and name only.
+		p.ArgumentsJSON = nil
+		p.Progress = nil
+		p.Result = nil
 		if cancel {
 			typ = protocol.TypeActionCallCancelled
+			p.Error = nil
 		} else {
 			p.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "prompt completed with unfinished ACP tool"}
 		}
