@@ -368,7 +368,14 @@ export class EventStream implements AsyncIterable<Envelope> {
     // Every envelope on this stream is a sequenced run event; one without a
     // sequence cannot be positioned, and delivering it would leave the
     // cursor behind it — a later resume would replay it without any way to
-    // detect the duplicate. Sequences start at one.
+    // detect the duplicate. Sequences start at one. The same holds for the
+    // run: adopting an empty run id would leave the stream with no observed
+    // run, and a later disconnect would replay from zero instead of the
+    // last delivered sequence.
+    const runId = envelope.run_id;
+    if (typeof runId !== 'string' || runId === '') {
+      throw new MalformedFrameError('event envelope carries no run id');
+    }
     const sequence = envelope.sequence;
     if (typeof sequence !== 'number' || !Number.isInteger(sequence) || sequence <= 0) {
       throw new MalformedFrameError('event envelope carries no sequence');
@@ -385,29 +392,29 @@ export class EventStream implements AsyncIterable<Envelope> {
     let resumed = this.resumed;
     if (resumed) {
       this.resumed = false;
-      if (this.runId !== '' && envelope.run_id !== this.runId) {
-        throw new ResumeMismatchError(this.lastSeq, this.runId, envelope.run_id ?? '', sequence);
+      if (this.runId !== '' && runId !== this.runId) {
+        throw new ResumeMismatchError(this.lastSeq, this.runId, runId, sequence);
       }
       // A cursor-bearing connection — including one replaying after zero —
       // requests the run from a known position, unlike a fresh live
       // subscription that may join mid-run: its first envelope must continue
       // the cursor exactly, or envelopes were skipped.
       if (sequence !== this.lastSeq + 1) {
-        throw new SequenceGapError(envelope.run_id ?? '', this.lastSeq + 1, sequence);
+        throw new SequenceGapError(runId, this.lastSeq + 1, sequence);
       }
     }
-    if (envelope.run_id !== this.runId) {
+    if (runId !== this.runId) {
       if (resumed && this.runId === '') {
         // The first envelope of a cursor-carrying stream names the run the
         // cursor belongs to: the run is adopted, and the sequence
         // expectation stays bound to the cursor.
-        this.runId = envelope.run_id ?? '';
+        this.runId = runId;
         this.terminal = isTerminal(envelope.type);
       } else if (this.runId === '') {
         // The stream's first observed envelope may join a run in progress:
         // sequences before the join were never deliverable to this
         // subscription, so the join position becomes the baseline.
-        this.runId = envelope.run_id ?? '';
+        this.runId = runId;
         this.lastSeq = 0;
         this.terminal = isTerminal(envelope.type);
       } else {
@@ -416,9 +423,9 @@ export class EventStream implements AsyncIterable<Envelope> {
         // from its first envelope: anything later means the opening events
         // were lost.
         if (sequence !== 1) {
-          throw new SequenceGapError(envelope.run_id ?? '', 1, sequence);
+          throw new SequenceGapError(runId, 1, sequence);
         }
-        this.runId = envelope.run_id ?? '';
+        this.runId = runId;
         this.lastSeq = 0;
         this.terminal = isTerminal(envelope.type);
       }
@@ -431,10 +438,10 @@ export class EventStream implements AsyncIterable<Envelope> {
     // the consumer and from a later cursor resume, so both surface.
     if (this.lastSeq > 0) {
       if (sequence <= this.lastSeq) {
-        throw new DuplicateSequenceError(envelope.run_id ?? '', sequence);
+        throw new DuplicateSequenceError(runId, sequence);
       }
       if (sequence !== this.lastSeq + 1) {
-        throw new SequenceGapError(envelope.run_id ?? '', this.lastSeq + 1, sequence);
+        throw new SequenceGapError(runId, this.lastSeq + 1, sequence);
       }
     }
     this.lastSeq = sequence;

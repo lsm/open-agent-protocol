@@ -518,14 +518,26 @@ export interface InputOption {
   description?: string;
 }
 
-export interface InputQuestion {
+/** A free-text question: the schema forbids options on it. */
+export interface TextQuestion {
   id: string;
   prompt: string;
-  kind: InputQuestionKind;
+  kind: 'text';
   required?: boolean;
-  /** At least one option when present: choice questions refuse an empty list. */
-  options?: [InputOption, ...InputOption[]];
+  options?: undefined;
 }
+
+/** A choice question: the schema requires a non-empty option list. */
+export interface ChoiceQuestion {
+  id: string;
+  prompt: string;
+  kind: 'single_choice' | 'multi_choice';
+  required?: boolean;
+  options: [InputOption, ...InputOption[]];
+}
+
+/** One asked question, discriminated by kind: text questions carry no options, choice questions carry at least one. */
+export type InputQuestion = TextQuestion | ChoiceQuestion;
 
 /** A text answer to one question. */
 export interface TextAnswer {
@@ -576,16 +588,28 @@ export interface UserInputResolveResponse {
   accepted: boolean;
 }
 
-export interface UserInputResolvedPayload {
+interface UserInputResolvedFields {
   interaction_id: string;
   requested_by: string;
   responded_by: string;
   session_id: string;
   run_id: string;
-  status: 'submitted' | 'cancelled';
-  /** At least one answer when present: a submitted resolution is never empty. */
-  answers?: [InputAnswer, ...InputAnswer[]];
 }
+
+/** A resolved gate whose answers were submitted: at least one, never empty. */
+export interface SubmittedInputResolved extends UserInputResolvedFields {
+  status: 'submitted';
+  answers: [InputAnswer, ...InputAnswer[]];
+}
+
+/** A cancelled gate resolution: the schema forbids answers on it. */
+export interface CancelledInputResolved extends UserInputResolvedFields {
+  status: 'cancelled';
+  answers?: undefined;
+}
+
+/** The confirmed outcome of one user-input gate, exclusive by status. */
+export type UserInputResolvedPayload = SubmittedInputResolved | CancelledInputResolved;
 
 export interface UserInputCancelRequest {
   interaction_id: string;

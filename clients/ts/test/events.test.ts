@@ -278,6 +278,22 @@ test('an envelope without a sequence is malformed', { timeout: 10000 }, async ()
   );
 });
 
+test('an envelope without a run id is malformed', { timeout: 10000 }, async () => {
+  const missing = testEnvelope({ type: EnvelopeType.RunStarted, sequence: 1, sessionId: SESSION });
+  const { session } = sessionWith([{ match: LIVE, chunks: [eventFrame(missing)] }]);
+  await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /no run id/),
+  );
+  const wrongTyped = JSON.stringify({
+    ...testEnvelope({ type: EnvelopeType.RunStarted, sequence: 1, sessionId: SESSION }),
+    run_id: 7,
+  });
+  const other = sessionWith([{ match: LIVE, chunks: [`data: ${wrongTyped}\n\n`] }]);
+  await rejectsWith(collect(other.session.events()), MalformedFrameError, (err) =>
+    assert.match(err.detail, /no run id/),
+  );
+});
+
 test('a frame id disagreeing with its envelope sequence is malformed', { timeout: 10000 }, async () => {
   const envelope = testEnvelope({
     type: EnvelopeType.RunStarted,

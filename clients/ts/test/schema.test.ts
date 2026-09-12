@@ -563,6 +563,14 @@ test('the schema exclusivity rules are compile-time errors', () => {
   const noChoices: protocol.PermissionRequestedPayload = { interaction_id: 'i-1', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', title: 'Allow tool', choices: [] };
   // @ts-expect-error an input request needs at least one question
   const noQuestions: protocol.UserInputRequestedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', title: 'Golden input', questions: [] };
+  // @ts-expect-error a text question carries no options
+  const textWithOptions: protocol.InputQuestion = { id: 'q-1', prompt: 'name', kind: 'text', options: [{ id: 'a', label: 'A' }] };
+  // @ts-expect-error a choice question requires its options
+  const choiceWithoutOptions: protocol.InputQuestion = { id: 'q-1', prompt: 'pick', kind: 'single_choice' };
+  // @ts-expect-error a submitted resolution carries at least one answer
+  const submittedWithoutAnswers: protocol.UserInputResolvedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', status: 'submitted' };
+  // @ts-expect-error a cancelled resolution carries no answers
+  const cancelledWithAnswers: protocol.UserInputResolvedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', status: 'cancelled', answers: [{ question_id: 'q-1', text: 'hi' }] };
   void badImage;
   void dataOnly;
   void emptyParts;
@@ -573,15 +581,25 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void noAnswers;
   void noChoices;
   void noQuestions;
+  void textWithOptions;
+  void choiceWithoutOptions;
+  void submittedWithoutAnswers;
+  void cancelledWithAnswers;
   // The two legal shapes still type-check.
   const urlImage: ImageContent = { url: 'https://example.test/i.png' };
   const inlineImage: ImageContent = { data: 'aGk=', media_type: 'text/plain' };
   const parts: MessageContent = [{ type: 'text', text: 'hi' }];
   const textAnswer: InputAnswer = { question_id: 'q-1', text: 'hi' };
   const choiceAnswer: InputAnswer = { question_id: 'q-1', selected_option_ids: ['yes'] };
+  const textQuestion: protocol.InputQuestion = { id: 'q-1', prompt: 'name', kind: 'text' };
+  const choiceQuestion: protocol.InputQuestion = { id: 'q-2', prompt: 'pick', kind: 'single_choice', options: [{ id: 'a', label: 'A' }] };
+  const cancelledResolution: protocol.UserInputResolvedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', status: 'cancelled' };
   void urlImage;
   void inlineImage;
   void parts;
   void textAnswer;
   void choiceAnswer;
+  void textQuestion;
+  void choiceQuestion;
+  void cancelledResolution;
 });

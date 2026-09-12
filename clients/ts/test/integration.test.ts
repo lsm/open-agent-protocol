@@ -152,9 +152,12 @@ test(
     });
     const address = await waitForListening(daemon);
 
-    // Wrap the platform fetch: the first /events connection is aborted once
-    // four envelopes have passed, exactly like a connection drop mid-run.
-    const client = dial(address, { fetch: sabotagingFetch() });
+    // Wrap the platform fetch: the first /events connection is dropped once
+    // the bytes that would carry the fourth envelope arrive — never exposing
+    // them, so the client's cursor provably sits mid-run and the resume must
+    // open a second connection.
+    const sabotage = sabotagedEventsFetch();
+    const client = dial(address, { fetch: sabotage.fetch });
     const session = await client.open('memory', { sessionId: 'ts-integration-b' });
     const events = session.events();
     await events.ready;
@@ -169,8 +172,10 @@ test(
       await resolveGate(session, envelope);
     }
     // The golden run is twelve envelopes; the resume replayed the suffix
-    // after the drop with no duplicates and no gaps.
+    // after the drop with no duplicates and no gaps — and the reconnect
+    // really happened on a second connection.
     assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => index + 1));
+    assert.ok(sabotage.connections() >= 2, `expected a reconnect, saw ${sabotage.connections()} connections`);
 
     await session.close();
   },
@@ -238,11 +243,20 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
   });
 }
 
-/** A fetch wrapper that aborts the daemon's first event-stream connection after four envelopes pass. */
-function sabotagingFetch(): FetchLike {
+/**
+ * A fetch wrapper that drops the daemon's first event-stream connection at a
+ * complete fourth SSE frame. Fetch chunk boundaries are arbitrary — a chunk
+ * may already carry the rest of the run — so the wrapper counts envelope
+ * markers over the whole accumulated text (a marker split across chunks is
+ * still counted once complete) and throws before exposing any byte of the
+ * chunk that reaches the fourth envelope: the client's cursor provably sits
+ * mid-run, the run is parked at its permission gate, and recovery must open
+ * a second connection.
+ */
+function sabotagedEventsFetch(): { fetch: FetchLike; connections(): number } {
   let eventsConnections = 0;
   const decoder = new TextDecoder();
-  return async (url, init) => {
+  const fetchLike: FetchLike = async (url, init) => {
     if (!url.includes('/events')) {
       const response = await fetch(url, init);
       return response as unknown as FetchResponse;
@@ -256,13 +270,18 @@ function sabotagingFetch(): FetchLike {
     const response = await fetch(url, { ...init, signal: controller.signal });
     const reader = response.body?.getReader();
     if (!reader) return response as unknown as FetchResponse;
-    let delivered = 0;
+    let seen = '';
     const sabotaged: StreamReader = {
       read: async () => {
         const result = await reader.read();
         if (!result.done && result.value) {
-          delivered += (decoder.decode(result.value).match(/"sequence":/g) ?? []).length;
-          if (delivered >= 4) controller.abort();
+          seen += decoder.decode(result.value, { stream: true });
+          if ((seen.match(/"sequence":/g) ?? []).length >= 4) {
+            // Drop the connection before this chunk — which may hold the
+            // fourth envelope and more — ever reaches the client.
+            controller.abort();
+            throw new Error('integration sabotage: connection dropped mid-run');
+          }
         }
         return result;
       },
@@ -276,4 +295,5 @@ function sabotagingFetch(): FetchLike {
       text: () => response.text(),
     };
   };
+  return { fetch: fetchLike, connections: () => eventsConnections };
 }
