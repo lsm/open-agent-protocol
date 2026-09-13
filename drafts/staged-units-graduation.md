@@ -518,8 +518,20 @@ No new envelope types. Additive fields:
   is legal only when the new admission is `queued` and the trace's descriptor
   advertises `session.message.delivery.queue`; otherwise the existing
   `illegal_run_transition` ("session already has a nonterminal run").
-- New diagnostic `queue_order_violation`: `run.started` for a queued run
-  while an earlier-admitted run in the session is nonterminal.
+- The capability gate does not depend on session state. The validator
+  already invokes `feature()` with `delivery.<mode>` for every explicit
+  non-`auto` delivery on the request, which covers an explicit `queue` on
+  an idle session; T2 adds the same gate on the admission side, so a
+  `queued` admission response (from an explicit or an `auto` request) on a
+  descriptor that omits `session.message.delivery.queue` or advertises it
+  `unavailable` is `unavailable_capability` whatever the session held.
+- New diagnostic `queue_order_violation`: any run-scoped envelope of a
+  later-admitted run, not only `run.started` but also a pre-start
+  `run.cancelled` or `run.failed` and anything else in its domain,
+  appearing while an earlier-admitted run in the session is nonterminal.
+  This is the one-run-domain delivery rule above applied to the trace's
+  timeline, so a queued run cancelled before promotion has its terminal
+  after the earlier run's terminal in every conforming trace.
 - New diagnostic `queue_limit_exceeded`: when the descriptor carries
   `limits`, a `queued` admission that would put the session's queued
   reservations above `max_queued_runs_per_session`, or a `run.started`
@@ -626,11 +638,16 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
 ### Fixtures
 
 Positive: `queue-explicit-idle-promoted`, `queue-busy-then-promoted`,
-`queue-busy-cancelled-prestart`, `queue-state-active-runs`,
+`queue-busy-cancelled-prestart` (its pre-start terminal after the first
+run's terminal), `queue-state-active-runs`,
 `queue-model-mutation-at-promotion` (a `session_mutation` descriptor, a
 queued submit naming another model, `current_model_id` unchanged until the
 first run's terminal). Negative:
 `queue-promoted-out-of-order` (`queue_order_violation`),
+`queue-prestart-terminal-interleaved` (`queue_order_violation`; a queued
+run's pre-start `run.cancelled` before the started run's terminal),
+`queue-idle-unadvertised` (`unavailable_capability`; explicit `queue` on an
+idle session with the capability unadvertised),
 `queue-model-mutation-early` (`premature_session_mutation`),
 `queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
 1`, one started run, two queued admissions),
@@ -1042,17 +1059,30 @@ and hub contract is explicit rather than inherited from `start`:
   that drainer is another goroutine, the hub adds a barrier of its own
   rather than trusting the adapter's: before calling the adapter with
   `delivery: "steer"` it gates the target run's drainer (envelopes are
-  read and buffered, not published), after the adapter returns it
+  read and buffered, not published), and after the adapter returns it
   registers the pending steer (`submission_id` to target run, reflected
-  in `active_runs`), and only then lifts the gate. Subscribers, and any
-  trace the hub records, therefore see the admission before the
-  settlement even when an adapter emits inside `Submit`. The same branch
+  in `active_runs`). The gate is not lifted inside `Submit`: the hub
+  cannot know when the response has reached the caller, and an SSE
+  subscriber could otherwise see `run.steer.applied` before the submit
+  caller learns the `submission_id`. `Session.Submit` returns with the
+  gate held, and the binding that makes the response observable lifts it
+  with `Session.Published(submissionID)`: `servehttp` after writing and
+  flushing the submit response, the stdio frontend after writing the
+  response line, an in-process embedder once it has handed the response
+  to its own caller. As a safety net, the hub lifts a still-held gate
+  when the context passed to `Submit` is done, so a binding that forgets
+  the call delays the target run's subscribers by at most the request's
+  lifetime rather than starving them. Subscribers, and any trace the hub
+  records, therefore see the admission before the settlement even when an
+  adapter emits inside `Submit`; the `servehttp` e2e test subscribes
+  before a synchronously settling steer and asserts the settlement arrives
+  after the response. The same branch
   is where a queued admission (T2) differs from `start`: it adopts the
   queued run's stream under a new serial but does not supersede the
   started run.
-- `serve/servehttp` and the stdio frontend: no change beyond passing the
-  delivery and `target_run_id` through; the response is the same
-  `session.message.submit.response`.
+- `serve/servehttp` and the stdio frontend: pass the delivery and
+  `target_run_id` through and call `Session.Published` after writing the
+  response; the response is the same `session.message.submit.response`.
 
 The hub's run-qualified cursor from T2 already covers a steer's
 events because they live in the target run's domain. The clients differ in
