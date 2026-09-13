@@ -379,6 +379,51 @@ func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 	}
 }
 
+// TestRejectedSubmitKeepsSubscriptions pins the subscribe-before-submit
+// flow on an idle session: an adapter-level rejection unwinds its
+// reservation without finishing anybody, so the corrected retry's run
+// reaches the subscription that was parked all along.
+func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}), release: make(chan struct{}), fail: base.ErrInvalidSubmission}
+	close(gated.release) // the adapter rejects at once; no interleaving needed
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "gated", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("rejected")}},
+	}); !errors.Is(err, base.ErrInvalidSubmission) {
+		t.Fatalf("submit error %v, want invalid submission", err)
+	}
+	select {
+	case <-sub.finish:
+		t.Fatal("a rejected submit finished the parked subscriber")
+	default:
+	}
+
+	// The corrected retry drives a real run to the same subscription.
+	gated.fail = nil
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "gated", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("corrected")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	close(gated.stream)
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-b" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want io.EOF", err)
+	}
+}
+
 // TestLateOverflowDoesNotCutNewerRun pins the position scope: a subscriber
 // that moved past run A into run B has seen A complete, so a late overflow
 // from A's drained stream must not terminate it — it keeps receiving B.

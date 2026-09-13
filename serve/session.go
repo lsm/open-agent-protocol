@@ -69,15 +69,21 @@ type Session struct {
 	// closed records a successful adapter close: no further run can drive
 	// the hub, so a live subscriber arriving afterwards must not park.
 	closed bool
-	// readers counts run streams still being drained, and pendingEnd is
-	// the current run's terminal state once its own drainer has exited
-	// while an overlapping older one still drains (a resubmit inside the
-	// previous run's settle window). The last reader to leave finishes
-	// subscribers with it, so the outcome subscribers were actually
-	// receiving survives the interleaving instead of parking them.
-	readers    int
-	pendingEnd *terminalState
-	subs       map[*subscriber]struct{}
+	// readers counts run streams still being drained; reservations count
+	// Submit admissions in flight (a reservation bridges an old reader's
+	// exit to the new run's start, so a zero-reader detach cannot land
+	// between the adapter admitting a run and the hub recording it).
+	// pendingEnd is the current run's terminal state once its own drainer
+	// exited into company, and finishDue marks a finish a real reader's
+	// exit would have fired but a reservation holds: the last real reader
+	// (or the reservation's release, once no reader remains) applies it.
+	// A reservation that unwinds without a run ever existing finishes
+	// nobody — parked subscribers keep waiting for the next submit.
+	readers      int
+	reservations int
+	finishDue    bool
+	pendingEnd   *terminalState
+	subs         map[*subscriber]struct{}
 }
 
 func newSession(id protocol.SessionID, adapterName string, session base.Session) *Session {
@@ -118,17 +124,17 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	if request.SessionID != s.id {
 		return protocol.MessageSubmitResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
 	}
-	// Reserve the reader slot before the adapter call: the adapter may
-	// admit this run while an old one's reader is still exiting, and that
-	// reader's zero-reader detach must not run between the admission and
-	// the hub recording the new run — subscribers attached before the
-	// resubmit would take the old run's end and never see the new one.
+	// Reserve against the zero-reader detach while the adapter decides: it
+	// may admit this run while an old one's reader is still exiting, and
+	// that detach must not run between the admission and the hub recording
+	// the new run — subscribers attached before the resubmit would take the
+	// old run's end and never see the new one.
 	s.mu.Lock()
-	s.readers++
+	s.reservations++
 	s.mu.Unlock()
 	admission, stream, err := s.session.Submit(ctx, request)
 	if err != nil {
-		s.exitReader("", nil)
+		s.releaseReservation()
 		return admission, err
 	}
 	s.adoptRun(admission.RunID, stream)
@@ -250,24 +256,44 @@ func (s *Session) currentRun() (protocol.RunID, bool) {
 }
 
 // startRun points the hub at a newly admitted run and starts draining its
-// adapter stream, reserving the reader slot in the same step. The drain is
-// unconditional for the whole run lifetime, so the adapter's bounded
-// subscriber buffers never fill on the hub side.
+// adapter stream. The drain is unconditional for the whole run lifetime, so
+// the adapter's bounded subscriber buffers never fill on the hub side.
 func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 	s.mu.Lock()
 	s.readers++
 	s.runID = runID
+	s.pendingEnd, s.finishDue = nil, false
 	s.mu.Unlock()
 	go s.readRun(runID, stream)
 }
 
-// adoptRun points the hub at a run whose reader slot Submit already
-// reserved, converting the reservation into the draining reader.
+// adoptRun converts a Submit reservation into the new run's draining
+// reader. Any finish an old reader deferred is superseded: the new run now
+// governs the subscribers' outcome.
 func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 	s.mu.Lock()
+	s.reservations--
+	s.readers++
 	s.runID = runID
+	s.pendingEnd, s.finishDue = nil, false
 	s.mu.Unlock()
 	go s.readRun(runID, stream)
+}
+
+// releaseReservation unwinds a Submit admission that never became a run.
+// Parked subscribers stay parked — the subscribe-before-submit flow must
+// survive a rejected submit — unless a real reader's exit deferred its
+// finish into the reservation, in which case that finish fires now.
+func (s *Session) releaseReservation() {
+	s.mu.Lock()
+	s.reservations--
+	due := s.finishDue && s.readers == 0 && s.reservations == 0
+	state := s.pendingEnd
+	s.pendingEnd, s.finishDue = nil, false
+	s.mu.Unlock()
+	if due {
+		s.finishSubs(state)
+	}
 }
 
 // readRun drains one run's adapter stream. A stream that ends on an error
@@ -302,20 +328,26 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	s.exitReader(runID, end)
 }
 
-// exitReader is the shared path when a run reader (or a Submit reservation,
-// which passes an empty run) leaves: with readers remaining, the current
-// run's terminal state is stashed for the last one to apply; the last one
-// finishes subscribers — with its own outcome when it drained the current
-// run, otherwise the current run's stashed one — detaching the set under
-// the lock so a concurrent startRun or subscribe cannot interleave.
+// exitReader is the path a run reader takes when its stream ends: with
+// readers remaining, the current run's terminal state is stashed for the
+// last one to apply; the last one finishes subscribers — with its own
+// outcome when it drained the current run, otherwise the current run's
+// stashed one — detaching the set under the lock so a concurrent startRun
+// or subscribe cannot interleave. When only a Submit reservation remains,
+// the finish is deferred to whichever resolves it.
 func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	s.mu.Lock()
 	s.readers--
 	current := s.runID
+	if current == runID {
+		s.pendingEnd = end
+	}
 	if s.readers > 0 {
-		if current == runID {
-			s.pendingEnd = end
-		}
+		s.mu.Unlock()
+		return
+	}
+	if s.reservations > 0 {
+		s.finishDue = true
 		s.mu.Unlock()
 		return
 	}
@@ -405,15 +437,21 @@ func (s *Session) detachSubsLocked() []*subscriber {
 // markClosed records a successful adapter close and ends every live stream.
 // An adapter reports its run terminal once the terminal envelope is queued,
 // not once a consumer drained it, so a reader may still hold final events:
-// with no reader draining, subscribers finish immediately; otherwise the
-// last reader's exit ends them with the run's terminal outcome, so no
-// terminal envelope is lost.
+// with a reader draining, its exit ends subscribers with the run's terminal
+// outcome so no terminal envelope is lost; with only a Submit admission in
+// flight, that admission's resolution ends them; with neither, they finish
+// immediately.
 func (s *Session) markClosed() {
 	s.mu.Lock()
 	s.closed = true
-	draining := s.readers > 0
-	s.mu.Unlock()
-	if !draining {
+	switch {
+	case s.readers > 0:
+		s.mu.Unlock()
+	case s.reservations > 0:
+		s.finishDue = true
+		s.mu.Unlock()
+	default:
+		s.mu.Unlock()
 		s.finishSubs(nil)
 	}
 }
