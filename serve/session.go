@@ -228,12 +228,14 @@ func (sub *subscriber) acknowledge(run protocol.RunID) {
 		sub.pending[run]--
 	}
 	// The acknowledged admission order only moves forward: a late envelope
-	// from an older, still-draining run must not drag the position back
-	// and un-expose the subscriber to a newer run's overflow.
+	// from an older, still-draining run must not drag the position back,
+	// and the acknowledged run identifier must stay paired with the
+	// newest serial — a regressed pointer would name the wrong run for
+	// loss cursors that resolve by acknowledged position.
 	if serial := sub.runSerials[run]; serial > sub.ackSerial {
 		sub.ackSerial = serial
-	}
-	if current := sub.ack.Load(); current == nil || *current != run {
+		sub.ack.Store(&run)
+	} else if current := sub.ack.Load(); current == nil {
 		sub.ack.Store(&run)
 	}
 	sub.pendMu.Unlock()
@@ -348,12 +350,19 @@ func (s *Session) bindRun(runID protocol.RunID, reserved uint64) protocol.RunID 
 		// drainer holds becomes the reader.
 		s.reservations--
 	}
-	if reserved > s.serials[s.runID] {
+	promoted := reserved > s.serials[s.runID]
+	if promoted {
 		s.runID = runID
 	}
-	// Binding supersedes a deferred finish exactly as an adopted run does —
-	// a deferred error reaches its cohort before the bound run publishes.
-	errored, failed := s.supersedeLocked()
+	// Only a promoted binding supersedes: an older orphan's binding leaves
+	// the current run and its deferred state untouched — clearing them
+	// would let a newer run's deferred error die with the older reader's
+	// eventual stale exit.
+	var errored []*subscriber
+	var failed *terminalState
+	if promoted {
+		errored, failed = s.supersedeLocked()
+	}
 	s.mu.Unlock()
 	s.deliverDeferredError(errored, failed)
 	return runID
@@ -759,13 +768,25 @@ func (s *Session) detachSubsLocked() []*subscriber {
 func (s *Session) markClosed() {
 	s.mu.Lock()
 	s.closed = true
+	var errored []*subscriber
+	var failed *terminalState
 	switch {
 	case s.readers > 0:
 		// Readers still drain, and the last one's exit ends the
 		// subscribers. A close owes every live subscriber — no future run
 		// can reach the ones that registered after the current run's
 		// reader deferred its end — so the deferred cohort is refreshed to
-		// everyone subscribed at close time.
+		// everyone subscribed at close time. A deferred stream error is
+		// delivered first to its own cohort and detached: the close's
+		// clean end is what subscribers outside that cohort are owed, and
+		// first-writer-wins keeps the error for those inside it.
+		if s.pendingEnd != nil && s.pendingEnd.err != nil {
+			errored, failed = s.deferred, s.pendingEnd
+			for _, sub := range errored {
+				delete(s.subs, sub)
+			}
+			s.pendingEnd = nil
+		}
 		s.deferred = s.snapshotSubsLocked()
 		s.mu.Unlock()
 	case s.reservations > 0:
@@ -780,6 +801,7 @@ func (s *Session) markClosed() {
 		s.mu.Unlock()
 		s.finishSubs(nil)
 	}
+	s.deliverDeferredError(errored, failed)
 }
 
 // closeForShutdown cancels any active run and then closes the adapter

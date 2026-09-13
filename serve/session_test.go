@@ -1533,6 +1533,117 @@ func TestQueueOverflowPreservesNewerRun(t *testing.T) {
 	}
 }
 
+// TestAcknowledgedRunStaysPairedWithSerial pins the pairing: acknowledging
+// a late older-run envelope after a newer run keeps the acknowledged run
+// identifier at the newer run, so a later queue-full loss cursor resolved
+// by acknowledged position names the newer run — not the stale pointer.
+func TestAcknowledgedRunStaysPairedWithSerial(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	entry.startRun("run-a", make(chan base.Result, 1))
+	entry.startRun("run-b", make(chan base.Result, 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for _, want := range []protocol.RunID{"run-a", "run-b"} {
+		entry.publish(runEnvelope(t, want, 1))
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != want {
+			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
+		}
+	}
+	// The older run's late envelopes are acknowledged after B's — the
+	// acknowledged serial stays at B's while a regressed pointer would
+	// name A.
+	entry.publish(runEnvelope(t, "run-a", 12))
+	entry.publish(runEnvelope(t, "run-a", 13))
+	for sequence := uint64(12); sequence <= 13; sequence++ {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != "run-a" || envelope.Sequence == nil || *envelope.Sequence != sequence {
+			t.Fatalf("late envelope %d: run %s sequence %v error %v", sequence, envelope.RunID, envelope.Sequence, err)
+		}
+	}
+	// Stale run-A envelopes fill the two-slot tail and a third is dropped;
+	// the acknowledged position is B — the cursor must name B.
+	entry.publish(runEnvelope(t, "run-a", 14))
+	entry.publish(runEnvelope(t, "run-a", 15))
+	entry.publish(runEnvelope(t, "run-a", 16)) // dropped; loss resolves by acknowledged position
+	for sequence := uint64(14); sequence <= 15; sequence++ {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != "run-a" || envelope.Sequence == nil || *envelope.Sequence != sequence {
+			t.Fatalf("tail envelope %d: run %s sequence %v error %v", sequence, envelope.RunID, envelope.Sequence, err)
+		}
+	}
+	_, err := subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the paired acknowledged run", overflow)
+	}
+}
+
+// TestCloseGivesNewcomersCleanEndOverDeferredError pins the two-cohort
+// close: subscribers that observed a failed run receive its deferred error;
+// subscribers that registered after that run's exit receive the close's
+// clean end — never an error from a run they never saw.
+func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	cohort, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA) // the older reader lags throughout
+	entry.startRun("run-b", streamB) // B is current
+	entry.publish(runEnvelope(t, "run-b", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
+	if _, err := subscription.Next(); err != nil { // cohort observes run B
+		t.Fatal(err)
+	}
+	// B's stream fails while A's older reader still drains: the current
+	// run's error defers behind company.
+	streamFailure := errors.New("run B stream died")
+	streamB <- base.Result{Error: streamFailure}
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.readers == 1 && entry.pendingEnd != nil && entry.pendingEnd.err == streamFailure
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run B's error end was never deferred behind run A's reader")
+		default:
+		}
+	}
+	newcomer, ok := entry.subscribe(8) // after B's exit: never observed B
+	if !ok {
+		t.Fatal("subscribe during the deferral window was refused")
+	}
+	entry.markClosed()
+	close(streamA)
+
+	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
+		t.Fatalf("cohort terminal %v, want run B's deferred stream failure", err)
+	}
+	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
+	for {
+		_, err := newcomerSubscription.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("newcomer terminal %v, want the clean close — never B's error", err)
+		}
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.
