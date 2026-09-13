@@ -420,20 +420,20 @@ var goldenTranscript = []string{
 	`{"id":3,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"oap-response-3","payload":{"session_id":"golden","status":"idle"},"in_reply_to":"open-1","session_id":"golden"}}`,
 	`{"id":4,"ok":true,"result":null}`,
 	`{"id":5,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"oap-response-4","payload":{"session_id":"golden","accepted":true,"submission_id":"submission-06","requested_delivery":"auto","effective_delivery":"start","delivery_resolution":"session_idle","admission":"started","run_id":"run-01","status":"running","message_ids":["message-05"]},"in_reply_to":"submit-1","session_id":"golden","run_id":"run-01"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":1,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"event-07","payload":{"session_id":"golden","run_id":"run-01","status":"running","started_at_ms":3},"sequence":1,"timestamp_ms":4,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":2,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"event-09","payload":{"session_id":"golden","run_id":"run-01","message_id":"message-08","part":{"type":"text","text":"I will use the scripted tool."}},"sequence":2,"timestamp_ms":5,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":3,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.requested","id":"event-10","payload":{"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","requested_by":"agent","execution_owner":"reference-adapter","name":"scripted_tool","arguments_json":{"operation":"golden"}},"sequence":3,"timestamp_ms":6,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":4,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"event-11","payload":{"interaction_id":"permission-02","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","title":"Allow scripted tool","description":"The golden script requires approval.","choices":[{"id":"approve","label":"Approve"},{"id":"deny","label":"Deny"}],"arguments_json":{"operation":"golden"}},"sequence":4,"timestamp_ms":7,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":1,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"event-07","payload":{"session_id":"golden","run_id":"run-01","status":"running","started_at_ms":3},"sequence":1,"timestamp_ms":4,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":2,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"event-09","payload":{"session_id":"golden","run_id":"run-01","message_id":"message-08","part":{"type":"text","text":"I will use the scripted tool."}},"sequence":2,"timestamp_ms":5,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":3,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.requested","id":"event-10","payload":{"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","requested_by":"agent","execution_owner":"reference-adapter","name":"scripted_tool","arguments_json":{"operation":"golden"}},"sequence":3,"timestamp_ms":6,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":4,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"event-11","payload":{"interaction_id":"permission-02","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","title":"Allow scripted tool","description":"The golden script requires approval.","choices":[{"id":"approve","label":"Approve"},{"id":"deny","label":"Deny"}],"arguments_json":{"operation":"golden"}},"sequence":4,"timestamp_ms":7,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
 	`{"id":6,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"oap-response-5","payload":{"interaction_id":"permission-02","session_id":"golden","run_id":"run-01","accepted":true},"in_reply_to":"resolve-p","session_id":"golden","run_id":"run-01"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":5,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"event-12","payload":{"interaction_id":"permission-02","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","outcome":"resolved","choice_id":"approve","granted":true},"sequence":5,"timestamp_ms":8,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":6,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.started","id":"event-13","payload":{"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","requested_by":"agent","execution_owner":"reference-adapter","name":"scripted_tool","arguments_json":{"operation":"golden"}},"sequence":6,"timestamp_ms":9,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":7,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.completed","id":"event-14","payload":{"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","requested_by":"agent","execution_owner":"reference-adapter","name":"scripted_tool","result":{"ok":true}},"sequence":7,"timestamp_ms":10,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":8,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.requested","id":"event-15","payload":{"interaction_id":"input-03","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","title":"Golden input","description":"Choose the deterministic answer.","questions":[{"id":"choice","prompt":"Continue?","kind":"single_choice","required":true,"options":[{"id":"yes","label":"Yes"}]}]},"sequence":8,"timestamp_ms":11,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":9,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.status.updated","id":"event-16","payload":{"session_id":"golden","run_id":"run-01","status":"waiting_for_input","pending_user_input_id":"input-03","updated_at_ms":12},"sequence":9,"timestamp_ms":13,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":5,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"event-12","payload":{"interaction_id":"permission-02","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","outcome":"resolved","choice_id":"approve","granted":true},"sequence":5,"timestamp_ms":8,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":6,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.started","id":"event-13","payload":{"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","requested_by":"agent","execution_owner":"reference-adapter","name":"scripted_tool","arguments_json":{"operation":"golden"}},"sequence":6,"timestamp_ms":9,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":7,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.completed","id":"event-14","payload":{"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","requested_by":"agent","execution_owner":"reference-adapter","name":"scripted_tool","result":{"ok":true}},"sequence":7,"timestamp_ms":10,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":8,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.requested","id":"event-15","payload":{"interaction_id":"input-03","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","title":"Golden input","description":"Choose the deterministic answer.","questions":[{"id":"choice","prompt":"Continue?","kind":"single_choice","required":true,"options":[{"id":"yes","label":"Yes"}]}]},"sequence":8,"timestamp_ms":11,"session_id":"golden","run_id":"run-01","tool_call_id":"tool-call-04","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":9,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.status.updated","id":"event-16","payload":{"session_id":"golden","run_id":"run-01","status":"waiting_for_input","pending_user_input_id":"input-03","updated_at_ms":12},"sequence":9,"timestamp_ms":13,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
 	`{"id":7,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.resolve.response","id":"oap-response-6","payload":{"interaction_id":"input-03","session_id":"golden","run_id":"run-01","accepted":true},"in_reply_to":"resolve-i","session_id":"golden","run_id":"run-01"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":10,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.resolved","id":"event-17","payload":{"interaction_id":"input-03","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","status":"submitted","answers":[{"question_id":"choice","selected_option_ids":["yes"]}]},"sequence":10,"timestamp_ms":14,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":11,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"event-19","payload":{"session_id":"golden","run_id":"run-01","message_id":"message-18","part":{"type":"text","text":"The golden script completed."}},"sequence":11,"timestamp_ms":15,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
-	`{"event":"envelope","session_id":"golden","sequence":12,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"event-20","payload":{"session_id":"golden","run_id":"run-01","final_response":{"id":"message-18","role":"assistant","content":"The golden script completed."},"stop_reason":"end_turn"},"sequence":12,"timestamp_ms":16,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":10,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.resolved","id":"event-17","payload":{"interaction_id":"input-03","requested_by":"agent","responded_by":"user","session_id":"golden","run_id":"run-01","status":"submitted","answers":[{"question_id":"choice","selected_option_ids":["yes"]}]},"sequence":10,"timestamp_ms":14,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":11,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"event-19","payload":{"session_id":"golden","run_id":"run-01","message_id":"message-18","part":{"type":"text","text":"The golden script completed."}},"sequence":11,"timestamp_ms":15,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
+	`{"event":"envelope","id":4,"session_id":"golden","sequence":12,"envelope":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"event-20","payload":{"session_id":"golden","run_id":"run-01","final_response":{"id":"message-18","role":"assistant","content":"The golden script completed."},"stop_reason":"end_turn"},"sequence":12,"timestamp_ms":16,"session_id":"golden","run_id":"run-01","capability_revision":"reference-memory-v1"}}`,
 	`{"id":8,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"oap-response-7","payload":{"session_id":"golden","status":"idle","transcript_cursor":"12","updated_at_ms":16},"in_reply_to":"oap-request-8","session_id":"golden"}}`,
 	`{"id":9,"ok":true,"result":null}`,
 }
@@ -829,12 +829,13 @@ func TestMalformedLinesFailClosed(t *testing.T) {
 	}
 }
 
-// TestOversizedLineFailsClosed bounds one line with a small frame limit.
+// TestOversizedLineFailsClosed bounds one request line with a small frame
+// limit; the prior response still fits and is flushed.
 func TestOversizedLineFailsClosed(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
-	f := startFrontend(t, hub, Options{FrameLimit: 128})
+	f := startFrontend(t, hub, Options{FrameLimit: 1800})
 	f.send(`{"id":1,"op":"adapters"}`)
-	f.send(`{"id":2,"op":"adapters","pad":"` + strings.Repeat("x", 200) + `"}`)
+	f.send(`{"id":2,"op":"adapters","pad":"` + strings.Repeat("x", 2000) + `"}`)
 	response := f.decodeResponse(f.line())
 	if response.ID != 1 || !response.OK {
 		t.Fatalf("prior response not flushed: %+v", response)
@@ -879,6 +880,9 @@ func (c *creditOut) Write(p []byte) (int, error) {
 // package's own tests; the frontend converges both onto one line.
 type stagedAdapter struct {
 	release chan struct{}
+	// hugeAt, when nonzero, emits that sequence's envelope with a payload
+	// far larger than the frame limit under test.
+	hugeAt uint64
 }
 
 func (a *stagedAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -946,9 +950,13 @@ func (s *stagedSession) Submit(_ context.Context, request protocol.MessageSubmit
 }
 
 func (s *stagedSession) emit(sequence uint64) protocol.Envelope {
+	text := fmt.Sprintf("staged %d", sequence)
+	if s.adapter.hugeAt == sequence {
+		text = strings.Repeat("x", 8192)
+	}
 	envelope, err := protocol.NewEnvelope(protocol.TypeContentDelta, protocol.EnvelopeID(fmt.Sprintf("staged-%02d", sequence)), protocol.ContentDeltaPayload{
 		SessionID: s.id, RunID: "run-staged", MessageID: "staged-message",
-		Part: protocol.ContentPart{Type: protocol.ContentText, Text: fmt.Sprintf("staged %d", sequence)},
+		Part: protocol.ContentPart{Type: protocol.ContentText, Text: text},
 	})
 	if err != nil {
 		panic(err)
@@ -1095,6 +1103,215 @@ func TestSlowConsumerBackpressure(t *testing.T) {
 	requireSequences(t, replayed, 7, 8)
 	f.send(`{"id":5,"op":"state","session_id":"slow"}`)
 	requireOK(t, f.expectResponse(5))
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// --- review-fix regressions ---
+
+// TestEventLinesCorrelateSubscriptions overlaps subscriptions on one session
+// and requires every event and signal line to name the events request whose
+// subscription produced it — the correlation stdout needs because, unlike
+// separate SSE connections, the lines share one stream.
+func TestEventLinesCorrelateSubscriptions(t *testing.T) {
+	hub := newTestHub(t, 2, 64)
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":1,"op":"open","adapter":"memory","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "multi"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(1))
+
+	// Two live subscriptions admitted before the run.
+	f.send(`{"id":2,"op":"events","session_id":"multi"}`)
+	requireOK(t, f.expectResponse(2))
+	f.send(`{"id":3,"op":"events","session_id":"multi"}`)
+	requireOK(t, f.expectResponse(3))
+	f.send(`{"id":4,"op":"submit","session_id":"multi","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "multi", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "multi", "")) + `}`)
+	responses, events := f.group(9)
+	if len(responses) != 1 || len(events) != 8 {
+		t.Fatalf("admission phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	bySubscription := make(map[int64][]uint64)
+	for _, line := range events {
+		var event envelopeLine
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("event line %q: %v", line, err)
+		}
+		if event.SessionID != "multi" || event.Sequence == nil {
+			t.Fatalf("event line %q lacks scope", line)
+		}
+		bySubscription[event.ID] = append(bySubscription[event.ID], *event.Sequence)
+	}
+	if len(bySubscription) != 2 {
+		t.Fatalf("%d subscriptions attributed, want 2", len(bySubscription))
+	}
+	for id, sequences := range bySubscription {
+		if len(sequences) != 4 {
+			t.Fatalf("subscription %d delivered %d envelopes, want 4", id, len(sequences))
+		}
+		for index, sequence := range sequences {
+			if sequence != uint64(index+1) {
+				t.Fatalf("subscription %d delivered %v, want 1..4", id, sequences)
+			}
+		}
+	}
+
+	// Settle the run through both gates; both subscriptions deliver every
+	// burst, interleaved but each attributed to its own id.
+	var permission, input string
+	for _, line := range events {
+		if strings.Contains(line, `"sequence":4`) {
+			permission = line
+		}
+	}
+	f.send(`{"id":7,"op":"resolve","session_id":"multi","request":` + string(resolveEnvelope(t, "resolve-p", permission, "multi")) + `}`)
+	responses, events = f.group(11)
+	if len(responses) != 1 || len(events) != 10 {
+		t.Fatalf("permission phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	for _, line := range events {
+		if strings.Contains(line, `"sequence":8`) {
+			input = line
+		}
+	}
+	f.send(`{"id":8,"op":"resolve","session_id":"multi","request":` + string(resolveEnvelope(t, "resolve-i", input, "multi")) + `}`)
+	responses, events = f.group(7)
+	if len(responses) != 1 || len(events) != 6 {
+		t.Fatalf("input phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+
+	// Cursor subscriptions after the settled run: the gap and the replayed
+	// suffix each name their own request.
+	f.send(`{"id":5,"op":"events","session_id":"multi","after":0}`)
+	requireOK(t, f.expectResponse(5))
+	signal := f.line()
+	var gap gapLine
+	if err := json.Unmarshal([]byte(signal), &gap); err != nil {
+		t.Fatalf("gap line %q: %v", signal, err)
+	}
+	if gap.Event != signalReplayGap || gap.ID != 5 {
+		t.Fatalf("gap line %q does not name subscription 5", signal)
+	}
+	f.send(`{"id":6,"op":"events","session_id":"multi","after":10}`)
+	requireOK(t, f.expectResponse(6))
+	_, replayed := f.group(2)
+	for index, line := range replayed {
+		var event envelopeLine
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("replay line %q: %v", line, err)
+		}
+		if event.ID != 6 || event.Sequence == nil || *event.Sequence != uint64(11+index) {
+			t.Fatalf("replay line %q does not name subscription 6 at sequence %d", line, 11+index)
+		}
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// stalledWriter never completes a write, exactly like a writer blocked on a
+// host pipe nobody drains.
+type stalledWriter struct{ block chan struct{} }
+
+func (w stalledWriter) Write([]byte) (int, error) {
+	<-w.block
+	return 0, io.ErrClosedPipe
+}
+
+// TestShutdownDoesNotWaitOnStalledOutput closes stdin while the writer is
+// blocked on an undrained pipe: the bounded teardown must abandon the writer
+// and return ErrOutputStalled instead of hanging before the caller's session
+// sweep.
+func TestShutdownDoesNotWaitOnStalledOutput(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) }) // let the abandoned writer drain after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stalledWriter{block: block}) }()
+
+	// One request whose response parks the writer inside out.Write.
+	if _, err := stdinWriter.Write([]byte("{\"id\":1,\"op\":\"adapters\"}\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrOutputStalled) {
+			t.Fatalf("Run returned %v, want ErrOutputStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stalled writer")
+	}
+}
+
+// TestOversizedOutputRefused drives both sides of the outbound frame limit:
+// a response whose encoding exceeds it is replaced by the bounded
+// response_too_large refusal, and an envelope that exceeds it ends its
+// subscription rather than emitting a line this framing cannot carry.
+func TestOversizedOutputRefused(t *testing.T) {
+	// Response side: the memory adapter's listing exceeds a small limit.
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{FrameLimit: 1024})
+	f.send(`{"id":1,"op":"adapters"}`)
+	requireCode(t, f.expectResponse(1), "response_too_large")
+	f.send(`{"id":2,"op":"state","session_id":"none"}`)
+	requireCode(t, f.expectResponse(2), "unknown_session") // small lines still flow
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	// Event side: a staged run whose second burst opens with an envelope
+	// no line can carry; the subscription ends without emitting it.
+	registry := serve.NewRegistry()
+	staged := &stagedAdapter{release: make(chan struct{}), hugeAt: 5}
+	if err := registry.Register("staged", staged); err != nil {
+		t.Fatal(err)
+	}
+	hub2 := serve.New(registry, serve.Options{StreamQueue: 8})
+	server, err := New(hub2, Options{FrameLimit: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+	f = &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), stdout: stdoutReader, done: done}
+
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "big"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(1))
+	f.send(`{"id":2,"op":"events","session_id":"big"}`)
+	requireOK(t, f.expectResponse(2))
+	f.send(`{"id":3,"op":"submit","session_id":"big","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "big", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "big", "")) + `}`)
+	responses, events := f.group(5)
+	if len(responses) != 1 || len(events) != 4 {
+		t.Fatalf("first burst: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	requireSequences(t, events, 1, 4)
+
+	close(staged.release)
+	time.Sleep(100 * time.Millisecond)
+	// The oversized envelope ended the subscription: the next line is the
+	// state probe's response, never an event line.
+	f.send(`{"id":4,"op":"state","session_id":"big"}`)
+	requireOK(t, f.expectResponse(4))
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}

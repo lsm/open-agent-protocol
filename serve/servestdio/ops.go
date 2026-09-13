@@ -61,9 +61,13 @@ type wireError struct {
 }
 
 // envelopeLine is one run-event delivery, the NDJSON form of the SSE
-// data:/id: pair: the envelope JSON with its sequence alongside it.
+// data:/id: pair: the envelope JSON with its sequence alongside it. ID
+// carries the id of the events request whose subscription produced the line
+// — several subscriptions may overlap on one session, and stdout, unlike
+// separate SSE connections, needs the correlation stated on every line.
 type envelopeLine struct {
 	Event     string          `json:"event"`
+	ID        int64           `json:"id"`
 	SessionID string          `json:"session_id"`
 	Sequence  *uint64         `json:"sequence,omitempty"`
 	Envelope  json.RawMessage `json:"envelope"`
@@ -71,6 +75,7 @@ type envelopeLine struct {
 
 type overflowLine struct {
 	Event        string `json:"event"`
+	ID           int64  `json:"id"`
 	SessionID    string `json:"session_id"`
 	RunID        string `json:"run_id"`
 	LastSequence uint64 `json:"last_sequence"`
@@ -79,6 +84,7 @@ type overflowLine struct {
 
 type gapLine struct {
 	Event           string `json:"event"`
+	ID              int64  `json:"id"`
 	SessionID       string `json:"session_id"`
 	RequestedAfter  uint64 `json:"requested_after"`
 	OldestAvailable uint64 `json:"oldest_available"`
@@ -88,6 +94,7 @@ type gapLine struct {
 
 type sessionClosedLine struct {
 	Event     string `json:"event"`
+	ID        int64  `json:"id"`
 	SessionID string `json:"session_id"`
 	Message   string `json:"message"`
 }
@@ -101,14 +108,25 @@ func (s *Server) serveRequest(ctx context.Context, request requestLine, lines ch
 	s.respond(lines, request, result, werr)
 }
 
-// respond writes one op's correlated response line.
+// respond writes one op's correlated response line. A response whose
+// encoding exceeds the frame limit is replaced by the bounded
+// response_too_large refusal, so an oversized result still gets a
+// correlated, framable answer.
 func (s *Server) respond(lines chan<- []byte, request requestLine, result json.RawMessage, werr *wireError) {
 	response := responseLine{ID: *request.ID, OK: werr == nil, Result: result}
 	if werr != nil {
 		response.Result = json.RawMessage("null")
 		response.Error = werr
 	}
-	s.send(lines, response)
+	if err := s.send(lines, response); err != nil {
+		s.logger.Printf("servestdio: response %d: %v", *request.ID, err)
+		fallback := responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: &wireError{
+			Code: "response_too_large", Message: "the encoded response exceeds the frame limit",
+		}}
+		if fallbackErr := s.send(lines, fallback); fallbackErr != nil {
+			s.logger.Printf("servestdio: response %d: %v", *request.ID, fallbackErr)
+		}
+	}
 }
 
 func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
@@ -499,7 +517,7 @@ func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage
 func (s *Server) serveEvents(ctx context.Context, request requestLine, lines chan<- []byte, work *sync.WaitGroup) {
 	id := *request.ID
 	fail := func(werr *wireError) {
-		s.send(lines, responseLine{ID: id, OK: false, Result: json.RawMessage("null"), Error: werr})
+		s.respond(lines, request, nil, werr)
 	}
 	if werr := request.only(paramSession, paramAfter); werr != nil {
 		fail(werr)
@@ -533,12 +551,14 @@ func (s *Server) serveEvents(ctx context.Context, request requestLine, lines cha
 		// The gap is delivered inside a successful op, exactly as the SSE
 		// route answers 200 and then emits the replay-gap event: the
 		// subscription itself is over.
-		s.send(lines, responseLine{ID: id, OK: true, Result: json.RawMessage("null")})
-		s.send(lines, gapLine{
-			Event: signalReplayGap, SessionID: string(entry.ID()),
+		s.respond(lines, request, json.RawMessage("null"), nil)
+		if sendErr := s.send(lines, gapLine{
+			Event: signalReplayGap, ID: id, SessionID: string(entry.ID()),
 			RequestedAfter: gap.RequestedAfter, OldestAvailable: gap.OldestAvailable, LatestAvailable: gap.LatestAvailable,
 			Message: "requested replay cursor is no longer retained; resume with a cursor at or after oldest_available - 1",
-		})
+		}); sendErr != nil {
+			s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+		}
 		return
 	}
 	if err != nil {
@@ -561,55 +581,66 @@ func (s *Server) serveEvents(ctx context.Context, request requestLine, lines cha
 		fail(&wireError{Code: code, Message: adapterMessage(err)})
 		return
 	}
-	s.send(lines, responseLine{ID: id, OK: true, Result: json.RawMessage("null")})
+	s.respond(lines, request, json.RawMessage("null"), nil)
 	work.Add(1)
 	go func() {
 		defer work.Done()
-		s.pump(entry, subscription, lines)
+		s.pump(entry, subscription, id, lines)
 	}()
 }
 
 // pump serves one subscription through the shared writer until it ends. The
-// envelope lines preserve the subscription's per-session order; the single
-// writer guarantees each line is atomic. Ends mirror the SSE stream ends: the
-// overflow and replay-gap signals get named lines, a subscription that ends
-// because the session closed under it gets the session-closed line, and the
-// clean end at a run's terminal event produces no line — the terminal
-// envelope (run.completed / run.failed / run.cancelled) is the marker, exactly
-// as the SSE response simply ends. Any other end (a failed run stream, the
-// frontend's own shutdown) also produces no line; the documented recovery is
-// a fresh events op with an after cursor.
-func (s *Server) pump(entry *serve.Session, subscription *serve.Subscription, lines chan<- []byte) {
+// envelope lines preserve the subscription's per-session order and carry the
+// events request's id, so overlapping subscriptions on one session stay
+// attributable; the single writer guarantees each line is atomic. Ends mirror
+// the SSE stream ends: the overflow and replay-gap signals get named lines, a
+// subscription that ends because the session closed under it gets the
+// session-closed line, and the clean end at a run's terminal event produces
+// no line — the terminal envelope (run.completed / run.failed /
+// run.cancelled) is the marker, exactly as the SSE response simply ends. Any
+// other end (a failed run stream, the frontend's own shutdown) also produces
+// no line; the documented recovery is a fresh events op with an after
+// cursor. An envelope whose line exceeds the frame limit ends the
+// subscription the same way: this framing cannot carry it, and skipping it
+// would leave a hole a later cursor would double-count.
+func (s *Server) pump(entry *serve.Session, subscription *serve.Subscription, id int64, lines chan<- []byte) {
 	defer subscription.Close()
 	for {
 		envelope, err := subscription.Next()
 		if err == nil {
 			data, marshalErr := json.Marshal(envelope)
 			if marshalErr != nil {
-				s.logger.Printf("servestdio: encode envelope: %v", marshalErr)
+				s.logger.Printf("servestdio: subscription %d: encode envelope: %v", id, marshalErr)
 				return
 			}
-			s.send(lines, envelopeLine{
-				Event: signalEnvelope, SessionID: string(entry.ID()),
+			if sendErr := s.send(lines, envelopeLine{
+				Event: signalEnvelope, ID: id, SessionID: string(entry.ID()),
 				Sequence: envelope.Sequence, Envelope: data,
-			})
+			}); sendErr != nil {
+				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+				return
+			}
 			continue
 		}
 		var overflow *serve.OverflowError
 		if errors.As(err, &overflow) {
-			s.send(lines, overflowLine{
-				Event: signalOverflow, SessionID: string(entry.ID()),
+			if sendErr := s.send(lines, overflowLine{
+				Event: signalOverflow, ID: id, SessionID: string(entry.ID()),
 				RunID:        string(overflow.RunID),
 				LastSequence: overflow.LastSequence,
 				Message:      "event stream consumer fell behind; resume with a cursor after this sequence",
-			})
+			}); sendErr != nil {
+				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+			}
 			return
 		}
 		if errors.Is(err, io.EOF) && entry.IsClosed() {
-			s.send(lines, sessionClosedLine{
-				Event: signalSessionClosed, SessionID: string(entry.ID()),
+			if sendErr := s.send(lines, sessionClosedLine{
+				Event: signalSessionClosed, ID: id, SessionID: string(entry.ID()),
 				Message: "the session is closed",
-			})
+			}); sendErr != nil {
+				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+			}
 		}
 		return
 	}

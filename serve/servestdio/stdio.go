@@ -35,6 +35,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lsm/open-agent-protocol/serve"
@@ -52,14 +53,23 @@ const DefaultFrameLimit = 8 << 20
 // single consumer of stdout.
 const defaultWriteQueue = 256
 
+// DefaultShutdownTimeout bounds Run's teardown wait for in-flight work and
+// the final output drain once the host ends the session; a host that stops
+// draining stdout cannot stretch shutdown past it.
+const DefaultShutdownTimeout = 5 * time.Second
+
 // Options tunes the frontend. The zero value is usable.
 type Options struct {
-	// FrameLimit bounds one request line in bytes; zero means
+	// FrameLimit bounds one line in bytes in both directions; zero means
 	// DefaultFrameLimit.
 	FrameLimit int
 	// WriteQueue bounds the lines buffered for the writer goroutine before
 	// producers block; zero means defaultWriteQueue.
 	WriteQueue int
+	// ShutdownTimeout bounds Run's teardown wait for in-flight work and the
+	// final output drain once the host ends the session; zero means
+	// DefaultShutdownTimeout.
+	ShutdownTimeout time.Duration
 	// Logger receives lifecycle diagnostics. Envelope payloads and resolved
 	// environment values are never written to it.
 	Logger *log.Logger
@@ -73,6 +83,7 @@ type Server struct {
 	schema      *jsonschema.Schema
 	frameLimit  int
 	writeQueue  int
+	shutdown    time.Duration
 	logger      *log.Logger
 	nextIDValue atomic.Uint64
 }
@@ -94,12 +105,17 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if writeQueue <= 0 {
 		writeQueue = defaultWriteQueue
 	}
+	shutdown := options.ShutdownTimeout
+	if shutdown <= 0 {
+		shutdown = DefaultShutdownTimeout
+	}
 	logger := options.Logger
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
 	return &Server{
-		hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, logger: logger,
+		hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue,
+		shutdown: shutdown, logger: logger,
 	}, nil
 }
 
@@ -119,6 +135,18 @@ func (e *MalformedLineError) Error() string {
 	return fmt.Sprintf("line %d is not a valid request: %s", e.Line, e.Detail)
 }
 
+// ErrLineTooLarge reports an encoded output line that exceeds the frame
+// limit: the host's own framing could not carry it, so it is refused rather
+// than emitted.
+var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame limit")
+
+// ErrOutputStalled reports that shutdown outlived the bounded output-drain
+// window: the host stopped draining stdout while ending the session, so
+// admitted lines could not be flushed. The frontend abandons the stalled
+// writer rather than waiting on the host's pipe, so the caller's bounded
+// session sweep and the process exit still happen.
+var ErrOutputStalled = errors.New("servestdio: shutdown outlived the output-drain window; the host stopped draining stdout")
+
 // frameResult is one line read from the host: frame carries the line without
 // its terminator, err the condition that ended the read (io.EOF for the clean
 // host close, a framing defect, or a read failure).
@@ -133,6 +161,13 @@ type frameResult struct {
 // object per LF-terminated line. The frontend is a codec and owns no session
 // lifetime: the caller sweeps the hub after Run returns, as the CLI does on
 // every exit path. Run itself never writes to stderr.
+//
+// The teardown after the host ends the session is bounded by
+// Options.ShutdownTimeout: a host that stops draining stdout cannot stretch
+// shutdown past it. When the window expires mid-drain, Run abandons the
+// stalled writer and returns ErrOutputStalled instead of waiting on the
+// host's pipe, so the caller's bounded session sweep and the process exit
+// still happen.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -155,13 +190,32 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	err := <-serveDone
 
 	// Cancel first so pumps and in-flight handlers detach from the hub, then
-	// wait for them: they may still be delivering their final lines, which
-	// the writer drains before the channel close ends it.
+	// wait for them within the shutdown window: they may still be delivering
+	// their final lines, which the writer drains before the channel close
+	// ends it. The window also bounds the final drain itself — the writer
+	// may be blocked inside out.Write on a pipe the host stopped reading,
+	// and shutdown must never depend on the host's pipe.
 	cancel()
-	work.Wait()
-	close(lines)
-	if writeErr := <-writerDone; err == nil {
-		err = writeErr
+	workDone := make(chan struct{})
+	go func() { work.Wait(); close(workDone) }()
+	deadline := time.NewTimer(s.shutdown)
+	defer deadline.Stop()
+	drained := false
+	select {
+	case <-workDone:
+		close(lines)
+		select {
+		case writeErr := <-writerDone:
+			drained = true
+			if err == nil {
+				err = writeErr
+			}
+		case <-deadline.C:
+		}
+	case <-deadline.C:
+	}
+	if !drained && err == nil {
+		err = ErrOutputStalled
 	}
 	return err
 }
@@ -311,16 +365,22 @@ func decodeRequest(frame []byte) (requestLine, error) {
 	return request, nil
 }
 
-// send marshals one output line onto the writer channel; a value that cannot
-// marshal (near-unreachable: every line type is a closed struct over already
-// validated JSON) is logged and skipped rather than killing the writer.
-func (s *Server) send(lines chan<- []byte, value any) {
+// send marshals one output line onto the writer channel. The frame limit
+// bounds both directions: a line whose encoding exceeds it could not be
+// carried by a host enforcing the same limit, so it is refused (and the
+// caller surfaces its own bounded terminal condition) rather than emitted; a
+// value that cannot marshal — near-unreachable, as every line type is a
+// closed struct over already validated JSON — is refused the same way.
+func (s *Server) send(lines chan<- []byte, value any) error {
 	line, err := json.Marshal(value)
 	if err != nil {
-		s.logger.Printf("servestdio: encode line: %v", err)
-		return
+		return fmt.Errorf("encode line: %w", err)
+	}
+	if len(line) > s.frameLimit {
+		return ErrLineTooLarge
 	}
 	lines <- line
+	return nil
 }
 
 func (s *Server) nextID(kind string) string {

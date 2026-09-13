@@ -131,16 +131,21 @@ oap serve --stdio [--config examples/oap-serve.json] < examples/oap-stdio-sessio
 ```
 
 Framing is strict NDJSON: exactly one JSON object per LF-terminated line,
-bounded to 8 MiB, no CR and no empty lines; anything that is not a valid
-request frame — invalid JSON, a non-object, an unknown field, a missing or
-non-numeric `id` — fails closed: the daemon flushes what it already admitted,
-prints one bounded diagnostic on stderr, and exits non-zero, exactly as the
-adapters treat a malformed frame from their own agents. Requests may be
-pipelined: execution ops run concurrently, every response is correlated by
-its request `id`, and the registration ops — `open` registers its session,
-`events` registers its subscription — complete before the next line is read,
-so the canonical pipelined sequence (`open`, `events`, `submit`) cannot race
-a registration or miss the run's first envelope.
+bounded to 8 MiB in both directions, no CR and no empty lines; anything that
+is not a valid request frame — invalid JSON, a non-object, an unknown field,
+a missing or non-numeric `id` — fails closed: the daemon flushes what it
+already admitted, prints one bounded diagnostic on stderr, and exits
+non-zero, exactly as the adapters treat a malformed frame from their own
+agents. The outbound bound is enforced too: a response whose encoding
+exceeds the limit is replaced by the bounded `response_too_large` refusal,
+and an envelope whose line exceeds it ends its subscription (with a bounded
+stderr diagnostic) rather than emitting a frame a host enforcing the same
+limit would reject. Requests may be pipelined: execution ops run
+concurrently, every response is correlated by its request `id`, and the
+registration ops — `open` registers its session, `events` registers its
+subscription — complete before the next line is read, so the canonical
+pipelined sequence (`open`, `events`, `submit`) cannot race a registration
+or miss the run's first envelope.
 
 The ops mirror the HTTP routes one to one — verbatim schema/v0.1 request
 envelopes, the same schema gate, and the same error codes (`error.code`
@@ -161,18 +166,21 @@ carries what the correlated `error.response` payload would). Host → daemon:
 Every op is repeatable; responses are `{"id":N,"ok":true,"result":...}` or
 `{"id":N,"ok":false,"error":{"code":...,"message":...}}`. Each `events` op
 opens one subscription, and daemon → host event lines are the SSE stream in
-NDJSON form:
+NDJSON form, each carrying the `id` of the events request whose subscription
+produced it — several subscriptions may overlap on one session, and stdout,
+unlike separate SSE connections, needs the correlation stated on every line:
 
-- `{"event":"envelope","session_id":...,"sequence":N,"envelope":{...}}` —
-  one run-event envelope, the SSE `data:`/`id:` pair; sequences are per-run.
-- `{"event":"oap-overflow","session_id":...,"run_id":...,"last_sequence":N}`
+- `{"event":"envelope","id":N,"session_id":...,"sequence":N,"envelope":{...}}`
+  — one run-event envelope, the SSE `data:`/`id:` pair; sequences are
+  per-run.
+- `{"event":"oap-overflow","id":N,"session_id":...,"run_id":...,"last_sequence":N}`
   — the consumer fell behind its bounded buffer; re-subscribe with `after`
   past this sequence.
-- `{"event":"oap-replay-gap","session_id":...,"requested_after":N,"oldest_available":N,"latest_available":N}`
+- `{"event":"oap-replay-gap","id":N,"session_id":...,"requested_after":N,"oldest_available":N,"latest_available":N}`
   — the requested cursor is no longer retained; resume at or after
   `oldest_available - 1`.
-- `{"event":"oap-session-closed","session_id":...}` — the session closed
-  under this subscription; nothing further will arrive for it.
+- `{"event":"oap-session-closed","id":N,"session_id":...}` — the session
+  closed under this subscription; nothing further will arrive for it.
 
 A subscription ends at its run's terminal envelope with no further line —
 `run.completed` / `run.failed` / `run.cancelled` are the markers, exactly as
@@ -184,8 +192,10 @@ and events, so every line is atomic and per-session event order is never
 broken by interleaving; a slow consumer blocks the writer — the bounded
 journal plus the overflow and gap signals protect memory. Closing stdin (the
 host is done) or SIGINT/SIGTERM settles every session inside a bounded
-window and exits; process exit kills all sessions, as restarting the HTTP
-daemon does.
+window and exits — the final output drain is itself bounded, so a host that
+stopped reading stdout cannot stretch shutdown; the daemon abandons the
+drain with one stderr diagnostic and exits non-zero. Process exit kills all
+sessions, as restarting the HTTP daemon does.
 
 ### Embedding the registry (`serve`)
 
