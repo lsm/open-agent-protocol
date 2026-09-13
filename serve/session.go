@@ -75,14 +75,16 @@ type Session struct {
 	// between the adapter admitting a run and the hub recording it).
 	// pendingEnd is the current run's terminal state once its own drainer
 	// exited into company, and finishDue marks a finish a real reader's
-	// exit would have fired but a reservation holds: the last real reader
-	// (or the reservation's release, once no reader remains) applies it.
-	// A reservation that unwinds without a run ever existing finishes
-	// nobody — parked subscribers keep waiting for the next submit.
+	// exit (or a close) would have fired but a reservation holds, owed to
+	// exactly the deferred cohort — the subscribers subscribed when the
+	// finish was deferred. Subscribers registering inside the reservation
+	// window are owed nothing (no reader existed to publish to them) and
+	// stay parked for the resolved admission or the next submit.
 	readers      int
 	reservations int
 	finishDue    bool
 	pendingEnd   *terminalState
+	deferred     []*subscriber
 	subs         map[*subscriber]struct{}
 }
 
@@ -262,7 +264,7 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 	s.mu.Lock()
 	s.readers++
 	s.runID = runID
-	s.pendingEnd, s.finishDue = nil, false
+	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 	s.mu.Unlock()
 	go s.readRun(runID, stream)
 }
@@ -275,29 +277,38 @@ func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 	s.reservations--
 	s.readers++
 	s.runID = runID
-	s.pendingEnd, s.finishDue = nil, false
+	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 	s.mu.Unlock()
 	go s.readRun(runID, stream)
 }
 
 // releaseReservation unwinds a Submit admission that never became a run.
 // Parked subscribers stay parked — the subscribe-before-submit flow must
-// survive a rejected submit — unless a real reader's exit deferred its
-// finish into the reservation and this release is the last one holding it,
-// in which case that finish fires now. A finish deferred behind further
-// reservations is retained for whichever release resolves last.
+// survive a rejected submit — unless a real reader's exit (or a close)
+// deferred a finish into the reservation and this release is the last one
+// holding it, in which case that finish fires for exactly the deferred
+// cohort: subscribers that registered inside the reservation window are
+// owed nothing and keep waiting for the next submit. A finish deferred
+// behind further reservations is retained for whichever release resolves
+// last.
 func (s *Session) releaseReservation() {
 	s.mu.Lock()
 	s.reservations--
 	due := s.finishDue && s.readers == 0 && s.reservations == 0
-	var state *terminalState
+	var (
+		state  *terminalState
+		cohort []*subscriber
+	)
 	if due {
-		state = s.pendingEnd
-		s.pendingEnd, s.finishDue = nil, false
+		state, cohort = s.pendingEnd, s.deferred
+		s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
+		for _, sub := range cohort {
+			delete(s.subs, sub)
+		}
 	}
 	s.mu.Unlock()
-	if due {
-		s.finishSubs(state)
+	for _, sub := range cohort {
+		sub.stop(state)
 	}
 }
 
@@ -353,6 +364,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	}
 	if s.reservations > 0 {
 		s.finishDue = true
+		s.deferred = s.snapshotSubsLocked()
 		s.mu.Unlock()
 		return
 	}
@@ -428,6 +440,17 @@ func (s *Session) detachSubs() []*subscriber {
 	return s.detachSubsLocked()
 }
 
+// snapshotSubsLocked copies the subscriber set without detaching it; s.mu
+// must be held, so the snapshot is atomic with the decision deferring a
+// finish onto it.
+func (s *Session) snapshotSubsLocked() []*subscriber {
+	subs := make([]*subscriber, 0, len(s.subs))
+	for sub := range s.subs {
+		subs = append(subs, sub)
+	}
+	return subs
+}
+
 // detachSubsLocked snapshots and empties the subscriber set; s.mu must be
 // held, so the detach is atomic with the caller's decision to finish.
 func (s *Session) detachSubsLocked() []*subscriber {
@@ -453,7 +476,12 @@ func (s *Session) markClosed() {
 	case s.readers > 0:
 		s.mu.Unlock()
 	case s.reservations > 0:
+		// No reader remains; the in-flight admission's resolution ends the
+		// subscribers the close found (later subscribes are refused). The
+		// close re-snapshots the cohort: a reader-exit deferral may predate
+		// subscribers that registered since and are owed the close too.
 		s.finishDue = true
+		s.deferred = s.snapshotSubsLocked()
 		s.mu.Unlock()
 	default:
 		s.mu.Unlock()

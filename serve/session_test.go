@@ -316,9 +316,24 @@ func TestSubmitReservationBridgesAdmission(t *testing.T) {
 	}()
 	// The admission is in flight (its reader slot reserved) when run A's
 	// stream ends; A's reader exits to a non-zero reader count, so the
-	// subscriber is not finished with A's end.
+	// subscriber is not finished with A's end. Waiting for the exit also
+	// pins A1's publish before run B's reader can publish.
 	<-gated.entered
 	close(streamA)
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		exited := entry.readers == 0 && entry.reservations == 1
+		entry.mu.Unlock()
+		if exited {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run A's reader never exited behind the reservation")
+		default:
+		}
+	}
 	close(gated.release)
 	if err := <-admitted; err != nil {
 		t.Fatal(err)
@@ -423,6 +438,90 @@ func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 	}
 	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("terminal %v, want the deferred clean end", err)
+	}
+}
+
+// TestDeferredFinishSparesLaterSubscribers pins the deferred cohort: a
+// subscriber registering between the run reader's deferred finish and the
+// reservation's rejection is owed nothing — it stays parked and receives
+// the next admitted run, while the cohort that did observe the run takes
+// its terminal.
+func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
+	entry := newSession("gated", "stub", gated)
+	cohort, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+
+	rejected := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
+		})
+		rejected <- err
+	}()
+	<-gated.entered
+	close(streamA) // the reader exits into a deferred finish owed to cohort
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.readers == 0 && entry.finishDue
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the reader never exited into the deferred finish")
+		default:
+		}
+	}
+	newcomer, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe during the reservation window was refused")
+	}
+	close(gated.release)
+	if err := <-rejected; !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("submit error %v, want run-active", err)
+	}
+
+	// The cohort takes run A's outcome; the newcomer stays attached.
+	cohortSubscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
+	envelope, err := cohortSubscription.Next()
+	if err != nil || envelope.RunID != "run-a" {
+		t.Fatalf("cohort envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := cohortSubscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("cohort terminal %v, want io.EOF", err)
+	}
+	select {
+	case <-newcomer.finish:
+		t.Fatal("the deferred finish swept a subscriber from inside the reservation window")
+	default:
+	}
+
+	// The next admitted run reaches the newcomer.
+	gated.fail = nil
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "gated", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("corrected")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	close(gated.stream)
+	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
+	envelope, err = newcomerSubscription.Next()
+	if err != nil || envelope.RunID != "run-b" {
+		t.Fatalf("newcomer envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := newcomerSubscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("newcomer terminal %v, want io.EOF", err)
 	}
 }
 
