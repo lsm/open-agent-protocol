@@ -516,15 +516,7 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 	// Drain everything the subscription already delivered before consulting
 	// the durable store, then fence with history so settlement never races
 	// an event still in flight.
-	for {
-		select {
-		case event := <-s.events:
-			s.handleEventLocked(event)
-			continue
-		default:
-		}
-		break
-	}
+	s.drainEnqueuedLocked()
 	after := watermark
 	for {
 		s.mu.Lock()
@@ -555,6 +547,11 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 		}
 		after = page.Events[len(page.Events)-1].Durable.Seq
 	}
+	// The fence is a client round trip, so the subscription may have enqueued
+	// more of the turn meanwhile. The terminal decision must consult that
+	// prefix too: a step.started reduced only after the terminal would be
+	// dropped as post-terminal instead of re-arming settlement.
+	s.drainEnqueuedLocked()
 	s.mu.Lock()
 	terminal := run.terminal
 	open := run.openSteps
@@ -569,6 +566,20 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 	}
 	<-run.admitted
 	s.settleRunLocked(run)
+}
+
+// drainEnqueuedLocked reduces every native event the subscription has already
+// delivered. It never blocks: the caller is the dispatcher goroutine holding
+// transitionMu, so anything not yet enqueued is reduced by dispatch afterwards.
+func (s *session) drainEnqueuedLocked() {
+	for {
+		select {
+		case event := <-s.events:
+			s.handleEventLocked(event)
+		default:
+			return
+		}
+	}
 }
 
 func (s *session) settleRunLocked(run *runState) {
