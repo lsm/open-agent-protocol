@@ -23,9 +23,10 @@ const (
 
 // streamSubscription serves one SSE connection from a hub subscription until
 // it ends at a run's terminal event, overflows, or the request context ends.
-// The overflow signal names the run current at signal time and the last
-// sequence this connection delivered, so a reconnect resumes exactly where
-// the consumer stopped.
+// The overflow signal names the run the subscription actually overflowed on
+// (snapshotted when the overflow happened, not when the signal is read here)
+// and the last sequence this connection delivered, so a reconnect resumes
+// exactly where the consumer stopped.
 func (s *Server) streamSubscription(w io.Writer, flusher http.Flusher, subscription *serve.Subscription) {
 	for {
 		envelope, err := subscription.Next()

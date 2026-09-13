@@ -285,8 +285,10 @@ var (
 	// than the one it was addressed to.
 	ErrScopeMismatch = errors.New("serve: request session does not match the addressed session")
 	// ErrNoRunToResume reports a cursor subscription on a session that has
-	// never run: there is nothing to replay.
-	ErrNoRunToResume = errors.New("serve: the session has no run to replay")
+	// never run: there is nothing to replay. Unlike the other sentinels it
+	// is returned directly and its text is the daemon's wire diagnostic, so
+	// it carries no package prefix.
+	ErrNoRunToResume = errors.New("the session has no run to replay")
 )
 
 // UnknownAdapterError reports a hub operation addressed to an unregistered
