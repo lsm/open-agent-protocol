@@ -12,7 +12,8 @@ Prompt: [issue #13](https://github.com/lsm/open-agent-protocol/issues/13)
 ## Context
 
 The v0.1 executable core is complete end-to-end: the schema bundle and the
-single validator, nine pinned adapters with executable corpora, `oap serve`,
+single validator, eight pinned native adapters with executable corpora plus
+the memory reference adapter, `oap serve`,
 the public `serve` package, the Go and TypeScript clients, and the stdio
 frontend in flight. Decision 0001 froze the smallest executable subset and
 Decision 0002 graduated queued admission into it on the strength of

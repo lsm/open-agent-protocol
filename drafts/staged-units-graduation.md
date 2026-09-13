@@ -110,9 +110,10 @@ No new envelope types. Changes to
   string, "allowed"?: [string], "disallowed"?: [string] }`, with `name`
   required when and only when `mode` is `named`, and `allowed`/`disallowed`
   mutually exclusive. `protocol.MessageSubmitRequest.ToolChoice` becomes
-  `*protocol.ToolChoice` (the struct already exists). This is the first of
-  the two schema narrowings Decision 0003 admits: no executable adapter
-  accepts the field today.
+  `*protocol.ToolChoice`, and that struct (today `Mode` and `Name` only)
+  gains `Allowed []string` and `Disallowed []string` so the wire shape
+  round-trips without loss. This is the first of the two schema narrowings
+  Decision 0003 admits: no executable adapter accepts the field today.
 - `output_schema` stays a JSON Schema object. The structured result travels
   in `run.completed.result` (already on the wire) and must validate against
   the admitted schema.
@@ -131,9 +132,13 @@ No new envelope types. Changes to
   serialized native config change before admission, which changes the
   session default), or `restart` (not offered in this phase).
 - Typed error codes on `error.response`: `unsupported_feature` with
-  `details.feature` naming the key (control present, capability
-  `unavailable` or absent); `capability_degraded` with `details.feature`
-  (capability `degraded`, key absent from `allow_degraded_features`);
+  `details.feature` naming the key and `details.reason` distinguishing the
+  two conditions it covers: `unadvertised` (control present, capability
+  `unavailable` or absent) and `unsatisfiable` (capability advertised, but
+  this request's value of the control cannot be honored, such as a tool
+  name outside the catalog or an output schema a fixed-output endpoint
+  cannot meet); `capability_degraded` with `details.feature` (capability
+  `degraded`, key absent from `allow_degraded_features`);
   `model_not_found` with `details.model_id` (`run.model_selection` advertised,
   id not in the effective catalog). All three already appear in the layered
   draft's vocabulary except `model_not_found`.
@@ -182,8 +187,13 @@ No new envelope types. Changes to
 two fixed ids), `run.instructions`, `run.tool_selection`, and
 `run.structured_output` (`emulated`). It echoes the admitted model on the
 response and `run.started`; prepends `instructions` to the scripted text so
-the effect is observable; honors `tool_choice.mode = "none"` by skipping the
-scripted tool and `disallowed: ["scripted_tool"]` likewise. Its structured
+the effect is observable; and applies every `tool_choice` member: `mode:
+"none"` skips the scripted tool, a `disallowed` list naming `scripted_tool`
+skips it, an `allowed` list that omits `scripted_tool` skips it, `mode:
+"required"` or `mode: "named"` with `name: "scripted_tool"` calls it, and a
+`named` choice or list entry naming a tool outside its catalog fails before
+admission with `unsupported_feature` (`details.reason: "unsatisfiable"`).
+Its structured
 result is the fixed object `{"ok": true}`: at admission it compiles the
 requested `output_schema` and rejects, before any identity is allocated,
 any schema that object does not satisfy (`unsupported_feature`,
@@ -198,12 +208,16 @@ result. Unknown model ids fail with `model_not_found`.
 Codex graduates `model_id` at `native` (`per_run`): its adapter already passes
 `request.ModelID` to `turn/start`; T1 adds the capability key, a corpus case
 `model-per-turn` (the `turn/start` frame carrying the requested model and
-`turn/started` attributed to it), and the rejection case for an unadvertised
-`instructions`. Makai lands in the same slice as the second native source:
-its adapter already sends `model_ref` on every `agent_message` and echoes it,
-so T1 adds the key and a `model-per-message` corpus case, and stops the
-adapter overwriting `current_model_id` with a per-run value (under the rule
-above a `per_run` application leaves the session default alone). Follow-on
+`turn/started` attributed to it), the rejection case for an unadvertised
+`instructions`, and a fix for the same `current_model_id` overwrite Makai
+has: the Codex session today assigns the per-turn model to
+`state.CurrentModelID`, which the `per_run` rule above forbids, so the
+session default stays the configured thread model and the per-run model
+lives on the admission response and `run.started` only. Makai lands in the
+same slice as the second native source: its adapter already sends
+`model_ref` on every `agent_message` and echoes it, so T1 adds the key and
+a `model-per-message` corpus case, and stops the adapter overwriting
+`current_model_id` with a per-run value in the same way. Follow-on
 evidence for the other adapters is gated on new ledger entries: Claude
 `set_model` (`session_mutation`), pi `set_model` (`session_mutation`), ACP
 `session/set_config_option` (`session_mutation`, degraded because
@@ -538,10 +552,12 @@ Wire:
   "run_id", "tool_call_id", "requested_by", "responded_by", "result"? |
   "error"? }` with exactly one of `result` or `error`; response `{
   "interaction_id", "session_id", "run_id", "tool_call_id", "accepted" }`.
-- Capability key `action.tools.execute` gains the documented meaning "the
-  control layer may execute tools it provided"; today's uses of that key by
-  adapters (native execution inside the harness) move to `action.tools`
-  alone, so the key means one thing.
+- New capability key `action.tools.provide`: the control layer may supply
+  tool definitions at session open and executes their calls. The existing
+  `action.tools.execute` keeps the meaning the `+tools` unit gives it
+  (normalized harness-side execution), so an old client reading a new
+  descriptor and a new client reading an old descriptor both interpret it
+  as today; only the new key gates control-owned execution.
 
 Semantics, on the interaction contract Decision 0001 fixed:
 
@@ -565,8 +581,8 @@ Evidence: Makai's `tool_execute`/`tool_result` bridge is exactly this
 boundary: the adapter's native codec already decodes both frames, every
 `agent_message` already carries a `tools` list (empty today), and the ledger
 names `tool-bridge-roundtrip` as a required case that the pinned corpus does
-not yet contain. Makai graduates T3c by adding that case and lifting
-`action.tools.execute` from `unavailable`; Claude `sdkMcpServers` with
+not yet contain. Makai graduates T3c by adding that case and advertising
+`action.tools.provide`; Claude `sdkMcpServers` with
 `mcp_message` reverse control and ACP reverse fs/terminal calls follow.
 
 ### Where the MCP client lives
@@ -594,7 +610,7 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   binding (`scope_mismatch`).
 - `session.open.request` with `tool_sources` or `tools` invokes the
   `feature()` gate with `action.tool_sources.attach` or
-  `action.tools.execute`.
+  `action.tools.provide`.
 
 ### Reference adapter
 
@@ -633,9 +649,10 @@ Positive: `tools-catalog-with-sources`, `open-attach-process-source`,
 ### Exit criteria
 
 The five gate items per sub-unit; Claude, ACP, and Makai advertise their
-sub-unit; the profile draft's feature-gate rows for `action.tool_sources.attach`
-and `action.tools.execute` cite the fixtures; the daemon README documents the
-credential rule for process sources.
+sub-unit; the profile draft's feature-gate row for
+`action.tool_sources.attach` and a new row for `action.tools.provide` cite
+the fixtures; the daemon README documents the credential rule for process
+sources.
 
 ## T4. Steer
 
@@ -739,7 +756,7 @@ executable surface.
 | `session.message.delivery.queue` | T2 | existing name; `limits` adds the bound |
 | `action.tools.list` with sources | T3a | existing name |
 | `action.tool_sources.attach` | T3b | existing name; `mode` discloses `session_open` and `remote` |
-| `action.tools.execute` | T3c | existing name, narrowed to control-layer execution |
+| `action.tools.provide` | T3c | new; `action.tools.execute` keeps its `+tools` meaning |
 | `session.message.delivery.steer` | T4 | existing name |
 
 ### Typed error codes on `error.response`
