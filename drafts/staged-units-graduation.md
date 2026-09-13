@@ -1094,7 +1094,12 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   must be derived from an accepted `result` or `error` resolution, so a
   terminal following a rejected result or error response is
   `illegal_tool_transition` even when an earlier acknowledgement was
-  accepted; its resolution
+  accepted. The accepted payload is stored too: the terminal's result
+  must equal the accepted `result` and a failure's `error` the accepted
+  `error`, compared as canonical JSON, otherwise the new diagnostic
+  `resolution_payload_mismatch`, so an adapter that forwards something
+  other than the participant's actual outcome to the harness cannot pass
+  conformance with an authorized but altered terminal; its resolution
   follows the interaction rules (`unmatched_interaction`,
   `duplicate_interaction`, `wrong_interaction_responder`,
   `pending_interaction_at_terminal`).
@@ -1117,7 +1122,16 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   and against the descriptor's native `tools`, checked when the open is
   admitted (`session.open.response`), so a collision the adapter should
   have refused is `duplicate_tool_name` even in a trace that only opens
-  the session and never lists or selects tools.
+  the session and never lists or selects tools. The check is repeated on
+  every revision-changing descriptor (`capabilities.updated` followed by
+  the new `capabilities.response`): each open session's retained provided
+  tools are compared with the new native `tools`, and its retained
+  attached source ids with the newly declared sources, diagnosing
+  `duplicate_tool_name` or `duplicate_tool_source` on the descriptor
+  envelope, since a post-refresh list is not mandatory and an ambiguous
+  catalog would otherwise go unnoticed. An adapter whose refresh would
+  introduce a colliding native tool must namespace it or keep it out of
+  the session's catalog; it never shadows a provided tool.
 - `session.state` snapshots: each `active_runs[]` entry's
   `pending_interactions` must equal the validator's set of unresolved
   interactions for that run (`session_state_mismatch` on omission or on a
@@ -1215,6 +1229,9 @@ then no open; validated as a correct rejection),
 `execution_owner` is not the declared control participant),
 `open-provide-colliding-name-admitted` (`duplicate_tool_name`; two
 supplied tools sharing a name, and the open admitted),
+`tools-refresh-collides-with-provided` (`duplicate_tool_name`; a provided
+tool `foo`, then a refreshed descriptor whose native tools include
+`foo`),
 `open-attach-colliding-source-admitted` (`duplicate_tool_source`; an
 attached source reusing an id the descriptor declares, and the open
 admitted),
@@ -1225,6 +1242,10 @@ tool with another tool's declared source),
 `accepted: false`, then `started`),
 `control-tool-terminal-after-rejected-result` (`illegal_tool_transition`;
 an accepted acknowledgement, a rejected `result`, then `completed`),
+`control-tool-result-mismatch` (`resolution_payload_mismatch`; an
+accepted result X, then `completed` carrying Y),
+`control-tool-error-mismatch` (`resolution_payload_mismatch`; an accepted
+error, then `failed` carrying a different one),
 `control-tool-state-omits-pending` (`session_state_mismatch`; a snapshot
 without the unresolved call in `pending_interactions`),
 `control-tool-call-owner-mismatch` (`wrong_tool_owner`; the catalog lists
@@ -1486,7 +1507,7 @@ strings in the schema; the validator does not enumerate them.
 `unannounced_catalog_change`, `queue_order_violation`,
 `queue_limit_exceeded`, `premature_session_mutation`,
 `unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
-`wrong_tool_owner`, `catalog_mismatch`,
+`wrong_tool_owner`, `resolution_payload_mismatch`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
 invariant is the same (`unavailable_capability`, `illegal_run_transition`,
@@ -1531,10 +1552,18 @@ every later unit relies on:
   client's dev-mode validation and by `oap validate` when it is pointed at
   a live endpoint rather than a fixture. It compiles the same bundle with
   `additionalProperties: false` lifted from payload objects (unknown
-  members are ignored, as the wire rule requires) and with the envelope
+  members are ignored, as the wire rule requires), with `enum` and `const`
+  constraints inside payloads lifted to their base type (an unknown enum
+  value surfaces as a string, as the layered draft's extension rule
+  requires, instead of failing the message), and with the envelope
   `oneOf` relaxed to "a known `type` must match its branch; an unknown
   `type` must satisfy the common envelope fields only", the same forward
   compatibility both clients already apply to unknown named SSE events.
+  The envelope-level discriminators stay exact (`type`, `protocol`,
+  `version`, `profile`), because they are what selects a known branch.
+  The step's tests validate a payload carrying a new enum value against
+  the old bundle in both modes: tolerated in the tolerant compile,
+  rejected in the strict one.
 - Fixture validation stays strict against the bundle at its own revision.
   That is the conformance validator's job and how a misspelled new field is
   caught; each unit extends the bundle in place under `schema/v0.1`.
