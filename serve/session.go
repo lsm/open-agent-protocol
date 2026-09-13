@@ -226,7 +226,12 @@ func (sub *subscriber) acknowledge(run protocol.RunID) {
 	if sub.pending[run] > 0 {
 		sub.pending[run]--
 	}
-	sub.ackSerial = sub.runSerials[run]
+	// The acknowledged admission order only moves forward: a late envelope
+	// from an older, still-draining run must not drag the position back
+	// and un-expose the subscriber to a newer run's overflow.
+	if serial := sub.runSerials[run]; serial > sub.ackSerial {
+		sub.ackSerial = serial
+	}
 	if current := sub.ack.Load(); current == nil || *current != run {
 		sub.ack.Store(&run)
 	}
@@ -300,6 +305,22 @@ func (s *Session) currentRun() (protocol.RunID, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.runID, s.runID != ""
+}
+
+// bindRun registers a run discovered from an orphan stream's envelopes:
+// it gains an admission serial, and becomes the current run when the hub
+// tracks none — an already-current run keeps precedence.
+func (s *Session) bindRun(runID protocol.RunID) protocol.RunID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.serials[runID] == 0 {
+		s.nextSerial++
+		s.serials[runID] = s.nextSerial
+	}
+	if s.runID == "" {
+		s.runID = runID
+	}
+	return runID
 }
 
 // startRun points the hub at a newly admitted run and starts draining its
@@ -387,6 +408,13 @@ func (s *Session) releaseReservation() {
 func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	var end *terminalState
 	for result := range stream {
+		// An orphan stream — returned alongside a submit error — carries no
+		// run id of its own: bind it to the run its envelopes name before
+		// any terminal signal, so overflow cursors and deferral bookkeeping
+		// resolve to the authoritative run rather than an empty one.
+		if runID == "" && result.Envelope.RunID != "" {
+			runID = s.bindRun(result.Envelope.RunID)
+		}
 		if result.Error != nil {
 			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
 				s.signalOverflow(runID)
@@ -411,8 +439,8 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 // stopExposed detaches the subscribers exposed to runID and terminates
 // them with the given state.
 func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
-	serial := s.serials[runID]
 	s.mu.Lock()
+	serial := s.serials[runID]
 	affected := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
 		if sub.exposedTo(runID, serial) {

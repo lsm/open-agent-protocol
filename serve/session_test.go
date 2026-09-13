@@ -1120,16 +1120,58 @@ func TestSubmitErrorStreamStillDrains(t *testing.T) {
 		t.Fatalf("submit error %v, want context.Canceled", err)
 	}
 
-	// The orphaned stream still feeds the subscription, then ends cleanly.
+	// The orphaned stream still feeds the subscription, bound to the run
+	// its envelopes name: a stream overflow attributes to that run with a
+	// usable cursor, not an empty one.
 	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-x", 1)}
+	gated.stream <- base.Result{Error: base.ErrEventStreamOverflow}
 	close(gated.stream)
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
 	envelope, err := subscription.Next()
 	if err != nil || envelope.RunID != "run-x" {
 		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
 	}
-	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("terminal %v, want io.EOF", err)
+	_, err = subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-x" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want run-x at sequence 1 — the bound run", overflow)
+	}
+}
+
+// TestAcknowledgedOrderStaysMonotonic pins the acknowledged admission
+// order: a late envelope from an older run consumed after a newer run must
+// not drag the position backward and un-expose the subscriber to the newer
+// run's overflow.
+func TestAcknowledgedOrderStaysMonotonic(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA) // admitted first
+	entry.startRun("run-b", streamB) // admitted second
+	entry.publish(runEnvelope(t, "run-b", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil { // acknowledges run B
+		t.Fatal(err)
+	}
+	entry.publish(runEnvelope(t, "run-a", 1))      // the older run's late envelope
+	if _, err := subscription.Next(); err != nil { // consumed after B
+		t.Fatal(err)
+	}
+	// B's adapter overflows with nothing of B pending: the acknowledged
+	// order still names B (the newer admission), so the subscriber is told.
+	entry.signalOverflow("run-b")
+	var overflow *OverflowError
+	if _, err := subscription.Next(); !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want OverflowError", err, err)
+	} else if overflow.RunID != "run-b" {
+		t.Fatalf("overflow run %q, want run-b — the monotonic acknowledged order", overflow.RunID)
 	}
 }
 
