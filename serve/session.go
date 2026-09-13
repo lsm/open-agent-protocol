@@ -208,9 +208,10 @@ type subscriber struct {
 	// moved past, whose stragglers are delivery lag, not loss. Admission
 	// order, not mailbox-delivery order, decides "after": a lagging older
 	// drainer may publish behind a newer run's first envelope.
-	attached protocol.RunID
-	lastRun  protocol.RunID
-	ack      atomic.Pointer[protocol.RunID]
+	attached       protocol.RunID
+	attachedSerial uint64
+	lastRun        protocol.RunID
+	ack            atomic.Pointer[protocol.RunID]
 
 	pendMu     sync.Mutex
 	pending    map[protocol.RunID]int
@@ -268,10 +269,11 @@ type terminalState struct {
 	err      error
 }
 
-func newSubscriber(queue int, attached protocol.RunID) *subscriber {
+func newSubscriber(queue int, attached protocol.RunID, attachedSerial uint64) *subscriber {
 	return &subscriber{
 		ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}),
-		attached: attached, pending: make(map[protocol.RunID]int), runSerials: make(map[protocol.RunID]uint64),
+		attached: attached, attachedSerial: attachedSerial,
+		pending: make(map[protocol.RunID]int), runSerials: make(map[protocol.RunID]uint64),
 	}
 }
 
@@ -297,7 +299,7 @@ func (s *Session) subscribe(queue int) (*subscriber, bool) {
 	if s.closed {
 		return nil, false
 	}
-	sub := newSubscriber(queue, s.runID)
+	sub := newSubscriber(queue, s.runID, s.serials[s.runID])
 	s.subs[sub] = struct{}{}
 	return sub, true
 }
@@ -347,14 +349,17 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 	s.runID = runID
 	s.nextSerial++
 	s.serials[runID] = s.nextSerial
-	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
+	errored, failed := s.supersedeLocked()
 	s.mu.Unlock()
+	s.deliverDeferredError(errored, failed)
 	go s.readRun(runID, stream, 0)
 }
 
 // adoptRun converts a Submit reservation into the new run's draining
-// reader. Any finish an old reader deferred is superseded: the new run now
-// governs the subscribers' outcome.
+// reader. A deferred clean end is superseded — the new run governs the
+// subscribers' outcome — but a deferred stream error is first delivered to
+// the cohort that observed the failed run: such errors are terminal for
+// the subscriptions that saw them, and a newer run must not bury one.
 func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 	s.mu.Lock()
 	s.reservations--
@@ -362,9 +367,27 @@ func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 	s.runID = runID
 	s.nextSerial++
 	s.serials[runID] = s.nextSerial
-	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
+	errored, failed := s.supersedeLocked()
 	s.mu.Unlock()
+	s.deliverDeferredError(errored, failed)
 	go s.readRun(runID, stream, 0)
+}
+
+// supersedeLocked clears the deferred finish state a new run supersedes,
+// returning the cohort and state first when the deferred outcome was a
+// stream error that must still be delivered. s.mu must be held.
+func (s *Session) supersedeLocked() (cohort []*subscriber, failed *terminalState) {
+	if s.pendingEnd != nil && s.pendingEnd.err != nil {
+		cohort, failed = s.deferred, s.pendingEnd
+	}
+	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
+	return cohort, failed
+}
+
+func (s *Session) deliverDeferredError(cohort []*subscriber, failed *terminalState) {
+	for _, sub := range cohort {
+		sub.stop(failed)
+	}
 }
 
 // adoptOrphan spawns a drainer for a stream an adapter returned alongside
@@ -460,10 +483,20 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 		// admission after all (ACP's pre-admission write failure closes an
 		// empty stream): undo the drainer and release the reservation as a
 		// rejection, so parked subscribers stay parked for a corrected
-		// retry instead of reading a phantom run's end.
+		// retry instead of reading a phantom run's end. A close that
+		// landed while this drainer held the reader slot still ends the
+		// session's subscribers — markClosed deferred its cohort to
+		// whoever left last.
 		s.mu.Lock()
 		s.readers--
+		var closedCohort []*subscriber
+		if s.closed && s.readers == 0 {
+			closedCohort = s.detachSubsLocked()
+		}
 		s.mu.Unlock()
+		for _, sub := range closedCohort {
+			sub.stop(nil)
+		}
 		s.releaseReservation()
 		return
 	}
@@ -620,13 +653,20 @@ func (s *Session) publish(envelope protocol.Envelope) {
 // acknowledged position — the consumer's view of it is incomplete, and a
 // clean end would hide the loss. A run the consumer already moved past
 // does not expose: its late envelopes are delivery lag, not loss. Before
-// anything is acknowledged, undelivered envelopes of the run or attachment
-// to it expose.
+// anything is acknowledged, the attachment run and runs admitted after it
+// expose; a pending envelope from a run admitted before the attachment
+// does not — the subscription's position was the newer run all along.
 func (sub *subscriber) exposedTo(runID protocol.RunID, serial uint64) bool {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
 	if sub.ackSerial == 0 {
-		return sub.pending[runID] > 0 || sub.attached == runID
+		if sub.attached == runID {
+			return true
+		}
+		if sub.attachedSerial == 0 {
+			return sub.pending[runID] > 0
+		}
+		return sub.pending[runID] > 0 && serial >= sub.attachedSerial
 	}
 	if serial == 0 {
 		return false

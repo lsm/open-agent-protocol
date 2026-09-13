@@ -1346,6 +1346,142 @@ func TestExposureByAdmissionOrder(t *testing.T) {
 	}
 }
 
+// TestCloseDuringEmptyErrorStreamEndsSubscribers pins the close-overlap: a
+// session closed while an empty error stream's drainer still holds the
+// reader slot ends its subscribers when that drainer releases — they must
+// not outlive the close.
+func TestCloseDuringEmptyErrorStreamEndsSubscribers(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
+		})
+		done <- err
+	}()
+	<-gated.entered
+	gated.stream = make(chan base.Result, 4) // open: the drainer lingers
+	gated.failWithStream = context.Canceled
+	close(gated.release)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("submit error %v, want context.Canceled", err)
+	}
+	// The close lands while the empty stream's drainer has not yet seen the
+	// channel close; ending the stream afterwards must apply the close.
+	entry.mu.Lock()
+	draining := entry.readers > 0
+	entry.mu.Unlock()
+	if !draining {
+		t.Fatal("the orphan drainer was not holding the reader slot")
+	}
+	entry.markClosed()
+	close(gated.stream)
+	select {
+	case <-sub.finish:
+	case <-time.After(testTimeout):
+		t.Fatal("the closed session's subscriber outlived the empty error stream")
+	}
+}
+
+// TestAttachmentRunOrdersPendingExposure pins the pre-acknowledgement
+// baseline: a subscriber attaching while a newer run is current treats a
+// pending envelope from an older, still-draining run as delivery lag, not
+// loss — the older run's overflow must not detach it.
+func TestAttachmentRunOrdersPendingExposure(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.startRun("run-b", streamB)
+	sub, ok := entry.subscribe(8) // attaches while run B is current
+	if !ok {
+		t.Fatal("subscribe with a run active was refused")
+	}
+	entry.publish(runEnvelope(t, "run-a", 1)) // the older run's late envelope, pending
+	entry.signalOverflow("run-a")             // older than the attachment: not exposed
+
+	entry.publish(runEnvelope(t, "run-b", 1))
+	close(streamA)
+	close(streamB)
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-a" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	envelope, err = subscription.Next()
+	if err != nil || envelope.RunID != "run-b" {
+		t.Fatalf("envelope: run %s error %v, want run-b continuing past run-a's overflow", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want io.EOF", err)
+	}
+}
+
+// TestDeferredErrorSurvivesNewAdmission pins the supersede rule: a new
+// admission may bury a deferred clean end, but a deferred stream error is
+// first delivered to the cohort that observed the failed run — such errors
+// are terminal for the subscriptions that saw them.
+func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-b", streamB)
+	entry.publish(runEnvelope(t, "run-b", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil { // cohort observes run B
+		t.Fatal(err)
+	}
+	// A second admission is in flight when run B's stream fails, deferring
+	// the error behind the reservation.
+	admit := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("next run")}},
+		})
+		admit <- err
+	}()
+	<-gated.entered
+	streamFailure := errors.New("run B stream died")
+	streamB <- base.Result{Error: streamFailure}
+	close(streamB)
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.readers == 0 && entry.pendingEnd != nil
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run B's error end was never deferred")
+		default:
+		}
+	}
+	// The in-flight admission resolves into a new run: it supersedes the
+	// deferred state but must first deliver the error to the cohort.
+	close(gated.release)
+	if err := <-admit; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
+		t.Fatalf("terminal %v, want run B's deferred stream failure", err)
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.
