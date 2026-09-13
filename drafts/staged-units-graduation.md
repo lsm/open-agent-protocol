@@ -1,0 +1,779 @@
+# Staged Units Graduation Plan
+
+Status: proposed design (companion to
+[Decision 0003](../decisions/0003-staged-unit-graduation.md))
+Date: 2026-09-13
+Base protocol: `open-agent-protocol` version `0.1`
+Profile: `open-agent-protocol.agent-control-core`
+Prompt: [issue #13](https://github.com/lsm/open-agent-protocol/issues/13)
+
+This document is the per-unit design behind Decision 0003. For each staged
+control unit it fixes the wire delta, the validator rules, the reference
+adapter behavior, the native evidence and the adapter that graduates first,
+the cut through `serve`, the daemon, the stdio frontend, and both clients,
+the fixtures, and the exit criteria its own decision will cite. It does not
+graduate anything: each unit's decision does that when the gate is met.
+
+The units keep issue #13's labels. The plan's order is Decision 0003's:
+T1 run controls, T5a models catalog, T2 queue delivery, T3 tool sources and
+control-layer tools, T4 steer, T5b auth state.
+
+## Where v0.1 leaves the staged surface
+
+The wire already carries more than the executable subset accepts:
+
+- `session.message.submit.request` carries `model_id`, `instructions`,
+  `tool_choice`, `output_schema`, `allow_degraded_features`, and `metadata`
+  ([`schema/v0.1/session.schema.json`](../schema/v0.1/session.schema.json),
+  [`protocol/control.go`](../protocol/control.go)). Every executable adapter
+  rejects `instructions`, `tool_choice`, and `output_schema` before admission.
+  Codex applies `model_id` to `turn/start` and Makai applies it as
+  `agent_message.model_ref`, both natively per run and both without
+  advertising a model-selection capability; every other adapter rejects it.
+- The delivery enums carry `queue`, `steer`, and `btw`; the admission enum
+  carries `steered` and `side_started`. Decision 0002 made the queued shape
+  canonical for `auto`; explicit `queue` and `steer` requests are rejected by
+  every adapter, and the validator's `sessionTrack` holds one active run.
+- `ToolDefinition` has `execution_owner` and the `action.call.*` payloads
+  carry `interaction_id`, `requested_by`, and `responded_by`, so tool
+  ownership is already expressible; no envelope resolves a control-owned call.
+- The layered draft names `models.request`/`models.response` and the
+  `auth.*` family; none is in the envelope `oneOf`, so the schema rejects them.
+- `adapter.Descriptor.MaxActiveRunsPerSession` exists in Go but has no wire
+  projection.
+
+## The gate, made concrete
+
+Decision 0003's four steps translate into these exit criteria for every unit:
+
+1. `adapter/memory.go` executes the unit and `adapter/adaptertest` asserts
+   it; `oap check` drives the reference path.
+2. `validation/state.go` enforces the unit's invariants with new diagnostic
+   codes registered in `validation/diagnostic.go` and
+   `validation/manifest.go`; `fixtures/manifest.json` lists the unit's
+   positive and negative fixtures under a new unit name; every existing
+   fixture validates unchanged.
+3. One native adapter executes the unit through its production codec and
+   reducer with a corpus case pinned to its ledger commit, its descriptor
+   advertises the unit at the evidenced level, and its live gate (where one
+   exists) exercises it.
+4. `serve.Hub`, `serve/servehttp`, the stdio frontend, `client`, and
+   `clients/ts` expose the unit in the same change as the hub; the Go and TS
+   e2e tests drive it end to end.
+5. The unit's decision is accepted; the core draft, the conformance draft, and
+   the README move the unit from staged to executable.
+
+## Order and evidence
+
+| Order | Unit | Native evidence in the pinned ledgers | Graduating adapter | Follow-on adapters |
+| --- | --- | --- | --- | --- |
+| 1 | T1 run controls | Codex `turn/start.model` and Makai `agent_message.model_ref` (native per-run); Claude `set_model` control request and `--model` at spawn; pi model selection commands; ACP `session/set_config_option` model; Hermes `session.create.model`; OpenCode `CreateSession.model`; Makai `agent_start.system_prompt` (session-level) | Codex (`model_id`, native) | Makai (native), Claude (`set_model`, emulated), pi, ACP |
+| 2 | T5a models catalog | OpenCode `model.list`/`provider.list`; pi `get_available_models`; Makai `models_request`; Claude `system/init.models` and `list_models`; Hermes `model.options` | OpenCode (native) | pi, Makai, Claude (degraded) |
+| 3 | T2 queue delivery | OpenCode `SessionInput.Admitted{delivery:"queue", promotedSeq}`; pi `follow_up` with `queue_update`; Hermes busy `queued` status under `busy_input_mode=queue`; Claude `queued_turn_count`/`still_queued` | OpenCode (native) | pi, Hermes |
+| 4 | T3 tool sources | T3a catalog with sources: Claude `system/init` (tools, MCP servers), Codex `mcpToolCall.server`; T3b attach at open: ACP `session/new.mcpServers`, Claude MCP config at spawn and `mcp_set_servers`; T3c control-layer tools: Makai `tool_execute`/`tool_result` bridge, Claude `sdkMcpServers` with `mcp_message`, ACP reverse fs/terminal calls | T3a Claude, T3b ACP, T3c Makai | Codex, Claude |
+| 5 | T4 steer | pi `steer` with `queue_update` and injection at a turn boundary; OpenCode `delivery:"steer"` while busy; Hermes `session.steer` and busy `steered`; Codex `turn/steer` with expected turn id | pi | OpenCode, Hermes, Codex |
+| 6 | T5b auth state | Claude `auth_status` frames; OpenCode `provider.list` | staged | — |
+
+Ledgers: [Codex](../research/codex-app-server-8d7cc24-mapping.md) ·
+[Claude Code](../research/claude-code-agent-sdk-2.1.263-mapping.md) ·
+[OpenCode](../research/opencode-v1.18.29-mapping.md) ·
+[pi](../research/pi-v0.85.1-mapping.md) ·
+[Hermes](../research/hermes-v2026.8.31-mapping.md) ·
+[ACP](../research/acp-v1.7.0-mapping.md) ·
+[Makai](../research/makai-agent-67ad514-mapping.md) ·
+[DeepSeek](../research/deepseek-harness-47f9438-mapping.md). DeepSeek
+contributes no native evidence to any unit at its pin and advertises each
+`unavailable`.
+
+## T1. Run controls
+
+Unit name: `run-controls`. Planned decision: 0004.
+
+### Scope
+
+Graduate the fail-closed control discipline for all four per-submit
+controls, and graduate `model_id` as the first control with native evidence.
+`instructions`, `tool_choice`, and `output_schema` get executable shapes and
+reference-adapter behavior in the same slice; native adapters advertise them
+`unavailable` until a ledger pins per-run evidence (today the only per-run
+native surfaces are the Codex and Makai model parameters). Nothing here
+changes run lifecycle.
+
+### Wire
+
+No new envelope types. Changes to
+[`session.schema.json`](../schema/v0.1/session.schema.json) and
+[`capabilities.schema.json`](../schema/v0.1/capabilities.schema.json):
+
+- `tool_choice` narrows from `true` to a typed policy over the advertised
+  catalog: `{ "mode": "auto" | "none" | "required" | "named", "name"?:
+  string, "allowed"?: [string], "disallowed"?: [string] }`, with `name`
+  required when and only when `mode` is `named`, and `allowed`/`disallowed`
+  mutually exclusive. `protocol.MessageSubmitRequest.ToolChoice` becomes
+  `*protocol.ToolChoice` (the struct already exists). This is the first of
+  the two schema narrowings Decision 0003 admits: no executable adapter
+  accepts the field today.
+- `output_schema` stays a JSON Schema object. The structured result travels
+  in `run.completed.result` (already on the wire) and must validate against
+  the admitted schema.
+- Capability keys, all optional, gated per submit:
+
+  | Key | Governs | Levels in v0.1 adapters after T1 |
+  | --- | --- | --- |
+  | `run.model_selection` | `model_id` | Codex and Makai `native` (`per_run`); memory `emulated` (fixed catalog); others `unavailable` until evidence |
+  | `run.instructions` | `instructions` | memory `emulated`; others `unavailable` |
+  | `run.tool_selection` | `tool_choice` | memory `emulated`; others `unavailable` |
+  | `run.structured_output` | `output_schema` | memory `emulated`; others `unavailable` |
+
+  `run.model_selection` is new; the other three are already named in the
+  core draft. `FeatureSupport.mode` discloses how an emulated control is
+  applied: `per_run` (native per-run parameter), `session_mutation` (a
+  serialized native config change before admission, which changes the
+  session default), or `restart` (not offered in this phase).
+- Typed error codes on `error.response`: `unsupported_feature` with
+  `details.feature` naming the key (control present, capability
+  `unavailable` or absent); `capability_degraded` with `details.feature`
+  (capability `degraded`, key absent from `allow_degraded_features`);
+  `model_not_found` with `details.model_id` (`run.model_selection` advertised,
+  id not in the effective catalog). All three already appear in the layered
+  draft's vocabulary except `model_not_found`.
+
+### Semantics
+
+- A submit carrying a control the endpoint has not affirmatively advertised
+  is rejected before admission, before any native write. No submission or run
+  identity is allocated.
+- `emulated` controls need no opt-in. `degraded` controls need the key in
+  `allow_degraded_features`; otherwise `capability_degraded` wins before
+  `unsupported_feature` for a different control on the same request only if
+  the degraded control is evaluated first, so evaluation order is fixed:
+  `model_id`, `instructions`, `tool_choice`, `output_schema`.
+- An admitted `model_id` is authoritative for the run: the submit response
+  repeats it in `model_id`, `run.started` repeats it, and `run.completed`
+  may not name another model. Absent `model_id`, the response reports the
+  effective model when known, as today.
+- `current_model_id` in session state is the model the next `auto`
+  submission without `model_id` would use. A `per_run` application leaves it
+  unchanged; a `session_mutation` application changes it, and the adapter
+  reflects the change rather than restoring the previous default.
+- `output_schema` binds the run's final response: `run.completed.result` is
+  present and conforms, or the run fails with `structured_output_failed`.
+  A harness that retries structured output natively (Claude Code's
+  `error_max_structured_output_retries`) maps exhaustion to that failure.
+
+### Validator
+
+- `session.message.submit.request` with any control invokes the existing
+  `feature()` gate with the control's key (diagnostic
+  `unavailable_capability` when unadvertised or `unavailable`).
+- New diagnostic `unapplied_control`: the submit response's `model_id` (when
+  the request carried one) differs from the request; `run.started.model_id`
+  differs from the admitted model (today's `illegal_run_transition` case
+  moves to this code); `run.completed` under an admitted `output_schema`
+  lacks `result`.
+- `runState` gains `controls` (the admitted request's control set) so the
+  checks above are keyed off the request, not the response.
+
+### Reference adapter
+
+`adapter/memory.go` advertises `run.model_selection` (`emulated`, catalog of
+two fixed ids), `run.instructions`, `run.tool_selection`, and
+`run.structured_output` (`emulated`). It echoes the admitted model on the
+response and `run.started`; prepends `instructions` to the scripted text so
+the effect is observable; honors `tool_choice.mode = "none"` by skipping the
+scripted tool and `disallowed: ["scripted_tool"]` likewise; and, under
+`output_schema`, emits `result: {"ok": true}` on `run.completed`. Unknown
+ids fail with `model_not_found`.
+
+### Native evidence
+
+Codex graduates `model_id` at `native` (`per_run`): its adapter already passes
+`request.ModelID` to `turn/start`; T1 adds the capability key, a corpus case
+`model-per-turn` (the `turn/start` frame carrying the requested model and
+`turn/started` attributed to it), and the rejection case for an unadvertised
+`instructions`. Makai lands in the same slice as the second native source:
+its adapter already sends `model_ref` on every `agent_message` and echoes it,
+so T1 adds the key and a `model-per-message` corpus case, and stops the
+adapter overwriting `current_model_id` with a per-run value (under the rule
+above a `per_run` application leaves the session default alone). Follow-on
+evidence for the other adapters is gated on new ledger entries: Claude
+`set_model` (`session_mutation`), pi `set_model` (`session_mutation`), ACP
+`session/set_config_option` (`session_mutation`, degraded because
+attribution is unsafe under concurrent changes).
+
+### Surfaces
+
+- `adapter`: new `*adapter.UnsupportedControlError{Feature}` and
+  `*adapter.DegradedControlError{Feature}` wrapping `ErrUnsupportedInput`, so
+  codecs can emit the typed codes; `ErrModelNotFound`.
+- `serve/servehttp` and the stdio frontend: `writeSubmitError` maps the new
+  errors to `unsupported_feature`, `capability_degraded`, and
+  `model_not_found` with `details`; the current `invalid_submission` mapping
+  stays for malformed input.
+- `client` and `clients/ts`: no new operations; `ServerError` exposes
+  `details`; e2e tests drive a `model_id` submit against the memory adapter
+  and assert the echoed model on `run.started`.
+
+### Fixtures
+
+Positive: `controls-model-admitted`, `controls-instructions-emulated`,
+`controls-structured-output`. Negative: `controls-unadvertised-model`
+(`unavailable_capability`), `controls-model-mismatch` (`unapplied_control`),
+`controls-structured-missing-result` (`unapplied_control`),
+`controls-degraded-without-optin` (`error.response` with
+`capability_degraded` then no admission; validated as a correct rejection).
+
+### Exit criteria
+
+The five gate items; the Codex and Makai descriptors advertise
+`run.model_selection`; the core draft's "Message Submit And Run Admission" section marks `model_id`
+executable and the other three "shape frozen, evidence pending".
+
+## T5a. Models catalog
+
+Unit name: `models`. Planned decision: 0005.
+
+### Scope
+
+Graduate `models.request`/`models.response` as a session-scoped control-plane
+query. Model resolution, aliases, pricing, and cache refresh stay out.
+
+### Wire
+
+New envelope types `models.request` and `models.response` added to the
+envelope `oneOf`; new `models.schema.json` in the bundle (the manifest
+schema's fixed seven-file list grows to eight, the second and last schema
+narrowing this plan admits since the list is a `const` inventory).
+
+```json
+{ "type": "models.request", "payload": { "session_id": "s1" } }
+{ "type": "models.response", "in_reply_to": "…", "session_id": "s1",
+  "capability_revision": "…",
+  "payload": {
+    "session_id": "s1",
+    "current_model_id": "provider/model-a",
+    "models": [
+      { "id": "provider/model-a", "display_name": "Model A",
+        "provider_id": "provider", "context_window": 200000,
+        "features": { "model.reasoning.output": { "level": "native" } } }
+    ]
+  } }
+```
+
+`ModelDescriptor` fields: `id` (required, the value `model_id` accepts),
+`display_name`, `provider_id`, `context_window`, `features` (the layered
+draft's `model.*` keys as `FeatureSupport`), `default` (boolean; at most one
+per response). `current_model_id` repeats session state. Capability key:
+`models.list` (already named). The catalog is part of the capability
+snapshot: a catalog change is a `capabilities.updated` invalidation on
+endpoints that advertise `capabilities.updates`, and a static endpoint may
+serve one catalog for its lifetime.
+
+### Semantics
+
+- `models.request` is session-scoped because every native source is a
+  process or session surface (pi, Claude, Makai, ACP) or trivially scoped to
+  one (OpenCode). The response is the effective catalog for that session.
+- A `model_id` accepted under `run.model_selection` must be a listed `id`
+  when `models.list` is advertised; otherwise `model_not_found`.
+- Degraded catalogs disclose why: Claude's is the recurring `system/init`
+  model list (`degraded`, refreshed per turn), Makai's is `unavailable` until
+  its failure behavior is exercised.
+
+### Validator
+
+- `models.request` and `models.response` join the request/response
+  correlation and scope checks; the response must repeat the request's
+  session.
+- New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
+  `models.response` in the same trace names an id the response did not list.
+- The `features` map on a descriptor is collected into the trace's catalog
+  for the `model_not_in_catalog` check only; it does not gate run events.
+
+### Reference adapter
+
+`adapter/memory.go` lists its two fixed ids with `default` on the first;
+`Models` is deterministic and revision-stable.
+
+### Native evidence
+
+OpenCode graduates first: `model.list` and `provider.list` are pinned native
+catalog routes (not yet in the adapter's HTTP client, which today calls only
+session, prompt, and event routes); the corpus case `models-list` decodes the
+pinned response shape through the production HTTP client and projects
+`ModelDescriptor` records with `provider_id` from the provider list.
+pi follows with `get_available_models`; Claude at `degraded` from the
+`system/init` frame; Makai stays `unavailable` at its pin.
+
+### Surfaces
+
+- `adapter`: optional interface `adapter.ModelLister` on `Session`
+  (`Models(ctx) (protocol.ModelsResponse, error)`), discovered by type
+  assertion so existing `Session` implementations compile unchanged; the hub
+  returns `unsupported_feature` for sessions whose adapter lacks it.
+- `serve`: `Session.Models(ctx)`.
+- `serve/servehttp`: `GET /sessions/{id}/models` returning `models.response`
+  with a daemon-minted correlation id, mirroring `GET
+  /adapters/{name}/capabilities`; stdio op `models`.
+- `client`: `Session.Models(ctx)`; `clients/ts`: `session.models()`.
+
+### Fixtures
+
+Positive: `models-list-then-select` (catalog, then a submit selecting a
+listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
+`models-response-scope-mismatch` (`scope_mismatch`).
+
+### Exit criteria
+
+The five gate items; OpenCode advertises `models.list` `native`; the
+conformance draft's `+models` unit text cites the fixtures.
+
+## T2. Queue delivery
+
+Unit name: `queue`. Planned decision: 0006.
+
+### Scope
+
+Graduate explicit `delivery: "queue"` requests and the `auto` to `queue`
+resolution on a busy session, which means admitting a second nonterminal run
+per session: one started run plus bounded queued reservations. Decision 0002
+already fixed the queued admission shape and pre-start settlement; T2 adds
+overlap, ordering, and state.
+
+### Wire
+
+No new envelope types. Additive fields:
+
+- `session.state` gains `active_runs`: an ordered list of every nonterminal
+  run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?
+  }]`, in admission order, with `queue_position` on queued entries
+  (1-based). `active_run_id` keeps naming the started run, or is absent when
+  only queued runs remain (session status `queued`).
+- `capabilities.response` gains optional `limits`: `{
+  "max_active_runs_per_session": int, "max_queued_runs_per_session": int }`,
+  the wire projection of `adapter.Descriptor.MaxActiveRunsPerSession` plus
+  the queue bound. Absent means one started run and at least one queued run.
+- Typed error `run_active` (the daemon's existing code, adopted as the
+  protocol code; the research draft's `session_busy` name is superseded): a
+  submission that cannot be admitted because the session is busy and no
+  advertised busy outcome applies, or the queue bound is reached. It is
+  returned before any identity is allocated.
+
+### Semantics
+
+- Explicit `queue` on an idle session is admitted `queued` and promotes
+  immediately; "run after current work reaches a safe boundary" is trivially
+  satisfied. Explicit `queue` never resolves to `start`.
+- `auto` on a busy session resolves to `queue` only when
+  `session.message.delivery.queue` is advertised; otherwise `run_active`.
+  `delivery_resolution` reports `session_busy` for that resolution.
+- Promotion is in admission order: a queued run may emit `run.started` only
+  when every earlier-admitted run in the session is terminal. Only one run
+  per session is started at a time; Decision 0001's cancellation scope
+  therefore still targets one execution.
+- A queued run cancels pre-start under Decision 0002; a queued run whose
+  harness drops it before start settles `run.failed` with a typed
+  `queue_dropped` error.
+- Every queued reservation is listed in `active_runs` until its terminal;
+  reconnect state preserves the order.
+
+### Validator
+
+- `sessionTrack.active` becomes an ordered set of nonterminal runs with
+  admission indices. A second admission on a session with a nonterminal run
+  is legal only when the new admission is `queued` and the trace's descriptor
+  advertises `session.message.delivery.queue`; otherwise the existing
+  `illegal_run_transition` ("session already has a nonterminal run").
+- New diagnostic `queue_order_violation`: `run.started` for a queued run
+  while an earlier-admitted run in the session is nonterminal.
+- `session.state` snapshots: `active_runs`, when present, must list exactly
+  the tracked nonterminal runs in admission order with consistent
+  `queue_position`; `active_run_id` must be the started run; otherwise
+  `session_state_mismatch`.
+
+### Reference adapter
+
+`adapter/memory.go` advertises `session.message.delivery.queue` `emulated`
+with `limits.max_queued_runs_per_session = 1`: a submit while the scripted
+run is active reserves a second run (`queued`), lists both in `active_runs`,
+and promotes it when the first settles; cancelling the queued run settles it
+pre-start.
+
+### Native evidence
+
+OpenCode graduates first: `SessionInput.Admitted` with `delivery: "queue"`
+and `promotedSeq` is the strongest native queue shape in the ledgers, and the
+three Decision 0002 cases already pin the reservation. New corpus cases:
+`queue-explicit-busy` (queue admitted while a run is active, promoted after
+the first run's derived settlement), `queue-cancelled-before-promotion`.
+Follow-on: pi `follow_up` (with `queue_update` as the queued-state
+observation), Hermes `queued` under `busy_input_mode=queue`.
+
+### Surfaces
+
+- `serve`: the hub's "current run" cursor becomes run-qualified. A
+  subscription's replay cursor already carries `(RunID, AfterSequence)`;
+  the hub stops assuming the newest admission is the run a bare sequence
+  refers to.
+- `serve/servehttp`: the SSE `id:` field becomes `<run_id>:<sequence>` and
+  `?after=` accepts the same form; a bare integer is still accepted and
+  resolves to the started run for compatibility. `oap-overflow` and
+  `oap-replay-gap` carry `run_id` (overflow already does). The stdio
+  frontend's `events` op and signal lines mirror this.
+- `client` and `clients/ts`: parse the qualified cursor and resume with it;
+  `Session.EventsAfter(RunID, LastSequence)` already exists in Go.
+- Daemon-management listing (`GET /sessions`) reports `active_runs`.
+
+### Fixtures
+
+Positive: `queue-explicit-idle-promoted`, `queue-busy-then-promoted`,
+`queue-busy-cancelled-prestart`, `queue-state-active-runs`. Negative:
+`queue-promoted-out-of-order` (`queue_order_violation`),
+`queue-overlap-unadvertised` (`illegal_run_transition`),
+`queue-state-missing-reservation` (`session_state_mismatch`).
+
+### Exit criteria
+
+The five gate items; OpenCode advertises `session.message.delivery.queue`
+`native`; Decision 0001's "at most one nonterminal run per session" is
+amended to "at most one started run and an advertised number of queued
+reservations".
+
+## T3. Tool sources and control-layer tools
+
+Unit names: `tool-sources` (T3a and T3b) and `control-tools` (T3c). Planned
+decision: 0007 (one decision, three sub-units, each independently
+advertisable).
+
+### T3a. Catalog with sources
+
+Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
+[`capabilities.schema.json`](../schema/v0.1/capabilities.schema.json):
+
+- `ToolSourceDescriptor`: `{ "id", "kind": "native" | "local" | "process" |
+  "remote" | "hosted", "display_name"?, "protocol"?, "endpoint"? }`, the
+  shape of [`examples/tool-source.json`](../examples/tool-source.json).
+  MCP sources are `{ "kind": "process" | "remote", "protocol": "mcp",
+  "endpoint": "stdio:…" | "https://…" }`.
+- `action.tools.list.response` gains `sources: [ToolSourceDescriptor]`;
+  `ToolDefinition` gains `source` (a source `id`, never an inline copy) and
+  `features` (per-tool `FeatureSupport` map, as in the example). The
+  capability descriptor's `tools` and `layers.*.tools` gain `sources` beside
+  them.
+- `action.call.*` payloads gain optional `source` (the source `id`), so a
+  consumer can attribute a call to an MCP server without parsing names.
+
+Semantics: a tool naming a source must name one the same response declared
+(validator diagnostic `unmatched_tool_source`); a source is described, not
+managed, by this sub-unit; the harness runs the client. Capability:
+`action.tools.list` (existing) with sources present.
+
+Evidence: Claude `system/init` carries the tool list and MCP server list per
+turn (`degraded` catalog, per-turn refresh); Codex `mcpToolCall.server` gives
+the source on the call but no catalog (`source` on calls only). Claude
+graduates T3a; its corpus case `tools-catalog-sources` projects the
+`system/init` frame into `action.tools.list.response`.
+
+### T3b. Attachment at session open
+
+Wire: `session.open.request` gains `tool_sources: [ToolSourceDescriptor]`.
+A `process` source additionally carries `command`, `args`, and
+`environment` (the registry's allowlist form: bare `NAME` forwards from the
+endpoint's own environment, `NAME=value` passes literally); a `remote`
+source carries only `endpoint` and is capability-gated (`mode: "remote"`).
+A bare `NAME` resolves only if the adapter's registry entry allowlists it,
+so a wire caller cannot read an ambient credential the operator did not
+expose; a `NAME=value` literal is the caller's own secret on a loopback,
+single-user wire, exactly as it is for the registry document today.
+
+Semantics: attachment is for the session's lifetime; the open response's
+state and the first `action.tools.list.response` reflect the attached
+sources; an endpoint that cannot attach at open rejects the open with
+`unsupported_feature` (`action.tool_sources.attach`). Runtime attach and
+detach are deferred until evidence beyond Claude's `mcp_set_servers` exists.
+
+Evidence: ACP `session/new.mcpServers` is a required array
+(`{ name, command, args, env }` entries) that the adapter already fills from
+its Go configuration; T3b moves that descriptor onto the wire at open, with
+the adapter resolving allowlisted names into ACP's literal `env` values.
+Claude spawns with MCP config. ACP graduates T3b with the corpus case
+`open-with-tool-sources` (a stdio MCP descriptor passed through
+`session/new`) and its live gate against docker/cagent.
+
+### T3c. Control-layer-provided tools
+
+Wire:
+
+- `session.open.request` gains `tools: [ToolDefinition]` whose
+  `execution_owner` is the opening participant. Per-submit tool provisioning
+  (Makai supplies tools per `agent_start`) is deferred; session-open is what
+  Claude and ACP support and what Makai can accept at start.
+- New envelope types `action.call.resolve.request` and
+  `action.call.resolve.response`, session- and run-scoped, mirroring the
+  permission resolve pair: request `{ "interaction_id", "session_id",
+  "run_id", "tool_call_id", "requested_by", "responded_by", "result"? |
+  "error"? }` with exactly one of `result` or `error`; response `{
+  "interaction_id", "session_id", "run_id", "tool_call_id", "accepted" }`.
+- Capability key `action.tools.execute` gains the documented meaning "the
+  control layer may execute tools it provided"; today's uses of that key by
+  adapters (native execution inside the harness) move to `action.tools`
+  alone, so the key means one thing.
+
+Semantics, on the interaction contract Decision 0001 fixed:
+
+- A call to a control-owned tool is an interaction: `action.call.requested`
+  carries `interaction_id`, `requested_by` (the agent), `responded_by` and
+  `execution_owner` (the control participant). The adapter emits
+  `action.call.started` at once, because execution has left the loop; the
+  validator's transition rules stay unchanged.
+- Only the declared responder may resolve; one resolution; the adapter emits
+  `action.call.completed` or `action.call.failed` from the resolution and
+  feeds the result to the harness through its native bridge.
+- Run cancel closes pending control-owned calls with
+  `action.call.cancelled` before the run terminal, as the memory adapter
+  already does for permission gates. Deadlines remain deferred (PF-2); a
+  harness-side timeout settles the call as `failed` with the harness's code.
+- A control-owned call is never routed to a harness-side executor, and a
+  harness-owned call is never resolvable from the control layer
+  (`wrong_interaction_responder`).
+
+Evidence: Makai's `tool_execute`/`tool_result` bridge is exactly this
+boundary: the adapter's native codec already decodes both frames, every
+`agent_message` already carries a `tools` list (empty today), and the ledger
+names `tool-bridge-roundtrip` as a required case that the pinned corpus does
+not yet contain. Makai graduates T3c by adding that case and lifting
+`action.tools.execute` from `unavailable`; Claude `sdkMcpServers` with
+`mcp_message` reverse control and ACP reverse fs/terminal calls follow.
+
+### Where the MCP client lives
+
+Adapter-side passthrough (T3a and T3b) first: the harness owns the MCP
+client; OAP describes, attaches, and observes. Serve-side connector second,
+as a `serve` feature on T3c: the hub hosts an MCP client as one more
+execution owner, provisions its tools through `session.open.request.tools`,
+routes `action.call.requested` whose `execution_owner` is the hub to the MCP
+server, and resolves through `action.call.resolve.request`. The connector
+serves adapters with no native MCP support (DeepSeek, pi, memory) and the
+HyperNeo-style embedding; it adds no wire vocabulary.
+
+### Validator
+
+- `action.tools.list.response`: `unmatched_tool_source` for a tool naming an
+  undeclared source.
+- `action.call.requested` with `execution_owner` equal to a declared control
+  participant must carry `interaction_id` and `responded_by`
+  (`illegal_tool_transition`); its resolution follows the interaction rules
+  (`unmatched_interaction`, `duplicate_interaction`,
+  `wrong_interaction_responder`, `pending_interaction_at_terminal`).
+- `action.call.resolve.request` and `.response` join correlation and scope
+  checks; the resolution's `tool_call_id` must match the interaction's
+  binding (`scope_mismatch`).
+- `session.open.request` with `tool_sources` or `tools` invokes the
+  `feature()` gate with `action.tool_sources.attach` or
+  `action.tools.execute`.
+
+### Reference adapter
+
+`adapter/memory.go` declares two sources (`native` for `scripted_tool`, a
+synthetic `process`/`mcp` source), accepts `tool_sources` at open and lists
+them, accepts one control-owned `ToolDefinition` at open, and, when present,
+calls it after the permission gate: `requested` and `started` with the
+opener as owner, then the terminal from `Resolve`. `InteractionResolution`
+gains a third arm `ToolCall *protocol.ActionCallResolveRequest`.
+
+### Surfaces
+
+- `adapter`: `OpenRequest` gains `ToolSources` and `Tools`;
+  `InteractionResolution.ToolCall`; optional interface `adapter.ToolLister`
+  (`Tools(ctx) (protocol.ToolsListResponse, error)`) for the catalog.
+- `serve`: `Session.Tools(ctx)`; `Session.Resolve` passes the new arm; the
+  optional MCP connector as a separate package `serve/mcpconnect`, out of
+  scope for the 0007 decision but designed against it.
+- `serve/servehttp`: `GET /sessions/{id}/tools` returning
+  `action.tools.list.response`; `POST /sessions/{id}/resolve` accepts
+  `action.call.resolve.request`; `POST /adapters/{name}/sessions` forwards
+  `tool_sources` and `tools`. Stdio ops `tools` and the extended `resolve`
+  and `open`.
+- `client` and `clients/ts`: `Open` options for sources and tools;
+  `Session.Tools`; `Session.ResolveToolCall`.
+
+### Fixtures
+
+Positive: `tools-catalog-with-sources`, `open-attach-process-source`,
+`control-tool-roundtrip`, `control-tool-cancelled-with-run`. Negative:
+`tools-unmatched-source` (`unmatched_tool_source`),
+`control-tool-wrong-owner` (`wrong_interaction_responder`),
+`control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
+`open-attach-unadvertised` (`unavailable_capability`).
+
+### Exit criteria
+
+The five gate items per sub-unit; Claude, ACP, and Makai advertise their
+sub-unit; the profile draft's feature-gate rows for `action.tool_sources.attach`
+and `action.tools.execute` cite the fixtures; the daemon README documents the
+credential rule for process sources.
+
+## T4. Steer
+
+Unit name: `steer`. Planned decision: 0008. This section is a pre-design for
+that decision, not a settled shape: it is the one unit that adds a new
+pending lifecycle inside a run, and its decision must be written from a pi
+corpus case first.
+
+### The question
+
+`steer` injects guidance into an active run. Unlike `queue`, it creates no
+run and no sequence domain of its own, so the control layer cannot observe
+from `run.started` that its guidance took effect. Every native source makes
+the application observable in a different way: pi at the next turn boundary
+(`queue_update` shrinks and the injected user message appears in the
+stream), OpenCode when the steered input is promoted (`prompted` after
+`prompt.admitted`), Hermes immediately (the busy result is `steered`), Codex
+on the `turn/steer` response against an expected active turn. pi also lets a
+steer be withdrawn before application (`clear_queue`). The protocol
+therefore needs a steer settlement, not only a steer admission.
+
+### Proposed shape
+
+- Admission: `session.message.submit.request` with `delivery: "steer"` and
+  optional `target_run_id` (additive field). Absent, the target is the
+  session's started run; a supplied target must be that run. Any other
+  target, or no started run, fails before admission with typed
+  `invalid_steer_target` (`details.reason`: `no_active_run`, `terminal`,
+  `queued`, `cross_session`, `not_steerable`).
+- Response: `admission: "steered"`, `effective_delivery: "steer"`, `run_id`
+  set to the target, `status` equal to the target's current status, and the
+  `submission_id` that names the pending steer.
+- Settlement, two new run-scoped events in the target run's sequence domain:
+  `run.steer.applied` `{ "session_id", "run_id", "submission_id",
+  "message_ids", "boundary": "immediate" | "turn" | "tool_result" |
+  "unknown" }` and `run.steer.dropped` `{ "session_id", "run_id",
+  "submission_id", "reason": ProtocolError }`. A harness that applies
+  immediately emits `applied` atomically with the response.
+- Barrier: every admitted steer settles before the run terminal; a run that
+  terminates first drops its pending steers with `run_terminated` before the
+  terminal, in the run's sequence.
+- `auto` on a busy session never resolves to `steer`; steering is always an
+  explicit request (P0.4's rule that explicit modes never change meaning is
+  kept, and an accidental steer is worse than a refused submit).
+
+### Validator
+
+`runState` gains `steers` (pending submissions); `steered` admissions are
+legal only against a started nonterminal run in the same session with
+`session.message.delivery.steer` advertised; `applied`/`dropped` must name a
+pending steer once (`unmatched_steer`, `duplicate_steer`); a terminal with a
+pending steer is `pending_steer_at_terminal`.
+
+### Reference adapter and evidence
+
+`adapter/memory.go` accepts a steer while waiting at the permission gate and
+applies it at the input gate (`boundary: "turn"`), which also exercises the
+drop path under cancel. pi graduates: its corpus already records `steer`,
+`queue_update`, and injection as codec evidence (`native-controls`,
+`steer-injected` labels); the new case executes them through `Submit` with
+an advertised `session.message.delivery.steer`. OpenCode, Hermes, and Codex
+follow.
+
+### Surfaces
+
+No new operations: `submit` carries the delivery; the events are stream
+envelopes. The hub's run-qualified cursor from T2 already covers a steer's
+events because they live in the target run's domain.
+
+### Questions the 0008 decision must answer from evidence
+
+1. Event naming: `run.steer.applied`/`run.steer.dropped` versus a general
+   `run.submission.*` pair that queue promotion could share.
+2. Whether the steered messages are echoed as `content.delta` with
+   `role: user` in the run stream or referenced by `message_ids` only.
+3. Whether `boundary` is worth carrying or `applied` alone suffices.
+4. Codex's expected-turn precondition: is `target_run_id` required when the
+   harness requires a target, or does the adapter fill it from the started
+   run.
+
+## T5b. Auth state
+
+Unit name: `auth`. Not scheduled. `auth.providers.request`/`.response` as a
+read-only listing (`[{ "provider_id", "state": "authenticated" |
+"unauthenticated" | "expired" | "unknown", "display_name"? }]`) has evidence
+in Claude's `auth_status` frames and OpenCode's `provider.list`. Login flows
+(`auth.login.*`) have no pinned evidence and stay in the profile draft. The
+unit is designed when a consumer needs to gate a model picker on auth state;
+until then `auth_required` on `run.failed` (already a standard code) is the
+executable surface.
+
+## Cross-cutting vocabulary
+
+### Capability keys introduced or given executable meaning
+
+| Key | Unit | Note |
+| --- | --- | --- |
+| `run.model_selection` | T1 | new; `mode` discloses `per_run` or `session_mutation` |
+| `run.instructions`, `run.tool_selection`, `run.structured_output` | T1 | existing names, executable gate |
+| `models.list` | T5a | existing name |
+| `session.message.delivery.queue` | T2 | existing name; `limits` adds the bound |
+| `action.tools.list` with sources | T3a | existing name |
+| `action.tool_sources.attach` | T3b | existing name; `mode` discloses `session_open` and `remote` |
+| `action.tools.execute` | T3c | existing name, narrowed to control-layer execution |
+| `session.message.delivery.steer` | T4 | existing name |
+
+### Typed error codes on `error.response`
+
+`unsupported_feature`, `capability_degraded` (already in the layered draft);
+`model_not_found`, `run_active` (adopted from the daemon), `queue_dropped`
+(on `run.failed`), `structured_output_failed` (on `run.failed`),
+`invalid_steer_target`, `run_terminated` (steer drop reason). Codes stay open
+strings in the schema; the validator does not enumerate them.
+
+### Validator diagnostics added
+
+`unapplied_control`, `model_not_in_catalog`, `queue_order_violation`,
+`unmatched_tool_source`, `unmatched_steer`, `duplicate_steer`,
+`pending_steer_at_terminal`. Existing codes are reused wherever the
+invariant is the same (`unavailable_capability`, `illegal_run_transition`,
+`session_state_mismatch`, `scope_mismatch`, `wrong_interaction_responder`,
+`pending_interaction_at_terminal`).
+
+### Conformance units
+
+`validation/manifest.go` `knownUnits` gains `run-controls`, `models`,
+`queue`, `tool-sources`, `control-tools`, `steer`. The conformance draft's
+unit list gains `+run-controls`, `+tool-sources`, and `+control-tools`
+beside the existing `+models`, `+queue`, and `+steer`; the executable claim
+becomes `open-agent-protocol.agent-control-core/0.1-executable` plus the
+graduated units.
+
+### Schema evolution
+
+Additive: new optional fields (`active_runs`, `limits`, `tool_sources`,
+`tools`, `source`, `sources`, `features`, `target_run_id`), new envelope
+types in the `oneOf` (`models.*`, `action.call.resolve.*`,
+`run.steer.*`), a new schema file. Narrowing, both inside surfaces no
+executable adapter accepts today: `tool_choice` from `true` to a typed
+object, and the manifest schema's seven-file inventory growing to eight.
+`version` and `profile` are unchanged.
+
+## Deliberately later
+
+Unchanged from Decisions 0001 and 0002 and PF-4: `btw` and side runs;
+subagent trees and background tasks (a run-tree design comes first);
+artifacts; checkpoints, rewind, branch; compaction markers; durable
+idempotent admission; cross-process replay and continuity leases; orphan
+terminals; retained-interaction reassociation and deadlines; runtime
+tool-source attach and detach; per-submit control-layer tools; model
+resolution and aliases; auth login flows; skills at the wire level.
+
+## Open items for the per-unit decisions
+
+- T1: confirm the `tool_choice` shape before any native adapter advertises
+  `run.tool_selection`; decide whether `metadata` on the submit request is
+  passed through to the harness or reserved.
+- T5a: whether `context_window` and `features` are worth requiring, or
+  `id` alone is the executable minimum.
+- T2: the exact `limits` field names, and whether `queue_position` is
+  required or optional on queued `active_runs` entries.
+- T3: whether `remote` sources are admitted in the first slice or held until
+  a header-free evidence case exists; the resolution response's `accepted`
+  semantics when the harness has already timed the call out.
+- T4: the four questions listed under the unit.

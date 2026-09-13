@@ -21,6 +21,7 @@ Current drafts:
 - [Agent Control Core](drafts/agent-control-core.md)
 - [Agent Control Profile](drafts/agent-control-profile.md)
 - [Layered Agent Protocol](drafts/layered-agent-protocol.md)
+- [Staged Units Graduation Plan](drafts/staged-units-graduation.md)
 
 Protocol artifacts:
 
@@ -246,6 +247,7 @@ Decisions:
 
 - [0001 — agent-control v0.1 executable core](decisions/0001-agent-control-v0.1-executable-core.md)
 - [0002 — admission before started](decisions/0002-admission-before-start.md)
+- [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (proposed)
 
 Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:
