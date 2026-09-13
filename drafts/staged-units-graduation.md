@@ -124,7 +124,10 @@ No new envelope types. Changes to
   resolved by choosing one member over another. The catalog a policy is
   judged against is the session's full catalog, including tools the control
   layer provides at open (T3c), so a policy governs those tools the same
-  way. In Go,
+  way. Plain names suffice because a session catalog never carries two
+  tools with the same `name` (the T3a uniqueness rule); until T3 lands the
+  catalog is the harness's native tool list, which is unique already. In
+  Go,
   `MessageSubmitRequest.ToolChoice` stays `json.RawMessage`;
   `protocol.ToolChoice` (today `Mode` and `Name` only) gains `Allowed
   []string` and `Disallowed []string`, and a strict
@@ -364,6 +367,9 @@ serve one catalog for its lifetime.
   session.
 - New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
   `models.response` in the same trace names an id the response did not list.
+- New diagnostic `ambiguous_default_model`: a `models.response` with more
+  than one descriptor carrying `default: true`, so the at-most-one rule
+  above is enforced rather than stated.
 - The `features` map on a descriptor is collected into the trace's catalog
   for the `model_not_in_catalog` check only; it does not gate run events.
 
@@ -398,6 +404,7 @@ pi follows with `get_available_models`; Claude at `degraded` from the
 
 Positive: `models-list-then-select` (catalog, then a submit selecting a
 listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
+`models-two-defaults` (`ambiguous_default_model`),
 `models-response-scope-mismatch` (`scope_mismatch`).
 
 ### Exit criteria
@@ -623,8 +630,18 @@ Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
   answers session-scoped lists only, so a trace, a stdio consumer, and the
   validator can tie a catalog to the attachment it reflects.
 
-Semantics: a tool naming a source must name one the same response declared,
-and a call carrying `source` must name the source the session's catalog
+Semantics: `name` is unique across a session's catalog, whatever the
+sources, so a policy entry (T1) and a call resolve to one catalog entry and
+one `execution_owner`: a list with two entries of one name is invalid
+(`duplicate_tool_name`); an attach or provide whose tools would collide
+with the catalog or with each other is rejected at open with
+`unsupported_feature` (`details.reason: "unsatisfiable"`, `details.tool`
+naming the collision) rather than shadowed or renamed silently; a harness
+that namespaces MCP tools (Claude's `mcp__<server>__<tool>`) exposes that
+namespaced string as `name`, and `source` carries the attribution so the
+name need not encode it. A tool naming a source must name one the same
+response declared, and a call carrying `source` must name the source the
+session's catalog
 records for that tool, or a declared source when the tool is not in the
 catalog (validator diagnostic `unmatched_tool_source` for both); the first
 session-scoped
@@ -753,6 +770,8 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 
 ### Validator
 
+- `action.tools.list.response`: `duplicate_tool_name` for two entries
+  sharing `name`, whatever their sources.
 - `action.tools.list.response`: `unmatched_tool_source` for a tool naming an
   undeclared source. `action.call.*` payloads carrying `source`: the same
   diagnostic when the trace's catalog lists the named tool under a
@@ -781,7 +800,9 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 `adapter/memory.go` declares two sources (`native` for `scripted_tool`, a
 synthetic `process`/`mcp` source), accepts `tool_sources` at open and lists
 them, accepts every control-owned `ToolDefinition` supplied at open (no
-cardinality limit; all are listed), and after the permission gate calls the
+cardinality limit; all are listed; a name colliding with `scripted_tool` or
+with another supplied definition rejects the open), and after the
+permission gate calls the
 first provided tool in open order that the run's admitted `tool_choice`
 selects: `requested` with the opener as owner, `started` when the opener
 acknowledges (or immediately before the terminal when it resolves without
@@ -823,6 +844,9 @@ settles `cancelled` from `requested`),
 `mode: "none"`, no call), `open-provide-two-tools` (both listed, the
 selected one called). Negative:
 `tools-unmatched-source` (`unmatched_tool_source`),
+`tools-duplicate-name` (`duplicate_tool_name`),
+`open-provide-colliding-name` (`error.response` with `unsupported_feature`
+then no open; validated as a correct rejection),
 `tools-call-source-mismatch` (`unmatched_tool_source`; a call naming one
 tool with another tool's declared source),
 `control-tool-started-before-ack` (`illegal_tool_transition`),
@@ -959,8 +983,9 @@ strings in the schema; the validator does not enumerate them.
 ### Validator diagnostics added
 
 `unapplied_control`, `unsatisfiable_control`, `model_not_in_catalog`,
-`queue_order_violation`, `premature_session_mutation`,
-`unmatched_tool_source`, `catalog_mismatch`,
+`ambiguous_default_model`, `queue_order_violation`,
+`premature_session_mutation`, `unmatched_tool_source`,
+`duplicate_tool_name`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
 invariant is the same (`unavailable_capability`, `illegal_run_transition`,
@@ -978,15 +1003,53 @@ graduated units.
 
 ### Schema evolution
 
-Additive only: new optional fields (`active_runs`, `limits`,
-`tool_sources`, `tools`, `source`, `sources`, `features`, `target_run_id`,
-`session_id` on the tools-list request), new envelope types in the
-`oneOf` (`models.*`, `action.call.resolve.*`, `run.steer.*`), and new
-payload definitions in existing schema files. No existing field's schema
-narrows: `tool_choice` keeps its permissive schema and its typed shape is
-a validator and adapter rule of the `run-controls` unit, and the models
-payloads live in the control-plane schema file so the bundle inventory and
-the manifest schema are unchanged. `version` and `profile` are unchanged.
+Additive on the wire, under the layered draft's extension rules (unknown
+fields are ignored; minor revisions are additive only): new optional
+fields (`active_runs`, `limits`, `tool_sources`, `tools`, `source`,
+`sources`, `features`, `target_run_id`, `session_id` on the tools-list
+request), new envelope types in the `oneOf` (`models.*`,
+`action.call.resolve.*`, `run.steer.*`), and new payload definitions in
+existing schema files. No existing field's schema narrows: `tool_choice`
+keeps its permissive schema and its typed shape is a validator and adapter
+rule of the `run-controls` unit, and the models payloads live in the
+control-plane schema file so the bundle inventory and the manifest schema
+are unchanged. `version` and `profile` are unchanged.
+
+The bundle itself is not additive, and the plan does not claim it is:
+every payload object in `capabilities.schema.json`, `session.schema.json`,
+and `action.schema.json` is closed (`additionalProperties: false`) and the
+envelope `oneOf` is fixed, so a validator compiled from an older bundle
+revision rejects a gated addition as small as `limits` on
+`capabilities.response`. The Go client's opt-in `WithEnvelopeValidation`
+(dev mode, off by default) would fail against an upgraded endpoint for
+that reason; the TypeScript client does no runtime schema validation. The
+phase therefore begins with a tolerance step that lands before T1 and that
+every later unit relies on:
+
+- `validation.CompileSchemas` gains a tolerant variant, used by the Go
+  client's dev-mode validation and by `oap validate` when it is pointed at
+  a live endpoint rather than a fixture. It compiles the same bundle with
+  `additionalProperties: false` lifted from payload objects (unknown
+  members are ignored, as the wire rule requires) and with the envelope
+  `oneOf` relaxed to "a known `type` must match its branch; an unknown
+  `type` must satisfy the common envelope fields only", the same forward
+  compatibility both clients already apply to unknown named SSE events.
+- Fixture validation stays strict against the bundle at its own revision.
+  That is the conformance validator's job and how a misspelled new field is
+  caught; each unit extends the bundle in place under `schema/v0.1`.
+- `capabilities.response` gains no schema-revision field: a consumer learns
+  what an endpoint will emit from the capability keys the units add, and
+  the tolerant compile makes the fields those keys imply harmless to a
+  client that predates them.
+
+Until the tolerance step lands, an older strict validator is incompatible
+with a newer endpoint's additions. No released consumer exists today, so
+sequencing the step first is sufficient, and any external consumer that
+ships before it must validate tolerantly or not at all. This is the
+answer to issue #13's versioning question: the wire stays `0.1` because
+nothing existing changes meaning, and forward compatibility is made a
+stated property of validators rather than an assumed property of the
+bundle.
 
 ## Deliberately later
 

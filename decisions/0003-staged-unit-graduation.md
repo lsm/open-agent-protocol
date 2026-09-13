@@ -144,6 +144,16 @@ shape is enforced by the validator's unit rules and by adapters over the
 unchanged permissive schema, and the models payloads join the existing
 control-plane schema file so the bundle inventory is unchanged.
 
+Additive is a property of the wire, not of the closed v0.1 schema bundle:
+its payload objects are `additionalProperties: false` and the envelope
+`oneOf` is fixed, so a validator compiled from an older bundle rejects a
+gated addition. The phase therefore starts with a tolerance step, before
+the first unit, that gives the Go client's dev-mode validation and any
+validation of a live endpoint a tolerant compile of the same bundle
+(unknown members ignored, unknown envelope types checked against the
+common fields only) while fixture validation stays strict. The plan's
+schema-evolution section specifies it; no unit graduates before it lands.
+
 ### First consumer
 
 The first real consumer is an in-process embedding of `serve.Hub` in the
