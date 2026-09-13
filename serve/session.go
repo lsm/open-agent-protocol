@@ -382,6 +382,23 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	s.exitReader(runID, end)
 }
 
+// stopExposed detaches the subscribers exposed to runID and terminates
+// them with the given state.
+func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
+	s.mu.Lock()
+	affected := make([]*subscriber, 0, len(s.subs))
+	for sub := range s.subs {
+		if sub.exposedTo(runID) {
+			affected = append(affected, sub)
+			delete(s.subs, sub)
+		}
+	}
+	s.mu.Unlock()
+	for _, sub := range affected {
+		sub.stop(state)
+	}
+}
+
 // exitReader is the path a run reader takes when its stream ends: with
 // readers remaining, the current run's terminal state and the cohort it is
 // owed to are stashed for the last one to apply; the last one finishes
@@ -391,6 +408,18 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 // cannot interleave. When only a Submit reservation remains, the finish is
 // deferred to whichever resolves it.
 func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
+	// A stale drainer's error must not vanish because a newer run keeps
+	// the hub busy: the subscribers still exposed to the failed run are
+	// terminated now. The current run's error keeps the deferred path —
+	// co-drainers may still be delivering its tail.
+	if end != nil && end.err != nil {
+		s.mu.Lock()
+		stale := s.runID != runID
+		s.mu.Unlock()
+		if stale {
+			s.stopExposed(runID, end)
+		}
+	}
 	s.mu.Lock()
 	s.readers--
 	current := s.runID
@@ -469,19 +498,18 @@ func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Unlock()
 }
 
-// exposedTo reports, as one consistent snapshot, whether the subscriber
-// has undelivered envelopes of runID queued, or is positioned in it — the
-// acknowledged run, or the attached one while nothing has been received.
+// exposedTo reports, as one consistent snapshot, whether the subscriber is
+// exposed to runID: once a run is acknowledged, that position governs — a
+// late envelope from an older run still queued behind it does not re-expose
+// the consumer to the older run's overflow. Before anything is
+// acknowledged, undelivered envelopes of the run or attachment to it do.
 func (sub *subscriber) exposedTo(runID protocol.RunID) bool {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
-	if sub.pending[runID] > 0 {
-		return true
-	}
 	if ack := sub.ack.Load(); ack != nil {
 		return *ack == runID
 	}
-	return sub.attached == runID
+	return sub.pending[runID] > 0 || sub.attached == runID
 }
 
 // signalOverflow terminates the subscribers exposed to runID with the
@@ -493,18 +521,7 @@ func (sub *subscriber) exposedTo(runID protocol.RunID) bool {
 // have seen it complete; an overflow from it recovers nothing for them and
 // must not cut them off from the newer run they are consuming.
 func (s *Session) signalOverflow(runID protocol.RunID) {
-	s.mu.Lock()
-	affected := make([]*subscriber, 0, len(s.subs))
-	for sub := range s.subs {
-		if sub.exposedTo(runID) {
-			affected = append(affected, sub)
-			delete(s.subs, sub)
-		}
-	}
-	s.mu.Unlock()
-	for _, sub := range affected {
-		sub.stop(&terminalState{overflow: true, run: runID})
-	}
+	s.stopExposed(runID, &terminalState{overflow: true, run: runID})
 }
 
 // finishSubs detaches every subscriber and terminates it with the given

@@ -335,19 +335,20 @@ func TestOverflowFollowsDeliveredRuns(t *testing.T) {
 	if envelope, err := spanning.Next(); err != nil || envelope.RunID != "run-a" {
 		t.Fatalf("run-a envelope: run %s error %v", envelope.RunID, err)
 	}
-	// Run B is admitted; the subscriber receives B's envelope, then B's
-	// stream overflows.
+	// Run B is admitted; the subscriber acknowledges B's envelope — only
+	// then does B's stream overflow, so the acknowledged position that
+	// scopes the overflow is pinned in B.
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-b", streamB)
 	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
-	streamB <- base.Result{Error: base.ErrEventStreamOverflow}
-	close(streamB)
-	close(streamA)
-
 	envelope, err := spanning.Next()
 	if err != nil || envelope.RunID != "run-b" {
 		t.Fatalf("run-b envelope: run %s error %v", envelope.RunID, err)
 	}
+	streamB <- base.Result{Error: base.ErrEventStreamOverflow}
+	close(streamB)
+	close(streamA)
+
 	_, err = spanning.Next()
 	var overflow *OverflowError
 	if !errors.As(err, &overflow) || overflow.RunID != "run-b" || overflow.LastSequence != 1 {
@@ -909,6 +910,97 @@ func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
 		t.Fatalf("overflow run %q, want run-a — the acknowledged position", overflow.RunID)
 	}
 	close(streamA)
+}
+
+// TestStaleRunErrorReachesExposedSubscribers pins the stale-error path: a
+// run whose drainer exits with an error while a newer run holds the hub
+// still terminates the subscribers exposed to it, instead of letting them
+// read the newer run's clean end and never learn of the loss.
+func TestStaleRunErrorReachesExposedSubscribers(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.publish(runEnvelope(t, "run-a", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil { // acknowledges run A
+		t.Fatal(err)
+	}
+	entry.startRun("run-b", streamB)
+	entry.publish(runEnvelope(t, "run-b", 1)) // queued; the consumer stays positioned in A
+	streamFailure := errors.New("run A stream died")
+	streamA <- base.Result{Error: streamFailure}
+	close(streamA)
+	close(streamB)
+	// Both readers exit before the consumer drains, so the stale failure
+	// has terminated the subscription ahead of any acknowledgement of B.
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		exited := entry.readers == 0
+		entry.mu.Unlock()
+		if exited {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the readers never exited")
+		default:
+		}
+	}
+
+	// The mailbox drains run B's queued envelope, then the stale failure
+	// ends the subscription — never a clean EOF hiding the loss.
+	if envelope, err := subscription.Next(); err != nil || envelope.RunID != "run-b" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
+		t.Fatalf("terminal %v, want run A's stale stream failure", err)
+	}
+}
+
+// TestAcknowledgedPositionOverridesStalePending pins the exposure priority:
+// once the consumer acknowledged a newer run, a late envelope from an older
+// run still queued behind it does not re-expose it to the older run's
+// overflow — its delivery of the newer run continues uninterrupted.
+func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.publish(runEnvelope(t, "run-a", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil {
+		t.Fatal(err)
+	}
+	entry.startRun("run-b", streamB)
+	entry.publish(runEnvelope(t, "run-b", 1))
+	if _, err := subscription.Next(); err != nil { // acknowledged run B
+		t.Fatal(err)
+	}
+	entry.publish(runEnvelope(t, "run-a", 2)) // a stale drainer's late envelope
+	entry.signalOverflow("run-a")             // must not terminate: position B
+
+	entry.publish(runEnvelope(t, "run-b", 2))
+	close(streamA)
+	close(streamB)
+	for _, want := range []protocol.RunID{"run-a", "run-b"} {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != want {
+			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
+		}
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want the clean end", err)
+	}
 }
 
 // stubSession settles its run asynchronously after Cancel: Close keeps
