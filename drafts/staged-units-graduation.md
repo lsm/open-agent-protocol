@@ -155,7 +155,16 @@ No new envelope types. Changes to
   files), and the draft 2020-12 metaschema is embedded in the engine, so
   an untrusted schema can never make an adapter or a validator read a
   local path or fetch a URL. The structured result travels in `run.completed.result` (already on
-  the wire) and must validate against the admitted schema.
+  the wire) and must validate against the admitted schema. In Go,
+  `protocol.RunCompletedPayload.Result` is today `map[string]any` with
+  `omitempty`, which drops a valid empty object `{}` from the wire and
+  would make a conforming run fail the presence check; T1 changes the
+  field to `json.RawMessage` (still `omitempty`, which for a raw message
+  omits only `nil`), so presence is preserved exactly as emitted and no
+  adapter re-encodes the harness's result. The memory adapter's
+  `{"ok": true}` and a schema admitting `{}` both round-trip, and the
+  T1 fixture `controls-structured-empty-object` (a schema with no required
+  members and an empty-object result, valid) pins the behavior.
 - Capability keys, all optional, gated per submit:
 
   | Key | Governs | Levels in v0.1 adapters after T1 |
@@ -1167,7 +1176,14 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   attached source ids with the newly declared sources, diagnosing
   `duplicate_tool_name` or `duplicate_tool_source` on the descriptor
   envelope, since a post-refresh list is not mandatory and an ambiguous
-  catalog would otherwise go unnoticed. An adapter whose refresh would
+  catalog would otherwise go unnoticed. The supplied-tool source check is
+  rerun at the same point: every retained provided tool's `source` must
+  still resolve against the retained attachments plus the new
+  descriptor's declared sources (`unmatched_tool_source` on the descriptor
+  envelope otherwise), so a refresh cannot leave a session with a provided
+  tool whose source resolves nowhere. An adapter's refresh therefore
+  keeps declaring any source a retained provided tool references, or the
+  refresh is a conformance failure. An adapter whose refresh would
   introduce a colliding native tool must namespace it or keep it out of
   the session's catalog; it never shadows a provided tool.
 - `session.state` snapshots: each `active_runs[]` entry's
@@ -1269,7 +1285,9 @@ then no open; validated as a correct rejection),
 supplied tools sharing a name, and the open admitted),
 `tools-refresh-collides-with-provided` (`duplicate_tool_name`; a provided
 tool `foo`, then a refreshed descriptor whose native tools include
-`foo`),
+`foo`), `tools-refresh-removes-provided-source` (`unmatched_tool_source`;
+a provided tool referencing a descriptor-declared source, then a refresh
+that no longer declares it),
 `open-attach-colliding-source-admitted` (`duplicate_tool_source`; an
 attached source reusing an id the descriptor declares, and the open
 admitted),
@@ -1631,14 +1649,19 @@ every later unit relies on:
   `"cancelled"` on its resolution); lifting them would make both branches
   of each `if` match every payload, forbidding and requiring `options` at
   once, so the tolerant compile keeps every `enum`/`const` inside an `if`
-  guard exact and lifts everything else, including the outer
-  `question.properties.kind.enum` that those guards compare: an unknown
-  `kind: "date"` then matches neither guard, takes neither `then`, and
-  surfaces as a string as the extension rule promises, whereas exempting
-  the whole property would still reject it. The step's tests validate a
-  payload carrying a new leaf enum value, and a `user.input.requested`
-  with an unknown `kind`, against the old bundle in both modes (tolerated
-  tolerant, rejected strict) and,
+  guard exact and lifts the extensible `enum` leaves elsewhere, including
+  the outer `question.properties.kind.enum` that those guards compare: an
+  unknown `kind: "date"` then matches neither guard, takes neither
+  `then`, and surfaces as a string as the extension rule promises, whereas
+  exempting the whole property would still reject it. A `const` is never
+  lifted: it is a fixed semantic value, not an extensible vocabulary
+  (`run.started.status` is `const: "running"`, and a `run.started` with
+  `status: "failed"` is malformed under any revision), and the same holds
+  for the `protocol`, `version`, and `profile` constants. The step's tests
+  validate a payload carrying a new leaf enum value, and a
+  `user.input.requested` with an unknown `kind`, against the old bundle
+  in both modes (tolerated tolerant, rejected strict), and a `run.started`
+  with `status: "failed"` rejected in both, and,
   as the regression guard, every fixture in the manifest under the
   tolerant compile, which must accept everything the strict compile
   accepts.
