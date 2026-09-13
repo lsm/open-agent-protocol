@@ -1141,6 +1141,66 @@ func TestSubmitErrorStreamStillDrains(t *testing.T) {
 	}
 }
 
+// TestOrphanBecomesCurrentOverCompletedRun pins the orphan promotion: a
+// stream returned with a submit error names a run whose envelopes make it
+// current over the run that completed before the admission — so a bare
+// Last-Event-ID reconnect resolves to it — while a genuinely newer
+// admission keeps precedence.
+func TestOrphanBecomesCurrentOverCompletedRun(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	// A run completed earlier leaves the hub's current run pointing at it.
+	streamOld := make(chan base.Result, 4)
+	entry.startRun("run-old", streamOld)
+	close(streamOld)
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		settled := entry.readers == 0
+		entry.mu.Unlock()
+		if settled {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the old run's reader never exited")
+		default:
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
+		})
+		done <- err
+	}()
+	<-gated.entered
+	gated.stream = make(chan base.Result, 4)
+	gated.failWithStream = context.Canceled
+	close(gated.release)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("submit error %v, want context.Canceled", err)
+	}
+	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-x", 1)}
+	close(gated.stream)
+	boundDeadline := time.After(testTimeout)
+	for {
+		if current, ok := entry.currentRun(); ok && current == "run-x" {
+			break
+		}
+		select {
+		case <-boundDeadline:
+			current, _ := entry.currentRun()
+			t.Fatalf("current run %q, want run-x — the orphan supersedes the completed run", current)
+		default:
+		}
+	}
+}
+
 // TestAcknowledgedOrderStaysMonotonic pins the acknowledged admission
 // order: a late envelope from an older run consumed after a newer run must
 // not drag the position backward and un-expose the subscriber to the newer

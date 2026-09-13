@@ -307,17 +307,18 @@ func (s *Session) currentRun() (protocol.RunID, bool) {
 	return s.runID, s.runID != ""
 }
 
-// bindRun registers a run discovered from an orphan stream's envelopes:
-// it gains an admission serial, and becomes the current run when the hub
-// tracks none — an already-current run keeps precedence.
-func (s *Session) bindRun(runID protocol.RunID) protocol.RunID {
+// bindRun registers a run discovered from an orphan stream's envelopes
+// against the admission serial reserved when the orphan was adopted: the
+// bound run becomes current when that serial outranks the current run's —
+// superseding the run that predated the adoption, deferring to any
+// genuinely newer admission.
+func (s *Session) bindRun(runID protocol.RunID, reserved uint64) protocol.RunID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.serials[runID] == 0 {
-		s.nextSerial++
-		s.serials[runID] = s.nextSerial
+		s.serials[runID] = reserved
 	}
-	if s.runID == "" {
+	if reserved > s.serials[s.runID] {
 		s.runID = runID
 	}
 	return runID
@@ -334,7 +335,7 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 	s.serials[runID] = s.nextSerial
 	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 	s.mu.Unlock()
-	go s.readRun(runID, stream)
+	go s.readRun(runID, stream, 0)
 }
 
 // adoptRun converts a Submit reservation into the new run's draining
@@ -349,7 +350,7 @@ func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 	s.serials[runID] = s.nextSerial
 	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 	s.mu.Unlock()
-	go s.readRun(runID, stream)
+	go s.readRun(runID, stream, 0)
 }
 
 // adoptOrphan converts the reservation into a drainer for a stream an
@@ -363,8 +364,12 @@ func (s *Session) adoptOrphan(stream base.EventStream) {
 	s.mu.Lock()
 	s.reservations--
 	s.readers++
+	// Reserve the admission serial now, in admission order; the run the
+	// envelopes later name binds to it.
+	s.nextSerial++
+	reserved := s.nextSerial
 	s.mu.Unlock()
-	go s.readRun("", stream)
+	go s.readRun("", stream, reserved)
 }
 
 // releaseReservation unwinds a Submit admission that never became a run.
@@ -405,15 +410,18 @@ func (s *Session) releaseReservation() {
 // leave always finishes them, with the current run's terminal outcome — its
 // own when it drained the current run, otherwise the outcome the current
 // run's reader stashed on exit (see pendingEnd).
-func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
+func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserved uint64) {
 	var end *terminalState
 	for result := range stream {
 		// An orphan stream — returned alongside a submit error — carries no
 		// run id of its own: bind it to the run its envelopes name before
 		// any terminal signal, so overflow cursors and deferral bookkeeping
-		// resolve to the authoritative run rather than an empty one.
+		// resolve to the authoritative run rather than an empty one. The
+		// admission serial was reserved when the orphan was adopted, so the
+		// bound run supersedes the run that predated the adoption while any
+		// genuinely newer admission keeps precedence.
 		if runID == "" && result.Envelope.RunID != "" {
-			runID = s.bindRun(result.Envelope.RunID)
+			runID = s.bindRun(result.Envelope.RunID, reserved)
 		}
 		if result.Error != nil {
 			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
@@ -440,6 +448,17 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 // them with the given state.
 func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
 	s.mu.Lock()
+	affected := s.detachExposedLocked(runID)
+	s.mu.Unlock()
+	for _, sub := range affected {
+		sub.stop(state)
+	}
+}
+
+// detachExposedLocked removes and returns the subscribers exposed to runID
+// from the live set; s.mu must be held, so the scan cannot miss members a
+// concurrent bookkeeping path is about to detach.
+func (s *Session) detachExposedLocked(runID protocol.RunID) []*subscriber {
 	serial := s.serials[runID]
 	affected := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
@@ -448,10 +467,7 @@ func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
 			delete(s.subs, sub)
 		}
 	}
-	s.mu.Unlock()
-	for _, sub := range affected {
-		sub.stop(state)
-	}
+	return affected
 }
 
 // exitReader is the path a run reader takes when its stream ends: with
@@ -465,19 +481,25 @@ func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
 func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	// A stale drainer's error must not vanish because a newer run keeps
 	// the hub busy: the subscribers still exposed to the failed run are
-	// terminated now. The current run's error keeps the deferred path —
-	// co-drainers may still be delivering its tail.
-	if end != nil && end.err != nil {
-		s.mu.Lock()
-		stale := s.runID != runID
-		s.mu.Unlock()
-		if stale {
-			s.stopExposed(runID, end)
-		}
-	}
+	// terminated after the bookkeeping below. Staleness is decided inside
+	// that same critical section — deciding it earlier would let a
+	// concurrent admission flip the run between the classification and the
+	// exit bookkeeping, dropping the error through the gap. The current
+	// run's error keeps the deferred path — co-drainers may still be
+	// delivering its tail.
+	var exposed []*subscriber
 	s.mu.Lock()
 	s.readers--
 	current := s.runID
+	// A stale drainer's error must not vanish because a newer run keeps
+	// the hub busy: the subscribers still exposed to the failed run are
+	// collected in this same critical section — collecting them after the
+	// bookkeeping below would miss members detached from the live set on
+	// the way out. The current run's error keeps the deferred path —
+	// co-drainers may still be delivering its tail.
+	if end != nil && end.err != nil && current != runID {
+		exposed = s.detachExposedLocked(runID)
+	}
 	if current == runID {
 		// The current run's outcome is deferred behind company — older
 		// readers still draining, or a reservation in flight — and is owed
@@ -489,6 +511,9 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	}
 	if s.readers > 0 {
 		s.mu.Unlock()
+		for _, sub := range exposed {
+			sub.stop(end)
+		}
 		return
 	}
 	if s.reservations > 0 {
@@ -497,6 +522,9 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 			s.deferred = s.snapshotSubsLocked()
 		}
 		s.mu.Unlock()
+		for _, sub := range exposed {
+			sub.stop(end)
+		}
 		return
 	}
 	if current != runID {
@@ -516,6 +544,9 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 			}
 		}
 		s.mu.Unlock()
+		for _, sub := range exposed {
+			sub.stop(end)
+		}
 		for _, sub := range cohort {
 			sub.stop(state)
 		}
