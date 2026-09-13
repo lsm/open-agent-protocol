@@ -57,6 +57,7 @@ type fakeClient struct {
 	started chan string
 	mu      sync.Mutex
 	closed  bool
+	dead    bool
 	replies map[string][]reply
 	calls   []recordedCall
 	callsMu sync.Mutex
@@ -1048,4 +1049,102 @@ func TestRespondFailureDoesNotProjectSubmitted(t *testing.T) {
 			t.Fatal("failed resolution emitted user.input.resolved")
 		}
 	}
+}
+
+// transportClose simulates the transport dying underneath the session: Done
+// fires and, as the production relay does once every already-routed
+// observation is forwarded, the inbound stream closes.
+func (f *fakeClient) transportClose() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dead {
+		return
+	}
+	f.dead = true
+	if !f.closed {
+		close(f.done)
+		f.closed = true
+	}
+	close(f.in)
+}
+
+// waitUnusable blocks until the reducer settled a transport failure (it marks
+// the session unusable under reduceMu, so once observed, anything that next
+// acquires reduceMu runs after the failure path decided).
+func waitUnusable(t *testing.T, s base.Session) {
+	t.Helper()
+	session := s.(*Session)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session.mu.Lock()
+		unusable := session.unusable
+		session.mu.Unlock()
+		if unusable {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("session did not become unusable after the transport closed")
+}
+
+// The transport can die right after native acceptance: the gateway answered
+// prompt.submit with status streaming and opened the turn, then the process
+// exited. The projection must not depend on whether the reducer settles the
+// transport failure before or after the Submit goroutine learns of the reply:
+// both interleavings yield run.started, the buffered delta, and run.failed
+// hermes_process_exit (the malformed-frame corpus trace). Before the in-flight
+// call was tracked, the reducer-first order aborted the reservation and Submit
+// returned an error with no stream at all (issue #10).
+func TestTransportDeathAfterAcceptanceProjectsTheOpenedTurn(t *testing.T) {
+	run := func(t *testing.T, closeBeforeReply bool) {
+		s, f := openTest(t)
+		release := make(chan struct{})
+		f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}, before: func() { <-release }})
+		ch := submitAsync(s)
+		f.awaitCall(t, native.MethodPromptSubmit)
+		// The turn opens and streams while the reply is still gated: both
+		// observations reduce against the unaccepted reservation and buffer.
+		f.event(native.EventMessageStart, 1, "")
+		f.event(native.EventMessageDelta, 2, `{"text":"Hi"}`)
+		if closeBeforeReply {
+			f.transportClose()
+			waitUnusable(t, s)
+		}
+		close(release)
+		got := <-ch
+		if got.err != nil {
+			t.Fatalf("submit failed instead of projecting the opened turn: %v", got.err)
+		}
+		if got.stream == nil || got.response.Admission != protocol.AdmissionStarted {
+			t.Fatalf("admission %+v with stream %v, want a started admission with a stream", got.response, got.stream)
+		}
+		if !closeBeforeReply {
+			f.transportClose()
+		}
+		events := drain(t, got.stream)
+		want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunFailed}
+		if len(events) != len(want) {
+			t.Fatalf("events %v", events)
+		}
+		for i := range want {
+			if events[i].Type != want[i] {
+				t.Fatalf("event %d = %s, want %s", i, events[i].Type, want[i])
+			}
+		}
+		var delta protocol.ContentDeltaPayload
+		if err := events[1].DecodePayload(&delta); err != nil || delta.Part.Type != protocol.ContentText || delta.Part.Text != "Hi" {
+			t.Fatalf("buffered delta lost: %+v err=%v", delta.Part, err)
+		}
+		var failed protocol.RunFailedPayload
+		if err := events[2].DecodePayload(&failed); err != nil || failed.Error.Code != "hermes_process_exit" || failed.Error.Message != "EOF" {
+			t.Fatalf("terminal %+v err=%v, want hermes_process_exit carrying the transport error", failed.Error, err)
+		}
+		validateWithCapabilities(t, got.response, events)
+		// The dead transport leaves the session unusable in both orders.
+		if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
+			t.Fatalf("session usable after transport death: %v", err)
+		}
+	}
+	t.Run("reducer settles the failure before the reply lands", func(t *testing.T) { run(t, true) })
+	t.Run("reply lands before the transport closes", func(t *testing.T) { run(t, false) })
 }

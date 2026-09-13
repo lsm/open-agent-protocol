@@ -43,6 +43,11 @@ type Session struct {
 	lastSeq      int64
 	stop         chan struct{}
 	stopOnce     sync.Once
+	// transportDead records that the reducer settled the transport's death
+	// (transportFailed ran). A Submit whose prompt.submit call was in flight
+	// at that point owns its reservation's settlement and reads this after
+	// the reply.
+	transportDead bool
 }
 
 // runState is reduceMu-domain except terminal/subscribers/started, which are
@@ -59,8 +64,15 @@ type runState struct {
 	// convergence point are buffered in wire order and replayed at start:
 	// the response barrier orders only wire-earlier events, so a piped
 	// burst can deliver turn frames around the response.
+	//
+	// submitting (reduceMu-domain) is set while the prompt.submit call is in
+	// flight. The reply decides whether native acceptance happened, so a
+	// transport failure settled in that window leaves the reservation to the
+	// Submit goroutine instead of aborting it: aborting would race the reply
+	// and drop an already-opened turn's evidence.
 	accepted      bool
 	openSeen      bool
+	submitting    bool
 	buffered      []native.Event
 	submittedText string
 	messageID     protocol.MessageID
@@ -142,6 +154,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	run := &runState{status: protocol.RunQueued, next: 1, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), startResult: make(chan error, 1)}
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
+	run.submitting = true
 	s.pending = run
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
@@ -152,6 +165,10 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	}()
 	err = <-callDone
 	s.reduceMu.Lock()
+	// The call is no longer in flight: from here the reservation is settled
+	// below or handed back to the reducer, and a transport failure settled
+	// after this point aborts it directly (transportFailed).
+	run.submitting = false
 	if err != nil || result.Status != native.SubmitStreaming {
 		if err == nil {
 			// A busy status (steered/redirected/queued), voice stop, or
@@ -159,9 +176,9 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			// these, so the native state diverged from the contract.
 			err = fmt.Errorf("%w: prompt.submit returned status %q", ErrNativeProtocol, result.Status)
 		}
+		s.abortPreStartUnlocked(run, err)
 		s.reduceMu.Unlock()
 		s.promptMu.Unlock()
-		s.abortPreStart(run, err)
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
 	// The response barriers behind wire-earlier events, so everything the
@@ -169,9 +186,18 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.mu.Lock()
 	run.accepted = true
 	openSeen := run.openSeen
+	transportDead := s.transportDead
 	s.mu.Unlock()
 	if openSeen {
 		s.startRun(run)
+	}
+	if transportDead {
+		// The transport died while the call was in flight and the reducer
+		// left the reservation to this goroutine; nothing more will be
+		// observed. An opened turn projects its buffered evidence and fails
+		// as a process exit; an unopened reservation aborts with the
+		// transport error.
+		s.failTransport(run)
 	}
 	s.reduceMu.Unlock()
 	s.promptMu.Unlock()
@@ -187,7 +213,8 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			// native acceptance is confirmed and the run is authoritative.
 			// Cancellation is now ambiguous to this caller; keep the reservation
 			// alive for the reducer to settle rather than reverting the session to
-			// idle while the accepted native turn may still execute.
+			// idle while the accepted native turn may still execute. The call is
+			// no longer in flight, so a later transport failure aborts it.
 			s.reduceMu.Unlock()
 			return protocol.MessageSubmitResponse{}, nil, ctx.Err()
 		}
@@ -992,12 +1019,6 @@ func (s *Session) foreignActivity(what string) {
 	}
 }
 
-func (s *Session) abortPreStart(run *runState, err error) {
-	s.reduceMu.Lock()
-	defer s.reduceMu.Unlock()
-	s.abortPreStartUnlocked(run, err)
-}
-
 func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 	s.mu.Lock()
 	if run.terminal || run.started {
@@ -1039,15 +1060,31 @@ func (s *Session) transportFailed() {
 	closed := s.closed
 	if !closed {
 		s.unusable = true
+		s.transportDead = true
 	}
 	s.mu.Unlock()
-	if !closed && run != nil {
-		if run.started {
-			s.failRun(run, "hermes_process_exit", fmt.Sprint(s.client.Err()))
-		} else {
-			s.abortPreStartUnlocked(run, fmt.Errorf("%w: %v", ErrNativeProtocol, s.client.Err()))
-		}
+	if closed || run == nil {
+		return
 	}
+	if !run.started && run.submitting {
+		// The reservation's prompt.submit call is in flight, so whether the
+		// native accepted the turn is the reply's to say. The Submit
+		// goroutine observes transportDead after the reply and settles the
+		// reservation itself; aborting here would race that reply and drop
+		// an already-opened turn's evidence.
+		return
+	}
+	s.failTransport(run)
+}
+
+// failTransport settles one run against the dead transport: a started run
+// fails as a process exit, an unstarted reservation aborts with the error.
+func (s *Session) failTransport(run *runState) {
+	if run.started {
+		s.failRun(run, "hermes_process_exit", fmt.Sprint(s.client.Err()))
+		return
+	}
+	s.abortPreStartUnlocked(run, fmt.Errorf("%w: %v", ErrNativeProtocol, s.client.Err()))
 }
 
 func (s *Session) emit(run *runState, t protocol.EnvelopeType, p any, terminal bool) error {
