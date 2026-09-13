@@ -261,7 +261,7 @@ func TestHubSubscriberQueueOverflow(t *testing.T) {
 		envelope.Sequence = &value
 		entry.publish(envelope)
 	}
-	if !slow.overflow.Load() {
+	if terminal := slow.terminal.Load(); terminal == nil || !terminal.overflow {
 		t.Fatal("slow subscriber was not marked overflowed")
 	}
 	select {
@@ -272,7 +272,7 @@ func TestHubSubscriberQueueOverflow(t *testing.T) {
 	if len(fast.ch) != 5 {
 		t.Fatalf("fast subscriber queued %d envelopes, want 5", len(fast.ch))
 	}
-	entry.finishSubs(false, nil)
+	entry.finishSubs(nil)
 	select {
 	case <-fast.finish:
 	default:

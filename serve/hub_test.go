@@ -54,14 +54,17 @@ func (a *manualAdapter) active(t *testing.T) *manualSession {
 }
 
 // manualSession runs at most one stream at a time; the test emits envelopes
-// or stream errors into it and ends the run by closing the stream.
+// or stream errors into it and ends the run by closing the stream. With
+// replayOverflow set, Resume hands back a stream that reports an event-
+// stream overflow before delivering anything.
 type manualSession struct {
-	id     protocol.SessionID
-	mu     sync.Mutex
-	runs   int
-	stream chan base.Result
-	active protocol.RunID
-	closed bool
+	id             protocol.SessionID
+	mu             sync.Mutex
+	runs           int
+	stream         chan base.Result
+	active         protocol.RunID
+	closed         bool
+	replayOverflow bool
 }
 
 var _ base.Session = (*manualSession)(nil)
@@ -102,8 +105,16 @@ func (s *manualSession) Cancel(_ context.Context, runID protocol.RunID) (protoco
 	return protocol.RunCancelResponse{SessionID: s.id, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 
-func (s *manualSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
-	return base.Recovery{}, nil, base.ErrRunNotFound
+func (s *manualSession) Resume(_ context.Context, _ base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.replayOverflow {
+		return base.Recovery{}, nil, base.ErrRunNotFound
+	}
+	out := make(chan base.Result, 1)
+	out <- base.Result{Error: base.ErrEventStreamOverflow}
+	close(out)
+	return base.Recovery{}, out, nil
 }
 
 func (s *manualSession) Close(context.Context) error {
@@ -324,7 +335,7 @@ func TestHubOpenRejections(t *testing.T) {
 
 	// A session that never ran has nothing to replay for a cursor.
 	openMemorySession(t, hub, "no-run")
-	if _, err := hub.Subscribe(ctx, "no-run", serve.After(0)); !errors.Is(err, serve.ErrNoRunToResume) {
+	if _, err := hub.Subscribe(ctx, "no-run", serve.After("", 0)); !errors.Is(err, serve.ErrNoRunToResume) {
 		t.Fatalf("no-run resume error %v", err)
 	}
 }
@@ -608,7 +619,7 @@ func TestHubResumeFromCursorMidStream(t *testing.T) {
 
 	// The run is parked at its gate with sequences 1..4 published; a cursor
 	// subscription joins at 3 and must replay 3..4 before live events.
-	resumed, err := hub.Subscribe(ctx, "resume", serve.After(2))
+	resumed, err := hub.Subscribe(ctx, "resume", serve.After(runID, 2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,9 +659,9 @@ func TestHubReplayGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer subscription.Close()
-	driveMemoryRun(t, session, subscription)
+	runID := driveMemoryRun(t, session, subscription)
 
-	_, err = hub.Subscribe(ctx, "gap", serve.After(1))
+	_, err = hub.Subscribe(ctx, "gap", serve.After(runID, 1))
 	var gap *base.ReplayGap
 	if !errors.As(err, &gap) {
 		t.Fatalf("error %v (%T), want *adapter.ReplayGap", err, err)
@@ -660,7 +671,7 @@ func TestHubReplayGap(t *testing.T) {
 	}
 
 	// A cursor inside the retained window still replays the suffix.
-	recovered, err := hub.Subscribe(ctx, "gap", serve.After(10))
+	recovered, err := hub.Subscribe(ctx, "gap", serve.After(runID, 10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -691,10 +702,10 @@ func TestHubCloseReplaySubscriptionEndsPromptly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer live.Close()
-	submitGolden(t, session, "park at the gate")
+	runID := submitGolden(t, session, "park at the gate")
 	initial := nextUntil(t, live, typeStop(protocol.TypeActionPermissionRequested))
 
-	resumed, err := hub.Subscribe(ctx, "close-replay", serve.After(2))
+	resumed, err := hub.Subscribe(ctx, "close-replay", serve.After(runID, 2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,6 +736,174 @@ func TestHubCloseReplaySubscriptionEndsPromptly(t *testing.T) {
 	middle := nextUntil(t, live, typeStop(protocol.TypeRunStatusUpdated))
 	resolveGate(t, session, envelopeOfType(t, middle, protocol.TypeUserInputRequested))
 	nextUntil(t, live, typeStop(protocol.TypeRunCompleted))
+}
+
+// TestHubCursorResumeBindsRun pins the run-bound cursor: with runs A and B
+// both settled and B current, a cursor bound to A replays A's suffix — not
+// B's events under A's sequence — while an unbound cursor resolves onto the
+// current run like the daemon's Last-Event-ID.
+func TestHubCursorResumeBindsRun(t *testing.T) {
+	hub := memoryHub(t, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	session := openMemorySession(t, hub, "bind")
+	first, err := hub.Subscribe(ctx, "bind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runA := driveMemoryRun(t, session, first)
+	first.Close()
+	second, err := hub.Subscribe(ctx, "bind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runB := driveMemoryRun(t, session, second)
+	if runA == runB {
+		t.Fatal("the scripted runs share a run id")
+	}
+
+	bound, err := hub.Subscribe(ctx, "bind", serve.After(runA, 9))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	replayed := nextUntil(t, bound, typeStop(protocol.TypeRunCompleted))
+	if len(replayed) != 3 {
+		t.Fatalf("bound replay %d envelopes, want 3", len(replayed))
+	}
+	for offset, envelope := range replayed {
+		if envelope.RunID != runA || envelope.Sequence == nil || *envelope.Sequence != uint64(10+offset) {
+			t.Fatalf("bound envelope %d: run %s sequence %v, want %s at %d", offset, envelope.RunID, envelope.Sequence, runA, 10+offset)
+		}
+	}
+
+	current, err := hub.Subscribe(ctx, "bind", serve.After("", 9))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	resolved := nextUntil(t, current, typeStop(protocol.TypeRunCompleted))
+	if len(resolved) != 3 {
+		t.Fatalf("current-run replay %d envelopes, want 3", len(resolved))
+	}
+	for offset, envelope := range resolved {
+		if envelope.RunID != runB || envelope.Sequence == nil || *envelope.Sequence != uint64(10+offset) {
+			t.Fatalf("current-run envelope %d: run %s sequence %v, want %s at %d", offset, envelope.RunID, envelope.Sequence, runB, 10+offset)
+		}
+	}
+}
+
+// TestHubOverflowSignalNamesOverflowedRun pins the overflow cursor against
+// the late-consumer race: a subscriber overflowed on run A that only reads
+// the signal after run B was admitted gets A as its resume run, because the
+// run is snapshotted when the overflow happens, not when the signal is read.
+// A witness subscription with a deep queue barriers on run A's completion
+// before run B starts, so which envelope overflowed the one-slot subscriber
+// is deterministic.
+func TestHubOverflowSignalNamesOverflowedRun(t *testing.T) {
+	manual := &manualAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 1})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	session, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "late-overflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow, err := hub.Subscribe(ctx, "late-overflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Close()
+	witness, err := hub.Subscribe(ctx, "late-overflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer witness.Close()
+	active := manual.active(t)
+
+	// Run A queues one envelope into the one-slot buffer, then overflows it.
+	runA := submitGolden(t, session, "overflow on run A")
+	active.emit(t, 1)
+	active.emit(t, 2)
+	active.endRun()
+	// The witness drains run A to its clean end, proving the reader finished
+	// every publish of run A before run B is admitted.
+	for count := 0; count < 2; count++ {
+		if _, err := witness.Next(); err != nil {
+			t.Fatalf("witness envelope %d: %v", count, err)
+		}
+	}
+	if _, err := witness.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("witness end error %v, want io.EOF", err)
+	}
+
+	// Run B intervenes and settles before the slow consumer reads anything.
+	runB := submitGolden(t, session, "run B intervenes")
+	active.emit(t, 1)
+	active.endRun()
+	if runA == runB {
+		t.Fatal("the manual adapter minted one run id for both runs")
+	}
+
+	first, err := slow.Next()
+	if err != nil || first.Sequence == nil || *first.Sequence != 1 || first.RunID != runA {
+		t.Fatalf("first envelope: run %s sequence %v error %v", first.RunID, first.Sequence, err)
+	}
+	_, err = slow.Next()
+	var overflow *serve.OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("error %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != runA {
+		t.Fatalf("overflow run %q, want the overflowed run %q (run B is current)", overflow.RunID, runA)
+	}
+	if overflow.LastSequence != 1 {
+		t.Fatalf("overflow sequence %d, want 1", overflow.LastSequence)
+	}
+}
+
+// TestHubReplayOverflowSeedsCursor pins the replay cursor floor: when the
+// replay stream overflows before delivering anything, the signal's cursor
+// must not regress behind the position the subscription started after.
+func TestHubReplayOverflowSeedsCursor(t *testing.T) {
+	manual := &manualAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	session, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "replay-overflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := submitGolden(t, session, "make a run to resume")
+	manual.active(t).endRun()
+	manual.active(t).mu.Lock()
+	manual.active(t).replayOverflow = true
+	manual.active(t).mu.Unlock()
+
+	replayed, err := hub.Subscribe(ctx, "replay-overflow", serve.After(runID, 5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replayed.Close()
+	_, err = replayed.Next()
+	var overflow *serve.OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("error %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != runID || overflow.LastSequence != 5 {
+		t.Fatalf("overflow cursor %+v, want run %s sequence 5", overflow, runID)
+	}
 }
 
 // --- listing and close semantics ---

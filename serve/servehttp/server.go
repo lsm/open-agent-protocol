@@ -485,7 +485,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, "invalid_cursor", fmt.Sprintf("cursor %q is not an unsigned sequence", cursor), protocol.Envelope{SessionID: entry.ID()})
 			return
 		}
-		options = append(options, serve.After(after))
+		// The wire cursor carries only a sequence: the daemon resolves it
+		// onto the session's current run, exactly as documented for
+		// Last-Event-ID reconnects.
+		options = append(options, serve.After("", after))
 	}
 	subscription, err := s.hub.Subscribe(r.Context(), entry.ID(), options...)
 	var gap *base.ReplayGap

@@ -148,7 +148,7 @@ for {
 Subscriptions are the daemon's SSE connections without the socket: any number
 per session, bounded per-subscription buffers, and the same typed terminal
 signals — `*serve.OverflowError` carries the resume cursor (re-subscribe with
-`serve.After(err.LastSequence)`), and an expired cursor fails `Subscribe` with
+`serve.After(err.RunID, err.LastSequence)`), and an expired cursor fails `Subscribe` with
 `*adapter.ReplayGap` naming what is still retained. `hub.Sessions(ctx)` lists
 every session with its adapter and lifecycle status (closed entries stay
 listed with their final state), and `hub.CloseSessions(ctx)` settles every

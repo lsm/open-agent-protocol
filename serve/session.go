@@ -156,30 +156,35 @@ func (s *Session) Close(ctx context.Context) error {
 
 // subscriber is one subscription's bounded mailbox. The channel is never
 // closed by the producer: a subscriber that must terminate is removed from
-// the hub and its finish channel is closed, and the consumer drains whatever
-// envelopes were already queued.
+// the hub, its terminal state is recorded, and its finish channel is closed;
+// the consumer drains whatever envelopes were already queued.
 type subscriber struct {
 	ch         chan protocol.Envelope
 	finish     chan struct{}
 	finishOnce sync.Once
-	overflow   atomic.Bool
-	// cause is the run stream's terminal error, when the run ended on one:
-	// a live consumer must see the adapter's failure, not a clean end.
-	cause atomic.Pointer[error]
+	terminal   atomic.Pointer[terminalState]
+}
+
+// terminalState is a subscriber's end state, recorded at stop time: the
+// overflow signal naming the run that overflowed, or the run stream's
+// terminal error. A nil state ends the stream cleanly. Recording the run at
+// stop time — not when the consumer gets around to reading the signal —
+// keeps the recovery cursor valid even when a newer run is admitted before
+// the consumer observes the overflow.
+type terminalState struct {
+	overflow bool
+	run      protocol.RunID
+	err      error
 }
 
 func newSubscriber(queue int) *subscriber {
 	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{})}
 }
 
-// stop terminates the subscriber: overflowed marks the fell-behind signal
-// and a non-nil cause becomes its terminal error; neither ends it cleanly.
-func (sub *subscriber) stop(overflowed bool, cause error) {
-	if overflowed {
-		sub.overflow.Store(true)
-	}
-	if cause != nil {
-		sub.cause.Store(&cause)
+// stop terminates the subscriber with its terminal state, if any.
+func (sub *subscriber) stop(state *terminalState) {
+	if state != nil {
+		sub.terminal.Store(state)
 	}
 	sub.finishOnce.Do(func() { close(sub.finish) })
 }
@@ -234,18 +239,18 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 // an error other than overflow carries that error to every subscriber as its
 // terminal error — a failed run must not read as a clean end.
 func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
-	var streamErr error
+	var end *terminalState
 	for result := range stream {
 		if result.Error != nil {
 			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
-				s.signalOverflow()
+				s.signalOverflow(runID)
 				continue
 			}
 			// Any other stream error ends delivery for this run; the
 			// documented reconnect path is the replay cursor. The stream is
 			// still drained so an adapter that reports an error but keeps
 			// its channel open cannot block its own later emits.
-			streamErr = result.Error
+			end = &terminalState{err: result.Error}
 			go func(stream base.EventStream) {
 				for range stream {
 				}
@@ -260,7 +265,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	finish := s.readers == 0 && (current == runID || s.finishAfterDrain)
 	s.mu.Unlock()
 	if finish {
-		s.finishSubs(false, streamErr)
+		s.finishSubs(end)
 	}
 }
 
@@ -272,22 +277,27 @@ func (s *Session) publish(envelope protocol.Envelope) {
 		select {
 		case sub.ch <- envelope:
 		default:
+			// The overflow is of THIS envelope's run — runs may be draining
+			// concurrently, so the session's current run can already be a
+			// newer one — and that is the run the recovery cursor must name,
+			// whatever run is current by the time the consumer reads the
+			// signal.
 			delete(s.subs, sub)
-			sub.stop(true, nil)
+			sub.stop(&terminalState{overflow: true, run: envelope.RunID})
 		}
 	}
 	s.mu.Unlock()
 }
 
 // signalOverflow terminates every subscriber with the overflow signal after
-// the adapter itself reported an event-stream overflow.
-func (s *Session) signalOverflow() {
-	s.finishSubs(true, nil)
+// the adapter itself reported an event-stream overflow on runID.
+func (s *Session) signalOverflow(runID protocol.RunID) {
+	s.finishSubs(&terminalState{overflow: true, run: runID})
 }
 
-// finishSubs detaches every subscriber and terminates it: with the overflow
-// signal, with cause as its terminal error, or cleanly.
-func (s *Session) finishSubs(overflow bool, cause error) {
+// finishSubs detaches every subscriber and terminates it with the given
+// terminal state, or cleanly when the state is nil.
+func (s *Session) finishSubs(state *terminalState) {
 	s.mu.Lock()
 	subs := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
@@ -296,7 +306,7 @@ func (s *Session) finishSubs(overflow bool, cause error) {
 	s.subs = make(map[*subscriber]struct{})
 	s.mu.Unlock()
 	for _, sub := range subs {
-		sub.stop(overflow, cause)
+		sub.stop(state)
 	}
 }
 
@@ -314,7 +324,7 @@ func (s *Session) markClosed() {
 		return
 	}
 	s.mu.Unlock()
-	s.finishSubs(false, nil)
+	s.finishSubs(nil)
 }
 
 // closeForShutdown cancels any active run and then closes the adapter

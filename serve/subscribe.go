@@ -15,17 +15,25 @@ import (
 type SubscribeOption func(*subscribeOptions)
 
 type subscribeOptions struct {
+	runID protocol.RunID
 	after *uint64
 }
 
-// After replays the session's current run from just after the given sequence
-// before live events: the subscription first delivers the run's envelopes
-// after that cursor, then continues with new ones. A cursor the adapter no
-// longer retains surfaces as *adapter.ReplayGap from Subscribe itself.
-func After(sequence uint64) SubscribeOption {
+// After replays one run from just after the given sequence before live
+// events: the subscription first delivers that run's envelopes after the
+// cursor, then continues with its live events. Binding the cursor to the run
+// it was observed on keeps recovery exact when a newer run has already been
+// admitted — a cursor from an OverflowError names that error's RunID, and a
+// cursor taken from a stream position names the run the stream was
+// consuming. An empty runID binds to the session's current run, the same
+// resolution the daemon applies to a bare Last-Event-ID. A cursor the
+// adapter no longer retains surfaces as *adapter.ReplayGap from Subscribe
+// itself.
+func After(runID protocol.RunID, sequence uint64) SubscribeOption {
 	return func(options *subscribeOptions) {
 		value := sequence
 		options.after = &value
+		options.runID = runID
 	}
 }
 
@@ -65,9 +73,14 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	if entry.IsClosed() {
 		return nil, &SessionClosedError{ID: id}
 	}
-	runID, hasRun := entry.currentRun()
-	if !hasRun {
-		return nil, ErrNoRunToResume
+	runID := config.runID
+	if runID == "" {
+		var hasRun bool
+		// The cursor names no run: resolve it onto the session's current
+		// run, exactly as the daemon resolves a bare Last-Event-ID.
+		if runID, hasRun = entry.currentRun(); !hasRun {
+			return nil, ErrNoRunToResume
+		}
 	}
 	_, replay, err := entry.session.Resume(ctx, base.ResumeRequest{RunID: runID, AfterSequence: *config.after})
 	var gap *base.ReplayGap
@@ -77,7 +90,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 	if err != nil {
 		return nil, err
 	}
-	return &Subscription{session: entry, ctx: ctx, replay: replay, run: runID}, nil
+	return &Subscription{session: entry, ctx: ctx, replay: replay, run: runID, last: *config.after}, nil
 }
 
 // Subscription is one ordered run-event consumer, the in-process counterpart
@@ -139,9 +152,10 @@ func (s *Subscription) Close() {
 }
 
 // nextLive serves the hub's live mailbox until the run reaches a terminal
-// event, the subscription overflows, or the context ends. The session is
-// consulted at signal time so a subscriber parked before the run started
-// still reports the run that overflowed it.
+// event, the subscription overflows, or the context ends. The terminal state
+// was recorded at stop time — including the run that overflowed this
+// subscriber — so the signal's cursor stays valid even when a newer run was
+// admitted before the consumer read it.
 func (s *Subscription) nextLive() (protocol.Envelope, error) {
 	for {
 		select {
@@ -158,15 +172,14 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 					return envelope, nil
 				default:
 					s.finished = true
-					if s.sub.overflow.Load() {
-						runID, _ := s.session.currentRun()
-						s.err = &OverflowError{RunID: runID, LastSequence: s.last}
-						return protocol.Envelope{}, s.err
-					}
-					if cause := s.sub.cause.Load(); cause != nil {
-						// The run's adapter stream ended on this error; a
-						// failed run must not read as a clean end.
-						s.err = *cause
+					if state := s.sub.terminal.Load(); state != nil {
+						if state.overflow {
+							s.err = &OverflowError{RunID: state.run, LastSequence: s.last}
+						} else {
+							// The run's adapter stream ended on this error;
+							// a failed run must not read as a clean end.
+							s.err = state.err
+						}
 						return protocol.Envelope{}, s.err
 					}
 					return protocol.Envelope{}, io.EOF
@@ -228,7 +241,7 @@ func (s *Subscription) observe(envelope protocol.Envelope) {
 func (s *Subscription) detach() {
 	if s.sub != nil {
 		s.session.unsubscribe(s.sub)
-		s.sub.stop(false, nil)
+		s.sub.stop(nil)
 		return
 	}
 	if s.replay != nil {
@@ -243,7 +256,9 @@ func (s *Subscription) detach() {
 // OverflowError reports that this subscription's event delivery fell
 // behind: its bounded buffer overflowed, or the adapter itself reported an
 // event-stream overflow. LastSequence is the last sequence this subscription
-// delivered; resume with Subscribe and After(LastSequence), bound to RunID.
+// delivered — for a replay subscription, at least the cursor it started
+// after — and RunID is the run the delivery position belongs to; resume
+// with Subscribe and After(RunID, LastSequence).
 type OverflowError struct {
 	RunID        protocol.RunID
 	LastSequence uint64
