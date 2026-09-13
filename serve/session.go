@@ -119,9 +119,17 @@ func (s *Session) IsClosed() bool {
 	return s.closed
 }
 
-// State reads the adapter's authoritative session state.
+// State reads the adapter's authoritative session state. An adapter
+// reporting the session closed (a process-backed adapter whose child exited
+// while idle) closes the hub-side entry too, mirroring the terminal Submit
+// rejection: live subscribers end and new subscriptions are refused rather
+// than parking on a session that can never run again.
 func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
-	return s.session.State(ctx)
+	state, err := s.session.State(ctx)
+	if errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
+	}
+	return state, err
 }
 
 // Submit admits one message submission and returns the adapter's admission.
@@ -269,32 +277,37 @@ func (sub *subscriber) untrack(run protocol.RunID) {
 
 // lossRun reports the run a queue-full drop's cursor should name: the
 // newest of the dropped envelope's run, the subscriber's acknowledged
-// position (or its attachment run before anything is acknowledged), and
-// any run with envelopes still queued — detaching the subscriber discards
-// every one of those runs' remaining delivery, and a cursor on any older
-// run cannot recover the newer ones' tails. The drain before the terminal
-// records the queued envelopes' positions, so the cursor resumes the
-// newest queued run exactly where delivery stopped.
-func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64) protocol.RunID {
+// position (or its attachment run before anything is acknowledged), any
+// run with envelopes still queued, and the session's current admitted run
+// — detaching the subscriber discards every one of those runs' remaining
+// delivery, and a cursor on any older run cannot recover the newer ones'
+// tails. The drain before the terminal records the queued envelopes'
+// positions, so the cursor resumes a queued run exactly where delivery
+// stopped; a run never delivered replays from its start.
+func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64, current protocol.RunID, currentSerial uint64) protocol.RunID {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
 	newest, newestSerial := dropped, droppedSerial
+	consider := func(run protocol.RunID, serial uint64) {
+		if serial > newestSerial {
+			newest, newestSerial = run, serial
+		}
+	}
 	if sub.ackSerial > newestSerial {
 		if ack := sub.ack.Load(); ack != nil {
 			newest, newestSerial = *ack, sub.ackSerial
 		}
 	}
-	if sub.ackSerial == 0 && sub.attachedSerial > newestSerial {
-		newest, newestSerial = sub.attached, sub.attachedSerial
+	if sub.ackSerial == 0 {
+		consider(sub.attached, sub.attachedSerial)
 	}
 	for run, queued := range sub.pending {
 		if queued == 0 {
 			continue
 		}
-		if serial := sub.runSerials[run]; serial > newestSerial {
-			newest, newestSerial = run, serial
-		}
+		consider(run, sub.runSerials[run])
 	}
+	consider(current, currentSerial)
 	return newest
 }
 
@@ -709,7 +722,7 @@ func (s *Session) publish(envelope protocol.Envelope) {
 			// acknowledged position is newer — a cursor on an older run
 			// cannot recover the newer run's remaining events.
 			delete(s.subs, sub)
-			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID])})
+			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID])})
 		}
 	}
 	s.mu.Unlock()

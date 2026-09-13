@@ -150,8 +150,10 @@ func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
 	if !errors.As(err, &overflow) {
 		t.Fatalf("terminal %v (%T), want the OverflowError that signalled first", err, err)
 	}
-	if overflow.RunID != "run-a" || overflow.LastSequence != 2 {
-		t.Fatalf("overflow cursor %+v, want run-a at sequence 2", overflow)
+	// Run B is current and newer: the detach discards its future delivery
+	// too, so the complete-recovery cursor replays B from its start.
+	if overflow.RunID != "run-b" || overflow.LastSequence != 0 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 0", overflow)
 	}
 }
 
@@ -1870,6 +1872,101 @@ func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
 	if _, err := newcomerSubscription.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("newcomer terminal %v, want the clean close — never B's error", err)
+	}
+}
+
+// TestQueueOverflowIncludesCurrentRun pins that the queue-full loss cursor
+// includes the current admitted run: run C admitted but not yet published
+// is the newest delivery discarded when a late older envelope drops — the
+// cursor names C (replayed from its start), never an older run whose
+// replay cannot recover C.
+func TestQueueOverflowIncludesCurrentRun(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	streamA := make(chan base.Result, 1)
+	entry.startRun("run-a", streamA)
+	streamB := make(chan base.Result, 1)
+	entry.startRun("run-b", streamB)
+	sub, ok := entry.subscribe(1)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	entry.publish(runEnvelope(t, "run-b", 1)) // fills the one-slot mailbox
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil { // positioned on run B
+		t.Fatal(err)
+	}
+	// Run C is admitted after B; its first envelope has not arrived when a
+	// late run-A envelope finds the full mailbox.
+	entry.publish(runEnvelope(t, "run-b", 2)) // B's tail fills the slot again
+	streamC := make(chan base.Result, 1)
+	entry.startRun("run-c", streamC)
+	entry.publish(runEnvelope(t, "run-a", 9)) // dropped; C's delivery is the loss
+
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-b" || envelope.Sequence == nil || *envelope.Sequence != 2 {
+		t.Fatalf("envelope: run %s sequence %v error %v", envelope.RunID, envelope.Sequence, err)
+	}
+	_, err = subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-c" || overflow.LastSequence != 0 {
+		t.Fatalf("overflow cursor %+v, want run-c at sequence 0 — the current run, replayed from its start", overflow)
+	}
+}
+
+// idleClosedSession reports the final closed state alongside
+// ErrSessionClosed from State, as a process-backed adapter whose child
+// exited while idle does.
+type idleClosedSession struct{ id protocol.SessionID }
+
+func (s *idleClosedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+}
+
+func (s *idleClosedSession) State(context.Context) (protocol.SessionState, error) {
+	return protocol.SessionState{SessionID: s.id, Status: protocol.SessionClosed}, base.ErrSessionClosed
+}
+
+func (s *idleClosedSession) Resolve(context.Context, base.InteractionResolution) error {
+	return base.ErrSessionClosed
+}
+
+func (s *idleClosedSession) Cancel(_ context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
+	return protocol.RunCancelResponse{}, base.ErrSessionClosed
+}
+
+func (s *idleClosedSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, base.ErrSessionClosed
+}
+
+func (s *idleClosedSession) Close(context.Context) error { return base.ErrSessionClosed }
+
+var _ base.Session = (*idleClosedSession)(nil)
+
+// TestStateReportingClosedClosesEntry pins the State wrapper: an adapter
+// whose child exited while idle reports the final state with
+// ErrSessionClosed; the hub-side entry closes so live subscribers end and
+// new subscriptions are refused instead of parking forever.
+func TestStateReportingClosedClosesEntry(t *testing.T) {
+	entry := newSession("idle-death", "stub", &idleClosedSession{id: "idle-death"})
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	state, err := entry.State(ctx)
+	if !errors.Is(err, base.ErrSessionClosed) || state.Status != protocol.SessionClosed {
+		t.Fatalf("state %+v error %v, want the closed final state", state, err)
+	}
+	if !entry.IsClosed() {
+		t.Fatal("the entry did not record the closed adapter session")
+	}
+	subscription := &Subscription{session: entry, ctx: ctx, sub: sub}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want the clean end of a closed session", err)
 	}
 }
 
