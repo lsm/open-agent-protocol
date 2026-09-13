@@ -932,7 +932,20 @@ covers `turn/steer`.
 
 No new operations: `submit` carries the delivery; the events are stream
 envelopes. The hub's run-qualified cursor from T2 already covers a steer's
-events because they live in the target run's domain.
+events because they live in the target run's domain. The clients differ in
+what that costs them: the Go client positions every sequenced envelope on
+the stream by its run and sequence regardless of type, so it needs only
+the two type constants; the TypeScript client decides run scope by an
+allowlist (`RUN_EVENT_TYPES` in `clients/ts/src/events.ts`) and treats any
+other type as session-scoped, delivering it without advancing the cursor,
+so an unlisted `run.steer.applied` would make the next run event raise
+`SequenceGapError` and a reconnect would replay the steer. The T4 client
+slice therefore adds `run.steer.applied` and `run.steer.dropped` to
+`EnvelopeType` and to `RUN_EVENT_TYPES`, with cursor tests: a steer event
+advances the cursor, a drop after it resumes after it, and a steer event
+is never delivered twice. Both clients' e2e tests drive a steer against
+the memory adapter and assert the settlement event in the target run's
+sequence.
 
 ### Questions the 0008 decision must answer from evidence
 
