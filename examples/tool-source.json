@@ -23,13 +23,7 @@
       {
         "name": "read_file",
         "description": "Read UTF-8 text from a workspace file.",
-        "source": {
-          "kind": "process",
-          "id": "filesystem",
-          "display_name": "Filesystem Tool Source",
-          "protocol": "example-tool-source",
-          "endpoint": "stdio:filesystem-tools"
-        },
+        "source": "filesystem",
         "input_schema": {
           "type": "object",
           "required": [
@@ -59,13 +53,7 @@
       {
         "name": "write_file",
         "description": "Write text to a workspace file.",
-        "source": {
-          "kind": "process",
-          "id": "filesystem",
-          "display_name": "Filesystem Tool Source",
-          "protocol": "example-tool-source",
-          "endpoint": "stdio:filesystem-tools"
-        },
+        "source": "filesystem",
         "input_schema": {
           "type": "object",
           "required": [

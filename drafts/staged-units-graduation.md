@@ -170,7 +170,9 @@ No new envelope types. Changes to
   the request carried one) differs from the request; `run.started.model_id`
   differs from the admitted model (today's `illegal_run_transition` case
   moves to this code); `run.completed` under an admitted `output_schema`
-  lacks `result`.
+  lacks `result`, or carries a `result` that does not validate against the
+  admitted schema (the validator compiles the schema with the same
+  `jsonschema` engine it already uses for the bundle).
 - `runState` gains `controls` (the admitted request's control set) so the
   checks above are keyed off the request, not the response.
 
@@ -181,9 +183,15 @@ two fixed ids), `run.instructions`, `run.tool_selection`, and
 `run.structured_output` (`emulated`). It echoes the admitted model on the
 response and `run.started`; prepends `instructions` to the scripted text so
 the effect is observable; honors `tool_choice.mode = "none"` by skipping the
-scripted tool and `disallowed: ["scripted_tool"]` likewise; and, under
-`output_schema`, emits `result: {"ok": true}` on `run.completed`. Unknown
-ids fail with `model_not_found`.
+scripted tool and `disallowed: ["scripted_tool"]` likewise. Its structured
+result is the fixed object `{"ok": true}`: at admission it compiles the
+requested `output_schema` and rejects, before any identity is allocated,
+any schema that object does not satisfy (`unsupported_feature`,
+`details.feature: "run.structured_output"`, `details.reason:
+"unsatisfiable"`); under an accepted schema `run.completed` carries that
+object as `result`, so the reference never emits a nonconforming success.
+The descriptor's `reason` for `run.structured_output` discloses the fixed
+result. Unknown model ids fail with `model_not_found`.
 
 ### Native evidence
 
@@ -220,6 +228,8 @@ Positive: `controls-model-admitted`, `controls-instructions-emulated`,
 `controls-structured-output`. Negative: `controls-unadvertised-model`
 (`unavailable_capability`), `controls-model-mismatch` (`unapplied_control`),
 `controls-structured-missing-result` (`unapplied_control`),
+`controls-structured-nonconforming-result` (`unapplied_control`; `result`
+present but invalid against the admitted schema),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection).
 
@@ -415,13 +425,25 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   subscription's replay cursor already carries `(RunID, AfterSequence)`;
   the hub stops assuming the newest admission is the run a bare sequence
   refers to.
-- `serve/servehttp`: the SSE `id:` field becomes `<run_id>:<sequence>` and
-  `?after=` accepts the same form; a bare integer is still accepted and
-  resolves to the started run for compatibility. `oap-overflow` and
-  `oap-replay-gap` carry `run_id` (overflow already does). The stdio
-  frontend's `events` op and signal lines mirror this.
-- `client` and `clients/ts`: parse the qualified cursor and resume with it;
-  `Session.EventsAfter(RunID, LastSequence)` already exists in Go.
+- `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
+  both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
+  Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
+  first event. Run identity for a cursor travels in an additive `?run=`
+  query parameter beside `?after=`; a cursor without `run` resolves onto
+  the session's started run, exactly today's behavior. `oap-overflow` and
+  `oap-replay-gap` both carry `run_id` (overflow already does) so a client
+  can resume the right run. The stdio frontend's `events` op gains the same
+  optional `run` parameter. A v0.1 client driving a session alone never has
+  two nonterminal runs on it (a second submit while busy is refused
+  `run_active` before any queue exists), so its bare cursors keep binding
+  the same run they do today; only a session shared with a queue-aware
+  client can see a queued run's pre-start terminal on its stream.
+- `client` and `clients/ts`: both already track the run of the last
+  observed envelope (`EventStream.runID`, `EventStream.runId`) and expose
+  `EventsAfter(RunID, LastSequence)` / `eventsAfter`; the change is to send
+  that run as `?run=` on reconnect and to accept a run switch after a
+  queued run's pre-start terminal, which each client's sequence checks
+  already key per run.
 - Daemon-management listing (`GET /sessions`) reports `active_runs`.
 
 ### Fixtures
@@ -458,6 +480,8 @@ Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
 - `action.tools.list.response` gains `sources: [ToolSourceDescriptor]`;
   `ToolDefinition` gains `source` (a source `id`, never an inline copy) and
   `features` (per-tool `FeatureSupport` map, as in the example). The
+  example previously carried an inline descriptor copy on each tool; it now
+  carries the id, so the cited shape and this contract agree. The
   capability descriptor's `tools` and `layers.*.tools` gain `sources` beside
   them.
 - `action.call.*` payloads gain optional `source` (the source `id`), so a
