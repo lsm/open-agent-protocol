@@ -137,8 +137,10 @@ capability keys, new typed error codes, new validator diagnostics, and new
 conformance units. `version` stays `0.1` and the profile identifier stays
 `open-agent-protocol.agent-control-core`; claims grow by unit
 (`+run-controls`, `+models`, `+queue`, `+tool-sources`, `+control-tools`,
-`+steer`). The plan lists the two places where an existing field's schema
-narrows, both inside fields no executable adapter accepts today.
+`+steer`). No existing field's schema narrows: the typed `tool_choice`
+shape is enforced by the validator's unit rules and by adapters over the
+unchanged permissive schema, and the models payloads join the existing
+control-plane schema file so the bundle inventory is unchanged.
 
 ### First consumer
 

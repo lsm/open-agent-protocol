@@ -105,15 +105,25 @@ No new envelope types. Changes to
 [`session.schema.json`](../schema/v0.1/session.schema.json) and
 [`capabilities.schema.json`](../schema/v0.1/capabilities.schema.json):
 
-- `tool_choice` narrows from `true` to a typed policy over the advertised
-  catalog: `{ "mode": "auto" | "none" | "required" | "named", "name"?:
-  string, "allowed"?: [string], "disallowed"?: [string] }`, with `name`
-  required when and only when `mode` is `named`, and `allowed`/`disallowed`
-  mutually exclusive. `protocol.MessageSubmitRequest.ToolChoice` becomes
-  `*protocol.ToolChoice`, and that struct (today `Mode` and `Name` only)
-  gains `Allowed []string` and `Disallowed []string` so the wire shape
-  round-trips without loss. This is the first of the two schema narrowings
-  Decision 0003 admits: no executable adapter accepts the field today.
+- `tool_choice` keeps its permissive schema (`true`), so every envelope
+  that validates today still validates. Its executable shape is a typed
+  policy over the advertised catalog, enforced by the validator's
+  `run-controls` rules and by adapters rather than by the schema: `{
+  "mode": "auto" | "none" | "required" | "named", "name"?: string,
+  "allowed"?: [string], "disallowed"?: [string] }`, with `name` present
+  when and only when `mode` is `named`, and `allowed`/`disallowed` mutually
+  exclusive. Precedence is fixed so no two implementations can read one
+  policy differently: `allowed` or `disallowed` filters the catalog first,
+  then `mode` applies to the filtered set; `named` must name a tool in the
+  filtered set and `required` needs a non-empty filtered set, otherwise the
+  policy is unsatisfiable and is rejected before admission
+  (`unsupported_feature`, `details.reason: "unsatisfiable"`), never
+  resolved by choosing one member over another. In Go,
+  `MessageSubmitRequest.ToolChoice` stays `json.RawMessage`;
+  `protocol.ToolChoice` (today `Mode` and `Name` only) gains `Allowed
+  []string` and `Disallowed []string`, and a strict
+  `MessageSubmitRequest.ToolChoicePolicy()` accessor decodes the typed
+  shape, rejecting unknown members.
 - `output_schema` stays a JSON Schema object. The structured result travels
   in `run.completed.result` (already on the wire) and must validate against
   the admitted schema.
@@ -178,6 +188,13 @@ No new envelope types. Changes to
   lacks `result`, or carries a `result` that does not validate against the
   admitted schema (the validator compiles the schema with the same
   `jsonschema` engine it already uses for the bundle).
+- New diagnostic `unsatisfiable_control`: a `tool_choice` that is not the
+  typed policy, carries both `allowed` and `disallowed`, names a tool in
+  its own `disallowed` list or outside its own `allowed` list, or, when the
+  trace carries a catalog (capabilities or `action.tools.list.response`),
+  is `required` or `named` against an empty filtered set. The check runs
+  only when the submit carries the control, so envelopes that do not use
+  the unit are untouched.
 - `runState` gains `controls` (the admitted request's control set) so the
   checks above are keyed off the request, not the response.
 
@@ -244,6 +261,8 @@ Positive: `controls-model-admitted`, `controls-instructions-emulated`,
 `controls-structured-missing-result` (`unapplied_control`),
 `controls-structured-nonconforming-result` (`unapplied_control`; `result`
 present but invalid against the admitted schema),
+`controls-tool-choice-contradictory` (`unsatisfiable_control`; `required`
+with the only tool disallowed, and `named` outside its own allowlist),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection).
 
@@ -265,9 +284,10 @@ query. Model resolution, aliases, pricing, and cache refresh stay out.
 ### Wire
 
 New envelope types `models.request` and `models.response` added to the
-envelope `oneOf`; new `models.schema.json` in the bundle (the manifest
-schema's fixed seven-file list grows to eight, the second and last schema
-narrowing this plan admits since the list is a `const` inventory).
+envelope `oneOf`, with their payload definitions in
+[`capabilities.schema.json`](../schema/v0.1/capabilities.schema.json)
+beside the other control-plane payloads (initialize and capabilities), so
+the bundle's file inventory and the manifest schema are untouched.
 
 ```json
 { "type": "models.request", "payload": { "session_id": "s1" } }
@@ -400,6 +420,13 @@ No new envelope types. Additive fields:
   `queue_dropped` error.
 - Every queued reservation is listed in `active_runs` until its terminal;
   reconnect state preserves the order.
+- Delivery order on a session stream is one run domain at a time, in
+  admission order: a later-admitted run's envelopes, including a queued
+  run's pre-start terminal, are delivered only after every earlier-admitted
+  run's terminal. The events themselves are unchanged (timestamps and the
+  state snapshot say when a queued run actually settled); this is a rule
+  about the ordered timeline a binding presents, and it keeps a single
+  `(run, sequence)` cursor sufficient for any consumer.
 
 ### Validator
 
@@ -435,10 +462,17 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
 
 ### Surfaces
 
-- `serve`: the hub's "current run" cursor becomes run-qualified. A
-  subscription's replay cursor already carries `(RunID, AfterSequence)`;
-  the hub stops assuming the newest admission is the run a bare sequence
-  refers to.
+- `serve`: subscriptions deliver one run domain at a time in admission
+  order. The hub already drains every run's adapter stream independently
+  and numbers runs by admission serial; T2 adds holding a later-admitted
+  run's envelopes until the earlier run's terminal has been delivered, so
+  a queued run's pre-start terminal never interleaves with the started
+  run's events on any subscription. A subscription's replay cursor already
+  carries `(RunID, AfterSequence)`: resume replays that run's retained
+  suffix and then continues into later-admitted runs in order, and the hub
+  stops assuming the newest admission is the run a bare sequence refers
+  to. Both clients' single scalar cursor therefore stays correct: the run
+  it names is always the only run in flight on the stream.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
@@ -447,17 +481,21 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   the session's started run, exactly today's behavior. `oap-overflow` and
   `oap-replay-gap` both carry `run_id` (overflow already does) so a client
   can resume the right run. The stdio frontend's `events` op gains the same
-  optional `run` parameter. A v0.1 client driving a session alone never has
-  two nonterminal runs on it (a second submit while busy is refused
-  `run_active` before any queue exists), so its bare cursors keep binding
-  the same run they do today; only a session shared with a queue-aware
-  client can see a queued run's pre-start terminal on its stream.
+  optional `run` parameter. `?run=` is still needed even with ordered
+  delivery: a drop between one run's terminal and the next run's first
+  envelope leaves the client holding the finished run's cursor while the
+  next run is already the started one. A v0.1 client driving a session
+  alone never has two nonterminal runs on it (a second submit while busy is
+  refused `run_active` before any queue exists), so its bare cursors keep
+  binding the same run they do today; a session shared with a queue-aware
+  client sees the queued run's terminal only after the started run's, in
+  its own domain, which the v0.1 clients already handle as a run switch.
 - `client` and `clients/ts`: both already track the run of the last
   observed envelope (`EventStream.runID`, `EventStream.runId`) and expose
   `EventsAfter(RunID, LastSequence)` / `eventsAfter`; the change is to send
-  that run as `?run=` on reconnect and to accept a run switch after a
-  queued run's pre-start terminal, which each client's sequence checks
-  already key per run.
+  that run as `?run=` on reconnect. Because delivery is one run domain at
+  a time, no per-run cursor table is needed: a run switch always follows a
+  terminal, which both clients already accept.
 - Daemon-management listing (`GET /sessions`) reports `active_runs`.
 
 ### Fixtures
@@ -500,11 +538,21 @@ Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
   them.
 - `action.call.*` payloads gain optional `source` (the source `id`), so a
   consumer can attribute a call to an MCP server without parsing names.
+- `action.tools.list.request` gains an optional `session_id` payload
+  member, and both list envelopes carry the envelope `session_id` when the
+  catalog is a session's effective catalog; the response repeats it in its
+  payload. Today's empty request stays valid for an endpoint-level catalog
+  (a static adapter). A session opened with `tool_sources` or `tools`
+  answers session-scoped lists only, so a trace, a stdio consumer, and the
+  validator can tie a catalog to the attachment it reflects.
 
 Semantics: a tool naming a source must name one the same response declared
-(validator diagnostic `unmatched_tool_source`); a source is described, not
-managed, by this sub-unit; the harness runs the client. Capability:
-`action.tools.list` (existing) with sources present.
+(validator diagnostic `unmatched_tool_source`); the first session-scoped
+list for a session opened with `tool_sources` or `tools` must declare every
+attached source and provided tool (diagnostic `catalog_mismatch`), and the
+usual scope agreement applies to both list envelopes (`scope_mismatch`); a
+source is described, not managed, by this sub-unit; the harness runs the
+client. Capability: `action.tools.list` (existing) with sources present.
 
 Evidence: Claude `system/init` carries the tool list and MCP server list per
 turn (`degraded` catalog, per-turn refresh); Codex `mcpToolCall.server` gives
@@ -769,9 +817,10 @@ strings in the schema; the validator does not enumerate them.
 
 ### Validator diagnostics added
 
-`unapplied_control`, `model_not_in_catalog`, `queue_order_violation`,
-`unmatched_tool_source`, `unmatched_steer`, `duplicate_steer`,
-`pending_steer_at_terminal`. Existing codes are reused wherever the
+`unapplied_control`, `unsatisfiable_control`, `model_not_in_catalog`,
+`queue_order_violation`, `unmatched_tool_source`, `catalog_mismatch`,
+`unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
+Existing codes are reused wherever the
 invariant is the same (`unavailable_capability`, `illegal_run_transition`,
 `session_state_mismatch`, `scope_mismatch`, `wrong_interaction_responder`,
 `pending_interaction_at_terminal`).
@@ -787,13 +836,15 @@ graduated units.
 
 ### Schema evolution
 
-Additive: new optional fields (`active_runs`, `limits`, `tool_sources`,
-`tools`, `source`, `sources`, `features`, `target_run_id`), new envelope
-types in the `oneOf` (`models.*`, `action.call.resolve.*`,
-`run.steer.*`), a new schema file. Narrowing, both inside surfaces no
-executable adapter accepts today: `tool_choice` from `true` to a typed
-object, and the manifest schema's seven-file inventory growing to eight.
-`version` and `profile` are unchanged.
+Additive only: new optional fields (`active_runs`, `limits`,
+`tool_sources`, `tools`, `source`, `sources`, `features`, `target_run_id`,
+`session_id` on the tools-list request), new envelope types in the
+`oneOf` (`models.*`, `action.call.resolve.*`, `run.steer.*`), and new
+payload definitions in existing schema files. No existing field's schema
+narrows: `tool_choice` keeps its permissive schema and its typed shape is
+a validator and adapter rule of the `run-controls` unit, and the models
+payloads live in the control-plane schema file so the bundle inventory and
+the manifest schema are unchanged. `version` and `profile` are unchanged.
 
 ## Deliberately later
 
