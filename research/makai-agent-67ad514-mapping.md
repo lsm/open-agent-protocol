@@ -312,8 +312,15 @@ frame type as observed-only. Recorded per the feedback rule; no OAP change.
   `MAKAI_AGENT_SESSION_IDLE_TTL_MS`, `0` disables), never selecting sessions
   with in-flight runs; the first observable evidence is a request-correlated
   sequence-zero `agent_error` `agent_not_found` ("session not found") on the
-  next `agent_message`. Corpus: `evicted-session-gone`
-  (ledger fixture `idle-eviction-session-gone`).
+  next `agent_message`. The adapter treats that correlated answer as
+  session-retirement evidence — the run settles through the ordinary failure
+  terminal and the mapped session becomes closed to further submissions and
+  state reads (`ErrSessionClosed`), since every later native message would
+  fail against the dead association (and the adapter's burned outbound
+  sequence can never resynchronize). Corpus: `evicted-session-gone`
+  (ledger fixture `idle-eviction-session-gone`), whose
+  `retire_after_terminal` check drives a further submission and a state read
+  after the terminal.
 - Registration generations (#204): stale publications from a stopped or
   evicted session's registration are discarded with no cross-registration
   attribution; the one wire-visible residue is outbox frames the old

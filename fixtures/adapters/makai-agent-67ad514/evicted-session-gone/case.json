@@ -22,5 +22,6 @@
     "makai_tool_blob": "b2cb0c58abd20a1691c19f97386d88bf58123cc8",
     "repository": "https://github.com/lsm/makai"
   },
+  "retire_after_terminal": true,
   "version": 1
 }

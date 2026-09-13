@@ -68,6 +68,10 @@ type makaiCorpusCase struct {
 	IdentityMap  map[string]string `json:"identity_map"`
 	Journal      int               `json:"journal_capacity,omitempty"`
 	ReplayAfter  *uint64           `json:"replay_after,omitempty"`
+	// RetireAfterTerminal asserts the terminal above retired the mapped
+	// session: a further submission and a state read must both answer
+	// ErrSessionClosed instead of admitting doomed native work.
+	RetireAfterTerminal bool `json:"retire_after_terminal,omitempty"`
 }
 type makaiProvenance struct {
 	Repository string `json:"repository"`
@@ -207,6 +211,14 @@ func runMakaiCorpusCase(t *testing.T, root string, entry makaiCorpusManifestCase
 		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
 	} else {
 		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	}
+	if definition.RetireAfterTerminal {
+		if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+			t.Fatalf("submission after session-retiring terminal accepted: %v", err)
+		}
+		if _, err := session.State(context.Background()); !errors.Is(err, base.ErrSessionClosed) {
+			t.Fatalf("state after session-retiring terminal: %v", err)
+		}
 	}
 	if definition.ReplayAfter != nil {
 		assertMakaiReplay(t, session, admission.RunID, *definition.ReplayAfter, events)

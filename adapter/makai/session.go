@@ -256,6 +256,16 @@ func (s *session) handleEnvelope(env native.Envelope) {
 			return
 		}
 		payload, _ := native.DecodePayload[native.AgentError](env)
+		// A request-correlated agent_not_found is eviction evidence: the
+		// native session is gone server-side (idle-TTL sweep or a foreign
+		// teardown), so retire the mapped session too — later submissions
+		// are guaranteed to fail against the dead association. The run
+		// still settles through the ordinary failure terminal below.
+		if payload.Code == native.ErrorAgentNotFound {
+			s.mu.Lock()
+			s.unusable = true
+			s.mu.Unlock()
+		}
 		s.failRun(run, string(payload.Code), payload.Message)
 	case native.TypeToolExecute:
 		payload, _ := native.DecodePayload[native.ToolExecute](env)
