@@ -165,11 +165,12 @@ type subscriber struct {
 	finish     chan struct{}
 	finishOnce sync.Once
 	terminal   atomic.Pointer[terminalState]
-	// joined names the run that was current when the subscriber attached
-	// (empty before any run): an adapter-reported overflow on an older
-	// run's stream must not terminate subscribers that never observed that
-	// run.
-	joined protocol.RunID
+	// exposed is the set of runs this subscriber has observed: the run
+	// current at attachment plus every run whose envelopes were delivered
+	// to it (a live subscriber spans runs). An adapter-reported overflow
+	// terminates the subscriber only when the overflowing run is one it
+	// observed; a run it never saw does not concern it.
+	exposed map[protocol.RunID]struct{}
 }
 
 // terminalState is a subscriber's end state, recorded at stop time: the
@@ -185,7 +186,11 @@ type terminalState struct {
 }
 
 func newSubscriber(queue int, joined protocol.RunID) *subscriber {
-	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}), joined: joined}
+	exposed := make(map[protocol.RunID]struct{})
+	if joined != "" {
+		exposed[joined] = struct{}{}
+	}
+	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}), exposed: exposed}
 }
 
 // stop terminates the subscriber with its terminal state, if any.
@@ -299,12 +304,15 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 }
 
 // publish delivers one envelope to every subscriber, terminating (not
-// blocking on) subscribers whose queue is full.
+// blocking on) subscribers whose queue is full. Delivery marks the
+// subscriber as exposed to the envelope's run — a live subscriber spans
+// runs, and an adapter overflow on any run it observed is its concern.
 func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Lock()
 	for sub := range s.subs {
 		select {
 		case sub.ch <- envelope:
+			sub.exposed[envelope.RunID] = struct{}{}
 		default:
 			// The overflow is of THIS envelope's run — runs may be draining
 			// concurrently, so the session's current run can already be a
@@ -320,15 +328,14 @@ func (s *Session) publish(envelope protocol.Envelope) {
 
 // signalOverflow terminates the subscribers exposed to runID with the
 // overflow signal after the adapter itself reported an event-stream overflow
-// on that run's stream. Subscribers that attached while a newer run was
-// current never observed this run and keep following theirs: a late
-// overflow arriving from an older run's still-draining stream must not cut
-// them off from the run they joined.
+// on that run's stream: every subscriber that observed the run — attached
+// during it, or live across it — while subscribers that never saw it keep
+// following theirs.
 func (s *Session) signalOverflow(runID protocol.RunID) {
 	s.mu.Lock()
 	affected := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
-		if sub.joined == "" || sub.joined == runID {
+		if _, exposed := sub.exposed[runID]; exposed {
 			affected = append(affected, sub)
 			delete(s.subs, sub)
 		}
