@@ -260,22 +260,34 @@ func (sub *subscriber) untrack(run protocol.RunID) {
 }
 
 // lossRun reports the run a queue-full drop's cursor should name: the
-// dropped envelope's run, unless the subscriber's acknowledged position —
-// or, before anything is acknowledged, its attachment run — is newer: the
-// newer run's remaining delivery is discarded too, and a cursor on the
-// older run cannot recover it.
+// newest of the dropped envelope's run, the subscriber's acknowledged
+// position (or its attachment run before anything is acknowledged), and
+// any run with envelopes still queued — detaching the subscriber discards
+// every one of those runs' remaining delivery, and a cursor on any older
+// run cannot recover the newer ones' tails. The drain before the terminal
+// records the queued envelopes' positions, so the cursor resumes the
+// newest queued run exactly where delivery stopped.
 func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64) protocol.RunID {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
-	if sub.ackSerial > droppedSerial {
+	newest, newestSerial := dropped, droppedSerial
+	if sub.ackSerial > newestSerial {
 		if ack := sub.ack.Load(); ack != nil {
-			return *ack
+			newest, newestSerial = *ack, sub.ackSerial
 		}
 	}
-	if sub.ackSerial == 0 && sub.attachedSerial > droppedSerial {
-		return sub.attached
+	if sub.ackSerial == 0 && sub.attachedSerial > newestSerial {
+		newest, newestSerial = sub.attached, sub.attachedSerial
 	}
-	return dropped
+	for run, queued := range sub.pending {
+		if queued == 0 {
+			continue
+		}
+		if serial := sub.runSerials[run]; serial > newestSerial {
+			newest, newestSerial = run, serial
+		}
+	}
+	return newest
 }
 
 // terminalState is a subscriber's end state, recorded at stop time: the
