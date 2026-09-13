@@ -345,18 +345,25 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 }
 
 // exitReader is the path a run reader takes when its stream ends: with
-// readers remaining, the current run's terminal state is stashed for the
-// last one to apply; the last one finishes subscribers — with its own
-// outcome when it drained the current run, otherwise the current run's
-// stashed one — detaching the set under the lock so a concurrent startRun
-// or subscribe cannot interleave. When only a Submit reservation remains,
-// the finish is deferred to whichever resolves it.
+// readers remaining, the current run's terminal state and the cohort it is
+// owed to are stashed for the last one to apply; the last one finishes
+// subscribers — with its own outcome for every subscriber when it drained
+// the current run, otherwise the deferred outcome for the deferred cohort
+// only — detaching under the lock so a concurrent startRun or subscribe
+// cannot interleave. When only a Submit reservation remains, the finish is
+// deferred to whichever resolves it.
 func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	s.mu.Lock()
 	s.readers--
 	current := s.runID
 	if current == runID {
+		// The current run's outcome is deferred behind company — older
+		// readers still draining, or a reservation in flight — and is owed
+		// to exactly the subscribers present now: ones registering inside
+		// the deferral window never observed the run and keep waiting for
+		// the next one.
 		s.pendingEnd = end
+		s.deferred = s.snapshotSubsLocked()
 	}
 	if s.readers > 0 {
 		s.mu.Unlock()
@@ -364,19 +371,39 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	}
 	if s.reservations > 0 {
 		s.finishDue = true
-		s.deferred = s.snapshotSubsLocked()
+		if s.deferred == nil {
+			s.deferred = s.snapshotSubsLocked()
+		}
 		s.mu.Unlock()
 		return
 	}
-	state := end
 	if current != runID {
-		state = s.pendingEnd
+		// This stale drainer is the last to leave: apply the current
+		// run's deferred outcome to the cohort it was owed to. (The
+		// cohort is never empty here — the current run's reader exited
+		// before this one and snapshotted it — but falling back to every
+		// subscriber keeps the invariant failure-safe rather than parking
+		// everyone.)
+		state, cohort := s.pendingEnd, s.deferred
+		s.pendingEnd, s.deferred = nil, nil
+		if cohort == nil {
+			cohort = s.detachSubsLocked()
+		} else {
+			for _, sub := range cohort {
+				delete(s.subs, sub)
+			}
+		}
+		s.mu.Unlock()
+		for _, sub := range cohort {
+			sub.stop(state)
+		}
+		return
 	}
-	s.pendingEnd = nil
+	s.pendingEnd, s.deferred = nil, nil
 	subs := s.detachSubsLocked()
 	s.mu.Unlock()
 	for _, sub := range subs {
-		sub.stop(state)
+		sub.stop(end)
 	}
 }
 

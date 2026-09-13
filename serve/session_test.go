@@ -525,6 +525,84 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 	}
 }
 
+// TestDeferredRunEndSparesLaterSubscribers pins the cohort of a run whose
+// drainer exits behind an older one: the deferred outcome reaches the
+// subscribers that existed at the exit, while a subscriber registering in
+// the window is not swept by the older drainer's eventual finish and stays
+// parked for the next run.
+func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	cohort, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+	entry.startRun("run-b", streamB)
+	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	// The current run's drainer exits behind the older one, deferring its
+	// clean end to the cohort.
+	close(streamB)
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.readers == 1 && entry.deferred != nil
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run B's reader never deferred its end behind run A's")
+		default:
+		}
+	}
+	newcomer, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe during the deferral window was refused")
+	}
+	close(streamA)
+
+	// The cohort takes the current run's clean end after both envelopes;
+	// the newcomer is untouched.
+	cohortSubscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
+	seen := map[protocol.RunID]bool{}
+	for {
+		envelope, err := cohortSubscription.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("cohort terminal %v, want the clean end", err)
+		}
+		seen[envelope.RunID] = true
+	}
+	if !seen["run-a"] || !seen["run-b"] {
+		t.Fatalf("cohort observed %v, want both runs", seen)
+	}
+	select {
+	case <-newcomer.finish:
+		t.Fatal("the deferred run end swept a subscriber from inside the window")
+	default:
+	}
+
+	// The next run reaches the newcomer.
+	streamC := make(chan base.Result, 4)
+	entry.startRun("run-c", streamC)
+	streamC <- base.Result{Envelope: runEnvelope(t, "run-c", 1)}
+	close(streamC)
+	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
+	envelope, err := newcomerSubscription.Next()
+	if err != nil || envelope.RunID != "run-c" {
+		t.Fatalf("newcomer envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := newcomerSubscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("newcomer terminal %v, want io.EOF", err)
+	}
+}
+
 // TestRejectedSubmitKeepsSubscriptions pins the subscribe-before-submit
 // flow on an idle session: an adapter-level rejection unwinds its
 // reservation without finishing anybody, so the corrected retry's run
