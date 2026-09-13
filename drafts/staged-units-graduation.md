@@ -124,9 +124,12 @@ No new envelope types. Changes to
   resolved by choosing one member over another. The catalog a policy is
   judged against is the session's full catalog, including tools the control
   layer provides at open (T3c), so a policy governs those tools the same
-  way. Plain names suffice because a session catalog never carries two
-  tools with the same `name` (the T3a uniqueness rule); until T3 lands the
-  catalog is the harness's native tool list, which is unique already. In
+  way. Plain names suffice only because the catalog a policy is judged
+  against never carries two tools with the same `name`: the tool
+  definition schema does not require it, so T1 itself introduces the rule
+  and its diagnostic (`duplicate_tool_name`, on any catalog a
+  `tool_choice` is evaluated against), and T3a later extends the same rule
+  to every session catalog whatever its sources. In
   Go,
   `MessageSubmitRequest.ToolChoice` stays `json.RawMessage`;
   `protocol.ToolChoice` (today `Mode` and `Name` only) gains `Allowed
@@ -240,6 +243,12 @@ No new envelope types. Changes to
   `output_schema` whose root is not an object schema. The check runs only
   when the submit carries a control, so envelopes that do not use the unit
   are untouched.
+- New diagnostic `duplicate_tool_name`: the catalog a `tool_choice` is
+  judged against (the descriptor's `tools` or the latest
+  `action.tools.list.response` for the session) lists two tools with one
+  `name`, whatever their owners, so no `named` or list entry can be
+  ambiguous. Introduced here so the `run-controls` unit is sound before
+  T3; T3a applies the same diagnostic to every session catalog.
 - `runState` gains `controls` (the admitted request's control set) so the
   checks above are keyed off the request, not the response.
 
@@ -322,6 +331,8 @@ root-array `output_schema`),
 `run.completed` with no call), `controls-named-without-call`
 (`unapplied_control`; `named` naming `scripted_tool`, `run.completed` with
 no call),
+`controls-tool-choice-ambiguous-name` (`duplicate_tool_name`; two native
+tools sharing a name in the descriptor, then a `named` policy),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection).
 
@@ -706,7 +717,9 @@ collide with each other or with a declared source is rejected at open
 `details.source`). Likewise `name` is unique across a session's catalog,
 whatever the sources, so a policy entry (T1) and a call resolve to one
 catalog entry and one `execution_owner`: a list with two entries of one name is invalid
-(`duplicate_tool_name`); an attach or provide whose tools would collide
+(`duplicate_tool_name`, the diagnostic T1 introduced for the catalog a
+policy is judged against, applied here to every session catalog); an
+attach or provide whose tools would collide
 with the catalog or with each other is rejected at open with
 `unsupported_feature` (`details.reason: "unsatisfiable"`, `details.tool`
 naming the collision) rather than shadowed or renamed silently; a harness
@@ -856,6 +869,13 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   sharing `name`, whatever their sources.
 - `action.tools.list.response` and `session.open.request.tool_sources`:
   `duplicate_tool_source` for two descriptors sharing `id`.
+- `catalog_mismatch`: `sessionTrack` records the `tool_sources` ids and
+  the provided `tools` (name and `execution_owner`) from
+  `session.open.request`; the first session-scoped
+  `action.tools.list.response` for that session must declare every
+  recorded source id and list every provided tool under the recorded
+  owner, or the diagnostic fires on the response. Later lists are not
+  compared, since runtime attach and detach stay deferred.
 - `action.tools.list.response`: `unmatched_tool_source` for a tool naming an
   undeclared source. `action.call.*` payloads carrying `source`: the same
   diagnostic when the trace's catalog lists the named tool under a
@@ -935,6 +955,9 @@ selected one called). Negative:
 `tools-duplicate-name` (`duplicate_tool_name`),
 `tools-duplicate-source-id` (`duplicate_tool_source`; two sources with one
 `id` and different endpoints),
+`tools-catalog-omits-attachment` (`catalog_mismatch`; an open with a
+process source and a provided tool, then a first list omitting the
+source),
 `open-provide-colliding-name` (`error.response` with `unsupported_feature`
 then no open; validated as a correct rejection),
 `open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
