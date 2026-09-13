@@ -33,11 +33,13 @@ func runEnvelope(t *testing.T, runID protocol.RunID, sequence uint64) protocol.E
 	return envelope
 }
 
-// TestOverflowCursorZeroWhenRunUnseen pins the sequence half of the overflow
-// cursor: a mailbox full of run A's envelopes that run B's publish overflows
-// yields (B, 0) — the consumer observed nothing of B, so recovery replays B
-// from its start — never B carrying A's last position.
-func TestOverflowCursorZeroWhenRunUnseen(t *testing.T) {
+// TestQueueOverflowCursorTracksPosition pins the queue-full cursor: it is
+// the subscriber's own position — the tail of its mailbox — whichever run
+// that belongs to, never the run of the envelope that found the queue full.
+// A late old-run envelope must not strand the newer run's observed tail
+// behind a cursor that cannot replay it, and a burst from an unseen newer
+// run must not strand the observed old run either.
+func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(2)
 	if !ok {
@@ -45,7 +47,7 @@ func TestOverflowCursorZeroWhenRunUnseen(t *testing.T) {
 	}
 	entry.publish(runEnvelope(t, "run-a", 1))
 	entry.publish(runEnvelope(t, "run-a", 2)) // the two-slot mailbox is full
-	entry.publish(runEnvelope(t, "run-b", 1)) // overflows, naming run B
+	entry.publish(runEnvelope(t, "run-b", 1)) // a newer run's envelope finds it full
 
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
 	for sequence := uint64(1); sequence <= 2; sequence++ {
@@ -59,8 +61,91 @@ func TestOverflowCursorZeroWhenRunUnseen(t *testing.T) {
 	if !errors.As(err, &overflow) {
 		t.Fatalf("error %v (%T), want OverflowError", err, err)
 	}
-	if overflow.RunID != "run-b" || overflow.LastSequence != 0 {
-		t.Fatalf("overflow cursor %+v, want run-b at sequence 0", overflow)
+	if overflow.RunID != "run-a" || overflow.LastSequence != 2 {
+		t.Fatalf("overflow cursor %+v, want run-a at sequence 2 — the mailbox tail", overflow)
+	}
+
+	// With the newer run already observed, the cursor stays in it.
+	latecomer := newSession("hub", "memory", nil)
+	positioned, ok := latecomer.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	latecomer.publish(runEnvelope(t, "run-a", 1))
+	latecomer.publish(runEnvelope(t, "run-b", 1))
+	latecomer.publish(runEnvelope(t, "run-b", 2)) // full mailbox, position in run-b
+
+	positionedSubscription := &Subscription{session: latecomer, ctx: context.Background(), sub: positioned}
+	if _, err := positionedSubscription.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := positionedSubscription.Next(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = positionedSubscription.Next()
+	if !errors.As(err, &overflow) {
+		t.Fatalf("error %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the mailbox tail", overflow)
+	}
+}
+
+// TestDeferredEndDoesNotClobberOverflowTerminal pins first-writer-wins on a
+// subscriber's terminal state: a slow consumer sitting in a deferred cohort
+// that a queue-full publish already signalled must keep its recovery cursor
+// when the deferred run end later stops the cohort again.
+func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.publish(runEnvelope(t, "run-a", 1))
+	entry.publish(runEnvelope(t, "run-a", 2)) // the two-slot mailbox is full
+
+	// The current run's drainer exits behind the older one, deferring an
+	// error end onto the cohort that holds the slow subscriber.
+	streamFailure := errors.New("run B stream died")
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-b", streamB)
+	streamB <- base.Result{Error: streamFailure}
+	close(streamB)
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.readers == 1 && entry.deferred != nil
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run B's reader never deferred its end behind run A's")
+		default:
+		}
+	}
+
+	// The slow consumer's mailbox overflows first — that terminal wins.
+	entry.publish(runEnvelope(t, "run-a", 3))
+	close(streamA) // the older drainer applies the deferred error to the cohort
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for sequence := uint64(1); sequence <= 2; sequence++ {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.Sequence == nil || *envelope.Sequence != sequence {
+			t.Fatalf("envelope %d: sequence %v error %v", sequence, envelope.Sequence, err)
+		}
+	}
+	_, err := subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want the OverflowError that signalled first", err, err)
+	}
+	if overflow.RunID != "run-a" || overflow.LastSequence != 2 {
+		t.Fatalf("overflow cursor %+v, want run-a at sequence 2", overflow)
 	}
 }
 

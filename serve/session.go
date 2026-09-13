@@ -219,10 +219,13 @@ func newSubscriber(queue int, attached protocol.RunID) *subscriber {
 	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}), attached: attached}
 }
 
-// stop terminates the subscriber with its terminal state, if any.
+// stop terminates the subscriber with its terminal state, if any. The
+// first terminal wins: a subscriber may sit in a deferred cohort that is
+// stopped again after an overflow already signalled it, and the later stop
+// must not replace the recovery cursor the consumer is entitled to.
 func (sub *subscriber) stop(state *terminalState) {
 	if state != nil {
-		sub.terminal.Store(state)
+		sub.terminal.CompareAndSwap(nil, state)
 	}
 	sub.finishOnce.Do(func() { close(sub.finish) })
 }
@@ -417,13 +420,14 @@ func (s *Session) publish(envelope protocol.Envelope) {
 		case sub.ch <- envelope:
 			sub.lastRun = envelope.RunID
 		default:
-			// The overflow is of THIS envelope's run — runs may be draining
-			// concurrently, so the session's current run can already be a
-			// newer one — and that is the run the recovery cursor must name,
-			// whatever run is current by the time the consumer reads the
-			// signal.
+			// The subscriber fell behind. Its recovery cursor is its own
+			// position — the tail of its mailbox, whichever run that
+			// belongs to — not the run of the envelope that found the
+			// queue full: a late envelope from an older, still-draining run
+			// must not strand the newer run's observed tail behind a
+			// cursor that cannot replay it.
 			delete(s.subs, sub)
-			sub.stop(&terminalState{overflow: true, run: envelope.RunID})
+			sub.stop(&terminalState{overflow: true, run: sub.lastRun})
 		}
 	}
 	s.mu.Unlock()
