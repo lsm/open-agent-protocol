@@ -435,6 +435,13 @@ serve one catalog for its lifetime.
   a removed one is not silently accepted) until a `models.response` under
   the new revision replaces it; the `feature()` gate already rejects a
   `models.response` citing a stale revision.
+- New diagnostic `unannounced_catalog_change`: a second `models.response`
+  under the same `capability_revision` whose set of ids differs from the
+  stored catalog, at `native` or `emulated` `models.list`; the wire rule
+  makes a catalog change a capability invalidation, so availability may
+  not change without `capabilities.updated`. At `degraded` the
+  descriptor's `reason` discloses per-turn refresh (Claude's `system/init`
+  list) and the check is skipped, which is what degraded means here.
 - New diagnostic `ambiguous_default_model`: a `models.response` with more
   than one descriptor carrying `default: true`, so the at-most-one rule
   above is enforced rather than stated.
@@ -483,7 +490,9 @@ listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 (`session_state_mismatch`; state reports one model, the catalog another),
 `models-select-removed-after-refresh` (`model_not_in_catalog`; a model
 listed under revision 1, dropped by the revision 2 catalog, then
-selected). Positive as well: `models-refresh-replaces-catalog` (a model
+selected), `models-catalog-mutates-within-revision`
+(`unannounced_catalog_change`; two responses under one revision with
+different ids). Positive as well: `models-refresh-replaces-catalog` (a model
 added by the revision 2 catalog is selected after `capabilities.updated`,
 and one selected between the refresh and the new catalog is not judged).
 
@@ -980,7 +989,13 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   different source, or when the tool is not listed and the source is
   undeclared; the validator keeps the catalog per session (`sessionTrack`
   gains `tools`), so attribution to the wrong MCP server is caught even when
-  both sources are declared.
+  both sources are declared. As with the models catalog, the session
+  catalog is stored with the `capability_revision` it was served under and
+  discarded when the active revision changes, so no `tool_choice` or
+  sourced call is judged against stale names, owners, or sources until a
+  list under the new revision replaces it; the open-time sources and
+  provided tools are kept across the refresh, because they are
+  session-lifetime facts the next list must still carry.
 - `action.call.requested` with `execution_owner` equal to a declared control
   participant must carry `interaction_id` and `responded_by`
   (`illegal_tool_transition`); `action.call.started` for such a call must
@@ -1007,6 +1022,11 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   control participant (`wrong_tool_owner`). The check runs at supply time,
   before any interaction exists, which `wrong_interaction_responder` cannot
   cover.
+- `session.open.request.tools[*].name` must be unique within the array
+  and against the descriptor's native `tools`, checked when the open is
+  admitted (`session.open.response`), so a collision the adapter should
+  have refused is `duplicate_tool_name` even in a trace that only opens
+  the session and never lists or selects tools.
 - `session.state` snapshots: each `active_runs[]` entry's
   `pending_interactions` must equal the validator's set of unresolved
   interactions for that run (`session_state_mismatch` on omission or on a
@@ -1071,7 +1091,8 @@ the request used.
 ### Fixtures
 
 Positive: `tools-catalog-with-sources`, `tools-catalog-list-only`,
-`open-attach-process-source`,
+`tools-catalog-refresh-replaces` (a tool added by the revision 2 list is
+selectable after `capabilities.updated`), `open-attach-process-source`,
 `control-tool-roundtrip` (acknowledgement, then result),
 `control-tool-resolved-without-ack` (`started` immediately before the
 terminal), `control-tool-cancelled-with-run` (an unacknowledged call
@@ -1082,6 +1103,8 @@ selected one called). Negative:
 `tools-unmatched-source` (`unmatched_tool_source`),
 `tools-list-response-unscoped` (`scope_mismatch`; a session-scoped
 request answered without `session_id`),
+`tools-select-removed-after-refresh` (`unsatisfiable_control`; a tool
+dropped by the revision 2 list, then named),
 `tools-duplicate-name` (`duplicate_tool_name`),
 `tools-duplicate-source-id` (`duplicate_tool_source`; two sources with one
 `id` and different endpoints),
@@ -1099,6 +1122,8 @@ source),
 then no open; validated as a correct rejection),
 `open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
 `execution_owner` is not the declared control participant),
+`open-provide-colliding-name-admitted` (`duplicate_tool_name`; two
+supplied tools sharing a name, and the open admitted),
 `tools-call-source-mismatch` (`unmatched_tool_source`; a call naming one
 tool with another tool's declared source),
 `control-tool-started-before-ack` (`illegal_tool_transition`),
@@ -1150,7 +1175,18 @@ therefore needs a steer settlement, not only a steer admission.
   session's started run; a supplied target must be that run. Any other
   target, or no started run, fails before admission with typed
   `invalid_steer_target` (`details.reason`: `no_active_run`, `terminal`,
-  `queued`, `cross_session`, `not_steerable`).
+  `queued`, `cross_session`, `not_steerable`). A steer carries no run
+  controls: `model_id`, `instructions`, `tool_choice`, and
+  `output_schema` on a `delivery: "steer"` submit are rejected before
+  admission with `unsupported_feature` (`details.feature` naming the
+  control's key, `details.reason: "unsatisfiable"`), because the target
+  run's admitted controls are authoritative until its terminal and a
+  steer admits no run for new controls to bind. Decision 0003's
+  "re-send the controls on each submit" therefore applies to submits that
+  admit a run; the validator diagnoses a `steered` admission of a request
+  carrying any control as `unsatisfiable_control` (fixtures
+  `steer-with-controls-rejected`, a correct rejection, and
+  `steer-with-controls-admitted`, `unsatisfiable_control`).
 - Response: `admission: "steered"`, `effective_delivery: "steer"`, `run_id`
   set to the target, `status` equal to the target's current status, and the
   `submission_id` that names the pending steer.
@@ -1252,7 +1288,14 @@ and hub contract is explicit rather than inherited from `start`:
   publish the buffered settlement, since the submitter never learned its
   `submission_id`: it first publishes a `session.state.updated` on the
   session stream whose `active_runs` entry for the target lists the steer
-  in `pending_steers`, and only then lifts the gate. The state snapshot is
+  in `pending_steers`, and only then lifts the gate. A snapshot the hub
+  mints is not in the adapter's run journal, which the T2 resume path
+  replays from, so the hub journals every snapshot it mints, keyed by the
+  run domain and sequence it preceded, and interleaves it at that position
+  on replay: a subscriber that drops after the fan-out and before receipt
+  resumes into the snapshot first and the settlement after it, and the
+  `servehttp` e2e test covers exactly that drop. The resolve fallback
+  under T3c uses the same journal. The state snapshot is
   the same surface a reconnecting submitter reads to recover the id, so
   every subscriber learns of the admission before the settlement, the
   target run's subscribers are delayed by at most the request's lifetime,
@@ -1271,8 +1314,17 @@ and hub contract is explicit rather than inherited from `start`:
 The hub's run-qualified cursor from T2 already covers a steer's
 events because they live in the target run's domain. The clients differ in
 what that costs them: the Go client positions every sequenced envelope on
-the stream by its run and sequence regardless of type, so it needs only
-the two type constants; the TypeScript client decides run scope by an
+the stream by its run and sequence regardless of type, so for the steer
+events it needs only the two type constants, but it has no handling at
+all for a session-scoped event, which the publication fallbacks now put
+on the stream (the daemon publishes none today): `deliver` treats every
+frame as run-scoped, so a `session.state.updated` with no `run_id` and a
+session-domain sequence would be read as a run switch and end in a
+`SequenceGapError`. The same client slice therefore mirrors the
+TypeScript rule: an envelope of a session-scoped type
+(`session.state.updated`, `capabilities.updated`) is delivered without
+touching the run cursor, with a test that interleaves a snapshot between
+run events and across a resume; the TypeScript client decides run scope by an
 allowlist (`RUN_EVENT_TYPES` in `clients/ts/src/events.ts`) and treats any
 other type as session-scoped, delivering it without advancing the cursor,
 so an unlisted `run.steer.applied` would make the next run event raise
@@ -1334,7 +1386,8 @@ strings in the schema; the validator does not enumerate them.
 
 `unapplied_control`, `unsatisfiable_control`, `degraded_without_optin`,
 `model_not_in_catalog`,
-`ambiguous_default_model`, `duplicate_model_id`, `queue_order_violation`,
+`ambiguous_default_model`, `duplicate_model_id`,
+`unannounced_catalog_change`, `queue_order_violation`,
 `queue_limit_exceeded`, `premature_session_mutation`,
 `unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
 `wrong_tool_owner`, `catalog_mismatch`,
