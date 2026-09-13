@@ -1775,6 +1775,38 @@ func TestQueueOverflowPrefersNewerQueuedRun(t *testing.T) {
 	}
 }
 
+// TestTerminalSubmitErrorClosesEntry pins the hub-side close on
+// ErrSessionClosed from Submit: a process-backed adapter whose transport
+// died leaves no future run possible, so a parked subscribe-before-submit
+// consumer must end at the rejection instead of blocking in Next forever.
+func TestTerminalSubmitErrorClosesEntry(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrSessionClosed}
+	close(gated.release) // the adapter rejects at once; no interleaving needed
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	if _, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "gated", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after the transport died")}},
+	}); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("submit error %v, want session-closed", err)
+	}
+	if !entry.IsClosed() {
+		t.Fatal("the entry did not record the closed adapter session")
+	}
+	subscription := &Subscription{session: entry, ctx: ctx, sub: sub}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want the clean end of a closed session", err)
+	}
+	if _, accepted := entry.subscribe(8); accepted {
+		t.Fatal("subscribe after the terminal rejection was accepted")
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.

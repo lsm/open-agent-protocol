@@ -151,6 +151,14 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 		} else {
 			s.releaseReservation()
 		}
+		// An adapter reporting the session closed (a dead transport made a
+		// process-backed adapter unusable) closes the hub-side entry too:
+		// no future run can ever reach live subscribers, and a
+		// subscribe-before-submit consumer parked in Next would otherwise
+		// block forever.
+		if errors.Is(err, base.ErrSessionClosed) {
+			s.markClosed()
+		}
 		return admission, err
 	}
 	s.adoptRun(admission.RunID, stream)
