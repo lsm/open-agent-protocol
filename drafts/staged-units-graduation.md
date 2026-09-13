@@ -290,10 +290,15 @@ No new envelope types. Changes to
   when the submit carries a control, so envelopes that do not use the unit
   are untouched.
 - New diagnostic `duplicate_tool_name`: the catalog a `tool_choice` is
-  judged against (the descriptor's `tools` or the latest
+  judged against (the descriptor's effective catalog or the latest
   `action.tools.list.response` for the session) lists two tools with one
   `name`, whatever their owners, so no `named` or list entry can be
-  ambiguous. Introduced here so the `run-controls` unit is sound before
+  ambiguous. The descriptor's effective catalog is the union of its
+  top-level `tools` and every `layers.*.tools`, since a valid descriptor
+  may publish its catalog under a layer alone; the validator normalizes
+  both into one list (with their `sources`) wherever this plan says "the
+  descriptor's `tools`", including the open-time collision and refresh
+  checks under T3. Introduced here so the `run-controls` unit is sound before
   T3; T3a applies the same diagnostic to every session catalog.
 - `runState` gains `controls` (the admitted request's control set) so the
   checks above are keyed off the request, not the response.
@@ -1407,8 +1412,13 @@ state; `applied`/`dropped` must name a
 pending steer once (`unmatched_steer`, `duplicate_steer`), and a `steered`
 response whose `submission_id` is already pending on that run is
 `duplicate_steer` as well, since the pending set could not represent two
-steers under one id and the second would never be seen to settle; a
-terminal with a pending steer is `pending_steer_at_terminal`. A settlement whose
+steers under one id and the second would never be seen to settle. The
+admission's `message_ids` are retained with the pending steer, and an
+`applied` settlement must report exactly them whenever the response
+supplied them (`unmatched_steer`: the settlement does not match the
+admission it names), so a submitter is never told that different
+guidance was applied than it submitted; a terminal with a pending steer
+is `pending_steer_at_terminal`. A settlement whose
 `submission_id` no earlier `steered` response in the trace admitted is
 `unmatched_steer`, which makes the ordering barrier below a conformance
 rule rather than a hub detail. Fixtures: positive `steer-immediate`
@@ -1423,7 +1433,9 @@ request answered `steered`), `steer-target-mismatch` (`scope_mismatch`;
 `steer-status-mismatch` (`illegal_run_transition`; the target is
 `waiting_for_input`, the response says `running`),
 `steer-duplicate-submission-id` (`duplicate_steer`; two `steered`
-responses on one run with the same `submission_id`). `session.state`
+responses on one run with the same `submission_id`),
+`steer-applied-message-ids-mismatch` (`unmatched_steer`; the admission
+returns ids A, the settlement reports ids B). `session.state`
 snapshots are checked against the same record: each `active_runs[]`
 entry's `pending_steers` must equal the pending set in `runState.steers`
 for that run, so an omitted pending steer or a settled one still listed
@@ -1661,7 +1673,21 @@ every later unit relies on:
   validate a payload carrying a new leaf enum value, and a
   `user.input.requested` with an unknown `kind`, against the old bundle
   in both modes (tolerated tolerant, rejected strict), and a `run.started`
-  with `status: "failed"` rejected in both, and,
+  with `status: "failed"` rejected in both. Discriminated unions get an
+  explicit fallback rather than exact guards alone: keeping every branch's
+  `const` exact would still make `common.schema.json#/$defs/contentPart`
+  reject an additive part such as `{ "type": "audio", ... }`, because no
+  branch matches, although the layered draft already names `audio` and
+  `file` as content kinds. The tolerant compile therefore rewrites each
+  `oneOf`/`anyOf` whose branches pin a `const` on one property into the
+  same branches plus one fallback branch that accepts an object whose
+  discriminator is a string outside the known set (`not: { enum: [known
+  values] }`) and that carries only the members every branch requires;
+  known branches stay strict, an unknown kind is tolerated as the wire
+  rule requires, and a known kind with a malformed body is still
+  rejected. The tests add an `audio` content part accepted tolerantly and
+  rejected strictly, and a `text` part missing `text` rejected in both,
+  and,
   as the regression guard, every fixture in the manifest under the
   tolerant compile, which must accept everything the strict compile
   accepts.
