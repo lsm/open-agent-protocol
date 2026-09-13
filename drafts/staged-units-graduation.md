@@ -577,8 +577,13 @@ No new envelope types. Additive fields:
   `pending_interactions` and `pending_steers` to these entries.
 - `capabilities.response` gains optional `limits`: `{
   "max_active_runs_per_session": int, "max_queued_runs_per_session": int }`,
-  the wire projection of `adapter.Descriptor.MaxActiveRunsPerSession` plus
-  the queue bound. Absent means one started run and at least one queued run.
+  where `max_active_runs_per_session` bounds the nonterminal set, which is
+  what `active_runs` lists (started run plus queued reservations; it is
+  the wire projection of `adapter.Descriptor.MaxActiveRunsPerSession`,
+  whose v0.1 value of 1 therefore means no queue at all), and
+  `max_queued_runs_per_session` bounds the queued subset. Absent means no
+  bound is advertised: one started run and at least one queued
+  reservation, unenforced.
 - Typed error `run_active` (the daemon's existing code, adopted as the
   protocol code; the research draft's `session_busy` name is superseded): a
   submission that cannot be admitted because the session is busy and no
@@ -657,12 +662,12 @@ No new envelope types. Additive fields:
   before promotion has its cancel exchange at once and its terminal after
   the earlier run's terminal in every conforming trace.
 - New diagnostic `queue_limit_exceeded`: when the descriptor carries
-  `limits`, a `queued` admission that would put the session's queued
-  reservations above `max_queued_runs_per_session`, or a `run.started`
-  that would put its started runs above `max_active_runs_per_session`;
-  `sessionTrack` keeps both bounds from the descriptor. Absent limits
-  enforce nothing here, since absence promises only one started run and at
-  least one queued.
+  `limits`, a `queued` admission that would put the session's nonterminal
+  set above `max_active_runs_per_session` or its queued subset above
+  `max_queued_runs_per_session`, both checked at the reservation, since
+  promotion adds no run; `sessionTrack` keeps both bounds from the
+  descriptor. Absent limits enforce nothing here, since absence
+  advertises no bound.
 - New diagnostic `premature_session_mutation`: when the descriptor discloses
   `run.model_selection` with mode `session_mutation`, a `session.state`
   snapshot taken while a run is started reports a `current_model_id` other
@@ -705,7 +710,8 @@ No new envelope types. Additive fields:
 ### Reference adapter
 
 `adapter/memory.go` advertises `session.message.delivery.queue` `emulated`
-with `limits.max_queued_runs_per_session = 1`: a submit while the scripted
+with `limits` of `max_active_runs_per_session: 2` and
+`max_queued_runs_per_session: 1`: a submit while the scripted
 run is active reserves a second run (`queued`), lists both in `active_runs`,
 and promotes it when the first settles; cancelling the queued run settles it
 pre-start.
@@ -835,7 +841,9 @@ rejection `queue-degraded-without-optin` (`error.response` with
 `capability_degraded`, then no admission) as a positive fixture,
 `queue-model-mutation-early` (`premature_session_mutation`),
 `queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
-1`, one started run, two queued admissions),
+1`, one started run, two queued admissions), `queue-over-active-limit`
+(`queue_limit_exceeded`; `max_active_runs_per_session: 1`, a queued
+admission while a run is started),
 `queue-overlap-unadvertised` (`illegal_run_transition`),
 `queue-explicit-admitted-start` (`illegal_run_transition`; explicit
 `queue` on an idle session answered `started`),
@@ -1091,6 +1099,13 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   descriptor already declares, so an attachment reusing a declared id is
   diagnosed even in a trace that ends at the open or later lists a single
   entry under that id.
+- Every accepted `capabilities.response`, initial or refreshed:
+  `duplicate_tool_name` across its effective catalog (top-level `tools`
+  and every `layers.*.tools`, unioned) and `duplicate_tool_source` across
+  its declared `sources`, so a descriptor that is ambiguous on its own is
+  diagnosed before any list, open, or call, and a session that never
+  lists or selects tools cannot reach a call whose owner or source lookup
+  is ambiguous.
 - `catalog_mismatch`: `sessionTrack` records the `tool_sources` ids and
   the provided `tools` (name and `execution_owner`) from
   `session.open.request`; every session-scoped
@@ -1271,7 +1286,10 @@ request answered without `session_id`),
 dropped by the revision 2 list, then named),
 `tools-duplicate-name` (`duplicate_tool_name`),
 `tools-duplicate-source-id` (`duplicate_tool_source`; two sources with one
-`id` and different endpoints),
+`id` and different endpoints), `descriptor-duplicate-tool-name`
+(`duplicate_tool_name`; one name under `tools` and under
+`layers.action.tools`), `descriptor-duplicate-source-id`
+(`duplicate_tool_source`; two declared sources with one `id`),
 `tools-catalog-omits-attachment` (`catalog_mismatch`; an open with a
 process source and a provided tool, then a first list omitting the
 source), `tools-catalog-drops-attachment-later` (`catalog_mismatch`; a
@@ -1522,30 +1540,33 @@ and hub contract is explicit rather than inherited from `start`:
   response; the response is the same `session.message.submit.response`.
 
 The hub's run-qualified cursor from T2 already covers a steer's
-events because they live in the target run's domain. The clients differ in
-what that costs them: the Go client positions every sequenced envelope on
-the stream by its run and sequence regardless of type, so for the steer
-events it needs only the two type constants, but it has no handling at
-all for a session-scoped event, which the publication fallbacks now put
-on the stream (the daemon publishes none today): `deliver` treats every
-frame as run-scoped, so a `session.state.updated` with no `run_id` and a
-session-domain sequence would be read as a run switch and end in a
-`SequenceGapError`. The T3c client slice, the first whose fallback mints
-a snapshot, therefore mirrors the TypeScript rule, and T4 reuses it: an
-envelope of a session-scoped type
-(`session.state.updated`, `capabilities.updated`) is delivered without
-touching the run cursor, with a test that interleaves a snapshot between
-run events and across a resume; the TypeScript client decides run scope by an
-allowlist (`RUN_EVENT_TYPES` in `clients/ts/src/events.ts`) and treats any
-other type as session-scoped, delivering it without advancing the cursor,
-so an unlisted `run.steer.applied` would make the next run event raise
-`SequenceGapError` and a reconnect would replay the steer. The T4 client
-slice therefore adds `run.steer.applied` and `run.steer.dropped` to
-`EnvelopeType` and to `RUN_EVENT_TYPES`, with cursor tests: a steer event
-advances the cursor, a drop after it resumes after it, and a steer event
-is never delivered twice. Both clients' e2e tests drive a steer against
-the memory adapter and assert the settlement event in the target run's
-sequence.
+events because they live in the target run's domain. Neither client can
+be left deciding stream scope by a type list, because a list cannot name
+future additions and the two lists fail in opposite directions: the Go
+client positions every frame as run-scoped, so a `session.state.updated`
+with no `run_id` and a session-domain sequence would be read as a run
+switch and end in a `SequenceGapError` (the daemon publishes no such
+event today, so nothing exercises the path), while the TypeScript client
+treats any type outside `RUN_EVENT_TYPES` (`clients/ts/src/events.ts`)
+as session-scoped and does not advance the cursor, so an unlisted
+`run.steer.applied`, or any future additive run event, would make the
+next known event raise `SequenceGapError` and a reconnect replay it.
+Both clients therefore switch to the wire's own scoping in the T3c
+client slice, the first whose fallback mints a snapshot, and T4 reuses
+it: an envelope carrying `run_id` is run-scoped and its sequence advances
+that run's cursor whatever its type; an envelope without `run_id` but
+with `sequence` is session-scoped and is delivered without touching the
+run cursor whatever its type. The schema requires `run_id` on every run
+event and session events carry none, so the rule is exact for known
+types and correct by construction for unknown ones; the type lists stay
+for typing only. Tests interleave a session snapshot between run events
+and across a resume, and feed an unknown run-scoped type and an unknown
+session-scoped type through both clients. The T4 client slice adds
+`run.steer.applied` and `run.steer.dropped` to `EnvelopeType` (typing),
+with cursor tests: a steer event advances the cursor, a drop after it
+resumes after it, and a steer event is never delivered twice. Both
+clients' e2e tests drive a steer against the memory adapter and assert
+the settlement event in the target run's sequence.
 
 ### Questions the 0008 decision must answer from evidence
 
@@ -1646,10 +1667,11 @@ every later unit relies on:
   client's dev-mode validation and by `oap validate` when it is pointed at
   a live endpoint rather than a fixture. It compiles the same bundle with
   `additionalProperties: false` lifted from payload objects (unknown
-  members are ignored, as the wire rule requires), with leaf `enum` and
-  `const` constraints inside payloads lifted to their base type (an
+  members are ignored, as the wire rule requires), with extensible leaf
+  `enum` constraints inside payloads lifted to their base type (an
   unknown enum value surfaces as a string, as the layered draft's
-  extension rule requires, instead of failing the message), and with the
+  extension rule requires, instead of failing the message; a `const` is
+  never lifted, as set out below), and with the
   envelope `oneOf` relaxed to "a known `type` must match its branch; an
   unknown `type` must satisfy the common envelope fields only", the same
   forward compatibility both clients already apply to unknown named SSE
