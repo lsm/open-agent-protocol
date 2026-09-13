@@ -883,6 +883,13 @@ type stagedAdapter struct {
 	// hugeAt, when nonzero, emits that sequence's envelope with a payload
 	// far larger than the frame limit under test.
 	hugeAt uint64
+	// openDelay, when nonzero, stalls the adapter handshake for that long —
+	// the shape of a process adapter whose child takes a moment to spawn.
+	openDelay time.Duration
+	// generatedID, when set, is minted for requests that name no session
+	// id — an adapter whose generated identifiers can outrun a small frame
+	// limit.
+	generatedID string
 }
 
 func (a *stagedAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -896,10 +903,20 @@ func (a *stagedAdapter) Probe(context.Context) (base.Descriptor, error) {
 	}, nil
 }
 
-func (a *stagedAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+func (a *stagedAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	if a.openDelay > 0 {
+		select {
+		case <-time.After(a.openDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	id := request.SessionID
 	if id == "" {
 		id = "staged-1"
+		if a.generatedID != "" {
+			id = protocol.SessionID(a.generatedID)
+		}
 	}
 	return &stagedSession{
 		adapter: a, id: id,
@@ -1003,6 +1020,8 @@ func (s *stagedSession) Close(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	s.state.Status = protocol.SessionClosed
+	s.state.ActiveRunID = ""
 	return nil
 }
 
@@ -1448,5 +1467,108 @@ func TestFrameLimitFloorRejectsUnusableLimits(t *testing.T) {
 	}
 	if _, err := New(hub, Options{FrameLimit: 256}); err != nil {
 		t.Fatalf("New rejected the floor: %v", err)
+	}
+}
+
+// TestShutdownGraceStartsAtDisconnect guards the grace anchor: the window
+// for a synchronous op still running at the host's disconnect must start at
+// that disconnect, not at Run's start — a daemon that served longer than
+// the window still grants the full grace, so the open completes and is
+// acknowledged instead of being cut off mid-registration.
+func TestShutdownGraceStartsAtDisconnect(t *testing.T) {
+	registry := serve.NewRegistry()
+	staged := &stagedAdapter{release: make(chan struct{}), openDelay: 200 * time.Millisecond}
+	if err := registry.Register("staged", staged); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8})
+	server, err := New(hub, Options{ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+	f := &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), stdout: stdoutReader, done: done}
+
+	// The disconnect arrives after the window has already elapsed once
+	// since Run started, while the open — which finishes inside one fresh
+	// window — is still in flight: an eagerly started timer would already
+	// have fired and cut the open off mid-registration.
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-slow", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "grace"}, "", "")) + `}`)
+	time.Sleep(150 * time.Millisecond)
+	if err := f.stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireOK(t, f.expectResponse(1))
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v, want the open to complete inside its fresh grace", err)
+	}
+}
+
+// TestOversizedOpenRollsBack drives an open whose acknowledgement cannot be
+// framed at the configured limit — a minimal request whose adapter then
+// generates an id too long for the response — the session is closed again
+// before the refusal is sent, so nothing the host believes failed stays
+// live.
+func TestOversizedOpenRollsBack(t *testing.T) {
+	registry := serve.NewRegistry()
+	staged := &stagedAdapter{release: make(chan struct{}), generatedID: strings.Repeat("s", 400)}
+	if err := registry.Register("staged", staged); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8})
+	f := startFrontend(t, hub, Options{FrameLimit: 640})
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-big", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")) + `}`)
+	response := f.expectResponse(1)
+	requireCode(t, response, "response_too_large")
+
+	// The rolled-back session is listed with its final state, not live.
+	f.send(`{"id":2,"op":"sessions"}`)
+	var listing struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+			Status    string `json:"status"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(f.expectResponse(2).Result, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Sessions) != 1 || listing.Sessions[0].Status != "closed" {
+		t.Fatalf("rolled-back open left %+v, want one closed entry", listing.Sessions)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestFrameLimitTerminalAlwaysFits pins the guarantee the frame-limit floor
+// buys: the minimal terminal signal encodes under the floor even at the
+// widest numeric ids, so a subscription never ends uncorrelated.
+func TestFrameLimitTerminalAlwaysFits(t *testing.T) {
+	line, err := json.Marshal(frameLimitLine{Event: signalFrameLimit, ID: int64(1) << 62, Sequence: uint64(1) << 63})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(line) > minFrameLimit {
+		t.Fatalf("minimal terminal encodes to %d bytes, over the %d-byte floor", len(line), minFrameLimit)
+	}
+}
+
+// TestErrorMessagesAreBounded guards the every-message-trimmed rule: a
+// host-supplied identifier of any length comes back only inside the bounded
+// message every other refusal path already applies.
+func TestErrorMessagesAreBounded(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	f.send(fmt.Sprintf(`{"id":1,"op":"state","session_id":%q}`, strings.Repeat("x", 5000)))
+	response := f.expectResponse(1)
+	requireCode(t, response, "unknown_session")
+	if runes := len([]rune(response.Error.Message)); runes > 301 {
+		t.Fatalf("error message carries %d runes, over the 300-rune bound", runes)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
 	}
 }

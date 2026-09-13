@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
@@ -104,14 +103,17 @@ type sessionClosedLine struct {
 
 // frameLimitLine is the terminal signal for a subscription whose envelope
 // exceeded the frame limit: this wire cannot carry that envelope, so the
-// subscription ends naming the position a cursor resumes after.
+// subscription ends naming the position a cursor resumes after. The
+// adapter-minted identifiers and the message are omitted in the minimal
+// form, which the frame-limit floor guarantees always fits: the correlation
+// id and the resume position are the parts the host cannot do without.
 type frameLimitLine struct {
 	Event     string `json:"event"`
 	ID        int64  `json:"id"`
-	SessionID string `json:"session_id"`
-	RunID     string `json:"run_id"`
+	SessionID string `json:"session_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
 	Sequence  uint64 `json:"sequence"`
-	Message   string `json:"message"`
+	Message   string `json:"message,omitempty"`
 }
 
 // serveRequest executes one op and writes its response. The execution ops
@@ -159,14 +161,6 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
 		}
 		return s.capabilitiesOp(ctx, request.Adapter)
-	case opOpen:
-		if werr := request.only(paramAdapter, paramRequest); werr != nil {
-			return nil, werr
-		}
-		if request.Adapter == "" {
-			return nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
-		}
-		return s.openOp(ctx, request)
 	case opSessions:
 		if werr := request.only(); werr != nil {
 			return nil, werr
@@ -195,8 +189,8 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 		}
 		return s.closeOp(ctx, request.SessionID)
 	default:
-		// opEvents and opOpen never reach here concurrently: decodeLoop
-		// routes them through its synchronous registration path.
+		// opEvents and opOpen never reach here: decodeLoop routes them
+		// through its synchronous registration path.
 		return nil, &wireError{Code: "unknown_op", Message: fmt.Sprintf("no op %q", trimMessage(request.Op))}
 	}
 }
@@ -234,7 +228,7 @@ func (request requestLine) only(fields ...string) *wireError {
 	if len(extra) == 0 {
 		return nil
 	}
-	return &wireError{Code: "invalid_request", Message: fmt.Sprintf("op %q accepts no %s parameter", request.Op, strings.Join(extra, ", "))}
+	return &wireError{Code: "invalid_request", Message: fmt.Sprintf("op %q accepts no %s parameter", trimMessage(request.Op), strings.Join(extra, ", "))}
 }
 
 // --- daemon-management surfaces ---
@@ -305,18 +299,49 @@ func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
 
 // --- OAP operations ---
 
-func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+// serveOpen executes one `open` op in the read loop (decodeLoop calls it
+// synchronously; see the registration-ordering note there). An open whose
+// acknowledgement cannot be framed is rolled back — closed again before the
+// refusal is sent — so a session the host believes failed never stays live
+// behind an id it cannot know.
+func (s *Server) serveOpen(ctx context.Context, request requestLine, lines chan<- []byte) {
+	result, entry, werr := s.openOp(ctx, request)
+	if werr == nil && !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
+		if entry != nil {
+			if closeErr := entry.Close(context.WithoutCancel(ctx)); closeErr != nil {
+				s.logger.Printf("servestdio: roll back open: %v", closeErr)
+			}
+		}
+		werr = &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session was rolled back"}
+	}
+	s.respond(lines, request, result, werr)
+}
+
+// fits reports whether one output line's encoding stays within the frame
+// limit, so its send would not be refused.
+func (s *Server) fits(value any) bool {
+	line, err := json.Marshal(value)
+	return err == nil && len(line) <= s.frameLimit
+}
+
+func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessage, *serve.Session, *wireError) {
+	if werr := request.only(paramAdapter, paramRequest); werr != nil {
+		return nil, nil, werr
+	}
+	if request.Adapter == "" {
+		return nil, nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
+	}
 	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionOpenRequest)
 	if werr != nil {
-		return nil, werr
+		return nil, nil, werr
 	}
 	var payload protocol.SessionOpenRequest
 	if err := envelope.DecodePayload(&payload); err != nil {
-		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+		return nil, nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
 	}
 	name := request.Adapter
 	if _, found := s.hub.Registry().Lookup(name); !found {
-		return nil, &wireError{Code: "unknown_adapter", Message: fmt.Sprintf("no adapter %q", name)}
+		return nil, nil, &wireError{Code: "unknown_adapter", Message: fmt.Sprintf("no adapter %q", trimMessage(name))}
 	}
 	open := base.OpenRequest{SessionID: payload.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}}
 	if payload.Metadata != nil {
@@ -324,12 +349,12 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		for key, raw := range payload.Metadata {
 			var value any
 			if err := json.Unmarshal(raw, &value); err != nil {
-				return nil, &wireError{Code: "invalid_payload", Message: fmt.Sprintf("metadata %q: %v", key, err)}
+				return nil, nil, &wireError{Code: "invalid_payload", Message: trimMessage(fmt.Sprintf("metadata %q: %v", key, err))}
 			}
 			open.Metadata[key] = value
 		}
 	}
-	_, state, err := s.hub.Open(ctx, name, open)
+	entry, state, err := s.hub.Open(ctx, name, open)
 	if err != nil {
 		code := "open_failed"
 		switch {
@@ -338,7 +363,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		case errors.Is(err, serve.ErrSessionExists):
 			code = "session_exists"
 		}
-		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+		return nil, nil, &wireError{Code: code, Message: adapterMessage(err)}
 	}
 	// The response is built from the state the open itself confirmed:
 	// re-reading state here could fail after registration and report a
@@ -347,12 +372,13 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		SessionID: state.SessionID, Status: state.Status,
 	})
 	if err != nil {
-		return nil, internalError(err)
+		return nil, entry, internalError(err)
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
 	response.CapabilityRevision = envelope.CapabilityRevision
-	return envelopeResult(response)
+	result, werr := envelopeResult(response)
+	return result, entry, werr
 }
 
 func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
@@ -479,7 +505,7 @@ func (s *Server) cancelOp(ctx context.Context, request requestLine) (json.RawMes
 		return nil, werr
 	}
 	if payload.SessionID != entry.ID() {
-		message := fmt.Sprintf("payload session_id %q does not match the addressed session %q", payload.SessionID, entry.ID())
+		message := trimMessage(fmt.Sprintf("payload session_id %q does not match the addressed session %q", payload.SessionID, entry.ID()))
 		return nil, &wireError{Code: "scope_mismatch", Message: message}
 	}
 	ack, err := entry.Cancel(ctx, payload.RunID)
@@ -555,7 +581,7 @@ func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage
 // the subscription is registered before the next line is read and a pipelined
 // submit cannot race ahead of it. The cursor mirrors the HTTP surface: a bare
 // sequence resolved onto the session's current run.
-func (s *Server) serveEvents(ctx context.Context, request requestLine, lines chan<- []byte, work *sync.WaitGroup) {
+func (s *Server) serveEvents(ctx context.Context, request requestLine, lines chan<- []byte) {
 	id := *request.ID
 	fail := func(werr *wireError) {
 		s.respond(lines, request, nil, werr)
@@ -622,10 +648,16 @@ func (s *Server) serveEvents(ctx context.Context, request requestLine, lines cha
 		fail(&wireError{Code: code, Message: adapterMessage(err)})
 		return
 	}
+	// The ok response is sent only once the pump is admitted, so it never
+	// promises a subscription teardown would not let start.
+	if !s.admit() {
+		subscription.Close()
+		s.respond(lines, request, nil, &wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
+		return
+	}
 	s.respond(lines, request, json.RawMessage("null"), nil)
-	work.Add(1)
 	go func() {
-		defer work.Done()
+		defer s.work.Done()
 		s.pump(entry, subscription, id, lines)
 	}()
 }
@@ -673,6 +705,12 @@ func (s *Server) pump(entry *serve.Session, subscription *serve.Subscription, id
 					Message: "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it",
 				}); signalErr != nil {
 					s.logger.Printf("servestdio: subscription %d: %v", id, signalErr)
+					// The adapter-minted identifiers can push the terminal
+					// past the same limit that ended the subscription: send
+					// the minimal form the floor guarantees fits.
+					if minimalErr := s.send(lines, frameLimitLine{Event: signalFrameLimit, ID: id, Sequence: sequence}); minimalErr != nil {
+						s.logger.Printf("servestdio: subscription %d: %v", id, minimalErr)
+					}
 				}
 				return
 			}
@@ -733,7 +771,7 @@ func (s *Server) gateRequest(payload json.RawMessage, want ...protocol.EnvelopeT
 func (s *Server) lookupSession(id string) (*serve.Session, *wireError) {
 	entry, err := s.hub.Session(protocol.SessionID(id))
 	if err != nil {
-		return nil, &wireError{Code: "unknown_session", Message: err.Error()}
+		return nil, &wireError{Code: "unknown_session", Message: trimMessage(err.Error())}
 	}
 	return entry, nil
 }

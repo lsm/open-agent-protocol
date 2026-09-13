@@ -95,6 +95,14 @@ type Server struct {
 	shutdown    time.Duration
 	logger      *log.Logger
 	nextIDValue atomic.Uint64
+
+	// mu guards shuttingDown and the work-WaitGroup admission it gates: once
+	// teardown begins no further workers may be Added, because a late
+	// positive Add — from a decodeLoop abandoned mid-op that then finishes —
+	// would race the Wait that may already have seen the counter reach zero.
+	mu           sync.Mutex
+	shuttingDown bool
+	work         sync.WaitGroup
 }
 
 // New compiles the request gate and returns a frontend over the hub.
@@ -190,7 +198,6 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	lines := make(chan []byte, s.writeQueue)
 	stop := make(chan struct{})
-	var work sync.WaitGroup
 	writerDone := make(chan error, 1)
 	go func() { writerDone <- writeLines(out, lines, stop) }()
 
@@ -202,39 +209,53 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	go readFrames(in, s.frameLimit, frames, readerDone)
 
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- s.decodeLoop(ctx, frames, lines, &work) }()
+	go func() { serveDone <- s.decodeLoop(ctx, frames, lines) }()
 
 	// End of input: decodeLoop returning is the session's normal end. When
-	// the host has ended the session while decodeLoop is stuck, the first
-	// window bounds how much longer the stuck op gets before it is
-	// abandoned.
-	endWindow := time.NewTimer(s.shutdown)
-	defer endWindow.Stop()
+	// the host has ended the session while decodeLoop is stuck, a fresh
+	// window — started at the host's end, never at Run's start, so a daemon
+	// that served longer than the window still grants the full grace —
+	// bounds how much longer the stuck op gets before it is abandoned.
+	serveGrace := func() (result error, finished bool) {
+		window := time.NewTimer(s.shutdown)
+		defer window.Stop()
+		select {
+		case result = <-serveDone:
+			return result, true
+		case <-window.C:
+			return nil, false
+		}
+	}
 	var err error
 	stuck := false
 	select {
 	case err = <-serveDone:
 	case <-readerDone:
-		select {
-		case err = <-serveDone:
-		case <-endWindow.C:
+		if graceErr, finished := serveGrace(); finished {
+			err = graceErr
+		} else {
 			stuck = true
 		}
 	case <-ctx.Done():
-		select {
-		case err = <-serveDone:
-		case <-endWindow.C:
+		if graceErr, finished := serveGrace(); finished {
+			err = graceErr
+		} else {
 			stuck = true
 		}
 	}
 
-	// Teardown: cancel detaches pumps and in-flight handlers from the hub;
-	// the second window bounds waiting for them and for the writer's final
-	// drain — the writer may be blocked inside out.Write on a pipe the host
-	// stopped reading, and shutdown must never depend on the host's pipe.
+	// Teardown: cancel detaches pumps and in-flight handlers from the hub,
+	// and admission closes so a decodeLoop abandoned mid-op cannot Add a
+	// late worker racing this Wait; the second window bounds waiting for the
+	// workers and for the writer's final drain — the writer may be blocked
+	// inside out.Write on a pipe the host stopped reading, and shutdown must
+	// never depend on the host's pipe.
 	cancel()
+	s.mu.Lock()
+	s.shuttingDown = true
+	s.mu.Unlock()
 	workDone := make(chan struct{})
-	go func() { work.Wait(); close(workDone) }()
+	go func() { s.work.Wait(); close(workDone) }()
 	drainWindow := time.NewTimer(s.shutdown)
 	defer drainWindow.Stop()
 	drained := false
@@ -351,7 +372,7 @@ func readFrame(reader *bufio.Reader, limit int) ([]byte, error) {
 // subscribe-before-submit disciplines. The execution ops run concurrently,
 // one goroutine per request, exactly as the HTTP server runs one handler
 // per connection.
-func (s *Server) decodeLoop(ctx context.Context, frames <-chan frameResult, lines chan<- []byte, work *sync.WaitGroup) error {
+func (s *Server) decodeLoop(ctx context.Context, frames <-chan frameResult, lines chan<- []byte) error {
 	number := 0
 	for {
 		select {
@@ -371,16 +392,16 @@ func (s *Server) decodeLoop(ctx context.Context, frames <-chan frameResult, line
 			}
 			switch request.Op {
 			case opEvents:
-				s.serveEvents(ctx, request, lines, work)
+				s.serveEvents(ctx, request, lines)
 			case opOpen:
-				result, werr := s.dispatch(ctx, request)
-				s.respond(lines, request, result, werr)
+				s.serveOpen(ctx, request, lines)
 			default:
-				work.Add(1)
-				go func(request requestLine) {
-					defer work.Done()
-					s.serveRequest(ctx, request, lines)
-				}(request)
+				if s.admit() {
+					go func(request requestLine) {
+						defer s.work.Done()
+						s.serveRequest(ctx, request, lines)
+					}(request)
+				}
 			}
 		}
 	}
@@ -443,4 +464,19 @@ func (s *Server) send(lines chan<- []byte, value any) error {
 
 func (s *Server) nextID(kind string) string {
 	return fmt.Sprintf("oap-%s-%d", kind, s.nextIDValue.Add(1))
+}
+
+// admit registers one worker with the teardown WaitGroup, refusing once
+// shutdown began: a late positive Add — from a decodeLoop abandoned mid-op
+// that then finished and dispatched another frame — would race the Wait that
+// may already have seen the counter reach zero, which the WaitGroup contract
+// forbids, and its worker would never be waited for.
+func (s *Server) admit() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.shuttingDown {
+		return false
+	}
+	s.work.Add(1)
+	return true
 }
