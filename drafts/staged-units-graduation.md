@@ -231,7 +231,18 @@ No new envelope types. Changes to
   `session.message.submit.response` rather than an `error.response` with
   `capability_degraded`) is diagnosed on the response; for an `auto`
   request the key is the delivery the admission resolved to (`queued`,
-  `steered`), judged on the response. The rejection path
+  `steered`), judged on the response. The core's mandatory `auto`
+  delivery itself is exempt: Claude, Hermes, and DeepSeek advertise
+  `session.message.delivery.auto` at `degraded` today with disclosed
+  reasons, every existing corpus admits `auto` without
+  `allow_degraded_features` (no fixture carries the field), and a caller
+  refused `auto` would have no way to submit at all. Its `degraded` level
+  is therefore disclosure the caller reads from the descriptor, not a
+  consent gate, and the opt-in rule applies to what a caller elects:
+  controls, explicit deliveries, and the delivery an `auto` resolves to
+  beyond `start`. The positive fixture `controls-auto-degraded-admitted`
+  records that this is legal, so the exemption is stated rather than
+  accidental. The rejection path
   is the correct one and stays a positive fixture; this rule catches the
   adapter that admits and executes degraded behavior without consent.
 - New diagnostic `unapplied_control`: the submit response's `model_id` (when
@@ -628,12 +639,15 @@ No new envelope types. Additive fields:
   than that run's admitted model.
 - `session.state` snapshots: `active_runs` is required whenever the
   validator tracks a queued reservation, more than one nonterminal run,
-  or a nonterminal run with a pending steer (T4) or a pending
-  control-owned call (T3c), since the single-run recovery path reads the
-  submission or interaction id from the entry's `pending_steers` or
-  `pending_interactions` and an omitted field would lose it; the last two
-  conditions arise only on endpoints advertising those units, so no
-  existing fixture changes meaning
+  or, on an endpoint advertising any unit that introduces `active_runs`
+  entries (T2 queue, T3c provide, T4 steer), a nonterminal run with a
+  pending steer or an unresolved interaction of any kind (permission,
+  user input, control-owned call), since the single-run recovery path
+  reads the submission or interaction id from the entry's
+  `pending_steers` or `pending_interactions` and an omitted field would
+  lose it; the interaction condition is scoped to those endpoints because
+  a v0.1-only endpoint has no `active_runs` at all, so no existing fixture
+  changes meaning
   (an absent field would read as an empty queue to a reconnecting client),
   and when present must list the tracked nonterminal runs in admission
   order with consistent `queue_position`; `active_run_id` must be the
@@ -713,17 +727,26 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   stated by the server rather than remembered by the client; the stdio
   frontend writes the same named lines beside its `oap-session-closed`.
   Both clients already skip named events they do not define, so both
-  signals are additive. A v0.1 client driving a session
-  alone never has two nonterminal runs on it (a second submit while busy is
-  refused `run_active` before any queue exists), so its bare cursors keep
-  binding the same run they do today; a session shared with a queue-aware
-  client sees the queued run's terminal only after the started run's, in
-  its own domain, which the v0.1 clients already handle as a run switch.
+  signals are additive. Continuation across run domains is opt-in, not
+  assumed: a v0.1 client ends its stream at the terminal of the run it is
+  reading (`client/events.go:143-146` returns `io.EOF` after a terminal
+  and `clients/ts/src/events.ts:162-165` does the same), so a stream that
+  continued into a queued run B would never be read by it and B's events
+  would silently vanish from that subscription. A T2-aware client asks
+  for continuation with an additive `?follow=session` parameter on the
+  subscribe request (a `follow` flag on the stdio subscribe op); without
+  it the daemon keeps the v0.1 behavior exactly, ending the stream at the
+  terminal of the run the subscription is bound to, preceded by the end
+  signal the legacy client skips. A legacy client therefore sees
+  precisely what it sees today and never a partial view of a run it did
+  not ask for, and one that submits again opens a new stream as it does
+  now.
 - `client` and `clients/ts`: both already track the run of the last
   observed envelope (`EventStream.runID`, `EventStream.runId`) and expose
   `EventsAfter(RunID, LastSequence)` / `eventsAfter`; the changes are to
-  send that run as `?run=` on reconnect and to stop treating a terminal
-  envelope as the end of the stream. A terminal ends the run; the stream
+  subscribe with `?follow=session`, send that run as `?run=` on
+  reconnect, and stop treating a terminal envelope as the end of a
+  following stream. A terminal ends the run; the stream
   ends on `oap-stream-end` (or a closed session). A connection that drops
   after a terminal without that signal is a drop like any other: the
   client resumes with the finished run's cursor and the daemon either
@@ -787,6 +810,9 @@ rejection `queue-degraded-without-optin` (`error.response` with
 reservation and a snapshot without `active_runs`),
 `state-omits-active-runs-with-pending` (`session_state_mismatch`; a single
 started run with a pending steer and a snapshot without `active_runs`),
+`state-omits-active-runs-with-pending-permission`
+(`session_state_mismatch`; a queue-advertising endpoint, one started run
+waiting on a permission, and a snapshot without `active_runs`),
 `queue-state-drops-unsettled-run` (`session_state_mismatch`; a snapshot
 omits a queued run whose terminal never arrives),
 `queue-state-omits-before-settlement` (`session_state_mismatch`; a
