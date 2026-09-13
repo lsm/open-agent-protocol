@@ -68,7 +68,7 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		if !open {
 			return nil, &SessionClosedError{ID: id}
 		}
-		return &Subscription{session: entry, ctx: ctx, sub: sub}, nil
+		return &Subscription{session: entry, ctx: ctx, sub: sub, positions: make(map[protocol.RunID]uint64)}, nil
 	}
 	if entry.IsClosed() {
 		return nil, &SessionClosedError{ID: id}
@@ -113,9 +113,13 @@ type Subscription struct {
 	run    protocol.RunID
 	// last tracks this subscription's last delivered position: sequences are
 	// per-run, so a connection that spans runs must not mix their sequence
-	// spaces into the overflow cursor.
-	last    uint64
-	lastRun protocol.RunID
+	// spaces into the overflow cursor. positions remembers the last
+	// delivered sequence of every run consumed, so an overflow cursor can
+	// resume the run whose events were dropped rather than whichever run
+	// happens to own the mailbox tail.
+	last      uint64
+	lastRun   protocol.RunID
+	positions map[protocol.RunID]uint64
 
 	closeOnce sync.Once
 	finished  bool
@@ -174,17 +178,19 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 					s.finished = true
 					if state := s.sub.terminal.Load(); state != nil {
 						if state.overflow {
-							// The cursor must not mix runs: when the overflow
-							// interrupted the subscription before it delivered
-							// anything of the overflowed run, the consumer's
-							// last position belongs to the previous run, and
-							// recovery replays the overflowed run from its
-							// start.
-							last := s.last
-							if state.run != s.lastRun {
-								last = 0
+							// The cursor resumes where the loss began: the
+							// run of the dropped or overflowed envelope, from
+							// the consumer's last delivered position in it —
+							// or, when that run was never observed, the
+							// observed mailbox tail, so the replayed suffix
+							// is never empty.
+							cursorRun, cursorSeq := state.run, uint64(0)
+							if sequence, observed := s.positions[state.run]; observed {
+								cursorSeq = sequence
+							} else if s.lastRun != "" {
+								cursorRun, cursorSeq = s.lastRun, s.last
 							}
-							s.err = &OverflowError{RunID: state.run, LastSequence: last}
+							s.err = &OverflowError{RunID: cursorRun, LastSequence: cursorSeq}
 						} else {
 							// The run's adapter stream ended on this error;
 							// a failed run must not read as a clean end.
@@ -238,8 +244,9 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 }
 
 // observe records one delivered envelope's position for the overflow
-// cursor and acknowledges its run on the hub side, where adapter-overflow
-// scoping reads the acknowledged position.
+// cursor — per run, so a dropped run's cursor survives later runs owning
+// the tail — and acknowledges its run on the hub side, where
+// adapter-overflow scoping reads the acknowledged position.
 func (s *Subscription) observe(envelope protocol.Envelope) {
 	s.sub.acknowledge(envelope.RunID)
 	if envelope.RunID != s.lastRun {
@@ -247,6 +254,15 @@ func (s *Subscription) observe(envelope protocol.Envelope) {
 		s.last = 0
 	}
 	s.last = observedSequence(envelope, s.last)
+	if envelope.Sequence == nil {
+		return
+	}
+	if s.positions == nil {
+		s.positions = make(map[protocol.RunID]uint64)
+	}
+	if *envelope.Sequence > s.positions[envelope.RunID] {
+		s.positions[envelope.RunID] = *envelope.Sequence
+	}
 }
 
 // detach detaches from the hub: a live subscriber unregisters and is

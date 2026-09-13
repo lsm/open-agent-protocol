@@ -1003,6 +1003,85 @@ func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
 	}
 }
 
+// TestNewerPendingRunExposesOverflow pins the newer-pending exposure: a
+// consumer that acknowledged run A with run B's envelopes queued but
+// unacknowledged is told of B's adapter overflow — B is its incomplete
+// future, and a clean end would hide the loss.
+func TestNewerPendingRunExposesOverflow(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.publish(runEnvelope(t, "run-a", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil { // acknowledges run A
+		t.Fatal(err)
+	}
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-b", streamB)
+	entry.publish(runEnvelope(t, "run-b", 1)) // queued, unacknowledged
+	entry.signalOverflow("run-b")             // newer pending run: exposed
+
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-b" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	_, err = subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want run-b overflow", err, err)
+	}
+	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 1", overflow)
+	}
+	close(streamA)
+	close(streamB)
+}
+
+// TestQueueOverflowCursorRecoversDroppedRun pins the dropped-run cursor:
+// when the consumer has a position in the run whose envelope found the
+// queue full, the cursor resumes that run from the consumer's last
+// delivered position — not the run that happens to own the mailbox tail.
+func TestQueueOverflowCursorRecoversDroppedRun(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(1)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-b", streamB)
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for _, want := range []protocol.RunID{"run-a", "run-b"} {
+		entry.publish(runEnvelope(t, want, 1))
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != want {
+			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
+		}
+	}
+	// A stale drainer's late terminal takes the one-slot tail; the next
+	// run-B envelope is dropped by the full queue.
+	entry.publish(runEnvelope(t, "run-a", 12))
+	entry.publish(runEnvelope(t, "run-b", 2))
+
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-a" || envelope.Sequence == nil || *envelope.Sequence != 12 {
+		t.Fatalf("tail envelope: run %s sequence %v error %v", envelope.RunID, envelope.Sequence, err)
+	}
+	_, err = subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the dropped run's position", overflow)
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.

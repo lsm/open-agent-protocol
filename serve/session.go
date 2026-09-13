@@ -183,31 +183,35 @@ type subscriber struct {
 	finishOnce sync.Once
 	terminal   atomic.Pointer[terminalState]
 	// attached names the run current when the subscriber registered;
-	// lastRun tracks the tail of its mailbox (the run of the last envelope
-	// enqueued, which a queue-full recovery cursor names); ack the run of
-	// the last envelope the consumer actually received through Next; and
-	// pending the runs with envelopes still sitting in the mailbox. An
-	// adapter-reported overflow terminates the subscriber when the
-	// overflowing run is its acknowledged or attached position — or still
-	// has undelivered envelopes ahead of the consumer: mailbox insertion
-	// is not observation, but an undelivered envelope of the run means the
-	// consumer's view of it is not yet complete either.
+	// lastRun tracks the tail of its mailbox; ack the run of the last
+	// envelope the consumer received through Next; pending the runs with
+	// envelopes still in the mailbox; and seen the runs in the order the
+	// mailbox first saw them, with ackSeenAt the index of the
+	// acknowledged one. An adapter-reported overflow terminates the
+	// subscriber when the overflowing run is its acknowledged position or
+	// still holds undelivered envelopes newer than that position — the
+	// consumer's view of such a run is incomplete — but not for a run it
+	// already moved past, whose stragglers are delivery lag, not loss.
 	attached protocol.RunID
 	lastRun  protocol.RunID
 	ack      atomic.Pointer[protocol.RunID]
 
-	pendMu  sync.Mutex
-	pending map[protocol.RunID]int
+	pendMu    sync.Mutex
+	pending   map[protocol.RunID]int
+	seen      []protocol.RunID
+	ackSeenAt int
 }
 
 // acknowledge records the run of an envelope the consumer received and
-// retires one of its pending mailbox entries; the two steps share the
-// pending lock so the hub's exposure decision never observes the half-done
-// state.
+// retires one of its pending mailbox entries; the steps share the pending
+// lock so the hub's exposure decision never observes the half-done state.
 func (sub *subscriber) acknowledge(run protocol.RunID) {
 	sub.pendMu.Lock()
 	if sub.pending[run] > 0 {
 		sub.pending[run]--
+	}
+	if index := sub.indexOf(run); index >= 0 {
+		sub.ackSeenAt = index
 	}
 	if current := sub.ack.Load(); current == nil || *current != run {
 		sub.ack.Store(&run)
@@ -215,24 +219,24 @@ func (sub *subscriber) acknowledge(run protocol.RunID) {
 	sub.pendMu.Unlock()
 }
 
+// indexOf reports the mailbox-first-seen order of run, or -1.
+func (sub *subscriber) indexOf(run protocol.RunID) int {
+	for index, seen := range sub.seen {
+		if seen == run {
+			return index
+		}
+	}
+	return -1
+}
+
 // track records an envelope of run enqueued to the mailbox.
 func (sub *subscriber) track(run protocol.RunID) {
 	sub.pendMu.Lock()
 	sub.pending[run]++
-	sub.pendMu.Unlock()
-}
-
-// position reports the run the subscriber has acknowledged consuming, or —
-// while it has received nothing — the run it attached under. A consumer
-// whose acknowledged position has moved past a run has seen that run
-// complete (its terminal envelope precedes any newer run's events), so an
-// overflow from the older run must not cut it off from the newer one it is
-// actually consuming.
-func (sub *subscriber) position() protocol.RunID {
-	if ack := sub.ack.Load(); ack != nil {
-		return *ack
+	if sub.indexOf(run) < 0 {
+		sub.seen = append(sub.seen, run)
 	}
-	return sub.attached
+	sub.pendMu.Unlock()
 }
 
 // terminalState is a subscriber's end state, recorded at stop time: the
@@ -250,7 +254,7 @@ type terminalState struct {
 func newSubscriber(queue int, attached protocol.RunID) *subscriber {
 	return &subscriber{
 		ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}),
-		attached: attached, pending: make(map[protocol.RunID]int),
+		attached: attached, pending: make(map[protocol.RunID]int), ackSeenAt: -1,
 	}
 }
 
@@ -485,31 +489,36 @@ func (s *Session) publish(envelope protocol.Envelope) {
 			sub.lastRun = envelope.RunID
 			sub.track(envelope.RunID)
 		default:
-			// The subscriber fell behind. Its recovery cursor is its own
-			// position — the tail of its mailbox, whichever run that
-			// belongs to — not the run of the envelope that found the
-			// queue full: a late envelope from an older, still-draining run
-			// must not strand the newer run's observed tail behind a
-			// cursor that cannot replay it.
+			// The subscriber fell behind and this envelope was dropped.
+			// The terminal names the dropped envelope's run: the consumer
+			// resumes from its last position in that run when it has one,
+			// or from its observed mailbox tail when it never saw the run —
+			// the OverflowError construction resolves which.
 			delete(s.subs, sub)
-			sub.stop(&terminalState{overflow: true, run: sub.lastRun})
+			sub.stop(&terminalState{overflow: true, run: envelope.RunID})
 		}
 	}
 	s.mu.Unlock()
 }
 
 // exposedTo reports, as one consistent snapshot, whether the subscriber is
-// exposed to runID: once a run is acknowledged, that position governs — a
-// late envelope from an older run still queued behind it does not re-expose
-// the consumer to the older run's overflow. Before anything is
-// acknowledged, undelivered envelopes of the run or attachment to it do.
+// exposed to runID: the acknowledged run always exposes, and so does a run
+// with undelivered envelopes newer than the acknowledged position — the
+// consumer's view of it is incomplete, and a clean end would hide the
+// loss. A run the consumer already moved past does not expose: its late
+// envelopes are delivery lag, not loss. Before anything is acknowledged,
+// undelivered envelopes of the run or attachment to it expose.
 func (sub *subscriber) exposedTo(runID protocol.RunID) bool {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
-	if ack := sub.ack.Load(); ack != nil {
-		return *ack == runID
+	index := sub.indexOf(runID)
+	if sub.ackSeenAt < 0 {
+		return (index >= 0 && sub.pending[runID] > 0) || sub.attached == runID
 	}
-	return sub.pending[runID] > 0 || sub.attached == runID
+	if index < 0 {
+		return false
+	}
+	return index == sub.ackSeenAt || (index > sub.ackSeenAt && sub.pending[runID] > 0)
 }
 
 // signalOverflow terminates the subscribers exposed to runID with the
