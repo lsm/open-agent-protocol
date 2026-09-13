@@ -410,6 +410,12 @@ serve one catalog for its lifetime.
   (`unavailable_capability` when the descriptor omits the key or advertises
   it `unavailable`), so a catalog served without being advertised fails
   the gate's rule that nothing is applied without being advertised.
+- `current_model_id` on `models.response` must equal the effective session
+  model the validator tracks (`sessionTrack.currentModel`: the latest
+  `session.open.response` or `session.state` value, advanced by a
+  `session_mutation` application at the run it applies to), otherwise
+  `session_state_mismatch`; a picker is never shown a current model the
+  session does not report.
 - New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
   `models.response` in the same trace names an id the response did not list.
 - New diagnostic `ambiguous_default_model`: a `models.response` with more
@@ -456,7 +462,8 @@ listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `models-request-scope-mismatch` (`scope_mismatch`; envelope and payload
 `session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`),
 `models-unadvertised` (`unavailable_capability`), `models-duplicate-id`
-(`duplicate_model_id`).
+(`duplicate_model_id`), `models-current-mismatch`
+(`session_state_mismatch`; state reports one model, the catalog another).
 
 ### Exit criteria
 
@@ -559,10 +566,12 @@ No new envelope types. Additive fields:
   `run.model_selection` with mode `session_mutation`, a `session.state`
   snapshot taken while a run is started reports a `current_model_id` other
   than that run's admitted model.
-- `session.state` snapshots: `active_runs`, when present, must list exactly
-  the tracked nonterminal runs in admission order with consistent
-  `queue_position`; `active_run_id` must be the started run; otherwise
-  `session_state_mismatch`.
+- `session.state` snapshots: `active_runs` is required whenever the
+  validator tracks a queued reservation or more than one nonterminal run
+  (an absent field would read as an empty queue to a reconnecting client),
+  and when present must list exactly the tracked nonterminal runs in
+  admission order with consistent `queue_position`; `active_run_id` must
+  be the started run; otherwise `session_state_mismatch`.
 
 ### Reference adapter
 
@@ -668,7 +677,9 @@ idle session with the capability unadvertised),
 `queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
 1`, one started run, two queued admissions),
 `queue-overlap-unadvertised` (`illegal_run_transition`),
-`queue-state-missing-reservation` (`session_state_mismatch`).
+`queue-state-missing-reservation` (`session_state_mismatch`),
+`queue-state-omits-active-runs` (`session_state_mismatch`; a queued
+reservation and a snapshot without `active_runs`).
 
 ### Exit criteria
 
@@ -893,9 +904,11 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 - `action.call.requested` with `execution_owner` equal to a declared control
   participant must carry `interaction_id` and `responded_by`
   (`illegal_tool_transition`); `action.call.started` for such a call must
-  be preceded by an `action.call.resolve.request` for its interaction in
-  any arm (`illegal_tool_transition` otherwise, so an adapter cannot record
-  execution the control participant has not evidenced); its resolution
+  be preceded by an `action.call.resolve.response` with `accepted: true`
+  for its interaction, answering either the acknowledgement or the
+  resolution (`illegal_tool_transition` otherwise, so an adapter cannot
+  record execution the control participant has not evidenced, and a
+  rejected exchange, `accepted: false`, evidences nothing); its resolution
   follows the interaction rules (`unmatched_interaction`,
   `duplicate_interaction`, `wrong_interaction_responder`,
   `pending_interaction_at_terminal`).
@@ -973,6 +986,8 @@ then no open; validated as a correct rejection),
 `tools-call-source-mismatch` (`unmatched_tool_source`; a call naming one
 tool with another tool's declared source),
 `control-tool-started-before-ack` (`illegal_tool_transition`),
+`control-tool-started-after-rejected-ack` (`illegal_tool_transition`;
+`accepted: false`, then `started`),
 `control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
@@ -1028,6 +1043,11 @@ therefore needs a steer settlement, not only a steer admission.
   harness that applies immediately emits `applied` as the first envelope
   after the response, never before it (the barrier is specified under
   Surfaces).
+- State: the target's `active_runs` entry (T2) gains `pending_steers:
+  [submission_id]` (additive), listing admitted steers until they settle,
+  so a submitter that lost the admission response recovers the id from
+  `session.state` and the hub's fallback under Surfaces has a surface to
+  publish.
 - Barrier: every admitted steer settles before the run terminal; a run that
   terminates first drops its pending steers with `run_terminated` before the
   terminal, in the run's sequence.
@@ -1100,10 +1120,17 @@ and hub contract is explicit rather than inherited from `start`:
   with `Session.Published(submissionID)`: `servehttp` after writing and
   flushing the submit response, the stdio frontend after writing the
   response line, an in-process embedder once it has handed the response
-  to its own caller. As a safety net, the hub lifts a still-held gate
-  when the context passed to `Submit` is done, so a binding that forgets
-  the call delays the target run's subscribers by at most the request's
-  lifetime rather than starving them. Subscribers, and any trace the hub
+  to its own caller. If the context passed to `Submit` ends before
+  `Published` is called (the HTTP client disconnected before the response
+  was written, or a binding forgot the call), the hub does not simply
+  publish the buffered settlement, since the submitter never learned its
+  `submission_id`: it first publishes a `session.state.updated` on the
+  session stream whose `active_runs` entry for the target lists the steer
+  in `pending_steers`, and only then lifts the gate. The state snapshot is
+  the same surface a reconnecting submitter reads to recover the id, so
+  every subscriber learns of the admission before the settlement, the
+  target run's subscribers are delayed by at most the request's lifetime,
+  and nothing is silently discarded. Subscribers, and any trace the hub
   records, therefore see the admission before the settlement even when an
   adapter emits inside `Submit`; the `servehttp` e2e test subscribes
   before a synchronously settling steer and asserts the settlement arrives
