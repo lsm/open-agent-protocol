@@ -1552,18 +1552,27 @@ every later unit relies on:
   client's dev-mode validation and by `oap validate` when it is pointed at
   a live endpoint rather than a fixture. It compiles the same bundle with
   `additionalProperties: false` lifted from payload objects (unknown
-  members are ignored, as the wire rule requires), with `enum` and `const`
-  constraints inside payloads lifted to their base type (an unknown enum
-  value surfaces as a string, as the layered draft's extension rule
-  requires, instead of failing the message), and with the envelope
-  `oneOf` relaxed to "a known `type` must match its branch; an unknown
-  `type` must satisfy the common envelope fields only", the same forward
-  compatibility both clients already apply to unknown named SSE events.
-  The envelope-level discriminators stay exact (`type`, `protocol`,
-  `version`, `profile`), because they are what selects a known branch.
-  The step's tests validate a payload carrying a new enum value against
-  the old bundle in both modes: tolerated in the tolerant compile,
-  rejected in the strict one.
+  members are ignored, as the wire rule requires), with leaf `enum` and
+  `const` constraints inside payloads lifted to their base type (an
+  unknown enum value surfaces as a string, as the layered draft's
+  extension rule requires, instead of failing the message), and with the
+  envelope `oneOf` relaxed to "a known `type` must match its branch; an
+  unknown `type` must satisfy the common envelope fields only", the same
+  forward compatibility both clients already apply to unknown named SSE
+  events. Discriminators stay exact: the envelope-level `type`,
+  `protocol`, `version`, and `profile`, and every `enum` or `const` that
+  guards a conditional or a union branch. `interaction.schema.json` has
+  four such guards (`kind: "text"` against `kind: single_choice |
+  multi_choice` on `user.input.requested`, `status: "submitted"` against
+  `"cancelled"` on its resolution); lifting them would make both branches
+  of each `if` match every payload, forbidding and requiring `options` at
+  once, so the tolerant compile skips `enum`/`const` nodes under `if` and
+  any property a sibling `if` compares, and lifts only leaf enums. The
+  step's tests validate a payload carrying a new leaf enum value against
+  the old bundle in both modes (tolerated tolerant, rejected strict) and,
+  as the regression guard, every fixture in the manifest under the
+  tolerant compile, which must accept everything the strict compile
+  accepts.
 - Fixture validation stays strict against the bundle at its own revision.
   That is the conformance validator's job and how a misspelled new field is
   caught; each unit extends the bundle in place under `schema/v0.1`.
