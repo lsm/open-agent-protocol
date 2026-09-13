@@ -536,13 +536,18 @@ No new envelope types. Additive fields:
   `queued` admission response (from an explicit or an `auto` request) on a
   descriptor that omits `session.message.delivery.queue` or advertises it
   `unavailable` is `unavailable_capability` whatever the session held.
-- New diagnostic `queue_order_violation`: any run-scoped envelope of a
+- New diagnostic `queue_order_violation`: any sequenced stream event of a
   later-admitted run, not only `run.started` but also a pre-start
-  `run.cancelled` or `run.failed` and anything else in its domain,
-  appearing while an earlier-admitted run in the session is nonterminal.
-  This is the one-run-domain delivery rule above applied to the trace's
-  timeline, so a queued run cancelled before promotion has its terminal
-  after the earlier run's terminal in every conforming trace.
+  `run.cancelled` or `run.failed` and anything else the adapter emits in
+  its domain, appearing while an earlier-admitted run in the session is
+  nonterminal. Requests and responses addressed to the queued run are
+  exempt (`run.cancel.request` and `.response` are run-scoped envelopes,
+  and cancelling a queued run before promotion necessarily happens while
+  the earlier run is nonterminal): the rule governs the adapter's
+  timeline, not the control layer's commands. This is the one-run-domain
+  delivery rule above applied to the trace, so a queued run cancelled
+  before promotion has its cancel exchange at once and its terminal after
+  the earlier run's terminal in every conforming trace.
 - New diagnostic `queue_limit_exceeded`: when the descriptor carries
   `limits`, a `queued` admission that would put the session's queued
   reservations above `max_queued_runs_per_session`, or a `run.started`
@@ -729,7 +734,7 @@ name need not encode it. A tool naming a source must name one the same
 response declared, and a call carrying `source` must name the source the
 session's catalog
 records for that tool, or a declared source when the tool is not in the
-catalog (validator diagnostic `unmatched_tool_source` for both); the first
+catalog (validator diagnostic `unmatched_tool_source` for both); every
 session-scoped
 list for a session opened with `tool_sources` or `tools` must declare every
 attached source and provided tool (diagnostic `catalog_mismatch`), and the
@@ -871,11 +876,13 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `duplicate_tool_source` for two descriptors sharing `id`.
 - `catalog_mismatch`: `sessionTrack` records the `tool_sources` ids and
   the provided `tools` (name and `execution_owner`) from
-  `session.open.request`; the first session-scoped
+  `session.open.request`; every session-scoped
   `action.tools.list.response` for that session must declare every
   recorded source id and list every provided tool under the recorded
-  owner, or the diagnostic fires on the response. Later lists are not
-  compared, since runtime attach and detach stay deferred.
+  owner, or the diagnostic fires on that response. Native entries may
+  differ between lists (a harness refreshes its own catalog), but the
+  open-time entries never drop out, because attachment is for the
+  session's lifetime and runtime attach and detach stay deferred.
 - `action.tools.list.response`: `unmatched_tool_source` for a tool naming an
   undeclared source. `action.call.*` payloads carrying `source`: the same
   diagnostic when the trace's catalog lists the named tool under a
@@ -957,7 +964,8 @@ selected one called). Negative:
 `id` and different endpoints),
 `tools-catalog-omits-attachment` (`catalog_mismatch`; an open with a
 process source and a provided tool, then a first list omitting the
-source),
+source), `tools-catalog-drops-attachment-later` (`catalog_mismatch`; a
+correct first list, then a second list omitting the provided tool),
 `open-provide-colliding-name` (`error.response` with `unsupported_feature`
 then no open; validated as a correct rejection),
 `open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
