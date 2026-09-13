@@ -277,14 +277,21 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	}
 	// The last reader: nobody delivers anymore, so subscribers always end
 	// here — with this reader's outcome when it drained the current run,
-	// otherwise with the current run's stashed one.
+	// otherwise with the current run's stashed one. The subscriber set is
+	// detached in this same critical section: releasing the lock first
+	// would let a new run's startRun or a new subscribe interleave, and
+	// this finish would then terminate subscribers that belong to the new
+	// run before they see any of its events.
 	state := end
 	if current != runID {
 		state = s.pendingEnd
 	}
 	s.pendingEnd = nil
+	subs := s.detachSubsLocked()
 	s.mu.Unlock()
-	s.finishSubs(state)
+	for _, sub := range subs {
+		sub.stop(state)
+	}
 }
 
 // publish delivers one envelope to every subscriber, terminating (not
@@ -316,16 +323,29 @@ func (s *Session) signalOverflow(runID protocol.RunID) {
 // finishSubs detaches every subscriber and terminates it with the given
 // terminal state, or cleanly when the state is nil.
 func (s *Session) finishSubs(state *terminalState) {
+	for _, sub := range s.detachSubs() {
+		sub.stop(state)
+	}
+}
+
+// detachSubs empties the subscriber set under the session lock; callers
+// that already hold the lock (the last run reader's exit) detach in their
+// own critical section via detachSubsLocked.
+func (s *Session) detachSubs() []*subscriber {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.detachSubsLocked()
+}
+
+// detachSubsLocked snapshots and empties the subscriber set; s.mu must be
+// held, so the detach is atomic with the caller's decision to finish.
+func (s *Session) detachSubsLocked() []*subscriber {
 	subs := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
 		subs = append(subs, sub)
 	}
 	s.subs = make(map[*subscriber]struct{})
-	s.mu.Unlock()
-	for _, sub := range subs {
-		sub.stop(state)
-	}
+	return subs
 }
 
 // markClosed records a successful adapter close and ends every live stream.
