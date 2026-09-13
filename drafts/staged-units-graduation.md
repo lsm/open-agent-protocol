@@ -589,8 +589,13 @@ No new envelope types. Additive fields:
   validator then marks that run settled-pending-delivery: its pre-start
   terminal must still arrive, after the earlier run's terminal
   (`queue_order_violation` if earlier, `session_state_mismatch` at the end
-  of the trace if never), and no later snapshot may list it again. A
-  started run is never reconciled this way; its terminal is never held.
+  of the trace if never), no later snapshot may list it again, and the
+  omission must be true when made: the held terminal's `timestamp_ms`,
+  when it is delivered, must be no later than the omitting snapshot's
+  `updated_at_ms`, otherwise the snapshot is diagnosed
+  `session_state_mismatch` at that point, since it dropped a run that was
+  still reserved. A started run is never reconciled this way; its
+  terminal is never held.
 
 ### Reference adapter
 
@@ -702,7 +707,10 @@ idle session with the capability unadvertised),
 `queue-state-omits-active-runs` (`session_state_mismatch`; a queued
 reservation and a snapshot without `active_runs`),
 `queue-state-drops-unsettled-run` (`session_state_mismatch`; a snapshot
-omits a queued run whose terminal never arrives).
+omits a queued run whose terminal never arrives),
+`queue-state-omits-before-settlement` (`session_state_mismatch`; a
+snapshot omits a queued run whose held terminal carries a later
+`timestamp_ms`).
 
 ### Exit criteria
 
@@ -840,6 +848,12 @@ Wire:
   (normalized harness-side execution), so an old client reading a new
   descriptor and a new client reading an old descriptor both interpret it
   as today; only the new key gates control-owned execution.
+- `active_runs[]` entries (T2) gain `pending_interactions:
+  [interaction_id]` (additive), listing the run's unresolved interactions
+  of every kind (permission, user input, control-owned calls). It is the
+  state surface a resolver that lost its resolve response reads: an
+  interaction absent from the list was resolved, one still present was
+  not, so a rejected resolution is re-sent and an accepted one is not.
 
 Semantics, on the interaction contract Decision 0001 fixed:
 
@@ -927,9 +941,12 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   with the `kind`, `protocol`, `endpoint`, and `display_name` it was
   attached with (the attach-only `command`, `args`, and `environment` are
   never listed), and a provided tool with the `name`, `description`,
-  `input_schema`, `annotations`, and `execution_owner` it was supplied
-  with, `features` being the adapter's to fill; a redirected endpoint or
-  an altered schema is `catalog_mismatch` just as an omission is. Native
+  `input_schema`, `annotations`, `execution_owner`, and `source` (present
+  or absent exactly as supplied) it was supplied with, `features` being
+  the adapter's to fill; a redirected endpoint, an altered schema, or a
+  tool moved to another declared source is `catalog_mismatch` just as an
+  omission is, so attribution and routing cannot change during the
+  session. Native
   entries may differ between lists (a harness refreshes its own catalog),
   but the open-time entries never drop out or change, because attachment
   is for the session's lifetime, provisioning is all-or-nothing, and
@@ -967,6 +984,11 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   control participant (`wrong_tool_owner`). The check runs at supply time,
   before any interaction exists, which `wrong_interaction_responder` cannot
   cover.
+- `session.state` snapshots: each `active_runs[]` entry's
+  `pending_interactions` must equal the validator's set of unresolved
+  interactions for that run (`session_state_mismatch` on omission or on a
+  resolved interaction still listed), the same check T4 applies to
+  `pending_steers`.
 
 ### Reference adapter
 
@@ -1000,10 +1022,16 @@ the request used.
   binding has written the accepted resolve response, which is the order
   the validator rejects. The hub gates the run's drainer across
   `Resolve`, the binding lifts it with `Session.Published(interactionID)`
-  after writing the response, and the context-done fallback simply lifts
-  it, since the events it releases are self-describing by
-  `interaction_id`, an id the resolver already holds from
-  `action.call.requested`, so nothing unknown is revealed. The optional
+  after writing the response. The context-done fallback reconciles as the
+  steer fallback does rather than lifting the gate blind: the hub first
+  publishes a `session.state.updated` whose `active_runs` entry for the
+  run reflects `pending_interactions` after the resolution (the
+  interaction absent when the resolution was accepted, present when it
+  was rejected), then lifts the gate. The accepted response is recorded in
+  the hub's trace before the released events, so the validator's
+  accepted-response rule holds in every trace, and a resolver that never
+  saw the response learns the outcome from state instead of guessing from
+  events it cannot attribute to acceptance. The optional
   MCP connector is a separate package `serve/mcpconnect`, out of scope for
   the 0007 decision but designed against it.
 - `serve/servehttp`: `GET /sessions/{id}/tools` returning
@@ -1039,7 +1067,9 @@ correct first list, then a second list omitting the provided tool),
 `tools-catalog-redirects-source` (`catalog_mismatch`; the attached source
 listed with another `endpoint`), `tools-catalog-alters-provided-schema`
 (`catalog_mismatch`; the provided tool listed with another
-`input_schema`),
+`input_schema`), `tools-catalog-moves-provided-source`
+(`catalog_mismatch`; the provided tool listed under another declared
+source),
 `open-provide-colliding-name` (`error.response` with `unsupported_feature`
 then no open; validated as a correct rejection),
 `open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
@@ -1051,6 +1081,8 @@ tool with another tool's declared source),
 `accepted: false`, then `started`),
 `control-tool-terminal-after-rejected-result` (`illegal_tool_transition`;
 an accepted acknowledgement, a rejected `result`, then `completed`),
+`control-tool-state-omits-pending` (`session_state_mismatch`; a snapshot
+without the unresolved call in `pending_interactions`),
 `control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
