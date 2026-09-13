@@ -224,11 +224,14 @@ No new envelope types. Changes to
   `feature()` gate with the control's key (diagnostic
   `unavailable_capability` when unadvertised or `unavailable`).
 - New diagnostic `degraded_without_optin`: `feature()` today accepts every
-  level but `unavailable`, so a request carrying a control whose key the
-  descriptor advertises `degraded` and whose `allow_degraded_features`
-  omits that key is remembered, and an admission correlated to it (a
+  level but `unavailable`, so a request carrying a control, or an
+  explicit non-`auto` delivery, whose key the descriptor advertises
+  `degraded` and whose `allow_degraded_features` omits that key is
+  remembered, and an admission correlated to it (a
   `session.message.submit.response` rather than an `error.response` with
-  `capability_degraded`) is diagnosed on the response. The rejection path
+  `capability_degraded`) is diagnosed on the response; for an `auto`
+  request the key is the delivery the admission resolved to (`queued`,
+  `steered`), judged on the response. The rejection path
   is the correct one and stays a positive fixture; this rule catches the
   adapter that admits and executes degraded behavior without consent.
 - New diagnostic `unapplied_control`: the submit response's `model_id` (when
@@ -558,6 +561,11 @@ No new envelope types. Additive fields:
 - `auto` on a busy session resolves to `queue` only when
   `session.message.delivery.queue` is advertised; otherwise `run_active`.
   `delivery_resolution` reports `session_busy` for that resolution.
+- A delivery capability advertised `degraded` needs its key in
+  `allow_degraded_features`, for an explicit `queue` and for an `auto`
+  that would resolve to it alike; otherwise `capability_degraded` before
+  admission, exactly as T1 rules for controls. T4 applies the same to
+  `session.message.delivery.steer`.
 - Promotion is in admission order: a queued run may emit `run.started` only
   when every earlier-admitted run in the session is terminal. Only one run
   per session is started at a time; Decision 0001's cancellation scope
@@ -592,6 +600,9 @@ No new envelope types. Additive fields:
   `queued` admission response (from an explicit or an `auto` request) on a
   descriptor that omits `session.message.delivery.queue` or advertises it
   `unavailable` is `unavailable_capability` whatever the session held.
+  T1's `degraded_without_optin` covers the delivery keys too: a `queued`
+  admission on a descriptor advertising the queue capability `degraded`
+  without the caller's opt-in is diagnosed on the response.
 - New diagnostic `queue_order_violation`: any sequenced stream event of a
   later-admitted run, not only `run.started` but also a pre-start
   `run.cancelled` or `run.failed` and anything else the adapter emits in
@@ -696,9 +707,13 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   domain, and when it ends a stream on purpose (a terminal with no
   later-admitted run, or the session closed) it writes an explicit
   `event: oap-stream-end` signal (`run_id`, `last_sequence`) before
-  closing; the stdio frontend writes the same named line beside its
-  `oap-session-closed`. Both clients already skip named events they do not
-  define, so the signal is additive. A v0.1 client driving a session
+  closing, and whenever a stream leaves a run's domain for a later one,
+  live or resumed, it first writes `event: oap-run-boundary` (`run_id`,
+  `last_sequence`) for the run it is leaving, so a run's terminality is
+  stated by the server rather than remembered by the client; the stdio
+  frontend writes the same named lines beside its `oap-session-closed`.
+  Both clients already skip named events they do not define, so both
+  signals are additive. A v0.1 client driving a session
   alone never has two nonterminal runs on it (a second submit while busy is
   refused `run_active` before any queue exists), so its bare cursors keep
   binding the same run they do today; a session shared with a queue-aware
@@ -720,15 +735,25 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   case to make this work: today a cursor-bearing connection whose first
   envelope names another run fails with `ResumeMismatchError`, and one
   whose first envelope is not `lastSeq+1` fails with `SequenceGapError`.
-  Under T2, when the cursor's run is terminal (both clients already track
-  `terminal`), the first resumed envelope may instead be sequence 1 of a
-  different run: the client adopts that run as the new domain and resets
-  its sequence expectation to it. A different run at any other sequence,
-  or a different run while the cursor's run is nonterminal, still fails
-  as today, so the daemon's answer to `?run=A&after=<A's terminal>` is
-  either the end signal or run B from sequence 1 and nothing else. Both
+  Under T2 the first resumed envelope may instead be sequence 1 of a
+  different run when the cursor's run is known terminal, and the client
+  then adopts that run as the new domain and resets its sequence
+  expectation to it. "Known terminal" has two sources: the in-memory
+  `terminal` flag both clients already track, and an `oap-run-boundary`
+  event naming the cursor's run at exactly the cursor's sequence. The
+  second is what makes the public manual-resume path work: a fresh
+  `EventStream` built by `EventsAfter(runA, n)` after a process restart
+  holds only the `(run, sequence)` pair, and the daemon's answer to
+  `?run=A&after=n` when A is terminal at n is the boundary for A, then B
+  from sequence 1, so the client learns terminality from the server
+  before the switch. A different run at any other sequence, or a
+  different run with neither piece of evidence, still fails as today, so
+  the daemon's answer is the end signal, the boundary followed by run B
+  from sequence 1, or A's own continuation and nothing else. Both
   clients' e2e tests drop the connection between a run's terminal and the
-  queued run's first envelope and assert the continuation. Because
+  queued run's first envelope on the same stream object, and separately
+  resume from the terminal cursor with a fresh `EventsAfter`, asserting
+  the continuation in both. Because
   delivery is one run domain at a time, no per-run cursor table is needed:
   a run switch always follows a terminal, and on a live connection both
   clients already accept it.
@@ -749,6 +774,10 @@ first run's terminal). Negative:
 run's pre-start `run.cancelled` before the started run's terminal),
 `queue-idle-unadvertised` (`unavailable_capability`; explicit `queue` on an
 idle session with the capability unadvertised),
+`queue-degraded-admitted-without-optin` (`degraded_without_optin`; queue
+advertised `degraded`, no opt-in, admitted `queued`), and the correct
+rejection `queue-degraded-without-optin` (`error.response` with
+`capability_degraded`, then no admission) as a positive fixture,
 `queue-model-mutation-early` (`premature_session_mutation`),
 `queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
 1`, one started run, two queued admissions),
