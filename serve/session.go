@@ -118,11 +118,20 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	if request.SessionID != s.id {
 		return protocol.MessageSubmitResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
 	}
+	// Reserve the reader slot before the adapter call: the adapter may
+	// admit this run while an old one's reader is still exiting, and that
+	// reader's zero-reader detach must not run between the admission and
+	// the hub recording the new run — subscribers attached before the
+	// resubmit would take the old run's end and never see the new one.
+	s.mu.Lock()
+	s.readers++
+	s.mu.Unlock()
 	admission, stream, err := s.session.Submit(ctx, request)
 	if err != nil {
+		s.exitReader("", nil)
 		return admission, err
 	}
-	s.startRun(admission.RunID, stream)
+	s.adoptRun(admission.RunID, stream)
 	return admission, nil
 }
 
@@ -165,12 +174,25 @@ type subscriber struct {
 	finish     chan struct{}
 	finishOnce sync.Once
 	terminal   atomic.Pointer[terminalState]
-	// exposed is the set of runs this subscriber has observed: the run
-	// current at attachment plus every run whose envelopes were delivered
-	// to it (a live subscriber spans runs). An adapter-reported overflow
-	// terminates the subscriber only when the overflowing run is one it
-	// observed; a run it never saw does not concern it.
-	exposed map[protocol.RunID]struct{}
+	// attached names the run current when the subscriber registered, and
+	// lastRun the run of its most recent delivered envelope (empty until
+	// one arrives): together they give the subscriber's position, which
+	// scopes adapter-reported overflows.
+	attached protocol.RunID
+	lastRun  protocol.RunID
+}
+
+// position reports the run the subscriber is consuming: the run of its
+// last delivered envelope, or — while it has received nothing — the run it
+// attached under. A subscriber whose position has moved past a run has
+// seen that run complete (its terminal envelope precedes any newer run's
+// events), so an overflow from the older run must not cut it off from the
+// newer one it is actually consuming.
+func (sub *subscriber) position() protocol.RunID {
+	if sub.lastRun != "" {
+		return sub.lastRun
+	}
+	return sub.attached
 }
 
 // terminalState is a subscriber's end state, recorded at stop time: the
@@ -185,12 +207,8 @@ type terminalState struct {
 	err      error
 }
 
-func newSubscriber(queue int, joined protocol.RunID) *subscriber {
-	exposed := make(map[protocol.RunID]struct{})
-	if joined != "" {
-		exposed[joined] = struct{}{}
-	}
-	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}), exposed: exposed}
+func newSubscriber(queue int, attached protocol.RunID) *subscriber {
+	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}), attached: attached}
 }
 
 // stop terminates the subscriber with its terminal state, if any.
@@ -232,12 +250,22 @@ func (s *Session) currentRun() (protocol.RunID, bool) {
 }
 
 // startRun points the hub at a newly admitted run and starts draining its
-// adapter stream. The drain is unconditional for the whole run lifetime, so
-// the adapter's bounded subscriber buffers never fill on the hub side.
+// adapter stream, reserving the reader slot in the same step. The drain is
+// unconditional for the whole run lifetime, so the adapter's bounded
+// subscriber buffers never fill on the hub side.
 func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 	s.mu.Lock()
-	s.runID = runID
 	s.readers++
+	s.runID = runID
+	s.mu.Unlock()
+	go s.readRun(runID, stream)
+}
+
+// adoptRun points the hub at a run whose reader slot Submit already
+// reserved, converting the reservation into the draining reader.
+func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
+	s.mu.Lock()
+	s.runID = runID
 	s.mu.Unlock()
 	go s.readRun(runID, stream)
 }
@@ -271,26 +299,26 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 		}
 		s.publish(result.Envelope)
 	}
+	s.exitReader(runID, end)
+}
+
+// exitReader is the shared path when a run reader (or a Submit reservation,
+// which passes an empty run) leaves: with readers remaining, the current
+// run's terminal state is stashed for the last one to apply; the last one
+// finishes subscribers — with its own outcome when it drained the current
+// run, otherwise the current run's stashed one — detaching the set under
+// the lock so a concurrent startRun or subscribe cannot interleave.
+func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	s.mu.Lock()
 	s.readers--
 	current := s.runID
 	if s.readers > 0 {
-		// Another reader may still deliver, so this one finishes nobody;
-		// the current run's terminal state is stashed for whichever reader
-		// leaves last.
 		if current == runID {
 			s.pendingEnd = end
 		}
 		s.mu.Unlock()
 		return
 	}
-	// The last reader: nobody delivers anymore, so subscribers always end
-	// here — with this reader's outcome when it drained the current run,
-	// otherwise with the current run's stashed one. The subscriber set is
-	// detached in this same critical section: releasing the lock first
-	// would let a new run's startRun or a new subscribe interleave, and
-	// this finish would then terminate subscribers that belong to the new
-	// run before they see any of its events.
 	state := end
 	if current != runID {
 		state = s.pendingEnd
@@ -304,15 +332,14 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 }
 
 // publish delivers one envelope to every subscriber, terminating (not
-// blocking on) subscribers whose queue is full. Delivery marks the
-// subscriber as exposed to the envelope's run — a live subscriber spans
-// runs, and an adapter overflow on any run it observed is its concern.
+// blocking on) subscribers whose queue is full. Delivery advances the
+// subscriber's position to the envelope's run.
 func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Lock()
 	for sub := range s.subs {
 		select {
 		case sub.ch <- envelope:
-			sub.exposed[envelope.RunID] = struct{}{}
+			sub.lastRun = envelope.RunID
 		default:
 			// The overflow is of THIS envelope's run — runs may be draining
 			// concurrently, so the session's current run can already be a
@@ -326,16 +353,17 @@ func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Unlock()
 }
 
-// signalOverflow terminates the subscribers exposed to runID with the
-// overflow signal after the adapter itself reported an event-stream overflow
-// on that run's stream: every subscriber that observed the run — attached
-// during it, or live across it — while subscribers that never saw it keep
-// following theirs.
+// signalOverflow terminates the subscribers positioned in runID with the
+// overflow signal after the adapter itself reported an event-stream
+// overflow on that run's stream. Subscribers that already moved past the
+// run have seen it complete — an overflow from it recovers nothing for
+// them and must not cut them off from the newer run they are consuming;
+// subscribers that never reached the run are likewise untouched.
 func (s *Session) signalOverflow(runID protocol.RunID) {
 	s.mu.Lock()
 	affected := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
-		if _, exposed := sub.exposed[runID]; exposed {
+		if sub.position() == runID {
 			affected = append(affected, sub)
 			delete(s.subs, sub)
 		}

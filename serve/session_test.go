@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -266,6 +267,170 @@ func TestOverflowFollowsDeliveredRuns(t *testing.T) {
 	var overflow *OverflowError
 	if !errors.As(err, &overflow) || overflow.RunID != "run-b" || overflow.LastSequence != 1 {
 		t.Fatalf("terminal %v (%T), want run-b overflow at 1", err, err)
+	}
+}
+
+// gatedSession parks its Submit until the test releases it, reporting when
+// the adapter call was entered — pinning Submit's reader reservation
+// against the zero-reader detach racing an in-flight admission.
+type gatedSession struct {
+	stubSession
+	entered chan struct{}
+	release chan struct{}
+	fail    error
+	once    sync.Once
+	stream  chan base.Result
+}
+
+func (g *gatedSession) Submit(_ context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	g.once.Do(func() { close(g.entered) })
+	<-g.release
+	if g.fail != nil {
+		return protocol.MessageSubmitResponse{}, nil, g.fail
+	}
+	g.stream = make(chan base.Result, 4)
+	return protocol.MessageSubmitResponse{SessionID: request.SessionID, RunID: "run-b", Accepted: true}, g.stream, nil
+}
+
+// TestSubmitReservationBridgesAdmission pins the settle-window invariant:
+// run A's reader may exit while the adapter is still admitting run B, and
+// the subscriber attached before the resubmit must bridge into B rather
+// than take A's end.
+func TestSubmitReservationBridgesAdmission(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+
+	admitted := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
+		})
+		admitted <- err
+	}()
+	// The admission is in flight (its reader slot reserved) when run A's
+	// stream ends; A's reader exits to a non-zero reader count, so the
+	// subscriber is not finished with A's end.
+	<-gated.entered
+	close(streamA)
+	close(gated.release)
+	if err := <-admitted; err != nil {
+		t.Fatal(err)
+	}
+
+	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	close(gated.stream)
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for _, want := range [2]string{"run-a", "run-b"} {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != protocol.RunID(want) {
+			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
+		}
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want io.EOF", err)
+	}
+}
+
+// TestSubmitReservationReleasesOnFailure pins the failure unwind: an
+// adapter rejection after A's reader exited still ends subscribers with
+// A's stashed outcome instead of wedging or hanging them parked.
+func TestSubmitReservationReleasesOnFailure(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}), release: make(chan struct{}), fail: base.ErrRunActive}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+
+	rejected := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
+		})
+		rejected <- err
+	}()
+	<-gated.entered
+	close(streamA)
+	close(gated.release)
+	if err := <-rejected; !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("submit error %v, want run-active", err)
+	}
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-a" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want io.EOF", err)
+	}
+}
+
+// TestLateOverflowDoesNotCutNewerRun pins the position scope: a subscriber
+// that moved past run A into run B has seen A complete, so a late overflow
+// from A's drained stream must not terminate it — it keeps receiving B.
+func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	// Observe run A's envelope first, with A's channel then empty: no
+	// further run-a publish can interleave once run B flows, so the
+	// subscriber's position advance into B (observed next) is stable when
+	// A's late overflow is sent.
+	for {
+		envelope, err := subscription.Next()
+		if err != nil {
+			t.Fatalf("early terminal %v", err)
+		}
+		if envelope.RunID == "run-a" {
+			break
+		}
+	}
+	entry.startRun("run-b", streamB)
+	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	for {
+		envelope, err := subscription.Next()
+		if err != nil {
+			t.Fatalf("early terminal %v", err)
+		}
+		if envelope.RunID == "run-b" {
+			break
+		}
+	}
+	// A's stream reports its overflow only now, with the subscriber
+	// positioned in B.
+	streamA <- base.Result{Error: base.ErrEventStreamOverflow}
+	close(streamA)
+	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 2)}
+	close(streamB)
+
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-b" || envelope.Sequence == nil || *envelope.Sequence != 2 {
+		t.Fatalf("run-b tail: run %s sequence %v error %v", envelope.RunID, envelope.Sequence, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want the clean run-b end", err)
 	}
 }
 
