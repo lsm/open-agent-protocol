@@ -963,7 +963,10 @@ Wire:
   `details.feature: "action.tools.provide"`, `details.reason:
   "unsatisfiable"`, `details.tool`); otherwise the adapter could admit a
   tool it would later classify as harness-owned or route to a participant
-  that never provided it. Per-submit tool provisioning
+  that never provided it. So is a tool whose `source` names a source
+  neither the descriptor nor the same open's `tool_sources` declares
+  (`details.source`), for the same reason: a dangling source cannot be
+  attributed or routed. Per-submit tool provisioning
   (Makai supplies tools per `agent_start`) is deferred; session-open is what
   Claude and ACP support and what Makai can accept at start.
 - New envelope types `action.call.resolve.request` and
@@ -1138,7 +1141,12 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `feature()` gate with `action.tool_sources.attach` or
   `action.tools.provide`; a `remote` source additionally requires the
   attach capability to disclose `mode: "remote"`, else
-  `unavailable_capability` on the admitted open.
+  `unavailable_capability` on the admitted open. Each supplied tool's
+  `source`, when present, must name a source in the union of the same
+  open's `tool_sources` and the sources the capability descriptor
+  declares, checked when the open is admitted (`unmatched_tool_source`),
+  so a trace that ends after the open cannot carry a provided catalog
+  entry that resolves to no source.
 - `session.open.request.tools[*].execution_owner` must be the declared
   control participant (`wrong_tool_owner`). The check runs at supply time,
   before any interaction exists, which `wrong_interaction_responder` cannot
@@ -1286,7 +1294,10 @@ the tool as harness-owned, the call names the control participant),
 `open-attach-unadvertised` (`unavailable_capability`),
 `open-attach-remote-unadvertised` (`unavailable_capability`; a `remote`
 source attached on a descriptor whose attach capability lacks `mode:
-"remote"`), `control-tool-double-accepted-resolution`
+"remote"`), `open-provide-dangling-source-admitted`
+(`unmatched_tool_source`; a provided tool with `source: "ghost"` that no
+descriptor or attachment declares, and the open admitted),
+`control-tool-double-accepted-resolution`
 (`duplicate_interaction`; two `result` resolutions for one interaction
 both answered `accepted: true`).
 
@@ -1371,9 +1382,15 @@ legal only against a started nonterminal run in the same session with
 with `delivery: "steer"` (the `submitResponse` combination table gains
 the `steered`/`steer` row and rejects it for `auto`, so "`auto` never
 resolves to `steer`" is enforced), and only with a `run_id` equal to the
-request's `target_run_id` when one was supplied (`scope_mismatch`); `applied`/`dropped` must name a
-pending steer once (`unmatched_steer`, `duplicate_steer`); a terminal with a
-pending steer is `pending_steer_at_terminal`. A settlement whose
+request's `target_run_id` when one was supplied (`scope_mismatch`) and a
+`status` equal to the target's tracked `runState.status` at that point
+(`illegal_run_transition`), so the submitter is never handed stale run
+state; `applied`/`dropped` must name a
+pending steer once (`unmatched_steer`, `duplicate_steer`), and a `steered`
+response whose `submission_id` is already pending on that run is
+`duplicate_steer` as well, since the pending set could not represent two
+steers under one id and the second would never be seen to settle; a
+terminal with a pending steer is `pending_steer_at_terminal`. A settlement whose
 `submission_id` no earlier `steered` response in the trace admitted is
 `unmatched_steer`, which makes the ordering barrier below a conformance
 rule rather than a hub detail. Fixtures: positive `steer-immediate`
@@ -1384,7 +1401,11 @@ rule rather than a hub detail. Fixtures: positive `steer-immediate`
 `steer-unadvertised` (`unavailable_capability`),
 `steer-auto-resolved-to-steer` (`illegal_run_transition`; an `auto`
 request answered `steered`), `steer-target-mismatch` (`scope_mismatch`;
-`target_run_id` naming one run, the response another). `session.state`
+`target_run_id` naming one run, the response another),
+`steer-status-mismatch` (`illegal_run_transition`; the target is
+`waiting_for_input`, the response says `running`),
+`steer-duplicate-submission-id` (`duplicate_steer`; two `steered`
+responses on one run with the same `submission_id`). `session.state`
 snapshots are checked against the same record: each `active_runs[]`
 entry's `pending_steers` must equal the pending set in `runState.steers`
 for that run, so an omitted pending steer or a settled one still listed
@@ -1609,10 +1630,15 @@ every later unit relies on:
   multi_choice` on `user.input.requested`, `status: "submitted"` against
   `"cancelled"` on its resolution); lifting them would make both branches
   of each `if` match every payload, forbidding and requiring `options` at
-  once, so the tolerant compile skips `enum`/`const` nodes under `if` and
-  any property a sibling `if` compares, and lifts only leaf enums. The
-  step's tests validate a payload carrying a new leaf enum value against
-  the old bundle in both modes (tolerated tolerant, rejected strict) and,
+  once, so the tolerant compile keeps every `enum`/`const` inside an `if`
+  guard exact and lifts everything else, including the outer
+  `question.properties.kind.enum` that those guards compare: an unknown
+  `kind: "date"` then matches neither guard, takes neither `then`, and
+  surfaces as a string as the extension rule promises, whereas exempting
+  the whole property would still reject it. The step's tests validate a
+  payload carrying a new leaf enum value, and a `user.input.requested`
+  with an unknown `kind`, against the old bundle in both modes (tolerated
+  tolerant, rejected strict) and,
   as the regression guard, every fixture in the manifest under the
   tolerant compile, which must accept everything the strict compile
   accepts.
