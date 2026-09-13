@@ -260,9 +260,10 @@ func (sub *subscriber) untrack(run protocol.RunID) {
 }
 
 // lossRun reports the run a queue-full drop's cursor should name: the
-// dropped envelope's run, unless the subscriber's acknowledged position is
-// newer — the newer run's remaining delivery is discarded too, and a
-// cursor on the older run cannot recover it.
+// dropped envelope's run, unless the subscriber's acknowledged position —
+// or, before anything is acknowledged, its attachment run — is newer: the
+// newer run's remaining delivery is discarded too, and a cursor on the
+// older run cannot recover it.
 func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64) protocol.RunID {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
@@ -270,6 +271,9 @@ func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64) pro
 		if ack := sub.ack.Load(); ack != nil {
 			return *ack
 		}
+	}
+	if sub.ackSerial == 0 && sub.attachedSerial > droppedSerial {
+		return sub.attached
 	}
 	return dropped
 }
@@ -516,19 +520,30 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 		// admission after all (ACP's pre-admission write failure closes an
 		// empty stream): undo the drainer and release the reservation as a
 		// rejection, so parked subscribers stay parked for a corrected
-		// retry instead of reading a phantom run's end. A close that
-		// landed while this drainer held the reader slot still ends the
-		// session's subscribers — markClosed deferred its cohort to
-		// whoever left last.
+		// retry instead of reading a phantom run's end. Leaving last still
+		// applies whatever finish is pending — a real run's deferred end
+		// stashed while this drainer held the reader slot, or a close's
+		// cohort — exactly as a last reader's exit would.
 		s.mu.Lock()
 		s.readers--
-		var closedCohort []*subscriber
-		if s.closed && s.readers == 0 {
-			closedCohort = s.detachSubsLocked()
+		var cohort []*subscriber
+		var state *terminalState
+		if s.readers == 0 && s.reservations == 1 {
+			if s.pendingEnd != nil || s.deferred != nil || s.finishDue || s.closed {
+				state, cohort = s.pendingEnd, s.deferred
+				s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
+				if cohort == nil {
+					cohort = s.detachSubsLocked()
+				} else {
+					for _, sub := range cohort {
+						delete(s.subs, sub)
+					}
+				}
+			}
 		}
 		s.mu.Unlock()
-		for _, sub := range closedCohort {
-			sub.stop(nil)
+		for _, sub := range cohort {
+			sub.stop(state)
 		}
 		s.releaseReservation()
 		return

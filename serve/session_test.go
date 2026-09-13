@@ -1644,6 +1644,100 @@ func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
 	}
 }
 
+// TestQueueOverflowPrefersAttachedRun pins the pre-acknowledgement loss
+// cursor: a subscriber attaching while a newer run is current keeps that
+// run in the cursor when a late older envelope is dropped — its remaining
+// delivery is discarded too, and an older-run cursor cannot recover it.
+func TestQueueOverflowPrefersAttachedRun(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	streamA := make(chan base.Result, 1)
+	entry.startRun("run-a", streamA)
+	streamB := make(chan base.Result, 1)
+	entry.startRun("run-b", streamB)
+	sub, ok := entry.subscribe(1) // attaches while run B is current
+	if !ok {
+		t.Fatal("subscribe with a run active was refused")
+	}
+	entry.publish(runEnvelope(t, "run-b", 1)) // fills the one-slot mailbox
+	entry.publish(runEnvelope(t, "run-a", 9)) // the older run's late envelope: dropped
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-b" || envelope.Sequence == nil || *envelope.Sequence != 1 {
+		t.Fatalf("envelope: run %s sequence %v error %v", envelope.RunID, envelope.Sequence, err)
+	}
+	_, err = subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the attached run", overflow)
+	}
+}
+
+// TestEmptyOrphanAppliesDeferredRunEnd pins the open-session path: a real
+// run's end deferred behind an unbound error stream applies when that empty
+// orphan exits last — affected consumers see the run's outcome, not a park.
+func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-b", streamB)
+	entry.publish(runEnvelope(t, "run-b", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil {
+		t.Fatal(err)
+	}
+	// A submit returns an error with a live, still-empty stream: its
+	// drainer lingers unbound, holding a reader slot.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
+		})
+		done <- err
+	}()
+	<-gated.entered
+	gated.stream = make(chan base.Result, 4)
+	gated.failWithStream = context.Canceled
+	close(gated.release)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("submit error %v, want context.Canceled", err)
+	}
+	// Run B's stream fails while the orphan holds its reader slot: B's end
+	// defers behind it.
+	streamFailure := errors.New("run B stream died")
+	streamB <- base.Result{Error: streamFailure}
+	close(streamB)
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.pendingEnd != nil && entry.pendingEnd.err == streamFailure
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run B's error end was never deferred behind the orphan")
+		default:
+		}
+	}
+	// The empty orphan exits last and must apply B's deferred end.
+	close(gated.stream)
+	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
+		t.Fatalf("terminal %v, want run B's deferred stream failure", err)
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.
