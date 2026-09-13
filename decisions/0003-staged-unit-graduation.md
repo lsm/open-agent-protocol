@@ -104,7 +104,9 @@ rejected before admission with a typed `unsupported_feature` error naming the
 capability key, never dropped. A control applied through a native
 session-level mutation is advertised `emulated` with a disclosed mode, and
 the session state afterwards reflects the native truth (`current_model_id`
-reports the new default). A control whose application cannot be confirmed
+reports the new default). Such a mutation runs immediately before the run
+it was requested for starts and never while another run is started, so a
+queued submit's mutation waits for promotion. A control whose application cannot be confirmed
 is `degraded` and requires the caller's `allow_degraded_features` opt-in,
 else `capability_degraded` before admission. If a real consumer finds the
 per-submit shape too chatty, that report is the evidence for a later additive

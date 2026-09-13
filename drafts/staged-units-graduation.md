@@ -114,11 +114,17 @@ No new envelope types. Changes to
   when and only when `mode` is `named`, and `allowed`/`disallowed` mutually
   exclusive. Precedence is fixed so no two implementations can read one
   policy differently: `allowed` or `disallowed` filters the catalog first,
-  then `mode` applies to the filtered set; `named` must name a tool in the
-  filtered set and `required` needs a non-empty filtered set, otherwise the
-  policy is unsatisfiable and is rejected before admission
+  then `mode` applies to the filtered set; every entry of `allowed` and
+  `disallowed` must name a tool in the advertised catalog (an unknown entry
+  is unsatisfiable, not ignored, so a misspelled `disallowed` entry fails
+  closed instead of silently blocking nothing), `named` must name a tool
+  in the filtered set, and `required` needs a non-empty filtered set;
+  otherwise the policy is unsatisfiable and is rejected before admission
   (`unsupported_feature`, `details.reason: "unsatisfiable"`), never
-  resolved by choosing one member over another. In Go,
+  resolved by choosing one member over another. The catalog a policy is
+  judged against is the session's full catalog, including tools the control
+  layer provides at open (T3c), so a policy governs those tools the same
+  way. In Go,
   `MessageSubmitRequest.ToolChoice` stays `json.RawMessage`;
   `protocol.ToolChoice` (today `Mode` and `Name` only) gains `Allowed
   []string` and `Disallowed []string`, and a strict
@@ -139,8 +145,9 @@ No new envelope types. Changes to
   `run.model_selection` is new; the other three are already named in the
   core draft. `FeatureSupport.mode` discloses how an emulated control is
   applied: `per_run` (native per-run parameter), `session_mutation` (a
-  serialized native config change before admission, which changes the
-  session default), or `restart` (not offered in this phase).
+  serialized native config change applied immediately before the run it
+  was requested for starts, which changes the session default), or
+  `restart` (not offered in this phase).
 - Typed error codes on `error.response`: `unsupported_feature` with
   `details.feature` naming the key and `details.reason` distinguishing the
   two conditions it covers: `unadvertised` (control present, capability
@@ -171,6 +178,18 @@ No new envelope types. Changes to
   submission without `model_id` would use. A `per_run` application leaves it
   unchanged; a `session_mutation` application changes it, and the adapter
   reflects the change rather than restoring the previous default.
+- A `session_mutation` application runs immediately before the run it was
+  requested for starts, never while another run is started, because the
+  started run's admitted model is authoritative until its terminal. For a
+  submit admitted `start` that is before admission, as today. For a submit
+  admitted `queued` (once T2 is executable) the adapter validates the id
+  against the catalog at admission but applies the mutation at promotion:
+  `current_model_id` keeps reporting the started run's model until then, a
+  queued run cancelled or dropped before start never applies its mutation,
+  and a mutation that fails at promotion settles the run pre-start as
+  `run.failed` with the typed error admission would have produced. An
+  adapter that cannot defer the mutation rejects the combination
+  (`run_active`) rather than mutating under a started run.
 - `output_schema` binds the run's final response: `run.completed.result` is
   present and conforms, or the run fails with `structured_output_failed`.
   A harness that retries structured output natively (Claude Code's
@@ -187,14 +206,20 @@ No new envelope types. Changes to
   moves to this code); `run.completed` under an admitted `output_schema`
   lacks `result`, or carries a `result` that does not validate against the
   admitted schema (the validator compiles the schema with the same
-  `jsonschema` engine it already uses for the bundle).
+  `jsonschema` engine it already uses for the bundle); an
+  `action.call.requested` in a run whose admitted `tool_choice` excludes
+  that tool (`mode: "none"`, filtered out by `allowed` or `disallowed`, or
+  `named` naming another tool), whichever participant owns the call.
 - New diagnostic `unsatisfiable_control`: a `tool_choice` that is not the
   typed policy, carries both `allowed` and `disallowed`, names a tool in
   its own `disallowed` list or outside its own `allowed` list, or, when the
-  trace carries a catalog (capabilities or `action.tools.list.response`),
-  is `required` or `named` against an empty filtered set. The check runs
-  only when the submit carries the control, so envelopes that do not use
-  the unit are untouched.
+  trace carries a catalog (capabilities or `action.tools.list.response`,
+  plus any `tools` provided at open), lists or names a tool outside that
+  catalog or is `required` or `named` against an empty filtered set. The
+  validator and the reference adapter therefore reject the same policies:
+  a policy the unit's rules accept is admitted by the reference, and one
+  the reference refuses is diagnosed. The check runs only when the submit
+  carries the control, so envelopes that do not use the unit are untouched.
 - `runState` gains `controls` (the admitted request's control set) so the
   checks above are keyed off the request, not the response.
 
@@ -238,7 +263,11 @@ a `model-per-message` corpus case, and stops the adapter overwriting
 evidence for the other adapters is gated on new ledger entries: Claude
 `set_model` (`session_mutation`), pi `set_model` (`session_mutation`), ACP
 `session/set_config_option` (`session_mutation`, degraded because
-attribution is unsafe under concurrent changes).
+attribution is unsafe under concurrent changes). A `session_mutation`
+adapter that also advertises `session.message.delivery.queue` (pi is the
+first candidate) must show the deferred application in its corpus: a
+queued submit naming another model while a run is started, with the
+native mutation frame appearing only after the started run's terminal.
 
 ### Surfaces
 
@@ -263,6 +292,10 @@ Positive: `controls-model-admitted`, `controls-instructions-emulated`,
 present but invalid against the admitted schema),
 `controls-tool-choice-contradictory` (`unsatisfiable_control`; `required`
 with the only tool disallowed, and `named` outside its own allowlist),
+`controls-tool-choice-unknown-entry` (`unsatisfiable_control`; an
+`allowed` list naming a tool outside the catalog the trace carries),
+`controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
+under `mode: "none"`),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection).
 
@@ -420,6 +453,9 @@ No new envelope types. Additive fields:
   `queue_dropped` error.
 - Every queued reservation is listed in `active_runs` until its terminal;
   reconnect state preserves the order.
+- A queued submit's `session_mutation` control (T1) is applied at
+  promotion, not at admission, so the started run's model stays
+  authoritative; the T1 semantics fix the failure and cancel paths.
 - Delivery order on a session stream is one run domain at a time, in
   admission order: a later-admitted run's envelopes, including a queued
   run's pre-start terminal, are delivered only after every earlier-admitted
@@ -437,6 +473,10 @@ No new envelope types. Additive fields:
   `illegal_run_transition` ("session already has a nonterminal run").
 - New diagnostic `queue_order_violation`: `run.started` for a queued run
   while an earlier-admitted run in the session is nonterminal.
+- New diagnostic `premature_session_mutation`: when the descriptor discloses
+  `run.model_selection` with mode `session_mutation`, a `session.state`
+  snapshot taken while a run is started reports a `current_model_id` other
+  than that run's admitted model.
 - `session.state` snapshots: `active_runs`, when present, must list exactly
   the tracked nonterminal runs in admission order with consistent
   `queue_position`; `active_run_id` must be the started run; otherwise
@@ -519,8 +559,12 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
 ### Fixtures
 
 Positive: `queue-explicit-idle-promoted`, `queue-busy-then-promoted`,
-`queue-busy-cancelled-prestart`, `queue-state-active-runs`. Negative:
+`queue-busy-cancelled-prestart`, `queue-state-active-runs`,
+`queue-model-mutation-at-promotion` (a `session_mutation` descriptor, a
+queued submit naming another model, `current_model_id` unchanged until the
+first run's terminal). Negative:
 `queue-promoted-out-of-order` (`queue_order_violation`),
+`queue-model-mutation-early` (`premature_session_mutation`),
 `queue-overlap-unadvertised` (`illegal_run_transition`),
 `queue-state-missing-reservation` (`session_state_mismatch`).
 
@@ -644,6 +688,13 @@ Semantics, on the interaction contract Decision 0001 fixed:
 - A control-owned call is never routed to a harness-side executor, and a
   harness-owned call is never resolvable from the control layer
   (`wrong_interaction_responder`).
+- Provided tools join the session's catalog: they are listed by
+  `action.tools.list.response` with the opener as `execution_owner`, and a
+  submit's `tool_choice` (T1) governs them like any other catalog tool. A
+  run whose admitted policy excludes a provided tool never emits
+  `action.call.requested` for it (`unapplied_control` otherwise); an
+  adapter that cannot withhold a provided tool from the harness for one run
+  rejects such a policy as unsatisfiable rather than exposing the tool.
 
 Evidence: Makai's `tool_execute`/`tool_result` bridge is exactly this
 boundary: the adapter's native codec already decodes both frames, every
@@ -684,10 +735,15 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 
 `adapter/memory.go` declares two sources (`native` for `scripted_tool`, a
 synthetic `process`/`mcp` source), accepts `tool_sources` at open and lists
-them, accepts one control-owned `ToolDefinition` at open, and, when present,
-calls it after the permission gate: `requested` and `started` with the
-opener as owner, then the terminal from `Resolve`. `InteractionResolution`
-gains a third arm `ToolCall *protocol.ActionCallResolveRequest`.
+them, accepts one control-owned `ToolDefinition` at open, and calls it
+after the permission gate when it is present and the run's admitted
+`tool_choice` selects it: `requested` and `started` with the opener as
+owner, then the terminal from `Resolve`. The provided tool joins the
+reference catalog next to `scripted_tool`, so the T1 rules apply to it
+unchanged: `mode: "none"`, a filter that excludes it, or `named` naming
+the other tool skips the call, and `named` naming it calls it.
+`InteractionResolution` gains a third arm `ToolCall
+*protocol.ActionCallResolveRequest`.
 
 ### Surfaces
 
@@ -708,8 +764,11 @@ gains a third arm `ToolCall *protocol.ActionCallResolveRequest`.
 ### Fixtures
 
 Positive: `tools-catalog-with-sources`, `open-attach-process-source`,
-`control-tool-roundtrip`, `control-tool-cancelled-with-run`. Negative:
+`control-tool-roundtrip`, `control-tool-cancelled-with-run`,
+`control-tool-withheld-by-tool-choice` (a provided tool, a submit with
+`mode: "none"`, no call). Negative:
 `tools-unmatched-source` (`unmatched_tool_source`),
+`control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
 `open-attach-unadvertised` (`unavailable_capability`).
@@ -838,7 +897,8 @@ strings in the schema; the validator does not enumerate them.
 ### Validator diagnostics added
 
 `unapplied_control`, `unsatisfiable_control`, `model_not_in_catalog`,
-`queue_order_violation`, `unmatched_tool_source`, `catalog_mismatch`,
+`queue_order_violation`, `premature_session_mutation`,
+`unmatched_tool_source`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
 invariant is the same (`unavailable_capability`, `illegal_run_transition`,
