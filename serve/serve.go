@@ -127,7 +127,14 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, err
 	}
+	// A session that already reports closed — its child process exited
+	// between the open and this confirmation read — keeps its final state
+	// but must refuse subscriptions: no further run can ever reach them,
+	// and a live subscription would park forever.
 	entry := newSession(state.SessionID, adapterName, session)
+	if err != nil {
+		entry.markClosed()
+	}
 	if err := h.sessions.add(entry); err != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}

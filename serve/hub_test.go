@@ -403,6 +403,79 @@ func TestHubOpenClosesSessionWhenStateFails(t *testing.T) {
 	}
 }
 
+// TestHubOpenMarksClosedOnClosedConfirmation pins the open contract when a
+// session closes between the adapter open and the confirmation read: the
+// final state is preserved and subscriptions are refused rather than parked
+// forever on a session that can never publish another run.
+func TestHubOpenMarksClosedOnClosedConfirmation(t *testing.T) {
+	gated := &manualClosedAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", gated); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	session, state, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "already-closed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != protocol.SessionClosed {
+		t.Fatalf("confirmation state %+v, want the final closed state", state)
+	}
+	if !session.IsClosed() {
+		t.Fatal("the entry did not record the closed confirmation")
+	}
+	if _, err := hub.Subscribe(ctx, session.ID()); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("subscribe error %v, want the session-closed refusal", err)
+	}
+}
+
+// manualClosedAdapter opens sessions whose State reports the final closed
+// state alongside ErrSessionClosed, as an adapter whose child exits at
+// once does.
+type manualClosedAdapter struct{}
+
+func (manualClosedAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{
+		Capabilities:       protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "reference.manual"}},
+		CapabilityRevision: "manual-v1",
+	}, nil
+}
+
+func (manualClosedAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+	return &closedStateSession{id: request.SessionID}, nil
+}
+
+type closedStateSession struct {
+	id protocol.SessionID
+}
+
+func (s *closedStateSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+}
+
+func (s *closedStateSession) State(context.Context) (protocol.SessionState, error) {
+	return protocol.SessionState{SessionID: s.id, Status: protocol.SessionClosed}, base.ErrSessionClosed
+}
+
+func (s *closedStateSession) Resolve(context.Context, base.InteractionResolution) error {
+	return base.ErrSessionClosed
+}
+
+func (s *closedStateSession) Cancel(_ context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
+	return protocol.RunCancelResponse{}, base.ErrSessionClosed
+}
+
+func (s *closedStateSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, base.ErrSessionClosed
+}
+
+func (s *closedStateSession) Close(context.Context) error { return base.ErrSessionClosed }
+
+var _ base.Session = (*closedStateSession)(nil)
+
 // --- fan-out, overflow, signals ---
 
 func TestHubFansOutToSubscribers(t *testing.T) {
