@@ -257,6 +257,21 @@ func (sub *subscriber) untrack(run protocol.RunID) {
 	sub.pendMu.Unlock()
 }
 
+// lossRun reports the run a queue-full drop's cursor should name: the
+// dropped envelope's run, unless the subscriber's acknowledged position is
+// newer — the newer run's remaining delivery is discarded too, and a
+// cursor on the older run cannot recover it.
+func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64) protocol.RunID {
+	sub.pendMu.Lock()
+	defer sub.pendMu.Unlock()
+	if sub.ackSerial > droppedSerial {
+		if ack := sub.ack.Load(); ack != nil {
+			return *ack
+		}
+	}
+	return dropped
+}
+
 // terminalState is a subscriber's end state, recorded at stop time: the
 // overflow signal naming the run that overflowed, or the run stream's
 // terminal error. A nil state ends the stream cleanly. Recording the run at
@@ -325,7 +340,6 @@ func (s *Session) currentRun() (protocol.RunID, bool) {
 // genuinely newer admission.
 func (s *Session) bindRun(runID protocol.RunID, reserved uint64) protocol.RunID {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.serials[runID] == 0 {
 		s.serials[runID] = reserved
 	}
@@ -337,6 +351,11 @@ func (s *Session) bindRun(runID protocol.RunID, reserved uint64) protocol.RunID 
 	if reserved > s.serials[s.runID] {
 		s.runID = runID
 	}
+	// Binding supersedes a deferred finish exactly as an adopted run does —
+	// a deferred error reaches its cohort before the bound run publishes.
+	errored, failed := s.supersedeLocked()
+	s.mu.Unlock()
+	s.deliverDeferredError(errored, failed)
 	return runID
 }
 
@@ -374,11 +393,16 @@ func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 }
 
 // supersedeLocked clears the deferred finish state a new run supersedes,
-// returning the cohort and state first when the deferred outcome was a
-// stream error that must still be delivered. s.mu must be held.
+// detaching the cohort first when the deferred outcome was a stream error
+// that must still be delivered — a stopped subscriber left in the live set
+// would keep receiving the new run's envelopes ahead of its terminal. s.mu
+// must be held.
 func (s *Session) supersedeLocked() (cohort []*subscriber, failed *terminalState) {
 	if s.pendingEnd != nil && s.pendingEnd.err != nil {
 		cohort, failed = s.deferred, s.pendingEnd
+		for _, sub := range cohort {
+			delete(s.subs, sub)
+		}
 	}
 	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 	return cohort, failed
@@ -635,13 +659,13 @@ func (s *Session) publish(envelope protocol.Envelope) {
 			sub.lastRun = envelope.RunID
 		default:
 			sub.untrack(envelope.RunID)
-			// The subscriber fell behind and this envelope was dropped.
-			// The terminal names the dropped envelope's run: the consumer
-			// resumes from its last position in that run when it has one,
-			// or from its observed mailbox tail when it never saw the run —
-			// the OverflowError construction resolves which.
+			// The subscriber fell behind and this envelope was dropped. The
+			// terminal names the run whose future delivery is discarded:
+			// the dropped envelope's run, unless the subscriber's
+			// acknowledged position is newer — a cursor on an older run
+			// cannot recover the newer run's remaining events.
 			delete(s.subs, sub)
-			sub.stop(&terminalState{overflow: true, run: envelope.RunID})
+			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID])})
 		}
 	}
 	s.mu.Unlock()

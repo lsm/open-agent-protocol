@@ -1482,6 +1482,47 @@ func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 	}
 }
 
+// TestQueueOverflowPreservesNewerRun pins the queue-full loss cursor when a
+// stale envelope is dropped: a subscriber that acknowledged run B and has
+// B's future delivery discarded too must recover from B's position — never
+// from the older run whose late envelope found the queue full.
+func TestQueueOverflowPreservesNewerRun(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(1)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-b", streamB)
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for _, want := range []protocol.RunID{"run-a", "run-b"} {
+		entry.publish(runEnvelope(t, want, 1))
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != want {
+			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
+		}
+	}
+	// A stale run-A terminal takes the one-slot tail; the next run-B
+	// envelope is dropped — but B's remaining delivery is the loss.
+	entry.publish(runEnvelope(t, "run-a", 12))
+	entry.publish(runEnvelope(t, "run-b", 2))
+
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-a" || envelope.Sequence == nil || *envelope.Sequence != 12 {
+		t.Fatalf("tail envelope: run %s sequence %v error %v", envelope.RunID, envelope.Sequence, err)
+	}
+	_, err = subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the newer run's position", overflow)
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.
