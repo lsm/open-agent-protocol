@@ -484,7 +484,16 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   optional `run` parameter. `?run=` is still needed even with ordered
   delivery: a drop between one run's terminal and the next run's first
   envelope leaves the client holding the finished run's cursor while the
-  next run is already the started one. A v0.1 client driving a session
+  next run is already the started one. Stream end changes with it: today
+  the daemon ends a stream at a run terminal unless a resubmit already
+  landed, and both clients read a terminal as the stream's clean end. Under
+  T2 the daemon continues past a terminal into any later-admitted run's
+  domain, and when it ends a stream on purpose (a terminal with no
+  later-admitted run, or the session closed) it writes an explicit
+  `event: oap-stream-end` signal (`run_id`, `last_sequence`) before
+  closing; the stdio frontend writes the same named line beside its
+  `oap-session-closed`. Both clients already skip named events they do not
+  define, so the signal is additive. A v0.1 client driving a session
   alone never has two nonterminal runs on it (a second submit while busy is
   refused `run_active` before any queue exists), so its bare cursors keep
   binding the same run they do today; a session shared with a queue-aware
@@ -492,9 +501,18 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   its own domain, which the v0.1 clients already handle as a run switch.
 - `client` and `clients/ts`: both already track the run of the last
   observed envelope (`EventStream.runID`, `EventStream.runId`) and expose
-  `EventsAfter(RunID, LastSequence)` / `eventsAfter`; the change is to send
-  that run as `?run=` on reconnect. Because delivery is one run domain at
-  a time, no per-run cursor table is needed: a run switch always follows a
+  `EventsAfter(RunID, LastSequence)` / `eventsAfter`; the changes are to
+  send that run as `?run=` on reconnect and to stop treating a terminal
+  envelope as the end of the stream. A terminal ends the run; the stream
+  ends on `oap-stream-end` (or a closed session). A connection that drops
+  after a terminal without that signal is a drop like any other: the
+  client resumes with the finished run's cursor and the daemon either
+  continues into the later-admitted run or answers with the end signal.
+  Against an older daemon, which closes at the terminal with no signal, the
+  client bounds that post-terminal resume to one attempt and then reads
+  `session.state`: an empty or absent `active_runs` is the clean end,
+  anything else keeps resuming. Because delivery is one run domain at a
+  time, no per-run cursor table is needed: a run switch always follows a
   terminal, which both clients already accept.
 - Daemon-management listing (`GET /sessions`) reports `active_runs`.
 
@@ -532,8 +550,10 @@ Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
 - `action.tools.list.response` gains `sources: [ToolSourceDescriptor]`;
   `ToolDefinition` gains `source` (a source `id`, never an inline copy) and
   `features` (per-tool `FeatureSupport` map, as in the example). The
-  example previously carried an inline descriptor copy on each tool; it now
-  carries the id, so the cited shape and this contract agree. The
+  example is aligned with this contract in the same change: it is now a
+  session-scoped request and response pair on the flat envelope, each tool
+  carries its source id rather than an inline descriptor copy, and each
+  carries `execution_owner`. The
   capability descriptor's `tools` and `layers.*.tools` gain `sources` beside
   them.
 - `action.call.*` payloads gain optional `source` (the source `id`), so a
