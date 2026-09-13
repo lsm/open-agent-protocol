@@ -427,7 +427,14 @@ serve one catalog for its lifetime.
   `session_state_mismatch`; a picker is never shown a current model the
   session does not report.
 - New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
-  `models.response` in the same trace names an id the response did not list.
+  `models.response` in the same trace names an id the response did not
+  list. The catalog is stored with the `capability_revision` it was served
+  under: a `capabilities.updated` or a new `capabilities.response` that
+  changes the active revision discards it, so no admission is judged
+  against a stale catalog (a newly added model is not falsely diagnosed,
+  a removed one is not silently accepted) until a `models.response` under
+  the new revision replaces it; the `feature()` gate already rejects a
+  `models.response` citing a stale revision.
 - New diagnostic `ambiguous_default_model`: a `models.response` with more
   than one descriptor carrying `default: true`, so the at-most-one rule
   above is enforced rather than stated.
@@ -473,7 +480,12 @@ listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`),
 `models-unadvertised` (`unavailable_capability`), `models-duplicate-id`
 (`duplicate_model_id`), `models-current-mismatch`
-(`session_state_mismatch`; state reports one model, the catalog another).
+(`session_state_mismatch`; state reports one model, the catalog another),
+`models-select-removed-after-refresh` (`model_not_in_catalog`; a model
+listed under revision 1, dropped by the revision 2 catalog, then
+selected). Positive as well: `models-refresh-replaces-catalog` (a model
+added by the revision 2 catalog is selected after `capabilities.updated`,
+and one selected between the refresh and the new catalog is not judged).
 
 ### Exit criteria
 
@@ -594,8 +606,13 @@ No new envelope types. Additive fields:
   when it is delivered, must be no later than the omitting snapshot's
   `updated_at_ms`, otherwise the snapshot is diagnosed
   `session_state_mismatch` at that point, since it dropped a run that was
-  still reserved. A started run is never reconciled this way; its
-  terminal is never held.
+  still reserved. Both fields are optional in the schemas, so the
+  reconciliation is available only with evidence: an omitting snapshot
+  without `updated_at_ms`, or a held terminal without `timestamp_ms`,
+  leaves the validator unable to tell an early settlement from a
+  premature drop and is diagnosed as the drop (the reference adapter and
+  the daemon stamp both, so conforming traces always qualify). A started
+  run is never reconciled this way; its terminal is never held.
 
 ### Reference adapter
 
@@ -710,7 +727,8 @@ reservation and a snapshot without `active_runs`),
 omits a queued run whose terminal never arrives),
 `queue-state-omits-before-settlement` (`session_state_mismatch`; a
 snapshot omits a queued run whose held terminal carries a later
-`timestamp_ms`).
+`timestamp_ms`), `queue-state-omits-without-timestamps`
+(`session_state_mismatch`; the omitting snapshot lacks `updated_at_ms`).
 
 ### Exit criteria
 
@@ -927,6 +945,11 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   descriptors that advertise the family key today, `action.tools` as an
   alias; the positive fixture `tools-catalog-list-only` carries a
   descriptor advertising `action.tools.list` alone.
+- An `action.tools.list.response` correlated to a request that names a
+  session (envelope or payload `session_id`) must carry that session on
+  both its envelope and its payload; an unscoped response to a scoped
+  request is `scope_mismatch`, not an endpoint-level catalog, so an
+  adapter cannot evade the lifetime-catalog check by dropping the scope.
 - `action.tools.list.response`: `duplicate_tool_name` for two entries
   sharing `name`, whatever their sources.
 - `action.tools.list.response` and `session.open.request.tool_sources`:
@@ -1057,6 +1080,8 @@ settles `cancelled` from `requested`),
 `mode: "none"`, no call), `open-provide-two-tools` (both listed, the
 selected one called). Negative:
 `tools-unmatched-source` (`unmatched_tool_source`),
+`tools-list-response-unscoped` (`scope_mismatch`; a session-scoped
+request answered without `session_id`),
 `tools-duplicate-name` (`duplicate_tool_name`),
 `tools-duplicate-source-id` (`duplicate_tool_source`; two sources with one
 `id` and different endpoints),
