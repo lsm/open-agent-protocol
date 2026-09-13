@@ -1807,6 +1807,72 @@ func TestTerminalSubmitErrorClosesEntry(t *testing.T) {
 	}
 }
 
+// TestCloseOverReservationErrorSplitsCohorts pins the no-reader
+// reservation branch: a deferred stream error reaches only its own cohort
+// when the close hands the finish to a lingering admission — a subscriber
+// registered after the failed run's exit is owed the clean close.
+func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	cohort, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-b", streamB)
+	entry.publish(runEnvelope(t, "run-b", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
+	if _, err := subscription.Next(); err != nil { // cohort observes run B
+		t.Fatal(err)
+	}
+	// An admission lingers; run B fails while only its reservation remains,
+	// deferring the error behind it.
+	admit := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("next run")}},
+		})
+		admit <- err
+	}()
+	<-gated.entered
+	streamFailure := errors.New("run B stream died")
+	streamB <- base.Result{Error: streamFailure}
+	close(streamB)
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.readers == 0 && entry.pendingEnd != nil && entry.pendingEnd.err == streamFailure
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run B's error end was never deferred behind the reservation")
+		default:
+		}
+	}
+	newcomer, ok := entry.subscribe(8) // after B's exit: never observed B
+	if !ok {
+		t.Fatal("subscribe during the deferral window was refused")
+	}
+	entry.markClosed()
+	gated.fail = base.ErrRunActive // the admission rejects; the close resolves the deferred finish
+	close(gated.release)
+	if err := <-admit; err == nil {
+		t.Fatal("the lingering admission unexpectedly succeeded after the close")
+	}
+
+	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
+		t.Fatalf("cohort terminal %v, want run B's deferred stream failure", err)
+	}
+	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
+	if _, err := newcomerSubscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("newcomer terminal %v, want the clean close — never B's error", err)
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.

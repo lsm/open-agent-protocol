@@ -826,9 +826,18 @@ func (s *Session) markClosed() {
 		s.mu.Unlock()
 	case s.reservations > 0:
 		// No reader remains; the in-flight admission's resolution ends the
-		// subscribers the close found (later subscribes are refused). The
-		// close re-snapshots the cohort: a reader-exit deferral may predate
-		// subscribers that registered since and are owed the close too.
+		// subscribers the close found (later subscribes are refused). A
+		// deferred stream error reaches its own cohort first and detaches —
+		// subscribers that registered after that run's exit are owed the
+		// clean close, not an error from a run they never observed — and
+		// the close cohort is then everyone still live.
+		if s.pendingEnd != nil && s.pendingEnd.err != nil {
+			errored, failed = s.deferred, s.pendingEnd
+			for _, sub := range errored {
+				delete(s.subs, sub)
+			}
+			s.pendingEnd = nil
+		}
 		s.finishDue = true
 		s.deferred = s.snapshotSubsLocked()
 		s.mu.Unlock()
