@@ -383,6 +383,10 @@ serve one catalog for its lifetime.
   correlation and scope checks: each envelope's top-level `session_id` must
   agree with its payload (`scope_mismatch`), and the response must repeat
   the request's session.
+- Both envelopes invoke the existing `feature()` gate with `models.list`
+  (`unavailable_capability` when the descriptor omits the key or advertises
+  it `unavailable`), so a catalog served without being advertised fails
+  the gate's rule that nothing is applied without being advertised.
 - New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
   `models.response` in the same trace names an id the response did not list.
 - New diagnostic `ambiguous_default_model`: a `models.response` with more
@@ -424,7 +428,8 @@ Positive: `models-list-then-select` (catalog, then a submit selecting a
 listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `models-two-defaults` (`ambiguous_default_model`),
 `models-request-scope-mismatch` (`scope_mismatch`; envelope and payload
-`session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`).
+`session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`),
+`models-unadvertised` (`unavailable_capability`).
 
 ### Exit criteria
 
@@ -499,6 +504,13 @@ No new envelope types. Additive fields:
   `illegal_run_transition` ("session already has a nonterminal run").
 - New diagnostic `queue_order_violation`: `run.started` for a queued run
   while an earlier-admitted run in the session is nonterminal.
+- New diagnostic `queue_limit_exceeded`: when the descriptor carries
+  `limits`, a `queued` admission that would put the session's queued
+  reservations above `max_queued_runs_per_session`, or a `run.started`
+  that would put its started runs above `max_active_runs_per_session`;
+  `sessionTrack` keeps both bounds from the descriptor. Absent limits
+  enforce nothing here, since absence promises only one started run and at
+  least one queued.
 - New diagnostic `premature_session_mutation`: when the descriptor discloses
   `run.model_selection` with mode `session_mutation`, a `session.state`
   snapshot taken while a run is started reports a `current_model_id` other
@@ -604,6 +616,8 @@ queued submit naming another model, `current_model_id` unchanged until the
 first run's terminal). Negative:
 `queue-promoted-out-of-order` (`queue_order_violation`),
 `queue-model-mutation-early` (`premature_session_mutation`),
+`queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
+1`, one started run, two queued admissions),
 `queue-overlap-unadvertised` (`illegal_run_transition`),
 `queue-state-missing-reservation` (`session_state_mismatch`).
 
@@ -707,7 +721,16 @@ Claude spawns with MCP config. ACP graduates T3b with the corpus case
 Wire:
 
 - `session.open.request` gains `tools: [ToolDefinition]` whose
-  `execution_owner` is the opening participant. Per-submit tool provisioning
+  `execution_owner` must equal the opening participant: on the daemon its
+  declared control participant, in a trace the participant
+  `protocol.initialize.request` declared (envelopes carry no sender field,
+  so the comparison is against the declared control participant, not a
+  per-envelope identity). An open supplying a tool owned by anyone else is
+  rejected before the session exists (`unsupported_feature`,
+  `details.feature: "action.tools.provide"`, `details.reason:
+  "unsatisfiable"`, `details.tool`); otherwise the adapter could admit a
+  tool it would later classify as harness-owned or route to a participant
+  that never provided it. Per-submit tool provisioning
   (Makai supplies tools per `agent_start`) is deferred; session-open is what
   Claude and ACP support and what Makai can accept at start.
 - New envelope types `action.call.resolve.request` and
@@ -813,6 +836,10 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 - `session.open.request` with `tool_sources` or `tools` invokes the
   `feature()` gate with `action.tool_sources.attach` or
   `action.tools.provide`.
+- `session.open.request.tools[*].execution_owner` must be the declared
+  control participant (`wrong_tool_owner`). The check runs at supply time,
+  before any interaction exists, which `wrong_interaction_responder` cannot
+  cover.
 
 ### Reference adapter
 
@@ -866,6 +893,8 @@ selected one called). Negative:
 `tools-duplicate-name` (`duplicate_tool_name`),
 `open-provide-colliding-name` (`error.response` with `unsupported_feature`
 then no open; validated as a correct rejection),
+`open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
+`execution_owner` is not the declared control participant),
 `tools-call-source-mismatch` (`unmatched_tool_source`; a call naming one
 tool with another tool's declared source),
 `control-tool-started-before-ack` (`illegal_tool_transition`),
@@ -919,8 +948,11 @@ therefore needs a steer settlement, not only a steer admission.
   `run.steer.applied` `{ "session_id", "run_id", "submission_id",
   "message_ids", "boundary": "immediate" | "turn" | "tool_result" |
   "unknown" }` and `run.steer.dropped` `{ "session_id", "run_id",
-  "submission_id", "reason": ProtocolError }`. A harness that applies
-  immediately emits `applied` atomically with the response.
+  "submission_id", "reason": ProtocolError }`. A settlement is never
+  observable before the admission that names its `submission_id`: a
+  harness that applies immediately emits `applied` as the first envelope
+  after the response, never before it (the barrier is specified under
+  Surfaces).
 - Barrier: every admitted steer settles before the run terminal; a run that
   terminates first drops its pending steers with `run_terminated` before the
   terminal, in the run's sequence.
@@ -934,7 +966,15 @@ therefore needs a steer settlement, not only a steer admission.
 legal only against a started nonterminal run in the same session with
 `session.message.delivery.steer` advertised; `applied`/`dropped` must name a
 pending steer once (`unmatched_steer`, `duplicate_steer`); a terminal with a
-pending steer is `pending_steer_at_terminal`.
+pending steer is `pending_steer_at_terminal`. A settlement whose
+`submission_id` no earlier `steered` response in the trace admitted is
+`unmatched_steer`, which makes the ordering barrier below a conformance
+rule rather than a hub detail. Fixtures: positive `steer-immediate`
+(response, then `applied` in the target's sequence), `steer-at-boundary`,
+`steer-dropped-at-terminal`; negative `steer-settled-before-response`
+(`unmatched_steer`), `steer-duplicate-settlement` (`duplicate_steer`),
+`steer-pending-at-terminal` (`pending_steer_at_terminal`),
+`steer-unadvertised` (`unavailable_capability`).
 
 ### Reference adapter and evidence
 
@@ -955,19 +995,33 @@ and hub contract is explicit rather than inherited from `start`:
 
 - `adapter`: for an admission of `steered`, `Session.Submit` returns the
   response and a nil `EventStream`; the settlement events are emitted on
-  the target run's existing stream, which the adapter already owns. A
-  non-nil stream with a `steered` admission is a contract violation the
-  hub reports as an adapter error, and `adaptertest` asserts the nil
-  stream and the settlement on the target's stream.
+  the target run's existing stream, which the adapter already owns, and
+  only after `Submit` has returned. An adapter whose harness settles
+  synchronously (Hermes answers `steered` in the busy result) holds the
+  settlement and releases it onto the target stream after return, and the
+  memory adapter does the same, so an in-process consumer that takes the
+  response from `Submit`'s return value and then reads the stream sees
+  them in that order. A non-nil stream with a `steered` admission is a
+  contract violation the hub reports as an adapter error; `adaptertest`
+  asserts the nil stream, the settlement on the target's stream, and that
+  the settlement is not readable before `Submit` returns.
 - `serve`: `Session.Submit` today calls `adoptRun` for every successful
   admission, which allocates an admission serial, counts a reader, and
   starts a drainer; for `steered` it does none of that. It releases the
   reservation it took before calling the adapter, leaves `runID` and the
   serial table untouched, and returns the response; the target run's
   drainer, already running, delivers `run.steer.applied` or
-  `run.steer.dropped` to subscribers in the target's sequence. The same
-  branch is where a queued admission (T2) differs from `start`: it adopts
-  the queued run's stream under a new serial but does not supersede the
+  `run.steer.dropped` to subscribers in the target's sequence. Because
+  that drainer is another goroutine, the hub adds a barrier of its own
+  rather than trusting the adapter's: before calling the adapter with
+  `delivery: "steer"` it gates the target run's drainer (envelopes are
+  read and buffered, not published), after the adapter returns it
+  registers the pending steer (`submission_id` to target run, reflected
+  in `active_runs`), and only then lifts the gate. Subscribers, and any
+  trace the hub records, therefore see the admission before the
+  settlement even when an adapter emits inside `Submit`. The same branch
+  is where a queued admission (T2) differs from `start`: it adopts the
+  queued run's stream under a new serial but does not supersede the
   started run.
 - `serve/servehttp` and the stdio frontend: no change beyond passing the
   delivery and `target_run_id` through; the response is the same
@@ -1039,8 +1093,9 @@ strings in the schema; the validator does not enumerate them.
 
 `unapplied_control`, `unsatisfiable_control`, `model_not_in_catalog`,
 `ambiguous_default_model`, `queue_order_violation`,
-`premature_session_mutation`, `unmatched_tool_source`,
-`duplicate_tool_name`, `catalog_mismatch`,
+`queue_limit_exceeded`, `premature_session_mutation`,
+`unmatched_tool_source`, `duplicate_tool_name`, `wrong_tool_owner`,
+`catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
 invariant is the same (`unavailable_capability`, `illegal_run_transition`,
