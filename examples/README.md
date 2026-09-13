@@ -28,3 +28,11 @@ model-IO boundary rather than the core `content.delta` stream.
 - `agent-control-run-stream.json`: ordered agent-control stream for a simple
   model/tool/model
   run.
+- `oap-serve.json`: adapter registry document for `oap serve` (HTTP + SSE) and
+  `oap serve --stdio` (NDJSON on stdin/stdout); one entry per in-repo adapter
+  type, with the `environment` allowlist that governs adapter credentials.
+- `oap-stdio-session.ndjson`: host-side request script for
+  `oap serve --stdio`, runnable as
+  `oap serve --stdio < examples/oap-stdio-session.ndjson` — list adapters,
+  probe capabilities, open a session, subscribe, read state, and close; the
+  daemon's responses and the session-closed signal interleave on stdout.

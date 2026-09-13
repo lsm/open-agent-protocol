@@ -42,6 +42,23 @@ func TestServeFlagErrors(t *testing.T) {
 	}
 }
 
+func TestServeStdioExcludesAddr(t *testing.T) {
+	// The refusal happens during flag handling, before any registry load or
+	// stdio traffic, so driving it through run cannot touch real stdin.
+	for _, args := range [][]string{
+		{"serve", "--stdio", "--addr", "127.0.0.1:6270"},
+		{"serve", "--stdio", "--addr", "127.0.0.1:0"},
+		{"serve", "--addr", "127.0.0.1:0", "--stdio"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
+			t.Fatalf("serve %v succeeded", args)
+		} else if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("serve %v: unexpected error %v", args, err)
+		}
+	}
+}
+
 func TestServeDefaultAddrIsLoopback(t *testing.T) {
 	host, _, err := net.SplitHostPort(servehttp.DefaultAddr)
 	if err != nil {

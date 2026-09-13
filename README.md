@@ -48,6 +48,7 @@ wire behavior is the contract the `client` package proves:
 
 ```sh
 oap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
+oap serve --stdio [--config examples/oap-serve.json]   # NDJSON on stdin/stdout
 ```
 
 Without `--config` the daemon serves the built-in memory reference adapter
@@ -115,6 +116,77 @@ and closes every session inside a bounded window — active runs that refuse
 Close are cancelled first — so child agent processes are settled rather than
 orphaned.
 
+### Subprocess embedding (`oap serve --stdio`)
+
+`oap serve --stdio` speaks the same daemon surface over newline-delimited
+JSON on stdin/stdout instead of HTTP + SSE, for hosts that embed the daemon
+by spawning it as a child process — the spawn-a-binary model — with no port,
+TLS, or authentication story: spawning the process is the authorization, and
+the registry config's env allowlist still governs adapter credentials
+exactly as over HTTP. The flag is mutually exclusive with `--addr`; stdout
+carries protocol lines only, and bounded diagnostics go to stderr:
+
+```sh
+oap serve --stdio [--config examples/oap-serve.json] < examples/oap-stdio-session.ndjson
+```
+
+Framing is strict NDJSON: exactly one JSON object per LF-terminated line,
+bounded to 8 MiB, no CR and no empty lines; anything that is not a valid
+request frame — invalid JSON, a non-object, an unknown field, a missing or
+non-numeric `id` — fails closed: the daemon flushes what it already admitted,
+prints one bounded diagnostic on stderr, and exits non-zero, exactly as the
+adapters treat a malformed frame from their own agents. Requests may be
+pipelined: execution ops run concurrently, every response is correlated by
+its request `id`, and the registration ops — `open` registers its session,
+`events` registers its subscription — complete before the next line is read,
+so the canonical pipelined sequence (`open`, `events`, `submit`) cannot race
+a registration or miss the run's first envelope.
+
+The ops mirror the HTTP routes one to one — verbatim schema/v0.1 request
+envelopes, the same schema gate, and the same error codes (`error.code`
+carries what the correlated `error.response` payload would). Host → daemon:
+
+| Op | Params | Result |
+| --- | --- | --- |
+| `adapters` | — | `{"adapters":[...]}` registry listing |
+| `capabilities` | `adapter` | `capabilities.response` envelope |
+| `open` | `adapter`, `request` = `session.open.request` | `session.open.response` envelope |
+| `events` | `session_id`, optional `after` cursor | `null`, then event lines |
+| `state` | `session_id` | `session.state.response` envelope |
+| `submit` | `session_id`, `request` = `session.message.submit.request` | admission response envelope |
+| `resolve` | `session_id`, `request` = permission/input resolve request | resolve response envelope |
+| `cancel` | `session_id`, `request` = `run.cancel.request` | `run.cancel.response` envelope |
+| `close` | `session_id` | `null` (v0.1 defines no close envelope) |
+
+Every op is repeatable; responses are `{"id":N,"ok":true,"result":...}` or
+`{"id":N,"ok":false,"error":{"code":...,"message":...}}`. Each `events` op
+opens one subscription, and daemon → host event lines are the SSE stream in
+NDJSON form:
+
+- `{"event":"envelope","session_id":...,"sequence":N,"envelope":{...}}` —
+  one run-event envelope, the SSE `data:`/`id:` pair; sequences are per-run.
+- `{"event":"oap-overflow","session_id":...,"run_id":...,"last_sequence":N}`
+  — the consumer fell behind its bounded buffer; re-subscribe with `after`
+  past this sequence.
+- `{"event":"oap-replay-gap","session_id":...,"requested_after":N,"oldest_available":N,"latest_available":N}`
+  — the requested cursor is no longer retained; resume at or after
+  `oldest_available - 1`.
+- `{"event":"oap-session-closed","session_id":...}` — the session closed
+  under this subscription; nothing further will arrive for it.
+
+A subscription ends at its run's terminal envelope with no further line —
+`run.completed` / `run.failed` / `run.cancelled` are the markers, exactly as
+the SSE response simply ends — so a host following a session opens a fresh
+`events` op per run. The `after` cursor is the `?after=` / `Last-Event-ID`
+equivalent: a bare sequence resolved onto the session's current run, replayed
+suffix first, then live events. One writer goroutine interleaves responses
+and events, so every line is atomic and per-session event order is never
+broken by interleaving; a slow consumer blocks the writer — the bounded
+journal plus the overflow and gap signals protect memory. Closing stdin (the
+host is done) or SIGINT/SIGTERM settles every session inside a bounded
+window and exits; process exit kills all sessions, as restarting the HTTP
+daemon does.
+
 ### Embedding the registry (`serve`)
 
 The `serve` package is the transport-neutral core the daemon is built on: a
@@ -161,7 +233,9 @@ boundary, exactly as `servehttp` does against the bundled schema.
 Pick the tier that fits: `adapter.Session` directly for one embedded session
 (a single run stream with a single consumer, replay through `Resume`);
 `serve` for multi-adapter, multi-session hosts in process; `oap serve` plus
-`client` for out-of-process or non-Go consumers over HTTP + SSE.
+`client` for out-of-process or non-Go consumers over HTTP + SSE; `oap serve
+--stdio` for hosts that embed the daemon as a spawned subprocess over
+NDJSON.
 
 ### Go client (`client`)
 

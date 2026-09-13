@@ -1,0 +1,6 @@
+{"id":1,"op":"adapters"}
+{"id":2,"op":"capabilities","adapter":"memory"}
+{"id":3,"op":"open","adapter":"memory","request":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"example-open","payload":{"session_id":"stdio-example"},"session_id":"stdio-example"}}
+{"id":4,"op":"events","session_id":"stdio-example"}
+{"id":5,"op":"state","session_id":"stdio-example"}
+{"id":6,"op":"close","session_id":"stdio-example"}
