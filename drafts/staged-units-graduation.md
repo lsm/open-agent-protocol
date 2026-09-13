@@ -261,7 +261,11 @@ No new envelope types. Changes to
   since the requirement binds a completed response). An adapter that
   cannot make its harness honor `required` or `named` advertises
   `run.tool_selection` accordingly or rejects the policy as unsatisfiable;
-  it never completes the run as if the requirement were met.
+  it never completes the run as if the requirement were met. Under a
+  `per_run` descriptor, a `session.state` snapshot whose `current_model_id`
+  changed to a run's admitted `model_id` is also `unapplied_control`: the
+  per-run rule leaves the session default untouched, and this is exactly
+  the Codex and Makai overwrite T1 fixes, so the fix is verifiable.
 - New diagnostic `unsatisfiable_control`: a `tool_choice` that is not the
   typed policy, carries both `allowed` and `disallowed`, names a tool in
   its own `disallowed` list or outside its own `allowed` list, or, when the
@@ -372,7 +376,9 @@ tools sharing a name in the descriptor, then a `named` policy),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection),
 `controls-degraded-admitted-without-optin` (`degraded_without_optin`; the
-same request admitted).
+same request admitted), `controls-per-run-overwrites-default`
+(`unapplied_control`; a `per_run` descriptor, a submit with `model_id`,
+then a snapshot reporting it as `current_model_id`).
 
 ### Exit criteria
 
@@ -553,7 +559,8 @@ No new envelope types. Additive fields:
   run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?
   }]`, in admission order, with `queue_position` on queued entries
   (1-based). `active_run_id` keeps naming the started run, or is absent when
-  only queued runs remain (session status `queued`).
+  only queued runs remain (session status `queued`). T3c and T4 add
+  `pending_interactions` and `pending_steers` to these entries.
 - `capabilities.response` gains optional `limits`: `{
   "max_active_runs_per_session": int, "max_queued_runs_per_session": int }`,
   the wire projection of `adapter.Descriptor.MaxActiveRunsPerSession` plus
@@ -614,6 +621,15 @@ No new envelope types. Additive fields:
   T1's `degraded_without_optin` covers the delivery keys too: a `queued`
   admission on a descriptor advertising the queue capability `degraded`
   without the caller's opt-in is diagnosed on the response.
+- The existing `submitResponse` combination table (admission,
+  `effective_delivery`, `status`, checked as `illegal_run_transition`) is
+  extended so the stated resolutions are enforced, not described: a
+  request with explicit `delivery: "queue"` may only be admitted `queued`
+  (never `started`, even on an idle session, since the queued run promotes
+  immediately instead), and an `auto` request admitted `queued` must carry
+  `effective_delivery: "queue"` and `delivery_resolution: "session_busy"`.
+  The response already has to repeat the requested delivery
+  (`scope_mismatch`), so a resolution cannot be hidden by rewriting it.
 - New diagnostic `queue_order_violation`: any sequenced stream event of a
   later-admitted run, not only `run.started` but also a pre-start
   `run.cancelled` or `run.failed` and anything else the adapter emits in
@@ -645,11 +661,11 @@ No new envelope types. Additive fields:
   user input, control-owned call), since the single-run recovery path
   reads the submission or interaction id from the entry's
   `pending_steers` or `pending_interactions` and an omitted field would
-  lose it; the interaction condition is scoped to those endpoints because
+  lose it (an absent field would read as an empty queue to a reconnecting
+  client); the interaction condition is scoped to those endpoints because
   a v0.1-only endpoint has no `active_runs` at all, so no existing fixture
-  changes meaning
-  (an absent field would read as an empty queue to a reconnecting client),
-  and when present must list the tracked nonterminal runs in admission
+  changes meaning. When present it must list the tracked nonterminal runs
+  in admission
   order with consistent `queue_position`; `active_run_id` must be the
   started run; otherwise `session_state_mismatch`. One reconciliation
   follows from the delivery rule: a queued run that settles before
@@ -699,9 +715,9 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   a queued run's pre-start terminal never interleaves with the started
   run's events on any subscription. A subscription's replay cursor already
   carries `(RunID, AfterSequence)`: resume replays that run's retained
-  suffix and then continues into later-admitted runs in order, and the hub
-  stops assuming the newest admission is the run a bare sequence refers
-  to. Both clients' single scalar cursor therefore stays correct: the run
+  suffix and, when the subscription follows the session (below), continues
+  into later-admitted runs in order, and the hub stops assuming the newest
+  admission is the run a bare sequence refers to. Both clients' single scalar cursor therefore stays correct: the run
   it names is always the only run in flight on the stream.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
@@ -717,9 +733,11 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   next run is already the started one. Stream end changes with it: today
   the daemon ends a stream at a run terminal unless a resubmit already
   landed, and both clients read a terminal as the stream's clean end. Under
-  T2 the daemon continues past a terminal into any later-admitted run's
-  domain, and when it ends a stream on purpose (a terminal with no
-  later-admitted run, or the session closed) it writes an explicit
+  T2 a following subscription (`?follow=session`, below) continues past a
+  terminal into any later-admitted run's domain, and when the daemon ends
+  a stream on purpose (a terminal with no later-admitted run, a terminal
+  on a subscription that does not follow, or the session closed) it
+  writes an explicit
   `event: oap-stream-end` signal (`run_id`, `last_sequence`) before
   closing, and whenever a stream leaves a run's domain for a later one,
   live or resumed, it first writes `event: oap-run-boundary` (`run_id`,
@@ -805,6 +823,10 @@ rejection `queue-degraded-without-optin` (`error.response` with
 `queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
 1`, one started run, two queued admissions),
 `queue-overlap-unadvertised` (`illegal_run_transition`),
+`queue-explicit-admitted-start` (`illegal_run_transition`; explicit
+`queue` on an idle session answered `started`),
+`queue-auto-without-resolution` (`illegal_run_transition`; an `auto`
+request admitted `queued` without `delivery_resolution: "session_busy"`),
 `queue-state-missing-reservation` (`session_state_mismatch`),
 `queue-state-omits-active-runs` (`session_state_mismatch`; a queued
 reservation and a snapshot without `active_runs`),
@@ -904,7 +926,10 @@ Wire: `session.open.request` gains `tool_sources: [ToolSourceDescriptor]`.
 A `process` source additionally carries `command`, `args`, and
 `environment` (the registry's allowlist form: bare `NAME` forwards from the
 endpoint's own environment, `NAME=value` passes literally); a `remote`
-source carries only `endpoint` and is capability-gated (`mode: "remote"`).
+source carries only `endpoint` and is capability-gated (`mode: "remote"`
+on `action.tool_sources.attach`; an open attaching a `remote` source on a
+descriptor without that mode is rejected, and the validator diagnoses an
+admitted one `unavailable_capability`).
 A bare `NAME` resolves only if the adapter's registry entry allowlists it,
 so a wire caller cannot read an ambient credential the operator did not
 expose; a `NAME=value` literal is the caller's own secret on a loopback,
@@ -1105,10 +1130,15 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `pending_interaction_at_terminal`).
 - `action.call.resolve.request` and `.response` join correlation and scope
   checks; the resolution's `tool_call_id` must match the interaction's
-  binding (`scope_mismatch`).
+  binding (`scope_mismatch`); a second `accepted: true` response to a
+  `result` or `error` for one interaction is `duplicate_interaction`
+  whatever the adapter then emits, so "one resolution" is enforced at the
+  response, not only at the terminal.
 - `session.open.request` with `tool_sources` or `tools` invokes the
   `feature()` gate with `action.tool_sources.attach` or
-  `action.tools.provide`.
+  `action.tools.provide`; a `remote` source additionally requires the
+  attach capability to disclose `mode: "remote"`, else
+  `unavailable_capability` on the admitted open.
 - `session.open.request.tools[*].execution_owner` must be the declared
   control participant (`wrong_tool_owner`). The check runs at supply time,
   before any interaction exists, which `wrong_interaction_responder` cannot
@@ -1253,7 +1283,12 @@ the tool as harness-owned, the call names the control participant),
 `control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
-`open-attach-unadvertised` (`unavailable_capability`).
+`open-attach-unadvertised` (`unavailable_capability`),
+`open-attach-remote-unadvertised` (`unavailable_capability`; a `remote`
+source attached on a descriptor whose attach capability lacks `mode:
+"remote"`), `control-tool-double-accepted-resolution`
+(`duplicate_interaction`; two `result` resolutions for one interaction
+both answered `accepted: true`).
 
 ### Exit criteria
 
@@ -1332,7 +1367,11 @@ therefore needs a steer settlement, not only a steer admission.
 
 `runState` gains `steers` (pending submissions); `steered` admissions are
 legal only against a started nonterminal run in the same session with
-`session.message.delivery.steer` advertised; `applied`/`dropped` must name a
+`session.message.delivery.steer` advertised, only in answer to a request
+with `delivery: "steer"` (the `submitResponse` combination table gains
+the `steered`/`steer` row and rejects it for `auto`, so "`auto` never
+resolves to `steer`" is enforced), and only with a `run_id` equal to the
+request's `target_run_id` when one was supplied (`scope_mismatch`); `applied`/`dropped` must name a
 pending steer once (`unmatched_steer`, `duplicate_steer`); a terminal with a
 pending steer is `pending_steer_at_terminal`. A settlement whose
 `submission_id` no earlier `steered` response in the trace admitted is
@@ -1342,7 +1381,10 @@ rule rather than a hub detail. Fixtures: positive `steer-immediate`
 `steer-dropped-at-terminal`; negative `steer-settled-before-response`
 (`unmatched_steer`), `steer-duplicate-settlement` (`duplicate_steer`),
 `steer-pending-at-terminal` (`pending_steer_at_terminal`),
-`steer-unadvertised` (`unavailable_capability`). `session.state`
+`steer-unadvertised` (`unavailable_capability`),
+`steer-auto-resolved-to-steer` (`illegal_run_transition`; an `auto`
+request answered `steered`), `steer-target-mismatch` (`scope_mismatch`;
+`target_run_id` naming one run, the response another). `session.state`
 snapshots are checked against the same record: each `active_runs[]`
 entry's `pending_steers` must equal the pending set in `runState.steers`
 for that run, so an omitted pending steer or a settled one still listed
@@ -1437,8 +1479,9 @@ all for a session-scoped event, which the publication fallbacks now put
 on the stream (the daemon publishes none today): `deliver` treats every
 frame as run-scoped, so a `session.state.updated` with no `run_id` and a
 session-domain sequence would be read as a run switch and end in a
-`SequenceGapError`. The same client slice therefore mirrors the
-TypeScript rule: an envelope of a session-scoped type
+`SequenceGapError`. The T3c client slice, the first whose fallback mints
+a snapshot, therefore mirrors the TypeScript rule, and T4 reuses it: an
+envelope of a session-scoped type
 (`session.state.updated`, `capabilities.updated`) is delivered without
 touching the run cursor, with a test that interleaves a snapshot between
 run events and across a resume; the TypeScript client decides run scope by an

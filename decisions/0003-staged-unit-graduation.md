@@ -99,7 +99,8 @@ invariant.
 
 Run controls stay per-submit requests; there is no session-configuration
 document, and the control layer re-sends the controls it wants on each
-`session.message.submit.request`. A control an adapter cannot apply is
+`session.message.submit.request` that admits a run (a steer joins a
+started run whose admitted controls are authoritative, and carries none). A control an adapter cannot apply is
 rejected before admission with a typed `unsupported_feature` error naming the
 capability key, never dropped. A control applied through a native
 session-level mutation is advertised `emulated` with a disclosed mode, and
