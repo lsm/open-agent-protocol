@@ -1201,6 +1201,79 @@ func TestOrphanBecomesCurrentOverCompletedRun(t *testing.T) {
 	}
 }
 
+// TestEmptyErrorStreamKeepsSubscriptionsParked pins the ACP-shaped
+// rejection: a submit error carrying an already-closed, empty stream is a
+// rejected admission, not a completed run — parked subscribers stay parked
+// for a corrected retry instead of reading a phantom run's end.
+func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("written-then-failed")}},
+		})
+		done <- err
+	}()
+	<-gated.entered
+	closed := make(chan base.Result)
+	close(closed)
+	gated.stream = closed
+	gated.failWithStream = context.Canceled
+	close(gated.release)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("submit error %v, want context.Canceled", err)
+	}
+	// The empty stream ends without an envelope: the drainer releases the
+	// reservation as a rejection and the parked subscriber survives.
+	releaseDeadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		released := entry.readers == 0 && entry.reservations == 0
+		entry.mu.Unlock()
+		if released {
+			break
+		}
+		select {
+		case <-releaseDeadline:
+			t.Fatal("the empty error stream never released its reservation")
+		default:
+		}
+	}
+	select {
+	case <-sub.finish:
+		t.Fatal("an empty error stream finished the parked subscriber")
+	default:
+	}
+
+	// The corrected retry reaches the same subscription.
+	gated.failWithStream = nil
+	gated.fail = nil
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "gated", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("corrected")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	close(gated.stream)
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-b" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want io.EOF", err)
+	}
+}
+
 // TestAcknowledgedOrderStaysMonotonic pins the acknowledged admission
 // order: a late envelope from an older run consumed after a newer run must
 // not drag the position backward and un-expose the subscriber to the newer

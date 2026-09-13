@@ -238,12 +238,21 @@ func (sub *subscriber) acknowledge(run protocol.RunID) {
 	sub.pendMu.Unlock()
 }
 
-// track records an envelope of run — admitted at serial — enqueued to the
+// track records an envelope of run — admitted at serial — as queued to the
 // mailbox.
 func (sub *subscriber) track(run protocol.RunID, serial uint64) {
 	sub.pendMu.Lock()
 	sub.pending[run]++
 	sub.runSerials[run] = serial
+	sub.pendMu.Unlock()
+}
+
+// untrack retires one queued entry of run — the send could not proceed.
+func (sub *subscriber) untrack(run protocol.RunID) {
+	sub.pendMu.Lock()
+	if sub.pending[run] > 0 {
+		sub.pending[run]--
+	}
 	sub.pendMu.Unlock()
 }
 
@@ -318,6 +327,11 @@ func (s *Session) bindRun(runID protocol.RunID, reserved uint64) protocol.RunID 
 	if s.serials[runID] == 0 {
 		s.serials[runID] = reserved
 	}
+	if s.reservations > 0 {
+		// The envelope proves the admission occurred: the reservation this
+		// drainer holds becomes the reader.
+		s.reservations--
+	}
 	if reserved > s.serials[s.runID] {
 		s.runID = runID
 	}
@@ -353,16 +367,16 @@ func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 	go s.readRun(runID, stream, 0)
 }
 
-// adoptOrphan converts the reservation into a drainer for a stream an
-// adapter returned alongside a submit error — cancellation after native
-// admission with the run still alive (Pi does this). The hub must still
-// drain and publish the stream or the adapter's bounded emission blocks
-// and the run's events never reach subscriptions. The stream carries no
-// run id of its own, so current-run tracking and any deferred finish stay
-// untouched; envelope runs drive delivery positions as usual.
+// adoptOrphan spawns a drainer for a stream an adapter returned alongside
+// a submit error — cancellation after native admission with the run still
+// alive (Pi does this). The hub must still drain and publish the stream or
+// the adapter's bounded emission blocks and the run's events never reach
+// subscriptions. The reservation stays held until the stream proves which
+// it is: an envelope binds the run and converts the reservation into the
+// reader, while a stream that ends empty (ACP's pre-admission write
+// failure) releases it as a rejected admission.
 func (s *Session) adoptOrphan(stream base.EventStream) {
 	s.mu.Lock()
-	s.reservations--
 	s.readers++
 	// Reserve the admission serial now, in admission order; the run the
 	// envelopes later name binds to it.
@@ -440,6 +454,18 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 			break
 		}
 		s.publish(result.Envelope)
+	}
+	if reserved > 0 && runID == "" {
+		// An error stream that never delivered an envelope is a rejected
+		// admission after all (ACP's pre-admission write failure closes an
+		// empty stream): undo the drainer and release the reservation as a
+		// rejection, so parked subscribers stay parked for a corrected
+		// retry instead of reading a phantom run's end.
+		s.mu.Lock()
+		s.readers--
+		s.mu.Unlock()
+		s.releaseReservation()
+		return
 	}
 	s.exitReader(runID, end)
 }
@@ -566,11 +592,16 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Lock()
 	for sub := range s.subs {
+		// Record the run and its admission serial before the send can wake
+		// a blocked consumer: acknowledge pairs with this bookkeeping, and
+		// a consumer woken ahead of it would leave a phantom pending
+		// envelope that later detaches it from an unrelated overflow.
+		sub.track(envelope.RunID, s.serials[envelope.RunID])
 		select {
 		case sub.ch <- envelope:
 			sub.lastRun = envelope.RunID
-			sub.track(envelope.RunID, s.serials[envelope.RunID])
 		default:
+			sub.untrack(envelope.RunID)
 			// The subscriber fell behind and this envelope was dropped.
 			// The terminal names the dropped envelope's run: the consumer
 			// resumes from its last position in that run when it has one,
