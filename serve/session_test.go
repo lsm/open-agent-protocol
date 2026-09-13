@@ -137,6 +137,46 @@ func TestMarkClosedFinishesImmediatelyWithoutReader(t *testing.T) {
 	}
 }
 
+// TestOverlappingReadersDeliverCurrentRunEnd pins the finish path when a
+// resubmit's reader exits before the previous run's drainer: however the
+// two readers interleave, the subscriber ends with the current run's
+// terminal outcome instead of parking forever.
+func TestOverlappingReadersDeliverCurrentRunEnd(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+	// The resubmit lands inside run A's settle window; run B takes the hub.
+	entry.startRun("run-b", streamB)
+	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	streamFailure := errors.New("run B stream died")
+	streamB <- base.Result{Error: streamFailure}
+	close(streamB)
+	close(streamA)
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelopes := 0
+	for {
+		_, err := subscription.Next()
+		if err == nil {
+			envelopes++
+			continue
+		}
+		if !errors.Is(err, streamFailure) {
+			t.Fatalf("terminal error %v, want run B's stream failure", err)
+		}
+		break
+	}
+	if envelopes != 2 {
+		t.Fatalf("delivered %d envelopes before the terminal, want 2", envelopes)
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.

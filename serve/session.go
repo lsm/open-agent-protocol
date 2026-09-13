@@ -69,13 +69,15 @@ type Session struct {
 	// closed records a successful adapter close: no further run can drive
 	// the hub, so a live subscriber arriving afterwards must not park.
 	closed bool
-	// readers counts run streams still being drained. A close must not
-	// finish subscribers while a reader may still be queueing final events,
-	// so it either finishes immediately (no readers) or defers to the last
-	// reader's exit.
-	readers          int
-	finishAfterDrain bool
-	subs             map[*subscriber]struct{}
+	// readers counts run streams still being drained, and pendingEnd is
+	// the current run's terminal state once its own drainer has exited
+	// while an overlapping older one still drains (a resubmit inside the
+	// previous run's settle window). The last reader to leave finishes
+	// subscribers with it, so the outcome subscribers were actually
+	// receiving survives the interleaving instead of parking them.
+	readers    int
+	pendingEnd *terminalState
+	subs       map[*subscriber]struct{}
 }
 
 func newSession(id protocol.SessionID, adapterName string, session base.Session) *Session {
@@ -231,13 +233,14 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 	go s.readRun(runID, stream)
 }
 
-// readRun drains one run's adapter stream. When the stream ends it finishes
-// subscribers only when it is the last reader and a newer run has not taken
-// over the hub: a stale finishSubs from run N must not terminate subscribers
-// already receiving run N+1, and a close that deferred its finish must not
-// fire while run N+1's reader still has events queued. A stream that ends on
-// an error other than overflow carries that error to every subscriber as its
-// terminal error — a failed run must not read as a clean end.
+// readRun drains one run's adapter stream. A stream that ends on an error
+// other than overflow carries that error to every subscriber as its terminal
+// error — a failed run must not read as a clean end. When the stream ends,
+// a reader with company finishes nobody: a stale finishSubs from run N must
+// not terminate subscribers already receiving run N+1. The last reader to
+// leave always finishes them, with the current run's terminal outcome — its
+// own when it drained the current run, otherwise the outcome the current
+// run's reader stashed on exit (see pendingEnd).
 func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	var end *terminalState
 	for result := range stream {
@@ -262,11 +265,26 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 	s.mu.Lock()
 	s.readers--
 	current := s.runID
-	finish := s.readers == 0 && (current == runID || s.finishAfterDrain)
-	s.mu.Unlock()
-	if finish {
-		s.finishSubs(end)
+	if s.readers > 0 {
+		// Another reader may still deliver, so this one finishes nobody;
+		// the current run's terminal state is stashed for whichever reader
+		// leaves last.
+		if current == runID {
+			s.pendingEnd = end
+		}
+		s.mu.Unlock()
+		return
 	}
+	// The last reader: nobody delivers anymore, so subscribers always end
+	// here — with this reader's outcome when it drained the current run,
+	// otherwise with the current run's stashed one.
+	state := end
+	if current != runID {
+		state = s.pendingEnd
+	}
+	s.pendingEnd = nil
+	s.mu.Unlock()
+	s.finishSubs(state)
 }
 
 // publish delivers one envelope to every subscriber, terminating (not
@@ -314,17 +332,16 @@ func (s *Session) finishSubs(state *terminalState) {
 // An adapter reports its run terminal once the terminal envelope is queued,
 // not once a consumer drained it, so a reader may still hold final events:
 // with no reader draining, subscribers finish immediately; otherwise the
-// finish waits for the last reader so no terminal envelope is lost.
+// last reader's exit ends them with the run's terminal outcome, so no
+// terminal envelope is lost.
 func (s *Session) markClosed() {
 	s.mu.Lock()
 	s.closed = true
-	if s.readers > 0 {
-		s.finishAfterDrain = true
-		s.mu.Unlock()
-		return
-	}
+	draining := s.readers > 0
 	s.mu.Unlock()
-	s.finishSubs(nil)
+	if !draining {
+		s.finishSubs(nil)
+	}
 }
 
 // closeForShutdown cancels any active run and then closes the adapter

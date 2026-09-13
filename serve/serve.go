@@ -104,9 +104,12 @@ func (h *Hub) Registry() *Registry { return h.registry }
 // read (leaving it live in the hub while the caller believes the open
 // failed). A request with no participant is opened as DefaultParticipant; a
 // request with an explicit session id is honoured, and reopening an id the
-// hub already tracks fails with *SessionExistsError (the duplicate adapter
-// session is closed again before the error returns). The adapter's own open
-// failure surfaces verbatim.
+// hub already tracks fails with *SessionExistsError. Whatever goes wrong
+// after the adapter opened — a failing confirmation read, a duplicate id —
+// the unregistered adapter session is closed again (on a context that
+// survives a cancelled request) before the error returns, so no caller-less
+// session is left for CloseSessions to be unable to discover. The adapter's
+// own open failure surfaces verbatim.
 func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenRequest) (*Session, protocol.SessionState, error) {
 	implementation, ok := h.registry.Lookup(adapterName)
 	if !ok {
@@ -121,6 +124,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	}
 	state, err := session.State(ctx)
 	if err != nil && !errors.Is(err, base.ErrSessionClosed) {
+		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, err
 	}
 	entry := newSession(state.SessionID, adapterName, session)

@@ -23,8 +23,9 @@ const testTimeout = 10 * time.Second
 // fan-out, overflow, signals — without racing on real adapter emission
 // timing.
 type manualAdapter struct {
-	mu      sync.Mutex
-	session *manualSession
+	mu       sync.Mutex
+	session  *manualSession
+	stateErr error
 }
 
 func (a *manualAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -35,7 +36,7 @@ func (a *manualAdapter) Probe(context.Context) (base.Descriptor, error) {
 }
 
 func (a *manualAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
-	session := &manualSession{id: request.SessionID}
+	session := &manualSession{id: request.SessionID, stateErr: a.stateErr}
 	a.mu.Lock()
 	a.session = session
 	a.mu.Unlock()
@@ -65,6 +66,7 @@ type manualSession struct {
 	active         protocol.RunID
 	closed         bool
 	replayOverflow bool
+	stateErr       error
 }
 
 var _ base.Session = (*manualSession)(nil)
@@ -87,6 +89,9 @@ func (s *manualSession) Submit(_ context.Context, _ protocol.MessageSubmitReques
 func (s *manualSession) State(context.Context) (protocol.SessionState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stateErr != nil {
+		return protocol.SessionState{}, s.stateErr
+	}
 	state := protocol.SessionState{SessionID: s.id, Status: protocol.SessionIdle}
 	if s.stream != nil {
 		state.Status = protocol.SessionRunning
@@ -364,6 +369,37 @@ func TestHubOpenDefaultsParticipant(t *testing.T) {
 	}
 	if requested.RespondedBy != serve.DefaultParticipant {
 		t.Fatalf("gate responder %q, want %q", requested.RespondedBy, serve.DefaultParticipant)
+	}
+}
+
+// TestHubOpenClosesSessionWhenStateFails pins the open-failure contract: a
+// session the adapter opened but could not confirm is closed again — the
+// caller holds no handle and the hub never registered it, so nothing else
+// could settle its child — and the adapter's error surfaces verbatim.
+func TestHubOpenClosesSessionWhenStateFails(t *testing.T) {
+	stateFailure := errors.New("state probe failed")
+	manual := &manualAdapter{stateErr: stateFailure}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	_, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "state-fail"})
+	if !errors.Is(err, stateFailure) {
+		t.Fatalf("open error %v, want the adapter state failure", err)
+	}
+	active := manual.active(t)
+	active.mu.Lock()
+	closed := active.closed
+	active.mu.Unlock()
+	if !closed {
+		t.Fatal("unconfirmed adapter session was left open")
+	}
+	if got := len(hub.Sessions(ctx)); got != 0 {
+		t.Fatalf("listing has %d entries, want 0", got)
 	}
 }
 
