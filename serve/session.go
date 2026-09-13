@@ -182,23 +182,55 @@ type subscriber struct {
 	finish     chan struct{}
 	finishOnce sync.Once
 	terminal   atomic.Pointer[terminalState]
-	// attached names the run current when the subscriber registered, and
-	// lastRun the run of its most recent delivered envelope (empty until
-	// one arrives): together they give the subscriber's position, which
-	// scopes adapter-reported overflows.
+	// attached names the run current when the subscriber registered;
+	// lastRun tracks the tail of its mailbox (the run of the last envelope
+	// enqueued, which a queue-full recovery cursor names); ack the run of
+	// the last envelope the consumer actually received through Next; and
+	// pending the runs with envelopes still sitting in the mailbox. An
+	// adapter-reported overflow terminates the subscriber when the
+	// overflowing run is its acknowledged or attached position — or still
+	// has undelivered envelopes ahead of the consumer: mailbox insertion
+	// is not observation, but an undelivered envelope of the run means the
+	// consumer's view of it is not yet complete either.
 	attached protocol.RunID
 	lastRun  protocol.RunID
+	ack      atomic.Pointer[protocol.RunID]
+
+	pendMu  sync.Mutex
+	pending map[protocol.RunID]int
 }
 
-// position reports the run the subscriber is consuming: the run of its
-// last delivered envelope, or — while it has received nothing — the run it
-// attached under. A subscriber whose position has moved past a run has
-// seen that run complete (its terminal envelope precedes any newer run's
-// events), so an overflow from the older run must not cut it off from the
-// newer one it is actually consuming.
+// acknowledge records the run of an envelope the consumer received and
+// retires one of its pending mailbox entries; the two steps share the
+// pending lock so the hub's exposure decision never observes the half-done
+// state.
+func (sub *subscriber) acknowledge(run protocol.RunID) {
+	sub.pendMu.Lock()
+	if sub.pending[run] > 0 {
+		sub.pending[run]--
+	}
+	if current := sub.ack.Load(); current == nil || *current != run {
+		sub.ack.Store(&run)
+	}
+	sub.pendMu.Unlock()
+}
+
+// track records an envelope of run enqueued to the mailbox.
+func (sub *subscriber) track(run protocol.RunID) {
+	sub.pendMu.Lock()
+	sub.pending[run]++
+	sub.pendMu.Unlock()
+}
+
+// position reports the run the subscriber has acknowledged consuming, or —
+// while it has received nothing — the run it attached under. A consumer
+// whose acknowledged position has moved past a run has seen that run
+// complete (its terminal envelope precedes any newer run's events), so an
+// overflow from the older run must not cut it off from the newer one it is
+// actually consuming.
 func (sub *subscriber) position() protocol.RunID {
-	if sub.lastRun != "" {
-		return sub.lastRun
+	if ack := sub.ack.Load(); ack != nil {
+		return *ack
 	}
 	return sub.attached
 }
@@ -216,7 +248,10 @@ type terminalState struct {
 }
 
 func newSubscriber(queue int, attached protocol.RunID) *subscriber {
-	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}), attached: attached}
+	return &subscriber{
+		ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}),
+		attached: attached, pending: make(map[protocol.RunID]int),
+	}
 }
 
 // stop terminates the subscriber with its terminal state, if any. The
@@ -419,6 +454,7 @@ func (s *Session) publish(envelope protocol.Envelope) {
 		select {
 		case sub.ch <- envelope:
 			sub.lastRun = envelope.RunID
+			sub.track(envelope.RunID)
 		default:
 			// The subscriber fell behind. Its recovery cursor is its own
 			// position — the tail of its mailbox, whichever run that
@@ -433,17 +469,34 @@ func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Unlock()
 }
 
-// signalOverflow terminates the subscribers positioned in runID with the
+// exposedTo reports, as one consistent snapshot, whether the subscriber
+// has undelivered envelopes of runID queued, or is positioned in it — the
+// acknowledged run, or the attached one while nothing has been received.
+func (sub *subscriber) exposedTo(runID protocol.RunID) bool {
+	sub.pendMu.Lock()
+	defer sub.pendMu.Unlock()
+	if sub.pending[runID] > 0 {
+		return true
+	}
+	if ack := sub.ack.Load(); ack != nil {
+		return *ack == runID
+	}
+	return sub.attached == runID
+}
+
+// signalOverflow terminates the subscribers exposed to runID with the
 // overflow signal after the adapter itself reported an event-stream
-// overflow on that run's stream. Subscribers that already moved past the
-// run have seen it complete — an overflow from it recovers nothing for
-// them and must not cut them off from the newer run they are consuming;
-// subscribers that never reached the run are likewise untouched.
+// overflow on that run's stream: every subscriber whose acknowledged or
+// attached position is the run, or whose mailbox still holds undelivered
+// envelopes of it — their view of the run is broken or incomplete.
+// Subscribers that already moved past the run with nothing of it pending
+// have seen it complete; an overflow from it recovers nothing for them and
+// must not cut them off from the newer run they are consuming.
 func (s *Session) signalOverflow(runID protocol.RunID) {
 	s.mu.Lock()
 	affected := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
-		if sub.position() == runID {
+		if sub.exposedTo(runID) {
 			affected = append(affected, sub)
 			delete(s.subs, sub)
 		}
@@ -505,6 +558,12 @@ func (s *Session) markClosed() {
 	s.closed = true
 	switch {
 	case s.readers > 0:
+		// Readers still drain, and the last one's exit ends the
+		// subscribers. A close owes every live subscriber — no future run
+		// can reach the ones that registered after the current run's
+		// reader deferred its end — so the deferred cohort is refreshed to
+		// everyone subscribed at close time.
+		s.deferred = s.snapshotSubsLocked()
 		s.mu.Unlock()
 	case s.reservations > 0:
 		// No reader remains; the in-flight admission's resolution ends the

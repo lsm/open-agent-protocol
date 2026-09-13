@@ -237,8 +237,11 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 	}
 }
 
-// observe records one delivered envelope's position for the overflow cursor.
+// observe records one delivered envelope's position for the overflow
+// cursor and acknowledges its run on the hub side, where adapter-overflow
+// scoping reads the acknowledged position.
 func (s *Subscription) observe(envelope protocol.Envelope) {
+	s.sub.acknowledge(envelope.RunID)
 	if envelope.RunID != s.lastRun {
 		s.lastRun = envelope.RunID
 		s.last = 0

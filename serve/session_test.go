@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -786,6 +787,128 @@ func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
 	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("terminal %v, want the clean run-b end", err)
 	}
+}
+
+// TestCloseSessionsAttemptsEverySession pins the shutdown fairness: under
+// a budget too tight for the old per-session floor, every session still
+// gets its Close attempted — an early stuck child must not eat the slices
+// the later sessions need to settle their own.
+func TestCloseSessionsAttemptsEverySession(t *testing.T) {
+	// A budget with headroom over the stuck sessions' settle loops: the
+	// pin is that every entry is attempted, not the tight total bound.
+	daemon := New(NewRegistry(), Options{ShutdownTimeout: 2 * time.Second})
+	sessions := make([]*countingSession, 4)
+	for index := range sessions {
+		s := &countingSession{stubSession: stubSession{settleAfter: 1000}}
+		sessions[index] = s
+		if err := daemon.sessions.add(newSession(protocol.SessionID(fmt.Sprintf("stuck-%d", index)), "stub", s)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	daemon.CloseSessions(context.Background())
+	for index, session := range sessions {
+		if session.closes.Load() == 0 {
+			t.Fatalf("session %d never got a Close attempt", index)
+		}
+	}
+}
+
+// countingSession records every Close attempt on a never-settling stub.
+type countingSession struct {
+	stubSession
+	closes atomic.Int32
+}
+
+func (c *countingSession) Close(ctx context.Context) error {
+	c.closes.Add(1)
+	return c.stubSession.Close(ctx)
+}
+
+// TestCloseEndsSubscribersRegisteredAfterDeferredRun pins the close
+// transition behind stale readers: a subscriber registering after the
+// current run deferred its end is still ended by the close — no future run
+// can reach it — instead of parking until its context dies.
+func TestCloseEndsSubscribersRegisteredAfterDeferredRun(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	early, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.startRun("run-b", streamB)
+	close(streamB) // the current run's drainer defers its end behind A's
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		deferred := entry.readers == 1 && entry.deferred != nil
+		entry.mu.Unlock()
+		if deferred {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run B's reader never deferred its end behind run A's")
+		default:
+		}
+	}
+	late, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe during the deferral window was refused")
+	}
+	entry.markClosed()
+	close(streamA)
+	for name, sub := range map[string]*subscriber{"early": early, "late": late} {
+		select {
+		case <-sub.finish:
+		case <-time.After(testTimeout):
+			t.Fatalf("the %s subscriber outlived the close", name)
+		}
+	}
+}
+
+// TestAdapterOverflowScopesByAcknowledgedRun pins that adapter-overflow
+// scoping uses the position the consumer acknowledged, not the mailbox
+// tail: run B enqueued behind unacknowledged run A envelopes does not move
+// the subscriber out of A's overflow.
+func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe with a run active was refused")
+	}
+	entry.publish(runEnvelope(t, "run-a", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil { // acknowledges run A
+		t.Fatal(err)
+	}
+	entry.startRun("run-b", streamB)
+	entry.publish(runEnvelope(t, "run-a", 2)) // enqueued, unacknowledged
+	entry.publish(runEnvelope(t, "run-b", 1)) // enqueued behind it: tail B
+	close(streamB)
+	entry.signalOverflow("run-a")
+
+	// The consumer is still positioned in run A: it drains the mailbox and
+	// takes A's overflow instead of B's clean end.
+	for _, want := range []protocol.RunID{"run-a", "run-b"} {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.RunID != want {
+			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
+		}
+	}
+	_, err := subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("terminal %v (%T), want run-a overflow", err, err)
+	}
+	if overflow.RunID != "run-a" {
+		t.Fatalf("overflow run %q, want run-a — the acknowledged position", overflow.RunID)
+	}
+	close(streamA)
 }
 
 // stubSession settles its run asynchronously after Cancel: Close keeps

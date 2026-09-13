@@ -255,16 +255,11 @@ func (h *Hub) CloseSessions(ctx context.Context) {
 		}
 		deadline, _ := sweep.Deadline()
 		remaining := time.Until(deadline)
+		// Each attempt gets its proportional share of the budget still
+		// remaining: an early stuck session must not eat the slices the
+		// later sessions need to attempt their own Close, which would
+		// orphan their children.
 		share := remaining / time.Duration(len(entries)-index)
-		// A session needs a real window to settle, but never more than the
-		// budget still has: the floor only applies while the whole sweep
-		// stays inside the configured timeout.
-		if share < 500*time.Millisecond {
-			share = 500 * time.Millisecond
-		}
-		if share > remaining {
-			share = remaining
-		}
 		perSession, cancelSession := context.WithTimeout(sweep, share)
 		if err := entry.closeForShutdown(perSession); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, base.ErrSessionClosed) {
 			h.logger.Printf("serve: close session %s: %v", entry.id, err)
