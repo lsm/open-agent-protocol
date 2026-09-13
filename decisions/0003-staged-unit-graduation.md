@@ -28,7 +28,11 @@ the tool-source shape. Several of the staged controls are already on the wire
 (`model_id`, `instructions`, `tool_choice`, `output_schema`,
 `allow_degraded_features` on `session.message.submit.request`; `queue`,
 `steer`, `btw` in the delivery enums; `steered` and `side_started` in the
-admission enum) but every executable adapter rejects them before admission.
+admission enum) but none of them is executable under an advertised
+capability: Codex applies `model_id` to `turn/start` and Makai to
+`agent_message.model_ref`, both natively per run and both without
+advertising model selection, and every executable adapter rejects the rest
+before admission.
 
 What is undecided is the order and the discipline by which those units become
 executable across protocol, validator, adapters, serve, and clients. This

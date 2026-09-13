@@ -988,7 +988,13 @@ Wire:
   that never provided it. So is a tool whose `source` names a source
   neither the descriptor nor the same open's `tool_sources` declares
   (`details.source`), for the same reason: a dangling source cannot be
-  attributed or routed. Per-submit tool provisioning
+  attributed or routed. Both are adapter rules that the validator enforces
+  on the admission, not on the request (validator, below): a refusal is
+  conforming and produces no diagnostic, and an open the adapter admitted
+  despite either condition is `wrong_tool_owner` or
+  `unmatched_tool_source` on the `session.open.response`, so the negative
+  fixtures for both are traces of an adapter that admitted what it should
+  have refused. Per-submit tool provisioning
   (Makai supplies tools per `agent_start`) is deferred; session-open is what
   Claude and ACP support and what Makai can accept at start.
 - New envelope types `action.call.resolve.request` and
@@ -1189,13 +1195,18 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `unavailable_capability` on the admitted open. Each supplied tool's
   `source`, when present, must name a source in the union of the same
   open's `tool_sources` and the sources the capability descriptor
-  declares, checked when the open is admitted (`unmatched_tool_source`),
-  so a trace that ends after the open cannot carry a provided catalog
-  entry that resolves to no source.
+  declares, checked when the open is admitted (`unmatched_tool_source` on
+  the `session.open.response`), so a trace that ends after the open cannot
+  carry a provided catalog entry that resolves to no source. An adapter
+  that refuses such an open, as the wire rule requires, produces no
+  diagnostic; the diagnostic names an admission the adapter should have
+  refused.
 - `session.open.request.tools[*].execution_owner` must be the declared
-  control participant (`wrong_tool_owner`). The check runs at supply time,
-  before any interaction exists, which `wrong_interaction_responder` cannot
-  cover. The same diagnostic fires on an `action.call.requested` whose
+  control participant (`wrong_tool_owner`, diagnosed on the
+  `session.open.response` when the open is admitted, on the same terms as
+  the source check). The check runs at supply time, before any interaction
+  exists, which `wrong_interaction_responder` cannot cover. The same
+  diagnostic fires on an `action.call.requested` whose
   `execution_owner` differs from the owner the session catalog records
   for that `name`, so an adapter cannot route a harness-owned tool to the
   control participant, or a provided tool to the harness, under a
@@ -1318,8 +1329,15 @@ listed with another `endpoint`), `tools-catalog-alters-provided-schema`
 source),
 `open-provide-colliding-name` (`error.response` with `unsupported_feature`
 then no open; validated as a correct rejection),
-`open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
-`execution_owner` is not the declared control participant),
+`open-provide-wrong-owner` (`error.response` with `unsupported_feature`,
+`details.feature: "action.tools.provide"`, `details.reason:
+"unsatisfiable"`, then no open; validated as a correct rejection),
+`open-provide-wrong-owner-admitted` (`wrong_tool_owner`; a supplied tool
+whose `execution_owner` is not the declared control participant, and the
+open admitted),
+`open-provide-dangling-source` (`error.response` with
+`unsupported_feature` and `details.source: "ghost"`, then no open;
+validated as a correct rejection),
 `open-provide-colliding-name-admitted` (`duplicate_tool_name`; two
 supplied tools sharing a name, and the open admitted),
 `tools-refresh-collides-with-provided` (`duplicate_tool_name`; a provided
@@ -1352,8 +1370,9 @@ the tool as harness-owned, the call names the control participant),
 `open-attach-remote-unadvertised` (`unavailable_capability`; a `remote`
 source attached on a descriptor whose attach capability lacks `mode:
 "remote"`), `open-provide-dangling-source-admitted`
-(`unmatched_tool_source`; a provided tool with `source: "ghost"` that no
-descriptor or attachment declares, and the open admitted),
+(`unmatched_tool_source` on the `session.open.response`; a provided tool
+with `source: "ghost"` that no descriptor or attachment declares, and the
+open admitted, the negative counterpart of `open-provide-dangling-source`),
 `control-tool-double-accepted-resolution`
 (`duplicate_interaction`; two `result` resolutions for one interaction
 both answered `accepted: true`), `control-tool-double-accepted-ack`
