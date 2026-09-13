@@ -684,18 +684,28 @@ func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
 	default:
 	}
 
-	// The next run reaches the newcomer.
+	// The next run reaches the newcomer. Run A's still-buffered envelope
+	// may publish after the newcomer subscribed — live fan-out delivers
+	// whatever publishes from attachment on — so run-a may legitimately
+	// arrive first; the pin is that run-c is observed and the end is clean.
 	streamC := make(chan base.Result, 4)
 	entry.startRun("run-c", streamC)
 	streamC <- base.Result{Envelope: runEnvelope(t, "run-c", 1)}
 	close(streamC)
 	newcomerSubscription := &Subscription{session: entry, ctx: context.Background(), sub: newcomer}
-	envelope, err := newcomerSubscription.Next()
-	if err != nil || envelope.RunID != "run-c" {
-		t.Fatalf("newcomer envelope: run %s error %v", envelope.RunID, err)
+	newcomerSeen := map[protocol.RunID]bool{}
+	for {
+		envelope, err := newcomerSubscription.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("newcomer terminal %v, want the clean end", err)
+		}
+		newcomerSeen[envelope.RunID] = true
 	}
-	if _, err := newcomerSubscription.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("newcomer terminal %v, want io.EOF", err)
+	if !newcomerSeen["run-c"] {
+		t.Fatalf("newcomer observed %v, want run-c among them", newcomerSeen)
 	}
 }
 
