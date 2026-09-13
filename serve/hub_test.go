@@ -863,18 +863,23 @@ func TestHubOverflowSignalNamesOverflowedRun(t *testing.T) {
 	defer witness.Close()
 	active := manual.active(t)
 
-	// Run A queues one envelope into the one-slot buffer, then overflows it.
+	// Run A queues one envelope into the slow subscriber's one-slot buffer,
+	// then overflows it. The witness drains between emits — the queue bound
+	// is hub-wide, so pacing the reader against it pins every queue state:
+	// A1 lands in both queues, the witness read empties its own, and A2 then
+	// overflows the slow subscriber while the witness takes it.
 	runA := submitGolden(t, session, "overflow on run A")
 	active.emit(t, 1)
+	if _, err := witness.Next(); err != nil {
+		t.Fatalf("witness envelope 1: %v", err)
+	}
 	active.emit(t, 2)
+	if _, err := witness.Next(); err != nil {
+		t.Fatalf("witness envelope 2: %v", err)
+	}
 	active.endRun()
 	// The witness drains run A to its clean end, proving the reader finished
 	// every publish of run A before run B is admitted.
-	for count := 0; count < 2; count++ {
-		if _, err := witness.Next(); err != nil {
-			t.Fatalf("witness envelope %d: %v", count, err)
-		}
-	}
 	if _, err := witness.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("witness end error %v, want io.EOF", err)
 	}
