@@ -1225,7 +1225,7 @@ func (w stalledWriter) Write([]byte) (int, error) {
 
 // TestShutdownDoesNotWaitOnStalledOutput closes stdin while the writer is
 // blocked on an undrained pipe: the bounded teardown must abandon the writer
-// and return ErrOutputStalled instead of hanging before the caller's session
+// and return ErrShutdownStalled instead of hanging before the caller's session
 // sweep.
 func TestShutdownDoesNotWaitOnStalledOutput(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
@@ -1249,8 +1249,8 @@ func TestShutdownDoesNotWaitOnStalledOutput(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if !errors.Is(err, ErrOutputStalled) {
-			t.Fatalf("Run returned %v, want ErrOutputStalled", err)
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown hung on the stalled writer")
@@ -1307,9 +1307,17 @@ func TestOversizedOutputRefused(t *testing.T) {
 	requireSequences(t, events, 1, 4)
 
 	close(staged.release)
-	time.Sleep(100 * time.Millisecond)
-	// The oversized envelope ended the subscription: the next line is the
-	// state probe's response, never an event line.
+	// The oversized envelope ends the subscription with the correlated
+	// oap-frame-limit terminal naming the position a cursor resumes after;
+	// nothing further arrives for it.
+	terminal := f.line()
+	var limited frameLimitLine
+	if err := json.Unmarshal([]byte(terminal), &limited); err != nil {
+		t.Fatalf("terminal line %q: %v", terminal, err)
+	}
+	if limited.Event != signalFrameLimit || limited.ID != 2 || limited.SessionID != "big" || limited.RunID != "run-staged" || limited.Sequence != 5 {
+		t.Fatalf("terminal line %q does not name the oversized position", terminal)
+	}
 	f.send(`{"id":4,"op":"state","session_id":"big"}`)
 	requireOK(t, f.expectResponse(4))
 	if err := f.finish(); err != nil {
@@ -1370,5 +1378,75 @@ func TestSessionsOpListsTrackedSessions(t *testing.T) {
 	requireCode(t, f.expectResponse(10), "invalid_request")
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
+	}
+}
+
+// hangingAdapter's Open never returns and ignores the context: the worst
+// case a synchronous registration op can hit.
+type hangingAdapter struct{ hang chan struct{} }
+
+func (a *hangingAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{
+		Capabilities: protocol.CapabilityDescriptor{
+			Endpoint:         protocol.EndpointDescriptor{ID: "hanging.test", Name: "Hanging test adapter", Version: "0.1", Adapter: "process-memory-script"},
+			ProtocolVersions: []string{protocol.Version},
+			Profiles:         []string{protocol.Profile},
+		},
+		CapabilityRevision: "hanging-test-v1",
+	}, nil
+}
+
+func (a *hangingAdapter) Open(context.Context, base.OpenRequest) (base.Session, error) {
+	<-a.hang
+	return nil, errors.New("unreachable")
+}
+
+// TestShutdownBoundedWhileOpStuck closes stdin while decodeLoop is stuck
+// inside a synchronous open that never returns: shutdown must still be
+// bounded from the host's end of the session, not from when the serving
+// loop notices.
+func TestShutdownBoundedWhileOpStuck(t *testing.T) {
+	registry := serve.NewRegistry()
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	if err := registry.Register("hang", &hangingAdapter{hang: hang}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	server, err := New(hub, Options{ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, io.Discard) }()
+
+	open := requestEnvelope(t, "open-hang", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "stuck"}, "", "")
+	if _, err := stdinWriter.Write([]byte(fmt.Sprintf("{\"id\":1,\"op\":\"open\",\"adapter\":\"hang\",\"request\":%s}\n", open))); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // let decodeLoop enter the hung open
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stuck synchronous op")
+	}
+}
+
+// TestFrameLimitFloorRejectsUnusableLimits guards the correlated-refusal
+// floor: a limit smaller than any control line cannot be configured.
+func TestFrameLimitFloorRejectsUnusableLimits(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	if _, err := New(hub, Options{FrameLimit: 64}); err == nil {
+		t.Fatal("New accepted a frame limit no correlated refusal could fit")
+	}
+	if _, err := New(hub, Options{FrameLimit: 256}); err != nil {
+		t.Fatalf("New rejected the floor: %v", err)
 	}
 }

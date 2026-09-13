@@ -131,21 +131,23 @@ oap serve --stdio [--config examples/oap-serve.json] < examples/oap-stdio-sessio
 ```
 
 Framing is strict NDJSON: exactly one JSON object per LF-terminated line,
-bounded to 8 MiB in both directions, no CR and no empty lines; anything that
-is not a valid request frame — invalid JSON, a non-object, an unknown field,
-a missing or non-numeric `id` — fails closed: the daemon flushes what it
-already admitted, prints one bounded diagnostic on stderr, and exits
-non-zero, exactly as the adapters treat a malformed frame from their own
-agents. The outbound bound is enforced too: a response whose encoding
-exceeds the limit is replaced by the bounded `response_too_large` refusal,
-and an envelope whose line exceeds it ends its subscription (with a bounded
-stderr diagnostic) rather than emitting a frame a host enforcing the same
-limit would reject. Requests may be pipelined: execution ops run
-concurrently, every response is correlated by its request `id`, and the
-registration ops — `open` registers its session, `events` registers its
-subscription — complete before the next line is read, so the canonical
-pipelined sequence (`open`, `events`, `submit`) cannot race a registration
-or miss the run's first envelope.
+bounded to 16 MiB in both directions — the same request budget the HTTP
+daemon's body limit enforces, so both transports accept the same requests —
+with no CR and no empty lines; anything that is not a valid request frame —
+invalid JSON, a non-object, an unknown field, a missing or non-numeric `id`
+— fails closed: the daemon flushes what it already admitted, prints one
+bounded diagnostic on stderr, and exits non-zero, exactly as the adapters
+treat a malformed frame from their own agents. The outbound bound is
+enforced too: a response whose encoding exceeds the limit is replaced by
+the bounded `response_too_large` refusal, and an envelope whose line
+exceeds it ends its subscription with the `oap-frame-limit` terminal signal
+below. The limit has a floor (256 bytes) so a correlated refusal always
+fits. Requests may be pipelined: execution ops run concurrently, every
+response is correlated by its request `id`, and the registration ops —
+`open` registers its session, `events` registers its subscription —
+complete before the next line is read, so the canonical pipelined sequence
+(`open`, `events`, `submit`) cannot race a registration or miss the run's
+first envelope.
 
 The ops mirror the HTTP routes one to one — verbatim schema/v0.1 request
 envelopes, the same schema gate, and the same error codes (`error.code`
@@ -182,6 +184,10 @@ unlike separate SSE connections, needs the correlation stated on every line:
   `oldest_available - 1`.
 - `{"event":"oap-session-closed","id":N,"session_id":...}` — the session
   closed under this subscription; nothing further will arrive for it.
+- `{"event":"oap-frame-limit","id":N,"session_id":...,"run_id":...,"sequence":N}`
+  — an envelope exceeded the frame limit and this wire cannot carry it; the
+  subscription ended at that position, and a cursor after `sequence`
+  continues past it.
 
 A subscription ends at its run's terminal envelope with no further line —
 `run.completed` / `run.failed` / `run.cancelled` are the markers, exactly as
@@ -191,12 +197,13 @@ equivalent: a bare sequence resolved onto the session's current run, replayed
 suffix first, then live events. One writer goroutine interleaves responses
 and events, so every line is atomic and per-session event order is never
 broken by interleaving; a slow consumer blocks the writer — the bounded
-journal plus the overflow and gap signals protect memory. Closing stdin (the
-host is done) or SIGINT/SIGTERM settles every session inside a bounded
-window and exits — the final output drain is itself bounded, so a host that
-stopped reading stdout cannot stretch shutdown; the daemon abandons the
-drain with one stderr diagnostic and exits non-zero. Process exit kills all
-sessions, as restarting the HTTP daemon does.
+journal plus the overflow and gap signals protect memory. Shutdown is
+bounded from the moment the host ends the session (stdin closed or signal),
+not from when the serving loop notices: a synchronous op that hangs (a
+stuck adapter open) or an output drain blocked on a pipe the host stopped
+reading is abandoned after its bounded window with one stderr diagnostic
+and a non-zero exit, and the bounded session sweep still runs. Process exit
+kills all sessions, as restarting the HTTP daemon does.
 
 ### Embedding the registry (`serve`)
 

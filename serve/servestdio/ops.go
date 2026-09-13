@@ -42,6 +42,7 @@ const (
 	signalOverflow      = "oap-overflow"
 	signalReplayGap     = "oap-replay-gap"
 	signalSessionClosed = "oap-session-closed"
+	signalFrameLimit    = "oap-frame-limit"
 )
 
 // responseLine is one daemon → host response, correlated by the request id.
@@ -98,6 +99,18 @@ type sessionClosedLine struct {
 	Event     string `json:"event"`
 	ID        int64  `json:"id"`
 	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}
+
+// frameLimitLine is the terminal signal for a subscription whose envelope
+// exceeded the frame limit: this wire cannot carry that envelope, so the
+// subscription ends naming the position a cursor resumes after.
+type frameLimitLine struct {
+	Event     string `json:"event"`
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id"`
+	Sequence  uint64 `json:"sequence"`
 	Message   string `json:"message"`
 }
 
@@ -645,7 +658,22 @@ func (s *Server) pump(entry *serve.Session, subscription *serve.Subscription, id
 				Event: signalEnvelope, ID: id, SessionID: string(entry.ID()),
 				Sequence: envelope.Sequence, Envelope: data,
 			}); sendErr != nil {
+				// This framing cannot carry the envelope, and skipping it
+				// would leave a sequence hole a later cursor would
+				// double-count: end the subscription with a terminal line
+				// naming the position a cursor resumes after.
 				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+				sequence := uint64(0)
+				if envelope.Sequence != nil {
+					sequence = *envelope.Sequence
+				}
+				if signalErr := s.send(lines, frameLimitLine{
+					Event: signalFrameLimit, ID: id, SessionID: string(entry.ID()),
+					RunID: string(envelope.RunID), Sequence: sequence,
+					Message: "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it",
+				}); signalErr != nil {
+					s.logger.Printf("servestdio: subscription %d: %v", id, signalErr)
+				}
 				return
 			}
 			continue

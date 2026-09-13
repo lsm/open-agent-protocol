@@ -44,9 +44,18 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// DefaultFrameLimit bounds one NDJSON line in both directions, matching the
-// adapter rpc codecs' frame budget.
-const DefaultFrameLimit = 8 << 20
+// DefaultFrameLimit bounds one NDJSON line in both directions. It matches
+// servehttp's request-body budget so both transports of the same daemon
+// accept the same requests, with the adapters' rpc-codec discipline — a
+// bounded line, refused rather than split — applied to the framing.
+const DefaultFrameLimit = 16 << 20
+
+// minFrameLimit is the smallest usable FrameLimit: every control line — an
+// error response with no result, a terminal signal — encodes well under it,
+// so a correlated answer always exists even when a result has to be refused.
+// New rejects smaller limits rather than accepting a configuration whose
+// own refusals could not be delivered.
+const minFrameLimit = 256
 
 // defaultWriteQueue bounds the lines buffered for the writer goroutine;
 // beyond it producers block, which is the documented backpressure onto the
@@ -101,6 +110,9 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if frameLimit <= 0 {
 		frameLimit = DefaultFrameLimit
 	}
+	if frameLimit < minFrameLimit {
+		return nil, fmt.Errorf("servestdio: frame limit %d is below the %d-byte minimum a correlated refusal needs", frameLimit, minFrameLimit)
+	}
 	writeQueue := options.WriteQueue
 	if writeQueue <= 0 {
 		writeQueue = defaultWriteQueue
@@ -140,12 +152,14 @@ func (e *MalformedLineError) Error() string {
 // than emitted.
 var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame limit")
 
-// ErrOutputStalled reports that shutdown outlived the bounded output-drain
-// window: the host stopped draining stdout while ending the session, so
-// admitted lines could not be flushed. The frontend abandons the stalled
-// writer rather than waiting on the host's pipe, so the caller's bounded
-// session sweep and the process exit still happen.
-var ErrOutputStalled = errors.New("servestdio: shutdown outlived the output-drain window; the host stopped draining stdout")
+// ErrShutdownStalled reports that shutdown outlived its bounded windows:
+// the host ended the session and either a synchronous op never finished —
+// an adapter open that hung, a response send blocked behind a stopped
+// consumer — or the final output drain never completed because the host
+// stopped reading stdout. The stalled stage is abandoned rather than waited
+// on, so the caller's bounded session sweep and the process exit still
+// happen.
+var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")
 
 // frameResult is one line read from the host: frame carries the line without
 // its terminator, err the condition that ended the read (io.EOF for the clean
@@ -162,95 +176,139 @@ type frameResult struct {
 // lifetime: the caller sweeps the hub after Run returns, as the CLI does on
 // every exit path. Run itself never writes to stderr.
 //
-// The teardown after the host ends the session is bounded by
-// Options.ShutdownTimeout: a host that stops draining stdout cannot stretch
-// shutdown past it. When the window expires mid-drain, Run abandons the
-// stalled writer and returns ErrOutputStalled instead of waiting on the
-// host's pipe, so the caller's bounded session sweep and the process exit
-// still happen.
+// Shutdown is bounded from the moment the host ends the session — stdin
+// closed, the read failed, or the context cancelled — not from when the
+// serving loop notices: the loop may be stuck inside a synchronous op (a
+// hung adapter open, a response send blocked behind a stopped consumer),
+// and Options.ShutdownTimeout bounds each stage independently. A stage that
+// outlives its window is abandoned and Run returns ErrShutdownStalled, so
+// the caller's bounded session sweep and the process exit still happen;
+// nothing ever waits indefinitely on the host's pipe or a stuck adapter.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	lines := make(chan []byte, s.writeQueue)
+	stop := make(chan struct{})
 	var work sync.WaitGroup
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- writeLines(out, lines) }()
+	go func() { writerDone <- writeLines(out, lines, stop) }()
 
-	// The reader goroutine owns blocking reads off the select below, so a
-	// context cancellation does not have to wait for the next stdin byte.
-	// Its channel is never closed: after cancellation the goroutine parks on
-	// the send and is abandoned (the process is exiting), and it never
-	// touches the line channel, so the writer teardown below stays safe.
+	// The reader reports its own end on a buffered side channel, because
+	// decodeLoop may be stuck inside a synchronous op and never consume the
+	// final frame: shutdown must be bounded even then.
+	readerDone := make(chan error, 1)
 	frames := make(chan frameResult)
-	go readFrames(in, s.frameLimit, frames)
+	go readFrames(in, s.frameLimit, frames, readerDone)
 
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- s.decodeLoop(ctx, frames, lines, &work) }()
-	err := <-serveDone
 
-	// Cancel first so pumps and in-flight handlers detach from the hub, then
-	// wait for them within the shutdown window: they may still be delivering
-	// their final lines, which the writer drains before the channel close
-	// ends it. The window also bounds the final drain itself — the writer
-	// may be blocked inside out.Write on a pipe the host stopped reading,
-	// and shutdown must never depend on the host's pipe.
+	// End of input: decodeLoop returning is the session's normal end. When
+	// the host has ended the session while decodeLoop is stuck, the first
+	// window bounds how much longer the stuck op gets before it is
+	// abandoned.
+	endWindow := time.NewTimer(s.shutdown)
+	defer endWindow.Stop()
+	var err error
+	stuck := false
+	select {
+	case err = <-serveDone:
+	case <-readerDone:
+		select {
+		case err = <-serveDone:
+		case <-endWindow.C:
+			stuck = true
+		}
+	case <-ctx.Done():
+		select {
+		case err = <-serveDone:
+		case <-endWindow.C:
+			stuck = true
+		}
+	}
+
+	// Teardown: cancel detaches pumps and in-flight handlers from the hub;
+	// the second window bounds waiting for them and for the writer's final
+	// drain — the writer may be blocked inside out.Write on a pipe the host
+	// stopped reading, and shutdown must never depend on the host's pipe.
 	cancel()
 	workDone := make(chan struct{})
 	go func() { work.Wait(); close(workDone) }()
-	deadline := time.NewTimer(s.shutdown)
-	defer deadline.Stop()
+	drainWindow := time.NewTimer(s.shutdown)
+	defer drainWindow.Stop()
 	drained := false
 	select {
 	case <-workDone:
-		close(lines)
+		close(stop)
 		select {
 		case writeErr := <-writerDone:
 			drained = true
 			if err == nil {
 				err = writeErr
 			}
-		case <-deadline.C:
+		case <-drainWindow.C:
 		}
-	case <-deadline.C:
+	case <-drainWindow.C:
 	}
-	if !drained && err == nil {
-		err = ErrOutputStalled
+	if (stuck || !drained) && err == nil {
+		err = ErrShutdownStalled
 	}
 	return err
 }
 
 // writeLines is the single ordered writer: it appends the LF terminator to
-// every marshaled line and writes it whole, so lines never interleave. A
-// write failure (the host closed stdout) is remembered while the writer keeps
-// draining, so producers blocked on the channel always drain instead of
-// deadlocking the teardown.
-func writeLines(out io.Writer, lines <-chan []byte) error {
+// every marshaled line and writes it whole, so lines never interleave. It
+// ends when stopped, draining the lines already queued; a write failure (the
+// host closed stdout) is remembered while the drain continues, so producers
+// blocked on the channel still hand off instead of deadlocking. The channel
+// is never closed: an abandoned producer parks on its send and is reclaimed
+// by process exit rather than panicking on a closed channel.
+func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}) error {
 	var failure error
-	for line := range lines {
+	write := func(line []byte) {
 		if failure != nil {
-			continue
+			return
 		}
 		if _, err := out.Write(append(line, '\n')); err != nil {
 			failure = err
 		}
 	}
-	return failure
+	for {
+		select {
+		case line := <-lines:
+			write(line)
+		case <-stop:
+			for {
+				select {
+				case line := <-lines:
+					write(line)
+				default:
+					return failure
+				}
+			}
+		}
+	}
 }
 
 // readFrames reads bounded NDJSON lines from in and forwards each with its
 // outcome. The framing rules mirror the adapter rpc codecs: a line is
 // LF-terminated, carries no CR, is non-empty, valid UTF-8, and within the
 // limit; an unterminated final line is a defect, while EOF at a line boundary
-// is the clean host close.
-func readFrames(in io.Reader, limit int, frames chan<- frameResult) {
+// is the clean host close. The terminal read outcome is also reported on
+// done — buffered, and before the final frame is delivered — because the
+// consumer may be stuck and never take that frame; shutdown stays bounded
+// even then.
+func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- error) {
 	reader := bufio.NewReader(in)
 	for {
 		frame, err := readFrame(reader, limit)
-		frames <- frameResult{frame: frame, err: err}
 		if err != nil {
+			done <- err
+			frames <- frameResult{frame: frame, err: err}
 			return
 		}
+		frames <- frameResult{frame: frame}
 	}
 }
 
