@@ -551,9 +551,22 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   Against an older daemon, which closes at the terminal with no signal, the
   client bounds that post-terminal resume to one attempt and then reads
   `session.state`: an empty or absent `active_runs` is the clean end,
-  anything else keeps resuming. Because delivery is one run domain at a
-  time, no per-run cursor table is needed: a run switch always follows a
-  terminal, which both clients already accept.
+  anything else keeps resuming. The resume checks change in exactly one
+  case to make this work: today a cursor-bearing connection whose first
+  envelope names another run fails with `ResumeMismatchError`, and one
+  whose first envelope is not `lastSeq+1` fails with `SequenceGapError`.
+  Under T2, when the cursor's run is terminal (both clients already track
+  `terminal`), the first resumed envelope may instead be sequence 1 of a
+  different run: the client adopts that run as the new domain and resets
+  its sequence expectation to it. A different run at any other sequence,
+  or a different run while the cursor's run is nonterminal, still fails
+  as today, so the daemon's answer to `?run=A&after=<A's terminal>` is
+  either the end signal or run B from sequence 1 and nothing else. Both
+  clients' e2e tests drop the connection between a run's terminal and the
+  queued run's first envelope and assert the continuation. Because
+  delivery is one run domain at a time, no per-run cursor table is needed:
+  a run switch always follows a terminal, and on a live connection both
+  clients already accept it.
 - Daemon-management listing (`GET /sessions`) reports `active_runs`.
 
 ### Fixtures
