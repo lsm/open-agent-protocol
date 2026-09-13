@@ -1,6 +1,6 @@
 {
   "adapter": "makai-agent-stdio",
-  "agent_protocol_tree": "0a21997a9bc6d4358a8ca549bb2f31c623f4583b",
+  "agent_protocol_tree": "3d3f7a767fe24b1363f2f1f51531426a1eebebb8",
   "cases": [
     {
       "id": "completed-result-before-end",
@@ -79,11 +79,25 @@
         "no-implied-native-replay"
       ],
       "path": "replay-degradation"
+    },
+    {
+      "id": "evicted-session-gone",
+      "ledger_fixtures": [
+        "idle-eviction-session-gone"
+      ],
+      "path": "evicted-session-gone"
+    },
+    {
+      "id": "post-stop-stale-publication",
+      "ledger_fixtures": [
+        "post-stop-stale-publication"
+      ],
+      "path": "post-stop-stale-publication"
     }
   ],
-  "commit": "67ad51420c3f4d7918218573366fde7db8c35b9c",
-  "commit_tree": "27d32e64ff5efed88c1302de0e25c1acdb9373b2",
-  "execution_client_blob": "d3a1e9d6c28372f271c33501d33a9290c55a3a91",
-  "makai_tool_blob": "feccd54dde57fa2a5eafec97dd880bf8c63121c0",
+  "commit": "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5",
+  "commit_tree": "41b5793e363647314d93f929b014fda23d4a4aa6",
+  "execution_client_blob": "a23cf6c230b14044f1f6a4ca4cd730db4e68ab5b",
+  "makai_tool_blob": "b2cb0c58abd20a1691c19f97386d88bf58123cc8",
   "version": 1
 }

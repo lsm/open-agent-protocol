@@ -5,7 +5,7 @@
     "run.streaming": "native"
   },
   "expected_oap": "expected-oap.json",
-  "id": "replay-degradation",
+  "id": "post-stop-stale-publication",
   "identity_map": {
     "native.message_id": "private_frame_id",
     "native.session_id": "oap.session_id",
@@ -22,6 +22,5 @@
     "makai_tool_blob": "b2cb0c58abd20a1691c19f97386d88bf58123cc8",
     "repository": "https://github.com/lsm/makai"
   },
-  "replay_after": 0,
   "version": 1
 }

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	PinnedCommit           = "67ad51420c3f4d7918218573366fde7db8c35b9c"
+	PinnedCommit           = "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5"
 	CapabilityRevision     = "makai-agent-67ad514-oap-v1"
 	defaultJournalCapacity = 256
 )
@@ -149,7 +149,11 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, errors.New("makai adapter: ID generator must produce a 21-character native session ID for kind makai-session")
 	}
-	request, err := a.envelope(native.TypeAgentStart, nativeAssociation, 1, native.AgentStart{ConfigJSON: string(a.config.AgentConfig), SystemPrompt: a.config.SystemPrompt, ResumeSessionID: &nativeAssociation})
+	// Dual-key emission per the v0.2.0 #198 transition: the canonical
+	// session_id key plus the permanent resume_session_id alias, same value —
+	// pre-rename servers keep binding the caller's id, dual-key servers take
+	// the canonical one.
+	request, err := a.envelope(native.TypeAgentStart, nativeAssociation, 1, native.AgentStart{ConfigJSON: string(a.config.AgentConfig), SystemPrompt: a.config.SystemPrompt, SessionID: &nativeAssociation, ResumeSessionID: &nativeAssociation})
 	if err != nil {
 		_ = client.Close()
 		return nil, err

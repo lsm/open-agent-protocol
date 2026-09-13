@@ -2,9 +2,13 @@ package makai
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +23,7 @@ func TestPinnedMakaiProcessAgainstResponsesMock(t *testing.T) {
 		t.Skip("skipping pinned Makai process integration in short mode")
 	}
 	if os.Getenv("OAP_MAKAI_INTEGRATION") != "1" {
-		t.Skip("set OAP_MAKAI_INTEGRATION=1, OAP_MAKAI_BIN, and OAP_MAKAI_COMMIT to run")
+		t.Skip("set OAP_MAKAI_INTEGRATION=1, OAP_MAKAI_BIN, and OAP_MAKAI_COMMIT to run; optionally set OAP_MAKAI_SHA256 to bind the exact release artifact")
 	}
 	binary := os.Getenv("OAP_MAKAI_BIN")
 	if binary == "" {
@@ -35,6 +39,31 @@ func TestPinnedMakaiProcessAgainstResponsesMock(t *testing.T) {
 	info, err := os.Stat(binary)
 	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
 		t.Fatalf("OAP_MAKAI_BIN is not an executable file: %v", err)
+	}
+	if expected := os.Getenv("OAP_MAKAI_SHA256"); expected != "" {
+		if len(expected) != sha256.Size*2 {
+			t.Fatal("OAP_MAKAI_SHA256 must be exactly 64 hexadecimal characters")
+		}
+		expectedDigest, err := hex.DecodeString(expected)
+		if err != nil {
+			t.Fatal("OAP_MAKAI_SHA256 must be exactly 64 hexadecimal characters")
+		}
+		file, err := os.Open(binary)
+		if err != nil {
+			t.Fatalf("open OAP_MAKAI_BIN for digest verification: %v", err)
+		}
+		hash := sha256.New()
+		_, copyErr := io.Copy(hash, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			t.Fatalf("hash OAP_MAKAI_BIN: %v", copyErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close OAP_MAKAI_BIN after hashing: %v", closeErr)
+		}
+		if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), hex.EncodeToString(expectedDigest)) {
+			t.Fatal("OAP_MAKAI_BIN SHA-256 does not match OAP_MAKAI_SHA256")
+		}
 	}
 	mock := providertest.New(t, providertest.Config{OpenAIKey: "fixture-makai-key"})
 	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)

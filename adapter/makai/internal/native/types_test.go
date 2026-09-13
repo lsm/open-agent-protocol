@@ -87,6 +87,74 @@ func TestEnvelopeRejectsInvalidShapes(t *testing.T) {
 	})
 }
 
+func TestAgentStartDualKeyTransition(t *testing.T) {
+	// v0.2.0 (#198): emitters send the canonical session_id key plus the
+	// permanent resume_session_id alias with the same value; the decoder
+	// accepts either key and the canonical one wins when both appear.
+	association := testSession
+	start := AgentStart{ConfigJSON: `{}`, SessionID: &association, ResumeSessionID: &association}
+	env, err := NewEnvelope(TypeAgentStart, testSession, testMessage, 1, 1, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	canonical, legacy := string(payload["session_id"]), string(payload["resume_session_id"])
+	if canonical == "" || legacy == "" || canonical != legacy {
+		t.Fatalf("dual-key emission: session_id=%s resume_session_id=%s", canonical, legacy)
+	}
+	if effective := start.EffectiveSessionID(); effective == nil || *effective != testSession {
+		t.Fatalf("effective=%v", effective)
+	}
+	decoded, err := DecodePayload[AgentStart](env)
+	if err != nil || decoded.EffectiveSessionID() == nil || *decoded.EffectiveSessionID() != testSession {
+		t.Fatalf("decoded=%+v err=%v", decoded, err)
+	}
+}
+
+func TestAgentStartAcceptsEachKeyOnDecode(t *testing.T) {
+	other := SessionID("Zbcdefghijklmnopqrstu")
+	cases := []struct {
+		name      string
+		json      string
+		effective SessionID
+	}{
+		{"canonical only", `{"config_json":"{}","session_id":"Abcdefghijklmnopqrstu"}`, testSession},
+		{"legacy alias only", `{"config_json":"{}","resume_session_id":"Abcdefghijklmnopqrstu"}`, testSession},
+		{"canonical wins", `{"config_json":"{}","session_id":"Abcdefghijklmnopqrstu","resume_session_id":"Zbcdefghijklmnopqrstu"}`, testSession},
+		{"omitted", `{"config_json":"{}"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var decoded AgentStart
+			if err := strictDecode([]byte(tc.json), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			effective := decoded.EffectiveSessionID()
+			if tc.effective == "" {
+				if effective != nil {
+					t.Fatalf("effective=%v want nil", effective)
+				}
+				return
+			}
+			if effective == nil || *effective != tc.effective {
+				t.Fatalf("effective=%v want %s", effective, tc.effective)
+			}
+			env := Envelope{Type: TypeAgentStart, SessionID: tc.effective, MessageID: testMessage, Sequence: 1, Timestamp: 1, Version: 1, Payload: json.RawMessage(tc.json)}
+			if err := env.Validate(false); err != nil {
+				t.Fatalf("agreement via payload key: %v", err)
+			}
+			foreign := env
+			foreign.SessionID = other
+			if err := foreign.Validate(false); err == nil {
+				t.Fatal("foreign payload session accepted")
+			}
+		})
+	}
+}
+
 func TestNestedJSONAndEnumsAreStrict(t *testing.T) {
 	cases := []Envelope{
 		{Type: TypeAgentEvent, SessionID: testSession, MessageID: testMessage, Sequence: 1, Timestamp: 1, Version: 1, Payload: json.RawMessage(`{"event_json":"{"}`)},

@@ -1,0 +1,7 @@
+[
+  {
+    "index": 2,
+    "reason": "stale-registration trailing publication drained after the correlated agent_stopped; the run already settled",
+    "type": "agent_event"
+  }
+]

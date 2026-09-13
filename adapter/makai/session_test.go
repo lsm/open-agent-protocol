@@ -208,6 +208,35 @@ func TestForeignAgentStartedIsRejected(t *testing.T) {
 	}
 }
 
+func TestOpenEmitsDualKeyAgentStart(t *testing.T) {
+	// v0.2.0 (#198): agent_start must carry the canonical session_id key and
+	// the permanent resume_session_id alias with the same value.
+	client := newFakeClient()
+	var request native.Envelope
+	client.callHook = func(_ context.Context, env native.Envelope, _ ...native.Type) (native.Envelope, error) {
+		request = env
+		id := native.MessageID("01ARZ3NDEKTSV4RRFFQ69G5FAW")
+		response, _ := native.NewEnvelope(native.TypeAgentStarted, env.SessionID, id, 1, 1, native.AgentStarted{SessionID: env.SessionID})
+		response.InReplyTo = &env.MessageID
+		return response, nil
+	}
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), WorkingDirectory: "/workspace", AgentConfig: json.RawMessage(`{"model":"test"}`), Clock: &fakeClock{}, IDs: &fakeIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := implementation.Open(context.Background(), base.OpenRequest{SessionID: "session"}); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(request.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	canonical, legacy := string(payload["session_id"]), string(payload["resume_session_id"])
+	if canonical == "" || legacy == "" || canonical != legacy || canonical != fmt.Sprintf("%q", request.SessionID) {
+		t.Fatalf("agent_start keys: session_id=%s resume_session_id=%s envelope=%s", canonical, legacy, request.SessionID)
+	}
+}
+
 func TestCompletedTextWaitsForAgentEnd(t *testing.T) {
 	session, client := openTest(t, 32)
 	response, stream := submitTest(t, session)
