@@ -214,6 +214,14 @@ No new envelope types. Changes to
 - `session.message.submit.request` with any control invokes the existing
   `feature()` gate with the control's key (diagnostic
   `unavailable_capability` when unadvertised or `unavailable`).
+- New diagnostic `degraded_without_optin`: `feature()` today accepts every
+  level but `unavailable`, so a request carrying a control whose key the
+  descriptor advertises `degraded` and whose `allow_degraded_features`
+  omits that key is remembered, and an admission correlated to it (a
+  `session.message.submit.response` rather than an `error.response` with
+  `capability_degraded`) is diagnosed on the response. The rejection path
+  is the correct one and stays a positive fixture; this rule catches the
+  adapter that admits and executes degraded behavior without consent.
 - New diagnostic `unapplied_control`: the submit response's `model_id` (when
   the request carried one) differs from the request; `run.started.model_id`
   differs from the admitted model (today's `illegal_run_transition` case
@@ -334,7 +342,9 @@ no call),
 `controls-tool-choice-ambiguous-name` (`duplicate_tool_name`; two native
 tools sharing a name in the descriptor, then a `named` policy),
 `controls-degraded-without-optin` (`error.response` with
-`capability_degraded` then no admission; validated as a correct rejection).
+`capability_degraded` then no admission; validated as a correct rejection),
+`controls-degraded-admitted-without-optin` (`degraded_without_optin`; the
+same request admitted).
 
 ### Exit criteria
 
@@ -890,10 +900,18 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `session.open.request`; every session-scoped
   `action.tools.list.response` for that session must declare every
   recorded source id and list every provided tool under the recorded
-  owner, or the diagnostic fires on that response. Native entries may
-  differ between lists (a harness refreshes its own catalog), but the
-  open-time entries never drop out, because attachment is for the
-  session's lifetime and runtime attach and detach stay deferred.
+  owner, or the diagnostic fires on that response. The comparison is of
+  the whole entry, not the identity: an attached source must be listed
+  with the `kind`, `protocol`, `endpoint`, and `display_name` it was
+  attached with (the attach-only `command`, `args`, and `environment` are
+  never listed), and a provided tool with the `name`, `description`,
+  `input_schema`, `annotations`, and `execution_owner` it was supplied
+  with, `features` being the adapter's to fill; a redirected endpoint or
+  an altered schema is `catalog_mismatch` just as an omission is. Native
+  entries may differ between lists (a harness refreshes its own catalog),
+  but the open-time entries never drop out or change, because attachment
+  is for the session's lifetime, provisioning is all-or-nothing, and
+  runtime attach and detach stay deferred.
 - `action.tools.list.response`: `unmatched_tool_source` for a tool naming an
   undeclared source. `action.call.*` payloads carrying `source`: the same
   diagnostic when the trace's catalog lists the named tool under a
@@ -948,14 +966,25 @@ the request used.
 - `adapter`: `OpenRequest` gains `ToolSources` and `Tools`;
   `InteractionResolution.ToolCall`; optional interface `adapter.ToolLister`
   (`Tools(ctx) (protocol.ToolsListResponse, error)`) for the catalog.
-- `serve`: `Session.Tools(ctx)`; `Session.Resolve` passes the new arm; the
-  optional MCP connector as a separate package `serve/mcpconnect`, out of
-  scope for the 0007 decision but designed against it.
+- `serve`: `Session.Tools(ctx)`; `Session.Resolve` passes the new arm
+  under the same publication gate T4 specifies for steer, because a
+  participant that resolves synchronously lets the adapter emit
+  `action.call.started` and the terminal inside `Resolve`, before the
+  binding has written the accepted resolve response, which is the order
+  the validator rejects. The hub gates the run's drainer across
+  `Resolve`, the binding lifts it with `Session.Published(interactionID)`
+  after writing the response, and the context-done fallback simply lifts
+  it, since the events it releases are self-describing by
+  `interaction_id`, an id the resolver already holds from
+  `action.call.requested`, so nothing unknown is revealed. The optional
+  MCP connector is a separate package `serve/mcpconnect`, out of scope for
+  the 0007 decision but designed against it.
 - `serve/servehttp`: `GET /sessions/{id}/tools` returning
   `action.tools.list.response`; `POST /sessions/{id}/resolve` accepts
-  `action.call.resolve.request`; `POST /adapters/{name}/sessions` forwards
+  `action.call.resolve.request` and calls `Session.Published` after
+  writing the response; `POST /adapters/{name}/sessions` forwards
   `tool_sources` and `tools`. Stdio ops `tools` and the extended `resolve`
-  and `open`.
+  (with the same post-write release) and `open`.
 - `client` and `clients/ts`: `Open` options for sources and tools;
   `Session.Tools`; `Session.ResolveToolCall` in all three arms
   (acknowledge, result, error), so a control layer can report that it has
@@ -979,6 +1008,10 @@ selected one called). Negative:
 process source and a provided tool, then a first list omitting the
 source), `tools-catalog-drops-attachment-later` (`catalog_mismatch`; a
 correct first list, then a second list omitting the provided tool),
+`tools-catalog-redirects-source` (`catalog_mismatch`; the attached source
+listed with another `endpoint`), `tools-catalog-alters-provided-schema`
+(`catalog_mismatch`; the provided tool listed with another
+`input_schema`),
 `open-provide-colliding-name` (`error.response` with `unsupported_feature`
 then no open; validated as a correct rejection),
 `open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
@@ -1069,7 +1102,13 @@ rule rather than a hub detail. Fixtures: positive `steer-immediate`
 `steer-dropped-at-terminal`; negative `steer-settled-before-response`
 (`unmatched_steer`), `steer-duplicate-settlement` (`duplicate_steer`),
 `steer-pending-at-terminal` (`pending_steer_at_terminal`),
-`steer-unadvertised` (`unavailable_capability`).
+`steer-unadvertised` (`unavailable_capability`). `session.state`
+snapshots are checked against the same record: each `active_runs[]`
+entry's `pending_steers` must equal the pending set in `runState.steers`
+for that run, so an omitted pending steer or a settled one still listed
+is `session_state_mismatch` (fixtures `steer-state-omits-pending`,
+`steer-state-retains-settled`); without this the state surface a
+submitter recovers the id from could silently lie.
 
 ### Reference adapter and evidence
 
@@ -1206,7 +1245,8 @@ strings in the schema; the validator does not enumerate them.
 
 ### Validator diagnostics added
 
-`unapplied_control`, `unsatisfiable_control`, `model_not_in_catalog`,
+`unapplied_control`, `unsatisfiable_control`, `degraded_without_optin`,
+`model_not_in_catalog`,
 `ambiguous_default_model`, `duplicate_model_id`, `queue_order_violation`,
 `queue_limit_exceeded`, `premature_session_mutation`,
 `unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
