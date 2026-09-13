@@ -23,6 +23,46 @@ func hubEnvelope(t *testing.T, typ protocol.EnvelopeType, sequence uint64) proto
 	return envelope
 }
 
+// runEnvelope is hubEnvelope carrying a run id, for driving the hub's
+// per-run cursor accounting directly.
+func runEnvelope(t *testing.T, runID protocol.RunID, sequence uint64) protocol.Envelope {
+	t.Helper()
+	envelope := hubEnvelope(t, protocol.TypeRunStatusUpdated, sequence)
+	envelope.RunID = runID
+	return envelope
+}
+
+// TestOverflowCursorZeroWhenRunUnseen pins the sequence half of the overflow
+// cursor: a mailbox full of run A's envelopes that run B's publish overflows
+// yields (B, 0) — the consumer observed nothing of B, so recovery replays B
+// from its start — never B carrying A's last position.
+func TestOverflowCursorZeroWhenRunUnseen(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	entry.publish(runEnvelope(t, "run-a", 1))
+	entry.publish(runEnvelope(t, "run-a", 2)) // the two-slot mailbox is full
+	entry.publish(runEnvelope(t, "run-b", 1)) // overflows, naming run B
+
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for sequence := uint64(1); sequence <= 2; sequence++ {
+		envelope, err := subscription.Next()
+		if err != nil || envelope.Sequence == nil || *envelope.Sequence != sequence {
+			t.Fatalf("envelope %d: sequence %v error %v", sequence, envelope.Sequence, err)
+		}
+	}
+	_, err := subscription.Next()
+	var overflow *OverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("error %v (%T), want OverflowError", err, err)
+	}
+	if overflow.RunID != "run-b" || overflow.LastSequence != 0 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 0", overflow)
+	}
+}
+
 // TestMarkClosedDefersFinishToReader pins the drain-before-finish contract:
 // an adapter reports its run terminal once the terminal envelope is queued,
 // so a close that lands while the reader still holds final events must not

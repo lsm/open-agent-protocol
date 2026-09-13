@@ -15,7 +15,7 @@
 // A minimal host embeds the default registry and drives one session:
 //
 //	hub := serve.New(must(serve.DefaultRegistry()), serve.Options{})
-//	session, err := hub.Open(ctx, "memory", adapter.OpenRequest{})
+//	session, _, err := hub.Open(ctx, "memory", adapter.OpenRequest{})
 //	subscription, err := hub.Subscribe(ctx, session.ID())
 //	// Submit, then consume run envelopes through subscription.Next until
 //	// io.EOF, resolving interactive gates as they arrive.

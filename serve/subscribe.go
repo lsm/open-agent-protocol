@@ -174,7 +174,17 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 					s.finished = true
 					if state := s.sub.terminal.Load(); state != nil {
 						if state.overflow {
-							s.err = &OverflowError{RunID: state.run, LastSequence: s.last}
+							// The cursor must not mix runs: when the overflow
+							// interrupted the subscription before it delivered
+							// anything of the overflowed run, the consumer's
+							// last position belongs to the previous run, and
+							// recovery replays the overflowed run from its
+							// start.
+							last := s.last
+							if state.run != s.lastRun {
+								last = 0
+							}
+							s.err = &OverflowError{RunID: state.run, LastSequence: last}
 						} else {
 							// The run's adapter stream ended on this error;
 							// a failed run must not read as a clean end.
@@ -205,6 +215,11 @@ func (s *Subscription) nextReplay() (protocol.Envelope, error) {
 			return protocol.Envelope{}, io.EOF
 		}
 		if result.Error != nil {
+			// The adapter may keep the errored stream open; hand it to the
+			// background drainer so its bounded replay channel cannot fill
+			// and block later adapter emits once this consumer stops. The
+			// error stays sticky for the subscription.
+			s.Close()
 			s.finished = true
 			if errors.Is(result.Error, base.ErrEventStreamOverflow) {
 				s.err = &OverflowError{RunID: s.run, LastSequence: s.last}

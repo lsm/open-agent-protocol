@@ -127,7 +127,7 @@ codec over this same hub.
 registry, _ := serve.DefaultRegistry()           // or serve.LoadRegistry(path, os.LookupEnv)
 hub := serve.New(registry, serve.Options{})
 
-session, _ := hub.Open(ctx, "memory", adapter.OpenRequest{SessionID: "demo"})
+session, _, _ := hub.Open(ctx, "memory", adapter.OpenRequest{SessionID: "demo"})
 sub, _ := hub.Subscribe(ctx, session.ID())        // subscribe before submitting
 session.Submit(ctx, protocol.MessageSubmitRequest{
 	SessionID: session.ID(), Delivery: protocol.DeliveryAuto,
