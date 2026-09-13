@@ -71,7 +71,7 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 2 | T5a models catalog | OpenCode `model.list`/`provider.list`; pi `get_available_models`; Makai `models_request`; Claude `system/init.models` and `list_models`; Hermes `model.options` | OpenCode (native) | pi, Makai, Claude (degraded) |
 | 3 | T2 queue delivery | OpenCode `SessionInput.Admitted{delivery:"queue", promotedSeq}`; pi `follow_up` with `queue_update`; Hermes busy `queued` status under `busy_input_mode=queue`; Claude `queued_turn_count`/`still_queued` | OpenCode (native) | pi, Hermes |
 | 4 | T3 tool sources | T3a catalog with sources: Claude `system/init` (tools, MCP servers), Codex `mcpToolCall.server`; T3b attach at open: ACP `session/new.mcpServers`, Claude MCP config at spawn and `mcp_set_servers`; T3c control-layer tools: Makai `tool_execute`/`tool_result` bridge, Claude `sdkMcpServers` with `mcp_message`, ACP reverse fs/terminal calls | T3a Claude, T3b ACP, T3c Makai | Codex, Claude |
-| 5 | T4 steer | pi `steer` with `queue_update` and injection at a turn boundary; OpenCode `delivery:"steer"` while busy; Hermes `session.steer` and busy `steered`; Codex `turn/steer` with expected turn id | pi | OpenCode, Hermes, Codex |
+| 5 | T4 steer | pi `steer` with `queue_update` and injection at a turn boundary; OpenCode `delivery:"steer"` while busy; Hermes `session.steer` and busy `steered` | pi | OpenCode, Hermes; Codex only after a new ledger pin covers `turn/steer` (the pinned Codex ledger defers it; the expected-turn-id detail comes from unpinned research) |
 | 6 | T5b auth state | Claude `auth_status` frames; OpenCode `provider.list` | staged | — |
 
 Ledgers: [Codex](../research/codex-app-server-8d7cc24-mapping.md) ·
@@ -796,8 +796,10 @@ from `run.started` that its guidance took effect. Every native source makes
 the application observable in a different way: pi at the next turn boundary
 (`queue_update` shrinks and the injected user message appears in the
 stream), OpenCode when the steered input is promoted (`prompted` after
-`prompt.admitted`), Hermes immediately (the busy result is `steered`), Codex
-on the `turn/steer` response against an expected active turn. pi also lets a
+`prompt.admitted`), Hermes immediately (the busy result is `steered`), and,
+per unpinned research only, Codex on the `turn/steer` response against an
+expected active turn (the pinned Codex ledger defers `turn/steer`, so this
+is not evidence until a new pin covers it). pi also lets a
 steer be withdrawn before application (`clear_queue`). The protocol
 therefore needs a steer settlement, not only a steer admission.
 
@@ -840,8 +842,9 @@ applies it at the input gate (`boundary: "turn"`), which also exercises the
 drop path under cancel. pi graduates: its corpus already records `steer`,
 `queue_update`, and injection as codec evidence (`native-controls`,
 `steer-injected` labels); the new case executes them through `Submit` with
-an advertised `session.message.delivery.steer`. OpenCode, Hermes, and Codex
-follow.
+an advertised `session.message.delivery.steer`. OpenCode and Hermes
+follow from their pinned ledgers; Codex follows only once a new ledger pin
+covers `turn/steer`.
 
 ### Surfaces
 
@@ -858,7 +861,8 @@ events because they live in the target run's domain.
 3. Whether `boundary` is worth carrying or `applied` alone suffices.
 4. Codex's expected-turn precondition: is `target_run_id` required when the
    harness requires a target, or does the adapter fill it from the started
-   run.
+   run. This is answered by the ledger pin that first covers `turn/steer`,
+   not by the current one.
 
 ## T5b. Auth state
 
