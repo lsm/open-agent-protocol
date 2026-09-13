@@ -156,6 +156,7 @@ carries what the correlated `error.response` payload would). Host → daemon:
 | `adapters` | — | `{"adapters":[...]}` registry listing |
 | `capabilities` | `adapter` | `capabilities.response` envelope |
 | `open` | `adapter`, `request` = `session.open.request` | `session.open.response` envelope |
+| `sessions` | — | `{"sessions":[...]}` tracked-session listing |
 | `events` | `session_id`, optional `after` cursor | `null`, then event lines |
 | `state` | `session_id` | `session.state.response` envelope |
 | `submit` | `session_id`, `request` = `session.message.submit.request` | admission response envelope |

@@ -172,9 +172,15 @@ func TestStdioEndToEnd(t *testing.T) {
 		t.Fatalf("open result: %s", opened)
 	}
 
+	// The session listing mirrors GET /sessions.
+	c.send(fmt.Sprintf(`{"id":%d,"op":"sessions"}`, next()))
+	if listed := c.expect(4); !strings.Contains(string(listed), `"session_id":"e2e"`) || !strings.Contains(string(listed), `"adapter":"memory"`) {
+		t.Fatalf("sessions listing lacks the open session: %s", listed)
+	}
+
 	// Subscribe before submitting, waiting for the subscription ack.
 	c.send(fmt.Sprintf(`{"id":%d,"op":"events","session_id":"e2e"}`, next()))
-	c.expect(4)
+	c.expect(5)
 
 	c.send(fmt.Sprintf(`{"id":%d,"op":"submit","session_id":"e2e","request":%s}`, next(), envelope(t, "e2e-submit", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
 		SessionID: "e2e", Delivery: protocol.DeliveryAuto,
@@ -189,7 +195,7 @@ func TestStdioEndToEnd(t *testing.T) {
 		line := c.line()
 		if strings.HasPrefix(line, `{"id":`) {
 			var response responseLine
-			if err := json.Unmarshal([]byte(line), &response); err != nil || response.ID != 5 || !response.OK {
+			if err := json.Unmarshal([]byte(line), &response); err != nil || response.ID != 6 || !response.OK {
 				t.Fatalf("submit response %q: %v", line, err)
 			}
 			responsesLeft--
@@ -212,7 +218,7 @@ func TestStdioEndToEnd(t *testing.T) {
 	// permission resolve's response may interleave with the input gate.
 	permissionResolve, runID := resolveFromGate(t, permission, "e2e", "e2e-permission")
 	c.send(fmt.Sprintf(`{"id":%d,"op":"resolve","session_id":"e2e","request":%s}`, next(), permissionResolve))
-	inputGate := readGate(t, c, 6)
+	inputGate := readGate(t, c, 7)
 	inputResolve, inputRun := resolveFromGate(t, inputGate, "e2e", "e2e-input")
 	if inputRun != runID {
 		t.Fatalf("input gate names run %s, permission gate named %s", inputRun, runID)
@@ -229,7 +235,7 @@ func TestStdioEndToEnd(t *testing.T) {
 			if err := json.Unmarshal([]byte(line), &response); err != nil {
 				t.Fatalf("resolve response %q: %v", line, err)
 			}
-			if response.ID == 7 {
+			if response.ID == 8 {
 				if !response.OK {
 					t.Fatalf("input resolve refused: %s", line)
 				}
@@ -242,17 +248,17 @@ func TestStdioEndToEnd(t *testing.T) {
 		}
 	}
 	if !resolveSeen {
-		c.expect(7)
+		c.expect(8)
 	}
 
 	c.send(fmt.Sprintf(`{"id":%d,"op":"state","session_id":"e2e"}`, next()))
-	if state := c.expect(8); !strings.Contains(string(state), `"status":"idle"`) {
+	if state := c.expect(9); !strings.Contains(string(state), `"status":"idle"`) {
 		t.Fatalf("state result: %s", state)
 	}
 
 	// A cursor subscription replays the settled run's retained suffix.
 	c.send(fmt.Sprintf(`{"id":%d,"op":"events","session_id":"e2e","after":9}`, next()))
-	c.expect(9)
+	c.expect(10)
 	for sequence := uint64(10); sequence <= 12; sequence++ {
 		line := c.line()
 		if !strings.Contains(line, fmt.Sprintf(`"sequence":%d`, sequence)) {
@@ -261,7 +267,7 @@ func TestStdioEndToEnd(t *testing.T) {
 	}
 
 	c.send(fmt.Sprintf(`{"id":%d,"op":"close","session_id":"e2e"}`, next()))
-	c.expect(10)
+	c.expect(11)
 
 	// Closing stdin is the host's shutdown: the process settles and exits 0.
 	if err := c.stdin.Close(); err != nil {

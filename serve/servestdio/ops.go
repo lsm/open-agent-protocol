@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
@@ -23,6 +24,7 @@ const (
 	opAdapters     = "adapters"
 	opCapabilities = "capabilities"
 	opOpen         = "open"
+	opSessions     = "sessions"
 	opEvents       = "events"
 	opState        = "state"
 	opSubmit       = "submit"
@@ -152,6 +154,11 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
 		}
 		return s.openOp(ctx, request)
+	case opSessions:
+		if werr := request.only(); werr != nil {
+			return nil, werr
+		}
+		return s.sessionsOp(ctx)
 	case opState:
 		if werr := request.only(paramSession); werr != nil {
 			return nil, werr
@@ -260,6 +267,27 @@ func (s *Server) capabilitiesOp(ctx context.Context, name string) (json.RawMessa
 	response.InReplyTo = correlation
 	response.CapabilityRevision = descriptor.CapabilityRevision
 	return envelopeResult(response)
+}
+
+type sessionInfo struct {
+	SessionID   string `json:"session_id"`
+	Adapter     string `json:"adapter"`
+	Status      string `json:"status"`
+	ActiveRunID string `json:"active_run_id,omitempty"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
+	statuses := s.hub.Sessions(ctx)
+	infos := make([]sessionInfo, 0, len(statuses))
+	for _, status := range statuses {
+		infos = append(infos, sessionInfo{
+			SessionID: string(status.SessionID), Adapter: status.Adapter,
+			Status: string(status.Status), ActiveRunID: string(status.ActiveRunID),
+			CreatedAt: status.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return marshalResult(map[string]any{"sessions": infos})
 }
 
 // --- OAP operations ---

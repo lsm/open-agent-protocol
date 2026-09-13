@@ -1316,3 +1316,59 @@ func TestOversizedOutputRefused(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 }
+
+// TestSessionsOpListsTrackedSessions mirrors the HTTP GET /sessions listing:
+// every tracked session in id order with its adapter and status, closed
+// entries retained with their final state.
+func TestSessionsOpListsTrackedSessions(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":1,"op":"sessions"}`)
+	if result := f.expectResponse(1).Result; string(result) != `{"sessions":[]}` {
+		t.Fatalf("empty listing: %s", result)
+	}
+
+	f.send(`{"id":2,"op":"open","adapter":"memory","request":` + string(requestEnvelope(t, "open-a", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "list-a"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(2))
+	f.send(`{"id":3,"op":"open","adapter":"memory","request":` + string(requestEnvelope(t, "open-b", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "list-b"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(3))
+	f.send(`{"id":4,"op":"events","session_id":"list-a"}`)
+	requireOK(t, f.expectResponse(4))
+	runToCompletion(t, f, "list-a", 5, 6, 7)
+	f.send(`{"id":8,"op":"close","session_id":"list-b"}`)
+	requireOK(t, f.expectResponse(8))
+
+	f.send(`{"id":9,"op":"sessions"}`)
+	var listing struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+			Adapter   string `json:"adapter"`
+			Status    string `json:"status"`
+			CreatedAt string `json:"created_at"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(f.expectResponse(9).Result, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Sessions) != 2 {
+		t.Fatalf("%d listed sessions, want 2: %+v", len(listing.Sessions), listing.Sessions)
+	}
+	want := map[string]string{"list-a": "idle", "list-b": "closed"}
+	for index, entry := range listing.Sessions {
+		if entry.Adapter != "memory" || entry.CreatedAt == "" {
+			t.Fatalf("entry %+v lacks adapter or creation time", entry)
+		}
+		if index == 0 && entry.SessionID != "list-a" || index == 1 && entry.SessionID != "list-b" {
+			t.Fatalf("listing out of id order: %+v", listing.Sessions)
+		}
+		if entry.Status != want[entry.SessionID] {
+			t.Fatalf("session %s listed as %s, want %s", entry.SessionID, entry.Status, want[entry.SessionID])
+		}
+	}
+
+	f.send(`{"id":10,"op":"sessions","session_id":"list-a"}`)
+	requireCode(t, f.expectResponse(10), "invalid_request")
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
