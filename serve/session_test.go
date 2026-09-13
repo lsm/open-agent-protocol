@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 	"testing"
 	"time"
 
@@ -270,20 +269,20 @@ func TestOverflowFollowsDeliveredRuns(t *testing.T) {
 	}
 }
 
-// gatedSession parks its Submit until the test releases it, reporting when
-// the adapter call was entered — pinning Submit's reader reservation
-// against the zero-reader detach racing an in-flight admission.
+// gatedSession parks its Submit until the test releases it, signalling
+// each adapter call through the entered channel — pinning Submit's reader
+// reservation against the zero-reader detach racing an in-flight
+// admission.
 type gatedSession struct {
 	stubSession
 	entered chan struct{}
 	release chan struct{}
 	fail    error
-	once    sync.Once
 	stream  chan base.Result
 }
 
 func (g *gatedSession) Submit(_ context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
-	g.once.Do(func() { close(g.entered) })
+	g.entered <- struct{}{}
 	<-g.release
 	if g.fail != nil {
 		return protocol.MessageSubmitResponse{}, nil, g.fail
@@ -297,7 +296,7 @@ func (g *gatedSession) Submit(_ context.Context, request protocol.MessageSubmitR
 // the subscriber attached before the resubmit must bridge into B rather
 // than take A's end.
 func TestSubmitReservationBridgesAdmission(t *testing.T) {
-	gated := &gatedSession{entered: make(chan struct{}), release: make(chan struct{})}
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
 	sub, ok := entry.subscribe(8)
 	if !ok {
@@ -344,7 +343,7 @@ func TestSubmitReservationBridgesAdmission(t *testing.T) {
 // adapter rejection after A's reader exited still ends subscribers with
 // A's stashed outcome instead of wedging or hanging them parked.
 func TestSubmitReservationReleasesOnFailure(t *testing.T) {
-	gated := &gatedSession{entered: make(chan struct{}), release: make(chan struct{}), fail: base.ErrRunActive}
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
 	entry := newSession("gated", "stub", gated)
 	sub, ok := entry.subscribe(8)
 	if !ok {
@@ -379,12 +378,60 @@ func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 	}
 }
 
+// TestDeferredFinishSurvivesLaterReservations pins the multi-submit case:
+// the run's reader exits while two admissions are in flight, and the first
+// rejection must not discard the deferred finish the second rejection (or
+// a later admission) still owes the subscribers.
+func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+
+	rejected := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+				SessionID: "gated", Delivery: protocol.DeliveryAuto,
+				Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
+			})
+			rejected <- err
+		}()
+	}
+	// Both admissions are in flight when run A's reader exits, deferring
+	// its finish behind the reservations; both are then rejected.
+	<-gated.entered
+	<-gated.entered
+	close(streamA)
+	close(gated.release)
+	for range 2 {
+		if err := <-rejected; !errors.Is(err, base.ErrRunActive) {
+			t.Fatalf("submit error %v, want run-active", err)
+		}
+	}
+
+	// The last release applies the run's deferred clean finish.
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-a" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want the deferred clean end", err)
+	}
+}
+
 // TestRejectedSubmitKeepsSubscriptions pins the subscribe-before-submit
 // flow on an idle session: an adapter-level rejection unwinds its
 // reservation without finishing anybody, so the corrected retry's run
 // reaches the subscription that was parked all along.
 func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
-	gated := &gatedSession{entered: make(chan struct{}), release: make(chan struct{}), fail: base.ErrInvalidSubmission}
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrInvalidSubmission}
 	close(gated.release) // the adapter rejects at once; no interleaving needed
 	entry := newSession("gated", "stub", gated)
 	sub, ok := entry.subscribe(8)

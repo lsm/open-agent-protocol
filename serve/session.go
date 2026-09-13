@@ -283,13 +283,18 @@ func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 // releaseReservation unwinds a Submit admission that never became a run.
 // Parked subscribers stay parked — the subscribe-before-submit flow must
 // survive a rejected submit — unless a real reader's exit deferred its
-// finish into the reservation, in which case that finish fires now.
+// finish into the reservation and this release is the last one holding it,
+// in which case that finish fires now. A finish deferred behind further
+// reservations is retained for whichever release resolves last.
 func (s *Session) releaseReservation() {
 	s.mu.Lock()
 	s.reservations--
 	due := s.finishDue && s.readers == 0 && s.reservations == 0
-	state := s.pendingEnd
-	s.pendingEnd, s.finishDue = nil, false
+	var state *terminalState
+	if due {
+		state = s.pendingEnd
+		s.pendingEnd, s.finishDue = nil, false
+	}
 	s.mu.Unlock()
 	if due {
 		s.finishSubs(state)
