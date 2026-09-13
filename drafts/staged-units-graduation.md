@@ -436,8 +436,10 @@ serve one catalog for its lifetime.
   the new revision replaces it; the `feature()` gate already rejects a
   `models.response` citing a stale revision.
 - New diagnostic `unannounced_catalog_change`: a second `models.response`
-  under the same `capability_revision` whose set of ids differs from the
-  stored catalog, at `native` or `emulated` `models.list`; the wire rule
+  under the same `capability_revision` whose catalog differs from the
+  stored one in any descriptor, compared whole (`id`, `display_name`,
+  `provider_id`, `context_window`, `features`, `default`), not only in
+  its set of ids, at `native` or `emulated` `models.list`; the wire rule
   makes a catalog change a capability invalidation, so availability may
   not change without `capabilities.updated`. At `degraded` the
   descriptor's `reason` discloses per-turn refresh (Claude's `system/init`
@@ -492,7 +494,9 @@ listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 listed under revision 1, dropped by the revision 2 catalog, then
 selected), `models-catalog-mutates-within-revision`
 (`unannounced_catalog_change`; two responses under one revision with
-different ids). Positive as well: `models-refresh-replaces-catalog` (a model
+different ids), `models-catalog-metadata-mutates-within-revision`
+(`unannounced_catalog_change`; the same ids, one descriptor's `default`
+and `context_window` changed). Positive as well: `models-refresh-replaces-catalog` (a model
 added by the revision 2 catalog is selected after `capabilities.updated`,
 and one selected between the refresh and the new catalog is not judged).
 
@@ -962,7 +966,12 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 - `action.tools.list.response`: `duplicate_tool_name` for two entries
   sharing `name`, whatever their sources.
 - `action.tools.list.response` and `session.open.request.tool_sources`:
-  `duplicate_tool_source` for two descriptors sharing `id`.
+  `duplicate_tool_source` for two descriptors sharing `id`. For the open,
+  the check runs when the open is admitted (`session.open.response`) over
+  the union of the attached descriptors and the sources the capability
+  descriptor already declares, so an attachment reusing a declared id is
+  diagnosed even in a trace that ends at the open or later lists a single
+  entry under that id.
 - `catalog_mismatch`: `sessionTrack` records the `tool_sources` ids and
   the provided `tools` (name and `execution_owner`) from
   `session.open.request`; every session-scoped
@@ -1021,7 +1030,12 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 - `session.open.request.tools[*].execution_owner` must be the declared
   control participant (`wrong_tool_owner`). The check runs at supply time,
   before any interaction exists, which `wrong_interaction_responder` cannot
-  cover.
+  cover. The same diagnostic fires on an `action.call.requested` whose
+  `execution_owner` differs from the owner the session catalog records
+  for that `name`, so an adapter cannot route a harness-owned tool to the
+  control participant, or a provided tool to the harness, under a
+  lifecycle that is otherwise consistent; the existing check that the
+  owner does not change mid-lifecycle stays as it is.
 - `session.open.request.tools[*].name` must be unique within the array
   and against the descriptor's native `tools`, checked when the open is
   admitted (`session.open.response`), so a collision the adapter should
@@ -1124,6 +1138,9 @@ then no open; validated as a correct rejection),
 `execution_owner` is not the declared control participant),
 `open-provide-colliding-name-admitted` (`duplicate_tool_name`; two
 supplied tools sharing a name, and the open admitted),
+`open-attach-colliding-source-admitted` (`duplicate_tool_source`; an
+attached source reusing an id the descriptor declares, and the open
+admitted),
 `tools-call-source-mismatch` (`unmatched_tool_source`; a call naming one
 tool with another tool's declared source),
 `control-tool-started-before-ack` (`illegal_tool_transition`),
@@ -1133,6 +1150,8 @@ tool with another tool's declared source),
 an accepted acknowledgement, a rejected `result`, then `completed`),
 `control-tool-state-omits-pending` (`session_state_mismatch`; a snapshot
 without the unresolved call in `pending_interactions`),
+`control-tool-call-owner-mismatch` (`wrong_tool_owner`; the catalog lists
+the tool as harness-owned, the call names the control participant),
 `control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
