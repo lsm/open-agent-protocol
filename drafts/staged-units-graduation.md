@@ -610,8 +610,11 @@ Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
   answers session-scoped lists only, so a trace, a stdio consumer, and the
   validator can tie a catalog to the attachment it reflects.
 
-Semantics: a tool naming a source must name one the same response declared
-(validator diagnostic `unmatched_tool_source`); the first session-scoped
+Semantics: a tool naming a source must name one the same response declared,
+and a call carrying `source` must name the source the session's catalog
+records for that tool, or a declared source when the tool is not in the
+catalog (validator diagnostic `unmatched_tool_source` for both); the first
+session-scoped
 list for a session opened with `tool_sources` or `tools` must declare every
 attached source and provided tool (diagnostic `catalog_mismatch`), and the
 usual scope agreement applies to both list envelopes (`scope_mismatch`); a
@@ -661,9 +664,12 @@ Wire:
 - New envelope types `action.call.resolve.request` and
   `action.call.resolve.response`, session- and run-scoped, mirroring the
   permission resolve pair: request `{ "interaction_id", "session_id",
-  "run_id", "tool_call_id", "requested_by", "responded_by", "result"? |
-  "error"? }` with exactly one of `result` or `error`; response `{
-  "interaction_id", "session_id", "run_id", "tool_call_id", "accepted" }`.
+  "run_id", "tool_call_id", "requested_by", "responded_by", "started"? |
+  "result"? | "error"? }` with exactly one of `started` (an empty object:
+  the control participant has begun executing), `result`, or `error`;
+  response `{ "interaction_id", "session_id", "run_id", "tool_call_id",
+  "accepted" }`. `started` is an acknowledgement, not a resolution: it may
+  appear at most once and only before the resolution.
 - New capability key `action.tools.provide`: the control layer may supply
   tool definitions at session open and executes their calls. The existing
   `action.tools.execute` keeps the meaning the `+tools` unit gives it
@@ -675,16 +681,26 @@ Semantics, on the interaction contract Decision 0001 fixed:
 
 - A call to a control-owned tool is an interaction: `action.call.requested`
   carries `interaction_id`, `requested_by` (the agent), `responded_by` and
-  `execution_owner` (the control participant). The adapter emits
-  `action.call.started` at once, because execution has left the loop; the
-  validator's transition rules stay unchanged.
+  `execution_owner` (the control participant). The call stays `requested`
+  until execution is evidenced: the adapter emits `action.call.started`
+  when the control participant acknowledges with a `started` resolve, or,
+  when the participant resolves with `result` or `error` without having
+  acknowledged, immediately before the terminal it derives from that
+  resolution (the result is the evidence). `started` is never emitted on
+  the adapter's own initiative, so durations and cancellation keep the
+  meaning the core gives them; a repeated or late acknowledgement is
+  answered `accepted: false` and emits nothing. The validator's transition
+  table is unchanged.
 - Only the declared responder may resolve; one resolution; the adapter emits
   `action.call.completed` or `action.call.failed` from the resolution and
   feeds the result to the harness through its native bridge.
 - Run cancel closes pending control-owned calls with
   `action.call.cancelled` before the run terminal, as the memory adapter
-  already does for permission gates. Deadlines remain deferred (PF-2); a
-  harness-side timeout settles the call as `failed` with the harness's code.
+  already does for permission gates; an unacknowledged call goes from
+  `requested` to `cancelled`, which the transition table already permits.
+  Deadlines remain deferred (PF-2); a harness-side timeout settles an
+  unacknowledged call as `cancelled` with the harness's code as the reason
+  and an acknowledged one as `failed` with that code.
 - A control-owned call is never routed to a harness-side executor, and a
   harness-owned call is never resolvable from the control layer
   (`wrong_interaction_responder`).
@@ -695,6 +711,12 @@ Semantics, on the interaction contract Decision 0001 fixed:
   `action.call.requested` for it (`unapplied_control` otherwise); an
   adapter that cannot withhold a provided tool from the harness for one run
   rejects such a policy as unsatisfiable rather than exposing the tool.
+- `tools` is accepted whole or not at all: an adapter that cannot provision
+  every supplied definition rejects the open with `unsupported_feature`
+  (`details.feature: "action.tools.provide"`, `details.reason:
+  "unsatisfiable"`) rather than accepting a subset, and no adapter carries
+  an unadvertised cardinality limit. The capability key alone therefore
+  tells a caller that any well-formed `tools` array is honored.
 
 Evidence: Makai's `tool_execute`/`tool_result` bridge is exactly this
 boundary: the adapter's native codec already decodes both frames, every
@@ -711,19 +733,29 @@ client; OAP describes, attaches, and observes. Serve-side connector second,
 as a `serve` feature on T3c: the hub hosts an MCP client as one more
 execution owner, provisions its tools through `session.open.request.tools`,
 routes `action.call.requested` whose `execution_owner` is the hub to the MCP
-server, and resolves through `action.call.resolve.request`. The connector
+server (acknowledging `started` as it dispatches), and resolves through
+`action.call.resolve.request`. The connector
 serves adapters with no native MCP support (DeepSeek, pi, memory) and the
 HyperNeo-style embedding; it adds no wire vocabulary.
 
 ### Validator
 
 - `action.tools.list.response`: `unmatched_tool_source` for a tool naming an
-  undeclared source.
+  undeclared source. `action.call.*` payloads carrying `source`: the same
+  diagnostic when the trace's catalog lists the named tool under a
+  different source, or when the tool is not listed and the source is
+  undeclared; the validator keeps the catalog per session (`sessionTrack`
+  gains `tools`), so attribution to the wrong MCP server is caught even when
+  both sources are declared.
 - `action.call.requested` with `execution_owner` equal to a declared control
   participant must carry `interaction_id` and `responded_by`
-  (`illegal_tool_transition`); its resolution follows the interaction rules
-  (`unmatched_interaction`, `duplicate_interaction`,
-  `wrong_interaction_responder`, `pending_interaction_at_terminal`).
+  (`illegal_tool_transition`); `action.call.started` for such a call must
+  be preceded by an `action.call.resolve.request` for its interaction in
+  any arm (`illegal_tool_transition` otherwise, so an adapter cannot record
+  execution the control participant has not evidenced); its resolution
+  follows the interaction rules (`unmatched_interaction`,
+  `duplicate_interaction`, `wrong_interaction_responder`,
+  `pending_interaction_at_terminal`).
 - `action.call.resolve.request` and `.response` join correlation and scope
   checks; the resolution's `tool_call_id` must match the interaction's
   binding (`scope_mismatch`).
@@ -735,15 +767,19 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 
 `adapter/memory.go` declares two sources (`native` for `scripted_tool`, a
 synthetic `process`/`mcp` source), accepts `tool_sources` at open and lists
-them, accepts one control-owned `ToolDefinition` at open, and calls it
-after the permission gate when it is present and the run's admitted
-`tool_choice` selects it: `requested` and `started` with the opener as
-owner, then the terminal from `Resolve`. The provided tool joins the
-reference catalog next to `scripted_tool`, so the T1 rules apply to it
-unchanged: `mode: "none"`, a filter that excludes it, or `named` naming
-the other tool skips the call, and `named` naming it calls it.
+them, accepts every control-owned `ToolDefinition` supplied at open (no
+cardinality limit; all are listed), and after the permission gate calls the
+first provided tool in open order that the run's admitted `tool_choice`
+selects: `requested` with the opener as owner, `started` when the opener
+acknowledges (or immediately before the terminal when it resolves without
+acknowledging), then the terminal from `Resolve`; a cancel before the
+acknowledgement settles the call `cancelled` from `requested`. The provided
+tools join the reference catalog next to `scripted_tool`, so the T1 rules
+apply to them unchanged: `mode: "none"` or a filter that excludes them
+skips the call, and `named` naming one of them calls that one.
 `InteractionResolution` gains a third arm `ToolCall
-*protocol.ActionCallResolveRequest`.
+*protocol.ActionCallResolveRequest` carrying whichever of the three arms
+the request used.
 
 ### Surfaces
 
@@ -759,15 +795,24 @@ the other tool skips the call, and `named` naming it calls it.
   `tool_sources` and `tools`. Stdio ops `tools` and the extended `resolve`
   and `open`.
 - `client` and `clients/ts`: `Open` options for sources and tools;
-  `Session.Tools`; `Session.ResolveToolCall`.
+  `Session.Tools`; `Session.ResolveToolCall` in all three arms
+  (acknowledge, result, error), so a control layer can report that it has
+  begun executing before it has a result.
 
 ### Fixtures
 
 Positive: `tools-catalog-with-sources`, `open-attach-process-source`,
-`control-tool-roundtrip`, `control-tool-cancelled-with-run`,
+`control-tool-roundtrip` (acknowledgement, then result),
+`control-tool-resolved-without-ack` (`started` immediately before the
+terminal), `control-tool-cancelled-with-run` (an unacknowledged call
+settles `cancelled` from `requested`),
 `control-tool-withheld-by-tool-choice` (a provided tool, a submit with
-`mode: "none"`, no call). Negative:
+`mode: "none"`, no call), `open-provide-two-tools` (both listed, the
+selected one called). Negative:
 `tools-unmatched-source` (`unmatched_tool_source`),
+`tools-call-source-mismatch` (`unmatched_tool_source`; a call naming one
+tool with another tool's declared source),
+`control-tool-started-before-ack` (`illegal_tool_transition`),
 `control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
