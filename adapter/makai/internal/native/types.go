@@ -89,7 +89,19 @@ func NewEnvelope(typ Type, sessionID SessionID, messageID MessageID, sequence ui
 }
 
 // Validate checks the common envelope. allowErrorSequence permits the pinned
-// server's exceptional agent_error sequence zero; all other frames start at 1.
+// server's request-validation agent_error sequence zero.
+//
+// Sequence discipline at the v0.2.0 pin (makai spec §13.1): outbound server
+// frames split into allocated frames (agent_started, agent_event,
+// agent_result, agent_stopped, settlement agent_error, tool_execute, ack,
+// nack) drawing one monotonic per-registration counter that describes
+// allocation order — not observed wire order, since synchronous replies are
+// written before the outbox flushes queued frames — and echo replies
+// (session_info, pong, tool_list_response) copying the request's inbound
+// sequence verbatim. Correlated request-validation agent_error frames carry
+// sequence 0, outside the ordering domain. Consumers must not detect loss or
+// reorder from observed sequences; receive order is the only ordering
+// authority, which is why nothing here enforces sequence continuity.
 func (e Envelope) Validate(allowErrorSequence bool) error {
 	if !e.Type.Supported() {
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
@@ -122,8 +134,8 @@ func (e Envelope) Validate(allowErrorSequence bool) error {
 	switch e.Type {
 	case TypeAgentStart:
 		p, _ := DecodePayload[AgentStart](e)
-		if p.ResumeSessionID != nil {
-			nested = *p.ResumeSessionID
+		if effective := p.EffectiveSessionID(); effective != nil {
+			nested = *effective
 		}
 	case TypeAgentMessage:
 		p, _ := DecodePayload[AgentMessage](e)
@@ -158,11 +170,29 @@ func DecodePayload[T any](e Envelope) (T, error) {
 	return value, nil
 }
 
+// AgentStart carries the session association key. At the v0.2.0 pin (#198)
+// the canonical payload key is session_id; resume_session_id survives as a
+// permanent server-side parse alias for the same value, and makai's own
+// emitters send both keys transitionally so pre-rename servers keep binding
+// the caller's id. This adapter mirrors that: set both fields to one value
+// when emitting, and EffectiveSessionID resolves whichever key carried an id
+// on decode (canonical wins when both appear, as the makai deserializer does).
 type AgentStart struct {
 	ConfigJSON      string     `json:"config_json"`
 	SystemPrompt    string     `json:"system_prompt,omitempty"`
+	SessionID       *SessionID `json:"session_id,omitempty"`
 	ResumeSessionID *SessionID `json:"resume_session_id,omitempty"`
 }
+
+// EffectiveSessionID returns the payload id whichever key carried it, or nil
+// when the start omits both keys (the server then generates the container id).
+func (p AgentStart) EffectiveSessionID() *SessionID {
+	if p.SessionID != nil {
+		return p.SessionID
+	}
+	return p.ResumeSessionID
+}
+
 type AgentMessage struct {
 	SessionID   SessionID `json:"session_id"`
 	MessageJSON string    `json:"message_json"`
@@ -321,7 +351,9 @@ func validatePayload(t Type, raw []byte) error {
 	}
 	switch p := target.(type) {
 	case *AgentStart:
-		if !validEmbeddedJSON(p.ConfigJSON) || (p.ResumeSessionID != nil && !p.ResumeSessionID.Valid()) {
+		legacyValid := p.ResumeSessionID == nil || p.ResumeSessionID.Valid()
+		canonicalValid := p.SessionID == nil || p.SessionID.Valid()
+		if !validEmbeddedJSON(p.ConfigJSON) || !legacyValid || !canonicalValid {
 			return fmt.Errorf("%w: invalid agent_start payload", ErrInvalidEnvelope)
 		}
 	case *AgentMessage:

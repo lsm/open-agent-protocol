@@ -24,10 +24,10 @@ import (
 )
 
 const (
-	makaiCommitTree = "27d32e64ff5efed88c1302de0e25c1acdb9373b2"
-	makaiAgentTree  = "0a21997a9bc6d4358a8ca549bb2f31c623f4583b"
-	makaiToolBlob   = "feccd54dde57fa2a5eafec97dd880bf8c63121c0"
-	makaiClientBlob = "d3a1e9d6c28372f271c33501d33a9290c55a3a91"
+	makaiCommitTree = "41b5793e363647314d93f929b014fda23d4a4aa6"
+	makaiAgentTree  = "3d3f7a767fe24b1363f2f1f51531426a1eebebb8"
+	makaiToolBlob   = "b2cb0c58abd20a1691c19f97386d88bf58123cc8"
+	makaiClientBlob = "a23cf6c230b14044f1f6a4ca4cd730db4e68ab5b"
 )
 
 var makaiLedgerFixtures = map[string]bool{
@@ -37,7 +37,8 @@ var makaiLedgerFixtures = map[string]bool{
 	"tool-completed": true, "tool-progress": true, "tool-failed": true,
 	"unfinished-child": true, "error-plus-agent-end": true, "cancel-confirmed": true,
 	"completion-wins-race": true, "process-exit": true, "malformed-nested-event": true,
-	"no-implied-native-replay": true,
+	"no-implied-native-replay":   true,
+	"idle-eviction-session-gone": true, "post-stop-stale-publication": true,
 }
 
 type makaiCorpusManifest struct {
@@ -67,6 +68,10 @@ type makaiCorpusCase struct {
 	IdentityMap  map[string]string `json:"identity_map"`
 	Journal      int               `json:"journal_capacity,omitempty"`
 	ReplayAfter  *uint64           `json:"replay_after,omitempty"`
+	// RetireAfterTerminal asserts the terminal above retired the mapped
+	// session: a further submission and a state read must both answer
+	// ErrSessionClosed instead of admitting doomed native work.
+	RetireAfterTerminal bool `json:"retire_after_terminal,omitempty"`
 }
 type makaiProvenance struct {
 	Repository string `json:"repository"`
@@ -206,6 +211,14 @@ func runMakaiCorpusCase(t *testing.T, root string, entry makaiCorpusManifestCase
 		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
 	} else {
 		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	}
+	if definition.RetireAfterTerminal {
+		if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+			t.Fatalf("submission after session-retiring terminal accepted: %v", err)
+		}
+		if _, err := session.State(context.Background()); !errors.Is(err, base.ErrSessionClosed) {
+			t.Fatalf("state after session-retiring terminal: %v", err)
+		}
 	}
 	if definition.ReplayAfter != nil {
 		assertMakaiReplay(t, session, admission.RunID, *definition.ReplayAfter, events)

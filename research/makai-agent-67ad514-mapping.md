@@ -6,14 +6,21 @@ an implementation input, not an interoperability claim.
 ## Provenance
 
 - Repository: `https://github.com/lsm/makai`
-- Commit: `67ad51420c3f4d7918218573366fde7db8c35b9c`
-- Commit tree: `27d32e64ff5efed88c1302de0e25c1acdb9373b2`
+- Release: `v0.2.0` (first release with official binaries:
+  linux/macos/windows × amd64/arm64)
+- Commit: `9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5`
+- Commit tree: `41b5793e363647314d93f929b014fda23d4a4aa6`
 - `zig/src/protocol/agent/` tree:
-  `0a21997a9bc6d4358a8ca549bb2f31c623f4583b`
+  `3d3f7a767fe24b1363f2f1f51531426a1eebebb8`
 - `zig/src/tools/makai.zig` blob:
-  `feccd54dde57fa2a5eafec97dd880bf8c63121c0`
+  `b2cb0c58abd20a1691c19f97386d88bf58123cc8`
 - `typescript/src/execution_client.ts` blob:
-  `d3a1e9d6c28372f271c33501d33a9290c55a3a91`
+  `a23cf6c230b14044f1f6a4ca4cd730db4e68ab5b`
+- Makai's own OAP deviations ledger at this pin:
+  `docs/oap-alignment.md` (blob `f86af24d5e3fb6f440dc9aa61a17a11ee32cd0f3`)
+- Normative session-lifecycle counterpart:
+  `docs/v1-sdk-agent-provider-spec.md` §13
+  (blob `720f638af319b83eb8048d3347ee42a39227d1cd`)
 - OAP convergence contract:
   `https://github.com/lsm/open-agent-protocol/issues/3`
 
@@ -21,15 +28,22 @@ Reproduce the pin with:
 
 ```sh
 git clone https://github.com/lsm/makai.git
-git -C makai checkout 67ad51420c3f4d7918218573366fde7db8c35b9c
+git -C makai checkout v0.2.0
 git -C makai rev-parse HEAD 'HEAD^{tree}' \
   HEAD:zig/src/protocol/agent \
   HEAD:zig/src/tools/makai.zig \
   HEAD:typescript/src/execution_client.ts
 ```
 
+Previous pin (2026-09-10, superseded): `67ad51420c3f4d7918218573366fde7db8c35b9c`,
+tree `27d32e64ff5efed88c1302de0e25c1acdb9373b2`.
+
 Normative inspected sources are:
 
+- `docs/v1-sdk-agent-provider-spec.md` §13 (session lifecycle, frame routing,
+  sequence discipline)
+- `docs/oap-alignment.md` (makai's deviations ledger against OAP, including
+  the RESIDUAL-1..6 catalogue)
 - `zig/src/protocol/agent/types.zig`
 - `zig/src/protocol/agent/envelope.zig`
 - `zig/src/protocol/agent/server.zig`
@@ -38,8 +52,8 @@ Normative inspected sources are:
 - `zig/src/tools/makai.zig`
 - `typescript/src/execution_client.ts`
 
-Moving `main`, the open v1.1 proposal, and issue descriptions are design
-signals only. They do not establish behavior at this pin.
+Moving `main` and issue descriptions are design signals only. They do not
+establish behavior at this pin.
 
 ## Native boundary
 
@@ -80,9 +94,16 @@ advertise only fixture-proven behavior.
 | assistant message lifecycle | `message_id` | Allocate one portable ID across start/update/end. |
 | native `tool_call_id` | `tool_call_id` | Namespace by endpoint and session; preserve across both bridge and observation frames. |
 
-Normal outgoing session frames are sequenced, but the pinned server error path
-can emit sequence zero. Native sequence is therefore not a valid substitute for
-OAP's positive contiguous per-run sequence.
+Normal outgoing session frames are sequenced, but the pinned server's
+request-validation error path emits sequence zero. Native sequence is
+therefore not a valid substitute for OAP's positive contiguous per-run
+sequence. At v0.2.0 §13.1 formalizes the full discipline: the adapter's
+outbound counter (sequence 1 for `agent_start`, +1 per accepted
+`agent_message`, consumed by an accepted `agent_stop`, unchanged by rejected
+requests and by the non-consuming request types) still matches the server's
+accepted-only inbound semantics, and the adapter's inbound validation now
+treats receive order as the only ordering authority (see the re-pin section
+below).
 
 ## Lifecycle mapping
 
@@ -163,10 +184,16 @@ cancellation. Therefore:
 - natural completion or failure observed before the stop response may win the
   race;
 - a correlated `agent_stopped` acknowledges destructive teardown;
-- at this pin, stop removes the session before the detached execution publishes
-  its final `agent_end`, so that later publish is rejected and discarded;
+- stop removes the session before the detached execution publishes its final
+  `agent_end`, so that later publish is rejected and discarded — at v0.2.0 the
+  discard is bound to the session's registration generation (#204), not merely
+  the id lookup, and one exception exists: frames the old registration already
+  committed to its outbox before the stop still drain afterward, arriving
+  after the correlated `agent_stopped` with lower allocated sequence numbers
+  (§13.1: consumers must not order frames by observed allocated sequence);
 - the adapter must therefore settle cancellation from correlated
-  `agent_stopped` when no earlier terminal evidence won;
+  `agent_stopped` when no earlier terminal evidence won, and ignore trailing
+  stale-registration frames for the already-settled run;
 - stale cancellation must never target a replacement run; and
 - a successful run cannot be reported as cancelled merely because stop was
   requested.
@@ -179,10 +206,14 @@ claim that the native frame is generally run-targeted terminal authority.
 
 At this pin, `session_id` names an in-memory correlation/container. An unknown
 ID creates fresh state and a live ID may be busy. It does not imply transcript
-load, resume, reconciliation, event replay, or cross-process recovery. The
-server can reuse a successful session, while the TypeScript execution client
-tears down each attempt. The adapter implements and documents the server model;
-it must not blend these two behaviors.
+load, resume, reconciliation, event replay, or cross-process recovery. At
+v0.2.0 an idle session is also silently evicted after the TTL (default 30
+minutes; in-flight runs are never selected), so a previously-live ID can turn
+session-gone between messages — the only evidence is the correlated
+`agent_not_found` on the next send. The server can reuse a successful session,
+while the TypeScript execution client tears down each attempt. The adapter
+implements and documents the server model; it must not blend these two
+behaviors.
 
 Native load, resume, replay, and durability are unavailable. If adapter-owned
 journaling is added, its bounded persistence scope is a separate degraded OAP
@@ -199,21 +230,151 @@ The mapped agent protocol does not expose a general user permission
 interaction. Permission support remains unavailable rather than inferred from
 tool hosting.
 
+## Re-pin to v0.2.0 (2026-09-12)
+
+The re-pin gate below is met at `v0.2.0` (`9f351fe…`): the v1.1 lifecycle and
+frame-routing specification (§13) with makai's own deviations ledger
+(`docs/oap-alignment.md`), #198's rename, #201's correlated waiter routing,
+and #202's idle-session eviction all landed. v0.2.0 is also the first release
+shipping official binaries, which the live process gate can bind by digest
+(`OAP_MAKAI_SHA256`). The wire is largely compatible; this re-pin applies
+targeted updates and records the deltas below. No OAP protocol or schema
+change is proven by any finding at this pin, so none is raised. Advertised
+capabilities are unchanged, so the capability revision string
+(`makai-agent-67ad514-oap-v1`) and corpus directory name are retained as the
+adapter's stable identities, matching the DeepSeek re-pin convention; the
+descriptor version now reports `9f351fe`.
+
+### `agent_start` key rename (#198)
+
+The canonical payload key is now `session_id`; `resume_session_id` survives as
+a permanent server-side parse alias carrying the same value, and makai's own
+emitters (Zig serializer, TS SDK) send both keys transitionally so
+pre-rename servers keep binding the caller's id. The adapter mirrors both
+sides: emission sets both keys to one value (`AgentStart.SessionID` +
+`AgentStart.ResumeSessionID`), strict decode accepts either key with the
+canonical one winning when both appear (makai's deserializer semantics), and
+the envelope-agreement check applies to whichever key carried the id
+(`AgentStart.EffectiveSessionID`). Semantics were already fixed: the key is
+correlation only, never a resume handle. The adapter never omits the payload
+id, so the server's id-generating exception does not apply.
+
+### Sequence discipline (§13.1)
+
+Inbound (adapter→makai): only an ACCEPTED `agent_message` advances the
+server's expected counter; an accepted `agent_stop` consumes it with the
+session; rejected requests and the non-consuming request types (`agent_status`,
+`ping`, `tool_list`, `models_request`, `goodbye`) never advance it. This
+matches the adapter's existing numbering (start at 1, +1 per written message,
++1 on stop), so the outbound counter is unchanged. Known limitation, unchanged
+from the previous pin and now documented rather than compensated: a
+request-correlated rejection of our `agent_message` fails the reserved run
+without rolling the adapter's counter back, so the burned sequence leaves the
+mapped session unable to admit a further native message (the server would
+answer `invalid_request`). Makai's own clients reconcile exactly this case
+(#210 gap 7 tracker rollback); an adapter-side retry policy would be new
+behavior, not a re-pin, and stays out until demanded with evidence.
+
+Outbound (makai→adapter): allocated frames (`agent_started`, `agent_event`,
+`agent_result`, `agent_stopped`, settlement `agent_error`, `tool_execute`,
+`ack`, `nack`) draw one monotonic per-registration counter describing
+ALLOCATION order, not observed wire order — verified from the pinned sources:
+`dispatchInboundLine` writes synchronous replies directly (`runtime.zig`
+`pumpClientMessages`) while queued run output flushes later
+(`pumpServerOutbox`), so the correlated `agent_stopped` can legally arrive
+before an already-queued lower-numbered `agent_event`, and a retried
+publication may burn a counter value leaving a gap (#210 gap 5). Echo replies
+(`session_info`, `pong`, `tool_list_response`) copy the request's inbound
+sequence verbatim, and request-validation `agent_error` carries `sequence: 0`.
+Consumers MUST NOT order echo replies against allocated frames by sequence.
+
+Adapter impact: the transport's strict per-session `+1` continuity check over
+allocated frames — written against the old pin, where allocation-failure paths
+could only produce duplicate sequences — is retired. Receive order is the
+adapter's only ordering authority (it already renumbers into contiguous OAP
+run sequence from receive order); duplicate-frame rejection by `message_id`
+and the zero-reserved-for-correlated-`agent_error` rule remain enforced. Echo
+reply types cannot reach this adapter on its request mix (it never sends
+`agent_status`/`ping`/`tool_list`), and the reducer already classifies them
+observed-only if they ever appear.
+
+### `tool_result` correlation (#210 gap 6)
+
+The stdio host now correlates each `tool_result` by `in_reply_to` against the
+current outstanding `tool_execute`'s `message_id` and discards
+mismatched/absent/unsolicited replies. No adapter impact: the adapter never
+emits `tool_result` (client-hosted execution is unavailable) and treats the
+frame type as observed-only. Recorded per the feedback rule; no OAP change.
+
+### New observable server behaviors
+
+- Idle-session TTL eviction (#202/#206): silent sweep (30-minute default,
+  `MAKAI_AGENT_SESSION_IDLE_TTL_MS`, `0` disables), never selecting sessions
+  with in-flight runs; the first observable evidence is a request-correlated
+  sequence-zero `agent_error` `agent_not_found` ("session not found") on the
+  next `agent_message`. The adapter treats that correlated answer as
+  session-retirement evidence — the run settles through the ordinary failure
+  terminal and the mapped session becomes closed to further submissions and
+  state reads (`ErrSessionClosed`), since every later native message would
+  fail against the dead association (and the adapter's burned outbound
+  sequence can never resynchronize). Corpus: `evicted-session-gone`
+  (ledger fixture `idle-eviction-session-gone`), whose
+  `retire_after_terminal` check drives a further submission and a state read
+  after the terminal.
+- Registration generations (#204): stale publications from a stopped or
+  evicted session's registration are discarded with no cross-registration
+  attribution; the one wire-visible residue is outbox frames the old
+  registration already committed draining after the correlated
+  `agent_stopped`. Corpus: `post-stop-stale-publication`
+  (ledger fixture `post-stop-stale-publication`) — the trailing stale
+  `agent_end` neither re-settles the cancelled run nor leaks an event.
+  The adapter never re-registers an id, so counter restarts across
+  registrations are out of scope.
+- Transactional publication / outbox retry (#210 gaps 1–5): retries are not
+  re-publication, session status flips ride the committed frame, and legal
+  allocated-sequence gaps/reordering may appear on the wire. The gap and
+  reorder tolerance is pinned by transport tests
+  (`TestClientToleratesAllocatedSequenceGapsAndReorder`); the corpus cases
+  above carry the observable shapes.
+
+### Cross-references into makai's ledger
+
+Makai's `docs/oap-alignment.md` at this pin records the same contract from
+the makai side, including RESIDUAL-1..6. Of those, RESIDUAL-5 (`agent_result`
+carries no run identity — settlement attributes to the oldest pending
+message) is structurally absorbed by the adapter: it never overlaps
+same-session sends (one in-flight run enforced), so the adapter's own run
+identity is authoritative. RESIDUAL-1/3/4 (stale admission/output across a
+silently reused id) cannot arise on this adapter's exclusive-id,
+no-re-registration usage. RESIDUAL-2's local mitigation (per-request
+correlation via `in_reply_to`) is exactly the correlated-rejection routing
+the transport already performs. RESIDUAL-6 is SSE-transport-only and outside
+this stdio adapter. Per the feedback rule, any future mismatch that cannot be
+resolved by re-pinning resolves as an OAP issue/decision or a makai issue —
+never silent adapter compensation.
+
 ## P0 mismatches
 
 1. **No submission/run split:** allocate distinct typed IDs in the adapter.
 2. **No explicit admission response:** pin the write/acceptance boundary and
    fail ambiguous delivery safely.
-3. **Unsafe same-session waiter routing:** enforce one in-flight operation until
-   issue #201 is resolved and exercised.
-4. **Misleading resume-era naming:** treat `session_id` only as correlation;
-   issue #198 governs native naming cleanup.
+3. **Unsafe same-session waiter routing:** resolved server-side at v0.2.0
+   (#201/§13.3: `in_reply_to`-aware routing); the adapter still enforces one
+   in-flight operation per session as its own policy.
+4. **Misleading resume-era naming:** resolved at v0.2.0 (#198) — the canonical
+   `agent_start` key is `session_id` with `resume_session_id` a permanent
+   alias; the adapter emits both keys and decodes canonical-wins.
 5. **Session-destructive cancellation:** advertise degraded cancellation and
    distinguish intent from settlement.
-6. **No lifecycle eviction:** bound adapter resources and make no native
-   lifecycle-ownership claim; issue #202 governs server behavior.
-7. **Native sequence includes exceptional zero:** validate separately and emit
-   adapter-owned OAP sequence.
+6. **No lifecycle eviction:** resolved server-side at v0.2.0 (#202/§13.2.6:
+   silent idle-TTL eviction, session-gone answers, never evicting in-flight
+   runs); the adapter still makes no native lifecycle-ownership claim and
+   bounds its own resources.
+7. **Native sequence is not an ordering domain:** at v0.2.0 §13.1 formalizes
+   the two-class discipline (allocated vs echo, validation errors at zero,
+   legal gaps and interleaving); the adapter validates the zero rule, rejects
+   duplicates by `message_id`, renumbers from receive order, and emits
+   adapter-owned contiguous OAP run sequence.
 8. **Frame identity is not transcript identity:** maintain typed registries.
 9. **Multiple terminal channels:** use one terminal arbiter.
 10. **Server and SDK session models differ:** implement one explicit boundary.
@@ -266,7 +427,7 @@ Required degradation and fault fixtures include:
 - model configuration distinct from model catalog;
 - locally rejected unavailable operations;
 - malformed/version-invalid envelope and nested event JSON;
-- duplicate, zero, regressed, and gapped native sequence;
+- duplicate and zero native sequence;
 - unmatched/foreign `in_reply_to` and duplicate frame IDs;
 - overlapping starts/messages and issue #201 cross-consumption reproduction;
 - stop before start, stop during processing, and stale stop;
@@ -274,42 +435,46 @@ Required degradation and fault fixtures include:
 - result/end omission, contradiction, duplication, and error-plus-end;
 - tool update before start, duplicate terminal, unfinished child, and late result;
 - EOF before admission certainty and during settlement;
-- bounded frame/queue rejection and stdout contamination.
+- bounded frame/queue rejection and stdout contamination;
+- idle-TTL eviction surfacing as a correlated session-gone run failure
+  (`evicted-session-gone`);
+- stale-registration trailing publication drained after a confirmed stop
+  (`post-stop-stale-publication`).
+
+Native-sequence fault coverage follows §13.1 at this pin: duplicate frames are
+rejected by `message_id`, zero is reserved for correlated validation errors,
+and allocated-sequence gaps/reordering are legal wire shapes (pinned by the
+transport tests) rather than corpus faults.
 
 ## v1.1 deviations and re-pin gate
 
-Makai PR #203 is a docs-only v1.1 proposal at the time of this pin. Its
-`aligned`, `renamed`, `deviating: reason`, and `absent by design` vocabulary is
-useful for the cross-repository ledger, but its prose is not runtime evidence.
-At `67ad514...`:
+Makai's v1.1 proposal (PR #203) landed as spec §13 plus
+`docs/oap-alignment.md`. At the current pin (`v0.2.0`):
 
 | Concept | Classification |
 |---|---|
 | session correlation identity | aligned, without persistence implication |
-| old resume-oriented naming | renamed pending #198 |
+| resume-era naming | renamed by #198; legacy key a permanent alias |
 | endpoint/participant IDs | absent by design; adapter allocates |
 | submission/run split | deviating: absent natively |
 | envelope `message_id` | deviating: frame identity |
-| `in_reply_to` | structurally aligned; waiter routing deviates pending #201 |
-| sequence | deviating: native session/frame ordering and exceptional zero |
+| `in_reply_to` | aligned (#201 routing landed) |
+| sequence | deviating: two-class per-registration allocation vs echo; zero for validation errors |
 | admission versus settlement | deviating: no explicit message admission response |
 | one terminal arbiter | deviating: result/end/error require normalization |
 | run-scoped cancellation | absent by design |
 | `agent_stop` | aligned only as session teardown/intention |
 | load/resume/reconciliation/replay | absent by design |
-| TTL, eviction, connection ownership | deviating/unimplemented pending #202 |
+| TTL, eviction, connection ownership | implemented (#202; §13.2.6) |
 
-Remain pinned until one newer commit contains all of:
-
-1. the merged v1.1 lifecycle/frame-routing specification and deviations ledger;
-2. issue #198's honest session naming and compatibility behavior;
-3. issue #201's correlation-correct waiter routing and overlap tests; and
-4. issue #202's normative eviction, cancellation, and ownership behavior.
-
-PR #203 alone is not a re-pin event. Once all four land, pin the first complete
-commit, recompute hashes, diff every mapped source, rerun all positive and
-fault fixtures, and change capabilities only where new evidence passes. Retain
-old-pin fixtures as compatibility regression evidence.
+The original re-pin gate — (1) the merged v1.1 lifecycle/frame-routing
+specification and deviations ledger, (2) #198's honest session naming and
+compatibility behavior, (3) #201's correlation-correct waiter routing and
+overlap tests, (4) #202's normative eviction, cancellation, and ownership
+behavior — is fully met at `v0.2.0`, and this re-pin exercised it: pins
+recomputed, every mapped source diffed, all fixtures regenerated, capabilities
+unchanged (no new evidence requires a different claim). Retain the old-pin
+understanding as compatibility regression context.
 
 ## Deferred scope
 

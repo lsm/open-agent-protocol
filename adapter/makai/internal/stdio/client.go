@@ -54,7 +54,6 @@ type Client struct {
 	pending     map[native.MessageID]pendingCall
 	seen        map[native.MessageID]struct{}
 	sent        map[native.MessageID]native.Envelope
-	sequences   map[native.SessionID]uint64
 	closed      bool
 	err         error
 	writes      chan writeRequest
@@ -77,7 +76,7 @@ func newClient(decoder *Decoder, writer io.Writer, options ClientOptions) *Clien
 	if wcap <= 0 {
 		wcap = cap
 	}
-	c := &Client{decoder: decoder, encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter, pending: map[native.MessageID]pendingCall{}, seen: map[native.MessageID]struct{}{}, sent: map[native.MessageID]native.Envelope{}, sequences: map[native.SessionID]uint64{}, writes: make(chan writeRequest, wcap), inbound: make(chan Inbound, cap), diagnostics: make(chan error, cap), done: make(chan struct{}), readDone: make(chan struct{})}
+	c := &Client{decoder: decoder, encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter, pending: map[native.MessageID]pendingCall{}, seen: map[native.MessageID]struct{}{}, sent: map[native.MessageID]native.Envelope{}, writes: make(chan writeRequest, wcap), inbound: make(chan Inbound, cap), diagnostics: make(chan error, cap), done: make(chan struct{}), readDone: make(chan struct{})}
 	go c.writeLoop()
 	go c.readLoop()
 	return c
@@ -211,14 +210,15 @@ func (c *Client) route(env native.Envelope) error {
 		return fmt.Errorf("%w: %s", ErrDuplicateMessageID, env.MessageID)
 	}
 	c.seen[env.MessageID] = struct{}{}
-	if trackedSequence(env.Type) || (env.Type == native.TypeAgentError && env.InReplyTo == nil) {
-		expected := c.sequences[env.SessionID] + 1
-		if env.Sequence != expected {
-			c.mu.Unlock()
-			return fmt.Errorf("%w for %s: got %d want %d", ErrSequence, env.SessionID, env.Sequence, expected)
-		}
-		c.sequences[env.SessionID] = env.Sequence
-	} else if env.Sequence == 0 && (env.Type != native.TypeAgentError || env.InReplyTo == nil) {
+	// v0.2.0 sequence discipline (makai spec §13.1): allocated frames draw a
+	// per-registration counter describing allocation order, not observed wire
+	// order — synchronous replies overtake outbox-queued frames, and a retried
+	// publication may burn a counter value and leave a gap — while echo
+	// replies copy the request's inbound sequence verbatim. Continuity is
+	// therefore not enforceable and receive order stays the only ordering
+	// authority; duplicate message_id rejection above is the real replay
+	// guard. Zero remains reserved for request-validation agent_error frames.
+	if env.Sequence == 0 && (env.Type != native.TypeAgentError || env.InReplyTo == nil) {
 		c.mu.Unlock()
 		return fmt.Errorf("%w for %s: unexpected zero", ErrSequence, env.SessionID)
 	}
@@ -273,15 +273,6 @@ func (c *Client) route(env native.Envelope) error {
 		return ErrInboundQueue
 	}
 	return nil
-}
-func trackedSequence(typ native.Type) bool {
-	switch typ {
-	case native.TypeAgentStarted, native.TypeAgentEvent, native.TypeAgentResult,
-		native.TypeAgentStopped, native.TypeToolExecute, native.TypeAck, native.TypeNack:
-		return true
-	default:
-		return false
-	}
 }
 
 func (c *Client) enqueue(msg Inbound) bool {

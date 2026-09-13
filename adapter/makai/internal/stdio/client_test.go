@@ -69,13 +69,41 @@ func TestClientCorrelatesAndOrdersResponse(t *testing.T) {
 	}
 }
 
+func TestClientToleratesAllocatedSequenceGapsAndReorder(t *testing.T) {
+	// v0.2.0 §13.1: allocated frames draw a per-registration counter that
+	// describes allocation order, not observed wire order — a retried
+	// publication may burn a counter value (gap) and synchronous replies
+	// overtake outbox-queued frames (reorder). None of this is transport
+	// loss; receive order is the only ordering authority.
+	frames := []string{
+		strings.Replace(strings.Replace(strings.Replace(testLine, `"type":"ping"`, `"type":"agent_event"`, 1), `"sequence":1`, `"sequence":2`, 1), `"payload":{}`, `"payload":{"event_json":"{}"}`, 1),
+		strings.Replace(strings.Replace(strings.Replace(strings.Replace(testLine, `"type":"ping"`, `"type":"agent_event"`, 1), `"sequence":1`, `"sequence":4`, 1), `01ARZ3NDEKTSV4RRFFQ69G5FAV`, `01ARZ3NDEKTSV4RRFFQ69G5FAX`, 1), `"payload":{}`, `"payload":{"event_json":"{}"}`, 1),
+		strings.Replace(strings.Replace(strings.Replace(strings.Replace(testLine, `"type":"ping"`, `"type":"agent_event"`, 1), `"sequence":1`, `"sequence":3`, 1), `01ARZ3NDEKTSV4RRFFQ69G5FAV`, `01ARZ3NDEKTSV4RRFFQ69G5FAY`, 1), `"payload":{}`, `"payload":{"event_json":"{}"}`, 1),
+	}
+	c := NewClient(strings.NewReader(strings.Join(frames, "\n")+"\n"), io.Discard, ClientOptions{})
+	for i, want := range []uint64{2, 4, 3} {
+		in := <-c.Inbound()
+		if in.Envelope == nil || in.Envelope.Sequence != want {
+			t.Fatalf("frame %d: inbound=%+v want sequence %d", i+1, in.Envelope, want)
+		}
+	}
+	select {
+	case <-c.Done():
+		if !errors.Is(c.Err(), io.EOF) {
+			t.Fatalf("closed with %v", c.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reader did not finish")
+	}
+}
+
 func TestClientRejectsSequenceAndCorrelationFaults(t *testing.T) {
 	cases := []struct {
 		name string
 		line string
 		want error
 	}{
-		{"gap", strings.Replace(strings.Replace(strings.Replace(testLine, `"type":"ping"`, `"type":"agent_event"`, 1), `"sequence":1`, `"sequence":2`, 1), `"payload":{}`, `"payload":{"event_json":"{}"}`, 1) + "\n", ErrSequence},
+		{"zero sequence", strings.Replace(strings.Replace(strings.Replace(testLine, `"type":"ping"`, `"type":"agent_error"`, 1), `"sequence":1`, `"sequence":0`, 1), `"payload":{}`, `"payload":{"code":"internal_error","message":"boom"}`, 1) + "\n", ErrSequence},
 		{"unmatched reply", strings.Replace(testLine, `"payload":{}`, `"in_reply_to":"01ARZ3NDEKTSV4RRFFQ69G5FAW","payload":{}`, 1) + "\n", ErrReplyNotPending},
 	}
 	for _, tc := range cases {

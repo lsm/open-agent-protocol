@@ -1,0 +1,15 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 1,
+    "oap": "adapter reducer projection",
+    "type": "agent_stopped"
+  },
+  {
+    "classification": "observed-only",
+    "fidelity": "lossy",
+    "index": 2,
+    "type": "agent_event"
+  }
+]
