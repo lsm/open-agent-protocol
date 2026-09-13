@@ -220,7 +220,14 @@ No new envelope types. Changes to
   `jsonschema` engine it already uses for the bundle); an
   `action.call.requested` in a run whose admitted `tool_choice` excludes
   that tool (`mode: "none"`, filtered out by `allowed` or `disallowed`, or
-  `named` naming another tool), whichever participant owns the call.
+  `named` naming another tool), whichever participant owns the call; and,
+  at `run.completed`, a run admitted with `mode: "required"` that emitted
+  no `action.call.requested`, or with `mode: "named"` that emitted none
+  naming that tool (a run that fails or is cancelled first is not judged,
+  since the requirement binds a completed response). An adapter that
+  cannot make its harness honor `required` or `named` advertises
+  `run.tool_selection` accordingly or rejects the policy as unsatisfiable;
+  it never completes the run as if the requirement were met.
 - New diagnostic `unsatisfiable_control`: a `tool_choice` that is not the
   typed policy, carries both `allowed` and `disallowed`, names a tool in
   its own `disallowed` list or outside its own `allowed` list, or, when the
@@ -311,6 +318,10 @@ with the only tool disallowed, and `named` outside its own allowlist),
 under `mode: "none"`),
 `controls-structured-non-object-schema` (`unsatisfiable_control`; a
 root-array `output_schema`),
+`controls-required-without-call` (`unapplied_control`; `mode: "required"`,
+`run.completed` with no call), `controls-named-without-call`
+(`unapplied_control`; `named` naming `scripted_tool`, `run.completed` with
+no call),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection).
 
@@ -353,7 +364,8 @@ the bundle's file inventory and the manifest schema are untouched.
   } }
 ```
 
-`ModelDescriptor` fields: `id` (required, the value `model_id` accepts),
+`ModelDescriptor` fields: `id` (required, unique within a response, the
+value `model_id` accepts),
 `display_name`, `provider_id`, `context_window`, `features` (the layered
 draft's `model.*` keys as `FeatureSupport`), `default` (boolean; at most one
 per response). `current_model_id` repeats session state. Both envelopes
@@ -392,6 +404,9 @@ serve one catalog for its lifetime.
 - New diagnostic `ambiguous_default_model`: a `models.response` with more
   than one descriptor carrying `default: true`, so the at-most-one rule
   above is enforced rather than stated.
+- New diagnostic `duplicate_model_id`: a `models.response` with two
+  descriptors sharing `id`, so an accepted `model_id` denotes exactly one
+  descriptor's metadata.
 - The `features` map on a descriptor is collected into the trace's catalog
   for the `model_not_in_catalog` check only; it does not gate run events.
 
@@ -429,7 +444,8 @@ listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `models-two-defaults` (`ambiguous_default_model`),
 `models-request-scope-mismatch` (`scope_mismatch`; envelope and payload
 `session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`),
-`models-unadvertised` (`unavailable_capability`).
+`models-unadvertised` (`unavailable_capability`), `models-duplicate-id`
+(`duplicate_model_id`).
 
 ### Exit criteria
 
@@ -663,9 +679,16 @@ Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
   answers session-scoped lists only, so a trace, a stdio consumer, and the
   validator can tie a catalog to the attachment it reflects.
 
-Semantics: `name` is unique across a session's catalog, whatever the
-sources, so a policy entry (T1) and a call resolve to one catalog entry and
-one `execution_owner`: a list with two entries of one name is invalid
+Semantics: a source `id` is unique across a session's catalog and across
+the `tool_sources` of one open, so a tool's `source` and a call's `source`
+resolve to one descriptor and the hub routes to one endpoint even when one
+owner serves several sources: a list declaring two sources with one `id`
+is invalid (`duplicate_tool_source`), and an attach whose descriptors
+collide with each other or with a declared source is rejected at open
+(`unsupported_feature`, `details.reason: "unsatisfiable"`,
+`details.source`). Likewise `name` is unique across a session's catalog,
+whatever the sources, so a policy entry (T1) and a call resolve to one
+catalog entry and one `execution_owner`: a list with two entries of one name is invalid
 (`duplicate_tool_name`); an attach or provide whose tools would collide
 with the catalog or with each other is rejected at open with
 `unsupported_feature` (`details.reason: "unsatisfiable"`, `details.tool`
@@ -814,6 +837,8 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 
 - `action.tools.list.response`: `duplicate_tool_name` for two entries
   sharing `name`, whatever their sources.
+- `action.tools.list.response` and `session.open.request.tool_sources`:
+  `duplicate_tool_source` for two descriptors sharing `id`.
 - `action.tools.list.response`: `unmatched_tool_source` for a tool naming an
   undeclared source. `action.call.*` payloads carrying `source`: the same
   diagnostic when the trace's catalog lists the named tool under a
@@ -891,6 +916,8 @@ settles `cancelled` from `requested`),
 selected one called). Negative:
 `tools-unmatched-source` (`unmatched_tool_source`),
 `tools-duplicate-name` (`duplicate_tool_name`),
+`tools-duplicate-source-id` (`duplicate_tool_source`; two sources with one
+`id` and different endpoints),
 `open-provide-colliding-name` (`error.response` with `unsupported_feature`
 then no open; validated as a correct rejection),
 `open-provide-wrong-owner` (`wrong_tool_owner`; a supplied tool whose
@@ -1092,10 +1119,10 @@ strings in the schema; the validator does not enumerate them.
 ### Validator diagnostics added
 
 `unapplied_control`, `unsatisfiable_control`, `model_not_in_catalog`,
-`ambiguous_default_model`, `queue_order_violation`,
+`ambiguous_default_model`, `duplicate_model_id`, `queue_order_violation`,
 `queue_limit_exceeded`, `premature_session_mutation`,
-`unmatched_tool_source`, `duplicate_tool_name`, `wrong_tool_owner`,
-`catalog_mismatch`,
+`unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
+`wrong_tool_owner`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
 invariant is the same (`unavailable_capability`, `illegal_run_transition`,
