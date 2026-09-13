@@ -1070,7 +1070,22 @@ as a `serve` feature on T3c: the hub hosts an MCP client as one more
 execution owner, provisions its tools through `session.open.request.tools`,
 routes `action.call.requested` whose `execution_owner` is the hub to the MCP
 server (acknowledging `started` as it dispatches), and resolves through
-`action.call.resolve.request`. The connector
+`action.call.resolve.request`. Ownership is an internal provisioning
+boundary, not a second wire identity: on the adapter-facing wire the hub
+is the declared control participant (the daemon is what sends
+`protocol.initialize.request`), so every provided tool the adapter sees,
+whether a client supplied it through `POST /adapters/{name}/sessions` or
+the connector provisioned it, carries the hub's participant id as
+`execution_owner`, and T3c's ownership rule holds without the hub
+borrowing a client's identity. Clients supply tools with that id, which
+the daemon publishes to them as its own identity on the client-facing
+wire, and the daemon rejects any other owner before forwarding the open.
+Inside, the hub keeps a provisioning registry (tool name to the client
+subscription that supplied it, or to the connector) to route each
+`action.call.requested` and to accept a resolution only from the party
+that provisioned the tool; a client resolving a connector-backed call is
+refused at the hub with `wrong_interaction_responder`, exactly as the
+adapter would refuse a foreign responder. The connector
 serves adapters with no native MCP support (DeepSeek, pi, memory) and the
 HyperNeo-style embedding; it adds no wire vocabulary.
 
@@ -1163,9 +1178,10 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 - `action.call.resolve.request` and `.response` join correlation and scope
   checks; the resolution's `tool_call_id` must match the interaction's
   binding (`scope_mismatch`); a second `accepted: true` response to a
-  `result` or `error` for one interaction is `duplicate_interaction`
-  whatever the adapter then emits, so "one resolution" is enforced at the
-  response, not only at the terminal.
+  `result` or `error`, or to a `started`, for one interaction is
+  `duplicate_interaction` whatever the adapter then emits, so "one
+  resolution" and "at most one acknowledgement" are both enforced at the
+  response, not only at the events that follow.
 - `session.open.request` with `tool_sources` or `tools` invokes the
   `feature()` gate with `action.tool_sources.attach` or
   `action.tools.provide`; a `remote` source additionally requires the
@@ -1340,7 +1356,9 @@ source attached on a descriptor whose attach capability lacks `mode:
 descriptor or attachment declares, and the open admitted),
 `control-tool-double-accepted-resolution`
 (`duplicate_interaction`; two `result` resolutions for one interaction
-both answered `accepted: true`).
+both answered `accepted: true`), `control-tool-double-accepted-ack`
+(`duplicate_interaction`; two `started` acknowledgements for one
+interaction both answered `accepted: true`).
 
 ### Exit criteria
 
@@ -1396,18 +1414,29 @@ therefore needs a steer settlement, not only a steer admission.
   `submission_id` that names the pending steer.
 - Settlement, two new run-scoped events in the target run's sequence domain:
   `run.steer.applied` `{ "session_id", "run_id", "submission_id",
-  "message_ids", "boundary": "immediate" | "turn" | "tool_result" |
-  "unknown" }` and `run.steer.dropped` `{ "session_id", "run_id",
-  "submission_id", "reason": ProtocolError }`. A settlement is never
+  "request_id", "message_ids", "boundary": "immediate" | "turn" |
+  "tool_result" | "unknown" }` and `run.steer.dropped` `{ "session_id",
+  "run_id", "submission_id", "request_id", "reason": ProtocolError }`,
+  where `request_id` is the envelope `id` of the submit request the
+  admission answered, so a settlement is attributable to the caller that
+  submitted it without the caller ever having seen the admission. A settlement is never
   observable before the admission that names its `submission_id`: a
   harness that applies immediately emits `applied` as the first envelope
   after the response, never before it (the barrier is specified under
   Surfaces).
 - State: the target's `active_runs` entry (T2) gains `pending_steers:
-  [submission_id]` (additive), listing admitted steers until they settle,
-  so a submitter that lost the admission response recovers the id from
-  `session.state` and the hub's fallback under Surfaces has a surface to
-  publish.
+  [{ "submission_id", "request_id" }]` (additive), listing admitted
+  steers until they settle, each with the envelope `id` of the submit
+  request that admitted it. A submitter that lost the admission response
+  therefore recovers by the request id it minted itself: a matching entry
+  in `pending_steers` gives it the `submission_id`, a settlement on the
+  stream carrying its `request_id` tells it the outcome, and a request id
+  found in neither means the submit was never admitted, so it may resend.
+  Nothing else is ever adopted by mistake and no guidance is injected
+  twice, because the caller never has to guess which fresh
+  `submission_id` is its own; envelope ids are unique per trace
+  (`duplicate_envelope_id`), so a resend is a new request, not a replay.
+  The hub's fallback under Surfaces publishes this surface.
 - Barrier: every admitted steer settles before the run terminal; a run that
   terminates first drops its pending steers with `run_terminated` before the
   terminal, in the run's sequence.
@@ -1431,11 +1460,14 @@ pending steer once (`unmatched_steer`, `duplicate_steer`), and a `steered`
 response whose `submission_id` is already pending on that run is
 `duplicate_steer` as well, since the pending set could not represent two
 steers under one id and the second would never be seen to settle. The
-admission's `message_ids` are retained with the pending steer, and an
-`applied` settlement must report exactly them whenever the response
-supplied them (`unmatched_steer`: the settlement does not match the
+admission's `message_ids` and the admitting request's envelope `id` are
+retained with the pending steer: an `applied` settlement must report
+exactly those `message_ids` whenever the response supplied them, and
+every settlement's `request_id` must equal that envelope id
+(`unmatched_steer` in both cases: the settlement does not match the
 admission it names), so a submitter is never told that different
-guidance was applied than it submitted; a terminal with a pending steer
+guidance was applied than it submitted and can always attribute a
+settlement to its own request; a terminal with a pending steer
 is `pending_steer_at_terminal`. A settlement whose
 `submission_id` no earlier `steered` response in the trace admitted is
 `unmatched_steer`, which makes the ordering barrier below a conformance
@@ -1453,10 +1485,13 @@ request answered `steered`), `steer-target-mismatch` (`scope_mismatch`;
 `steer-duplicate-submission-id` (`duplicate_steer`; two `steered`
 responses on one run with the same `submission_id`),
 `steer-applied-message-ids-mismatch` (`unmatched_steer`; the admission
-returns ids A, the settlement reports ids B). `session.state`
+returns ids A, the settlement reports ids B),
+`steer-settlement-wrong-request-id` (`unmatched_steer`; the settlement's
+`request_id` is not the admitting request's envelope id). `session.state`
 snapshots are checked against the same record: each `active_runs[]`
 entry's `pending_steers` must equal the pending set in `runState.steers`
-for that run, so an omitted pending steer or a settled one still listed
+for that run, submission and request id alike, so an omitted pending
+steer, a wrong `request_id`, or a settled one still listed
 is `session_state_mismatch` (fixtures `steer-state-omits-pending`,
 `steer-state-retains-settled`); without this the state surface a
 submitter recovers the id from could silently lie.
