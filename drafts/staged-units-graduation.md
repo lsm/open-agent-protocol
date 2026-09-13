@@ -579,9 +579,18 @@ No new envelope types. Additive fields:
 - `session.state` snapshots: `active_runs` is required whenever the
   validator tracks a queued reservation or more than one nonterminal run
   (an absent field would read as an empty queue to a reconnecting client),
-  and when present must list exactly the tracked nonterminal runs in
-  admission order with consistent `queue_position`; `active_run_id` must
-  be the started run; otherwise `session_state_mismatch`.
+  and when present must list the tracked nonterminal runs in admission
+  order with consistent `queue_position`; `active_run_id` must be the
+  started run; otherwise `session_state_mismatch`. One reconciliation
+  follows from the delivery rule: a queued run that settles before
+  promotion has its terminal held until the earlier run's terminal, while
+  the snapshot says when it actually settled, so a snapshot may already
+  omit a tracked queued run whose terminal has not been delivered. The
+  validator then marks that run settled-pending-delivery: its pre-start
+  terminal must still arrive, after the earlier run's terminal
+  (`queue_order_violation` if earlier, `session_state_mismatch` at the end
+  of the trace if never), and no later snapshot may list it again. A
+  started run is never reconciled this way; its terminal is never held.
 
 ### Reference adapter
 
@@ -675,6 +684,8 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
 Positive: `queue-explicit-idle-promoted`, `queue-busy-then-promoted`,
 `queue-busy-cancelled-prestart` (its pre-start terminal after the first
 run's terminal), `queue-state-active-runs`,
+`queue-state-reflects-early-settlement` (a snapshot omitting the
+cancelled queued run before its held terminal is delivered),
 `queue-model-mutation-at-promotion` (a `session_mutation` descriptor, a
 queued submit naming another model, `current_model_id` unchanged until the
 first run's terminal). Negative:
@@ -689,7 +700,9 @@ idle session with the capability unadvertised),
 `queue-overlap-unadvertised` (`illegal_run_transition`),
 `queue-state-missing-reservation` (`session_state_mismatch`),
 `queue-state-omits-active-runs` (`session_state_mismatch`; a queued
-reservation and a snapshot without `active_runs`).
+reservation and a snapshot without `active_runs`),
+`queue-state-drops-unsettled-run` (`session_state_mismatch`; a snapshot
+omits a queued run whose terminal never arrives).
 
 ### Exit criteria
 
@@ -891,6 +904,15 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 
 ### Validator
 
+- `action.tools.list.request` and `.response` are gated on the key the
+  profile names for the catalog. Today `validation/state.go` sends both to
+  `feature("tools")`, whose aliases resolve to `action.tools` and never to
+  `action.tools.list`, so an endpoint advertising only `action.tools.list`
+  would fail with `unavailable_capability`. The gate becomes
+  `feature("tools.list")`, accepting `action.tools.list` and, for
+  descriptors that advertise the family key today, `action.tools` as an
+  alias; the positive fixture `tools-catalog-list-only` carries a
+  descriptor advertising `action.tools.list` alone.
 - `action.tools.list.response`: `duplicate_tool_name` for two entries
   sharing `name`, whatever their sources.
 - `action.tools.list.response` and `session.open.request.tool_sources`:
@@ -926,7 +948,12 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   for its interaction, answering either the acknowledgement or the
   resolution (`illegal_tool_transition` otherwise, so an adapter cannot
   record execution the control participant has not evidenced, and a
-  rejected exchange, `accepted: false`, evidences nothing); its resolution
+  rejected exchange, `accepted: false`, evidences nothing). Acceptance is
+  tracked per arm: `action.call.completed` or `.failed` for such a call
+  must be derived from an accepted `result` or `error` resolution, so a
+  terminal following a rejected result or error response is
+  `illegal_tool_transition` even when an earlier acknowledgement was
+  accepted; its resolution
   follows the interaction rules (`unmatched_interaction`,
   `duplicate_interaction`, `wrong_interaction_responder`,
   `pending_interaction_at_terminal`).
@@ -992,7 +1019,8 @@ the request used.
 
 ### Fixtures
 
-Positive: `tools-catalog-with-sources`, `open-attach-process-source`,
+Positive: `tools-catalog-with-sources`, `tools-catalog-list-only`,
+`open-attach-process-source`,
 `control-tool-roundtrip` (acknowledgement, then result),
 `control-tool-resolved-without-ack` (`started` immediately before the
 terminal), `control-tool-cancelled-with-run` (an unacknowledged call
@@ -1021,6 +1049,8 @@ tool with another tool's declared source),
 `control-tool-started-before-ack` (`illegal_tool_transition`),
 `control-tool-started-after-rejected-ack` (`illegal_tool_transition`;
 `accepted: false`, then `started`),
+`control-tool-terminal-after-rejected-result` (`illegal_tool_transition`;
+an accepted acknowledgement, a rejected `result`, then `completed`),
 `control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
