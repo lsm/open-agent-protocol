@@ -366,7 +366,12 @@ native mutation frame appearing only after the started run's terminal.
 ### Fixtures
 
 Positive: `controls-model-admitted`, `controls-instructions-emulated`,
-`controls-structured-output`. Negative: `controls-unadvertised-model`
+`controls-structured-output`, `controls-structured-empty-object` (a
+schema with no required members and an empty-object `result`, valid),
+`controls-auto-degraded-admitted` (an `auto` submit admitted without
+`allow_degraded_features` on a descriptor whose `auto` delivery is
+`degraded`, legal under the exemption above). Negative:
+`controls-unadvertised-model`
 (`unavailable_capability`), `controls-model-mismatch` (`unapplied_control`),
 `controls-structured-missing-result` (`unapplied_control`),
 `controls-structured-nonconforming-result` (`unapplied_control`; `result`
@@ -1448,14 +1453,26 @@ therefore needs a steer settlement, not only a steer admission.
   steers until they settle, each with the envelope `id` of the submit
   request that admitted it. A submitter that lost the admission response
   therefore recovers by the request id it minted itself: a matching entry
-  in `pending_steers` gives it the `submission_id`, a settlement on the
-  stream carrying its `request_id` tells it the outcome, and a request id
-  found in neither means the submit was never admitted, so it may resend.
-  Nothing else is ever adopted by mistake and no guidance is injected
-  twice, because the caller never has to guess which fresh
-  `submission_id` is its own; envelope ids are unique per trace
-  (`duplicate_envelope_id`), so a resend is a new request, not a replay.
-  The hub's fallback under Surfaces publishes this surface.
+  in `pending_steers` gives it the `submission_id`, and a settlement on
+  the stream carrying its `request_id` tells it the outcome. A request id
+  found in neither is not conclusive while the target run is nonterminal:
+  the submit the caller gave up on may still be in flight in the adapter
+  and be admitted after the snapshot was taken (the hub registers a
+  pending steer only once the adapter returns, under Surfaces), and a
+  resend would then be admitted as a second steer, because envelope ids
+  are unique per trace (`duplicate_envelope_id`) and the daemon
+  deduplicates nothing: a resend is a new request, not a replay. The
+  caller therefore keeps reading state and the stream rather than
+  resending, and absence becomes conclusive at the target run's terminal,
+  since every pending steer settles before it and a `steered` admission
+  is legal only against a nonterminal run: a request id that has appeared
+  in neither by then was never admitted, and what to submit to the
+  session's next run is a fresh decision. Nothing is ever adopted by
+  mistake, because the caller never has to guess which fresh
+  `submission_id` is its own; guidance is injected twice only by a caller
+  that resends before that bound, which the plan leaves as the caller's
+  choice rather than claiming a guarantee the wire does not give. The
+  hub's fallback under Surfaces publishes this surface.
 - Barrier: every admitted steer settles before the run terminal; a run that
   terminates first drops its pending steers with `run_terminated` before the
   terminal, in the run's sequence.
@@ -1506,7 +1523,12 @@ responses on one run with the same `submission_id`),
 `steer-applied-message-ids-mismatch` (`unmatched_steer`; the admission
 returns ids A, the settlement reports ids B),
 `steer-settlement-wrong-request-id` (`unmatched_steer`; the settlement's
-`request_id` is not the admitting request's envelope id). `session.state`
+`request_id` is not the admitting request's envelope id),
+`steer-with-controls-rejected` (`error.response` with
+`unsupported_feature`, `details.reason: "unsatisfiable"`, then no
+admission; validated as a correct rejection),
+`steer-with-controls-admitted` (`unsatisfiable_control`; a `steered`
+admission of a request carrying `model_id`). `session.state`
 snapshots are checked against the same record: each `active_runs[]`
 entry's `pending_steers` must equal the pending set in `runState.steers`
 for that run, submission and request id alike, so an omitted pending
