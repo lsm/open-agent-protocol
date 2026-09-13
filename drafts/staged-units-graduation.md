@@ -133,9 +133,17 @@ No new envelope types. Changes to
   []string` and `Disallowed []string`, and a strict
   `MessageSubmitRequest.ToolChoicePolicy()` accessor decodes the typed
   shape, rejecting unknown members.
-- `output_schema` stays a JSON Schema object. The structured result travels
-  in `run.completed.result` (already on the wire) and must validate against
-  the admitted schema.
+- `output_schema` stays a JSON Schema object, and it must describe a JSON
+  object: its root `type` is `"object"` (a `type` list may name only
+  `"object"`). `run.completed.result` is `type: "object"` in
+  `run.schema.json` and `map[string]any` in Go for every adapter, so a
+  root-array or scalar schema could never be met by a conforming success;
+  such a schema is unsatisfiable and every adapter rejects it before
+  admission (`unsupported_feature`, `details.feature:
+  "run.structured_output"`, `details.reason: "unsatisfiable"`). This
+  matches the native structured-output surfaces, which accept object roots
+  only. The structured result travels in `run.completed.result` (already on
+  the wire) and must validate against the admitted schema.
 - Capability keys, all optional, gated per submit:
 
   | Key | Governs | Levels in v0.1 adapters after T1 |
@@ -221,8 +229,10 @@ No new envelope types. Changes to
   catalog or is `required` or `named` against an empty filtered set. The
   validator and the reference adapter therefore reject the same policies:
   a policy the unit's rules accept is admitted by the reference, and one
-  the reference refuses is diagnosed. The check runs only when the submit
-  carries the control, so envelopes that do not use the unit are untouched.
+  the reference refuses is diagnosed. The same diagnostic covers an
+  `output_schema` whose root is not an object schema. The check runs only
+  when the submit carries a control, so envelopes that do not use the unit
+  are untouched.
 - `runState` gains `controls` (the admitted request's control set) so the
   checks above are keyed off the request, not the response.
 
@@ -299,6 +309,8 @@ with the only tool disallowed, and `named` outside its own allowlist),
 `allowed` list naming a tool outside the catalog the trace carries),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
 under `mode: "none"`),
+`controls-structured-non-object-schema` (`unsatisfiable_control`; a
+root-array `output_schema`),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection).
 
@@ -326,7 +338,8 @@ beside the other control-plane payloads (initialize and capabilities), so
 the bundle's file inventory and the manifest schema are untouched.
 
 ```json
-{ "type": "models.request", "payload": { "session_id": "s1" } }
+{ "type": "models.request", "session_id": "s1",
+  "payload": { "session_id": "s1" } }
 { "type": "models.response", "in_reply_to": "…", "session_id": "s1",
   "capability_revision": "…",
   "payload": {
@@ -343,7 +356,11 @@ the bundle's file inventory and the manifest schema are untouched.
 `ModelDescriptor` fields: `id` (required, the value `model_id` accepts),
 `display_name`, `provider_id`, `context_window`, `features` (the layered
 draft's `model.*` keys as `FeatureSupport`), `default` (boolean; at most one
-per response). `current_model_id` repeats session state. Capability key:
+per response). `current_model_id` repeats session state. Both envelopes
+are session-scoped in the envelope `oneOf`: `models.request` extends the
+`session` base that requires the top-level `session_id`, as
+`session.state.request` does, and the payload's `session_id` must agree
+with it. Capability key:
 `models.list` (already named). The catalog is part of the capability
 snapshot: a catalog change is a `capabilities.updated` invalidation on
 endpoints that advertise `capabilities.updates`, and a static endpoint may
@@ -363,8 +380,9 @@ serve one catalog for its lifetime.
 ### Validator
 
 - `models.request` and `models.response` join the request/response
-  correlation and scope checks; the response must repeat the request's
-  session.
+  correlation and scope checks: each envelope's top-level `session_id` must
+  agree with its payload (`scope_mismatch`), and the response must repeat
+  the request's session.
 - New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
   `models.response` in the same trace names an id the response did not list.
 - New diagnostic `ambiguous_default_model`: a `models.response` with more
@@ -405,7 +423,8 @@ pi follows with `get_available_models`; Claude at `degraded` from the
 Positive: `models-list-then-select` (catalog, then a submit selecting a
 listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `models-two-defaults` (`ambiguous_default_model`),
-`models-response-scope-mismatch` (`scope_mismatch`).
+`models-request-scope-mismatch` (`scope_mismatch`; envelope and payload
+`session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`).
 
 ### Exit criteria
 
@@ -931,7 +950,30 @@ covers `turn/steer`.
 ### Surfaces
 
 No new operations: `submit` carries the delivery; the events are stream
-envelopes. The hub's run-qualified cursor from T2 already covers a steer's
+envelopes. A steer creates no run and no sequence domain, so the adapter
+and hub contract is explicit rather than inherited from `start`:
+
+- `adapter`: for an admission of `steered`, `Session.Submit` returns the
+  response and a nil `EventStream`; the settlement events are emitted on
+  the target run's existing stream, which the adapter already owns. A
+  non-nil stream with a `steered` admission is a contract violation the
+  hub reports as an adapter error, and `adaptertest` asserts the nil
+  stream and the settlement on the target's stream.
+- `serve`: `Session.Submit` today calls `adoptRun` for every successful
+  admission, which allocates an admission serial, counts a reader, and
+  starts a drainer; for `steered` it does none of that. It releases the
+  reservation it took before calling the adapter, leaves `runID` and the
+  serial table untouched, and returns the response; the target run's
+  drainer, already running, delivers `run.steer.applied` or
+  `run.steer.dropped` to subscribers in the target's sequence. The same
+  branch is where a queued admission (T2) differs from `start`: it adopts
+  the queued run's stream under a new serial but does not supersede the
+  started run.
+- `serve/servehttp` and the stdio frontend: no change beyond passing the
+  delivery and `target_run_id` through; the response is the same
+  `session.message.submit.response`.
+
+The hub's run-qualified cursor from T2 already covers a steer's
 events because they live in the target run's domain. The clients differ in
 what that costs them: the Go client positions every sequenced envelope on
 the stream by its run and sequence regardless of type, so it needs only
