@@ -165,6 +165,11 @@ type subscriber struct {
 	finish     chan struct{}
 	finishOnce sync.Once
 	terminal   atomic.Pointer[terminalState]
+	// joined names the run that was current when the subscriber attached
+	// (empty before any run): an adapter-reported overflow on an older
+	// run's stream must not terminate subscribers that never observed that
+	// run.
+	joined protocol.RunID
 }
 
 // terminalState is a subscriber's end state, recorded at stop time: the
@@ -179,8 +184,8 @@ type terminalState struct {
 	err      error
 }
 
-func newSubscriber(queue int) *subscriber {
-	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{})}
+func newSubscriber(queue int, joined protocol.RunID) *subscriber {
+	return &subscriber{ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}), joined: joined}
 }
 
 // stop terminates the subscriber with its terminal state, if any.
@@ -197,14 +202,13 @@ func (sub *subscriber) stop(state *terminalState) {
 // would hang the consumer. The check shares the hub lock with markClosed,
 // closing the arrive/finish race.
 func (s *Session) subscribe(queue int) (*subscriber, bool) {
-	sub := newSubscriber(queue)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
 		return nil, false
 	}
+	sub := newSubscriber(queue, s.runID)
 	s.subs[sub] = struct{}{}
-	s.mu.Unlock()
 	return sub, true
 }
 
@@ -314,10 +318,25 @@ func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Unlock()
 }
 
-// signalOverflow terminates every subscriber with the overflow signal after
-// the adapter itself reported an event-stream overflow on runID.
+// signalOverflow terminates the subscribers exposed to runID with the
+// overflow signal after the adapter itself reported an event-stream overflow
+// on that run's stream. Subscribers that attached while a newer run was
+// current never observed this run and keep following theirs: a late
+// overflow arriving from an older run's still-draining stream must not cut
+// them off from the run they joined.
 func (s *Session) signalOverflow(runID protocol.RunID) {
-	s.finishSubs(&terminalState{overflow: true, run: runID})
+	s.mu.Lock()
+	affected := make([]*subscriber, 0, len(s.subs))
+	for sub := range s.subs {
+		if sub.joined == "" || sub.joined == runID {
+			affected = append(affected, sub)
+			delete(s.subs, sub)
+		}
+	}
+	s.mu.Unlock()
+	for _, sub := range affected {
+		sub.stop(&terminalState{overflow: true, run: runID})
+	}
 }
 
 // finishSubs detaches every subscriber and terminates it with the given

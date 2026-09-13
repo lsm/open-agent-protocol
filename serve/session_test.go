@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -174,6 +175,69 @@ func TestOverlappingReadersDeliverCurrentRunEnd(t *testing.T) {
 	}
 	if envelopes != 2 {
 		t.Fatalf("delivered %d envelopes before the terminal, want 2", envelopes)
+	}
+}
+
+// TestAdapterOverflowScopedToExposedSubscribers pins the adapter-overflow
+// scoping: a late overflow from an older run's still-draining stream
+// terminates the subscribers that observed that run, while a subscriber
+// that attached for a newer run keeps receiving it.
+func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	spanning, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
+	// Run B takes the hub while A's stream still drains; a fresh subscriber
+	// joins for B and never observes A.
+	entry.startRun("run-b", streamB)
+	bOnly, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe with a run active was refused")
+	}
+	streamA <- base.Result{Error: base.ErrEventStreamOverflow}
+	close(streamA)
+
+	// The spanning subscriber observed A, so A's overflow is its terminal.
+	// (The two readers race, so whether B's envelope interleaves before the
+	// drain is unspecified; the terminal is not.)
+	spanningSubscription := &Subscription{session: entry, ctx: context.Background(), sub: spanning}
+	for {
+		_, err := spanningSubscription.Next()
+		if err != nil {
+			var overflow *OverflowError
+			if !errors.As(err, &overflow) || overflow.RunID != "run-a" {
+				t.Fatalf("spanning terminal %v (%T), want run-a overflow", err, err)
+			}
+			break
+		}
+	}
+
+	// The B subscriber is untouched: it observes whatever publishes from its
+	// attachment on (live semantics — possibly A's tail, in either order)
+	// and ends with the hub's clean terminal, never A's overflow.
+	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
+	close(streamB)
+	bSubscription := &Subscription{session: entry, ctx: context.Background(), sub: bOnly}
+	sawRunB := false
+	for {
+		envelope, err := bSubscription.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("run-b subscriber terminal %v, want io.EOF", err)
+		}
+		if envelope.RunID == "run-b" {
+			sawRunB = true
+		}
+	}
+	if !sawRunB {
+		t.Fatal("run-b subscriber never observed run B")
 	}
 }
 
