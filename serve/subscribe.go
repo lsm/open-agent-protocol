@@ -179,18 +179,17 @@ func (s *Subscription) nextLive() (protocol.Envelope, error) {
 					if state := s.sub.terminal.Load(); state != nil {
 						if state.overflow {
 							// The cursor resumes where the loss began: the
-							// run of the dropped or overflowed envelope, from
-							// the consumer's last delivered position in it —
-							// or, when that run was never observed, the
-							// observed mailbox tail, so the replayed suffix
-							// is never empty.
-							cursorRun, cursorSeq := state.run, uint64(0)
+							// run of the dropped or overflowed envelope,
+							// from the consumer's last delivered position in
+							// it — or sequence zero when that run was never
+							// delivered, replaying the unseen run from its
+							// start: a cursor naming an older observed run
+							// could not recover it.
+							cursorSeq := uint64(0)
 							if sequence, observed := s.positions[state.run]; observed {
 								cursorSeq = sequence
-							} else if s.lastRun != "" {
-								cursorRun, cursorSeq = s.lastRun, s.last
 							}
-							s.err = &OverflowError{RunID: cursorRun, LastSequence: cursorSeq}
+							s.err = &OverflowError{RunID: state.run, LastSequence: cursorSeq}
 						} else {
 							// The run's adapter stream ended on this error;
 							// a failed run must not read as a clean end.

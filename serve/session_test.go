@@ -34,18 +34,20 @@ func runEnvelope(t *testing.T, runID protocol.RunID, sequence uint64) protocol.E
 	return envelope
 }
 
-// TestQueueOverflowCursorTracksPosition pins the queue-full cursor: it is
-// the subscriber's own position — the tail of its mailbox — whichever run
-// that belongs to, never the run of the envelope that found the queue full.
-// A late old-run envelope must not strand the newer run's observed tail
-// behind a cursor that cannot replay it, and a burst from an unseen newer
-// run must not strand the observed old run either.
+// TestQueueOverflowCursorTracksPosition pins the queue-full cursor: it
+// names the run of the dropped envelope — the run whose events were lost —
+// from the consumer's last delivered position in it, or from its start
+// when the run was never delivered, so the replayed suffix always covers
+// the loss. A cursor rewritten onto an older observed run could not
+// recover an entirely unseen newer stream.
 func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
 	}
+	entry.startRun("run-a", make(chan base.Result, 1))
+	entry.startRun("run-b", make(chan base.Result, 1))
 	entry.publish(runEnvelope(t, "run-a", 1))
 	entry.publish(runEnvelope(t, "run-a", 2)) // the two-slot mailbox is full
 	entry.publish(runEnvelope(t, "run-b", 1)) // a newer run's envelope finds it full
@@ -62,16 +64,19 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	if !errors.As(err, &overflow) {
 		t.Fatalf("error %v (%T), want OverflowError", err, err)
 	}
-	if overflow.RunID != "run-a" || overflow.LastSequence != 2 {
-		t.Fatalf("overflow cursor %+v, want run-a at sequence 2 — the mailbox tail", overflow)
+	if overflow.RunID != "run-b" || overflow.LastSequence != 0 {
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 0 — the unseen dropped run", overflow)
 	}
 
-	// With the newer run already observed, the cursor stays in it.
+	// With the newer run already observed, the cursor resumes it from the
+	// consumer's position in it.
 	latecomer := newSession("hub", "memory", nil)
 	positioned, ok := latecomer.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
 	}
+	latecomer.startRun("run-a", make(chan base.Result, 1))
+	latecomer.startRun("run-b", make(chan base.Result, 1))
 	latecomer.publish(runEnvelope(t, "run-a", 1))
 	latecomer.publish(runEnvelope(t, "run-b", 1))
 	latecomer.publish(runEnvelope(t, "run-b", 2)) // full mailbox, position in run-b
@@ -88,7 +93,7 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 		t.Fatalf("error %v (%T), want OverflowError", err, err)
 	}
 	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
-		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the mailbox tail", overflow)
+		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the observed position", overflow)
 	}
 }
 
@@ -362,15 +367,19 @@ func TestOverflowFollowsDeliveredRuns(t *testing.T) {
 // admission.
 type gatedSession struct {
 	stubSession
-	entered chan struct{}
-	release chan struct{}
-	fail    error
-	stream  chan base.Result
+	entered        chan struct{}
+	release        chan struct{}
+	fail           error
+	failWithStream error
+	stream         chan base.Result
 }
 
 func (g *gatedSession) Submit(_ context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	g.entered <- struct{}{}
 	<-g.release
+	if g.failWithStream != nil {
+		return protocol.MessageSubmitResponse{}, g.stream, g.failWithStream
+	}
 	if g.fail != nil {
 		return protocol.MessageSubmitResponse{}, nil, g.fail
 	}
@@ -1079,6 +1088,86 @@ func TestQueueOverflowCursorRecoversDroppedRun(t *testing.T) {
 	}
 	if overflow.RunID != "run-b" || overflow.LastSequence != 1 {
 		t.Fatalf("overflow cursor %+v, want run-b at sequence 1 — the dropped run's position", overflow)
+	}
+}
+
+// TestSubmitErrorStreamStillDrains pins the adapter contract some adapters
+// exercise (Pi): Submit may fail while returning a live stream whose run
+// stays alive adapter-side. The hub drains and publishes that stream —
+// subscriptions receive its events — while the caller still sees the error.
+func TestSubmitErrorStreamStillDrains(t *testing.T) {
+	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	entry := newSession("gated", "stub", gated)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the caller's context dies mid-admission
+	done := make(chan error, 1)
+	go func() {
+		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+			SessionID: "gated", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
+		})
+		done <- err
+	}()
+	<-gated.entered
+	gated.stream = make(chan base.Result, 4)
+	gated.failWithStream = context.Canceled
+	close(gated.release)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("submit error %v, want context.Canceled", err)
+	}
+
+	// The orphaned stream still feeds the subscription, then ends cleanly.
+	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-x", 1)}
+	close(gated.stream)
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-x" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want io.EOF", err)
+	}
+}
+
+// TestExposureByAdmissionOrder pins that overflow exposure compares run
+// admission order, not mailbox-delivery order: a lagging older drainer
+// publishing after a newer run's envelope must not count as newer.
+func TestExposureByAdmissionOrder(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	streamA := make(chan base.Result, 4)
+	streamB := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA) // admitted first
+	entry.startRun("run-b", streamB) // admitted second
+	// Delivery order inverts admission order: B publishes first.
+	entry.publish(runEnvelope(t, "run-b", 1))
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	if _, err := subscription.Next(); err != nil { // acknowledges run B
+		t.Fatal(err)
+	}
+	entry.publish(runEnvelope(t, "run-a", 1)) // the lagging older run's envelope
+	entry.signalOverflow("run-a")             // admitted BEFORE the ack: not newer
+
+	entry.publish(runEnvelope(t, "run-b", 2))
+	close(streamA)
+	close(streamB)
+	envelope, err := subscription.Next()
+	if err != nil || envelope.RunID != "run-a" {
+		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
+	}
+	envelope, err = subscription.Next()
+	if err != nil || envelope.RunID != "run-b" {
+		t.Fatalf("envelope: run %s error %v, want run-b continuing past run-a's overflow", envelope.RunID, err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want io.EOF", err)
 	}
 }
 

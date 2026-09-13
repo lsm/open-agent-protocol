@@ -80,18 +80,24 @@ type Session struct {
 	// finish was deferred. Subscribers registering inside the reservation
 	// window are owed nothing (no reader existed to publish to them) and
 	// stay parked for the resolved admission or the next submit.
+	// nextSerial numbers runs in admission order, recorded in serials:
+	// overflow exposure compares admission order, not the order envelopes
+	// happen to reach a mailbox — a lagging older drainer may publish
+	// after a newer run's first envelope.
 	readers      int
 	reservations int
 	finishDue    bool
 	pendingEnd   *terminalState
 	deferred     []*subscriber
 	subs         map[*subscriber]struct{}
+	nextSerial   uint64
+	serials      map[protocol.RunID]uint64
 }
 
 func newSession(id protocol.SessionID, adapterName string, session base.Session) *Session {
 	return &Session{
 		id: id, adapterName: adapterName, session: session,
-		created: time.Now(), subs: make(map[*subscriber]struct{}),
+		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
 	}
 }
 
@@ -136,7 +142,15 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	s.mu.Unlock()
 	admission, stream, err := s.session.Submit(ctx, request)
 	if err != nil {
-		s.releaseReservation()
+		if stream != nil {
+			// Some adapters return a live stream alongside the error —
+			// cancellation after native admission, with the run still
+			// alive adapter-side. The hub still drains and publishes it;
+			// the caller still sees the error.
+			s.adoptOrphan(stream)
+		} else {
+			s.releaseReservation()
+		}
 		return admission, err
 	}
 	s.adoptRun(admission.RunID, stream)
@@ -185,21 +199,23 @@ type subscriber struct {
 	// attached names the run current when the subscriber registered;
 	// lastRun tracks the tail of its mailbox; ack the run of the last
 	// envelope the consumer received through Next; pending the runs with
-	// envelopes still in the mailbox; and seen the runs in the order the
-	// mailbox first saw them, with ackSeenAt the index of the
-	// acknowledged one. An adapter-reported overflow terminates the
-	// subscriber when the overflowing run is its acknowledged position or
-	// still holds undelivered envelopes newer than that position — the
-	// consumer's view of such a run is incomplete — but not for a run it
-	// already moved past, whose stragglers are delivery lag, not loss.
+	// envelopes still in the mailbox; and runSerials the admission-order
+	// token of each run the mailbox saw, with ackSerial the acknowledged
+	// run's token. An adapter-reported overflow terminates the subscriber
+	// when the overflowing run is its acknowledged position or still holds
+	// undelivered envelopes admitted after that position — the consumer's
+	// view of such a run is incomplete — but not for a run it already
+	// moved past, whose stragglers are delivery lag, not loss. Admission
+	// order, not mailbox-delivery order, decides "after": a lagging older
+	// drainer may publish behind a newer run's first envelope.
 	attached protocol.RunID
 	lastRun  protocol.RunID
 	ack      atomic.Pointer[protocol.RunID]
 
-	pendMu    sync.Mutex
-	pending   map[protocol.RunID]int
-	seen      []protocol.RunID
-	ackSeenAt int
+	pendMu     sync.Mutex
+	pending    map[protocol.RunID]int
+	runSerials map[protocol.RunID]uint64
+	ackSerial  uint64
 }
 
 // acknowledge records the run of an envelope the consumer received and
@@ -210,32 +226,19 @@ func (sub *subscriber) acknowledge(run protocol.RunID) {
 	if sub.pending[run] > 0 {
 		sub.pending[run]--
 	}
-	if index := sub.indexOf(run); index >= 0 {
-		sub.ackSeenAt = index
-	}
+	sub.ackSerial = sub.runSerials[run]
 	if current := sub.ack.Load(); current == nil || *current != run {
 		sub.ack.Store(&run)
 	}
 	sub.pendMu.Unlock()
 }
 
-// indexOf reports the mailbox-first-seen order of run, or -1.
-func (sub *subscriber) indexOf(run protocol.RunID) int {
-	for index, seen := range sub.seen {
-		if seen == run {
-			return index
-		}
-	}
-	return -1
-}
-
-// track records an envelope of run enqueued to the mailbox.
-func (sub *subscriber) track(run protocol.RunID) {
+// track records an envelope of run — admitted at serial — enqueued to the
+// mailbox.
+func (sub *subscriber) track(run protocol.RunID, serial uint64) {
 	sub.pendMu.Lock()
 	sub.pending[run]++
-	if sub.indexOf(run) < 0 {
-		sub.seen = append(sub.seen, run)
-	}
+	sub.runSerials[run] = serial
 	sub.pendMu.Unlock()
 }
 
@@ -254,7 +257,7 @@ type terminalState struct {
 func newSubscriber(queue int, attached protocol.RunID) *subscriber {
 	return &subscriber{
 		ch: make(chan protocol.Envelope, queue), finish: make(chan struct{}),
-		attached: attached, pending: make(map[protocol.RunID]int), ackSeenAt: -1,
+		attached: attached, pending: make(map[protocol.RunID]int), runSerials: make(map[protocol.RunID]uint64),
 	}
 }
 
@@ -306,6 +309,8 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 	s.mu.Lock()
 	s.readers++
 	s.runID = runID
+	s.nextSerial++
+	s.serials[runID] = s.nextSerial
 	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 	s.mu.Unlock()
 	go s.readRun(runID, stream)
@@ -319,9 +324,26 @@ func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
 	s.reservations--
 	s.readers++
 	s.runID = runID
+	s.nextSerial++
+	s.serials[runID] = s.nextSerial
 	s.pendingEnd, s.finishDue, s.deferred = nil, false, nil
 	s.mu.Unlock()
 	go s.readRun(runID, stream)
+}
+
+// adoptOrphan converts the reservation into a drainer for a stream an
+// adapter returned alongside a submit error — cancellation after native
+// admission with the run still alive (Pi does this). The hub must still
+// drain and publish the stream or the adapter's bounded emission blocks
+// and the run's events never reach subscriptions. The stream carries no
+// run id of its own, so current-run tracking and any deferred finish stay
+// untouched; envelope runs drive delivery positions as usual.
+func (s *Session) adoptOrphan(stream base.EventStream) {
+	s.mu.Lock()
+	s.reservations--
+	s.readers++
+	s.mu.Unlock()
+	go s.readRun("", stream)
 }
 
 // releaseReservation unwinds a Submit admission that never became a run.
@@ -389,10 +411,11 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream) {
 // stopExposed detaches the subscribers exposed to runID and terminates
 // them with the given state.
 func (s *Session) stopExposed(runID protocol.RunID, state *terminalState) {
+	serial := s.serials[runID]
 	s.mu.Lock()
 	affected := make([]*subscriber, 0, len(s.subs))
 	for sub := range s.subs {
-		if sub.exposedTo(runID) {
+		if sub.exposedTo(runID, serial) {
 			affected = append(affected, sub)
 			delete(s.subs, sub)
 		}
@@ -487,7 +510,7 @@ func (s *Session) publish(envelope protocol.Envelope) {
 		select {
 		case sub.ch <- envelope:
 			sub.lastRun = envelope.RunID
-			sub.track(envelope.RunID)
+			sub.track(envelope.RunID, s.serials[envelope.RunID])
 		default:
 			// The subscriber fell behind and this envelope was dropped.
 			// The terminal names the dropped envelope's run: the consumer
@@ -502,23 +525,23 @@ func (s *Session) publish(envelope protocol.Envelope) {
 }
 
 // exposedTo reports, as one consistent snapshot, whether the subscriber is
-// exposed to runID: the acknowledged run always exposes, and so does a run
-// with undelivered envelopes newer than the acknowledged position — the
-// consumer's view of it is incomplete, and a clean end would hide the
-// loss. A run the consumer already moved past does not expose: its late
-// envelopes are delivery lag, not loss. Before anything is acknowledged,
-// undelivered envelopes of the run or attachment to it expose.
-func (sub *subscriber) exposedTo(runID protocol.RunID) bool {
+// exposed to runID — admitted at serial: the acknowledged run always
+// exposes, and so does a run with undelivered envelopes admitted after the
+// acknowledged position — the consumer's view of it is incomplete, and a
+// clean end would hide the loss. A run the consumer already moved past
+// does not expose: its late envelopes are delivery lag, not loss. Before
+// anything is acknowledged, undelivered envelopes of the run or attachment
+// to it expose.
+func (sub *subscriber) exposedTo(runID protocol.RunID, serial uint64) bool {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
-	index := sub.indexOf(runID)
-	if sub.ackSeenAt < 0 {
-		return (index >= 0 && sub.pending[runID] > 0) || sub.attached == runID
+	if sub.ackSerial == 0 {
+		return sub.pending[runID] > 0 || sub.attached == runID
 	}
-	if index < 0 {
+	if serial == 0 {
 		return false
 	}
-	return index == sub.ackSeenAt || (index > sub.ackSeenAt && sub.pending[runID] > 0)
+	return serial == sub.ackSerial || (serial > sub.ackSerial && sub.pending[runID] > 0)
 }
 
 // signalOverflow terminates the subscribers exposed to runID with the
