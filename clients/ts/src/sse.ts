@@ -1,0 +1,134 @@
+/**
+ * A WHATWG-conformant text/event-stream scanner, the TypeScript port of the
+ * Go client's parser: CR, LF, and CRLF all terminate lines; a leading UTF-8
+ * BOM is stripped; comment lines (leading ':') and unknown fields such as
+ * retry are ignored; one optional space after the field colon is dropped;
+ * multiple data lines join with newlines; an id containing NUL is discarded;
+ * a frame dispatches only at its blank line, so an unterminated trailing
+ * frame is discarded.
+ */
+
+/** One dispatched frame: a blank line's worth of accumulated field lines. */
+export interface SSEFrame {
+  /** The dispatch name, "message" when no event field was set. */
+  event: string;
+  /** The joined data lines (no trailing newline). */
+  data: string;
+  /** The id field's value; `hasId` reports whether one was set. */
+  lastId: string;
+  hasId: boolean;
+}
+
+const BOM = '﻿';
+
+/**
+ * SSEParser consumes the event stream incrementally: push byte chunks as they
+ * arrive and take the frames each one completed. Push must receive the
+ * stream's bytes in order; multi-byte UTF-8 sequences split across chunks are
+ * decoded correctly. Call finish() at end of stream — an unterminated
+ * trailing frame is discarded, never dispatched.
+ */
+export class SSEParser {
+  private readonly decoder = new TextDecoder('utf-8');
+  private pending = '';
+  private started = false;
+  private eventName = '';
+  private dataLines: string[] = [];
+  private lastId = '';
+  private hasId = false;
+
+  /** Decodes chunk and returns every frame it completed. */
+  push(chunk: Uint8Array): SSEFrame[] {
+    this.pending += this.decoder.decode(chunk, { stream: true });
+    return this.drain(false);
+  }
+
+  /**
+   * Ends the document and returns any final frames: a CR at end of stream
+   * still terminates its line, so a document ending in a complete blank line
+   * dispatches its last frame here; an unterminated trailing frame is
+   * discarded.
+   */
+  finish(): SSEFrame[] {
+    this.pending += this.decoder.decode();
+    const frames = this.drain(true);
+    this.pending = '';
+    return frames;
+  }
+
+  private drain(eof: boolean): SSEFrame[] {
+    const frames: SSEFrame[] = [];
+    for (;;) {
+      const index = this.pending.search(/[\r\n]/);
+      if (index === -1) break;
+      const terminator = this.pending[index];
+      let consumed = index + 1;
+      if (terminator === '\r') {
+        const next = this.pending[index + 1];
+        if (next === undefined) {
+          // A CR at the end of the buffer may open a CRLF split across
+          // chunks; at end of stream it still terminates its line.
+          if (!eof) break;
+        } else if (next === '\n') {
+          consumed += 1;
+        }
+      }
+      let line = this.pending.slice(0, index);
+      this.pending = this.pending.slice(consumed);
+      if (!this.started) {
+        this.started = true;
+        if (line.startsWith(BOM)) line = line.slice(BOM.length);
+      }
+      this.field(line, frames);
+    }
+    return frames;
+  }
+
+  /** Applies one field line, dispatching the accumulated frame at a blank line. */
+  private field(line: string, frames: SSEFrame[]): void {
+    if (line.length === 0) {
+      if (this.dataLines.length > 0) {
+        const event = this.eventName === '' ? 'message' : this.eventName;
+        frames.push({ event, data: this.dataLines.join('\n'), lastId: this.lastId, hasId: this.hasId });
+      }
+      this.reset();
+      return;
+    }
+    if (line.startsWith(':')) return; // comment or keepalive
+    const colon = line.indexOf(':');
+    let name: string;
+    let value: string;
+    if (colon === -1) {
+      name = line;
+      value = '';
+    } else {
+      name = line.slice(0, colon);
+      value = line.slice(colon + 1);
+      if (value.startsWith(' ')) value = value.slice(1);
+    }
+    switch (name) {
+      case 'event':
+        this.eventName = value;
+        break;
+      case 'data':
+        this.dataLines.push(value);
+        break;
+      case 'id':
+        if (!value.includes('\u0000')) {
+          this.lastId = value;
+          this.hasId = true;
+        }
+        break;
+      default:
+        // "retry" and any unknown field are ignored.
+        break;
+    }
+  }
+
+  private reset(): void {
+    this.eventName = '';
+    this.dataLines = [];
+    this.lastId = '';
+    this.hasId = false;
+  }
+}

@@ -158,6 +158,26 @@ validation of every inbound envelope against the bundled schema (off by
 default). The client logs nothing. See `example_test.go` for the canonical
 lifecycle and the package documentation for the full surface.
 
+### TypeScript client (`clients/ts`)
+
+The TypeScript client mirrors the Go one — same wire surface, same typed
+errors, same invisible resume — for non-Go hosts, with a zero-dependency
+runtime on platform fetch and streams (Node 18+ baseline):
+
+```ts
+const client = dial('127.0.0.1:6270');
+const session = await client.open('memory', { sessionId: 'demo' });
+const events = session.events();          // subscribe before submitting
+await events.ready;
+await session.submit({ messages: [{ role: 'user', content: 'hi' }], delivery: 'auto' });
+for await (const envelope of events) {
+  // resolve gates, collect deltas, end at run.completed
+}
+```
+
+See `clients/ts/README.md` for the full surface. npm publishing is
+intentionally out of scope; the package is consumed from a checkout.
+
 Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)

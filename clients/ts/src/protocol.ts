@@ -1,0 +1,659 @@
+/**
+ * The Open Agent Protocol agent-control-core wire model, hand-written to
+ * mirror schema/v0.1 exactly. Every envelope travels verbatim: the client
+ * adds no fields of its own and ignores none.
+ */
+
+export const PROTOCOL = 'open-agent-protocol';
+export const VERSION = '0.1';
+export const PROFILE = 'open-agent-protocol.agent-control-core';
+
+/**
+ * Envelope type constants and their string union. The union stays open
+ * (`string & {}`): the protocol adds envelope types without a client
+ * release, and the event stream must deliver unknown types unhindered.
+ */
+export const EnvelopeType = {
+  ProtocolInitializeRequest: 'protocol.initialize.request',
+  ProtocolInitializeResponse: 'protocol.initialize.response',
+  CapabilitiesRequest: 'capabilities.request',
+  CapabilitiesResponse: 'capabilities.response',
+  CapabilitiesUpdated: 'capabilities.updated',
+  SessionOpenRequest: 'session.open.request',
+  SessionOpenResponse: 'session.open.response',
+  SessionStateRequest: 'session.state.request',
+  SessionStateResponse: 'session.state.response',
+  SessionStateUpdated: 'session.state.updated',
+  SessionMessageSubmitRequest: 'session.message.submit.request',
+  SessionMessageSubmitResponse: 'session.message.submit.response',
+  RunCancelRequest: 'run.cancel.request',
+  RunCancelResponse: 'run.cancel.response',
+  RunStarted: 'run.started',
+  RunStatusUpdated: 'run.status.updated',
+  ContentDelta: 'content.delta',
+  RunCompleted: 'run.completed',
+  RunFailed: 'run.failed',
+  RunCancelled: 'run.cancelled',
+  ActionToolsListRequest: 'action.tools.list.request',
+  ActionToolsListResponse: 'action.tools.list.response',
+  ActionCallRequested: 'action.call.requested',
+  ActionCallStarted: 'action.call.started',
+  ActionCallProgress: 'action.call.progress',
+  ActionCallCompleted: 'action.call.completed',
+  ActionCallFailed: 'action.call.failed',
+  ActionCallCancelled: 'action.call.cancelled',
+  ActionPermissionRequested: 'action.permission.requested',
+  ActionPermissionResolveRequest: 'action.permission.resolve.request',
+  ActionPermissionResolveResponse: 'action.permission.resolve.response',
+  ActionPermissionResolved: 'action.permission.resolved',
+  UserInputRequested: 'user.input.requested',
+  UserInputResolveRequest: 'user.input.resolve.request',
+  UserInputResolveResponse: 'user.input.resolve.response',
+  UserInputResolved: 'user.input.resolved',
+  UserInputCancelRequest: 'user.input.cancel.request',
+  UserInputCancelResponse: 'user.input.cancel.response',
+  ErrorResponse: 'error.response',
+} as const;
+
+export type EnvelopeType = (typeof EnvelopeType)[keyof typeof EnvelopeType] | (string & {});
+
+/** One protocol envelope; `payload` is decoded JSON, still untyped. */
+export interface Envelope {
+  protocol: string;
+  version: string;
+  profile: string;
+  type: EnvelopeType;
+  id: string;
+  payload: Record<string, unknown>;
+  /** Sequences are 1-based and contiguous within a run. */
+  sequence?: number;
+  timestamp_ms?: number;
+  in_reply_to?: string;
+  session_id?: string;
+  run_id?: string;
+  turn_id?: string;
+  tool_call_id?: string;
+  capability_revision?: string;
+  extensions?: Record<string, unknown>;
+}
+
+/** Decodes one envelope from a JSON document (an SSE data field or a response body). */
+export function parseEnvelope(data: string): Envelope {
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch (err) {
+    throw new Error(`decode envelope: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('decode envelope: not a JSON object');
+  }
+  return value as Envelope;
+}
+
+/**
+ * Types one envelope's payload. The cast is deliberate: payloads are trusted
+ * schema/v0.1 documents on this single-user wire, and runtime JSON-Schema
+ * validation is out of scope for the zero-dependency client.
+ */
+export function payload<T>(envelope: Envelope): T {
+  if (typeof envelope.payload !== 'object' || envelope.payload === null || Array.isArray(envelope.payload)) {
+    throw new Error(`decode ${envelope.type} payload: missing payload`);
+  }
+  return envelope.payload as T;
+}
+
+// --- common.schema.json ---
+
+export type MessageRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool';
+
+/**
+ * A JSON value: what the wire's JSON-typed fields carry. `undefined` is
+ * excluded deliberately — JSON.stringify silently drops it, which would turn
+ * a required field into a schema violation on the wire — and so are the
+ * other non-serializable values.
+ */
+export type JSONValue = null | boolean | number | string | JSONValue[] | { [key: string]: JSONValue };
+
+export type SupportLevel = 'native' | 'emulated' | 'degraded' | 'unavailable';
+
+/** An image carried by URL alone. */
+export interface UrlImage {
+  url: string;
+  data?: undefined;
+  media_type?: undefined;
+}
+
+/** An image carried as inline data with its media type. */
+export interface InlineImage {
+  data: string;
+  media_type: string;
+  url?: undefined;
+}
+
+/** An image part: exactly one of a URL, or inline data with its media type. */
+export type ImageContent = UrlImage | InlineImage;
+
+export interface TextPart {
+  type: 'text';
+  text: string;
+}
+
+export interface ReasoningPart {
+  type: 'reasoning';
+  reasoning: string;
+}
+
+export interface ImagePart {
+  type: 'image';
+  image: ImageContent;
+}
+
+export interface ToolCallPart {
+  type: 'tool_call';
+  tool_call_id: string;
+  name: string;
+  arguments_json: JSONValue;
+}
+
+export interface ToolResultPart {
+  type: 'tool_result';
+  tool_call_id: string;
+  result: JSONValue;
+  is_error?: boolean;
+}
+
+export type ContentPart = TextPart | ReasoningPart | ImagePart | ToolCallPart | ToolResultPart;
+
+/** Message content is either a plain string or a non-empty list of parts. */
+export type MessageContent = string | [ContentPart, ...ContentPart[]];
+
+export function textContent(content: MessageContent): string | null {
+  return typeof content === 'string' ? content : null;
+}
+
+export function partsContent(content: MessageContent): [ContentPart, ...ContentPart[]] | null {
+  return Array.isArray(content) ? content : null;
+}
+
+export interface Message {
+  id?: string;
+  role: MessageRole;
+  content: MessageContent;
+  metadata?: Record<string, unknown>;
+}
+
+export interface Usage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface ProtocolError {
+  code: string;
+  message: string;
+  retriable?: boolean;
+  details?: Record<string, unknown>;
+}
+
+export interface ErrorResponse {
+  error: ProtocolError;
+}
+
+export interface RecoveryMetadata {
+  recovered?: boolean;
+  previous_session_id?: string;
+  previous_run_id?: string;
+  resume_cursor?: string;
+  reason?: string;
+}
+
+// --- capabilities.schema.json ---
+
+export interface EndpointDescriptor {
+  id: string;
+  name?: string;
+  version?: string;
+  adapter?: string;
+}
+
+export interface Participant {
+  id: string;
+  name?: string;
+  version?: string;
+}
+
+export interface FeatureSupport {
+  level: SupportLevel;
+  reason?: string;
+  mode?: string;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description?: string;
+  input_schema: Record<string, unknown>;
+  execution_owner: string;
+  annotations?: Record<string, unknown>;
+}
+
+export interface Binding {
+  kind: string;
+  serialization?: string;
+}
+
+export interface Degradation {
+  feature: string;
+  from?: SupportLevel;
+  to: SupportLevel;
+  mode?: string;
+  reason: string;
+}
+
+export type RequestedDeliveryMode = 'auto' | 'queue' | 'steer' | 'btw';
+export type EffectiveDeliveryMode = 'start' | 'queue' | 'steer' | 'btw';
+
+export interface CapabilityLayer {
+  features?: Record<string, FeatureSupport>;
+  /** At least one mode when present: the schema refuses an empty list. */
+  requested_delivery_modes?: [RequestedDeliveryMode, ...RequestedDeliveryMode[]];
+  /** At least one mode when present: the schema refuses an empty list. */
+  effective_delivery_modes?: [EffectiveDeliveryMode, ...EffectiveDeliveryMode[]];
+  tools?: ToolDefinition[];
+}
+
+export interface InitializeRequest {
+  /** At least one version: the schema refuses an empty list. */
+  protocol_versions: [string, ...string[]];
+  /** At least one profile: the schema refuses an empty list. */
+  profiles: [string, ...string[]];
+  participant?: Participant;
+}
+
+export interface InitializeResponse {
+  protocol_version: string;
+  profile: string;
+  endpoint: EndpointDescriptor;
+}
+
+/** An empty request payload: the schema's empty-object defs allow no fields (additionalProperties: false). */
+export interface EmptyRequestPayload {
+  readonly [key: string]: never;
+}
+
+export type CapabilitiesRequest = EmptyRequestPayload;
+
+/** One adapter's capability snapshot; every envelope the adapter emits repeats the revision. */
+export interface CapabilityDescriptor {
+  endpoint: EndpointDescriptor;
+  /** At least one version when present: the schema refuses an empty list. */
+  protocol_versions?: [string, ...string[]];
+  /** At least one profile when present: the schema refuses an empty list. */
+  profiles?: [string, ...string[]];
+  bindings?: Binding[];
+  features?: Record<string, FeatureSupport>;
+  layers?: Record<string, CapabilityLayer>;
+  tools?: ToolDefinition[];
+  degradation?: Degradation[];
+}
+
+export interface CapabilitiesUpdated {
+  previous_revision: string;
+  reason?: string;
+}
+
+// --- session.schema.json ---
+
+export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_for_input' | 'closed' | 'error';
+
+export interface SessionOpenRequest {
+  session_id?: string;
+  metadata?: Record<string, unknown>;
+  recovery?: RecoveryMetadata;
+}
+
+export type SessionOpenResponse = SessionState;
+export type SessionStateResponse = SessionState;
+export type SessionStateUpdated = SessionState;
+
+export interface SessionStateRequest {
+  session_id: string;
+}
+
+export interface SessionState {
+  session_id: string;
+  status: SessionStatus;
+  active_run_id?: string;
+  current_model_id?: string;
+  transcript_cursor?: string;
+  updated_at_ms?: number;
+  metadata?: Record<string, unknown>;
+  recovery?: RecoveryMetadata;
+}
+
+export interface MessageSubmitRequest {
+  session_id: string;
+  /** At least one message: the schema refuses an empty submission. */
+  messages: [Message, ...Message[]];
+  delivery: RequestedDeliveryMode;
+  model_id?: string;
+  instructions?: string;
+  tool_choice?: unknown;
+  output_schema?: Record<string, unknown>;
+  allow_degraded_features?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export type Admission = 'started' | 'queued' | 'steered' | 'side_started' | 'rejected';
+
+export interface MessageSubmitResponse {
+  session_id: string;
+  accepted: boolean;
+  submission_id: string;
+  requested_delivery: RequestedDeliveryMode;
+  effective_delivery: EffectiveDeliveryMode;
+  delivery_resolution?: string;
+  admission: Admission;
+  run_id?: string;
+  status?: RunStatus;
+  model_id?: string;
+  message_ids?: string[];
+}
+
+// --- run.schema.json ---
+
+export type RunStatus = 'queued' | 'running' | 'waiting_for_input' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
+
+export interface RunCancelRequest {
+  session_id: string;
+  run_id: string;
+  reason?: string;
+}
+
+export interface RunCancelResponse {
+  session_id: string;
+  run_id: string;
+  accepted: boolean;
+  status: RunStatus;
+}
+
+export interface RunStartedPayload {
+  session_id: string;
+  run_id: string;
+  status: 'running';
+  model_id?: string;
+  started_at_ms?: number;
+}
+
+export interface RunStatusUpdatedPayload {
+  session_id: string;
+  run_id: string;
+  status: RunStatus;
+  pending_user_input_id?: string;
+  updated_at_ms?: number;
+}
+
+export interface ContentDeltaPayload {
+  session_id: string;
+  run_id: string;
+  message_id?: string;
+  part: ContentPart;
+}
+
+export interface RunCompletedPayload {
+  session_id: string;
+  run_id: string;
+  final_response: Message;
+  stop_reason: string;
+  result?: Record<string, unknown>;
+  usage?: Usage;
+  duration_ms?: number;
+}
+
+export interface RunFailedPayload {
+  session_id: string;
+  run_id: string;
+  error: ProtocolError;
+  usage?: Usage;
+  duration_ms?: number;
+  recovery?: RecoveryMetadata;
+}
+
+export interface RunCancelledPayload {
+  session_id: string;
+  run_id: string;
+  reason?: string;
+  usage?: Usage;
+  duration_ms?: number;
+}
+
+// --- action.schema.json ---
+
+export type ToolsListRequest = EmptyRequestPayload;
+
+export interface ToolsListResponse {
+  tools: ToolDefinition[];
+}
+
+/** The fields every action.call.* payload shares; the variants below each declare their own exclusive fields. */
+interface ActionCallBase {
+  interaction_id?: string;
+  session_id: string;
+  run_id: string;
+  tool_call_id: string;
+  requested_by?: string;
+  responded_by?: string;
+  execution_owner: string;
+  name?: string;
+}
+
+export interface ActionCallRequestedPayload extends ActionCallBase {
+  requested_by: string;
+  name: string;
+  arguments_json: JSONValue;
+  progress?: undefined;
+  result?: undefined;
+  error?: undefined;
+}
+
+export interface ActionCallStartedPayload extends ActionCallBase {
+  name: string;
+  arguments_json?: unknown;
+  progress?: undefined;
+  result?: undefined;
+  error?: undefined;
+}
+
+export interface ActionCallProgressPayload extends ActionCallBase {
+  progress: JSONValue;
+  arguments_json?: undefined;
+  result?: undefined;
+  error?: undefined;
+}
+
+export interface ActionCallCompletedPayload extends ActionCallBase {
+  result: JSONValue;
+  arguments_json?: undefined;
+  progress?: undefined;
+  error?: undefined;
+}
+
+export interface ActionCallFailedPayload extends ActionCallBase {
+  error: ProtocolError;
+  arguments_json?: undefined;
+  progress?: undefined;
+  result?: undefined;
+}
+
+export interface ActionCallCancelledPayload extends ActionCallBase {
+  arguments_json?: undefined;
+  progress?: undefined;
+  result?: undefined;
+  error?: undefined;
+}
+
+export interface PermissionChoice {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface PermissionRequestedPayload {
+  interaction_id: string;
+  requested_by: string;
+  responded_by: string;
+  session_id: string;
+  run_id: string;
+  tool_call_id?: string;
+  title: string;
+  description?: string;
+  /** At least one choice: the schema refuses an empty permission request. */
+  choices: [PermissionChoice, ...PermissionChoice[]];
+  arguments_json?: unknown;
+}
+
+export interface PermissionResolveRequest {
+  interaction_id: string;
+  requested_by: string;
+  responded_by: string;
+  session_id: string;
+  run_id: string;
+  choice_id?: string;
+  granted: boolean;
+  reason?: string;
+  updated_arguments_json?: unknown;
+}
+
+export interface PermissionResolveResponse {
+  interaction_id: string;
+  session_id: string;
+  run_id: string;
+  accepted: boolean;
+}
+
+export interface PermissionResolvedPayload {
+  interaction_id: string;
+  requested_by: string;
+  responded_by: string;
+  session_id: string;
+  run_id: string;
+  tool_call_id?: string;
+  outcome: 'resolved' | 'rejected' | 'cancelled' | 'failed';
+  choice_id?: string;
+  granted?: boolean;
+  reason?: ProtocolError;
+}
+
+// --- interaction.schema.json ---
+
+export type InputQuestionKind = 'text' | 'single_choice' | 'multi_choice';
+
+export interface InputOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/** A free-text question: the schema forbids options on it. */
+export interface TextQuestion {
+  id: string;
+  prompt: string;
+  kind: 'text';
+  required?: boolean;
+  options?: undefined;
+}
+
+/** A choice question: the schema requires a non-empty option list. */
+export interface ChoiceQuestion {
+  id: string;
+  prompt: string;
+  kind: 'single_choice' | 'multi_choice';
+  required?: boolean;
+  options: [InputOption, ...InputOption[]];
+}
+
+/** One asked question, discriminated by kind: text questions carry no options, choice questions carry at least one. */
+export type InputQuestion = TextQuestion | ChoiceQuestion;
+
+/** A text answer to one question. */
+export interface TextAnswer {
+  question_id: string;
+  text: string;
+  selected_option_ids?: undefined;
+}
+
+/** A choice answer to one question: one or more selected option ids. */
+export interface SelectedOptionsAnswer {
+  question_id: string;
+  selected_option_ids: [string, ...string[]];
+  text?: undefined;
+}
+
+/** One answered question: a text answer or selected option ids, exactly one of the two. */
+export type InputAnswer = TextAnswer | SelectedOptionsAnswer;
+
+export interface UserInputRequestedPayload {
+  interaction_id: string;
+  requested_by: string;
+  responded_by: string;
+  session_id: string;
+  run_id: string;
+  tool_call_id?: string;
+  title: string;
+  description?: string;
+  /** At least one question: the schema refuses an empty input request. */
+  questions: [InputQuestion, ...InputQuestion[]];
+  allow_cancel?: boolean;
+  draft_answers?: InputAnswer[];
+}
+
+export interface UserInputResolveRequest {
+  interaction_id: string;
+  requested_by: string;
+  responded_by: string;
+  session_id: string;
+  run_id: string;
+  /** At least one answer: the schema refuses an empty resolution. */
+  answers: [InputAnswer, ...InputAnswer[]];
+}
+
+export interface UserInputResolveResponse {
+  interaction_id: string;
+  session_id: string;
+  run_id: string;
+  accepted: boolean;
+}
+
+interface UserInputResolvedFields {
+  interaction_id: string;
+  requested_by: string;
+  responded_by: string;
+  session_id: string;
+  run_id: string;
+}
+
+/** A resolved gate whose answers were submitted: at least one, never empty. */
+export interface SubmittedInputResolved extends UserInputResolvedFields {
+  status: 'submitted';
+  answers: [InputAnswer, ...InputAnswer[]];
+}
+
+/** A cancelled gate resolution: the schema forbids answers on it. */
+export interface CancelledInputResolved extends UserInputResolvedFields {
+  status: 'cancelled';
+  answers?: undefined;
+}
+
+/** The confirmed outcome of one user-input gate, exclusive by status. */
+export type UserInputResolvedPayload = SubmittedInputResolved | CancelledInputResolved;
+
+export interface UserInputCancelRequest {
+  interaction_id: string;
+  requested_by: string;
+  responded_by: string;
+  session_id: string;
+  run_id: string;
+  reason?: string;
+}
+
+export type UserInputCancelResponse = UserInputResolveResponse;
