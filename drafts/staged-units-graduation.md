@@ -145,7 +145,16 @@ No new envelope types. Changes to
   admission (`unsupported_feature`, `details.feature:
   "run.structured_output"`, `details.reason: "unsatisfiable"`). This
   matches the native structured-output surfaces, which accept object roots
-  only. The structured result travels in `run.completed.result` (already on
+  only. It is also self-contained: every `$ref` resolves within the
+  document (a fragment or a `$id`-anchored subschema), and a reference to
+  anything outside it (an absolute URI, a file, an HTTP resource) is
+  unsatisfiable and rejected before admission. Adapters and the validator
+  compile it with a loader that refuses every reference outside the
+  resources they added themselves (`jsonschema.Compiler.UseLoader` with a
+  loader that returns an error; the engine's default loader reads local
+  files), and the draft 2020-12 metaschema is embedded in the engine, so
+  an untrusted schema can never make an adapter or a validator read a
+  local path or fetch a URL. The structured result travels in `run.completed.result` (already on
   the wire) and must validate against the admitted schema.
 - Capability keys, all optional, gated per submit:
 
@@ -248,7 +257,9 @@ No new envelope types. Changes to
   validator and the reference adapter therefore reject the same policies:
   a policy the unit's rules accept is admitted by the reference, and one
   the reference refuses is diagnosed. The same diagnostic covers an
-  `output_schema` whose root is not an object schema. The check runs only
+  `output_schema` whose root is not an object schema or that carries an
+  external reference; the validator detects the reference by compiling
+  with the refusing loader, never by resolving it. The check runs only
   when the submit carries a control, so envelopes that do not use the unit
   are untouched.
 - New diagnostic `duplicate_tool_name`: the catalog a `tool_choice` is
@@ -274,7 +285,8 @@ skips it, an `allowed` list that omits `scripted_tool` skips it, `mode:
 admission with `unsupported_feature` (`details.reason: "unsatisfiable"`).
 Its structured
 result is the fixed object `{"ok": true}`: at admission it compiles the
-requested `output_schema` and rejects, before any identity is allocated,
+requested `output_schema` with the refusing loader and rejects, before
+any identity is allocated, a schema carrying an external reference and
 any schema that object does not satisfy (`unsupported_feature`,
 `details.feature: "run.structured_output"`, `details.reason:
 "unsatisfiable"`); under an accepted schema `run.completed` carries that
@@ -334,7 +346,9 @@ with the only tool disallowed, and `named` outside its own allowlist),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
 under `mode: "none"`),
 `controls-structured-non-object-schema` (`unsatisfiable_control`; a
-root-array `output_schema`),
+root-array `output_schema`), `controls-structured-external-ref`
+(`unsatisfiable_control`; an `output_schema` with an absolute `$ref`,
+which the validator must diagnose without any resource access),
 `controls-required-without-call` (`unapplied_control`; `mode: "required"`,
 `run.completed` with no call), `controls-named-without-call`
 (`unapplied_control`; `named` naming `scripted_tool`, `run.completed` with
@@ -602,7 +616,13 @@ No new envelope types. Additive fields:
   snapshot taken while a run is started reports a `current_model_id` other
   than that run's admitted model.
 - `session.state` snapshots: `active_runs` is required whenever the
-  validator tracks a queued reservation or more than one nonterminal run
+  validator tracks a queued reservation, more than one nonterminal run,
+  or a nonterminal run with a pending steer (T4) or a pending
+  control-owned call (T3c), since the single-run recovery path reads the
+  submission or interaction id from the entry's `pending_steers` or
+  `pending_interactions` and an omitted field would lose it; the last two
+  conditions arise only on endpoints advertising those units, so no
+  existing fixture changes meaning
   (an absent field would read as an empty queue to a reconnecting client),
   and when present must list the tracked nonterminal runs in admission
   order with consistent `queue_position`; `active_run_id` must be the
@@ -736,6 +756,8 @@ idle session with the capability unadvertised),
 `queue-state-missing-reservation` (`session_state_mismatch`),
 `queue-state-omits-active-runs` (`session_state_mismatch`; a queued
 reservation and a snapshot without `active_runs`),
+`state-omits-active-runs-with-pending` (`session_state_mismatch`; a single
+started run with a pending steer and a snapshot without `active_runs`),
 `queue-state-drops-unsettled-run` (`session_state_mismatch`; a snapshot
 omits a queued run whose terminal never arrives),
 `queue-state-omits-before-settlement` (`session_state_mismatch`; a
