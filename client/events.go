@@ -316,16 +316,14 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 				failure = err
 				return false
 			}
-			runID, last := protocol.RunID(signal.RunID), signal.LastSequence
-			if es.runID != "" {
-				// The hub names the run current at signal time, which can be
-				// a newer run than the one this connection was consuming
-				// while last_sequence counts the consumed run's envelopes.
-				// The stream's own cursor is the pair it actually delivered,
-				// so recovery resumes the run that overflowed.
-				runID, last = es.runID, es.lastSeq
-			}
-			failure = &OverflowError{RunID: runID, LastSequence: last, Message: signal.Message}
+			// The hub's cursor is the recovery target, trusted as given:
+			// it names the run whose delivery was lost and the consumer's
+			// last position in it — which may be a run this connection
+			// never reached, or an older run whose late envelope filled the
+			// queue while a newer run's remaining delivery was discarded
+			// too. Overwriting it with the connection's own last position
+			// would strand whichever run the signal names.
+			failure = &OverflowError{RunID: protocol.RunID(signal.RunID), LastSequence: signal.LastSequence, Message: signal.Message}
 			return false
 		case signalGap:
 			signal, err := decodeSignal[gapSignal](f.data)

@@ -1,4 +1,4 @@
-package serve
+package servehttp
 
 import (
 	"bufio"
@@ -16,32 +16,32 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
 	"github.com/lsm/open-agent-protocol/validation"
 )
 
 const testTimeout = 5 * time.Second
 
-func mustMemory() base.Adapter {
-	return base.NewMemory(base.Config{})
-}
-
-func memoryRegistry(capacity int) *Registry {
-	registry := NewRegistry()
+func memoryRegistry(capacity int) *serve.Registry {
+	registry := serve.NewRegistry()
 	if err := registry.Register("memory", base.NewMemory(base.Config{JournalCapacity: capacity})); err != nil {
 		panic(err)
 	}
 	return registry
 }
 
-func newServer(t *testing.T, registry *Registry, options Options) (*Server, *httptest.Server) {
+// newServer serves one hub over the real codec on loopback and returns both,
+// so tests can drive the HTTP surface and the hub's own sweep.
+func newServer(t *testing.T, registry *serve.Registry, options Options) (*serve.Hub, *httptest.Server) {
 	t.Helper()
-	daemon, err := New(registry, options)
+	hub := serve.New(registry, serve.Options{})
+	daemon, err := New(hub, options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(daemon.Handler())
 	t.Cleanup(server.Close)
-	return daemon, server
+	return hub, server
 }
 
 func newMemoryServer(t *testing.T, capacity int) *httptest.Server {
@@ -722,7 +722,7 @@ func TestResolveRejections(t *testing.T) {
 	openSession(t, server, "memory", "resolve-reject")
 
 	unknownRun := requestEnvelope(t, protocol.TypeActionPermissionResolveRequest, "resolve-unknown", protocol.PermissionResolveRequest{
-		InteractionID: "interaction-1", RequestedBy: "agent", RespondedBy: DaemonParticipant,
+		InteractionID: "interaction-1", RequestedBy: "agent", RespondedBy: serve.DefaultParticipant,
 		SessionID: "resolve-reject", RunID: "run-404", ChoiceID: "approve", Granted: true,
 	}, "resolve-reject", "run-404", "")
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/resolve-reject/resolve", unknownRun)
@@ -901,7 +901,7 @@ func TestHostAllowlist(t *testing.T) {
 func TestCapabilitiesRequiresDescriptorRevision(t *testing.T) {
 	// A programmatically registered adapter that probes without a revision
 	// must not be relayed into a schema-invalid capabilities response.
-	registry := NewRegistry()
+	registry := serve.NewRegistry()
 	if err := registry.Register("bare", bareAdapter{}); err != nil {
 		t.Fatal(err)
 	}

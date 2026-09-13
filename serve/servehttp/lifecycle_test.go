@@ -1,15 +1,18 @@
-package serve
+package servehttp
 
 import (
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
 	"github.com/lsm/open-agent-protocol/validation"
 )
 
@@ -20,6 +23,22 @@ func readAll(t *testing.T, response *http.Response) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func writeConfig(t *testing.T, document string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "oap.json")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func staticEnviron(values map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		value, ok := values[name]
+		return value, ok
+	}
 }
 
 // The full-lifecycle tests drive one complete session over HTTP per adapter
@@ -37,7 +56,7 @@ func TestValidationGatedLifecycleFakeAdapter(t *testing.T) {
 	testValidationGatedLifecycle(t, fakeRegistry(64, 0, 0), "fake")
 }
 
-func testValidationGatedLifecycle(t *testing.T, registry *Registry, adapterName string) {
+func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapterName string) {
 	t.Helper()
 	_, server := newServer(t, registry, Options{})
 	sessionID := "lifecycle-" + adapterName
@@ -198,7 +217,7 @@ func TestCloseSessionsSettlesActiveRuns(t *testing.T) {
 // listing and load errors carry names only.
 func TestDaemonOutputNeverCarriesEnvironmentValues(t *testing.T) {
 	const secret = "super-secret-value"
-	registry, err := LoadRegistry(writeConfig(t,
+	registry, err := serve.LoadRegistry(writeConfig(t,
 		`{"adapters": {"claude": {"type": "claude", "executable": "/bin/claude", "environment": ["OAP_SECRET"], "working_directory": "/tmp"}}}`),
 		staticEnviron(map[string]string{"OAP_SECRET": secret}))
 	if err != nil {
@@ -217,7 +236,7 @@ func TestDaemonOutputNeverCarriesEnvironmentValues(t *testing.T) {
 		}
 	}
 
-	_, err = LoadRegistry(writeConfig(t,
+	_, err = serve.LoadRegistry(writeConfig(t,
 		`{"adapters": {"broken": {"type": "nope", "environment": ["OAP_SECRET"]}}}`),
 		staticEnviron(map[string]string{"OAP_SECRET": secret}))
 	if err == nil {

@@ -13,8 +13,9 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
-	"github.com/lsm/open-agent-protocol/internal/serve"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
+	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
 
 const testTimeout = 5 * time.Second
@@ -22,7 +23,8 @@ const testTimeout = 5 * time.Second
 // newDaemon serves one registry over the real daemon handler on loopback.
 func newDaemon(t *testing.T, registry *serve.Registry) *httptest.Server {
 	t.Helper()
-	daemon, err := serve.New(registry, serve.Options{})
+	hub := serve.New(registry, serve.Options{})
+	daemon, err := servehttp.New(hub, servehttp.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,13 +899,14 @@ func TestClientRejectsRunMismatchOnManualResume(t *testing.T) {
 	}
 }
 
-func TestClientOverflowCursorTracksConsumedRun(t *testing.T) {
-	// The hub's overflow signal names the run current at signal time, which
-	// can be a newer run than the one this connection consumed; the error
-	// must carry the stream's own cursor so recovery resumes the run that
-	// actually overflowed.
+func TestClientOverflowCursorTrustsSignal(t *testing.T) {
+	// The hub's overflow signal carries the full recovery cursor: the run
+	// whose delivery was lost and the consumer's last position in it —
+	// possibly a run this connection never reached. The client trusts it
+	// as given; overwriting it with the connection's own last position
+	// would strand whichever run the signal names.
 	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "consumed-run", 1)
-	body := fmt.Sprintf("id: 1\ndata: %s\n\nevent: oap-overflow\ndata: {\"run_id\":\"newer-run\",\"last_sequence\":1,\"message\":\"fell behind\"}\n\n", envelope)
+	body := fmt.Sprintf("id: 1\ndata: %s\n\nevent: oap-overflow\ndata: {\"run_id\":\"dropped-run\",\"last_sequence\":7,\"message\":\"fell behind\"}\n\n", envelope)
 	c := defectServer(t, body)
 	stream := openDefectSession(t, c).Events(context.Background())
 	if _, err := stream.Next(); err != nil {
@@ -914,8 +917,8 @@ func TestClientOverflowCursorTracksConsumedRun(t *testing.T) {
 	if !errors.As(err, &overflow) {
 		t.Fatalf("error %v (%T), want OverflowError", err, err)
 	}
-	if overflow.RunID != "consumed-run" || overflow.LastSequence != 1 {
-		t.Fatalf("overflow cursor %+v, want consumed-run at 1", overflow)
+	if overflow.RunID != "dropped-run" || overflow.LastSequence != 7 {
+		t.Fatalf("overflow cursor %+v, want dropped-run at 7 — the signal's cursor", overflow)
 	}
 }
 

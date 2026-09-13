@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/internal/serve"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
 
 func TestUsageMentionsServe(t *testing.T) {
@@ -43,12 +43,12 @@ func TestServeFlagErrors(t *testing.T) {
 }
 
 func TestServeDefaultAddrIsLoopback(t *testing.T) {
-	host, _, err := net.SplitHostPort(serve.DefaultAddr)
+	host, _, err := net.SplitHostPort(servehttp.DefaultAddr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if host != "127.0.0.1" {
-		t.Fatalf("default address %q is not loopback", serve.DefaultAddr)
+		t.Fatalf("default address %q is not loopback", servehttp.DefaultAddr)
 	}
 }
 

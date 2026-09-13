@@ -15,7 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lsm/open-agent-protocol/internal/serve"
+	"github.com/lsm/open-agent-protocol/serve"
+	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
 
 // runServe starts the single-user local daemon over the adapter registry and
@@ -26,7 +27,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "adapter registry JSON path (default: built-in memory adapter)")
-	addr := fs.String("addr", serve.DefaultAddr, "listen address")
+	addr := fs.String("addr", servehttp.DefaultAddr, "listen address")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -50,8 +51,11 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	daemon, err := serve.New(registry, serve.Options{
-		Logger: log.New(stderr, "oap: ", 0), HostAllowlist: loopbackHosts(*addr),
+	hub := serve.New(registry, serve.Options{
+		Logger: log.New(stderr, "oap: ", 0),
+	})
+	daemon, err := servehttp.New(hub, servehttp.Options{
+		HostAllowlist: loopbackHosts(*addr),
 	})
 	if err != nil {
 		return err
@@ -78,7 +82,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// were opened before returning the error.
 		settle, cancelSettle := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 		defer cancelSettle()
-		daemon.CloseSessions(settle)
+		hub.CloseSessions(settle)
 		return err
 	case <-signals.Done():
 	}
@@ -95,7 +99,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	sessionShutdown, cancelSessions := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelSessions()
-	daemon.CloseSessions(sessionShutdown)
+	hub.CloseSessions(sessionShutdown)
 	fmt.Fprintln(stderr, "oap: stopped")
 	return nil
 }

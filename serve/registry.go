@@ -1,7 +1,3 @@
-// Package serve exposes the OAP adapter registry over a single-user local
-// HTTP + SSE daemon. The daemon is a thin translation of adapter.Session onto
-// HTTP: request and event bodies are verbatim schema/v0.1 envelopes, and the
-// daemon adds no protocol semantics of its own.
 package serve
 
 import (
@@ -30,7 +26,7 @@ type configFile struct {
 	Adapters map[string]adapterEntry `json:"adapters"`
 }
 
-// adapterEntry carries the fields the daemon can express for the in-repo
+// adapterEntry carries the fields the registry can express for the in-repo
 // adapters. Per-type requirements are enforced by the adapters' own
 // constructors, so a registry entry that omits a required field fails at load
 // time with the adapter's own diagnostic.
@@ -113,9 +109,9 @@ func (r *Registry) adaptersLen() int { return len(r.adapters) }
 
 // LoadRegistry reads a registry document and constructs every entry. Adapter
 // construction is eager, so constructor requirements (absolute working
-// directories, executables, provider settings) surface at daemon start rather
+// directories, executables, provider settings) surface at hub start rather
 // than at first use. Environ resolves bare allowlist names against the
-// daemon's own environment; pass os.LookupEnv outside tests.
+// embedding process's own environment; pass os.LookupEnv outside tests.
 func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -227,11 +223,11 @@ func wrapBuild(name string, err error) error {
 }
 
 // resolveEnvironment turns the config allowlist into the verbatim child
-// environment: a bare NAME forwards the value the daemon itself carries and is
-// omitted entirely when unset, while NAME=value passes through literally. The
-// result is never nil, so adapters that treat a nil environment as "inherit
-// ambient" stay on an explicit allowlist and no ambient credential can reach a
-// child process unless its variable was listed here.
+// environment: a bare NAME forwards the value the embedding process itself
+// carries and is omitted entirely when unset, while NAME=value passes through
+// literally. The result is never nil, so adapters that treat a nil environment
+// as "inherit ambient" stay on an explicit allowlist and no ambient credential
+// can reach a child process unless its variable was listed here.
 func resolveEnvironment(entries []string, environ func(string) (string, bool)) ([]string, error) {
 	resolved := make([]string, 0, len(entries))
 	for _, entry := range entries {
