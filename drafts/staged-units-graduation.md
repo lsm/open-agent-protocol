@@ -1335,8 +1335,16 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   naming that key (`unavailable_capability` on the error response
   otherwise), so the fail-closed refusal the wire requires is itself
   conforming; a `remote` source additionally requires the attach
-  capability to disclose `mode: "remote"`, else `unavailable_capability`
-  on the admitted open. Each supplied tool's
+  capability to disclose `mode: "remote"`, judged on the same terms: the
+  missing mode is remembered from the request, an admitted open is
+  `unavailable_capability` on the response, and a correlated
+  `error.response` must carry `unsupported_feature` with
+  `details.feature: "action.tool_sources.attach"`, `details.reason:
+  "unsatisfiable"`, and `details.source` naming the source
+  (`unavailable_capability` on the error response otherwise, so a
+  refusal under an unrelated code such as `internal_error` cannot pass
+  as the typed refusal that tells the caller the input is permanently
+  unsupported). Each supplied tool's
   `source`, when present, must name a source in the union of the same
   open's `tool_sources` and the sources the capability descriptor
   declares, checked when the open is admitted (`unmatched_tool_source` on
@@ -1529,9 +1537,15 @@ the open admitted), the correct rejections
 `open-provide-unadvertised-rejected` (`error.response` with
 `unsupported_feature`, `details.feature` naming
 `action.tool_sources.attach` or `action.tools.provide`, then no open),
-`open-attach-remote-unadvertised` (`unavailable_capability`; a `remote`
-source attached on a descriptor whose attach capability lacks `mode:
-"remote"`), `open-provide-dangling-source-admitted`
+`open-attach-remote-unadvertised` (`unavailable_capability` on the
+admission; a `remote` source attached on a descriptor whose attach
+capability lacks `mode: "remote"`, and the open admitted),
+`open-attach-remote-unadvertised-rejected` (`error.response` with
+`unsupported_feature`, `details.feature: "action.tool_sources.attach"`,
+`details.reason: "unsatisfiable"`, `details.source`; validated as a
+correct rejection), `open-attach-remote-wrong-refusal`
+(`unavailable_capability` on the error response; the same open refused
+with `internal_error`), `open-provide-dangling-source-admitted`
 (`unmatched_tool_source` on the `session.open.response`; a provided tool
 with `source: "ghost"` that no descriptor or attachment declares, and the
 open admitted, the negative counterpart of `open-provide-dangling-source`),
@@ -1818,13 +1832,21 @@ and hub contract is explicit rather than inherited from `start`:
   resumes into the snapshot first and the settlement after it, and the
   `servehttp` e2e test covers exactly that drop. A journaled snapshot
   keeps the envelope `id` it was first published under, and because a
-  session-scoped envelope advances no run cursor, a subscriber that
-  received the snapshot and dropped before the settlement resumes with a
-  cursor that precedes the snapshot's position and is sent it again; the
-  resume contract's no-duplicates promise is kept by identity rather
-  than by cursor for these interleaved envelopes (client rule below),
-  and the e2e test also drops between the snapshot and the settlement
-  and asserts the application sees the snapshot once. The resolve fallback
+  session-scoped envelope advances no run cursor, a bare cursor cannot
+  say whether the subscriber received it: one that received the snapshot
+  and dropped before the settlement resumes with a cursor that precedes
+  the snapshot's position. The resume cursor therefore gains an additive
+  component for the interleaved position: `?after_session=<envelope
+  id>` beside `?after=` and `?run=` (an `after_session` field on the
+  stdio `events` op) names the last journaled session-scoped envelope
+  the subscriber delivered at that position, and the hub replays only
+  the journaled envelopes at that position that follow it in journal
+  order. The no-duplicates promise is thus kept by the cursor itself,
+  which a caller persists and carries across a process restart, rather
+  than by state a client instance keeps in memory (client rule below);
+  the e2e test drops between the snapshot and the settlement, resumes
+  with the full cursor from a fresh client, and asserts the application
+  sees the snapshot once. The resolve fallback
   under T3c uses the same journal. The state snapshot is
   the same surface a reconnecting submitter reads to recover the id, so
   every subscriber learns of the admission before the settlement, the
@@ -1864,14 +1886,19 @@ run cursor whatever its type. The schema requires `run_id` on every run
 event and session events carry none, so the rule is exact for known
 types and correct by construction for unknown ones; the type lists stay
 for typing only. A session-scoped envelope interleaved in a run's replay
-is deduplicated by `id`: each client retains the ids of the
-session-scoped envelopes it delivered since the last cursor-advancing
-envelope (the set empties whenever the run cursor advances, so it stays
-small) and drops one whose `id` it has already delivered, so a hub-minted
-snapshot replayed at a position the client had already passed reaches
-the application once. Tests interleave a session snapshot between run
-events and across a resume, replay it across a drop between the snapshot
-and the next run event and assert single delivery, and feed an unknown run-scoped type and an unknown
+is covered by the cursor, not by in-memory state: each client's resume
+cursor becomes `{ run, sequence, session_envelope_id? }`, where the
+third member is the `id` of the last session-scoped envelope delivered
+since the last cursor-advancing envelope and is cleared whenever the run
+cursor advances; the client sends it as `?after_session=` on every
+reconnect and exposes it in the cursor it hands the application
+(`EventsAfter` takes the full cursor, with the two-member form kept as
+a convenience that resumes without it), so a persisted cursor carries
+it across a process restart and a fresh `EventStream` built from it is
+not sent the snapshot again. Tests interleave a session snapshot
+between run events and across a resume, resume from a fresh stream
+built from the persisted cursor after receiving the snapshot and assert
+it is not redelivered, and feed an unknown run-scoped type and an unknown
 session-scoped type through both clients. The T4 client slice adds
 `run.steer.applied` and `run.steer.dropped` to `EnvelopeType` (typing),
 with cursor tests: a steer event advances the cursor, a drop after it
