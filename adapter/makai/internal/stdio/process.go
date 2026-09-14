@@ -30,11 +30,16 @@ type ProcessConfig struct {
 	WriteQueueCapacity int
 	StderrLimit        int
 	ShutdownTimeout    time.Duration
+	// stderrTap wraps the stderr read end before the copier is started. It is a
+	// package-private seam for tests that need the copier to lag the child's
+	// exit; production callers leave it nil.
+	stderrTap func(io.ReadCloser) io.ReadCloser
 }
 type Process struct {
 	Client     *Client
 	command    *exec.Cmd
 	stdin      io.WriteCloser
+	stderrPipe io.ReadCloser
 	stderr     *limitedBuffer
 	stderrDone chan struct{}
 	waitDone   chan struct{}
@@ -75,10 +80,13 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	if limit <= 0 {
 		limit = defaultStderrLimit
 	}
+	if config.stderrTap != nil {
+		stderrPipe = config.stderrTap(stderrPipe)
+	}
 	stderr := &limitedBuffer{limit: limit}
 	stderrDone := make(chan struct{})
 	go func() { _, _ = io.Copy(stderr, stderrPipe); close(stderrDone) }()
-	p := &Process{command: cmd, stdin: stdin, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
+	p := &Process{command: cmd, stdin: stdin, stderrPipe: stderrPipe, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
 	if p.timeout <= 0 {
 		p.timeout = 5 * time.Second
 	}
@@ -136,8 +144,8 @@ func (p *Process) wait() {
 	// pipe is closed; otherwise a response the child wrote immediately before
 	// exiting is reported as a process-exit failure on the pending call.
 	<-p.Client.ReadDone()
+	p.drainStderr()
 	err := p.command.Wait()
-	<-p.stderrDone
 	p.waitMu.Lock()
 	p.waitErr = err
 	p.waitMu.Unlock()
@@ -146,19 +154,51 @@ func (p *Process) wait() {
 	close(p.waitDone)
 }
 
+// drainStderr waits for the stderr copier to finish before the child is reaped.
+// Cmd.Wait closes the pipes it created as soon as the child exits, and
+// StderrPipe's contract is that every read must complete first: a copier that
+// has not yet consumed the buffered bytes fails on a closed file and the bytes
+// are lost, which is how a handshake failure ended up composing an empty
+// stderr. A descendant that inherited stderr can keep the read end from
+// reaching EOF, so bound the drain and close our side to release the copier,
+// exactly as the shutdown paths bound the stdout drain.
+func (p *Process) drainStderr() { p.drainStderrWithin(p.timeout) }
+
+// drainStderrWithin waits up to limit for the copier, then closes the read end
+// to release it. Releasing costs whatever a still-writing descendant had left
+// to say; blocking instead would cost the caller its bound.
+func (p *Process) drainStderrWithin(limit time.Duration) {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-p.stderrDone:
+	case <-timer.C:
+		_ = p.stderrPipe.Close()
+		<-p.stderrDone
+	}
+}
+
 // killAndRelease kills the child and retires the client before reaping. Reaping
 // waits for the reader to drain (see wait), but a reader blocked on a stdout a
 // descendant still holds open would never reach EOF. Retiring the client closes
 // the pipe so the drain completes instead of stalling teardown.
 func (p *Process) killAndRelease() {
 	_ = p.command.Process.Kill()
+	// Release stderr too, not just the client's stdout. Forced shutdown has
+	// already spent its budget; without this the drain in wait() would start a
+	// fresh full timeout against a descendant-held stderr and Close would
+	// overrun its configured bound by a second timeout.
+	_ = p.stderrPipe.Close()
 	p.Client.closeWith(processExitError(nil))
 }
 func (p *Process) abortBeforeWait() error {
 	_ = p.command.Process.Kill()
-	err := p.command.Wait()
-	<-p.stderrDone
-	return err
+	// Bounded by abortStderrGrace, not the shutdown timeout: this runs inside a
+	// Start that has already failed or been cancelled, and the drain expiring
+	// closes the read end, so a descendant holding stderr cannot keep the
+	// caller waiting for its diagnostic.
+	p.drainStderrWithin(abortStderrGrace)
+	return p.command.Wait()
 }
 func processExitError(err error) error {
 	if err == nil {
@@ -207,3 +247,11 @@ func redact(v string) string {
 	v = secretQuoted.ReplaceAllString(v, `$1"[REDACTED]"`)
 	return strings.TrimSpace(secretLine.ReplaceAllString(v, `$1$2[REDACTED]`))
 }
+
+// abortStderrGrace bounds the stderr drain on the handshake-abort paths. The
+// child is already killed there, so the diagnostic stderr composed into the
+// failure is whatever it wrote before dying and is sitting in the pipe buffer
+// already: the copier needs a scheduling slice, not a shutdown budget. Bounding
+// it here keeps a descendant that inherited stderr from adding a full
+// ShutdownTimeout to a Start that has already failed or been cancelled.
+const abortStderrGrace = 250 * time.Millisecond

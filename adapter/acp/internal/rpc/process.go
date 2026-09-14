@@ -69,6 +69,7 @@ type Process struct {
 	command    *exec.Cmd
 	stdin      io.WriteCloser
 	pipes      *pipeCloser
+	stderrPipe io.ReadCloser
 	stderr     *limitedBuffer
 	stderrDone chan struct{}
 	waitDone   chan struct{}
@@ -129,7 +130,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 
 	pipes := &pipeCloser{read: stdout, write: stdin}
 	process := &Process{
-		command: command, stdin: stdin, pipes: pipes, stderr: stderr, stderrDone: stderrDone,
+		command: command, stdin: stdin, pipes: pipes, stderrPipe: stderrPipe, stderr: stderr, stderrDone: stderrDone,
 		waitDone: make(chan struct{}), timeout: config.ShutdownTimeout,
 	}
 	if process.timeout <= 0 {
@@ -178,15 +179,11 @@ func (process *Process) Close(ctx context.Context) error {
 		case <-process.waitDone:
 			process.closeErr = process.WaitError()
 		case <-ctx.Done():
-			_ = process.command.Process.Kill()
-			// A surviving descendant could still hold stdout open, which would
-			// block the drain; closing the pipes forces the reader to finish.
-			_ = process.pipes.Close()
+			process.killAndRelease()
 			<-process.waitDone
 			process.closeErr = ctx.Err()
 		case <-timer.C:
-			_ = process.command.Process.Kill()
-			_ = process.pipes.Close()
+			process.killAndRelease()
 			<-process.waitDone
 			process.closeErr = errors.New("acp rpc: shutdown timed out")
 		}
@@ -207,14 +204,38 @@ func (process *Process) wait() {
 	// pipes are closed; otherwise a response the child wrote immediately before
 	// exiting becomes a closed-pipe error on the pending call.
 	<-process.Client.ReadDone()
+	process.drainStderr()
 	err := process.command.Wait()
-	<-process.stderrDone
 	process.waitMu.Lock()
 	process.waitErr = err
 	process.waitMu.Unlock()
 	_ = process.pipes.Close()
 	process.Client.shutdown(processExitError(err))
 	close(process.waitDone)
+}
+
+// drainStderr waits for the stderr copier to finish before the child is reaped.
+// Cmd.Wait closes the pipes it created as soon as the child exits, and
+// StderrPipe's contract is that every read must complete first: a copier that
+// has not yet consumed the buffered bytes fails on a closed file and the bytes
+// are lost, which is how a handshake failure ended up composing an empty
+// stderr. A descendant that inherited stderr can keep the read end from
+// reaching EOF, so bound the drain and close our side to release the copier,
+// exactly as the shutdown paths bound the stdout drain.
+func (process *Process) drainStderr() { process.drainStderrWithin(process.timeout) }
+
+// drainStderrWithin waits up to limit for the copier, then closes the read end
+// to release it. Releasing costs whatever a still-writing descendant had left
+// to say; blocking instead would cost the caller its bound.
+func (process *Process) drainStderrWithin(limit time.Duration) {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-process.stderrDone:
+	case <-timer.C:
+		_ = process.stderrPipe.Close()
+		<-process.stderrDone
+	}
 }
 
 func processExitError(err error) error {
@@ -225,12 +246,26 @@ func processExitError(err error) error {
 }
 func (process *Process) abort() error {
 	_ = process.command.Process.Kill()
-	// A descendant that inherited stdout keeps the reader's drain blocked, so
-	// wait() would never finish; release the pipes before waiting, exactly as
-	// the bounded shutdown paths do.
-	_ = process.pipes.Close()
+	// Collect the dead child's stderr before releasing the pipes: this is the
+	// diagnostic the caller composes into the handshake error, and
+	// killAndRelease closes the read end. Bounded by abortStderrGrace so a
+	// descendant holding stderr cannot stall a failed Start.
+	process.drainStderrWithin(abortStderrGrace)
+	process.killAndRelease()
 	<-process.waitDone
 	return process.WaitError()
+}
+
+// killAndRelease kills the child and closes the read pipes before reaping. A
+// surviving descendant could hold stdout or stderr open, and wait() drains both
+// before reaping; closing our ends forces those drains to finish. Releasing
+// stderr matters as much as stdout here: forced shutdown has already spent its
+// budget, and leaving stderr open would start a fresh full timeout inside
+// drainStderr and overrun the configured bound by a second timeout.
+func (process *Process) killAndRelease() {
+	_ = process.command.Process.Kill()
+	_ = process.pipes.Close()
+	_ = process.stderrPipe.Close()
 }
 
 type pipeCloser struct {
@@ -304,3 +339,11 @@ func cloneMap(source ClientCapabilities) ClientCapabilities {
 	}
 	return result
 }
+
+// abortStderrGrace bounds the stderr drain on the handshake-abort paths. The
+// child is already killed there, so the diagnostic stderr composed into the
+// failure is whatever it wrote before dying and is sitting in the pipe buffer
+// already: the copier needs a scheduling slice, not a shutdown budget. Bounding
+// it here keeps a descendant that inherited stderr from adding a full
+// ShutdownTimeout to a Start that has already failed or been cancelled.
+const abortStderrGrace = 250 * time.Millisecond

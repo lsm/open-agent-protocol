@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,6 +71,31 @@ func TestProcessHelper(t *testing.T) {
 		descendant.Stdout = os.Stdout
 		if err := descendant.Start(); err != nil {
 			os.Exit(20)
+		}
+		os.Exit(0)
+	case "bad-descendant":
+		// A failed handshake whose descendant inherits stderr: the pipe never
+		// reaches EOF even though the direct child is killed.
+		os.Stderr.WriteString("api_key=secret-value\n" + strings.Repeat("x", 256))
+		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
+		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(22)
+		}
+		os.Stdout.WriteString("noise\n")
+		os.Exit(2)
+	case "ready-stderr-descendant":
+		// A descendant inheriting both pipes keeps either read end from
+		// reaching EOF once the direct child exits, so forced shutdown has to
+		// release both to stay inside one timeout budget.
+		os.Stdout.WriteString(`{"type":"ready","protocol_version":"1"}` + "\n")
+		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
+		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
+		descendant.Stdout = os.Stdout
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(21)
 		}
 		os.Exit(0)
 	case "holder":
@@ -239,5 +266,118 @@ func TestRedactHidesQuotedAndBearerCredentials(t *testing.T) {
 		if got := redact(input); got != want {
 			t.Fatalf("redact %q = %q want %q", input, got, want)
 		}
+	}
+}
+
+// lateReader defers the copier's first read until its gate opens, standing in
+// for a copier that has not yet drained the pipe when the child exits.
+type lateReader struct {
+	io.ReadCloser
+	gate chan struct{}
+	once sync.Once
+}
+
+func (r *lateReader) Read(p []byte) (int, error) {
+	r.once.Do(func() { <-r.gate })
+	return r.ReadCloser.Read(p)
+}
+
+// Reaping must wait for the stderr copier. Cmd.Wait closes the pipes it
+// created, so a copier still holding buffered bytes when the child is reaped
+// reads from a closed file and loses them — which emptied the stderr composed
+// into handshake failures. The gate holds the copier past the point where the
+// old order would have reaped, and the bytes must still arrive.
+func TestProcessLaggingStderrCopierStillReachesBuffer(t *testing.T) {
+	gate := make(chan struct{})
+	config := helperConfig("bad")
+	config.stderrTap = func(pipe io.ReadCloser) io.ReadCloser {
+		return &lateReader{ReadCloser: pipe, gate: gate}
+	}
+	time.AfterFunc(150*time.Millisecond, func() { close(gate) })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := Start(ctx, config)
+	if !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("secret leaked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("stderr lost to a lagging copier: %v", err)
+	}
+}
+
+// A stderr the child's descendant holds open never reaches EOF. Forced shutdown
+// must release it as it releases stdout, so teardown finishes inside a single
+// timeout budget: if only stdout were released, the drain in wait() would start
+// a fresh full timeout and Close would take roughly twice its configured bound.
+func TestProcessShutdownReleasesDescendantHeldStderr(t *testing.T) {
+	const timeout = time.Second
+	config := helperConfig("ready-stderr-descendant")
+	config.ShutdownTimeout = timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p, err := Start(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan time.Duration, 1)
+	start := time.Now()
+	go func() { _ = p.Close(context.Background()); done <- time.Since(start) }()
+	select {
+	case elapsed := <-done:
+		// Generous against a loaded CI box, but well under the doubled bound.
+		if elapsed > timeout+500*time.Millisecond {
+			t.Fatalf("Close took %v, want roughly one %v budget", elapsed, timeout)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("Close blocked while a descendant held stderr open")
+	}
+}
+
+// A failed handshake whose child left a descendant holding stderr must still
+// report that child's stderr, and must not wait a full ShutdownTimeout to do
+// it: the abort paths drain under a short grace and then release the pipe.
+func TestProcessHandshakeAbortBoundsDescendantHeldStderr(t *testing.T) {
+	config := helperConfig("bad-descendant")
+	config.ShutdownTimeout = 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := Start(ctx, config)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Start took %v; the abort drain waited on a descendant-held stderr", elapsed)
+	}
+	if strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("secret leaked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("stderr lost to the bounded abort drain: %v", err)
+	}
+}
+
+// The abort paths release the stderr read end to bound themselves, so the
+// release must come after the drain, never instead of it. Gate the copier
+// inside the grace window: the bytes must still reach the composed error.
+func TestProcessHandshakeAbortDrainsBeforeReleasing(t *testing.T) {
+	gate := make(chan struct{})
+	config := helperConfig("bad")
+	config.stderrTap = func(pipe io.ReadCloser) io.ReadCloser {
+		return &lateReader{ReadCloser: pipe, gate: gate}
+	}
+	time.AfterFunc(abortStderrGrace/4, func() { close(gate) })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := Start(ctx, config)
+	if !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("stderr released before it was drained: %v", err)
 	}
 }
