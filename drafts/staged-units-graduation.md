@@ -1057,7 +1057,19 @@ No new envelope types. Additive fields:
   typed `run_active`; a refusal under any other code is
   `queue_limit_exceeded` on the error response (`/payload/error/code`), so
   an
-  adapter cannot hide a reached bound behind `internal_error`. Fixtures:
+  adapter cannot hide a reached bound behind `internal_error`. The
+  inverse is checked too, or the re-evaluation would only ever tighten:
+  where the bound is *not* reached at the response — the queued run that
+  made the request exceed it terminated while `Submit` was in flight —
+  the submit was admissible, and an `error.response` carrying
+  `run_active` or `queue_limit_exceeded` reports a bound that no longer
+  binds. That is `queue_limit_exceeded` on the error response, naming the
+  bound and the counts as of the response, so a caller is not told to
+  wait for capacity it already has. Other codes on that response stay
+  outside this rule: the adapter may have refused for a reason the queue
+  knows nothing about. Fixture `queue-limit-cleared-stale-refusal` (the
+  bound reached at the request, the queued run terminated before the
+  response, still refused `run_active`). Fixtures:
   `queue-over-limit-rejected` (`error.response` with `run_active`;
   validated as a correct rejection), `queue-over-limit-wrong-refusal`
   (`queue_limit_exceeded` on the error response; the same request
@@ -2225,7 +2237,20 @@ the already-published terminal), and its correlated `error.response`
 must carry `invalid_steer_target`
 with the `details.reason` the wire assigns to that condition (`queued`,
 `terminal`, `cross_session`, `no_active_run`, `not_steerable` for the
-`cancelling` case). When the same request is also ungated — an explicit
+`cancelling` case). A target can meet more than one — a queued or
+terminal run belonging to another session is both `cross_session` and
+`queued` or `terminal` — and these are peers on the state rung sharing a
+diagnostic, a pointer, and a value, so the global tie-break cannot
+separate them. They are ranked instead, most fundamental first:
+`cross_session`, `no_active_run`, `terminal`, `not_steerable`, `queued`.
+Ownership outranks lifecycle because a caller steering another session's
+run has the wrong run, not a badly timed one, and must be told so rather
+than sent to wait for a state it will never see; among lifecycle
+conditions the permanent outranks the transient, on the same reasoning as
+the ladder itself. The validator requires the highest-ranked reason the
+target satisfies and the adapter reports it, so the two cannot diverge.
+Fixture `steer-cross-session-terminal-target` (positive; another
+session's terminal run, refused `cross_session`). When the same request is also ungated — an explicit
 steer to an endpoint that does not advertise
 `session.message.delivery.steer` — the delivery gate wins and this rule
 stands down, because a single `error.response` cannot carry both codes
