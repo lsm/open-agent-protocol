@@ -252,8 +252,11 @@ No new envelope types. Changes to
   explicit non-`auto` delivery, whose key the descriptor advertises
   `degraded` and whose `allow_degraded_features` omits that key is
   remembered, and an admission correlated to it (a
-  `session.message.submit.response` rather than an `error.response` with
-  `capability_degraded`) is diagnosed on the response; for an `auto`
+  `session.message.submit.response`) is diagnosed on the response, while
+  a correlated `error.response` must carry `capability_degraded` with
+  `details.feature` naming that key (otherwise `degraded_without_optin`
+  on the error response, so a refusal under `internal_error` or naming
+  the wrong feature does not pass as the typed refusal); for an `auto`
   request the key is the delivery the admission resolved to (`queued`,
   `steered`), judged on the response. The core's mandatory `auto`
   delivery itself is exempt: Claude, Hermes, and DeepSeek advertise
@@ -445,7 +448,9 @@ tools sharing a name in the descriptor, then a `named` policy),
 `controls-degraded-without-optin` (`error.response` with
 `capability_degraded` then no admission; validated as a correct rejection),
 `controls-degraded-admitted-without-optin` (`degraded_without_optin`; the
-same request admitted), `controls-per-run-overwrites-default`
+same request admitted), `controls-degraded-wrong-refusal`
+(`degraded_without_optin` on the error response; the same request
+refused with `internal_error`), `controls-per-run-overwrites-default`
 (`unapplied_control`; a `per_run` descriptor, a submit with `model_id`,
 then a snapshot reporting it as `current_model_id`),
 `controls-per-run-changes-default` (`unapplied_control`; the same, but
@@ -667,8 +672,12 @@ No new envelope types. Additive fields:
   run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?
   }]`, in admission order, with `queue_position` on queued entries
   (1-based). `active_run_id` keeps naming the started run, or is absent when
-  only queued runs remain (session status `queued`). T3c and T4 add
-  `pending_interactions` and `pending_steers` to these entries.
+  only queued runs remain (session status `queued`). Each entry also carries
+  `pending_interactions: [interaction_id]` (additive), the run's
+  unresolved permission and user-input interactions, so the single-run
+  recovery path this unit requires can read the id it needs from a
+  T2-only endpoint; T3c extends the list to control-owned calls and T4
+  adds `pending_steers`.
 - `capabilities.response` gains optional `limits`: `{
   "max_active_runs_per_session": int, "max_queued_runs_per_session": int }`,
   where `max_active_runs_per_session` bounds the nonterminal set, which is
@@ -738,6 +747,19 @@ No new envelope types. Additive fields:
   is legal only when the new admission is `queued` and the trace's descriptor
   advertises `session.message.delivery.queue`; otherwise the existing
   `illegal_run_transition` ("session already has a nonterminal run").
+  The refusal is validated too: an `auto` submit on a session with a
+  nonterminal run whose descriptor does not advertise
+  `session.message.delivery.queue`, or advertises it `unavailable`, is
+  remembered from the request and re-evaluated at the correlated
+  response (a run that terminated in flight leaves the session idle and
+  the submit admissible), and its `error.response` must be the wire's
+  `run_active`; a refusal under any other code is `illegal_run_transition`
+  on the error response (`/payload/code`), so the ordinary busy-session
+  refusal cannot hide behind `internal_error`. Fixtures:
+  `queue-busy-auto-rejected` (`error.response` with `run_active`;
+  validated as a correct rejection) and `queue-busy-auto-wrong-refusal`
+  (`illegal_run_transition` on the error response; the same request
+  refused with `internal_error`).
 - The capability gate does not depend on session state. The validator
   today invokes `feature()` with `delivery.<mode>` on the request itself
   for every explicit non-`auto` delivery; T2 moves that judgement to the
@@ -818,7 +840,14 @@ No new envelope types. Additive fields:
   reads the submission or interaction id from the entry's
   `pending_steers` or `pending_interactions` and an omitted field would
   lose it (an absent field would read as an empty queue to a reconnecting
-  client); the interaction condition is scoped to those endpoints because
+  client); each present entry's `pending_interactions` must equal the
+  validator's set of unresolved interactions for that run
+  (`session_state_mismatch` on omission or on a resolved interaction
+  still listed), a check that lands here with the field so that a
+  T2-only endpoint with a run blocked on a permission or user-input
+  interaction cannot emit an entry without the id (T2 fixture
+  `queue-state-omits-pending-interaction`); the interaction condition is
+  scoped to those endpoints because
   a v0.1-only endpoint has no `active_runs` at all, so no existing fixture
   changes meaning. When present it must list the tracked nonterminal runs
   in admission
@@ -992,6 +1021,8 @@ admitted `queued`), the correct rejection
 advertised `degraded`, no opt-in, admitted `queued`), and the correct
 rejection `queue-degraded-without-optin` (`error.response` with
 `capability_degraded`, then no admission) as a positive fixture,
+`queue-degraded-wrong-refusal` (`degraded_without_optin` on the error
+response; the same request refused with `internal_error`),
 `queue-model-mutation-early` (`premature_session_mutation`),
 `queue-mode-refreshed-while-queued` (positive; a `session_mutation`
 descriptor, a queued controlled submit, a `capabilities.updated` to
@@ -1005,6 +1036,9 @@ application at promotion, as T1's `per_run` snapshot rule specifies),
 (`queue_limit_exceeded`; `max_active_runs_per_session: 1`, a queued
 admission while a run is started),
 `queue-overlap-unadvertised` (`illegal_run_transition`),
+`queue-state-omits-pending-interaction` (`session_state_mismatch`; a
+started run blocked on a permission interaction, and an `active_runs`
+entry for it without the interaction id),
 `queue-explicit-admitted-start` (`illegal_run_transition`; explicit
 `queue` on an idle session answered `started`),
 `queue-auto-without-resolution` (`illegal_run_transition`; an `auto`
@@ -1177,9 +1211,10 @@ Wire:
   (normalized harness-side execution), so an old client reading a new
   descriptor and a new client reading an old descriptor both interpret it
   as today; only the new key gates control-owned execution.
-- `active_runs[]` entries (T2) gain `pending_interactions:
-  [interaction_id]` (additive), listing the run's unresolved interactions
-  of every kind (permission, user input, control-owned calls). It is the
+- `active_runs[]` entries' `pending_interactions` (T2, where it lists
+  the run's unresolved permission and user-input interactions) extends
+  to control-owned calls, so the list names the run's unresolved
+  interactions of every kind. It is the
   state surface a resolver that lost its resolve response reads: an
   interaction absent from the list was resolved, one still present was
   not, so a rejected resolution is re-sent and an accepted one is not.
@@ -1448,10 +1483,10 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   refresh is a conformance failure. An adapter whose refresh would
   introduce a colliding native tool must namespace it or keep it out of
   the session's catalog; it never shadows a provided tool.
-- `session.state` snapshots: each `active_runs[]` entry's
-  `pending_interactions` must equal the validator's set of unresolved
-  interactions for that run (`session_state_mismatch` on omission or on a
-  resolved interaction still listed), the same check T4 applies to
+- `session.state` snapshots: T2's equality check on each `active_runs[]`
+  entry's `pending_interactions` now counts control-owned calls among
+  the unresolved interactions (`session_state_mismatch` on omission or on
+  a resolved interaction still listed), the same check T4 applies to
   `pending_steers`.
 
 ### Reference adapter
@@ -1946,8 +1981,18 @@ and hub contract is explicit rather than inherited from `start`:
   settlement read before the adapter has returned are contract
   violations reported as adapter errors rather than published. When the
   gate lifts, the drainer publishes the withheld remainder in order and
-  resumes publishing live. After the adapter returns
-  the hub registers the pending steer (`submission_id` to target run,
+  resumes publishing live. The error path has its own drain: when the
+  adapter returns an error instead of an admission (an invalid target, a
+  control on a steer, or any failure), nothing was admitted and no
+  settlement can follow, so the submit goroutine drains the target
+  stream without blocking, publishes the whole buffer in order, and
+  lifts the gate before handing the error to the binding; the hub's
+  trace then records every envelope emitted before return, including a
+  terminal the target reached while the request was in flight, ahead of
+  the `error.response`, which is what the validator's response-time
+  re-evaluation of the target reads. `Session.Resolve` does the same on
+  its error path under T3c. After the adapter returns an admission the
+  hub registers the pending steer (`submission_id` to target run,
   reflected in `active_runs`). The gate is not lifted inside `Submit`:
   the hub
   cannot know when the response has reached the caller, and an SSE
