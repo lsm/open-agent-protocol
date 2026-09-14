@@ -154,8 +154,13 @@ func (p *Process) wait() {
 // stderr. A descendant that inherited stderr can keep the read end from
 // reaching EOF, so bound the drain and close our side to release the copier,
 // exactly as the shutdown paths bound the stdout drain.
-func (p *Process) drainStderr() {
-	timer := time.NewTimer(p.grace)
+func (p *Process) drainStderr() { p.drainStderrWithin(p.grace) }
+
+// drainStderrWithin waits up to limit for the copier, then closes the read end
+// to release it. Releasing costs whatever a still-writing descendant had left
+// to say; blocking instead would cost the caller its bound.
+func (p *Process) drainStderrWithin(limit time.Duration) {
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
 	case <-p.stderrDone:
@@ -172,7 +177,17 @@ func processExitError(err error) error {
 	return fmt.Errorf("claude rpc: process exited: %w", err)
 }
 
-func (p *Process) abort() error { p.killAndRelease(); <-p.waitDone; return p.WaitError() }
+func (p *Process) abort() error {
+	_ = p.command.Process.Kill()
+	// Collect the dead child's stderr before releasing the pipes: this is the
+	// diagnostic the caller composes into the handshake error, and
+	// killAndRelease closes the read end. Bounded by abortStderrGrace so a
+	// descendant holding stderr cannot stall a failed Start.
+	p.drainStderrWithin(abortStderrGrace)
+	p.killAndRelease()
+	<-p.waitDone
+	return p.WaitError()
+}
 
 // killAndRelease kills the child and retires the client before reaping. Reaping
 // waits for the reader to drain (see wait), but a reader blocked on a response
@@ -250,3 +265,11 @@ func redact(v string) string {
 	v = secretQuoted.ReplaceAllString(v, `$1"[REDACTED]"`)
 	return strings.TrimSpace(secretLine.ReplaceAllString(v, `$1$2[REDACTED]`))
 }
+
+// abortStderrGrace bounds the stderr drain on the handshake-abort paths. The
+// child is already killed there, so the diagnostic stderr composed into the
+// failure is whatever it wrote before dying and is sitting in the pipe buffer
+// already: the copier needs a scheduling slice, not a shutdown budget. Bounding
+// it here keeps a descendant that inherited stderr from adding a full
+// ShutdownTimeout to a Start that has already failed or been cancelled.
+const abortStderrGrace = 250 * time.Millisecond

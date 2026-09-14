@@ -222,8 +222,13 @@ func (process *Process) wait() {
 // stderr. A descendant that inherited stderr can keep the read end from
 // reaching EOF, so bound the drain and close our side to release the copier,
 // exactly as the shutdown paths bound the stdout drain.
-func (process *Process) drainStderr() {
-	timer := time.NewTimer(process.timeout)
+func (process *Process) drainStderr() { process.drainStderrWithin(process.timeout) }
+
+// drainStderrWithin waits up to limit for the copier, then closes the read end
+// to release it. Releasing costs whatever a still-writing descendant had left
+// to say; blocking instead would cost the caller its bound.
+func (process *Process) drainStderrWithin(limit time.Duration) {
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
 	case <-process.stderrDone:
@@ -240,6 +245,12 @@ func processExitError(err error) error {
 	return fmt.Errorf("acp rpc: process exited: %w", err)
 }
 func (process *Process) abort() error {
+	_ = process.command.Process.Kill()
+	// Collect the dead child's stderr before releasing the pipes: this is the
+	// diagnostic the caller composes into the handshake error, and
+	// killAndRelease closes the read end. Bounded by abortStderrGrace so a
+	// descendant holding stderr cannot stall a failed Start.
+	process.drainStderrWithin(abortStderrGrace)
 	process.killAndRelease()
 	<-process.waitDone
 	return process.WaitError()
@@ -328,3 +339,11 @@ func cloneMap(source ClientCapabilities) ClientCapabilities {
 	}
 	return result
 }
+
+// abortStderrGrace bounds the stderr drain on the handshake-abort paths. The
+// child is already killed there, so the diagnostic stderr composed into the
+// failure is whatever it wrote before dying and is sitting in the pipe buffer
+// already: the copier needs a scheduling slice, not a shutdown budget. Bounding
+// it here keeps a descendant that inherited stderr from adding a full
+// ShutdownTimeout to a Start that has already failed or been cancelled.
+const abortStderrGrace = 250 * time.Millisecond

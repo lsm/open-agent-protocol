@@ -73,6 +73,18 @@ func TestProcessHelper(t *testing.T) {
 			os.Exit(20)
 		}
 		os.Exit(0)
+	case "bad-descendant":
+		// A failed handshake whose descendant inherits stderr: the pipe never
+		// reaches EOF even though the direct child is killed.
+		os.Stderr.WriteString("api_key=secret-value\n" + strings.Repeat("x", 256))
+		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
+		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(22)
+		}
+		os.Stdout.WriteString("noise\n")
+		os.Exit(2)
 	case "ready-stderr-descendant":
 		// A descendant inheriting both pipes keeps either read end from
 		// reaching EOF once the direct child exits, so forced shutdown has to
@@ -321,5 +333,51 @@ func TestProcessShutdownReleasesDescendantHeldStderr(t *testing.T) {
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("Close blocked while a descendant held stderr open")
+	}
+}
+
+// A failed handshake whose child left a descendant holding stderr must still
+// report that child's stderr, and must not wait a full ShutdownTimeout to do
+// it: the abort paths drain under a short grace and then release the pipe.
+func TestProcessHandshakeAbortBoundsDescendantHeldStderr(t *testing.T) {
+	config := helperConfig("bad-descendant")
+	config.ShutdownTimeout = 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := Start(ctx, config)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Start took %v; the abort drain waited on a descendant-held stderr", elapsed)
+	}
+	if strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("secret leaked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("stderr lost to the bounded abort drain: %v", err)
+	}
+}
+
+// The abort paths release the stderr read end to bound themselves, so the
+// release must come after the drain, never instead of it. Gate the copier
+// inside the grace window: the bytes must still reach the composed error.
+func TestProcessHandshakeAbortDrainsBeforeReleasing(t *testing.T) {
+	gate := make(chan struct{})
+	config := helperConfig("bad")
+	config.stderrTap = func(pipe io.ReadCloser) io.ReadCloser {
+		return &lateReader{ReadCloser: pipe, gate: gate}
+	}
+	time.AfterFunc(abortStderrGrace/4, func() { close(gate) })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := Start(ctx, config)
+	if !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("stderr released before it was drained: %v", err)
 	}
 }
