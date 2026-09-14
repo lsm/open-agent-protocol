@@ -393,12 +393,12 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	ps := &permissionState{id: id, run: run, tool: tool, request: r, options: opts}
 	s.interactions[id] = ps
 	s.mu.Unlock()
-	event, err := s.emitEnvelope(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "")
-	if err == nil {
-		s.mu.Lock()
-		ps.requestEventID = event.ID
-		s.mu.Unlock()
-	}
+	// A consumer may resolve the gate the instant it observes this event, and
+	// Resolve correlates the resolution to it through in_reply_to. The id is
+	// therefore recorded under the publication lock, before any subscriber
+	// can see the event: recording it afterwards let a fast Resolve read an
+	// empty correlation.
+	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event protocol.Envelope) { ps.requestEventID = event.ID })
 }
 
 func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
@@ -869,6 +869,15 @@ func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, te
 }
 
 func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID) (protocol.Envelope, error) {
+	return s.emitRecorded(run, typ, payload, terminal, inReplyTo, nil)
+}
+
+// emitRecorded publishes one envelope and, when record is set, hands the
+// finished envelope to it under the session lock before any subscriber can
+// observe the event. State a consumer may act on as soon as the event is
+// visible (a gate's request id, read back for in_reply_to) must be recorded
+// this way rather than after publication.
+func (s *session) emitRecorded(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID, record func(protocol.Envelope)) (protocol.Envelope, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
 	s.mu.Lock()
@@ -897,6 +906,9 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 		}
 		_ = json.Unmarshal(e.Payload, &generic)
 		e.ToolCallID = generic.ToolCallID
+	}
+	if record != nil {
+		record(e)
 	}
 	s.journal = append(s.journal, e)
 	if len(s.journal) > s.capacity {
