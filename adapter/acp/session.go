@@ -655,8 +655,9 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 		return errTerminalWon
 	}
 	p.resolved = true
-	// The dispatcher records the request event id after publishing the gate;
-	// read it under the lock so the correlation cannot race that write.
+	// The dispatcher records the request event id under the publication lock
+	// before the gate is visible (see handleRequest), so it is always present
+	// here; the lock only orders this read against that write.
 	requestEventID := p.requestEventID
 	s.mu.Unlock()
 	out := protocol.InteractionRejected
