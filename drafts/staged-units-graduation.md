@@ -198,10 +198,21 @@ No new envelope types. Changes to
   is rejected before admission, before any native write. No submission or run
   identity is allocated.
 - `emulated` controls need no opt-in. `degraded` controls need the key in
-  `allow_degraded_features`; otherwise `capability_degraded` wins before
-  `unsupported_feature` for a different control on the same request only if
-  the degraded control is evaluated first, so evaluation order is fixed:
-  `model_id`, `instructions`, `tool_choice`, `output_schema`.
+  `allow_degraded_features`; otherwise `capability_degraded`. Which
+  failure a request that trips more than one must report is not decided
+  by the order of the controls in the payload but by the single refusal
+  precedence the validator applies (see **Refusal precedence** below):
+  the rungs first, so an unadvertised control outranks a degraded one
+  whichever field carries it — a caller told to stop sending
+  `instructions` learns something permanent, where an opt-in it could
+  have supplied is a request it can simply reissue — and, among failures
+  on the same rung, the lower capability key lexicographically. One order
+  governs the whole plan, so an adapter and the validator cannot pick
+  different conforming refusals for the same request. Fixture
+  `controls-degraded-model-unadvertised-instructions` (positive; a
+  `degraded` `model_id` without the opt-in alongside an unadvertised
+  `instructions`, refused with `unsupported_feature` naming
+  `run.instructions`).
 - An admitted `model_id` is authoritative for the run: the submit response
   repeats it in `model_id`, `run.started` repeats it, and `run.completed`
   may not name another model. Absent `model_id`, the response reports the
