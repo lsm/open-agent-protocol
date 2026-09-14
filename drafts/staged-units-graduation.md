@@ -237,16 +237,25 @@ No new envelope types. Changes to
   admission correlated to it (`session.message.submit.response`) is
   `unavailable_capability` on the response, and a correlated
   `error.response` must carry `unsupported_feature` with `details.feature`
-  naming the control's key (`unavailable_capability` on the error response
-  otherwise: the refusal happened, but under a code that does not tell the
-  caller what to stop sending). The stale-revision and missing-descriptor
-  branches of `feature()` stay on the request, as for every optional
-  envelope. Fixtures: `controls-unadvertised-model` (`unavailable_capability`
-  on the admission) and the correct rejection
-  `controls-unadvertised-model-rejected` (`error.response` with
-  `unsupported_feature`, `details.feature: "run.model_selection"`,
-  `details.reason: "unadvertised"`, then no admission), which is also the
-  shape of the Codex `instructions` rejection T1 keeps.
+  naming the control's key and `details.reason: "unadvertised"`, the
+  reason the wire contract above assigns to this condition
+  (`unavailable_capability` on the error response otherwise: the refusal
+  happened, but under a code, feature, or reason that does not tell the
+  caller what to stop sending — `unsatisfiable`, which says the request
+  was understood and could not be honoured, is exactly the wrong story
+  for a capability the endpoint never offered, and an absent reason
+  leaves the caller guessing whether retrying differently would help).
+  The same response-time gate serves the explicit queue and steer
+  deliveries of T2 and T4, so it holds them to the same reason. The
+  stale-revision and missing-descriptor branches of `feature()` stay on
+  the request, as for every optional envelope. Fixtures:
+  `controls-unadvertised-model` (`unavailable_capability` on the
+  admission), the correct rejection `controls-unadvertised-model-rejected`
+  (`error.response` with `unsupported_feature`, `details.feature:
+  "run.model_selection"`, `details.reason: "unadvertised"`, then no
+  admission), which is also the shape of the Codex `instructions`
+  rejection T1 keeps, and `controls-unadvertised-wrong-reason` (the right
+  code and feature under `details.reason: "unsatisfiable"`).
 - New diagnostic `degraded_without_optin`: `feature()` today accepts every
   level but `unavailable`, so a request carrying a control, or an
   explicit non-`auto` delivery, whose key the descriptor advertises
@@ -318,14 +327,34 @@ No new envelope types. Changes to
   trace carries a catalog (capabilities or `action.tools.list.response`,
   plus any `tools` provided at open), lists or names a tool outside that
   catalog or is `required` or `named` against an empty filtered set. The
-  validator and the reference adapter therefore reject the same policies:
-  a policy the unit's rules accept is admitted by the reference, and one
-  the reference refuses is diagnosed. The same diagnostic covers an
-  `output_schema` whose root is not an object schema or that carries an
-  external reference; the validator detects the reference by compiling
-  with the refusing loader, never by resolving it. The check runs only
-  when the submit carries a control, so envelopes that do not use the unit
-  are untouched.
+  same condition covers an `output_schema` whose root is not an object
+  schema or that carries an external reference; the validator detects the
+  reference by compiling with the refusing loader, never by resolving it.
+  The validator and the reference adapter therefore reject the same
+  policies: a policy the unit's rules accept is admitted by the
+  reference, and one the reference refuses is diagnosed.
+  Like every other gate in this plan the condition is judged on the
+  correlated response, never on the request, because the wire requires
+  the endpoint to refuse an unsatisfiable control and diagnosing the
+  request would fail the behaviour it mandates. The validator retains the
+  condition from the `session.message.submit.request` (the offending
+  control, and the tool or field that makes it unsatisfiable) and settles
+  it at the correlated response: an admission is `unsatisfiable_control`
+  on the `session.message.submit.response`, and an `error.response` must
+  carry `unsupported_feature` with `details.feature` naming the control's
+  key, `details.reason: "unsatisfiable"`, and the detail the condition
+  identifies (`details.tool` for a `tool_choice` naming or filtering to
+  an unavailable tool, `details.field` for an `output_schema`), with a
+  refusal under any other code, feature, reason, or without that detail
+  diagnosed as `unsatisfiable_control` on the `error.response`. The check
+  runs only when the submit carries a control, so envelopes that do not
+  use the unit are untouched. The contradictory-policy and
+  external-reference cases therefore appear twice: as positives where the
+  typed refusal arrives (`controls-tool-choice-contradictory-rejected`,
+  `controls-output-schema-external-rejected`), and as negatives where the
+  submit is admitted (`controls-tool-choice-contradictory`,
+  `controls-structured-external-ref`) or refused under the wrong shape
+  (`controls-unsatisfiable-wrong-refusal`).
 - New diagnostic `duplicate_tool_name`: the catalog a `tool_choice` is
   judged against (the descriptor's effective catalog or the latest
   `action.tools.list.response` for the session) lists two tools with one
@@ -429,16 +458,26 @@ correct rejection). Negative:
 `controls-structured-missing-result` (`unapplied_control`),
 `controls-structured-nonconforming-result` (`unapplied_control`; `result`
 present but invalid against the admitted schema),
-`controls-tool-choice-contradictory` (`unsatisfiable_control`; `required`
-with the only tool disallowed, and `named` outside its own allowlist),
-`controls-tool-choice-unknown-entry` (`unsatisfiable_control`; an
-`allowed` list naming a tool outside the catalog the trace carries),
+`controls-tool-choice-contradictory` (`unsatisfiable_control` on the
+admission; `required` with the only tool disallowed, and `named` outside
+its own allowlist), `controls-tool-choice-unknown-entry`
+(`unsatisfiable_control` on the admission; an `allowed` list naming a
+tool outside the catalog the trace carries),
+`controls-tool-choice-contradictory-rejected` (positive; the same policy
+refused with `unsupported_feature`, `details.feature:
+"run.tool_choice"`, `details.reason: "unsatisfiable"`, `details.tool`),
+`controls-unsatisfiable-wrong-refusal` (`unsatisfiable_control` on the
+`error.response`; the same policy refused with `internal_error`),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
 under `mode: "none"`),
-`controls-structured-non-object-schema` (`unsatisfiable_control`; a
-root-array `output_schema`), `controls-structured-external-ref`
-(`unsatisfiable_control`; an `output_schema` with an absolute `$ref`,
-which the validator must diagnose without any resource access),
+`controls-structured-non-object-schema` (`unsatisfiable_control` on the
+admission; a root-array `output_schema`), `controls-structured-external-ref`
+(`unsatisfiable_control` on the admission; an `output_schema` with an
+absolute `$ref`, which the validator must diagnose without any resource
+access), `controls-output-schema-external-rejected` (positive; the same
+schema refused with `unsupported_feature`, `details.feature:
+"run.structured_output"`, `details.reason: "unsatisfiable"`,
+`details.field`),
 `controls-required-without-call` (`unapplied_control`; `mode: "required"`,
 `run.completed` with no call), `controls-named-without-call`
 (`unapplied_control`; `named` naming `scripted_tool`, `run.completed` with
@@ -599,10 +638,15 @@ serve one catalog for its lifetime.
   correlating response, and whether it was admitted or refused): when
   the first `models.response` under that revision arrives and omits the
   id, a retained admission is `model_not_in_catalog` as before and a
-  retained refusal whose code was not `model_not_found` is
-  `model_not_in_catalog` on that `error.response`, so refusing an
-  unlisted model with `internal_error` in the gap before the catalog is
-  no safer than admitting it. Fixtures
+  retained refusal is held to exactly the code-and-detail test the
+  immediately judged path applies: `model_not_found` with the requested
+  id in `details.model_id`, and any other code, or `model_not_found`
+  without that detail or naming a different id, is `model_not_in_catalog`
+  on that `error.response`. Deferring the judgement must not weaken it —
+  a refusal the caller cannot act on is no more conforming for having
+  preceded the catalog — so refusing an unlisted model with
+  `internal_error`, or with an undiagnosable `model_not_found`, in the
+  gap before the catalog is no safer than admitting it. Fixtures
   `models-unlisted-selection-refused` (the typed refusal, a positive),
   `models-unlisted-selection-wrong-refusal`,
   `models-unlisted-selection-missing-detail` (`model_not_found` without
@@ -610,7 +654,9 @@ serve one catalog for its lifetime.
   (positive; the T1 `unadvertised` refusal against an unlisted id on an
   endpoint that does not advertise selection) and
   `models-refused-before-catalog` (the refusal precedes the first
-  catalog and is reconciled when it arrives).
+  catalog and is reconciled when it arrives) and
+  `models-refused-before-catalog-missing-detail` (a `model_not_found`
+  without `details.model_id` precedes the catalog that omits the id).
 - New diagnostic `unannounced_catalog_change`: a second `models.response`
   under the same `capability_revision` whose catalog differs from the
   stored one in any descriptor, compared whole (`id`, `display_name`,
@@ -2446,13 +2492,24 @@ every later unit relies on:
   the next transition out of it is judged, an unknown admission or
   delivery skips the combination table but keeps the correlation, scope,
   and capability checks, with opaque run bookkeeping so the run's own
-  events are not orphaned: an accepted response whose `admission` or
-  `effective_delivery` is unknown and that names a `run_id` the
-  validator does not yet track registers that run as opaquely admitted
-  (run known, status opaque, the pre-`run.started` rule and every rule
-  keyed on the admission kind, such as queue order, limits, and steer
-  settlement, quarantined for it), and one naming a tracked run is
-  treated as an operation on that run, as a `steered` admission is,
+  events are not orphaned. Suspension is per member, not per envelope:
+  every semantic a known member still carries is applied, and only the
+  rules that actually depend on the unknown one stand down. The
+  `admission` decides run identity, so it alone decides whether a run is
+  created. An accepted response whose `admission` is a known member is
+  treated exactly as that member says whatever `effective_delivery`
+  holds — `steered` operates on an existing started run and creates
+  nothing, so a future delivery value cannot let a malformed response
+  conjure a run and make its later events look valid, and `queued` and
+  `started` register their run as that kind with the rules keyed on it
+  live; only the rules keyed on the delivery itself (which bound applies,
+  whether the delivery was advertised) are quarantined. Opaque run
+  creation is reserved for an unknown `admission`: a response carrying
+  one that names a `run_id` the validator does not yet track registers
+  that run as opaquely admitted (run known, status opaque, the
+  pre-`run.started` rule and every rule keyed on the admission kind, such
+  as queue order, limits, and steer settlement, quarantined for it), and
+  one naming a tracked run is treated as an operation on that run,
   creating nothing; the run's later events then get the type-independent
   bookkeeping and the lifecycle rules that do not depend on the
   admission kind (one terminal, nothing after it, sequence contiguity).
