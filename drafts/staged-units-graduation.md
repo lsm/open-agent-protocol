@@ -724,7 +724,12 @@ No new envelope types. Additive fields:
   run's terminal. The events themselves are unchanged (timestamps and the
   state snapshot say when a queued run actually settled); this is a rule
   about the ordered timeline a binding presents, and it keeps a single
-  `(run, sequence)` cursor sufficient for any consumer.
+  `(run, sequence)` cursor sufficient for every run-domain envelope. T2
+  itself interleaves no session-scoped envelope on a run stream (queue
+  state travels in `session.state` and its `active_runs`), but the
+  cursor member for interleaved session-scoped envelopes that T3c's and
+  T4's hub-minted snapshots need lands in T2's client slice below, so
+  those units find it in place.
 
 ### Validator
 
@@ -869,8 +874,11 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   carries `(RunID, AfterSequence)`: resume replays that run's retained
   suffix and, when the subscription follows the session (below), continues
   into later-admitted runs in order, and the hub stops assuming the newest
-  admission is the run a bare sequence refers to. Both clients' single scalar cursor therefore stays correct: the run
-  it names is always the only run in flight on the stream.
+  admission is the run a bare sequence refers to. A cursor's run and sequence therefore stay correct: the run it names
+  is always the only run in flight on the stream. The cursor's third
+  member, for session-scoped envelopes interleaved into a run's replay,
+  is specified under T4's client section and landed by T2's client slice
+  (below), since T2 is the first slice to touch cursor handling.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
@@ -915,8 +923,11 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   observed envelope (`EventStream.runID`, `EventStream.runId`) and expose
   `EventsAfter(RunID, LastSequence)` / `eventsAfter`; the changes are to
   subscribe with `?follow=session`, send that run as `?run=` on
-  reconnect, and stop treating a terminal envelope as the end of a
-  following stream. A terminal ends the run; the stream
+  reconnect, adopt the wire's own scoping and the `after_session` cursor
+  member specified under T4's client section (T2 lands them, as the first
+  slice to touch cursor handling; the daemon accepts `?after_session=`
+  from T2 on and, having no journal yet, ignores it until T3c), and stop
+  treating a terminal envelope as the end of a following stream. A terminal ends the run; the stream
   ends on `oap-stream-end` (or a closed session). A connection that drops
   after a terminal without that signal is a drop like any other: the
   client resumes with the finished run's cursor and the daemon either
@@ -1789,8 +1800,13 @@ rule rather than a hub detail. A request with `delivery: "steer"` whose
 target (`target_run_id`, or the session's started run when absent) is
 not a started nonterminal run of that session that can still take
 guidance (queued, terminal, another session's, no started run at all,
-or a started run that is `cancelling`) is remembered from the request,
-and its correlated `error.response` must carry `invalid_steer_target`
+or a started run that is `cancelling`) is remembered from the request
+and re-evaluated against the target's tracked state at the correlated
+response, so a target that reached a terminal or became `cancelling`
+while the request was in flight is judged as `terminal` or
+`not_steerable` there (an admission against it could not settle before
+the already-published terminal), and its correlated `error.response`
+must carry `invalid_steer_target`
 with the `details.reason` the wire assigns to that condition (`queued`,
 `terminal`, `cross_session`, `no_active_run`, `not_steerable` for the
 `cancelling` case); an admission is the
@@ -1806,6 +1822,12 @@ learns why the steer could not land. Fixtures: positive `steer-immediate`
 correct rejection), `steer-target-cancelling-rejected` (`error.response`
 with `invalid_steer_target`, `details.reason: "not_steerable"` against a
 `cancelling` target; validated as a correct rejection),
+`steer-target-terminated-in-flight-rejected` (`error.response` with
+`invalid_steer_target`, `details.reason: "terminal"`; the target was
+running at the request and terminal before the response; validated as a
+correct rejection), `steer-target-terminated-in-flight-wrong-refusal`
+(`illegal_run_transition` on the error response; the same race refused
+with `internal_error`),
 `steer-dropped-at-terminal`, `steer-status-advances-in-flight` (a
 `run.status.updated` to `waiting_for_input` between the steer request and
 its response, the response naming that transition's sequence as
@@ -2011,9 +2033,12 @@ treats any type outside `RUN_EVENT_TYPES` (`clients/ts/src/events.ts`)
 as session-scoped and does not advance the cursor, so an unlisted
 `run.steer.applied`, or any future additive run event, would make the
 next known event raise `SequenceGapError` and a reconnect replay it.
-Both clients therefore switch to the wire's own scoping in the T3c
-client slice, the first whose fallback mints a snapshot, and T4 reuses
-it: an envelope carrying `run_id` is run-scoped and its sequence advances
+Both clients therefore switch to the wire's own scoping in the T2
+client slice, the first that changes cursor handling at all (`?run=`,
+`?follow=session`), even though T2 itself interleaves no session-scoped
+envelope on a run stream, so that T3c's and T4's hub-minted snapshots
+find the scoping and the `after_session` cursor member already in place
+rather than landing with the units that first need them: an envelope carrying `run_id` is run-scoped and its sequence advances
 that run's cursor whatever its type; an envelope without `run_id` but
 with `sequence` is session-scoped and is delivered without touching the
 run cursor whatever its type. The schema requires `run_id` on every run
@@ -2240,13 +2265,27 @@ every later unit relies on:
   types, not of status strings) and neither the transition into it nor
   the next transition out of it is judged, an unknown admission or
   delivery skips the combination table but keeps the correlation, scope,
-  and capability checks, and an unknown interaction `kind`, `status`, or
+  and capability checks, with opaque run bookkeeping so the run's own
+  events are not orphaned: an accepted response whose `admission` or
+  `effective_delivery` is unknown and that names a `run_id` the
+  validator does not yet track registers that run as opaquely admitted
+  (run known, status opaque, the pre-`run.started` rule and every rule
+  keyed on the admission kind, such as queue order, limits, and steer
+  settlement, quarantined for it), and one naming a tracked run is
+  treated as an operation on that run, as a `steered` admission is,
+  creating nothing; the run's later events then get the type-independent
+  bookkeeping and the lifecycle rules that do not depend on the
+  admission kind (one terminal, nothing after it, sequence contiguity).
+  An unknown interaction `kind`, `status`, or
   `outcome` skips the value-specific branch and keeps the lifecycle
   checks. Strict mode is unchanged. The step's tests feed
   `run.status.updated` with `status: "paused"` followed by a known
   transition (tolerant: valid; strict: the schema rejection), and a
-  `session.message.submit.response` with an unknown `admission`
-  (tolerant: correlation and scope checked, no combination diagnostic).
+  `session.message.submit.response` with an unknown `admission` and a
+  new `run_id`, followed by that run's `run.started` and `run.completed`
+  (tolerant: correlation and scope checked, no combination diagnostic,
+  the run registered, its events accepted, and its terminal recorded;
+  strict: the schema rejection).
 - Fixture validation stays strict against the bundle at its own revision.
   That is the conformance validator's job and how a misspelled new field is
   caught; each unit extends the bundle in place under `schema/v0.1`.
