@@ -505,7 +505,17 @@ serve one catalog for its lifetime.
   against a stale catalog (a newly added model is not falsely diagnosed,
   a removed one is not silently accepted) until a `models.response` under
   the new revision replaces it; the `feature()` gate already rejects a
-  `models.response` citing a stale revision.
+  `models.response` citing a stale revision. An admission with `model_id`
+  under a revision whose catalog the trace has not yet served is not
+  skipped but retained (`sessionTrack.unjudgedModels`: the id and the
+  admitting response), and the first `models.response` under that
+  revision reconciles them: every retained id the catalog does not list
+  is `model_not_in_catalog` on that response, with `details` naming the
+  admission, so an adapter cannot accept an unlisted model in the gap
+  between a refresh and its catalog, or before its first catalog, and
+  have the gap hide it. Reconciliation runs at `native` and `emulated`
+  `models.list` only; at `degraded` the catalog refreshes per turn and an
+  earlier admission may have matched a list that was never served.
 - New diagnostic `unannounced_catalog_change`: a second `models.response`
   under the same `capability_revision` whose catalog differs from the
   stored one in any descriptor, compared whole (`id`, `display_name`,
@@ -571,7 +581,11 @@ different ids), `models-catalog-metadata-mutates-within-revision`
 (`unannounced_catalog_change`; the same ids, one descriptor's `default`
 and `context_window` changed). Positive as well: `models-refresh-replaces-catalog` (a model
 added by the revision 2 catalog is selected after `capabilities.updated`,
-and one selected between the refresh and the new catalog is not judged).
+and one selected between the refresh and the new catalog is retained and
+found listed when that catalog arrives). Negative as well:
+`models-select-in-gap-unlisted` (`model_not_in_catalog` on the revision 2
+`models.response`; a model accepted between `capabilities.updated` and
+the new catalog, which then omits it).
 
 ### Exit criteria
 
@@ -1215,9 +1229,14 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   checks; the resolution's `tool_call_id` must match the interaction's
   binding (`scope_mismatch`); a second `accepted: true` response to a
   `result` or `error`, or to a `started`, for one interaction is
-  `duplicate_interaction` whatever the adapter then emits, so "one
-  resolution" and "at most one acknowledgement" are both enforced at the
-  response, not only at the events that follow.
+  `duplicate_interaction` whatever the adapter then emits, and so is an
+  accepted `started` after an accepted `result` or `error` for the same
+  interaction (`interactionState` records the accepted terminal, and
+  every later request of any arm must be answered `accepted: false`, as
+  the semantics above require of a late acknowledgement), so "one
+  resolution", "at most one acknowledgement", and "no acknowledgement
+  once resolved" are all enforced at the response, not only at the
+  events that follow.
 - `session.open.request` with `tool_sources` or `tools` invokes the
   `feature()` gate with `action.tool_sources.attach` or
   `action.tools.provide`; a `remote` source additionally requires the
@@ -1307,9 +1326,12 @@ the request used.
   after writing the response. The context-done fallback reconciles as the
   steer fallback does rather than lifting the gate blind: the hub first
   publishes a `session.state.updated` whose `active_runs` entry for the
-  run reflects `pending_interactions` after the resolution (the
-  interaction absent when the resolution was accepted, present when it
-  was rejected), then lifts the gate. The accepted response is recorded in
+  run reflects `pending_interactions` after the request was answered:
+  the interaction absent only when an accepted `result` or `error`
+  settled it, and still present when the request was rejected or when it
+  was an accepted `started` acknowledgement, which is not a resolution
+  and leaves the call awaiting its terminal, then lifts the gate. The
+  accepted response is recorded in
   the hub's trace before the released events, so the validator's
   accepted-response rule holds in every trace, and a resolver that never
   saw the response learns the outcome from state instead of guessing from
@@ -1410,7 +1432,10 @@ open admitted, the negative counterpart of `open-provide-dangling-source`),
 (`duplicate_interaction`; two `result` resolutions for one interaction
 both answered `accepted: true`), `control-tool-double-accepted-ack`
 (`duplicate_interaction`; two `started` acknowledgements for one
-interaction both answered `accepted: true`).
+interaction both answered `accepted: true`),
+`control-tool-ack-after-result-accepted` (`duplicate_interaction`; an
+accepted `result`, then a `started` for the same interaction also
+answered `accepted: true`).
 
 ### Exit criteria
 
@@ -1462,9 +1487,10 @@ therefore needs a steer settlement, not only a steer admission.
   `steer-with-controls-rejected`, a correct rejection, and
   `steer-with-controls-admitted`, `unsatisfiable_control`).
 - Response: `admission: "steered"`, `effective_delivery: "steer"`, `run_id`
-  set to the target, `status` equal to the target's status at admission
-  (after every target-run envelope the adapter had emitted by then), and
-  the `submission_id` that names the pending steer.
+  set to the target, `status` equal to the target's status after the last
+  target-run envelope the adapter emitted before returning (the status
+  the stream tracks at the response, under the ordering Surfaces gives),
+  and the `submission_id` that names the pending steer.
 - Settlement, two new run-scoped events in the target run's sequence domain:
   `run.steer.applied` `{ "session_id", "run_id", "submission_id",
   "request_id", "message_ids", "boundary": "immediate" | "turn" |
@@ -1518,14 +1544,14 @@ with `delivery: "steer"` (the `submitResponse` combination table gains
 the `steered`/`steer` row and rejects it for `auto`, so "`auto` never
 resolves to `steer`" is enforced), and only with a `run_id` equal to the
 request's `target_run_id` when one was supplied (`scope_mismatch`) and a
-`status` the target held while the request was in flight: the tracked
-`runState.status` at the response, or a status the target held between
-the request and the response before a transition that precedes the
-response (`illegal_run_transition` otherwise), so the submitter is never
-handed a status the target did not have at admission, and a transition
-the adapter emitted during the call, which the hub publishes ahead of the
-response (Surfaces), does not falsify a response that reports the status
-the steer was admitted against; `applied`/`dropped` must name a
+`status` equal to the target's tracked `runState.status` at the response
+(`illegal_run_transition` otherwise), so the submitter is never handed
+stale run state: a transition the adapter emitted during the call
+precedes the response in the trace and the response reports it, and a
+transition emitted after the adapter returned follows the response,
+because the hub orders the response at the position the adapter's
+`status` names (Surfaces) rather than letting a later transition race
+ahead of it; `applied`/`dropped` must name a
 pending steer once (`unmatched_steer`, `duplicate_steer`), and a `steered`
 response whose `submission_id` is already pending on that run is
 `duplicate_steer` as well, since the pending set could not represent two
@@ -1545,8 +1571,10 @@ rule rather than a hub detail. Fixtures: positive `steer-immediate`
 (response, then `applied` in the target's sequence), `steer-at-boundary`,
 `steer-dropped-at-terminal`, `steer-status-advances-in-flight` (a
 `run.status.updated` to `waiting_for_input` between the steer request and
-its response, the response reporting `running`, the status at admission);
-negative `steer-settled-before-response`
+its response, the response reporting `waiting_for_input`); negative
+`steer-status-stale` (`illegal_run_transition`; the same transition
+before the response, the response still reporting `running`),
+`steer-settled-before-response`
 (`unmatched_steer`), `steer-duplicate-settlement` (`duplicate_steer`),
 `steer-pending-at-terminal` (`pending_steer_at_terminal`),
 `steer-unadvertised` (`unavailable_capability`),
@@ -1624,14 +1652,21 @@ and hub contract is explicit rather than inherited from `start`:
   settlement is published as it is read, during the call and after it, so
   the gate never reorders a status transition or any other pre-response
   envelope behind the response. When the adapter returns, the hub drains
-  the target stream without blocking and publishes what it finds up to
-  that first settlement before handing the response to the binding, so
-  every envelope the adapter emitted before returning (readable at return
-  by the adapter contract above) precedes the response in the hub's
-  trace, and the response's `status`, the target's status at admission,
-  is one the validator has already tracked. A settlement read before the
-  adapter has returned is the contract violation above and is reported
-  as an adapter error rather than published. After the adapter returns
+  the target stream without blocking and publishes what it finds before
+  handing the response to the binding, stopping at the first settlement
+  or at the first envelope that leaves the target's tracked status
+  different from the `status` the response reports; from that envelope
+  on the gate withholds. Every envelope the adapter emitted before
+  returning is readable at return (the adapter contract above) and the
+  last of them leaves the target at the reported status, so they precede
+  the response in the hub's trace, while an envelope that moves the
+  status past the reported one can only have been emitted after the
+  adapter returned and is ordered after the response, where the
+  validator expects it; the response therefore always reports the status
+  the trace tracks at its position, and nothing is reordered within the
+  run. A settlement read before the adapter has returned is the contract
+  violation above and is reported as an adapter error rather than
+  published. After the adapter returns
   the hub registers the pending steer (`submission_id` to target run,
   reflected in `active_runs`). The gate is not lifted inside `Submit`:
   the hub
@@ -1663,8 +1698,9 @@ and hub contract is explicit rather than inherited from `start`:
   records, therefore see the admission before the settlement even when an
   adapter emits inside `Submit`; the `servehttp` e2e test subscribes
   before a synchronously settling steer and asserts the settlement arrives
-  after the response and a status transition emitted during the call
-  before it. The same branch
+  after the response, a status transition emitted during the call
+  before it, and one emitted after `Submit` returned after it. The same
+  branch
   is where a queued admission (T2) differs from `start`: it adopts the
   queued run's stream under a new serial but does not supersede the
   started run.
