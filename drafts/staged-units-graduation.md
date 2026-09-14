@@ -573,20 +573,44 @@ serve one catalog for its lifetime.
   `models.list` only; at `degraded` the catalog refreshes per turn and an
   earlier admission may have matched a list that was never served.
 - A mismatch is judged on the correlated response, not on the admission
-  alone, so a refusal cannot escape it. When a catalog has been served
-  under the active revision at `native` or `emulated` and a submit's
-  `model_id` names an id that catalog does not list, the validator
-  retains the mismatch from the request (`sessionTrack.pendingModelMiss`:
-  the requested id and the request's envelope id) and re-evaluates it at
-  the correlated response. An admission is `model_not_in_catalog` as
-  above; an `error.response` must carry `model_not_found` with the
-  requested id in `details.model_id`, and any other code on that response
-  — `internal_error` most of all — is `model_not_in_catalog` on the
-  `error.response`, with `details` naming the requested id and the
-  refusing code, so the adapter that swallows a catalog miss behind an
-  untyped failure is diagnosed exactly as the one that accepts it.
-  Fixtures `models-unlisted-selection-refused` (the typed refusal, a
-  positive) and `models-unlisted-selection-wrong-refusal`.
+  alone, so a refusal cannot escape it. The rule is scoped to a submit
+  whose descriptor advertises `run.model_selection` as available, per
+  the wire rule above: on an endpoint that serves a catalog without
+  advertising selection (OpenCode, exactly as the T1 table orders it —
+  `models.list` native, selection unavailable) the mandatory refusal is
+  T1's `unsupported_feature` with `details.reason: "unadvertised"`, and
+  demanding `model_not_found` there would leave no conforming response,
+  so the T1 control gate wins and this rule stands down. Where selection
+  is advertised and a catalog has been served under the active revision
+  at `native` or `emulated`, a submit whose `model_id` names an id that
+  catalog does not list is retained from the request
+  (`sessionTrack.pendingModelMiss`: the requested id and the request's
+  envelope id) and re-evaluated at the correlated response. An admission
+  is `model_not_in_catalog` as above; an `error.response` must carry
+  `model_not_found` with the requested id in `details.model_id`, and a
+  refusal under any other code — `internal_error` most of all — or
+  without that detail is `model_not_in_catalog` on the `error.response`,
+  with `details` naming the requested id and the refusing code, so the
+  adapter that swallows a catalog miss behind an untyped or
+  undiagnosable failure is diagnosed exactly as the one that accepts it.
+  A refused selection made before the first catalog under the active
+  revision is retained too, alongside the admitted ones, in
+  `sessionTrack.unjudgedModels` (which records the requested id, the
+  correlating response, and whether it was admitted or refused): when
+  the first `models.response` under that revision arrives and omits the
+  id, a retained admission is `model_not_in_catalog` as before and a
+  retained refusal whose code was not `model_not_found` is
+  `model_not_in_catalog` on that `error.response`, so refusing an
+  unlisted model with `internal_error` in the gap before the catalog is
+  no safer than admitting it. Fixtures
+  `models-unlisted-selection-refused` (the typed refusal, a positive),
+  `models-unlisted-selection-wrong-refusal`,
+  `models-unlisted-selection-missing-detail` (`model_not_found` without
+  `details.model_id`), `models-unadvertised-selection-unlisted`
+  (positive; the T1 `unadvertised` refusal against an unlisted id on an
+  endpoint that does not advertise selection) and
+  `models-refused-before-catalog` (the refusal precedes the first
+  catalog and is reconciled when it arrives).
 - New diagnostic `unannounced_catalog_change`: a second `models.response`
   under the same `capability_revision` whose catalog differs from the
   stored one in any descriptor, compared whole (`id`, `display_name`,
@@ -769,7 +793,7 @@ No new envelope types. Additive fields:
   response (a run that terminated in flight leaves the session idle and
   the submit admissible), and its `error.response` must be the wire's
   `run_active`; a refusal under any other code is `illegal_run_transition`
-  on the error response (`/payload/code`), so the ordinary busy-session
+  on the error response (`/payload/error/code`), so the ordinary busy-session
   refusal cannot hide behind `internal_error`. Fixtures:
   `queue-busy-auto-rejected` (`error.response` with `run_active`;
   validated as a correct rejection) and `queue-busy-auto-wrong-refusal`
@@ -833,9 +857,20 @@ No new envelope types. Additive fields:
   nonterminal). The refusal is validated as well as the admission: a
   submit that would exceed a bound (an explicit `queue`, or an `auto` on
   a busy session whose descriptor advertises the queue capability) is
-  remembered from the request, and its correlated `error.response` must
-  be the wire's typed `run_active`; a refusal under any other code is
-  `queue_limit_exceeded` on the error response (`/payload/code`), so an
+  remembered from the request together with the bounds that applied to
+  it, and the counts are re-evaluated against those bounds at the
+  correlated response rather than settled at the request, as the
+  busy-`auto` rule above already does — capacity moves while `Submit` is
+  in flight, and a stale expectation cuts both ways: a queued run that
+  terminated before the response leaves the submit admissible, so an
+  arbitrary refusal must no longer pass merely for saying `run_active`,
+  while a concurrent admission that fills the queue after the request
+  was received creates a limit hit the request-time snapshot never saw
+  and an `internal_error` refusal must still be caught. Where the bound
+  is reached at the response, the `error.response` must be the wire's
+  typed `run_active`; a refusal under any other code is
+  `queue_limit_exceeded` on the error response (`/payload/error/code`), so
+  an
   adapter cannot hide a reached bound behind `internal_error`. Fixtures:
   `queue-over-limit-rejected` (`error.response` with `run_active`;
   validated as a correct rejection) and `queue-over-limit-wrong-refusal`
@@ -1317,10 +1352,16 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `feature("tools")`, whose aliases resolve to `action.tools` and never to
   `action.tools.list`, so an endpoint advertising only `action.tools.list`
   would fail with `unavailable_capability`. The gate becomes
-  `feature("tools.list")`, accepting `action.tools.list` and, for
-  descriptors that advertise the family key today, `action.tools` as an
-  alias; the positive fixture `tools-catalog-list-only` carries a
-  descriptor advertising `action.tools.list` alone.
+  `feature("tools.list")`, which accepts `action.tools.list` and nothing
+  else. `action.tools` is deliberately not an alias: that family key
+  means lifecycle observation today, and several descriptors — ACP, pi,
+  Makai — advertise it while stating outright that they expose no
+  portable catalog, so aliasing it would let a served catalog pass a
+  gate the endpoint never claimed and defeat the rule that catalog
+  behaviour is separately advertised. Adapters migrate to
+  `action.tools.list` only on listing evidence of their own. The
+  positive fixture `tools-catalog-list-only` carries a descriptor
+  advertising `action.tools.list` alone.
 - The gate is judged on the correlated response, never on the request,
   exactly as the `models.list` rule is. An endpoint that advertises
   neither key may still be asked for a catalog, and answering
@@ -1332,10 +1373,16 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   on the request (`sessionTrack.pendingToolsList`) and settles it at the
   correlated response: an `action.tools.list.response` that arrives
   anyway is `unavailable_capability` on that response; an
-  `error.response` must carry `unsupported_feature`, and another code
-  there is `unavailable_capability` on the `error.response`. Fixtures
-  `tools-list-ungated-refused` (positive) and
-  `tools-list-ungated-wrong-refusal`.
+  `error.response` must carry `unsupported_feature` with
+  `details.feature` naming `action.tools.list`, exactly as the T1
+  control refusal names its control's key — the code alone does not tell
+  the caller which capability to stop requesting — so a refusal under
+  another code, or under `unsupported_feature` with `details.feature`
+  absent or naming an unrelated capability, is `unavailable_capability`
+  on the `error.response`. Fixtures `tools-list-ungated-refused`
+  (positive), `tools-list-ungated-wrong-refusal` (another code) and
+  `tools-list-ungated-wrong-feature` (`unsupported_feature` with
+  `details.feature: "run.model_selection"`).
 - An `action.tools.list.response` correlated to a request that names a
   session (envelope or payload `session_id`) must carry that session on
   both its envelope and its payload; an unscoped response to a scoped
@@ -1354,10 +1401,14 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `session.open.request` (the duplicated id and the request's envelope
   id) and, when the correlated response is an `error.response`, requires
   `unsupported_feature` with `details.reason: "unsatisfiable"` and
-  `details.source` naming the offending id; any other code there —
-  `internal_error` included — is `duplicate_tool_source` on the
-  `error.response`. Fixtures `tool-source-collision-refused` (positive)
-  and `tool-source-collision-wrong-refusal`.
+  `details.source` naming the offending id; a refusal under any other
+  code — `internal_error` included — or under the right code without
+  either detail is `duplicate_tool_source` on the `error.response`, as
+  the dangling-source clause below validates its own refusal. Fixtures
+  `tool-source-collision-refused` (positive),
+  `tool-source-collision-wrong-refusal` (another code) and
+  `tool-source-collision-missing-detail` (`unsupported_feature` without
+  `details.source`).
 - Every accepted `capabilities.response`, initial or refreshed:
   `duplicate_tool_name` across its effective catalog (top-level `tools`
   and every `layers.*.tools`, unioned) and `duplicate_tool_source` across
@@ -1453,7 +1504,23 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   the semantics above require of a late acknowledgement), so "one
   resolution", "at most one acknowledgement", and "no acknowledgement
   once resolved" are all enforced at the response, not only at the
-  events that follow.
+  events that follow. `accepted: false` is judged against the same
+  state, not waved through: a resolution that the validator's
+  `interactionState` says is valid — correctly scoped, from the bound
+  responder, the first `started`, `result` or `error` for a pending
+  interaction — must be accepted, and a refusal of it is
+  `unmatched_interaction` on the `action.call.resolve.response`. Where a
+  refusal is legitimate the enumerated reason must name the condition
+  the validator observes (a late acknowledgement after an accepted
+  terminal, a foreign responder, an unknown `tool_call_id`, a cancelled
+  or settled call); a reason that names a different condition is
+  `wrong_interaction_responder` or `duplicate_interaction` according to
+  the condition actually present. Without this, an adapter could refuse
+  the one valid resolution with an arbitrary reason, emit nothing, and
+  let a later cancellation settle the call and the run so the trace
+  passed. Fixtures `control-call-valid-resolution-rejected`
+  (`accepted: false` to the first correctly scoped `result`, then a
+  cancel) and `control-call-rejection-wrong-reason`.
 - `session.open.request` with `tool_sources` or `tools` is judged through
   the `feature()` gate with `action.tool_sources.attach` or
   `action.tools.provide` on the correlated response, as T1 and T2 judge
@@ -1882,11 +1949,24 @@ the already-published terminal), and its correlated `error.response`
 must carry `invalid_steer_target`
 with the `details.reason` the wire assigns to that condition (`queued`,
 `terminal`, `cross_session`, `no_active_run`, `not_steerable` for the
-`cancelling` case); an admission is the
+`cancelling` case). When the same request is also ungated — an explicit
+steer to an endpoint that does not advertise
+`session.message.delivery.steer` — the delivery gate wins and this rule
+stands down, because a single `error.response` cannot carry both codes
+and the caller's first duty is to stop sending a delivery the endpoint
+does not support: the correlated refusal must be T2's
+`unsupported_feature` naming `session.message.delivery.steer`, the
+retained target expectation is discharged without diagnosis, and only a
+refusal that is neither is diagnosed (`unavailable_capability` on the
+error response, by the delivery rule). Fixture
+`steer-unadvertised-no-active-run`, where capability and target
+validation fail together and the `unsupported_feature` refusal is
+validated as correct. An admission is the
 `illegal_run_transition` above, and a refusal under any other code, or
 under `invalid_steer_target` with a reason that does not match the
 condition, is `illegal_run_transition` on the error response
-(`/payload/code` or `/payload/details/reason`), so an adapter cannot
+(`/payload/error/code` or `/payload/error/details/reason`), so an
+adapter cannot
 hide an invalid target behind `internal_error` and a caller always
 learns why the steer could not land. Fixtures: positive `steer-immediate`
 (response, then `applied` in the target's sequence), `steer-at-boundary`,
@@ -2037,10 +2117,15 @@ and hub contract is explicit rather than inherited from `start`:
   unknown run, an unparseable submission) states no boundary, and the
   hub uses the target's last published sequence at arming, so nothing
   the adapter did not account for precedes the refusal. The hub's trace
-  then records every envelope emitted before return, including a
-  terminal the target reached while the request was in flight, ahead of
-  the `error.response`, and nothing emitted after it — which is what the
-  validator's response-time re-evaluation of the target reads.
+  then records every envelope up to the applied boundary — for a
+  boundary-stating error, every envelope the adapter emitted before
+  returning, including a terminal the target reached while the request
+  was in flight — ahead of the `error.response`, and nothing beyond it,
+  which is what the validator's response-time re-evaluation of the
+  target reads. For an error that states no boundary the adapter
+  examined nothing, so nothing emitted since arming precedes the
+  refusal, and the re-evaluation reads the target as the adapter left
+  it.
   `Session.Resolve` does the same on its error path under T3c. After the adapter returns an admission the
   hub registers the pending steer (`submission_id` to target run,
   reflected in `active_runs`). The gate is not lifted inside `Submit`:
