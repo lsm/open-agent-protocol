@@ -465,7 +465,8 @@ its own allowlist), `controls-tool-choice-unknown-entry`
 tool outside the catalog the trace carries),
 `controls-tool-choice-contradictory-rejected` (positive; the same policy
 refused with `unsupported_feature`, `details.feature:
-"run.tool_choice"`, `details.reason: "unsatisfiable"`, `details.tool`),
+"run.tool_selection"`, `details.reason: "unsatisfiable"`,
+`details.tool`),
 `controls-unsatisfiable-wrong-refusal` (`unsatisfiable_control` on the
 `error.response`; the same policy refused with `internal_error`),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
@@ -1446,15 +1447,23 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   be hidden behind an untyped failure: the validator retains it from the
   `session.open.request` (the duplicated id and the request's envelope
   id) and, when the correlated response is an `error.response`, requires
-  `unsupported_feature` with `details.reason: "unsatisfiable"` and
+  `unsupported_feature` with `details.feature:
+  "action.tool_sources.attach"`, `details.reason: "unsatisfiable"` and
   `details.source` naming the offending id; a refusal under any other
-  code — `internal_error` included — or under the right code without
-  either detail is `duplicate_tool_source` on the `error.response`, as
-  the dangling-source clause below validates its own refusal. Fixtures
-  `tool-source-collision-refused` (positive),
-  `tool-source-collision-wrong-refusal` (another code) and
-  `tool-source-collision-missing-detail` (`unsupported_feature` without
-  `details.source`).
+  code — `internal_error` included — or under the right code with
+  `details.feature` absent or naming an unrelated capability, or without
+  either of the other two details, is `duplicate_tool_source` on the
+  `error.response`, as the dangling-source clause below validates its own
+  refusal. The feature is not optional decoration: the wire's failure
+  rules require every `unsupported_feature` to identify the missing
+  capability in `details.feature`
+  (`drafts/layered-agent-protocol.md:696`), and without it a caller
+  cannot tell that attaching sources is what the endpoint refused.
+  Fixtures `tool-source-collision-refused` (positive),
+  `tool-source-collision-wrong-refusal` (another code),
+  `tool-source-collision-wrong-feature` (`unsupported_feature` naming
+  `action.tools.provide`) and `tool-source-collision-missing-detail`
+  (`unsupported_feature` without `details.source`).
 - Every accepted `capabilities.response`, initial or refreshed:
   `duplicate_tool_name` across its effective catalog (top-level `tools`
   and every `layers.*.tools`, unioned) and `duplicate_tool_source` across
