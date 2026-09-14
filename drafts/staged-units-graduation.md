@@ -902,11 +902,20 @@ No new envelope types. Additive fields:
   `queue-limit-lowered-then-admitted` (`queue_limit_exceeded`; the same
   refresh, then a `queued` admission while both runs are still
   nonterminal). The refusal is validated as well as the admission: a
-  submit that would exceed a bound (an explicit `queue`, or an `auto` on
-  a busy session whose descriptor advertises the queue capability) is
-  remembered from the request together with the bounds that applied to
-  it, and the counts are re-evaluated against those bounds at the
-  correlated response rather than settled at the request, as the
+  submit that would exceed a bound is remembered from the request
+  together with the bounds that applied to it — but only when the
+  descriptor advertises `session.message.delivery.queue` as available,
+  because a bound belongs to a queue the endpoint offers. An explicit
+  `queue` to an endpoint that does not advertise it is already owed the
+  gate's `unsupported_feature` naming
+  `session.message.delivery.queue` with `details.reason: "unadvertised"`,
+  and a single `error.response` cannot also be `run_active`; as with the
+  ungated steer in T4, the capability gate wins, this rule stands down,
+  and the retained limit expectation is discharged without diagnosis. So
+  the rule covers an explicit `queue` on an advertising endpoint and an
+  `auto` on a busy session whose descriptor advertises the queue
+  capability, and for those the counts are re-evaluated against the
+  retained bounds at the correlated response rather than settled at the request, as the
   busy-`auto` rule above already does — capacity moves while `Submit` is
   in flight, and a stale expectation cuts both ways: a queued run that
   terminated before the response leaves the submit admissible, so an
@@ -920,9 +929,12 @@ No new envelope types. Additive fields:
   an
   adapter cannot hide a reached bound behind `internal_error`. Fixtures:
   `queue-over-limit-rejected` (`error.response` with `run_active`;
-  validated as a correct rejection) and `queue-over-limit-wrong-refusal`
+  validated as a correct rejection), `queue-over-limit-wrong-refusal`
   (`queue_limit_exceeded` on the error response; the same request
-  refused with `internal_error`).
+  refused with `internal_error`) and `queue-ungated-over-limit`
+  (positive; an explicit `queue` to a busy non-advertising endpoint at
+  its active-run bound, refused with the gate's `unsupported_feature`,
+  where capability and limit would otherwise both claim the response).
 - New diagnostic `premature_session_mutation`: when the started run was
   admitted under a descriptor disclosing `run.model_selection` with mode
   `session_mutation` (the mode `runState` retains from admission, T1), a
@@ -1512,14 +1524,25 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   authority and a gap defers rather than falls back to the descriptor's
   `tools` (a session that never lists is judged against the descriptor's
   effective catalog plus its open-time tools, as T1 rules), so
-  `sessionTrack.unjudgedTools` keeps every `tool_choice` admitted, and
-  every `action.call.requested` emitted with a `source` or an
+  `sessionTrack.unjudgedTools` keeps every `tool_choice` submitted —
+  admitted or refused, with the correlating response and, for a refusal,
+  its code and details, as `unjudgedModels` keeps refused selections —
+  and every `action.call.requested` emitted with a `source` or an
   `execution_owner`, while the session has no catalog under the active
   revision, and the first `action.tools.list.response` under that
   revision reconciles them: a retained policy that lists or names a tool
   the catalog does not carry, or that is `required` or `named` against an
   empty filtered set, is `unsatisfiable_control` on that response with
-  `details` naming the admission; a retained call whose `name` the
+  `details` naming the admission when it was admitted, and when it was
+  refused is held to the same code-and-detail test the immediately judged
+  path applies — `unsupported_feature` with `details.feature:
+  "run.tool_selection"`, `details.reason: "unsatisfiable"`, and
+  `details.tool` naming the offending tool, with anything else
+  `unsatisfiable_control` on that `action.tools.list.response`, naming
+  the refusal it reconciles. Refusing an unlistable policy with
+  `internal_error` in the gap is no safer than admitting it. Fixtures
+  `tools-select-in-gap-refused` (positive; the typed refusal precedes the
+  list that omits the tool) and `tools-select-in-gap-wrong-refusal`; a retained call whose `name` the
   catalog lists under another source or another owner, or does not list
   while its source is undeclared, is `unmatched_tool_source` or
   `wrong_tool_owner` on that response, naming the call. An adapter
@@ -1586,16 +1609,28 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   naming that key (`unavailable_capability` on the error response
   otherwise), so the fail-closed refusal the wire requires is itself
   conforming; a `remote` source additionally requires the attach
-  capability to disclose `mode: "remote"`, judged on the same terms: the
-  missing mode is remembered from the request, an admitted open is
-  `unavailable_capability` on the response, and a correlated
+  capability to disclose `mode: "remote"`, judged on the same terms but
+  only once attachment itself is available. The two are ordered, not
+  concurrent: when the descriptor omits `action.tool_sources.attach` or
+  advertises it `unavailable`, the gate above owns the response and its
+  `unadvertised` refusal is the conforming one, so the mode check does
+  not run and its expectation is discharged without diagnosis — a single
+  `error.response` cannot carry both `unadvertised` and `unsatisfiable`,
+  and a caller told the capability is missing has no use for a detail
+  about one of its modes. Where attach is available and the mode is not
+  disclosed, the missing mode is remembered from the request, an admitted
+  open is `unavailable_capability` on the response, and a correlated
   `error.response` must carry `unsupported_feature` with
   `details.feature: "action.tool_sources.attach"`, `details.reason:
   "unsatisfiable"`, and `details.source` naming the source
   (`unavailable_capability` on the error response otherwise, so a
   refusal under an unrelated code such as `internal_error` cannot pass
   as the typed refusal that tells the caller the input is permanently
-  unsupported). Each supplied tool's
+  unsupported). Fixture `tool-source-remote-unadvertised-attach`
+  (positive; a `remote` source on a descriptor without the attach
+  capability, refused with the gate's `unadvertised` refusal, where the
+  mode check would otherwise claim the same response). Each supplied
+  tool's
   `source`, when present, must name a source in the union of the same
   open's `tool_sources` and the sources the capability descriptor
   declares, checked when the open is admitted (`unmatched_tool_source` on
