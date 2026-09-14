@@ -407,9 +407,20 @@ No new envelope types. Changes to
   whole failure the diagnostic exists to catch. The retained default
   therefore survives the terminal as the session's expected default, and
   every later snapshot is judged against it until something the
-  validator credits moves it: an admitted `session_mutation` application
-  (which sets a new expected default), or a `capabilities` change that
-  discards the session's model bookkeeping. Fixture
+  validator credits moves it: an admitted `session_mutation`
+  application, which sets a new expected default, and nothing else. A
+  `capabilities.updated` or a refreshed `capabilities.response` is not
+  such an event — it invalidates the descriptor and the catalogs served
+  under the old revision, which is why the models and tools bookkeeping
+  is discarded at a refresh, but it does not run a session's model back
+  to some earlier value, and treating it as a reset would hand every
+  adapter an escape hatch: emit an unrelated refresh after a `per_run`
+  submit and the next snapshot could report the run's model unchallenged.
+  The retained default therefore survives capability changes along with
+  terminals. Fixture `controls-per-run-overwrites-default-after-refresh`
+  (`unapplied_control`; a `per_run` submit, an unrelated
+  `capabilities.updated`, then a snapshot reporting the run's model), and
+  fixture
   `controls-per-run-overwrites-default-at-terminal` (`unapplied_control`;
   a `per_run` submit, its `run.completed`, then a snapshot reporting the
   run's model as `current_model_id`). While the run is still queued
@@ -1862,9 +1873,15 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   a descriptor that omits the key or advertises it `unavailable` is
   `unavailable_capability` on the response, and a correlated
   `error.response` must carry `unsupported_feature` with `details.feature`
-  naming that key (`unavailable_capability` on the error response
-  otherwise), so the fail-closed refusal the wire requires is itself
-  conforming; a `remote` source additionally requires the attach
+  naming that key and `details.reason: "unadvertised"`, the reason the
+  ladder assigns to every capability-rung failure — a refusal saying
+  `unsatisfiable`, or carrying no reason, tells the caller to change a
+  value when what it must do is stop using a capability the endpoint does
+  not have — and anything else is `unavailable_capability` on the error
+  response, so the fail-closed refusal the wire requires is itself
+  conforming. Fixture `open-unadvertised-wrong-reason`
+  (`unavailable_capability` on the error response; the right code and
+  feature under `details.reason: "unsatisfiable"`); a `remote` source additionally requires the attach
   capability to disclose `mode: "remote"`, judged on the same terms but
   only once attachment itself is available. The two are ordered, not
   concurrent: when the descriptor omits `action.tool_sources.attach` or
@@ -2202,10 +2219,23 @@ therefore needs a steer settlement, not only a steer admission.
   run's admitted controls are authoritative until its terminal and a
   steer admits no run for new controls to bind. Decision 0003's
   "re-send the controls on each submit" therefore applies to submits that
-  admit a run; the validator diagnoses a `steered` admission of a request
-  carrying any control as `unsatisfiable_control` (fixtures
-  `steer-with-controls-rejected`, a correct rejection, and
-  `steer-with-controls-admitted`, `unsatisfiable_control`).
+  admit a run. The validator judges this on the correlated response, not
+  on the admission alone, because the refusal is the required behaviour
+  and nothing else would catch a wrong one: T1 has no quarrel with a
+  `model_id` that is perfectly valid in itself, so an adapter answering
+  `internal_error` here would otherwise escape both rules. The
+  steer-specific expectation is retained from the request and settled at
+  the response — a `steered` admission is `unsatisfiable_control`, and a
+  correlated `error.response` must carry `unsupported_feature` with
+  `details.feature` naming the control's key and `details.reason:
+  "unsatisfiable"` (the control is offered and the request understood;
+  it is the combination with a steer that cannot be honoured), with any
+  other code, feature, or reason diagnosed `unsatisfiable_control` on the
+  `error.response`. Fixtures `steer-with-controls-rejected` (a correct
+  rejection), `steer-with-controls-admitted` (`unsatisfiable_control`)
+  and `steer-with-controls-wrong-refusal` (`unsatisfiable_control` on the
+  error response; the same steer refused `internal_error` on an endpoint
+  advertising both steer and the control).
 - Response: `admission: "steered"`, `effective_delivery: "steer"`, `run_id`
   set to the target, `target_sequence` (additive, required on a `steered`
   admission) naming the target run's last emitted sequence at admission,
