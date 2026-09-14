@@ -295,7 +295,20 @@ No new envelope types. Changes to
   value: the per-run rule leaves the session default untouched, so the
   comparison is against what the default was, not merely against the
   model the run selected; the Codex and Makai overwrite T1 fixes is the
-  first case, so the fix is verifiable.
+  first case, so the fix is verifiable. While the run is still queued
+  (T2), its retained default follows the applications the validator
+  itself credits: an earlier-admitted `session_mutation` run promoted
+  before it applies its mutation at that promotion and moves the session
+  default (`premature_session_mutation` requires snapshots in that run's
+  started window to report its model), so the queued `per_run` run's
+  `defaultModel` is rebased to the applied model at that point and a
+  snapshot reporting it is conforming; once the `per_run` run has
+  started no mutation can apply (a `session_mutation` never runs while
+  another run is started), so from its `run.started` the retained
+  default is fixed. T2 fixture `queue-per-run-behind-mutation` covers
+  the coexistence: a started run, a queued `session_mutation` run, a
+  queued `per_run` run admitted after it, then the mutation run's
+  promotion and a snapshot reporting its model, no diagnostic.
 - New diagnostic `unsatisfiable_control`: a `tool_choice` that is not the
   typed policy, carries both `allowed` and `disallowed`, names a tool in
   its own `disallowed` list or outside its own `allowed` list, or, when the
@@ -521,7 +534,12 @@ serve one catalog for its lifetime.
 - `current_model_id` on `models.response` must equal the effective session
   model the validator tracks (`sessionTrack.currentModel`: the latest
   `session.open.response` or `session.state` value, advanced by a
-  `session_mutation` application at the run it applies to), otherwise
+  `session_mutation` application at the run it applies to; the open
+  response is decoded as `SessionState`, which is what
+  `session.schema.json` aliases `openResponse` to, because
+  `protocol.SessionOpenResponse` today carries no `current_model_id`,
+  and T1 adds that member to the Go type so the daemon and adapters
+  populate on the wire what the schema already promises), otherwise
   `session_state_mismatch`; a picker is never shown a current model the
   session does not report. A nonempty `current_model_id` must also name
   one of the response's own model ids (`model_not_in_catalog`, with
@@ -952,6 +970,9 @@ rejection `queue-degraded-without-optin` (`error.response` with
 descriptor, a queued controlled submit, a `capabilities.updated` to
 `per_run` while it waits, then promotion with the mutation reflected in
 `current_model_id`: judged under the retained mode, no diagnostic),
+`queue-per-run-behind-mutation` (positive; a queued `per_run` run's
+retained default follows an earlier-admitted `session_mutation` run's
+application at promotion, as T1's `per_run` snapshot rule specifies),
 `queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
 1`, one started run, two queued admissions), `queue-over-active-limit`
 (`queue_limit_exceeded`; `max_active_runs_per_session: 1`, a queued
@@ -1235,10 +1256,13 @@ HyperNeo-style embedding; it adds no wire vocabulary.
 - Every accepted `capabilities.response`, initial or refreshed:
   `duplicate_tool_name` across its effective catalog (top-level `tools`
   and every `layers.*.tools`, unioned) and `duplicate_tool_source` across
-  its declared `sources`, so a descriptor that is ambiguous on its own is
-  diagnosed before any list, open, or call, and a session that never
-  lists or selects tools cannot reach a call whose owner or source lookup
-  is ambiguous.
+  its declared `sources`, and `unmatched_tool_source` for each catalog
+  tool whose `source` names none of its declared sources (both
+  normalized across layers as the catalog is), so a descriptor that is
+  ambiguous or dangling on its own is diagnosed before any list, open,
+  or call: a session that never lists or selects tools cannot reach a
+  call whose owner or source lookup is ambiguous, and a call that agrees
+  with a dangling descriptor entry is not excused by that agreement.
 - `catalog_mismatch`: `sessionTrack` records the `tool_sources` ids and
   the provided `tools` (name and `execution_owner`) from
   `session.open.request`; every session-scoped
@@ -1503,6 +1527,9 @@ tool `foo`, then a refreshed descriptor whose native tools include
 `foo`), `tools-refresh-removes-provided-source` (`unmatched_tool_source`;
 a provided tool referencing a descriptor-declared source, then a refresh
 that no longer declares it),
+`tools-descriptor-dangling-source` (`unmatched_tool_source` on the
+`capabilities.response`; a descriptor tool with `source: "ghost"` and no
+such declared source),
 `tools-select-in-gap-unlisted` (`unsatisfiable_control` on the revision 2
 list; a `named` policy admitted between `capabilities.updated` and the
 new list, which then omits the tool), `tools-call-in-gap-wrong-source`
@@ -1696,8 +1723,23 @@ settlement to its own request; a terminal with a pending steer
 is `pending_steer_at_terminal`. A settlement whose
 `submission_id` no earlier `steered` response in the trace admitted is
 `unmatched_steer`, which makes the ordering barrier below a conformance
-rule rather than a hub detail. Fixtures: positive `steer-immediate`
+rule rather than a hub detail. A request with `delivery: "steer"` whose
+target (`target_run_id`, or the session's started run when absent) is
+not a started nonterminal run of that session (queued, terminal, another
+session's, or no started run at all) is remembered from the request, and
+its correlated `error.response` must carry `invalid_steer_target` with
+the `details.reason` the wire assigns to that condition (`queued`,
+`terminal`, `cross_session`, `no_active_run`); an admission is the
+`illegal_run_transition` above, and a refusal under any other code, or
+under `invalid_steer_target` with a reason that does not match the
+condition, is `illegal_run_transition` on the error response
+(`/payload/code` or `/payload/details/reason`), so an adapter cannot
+hide an invalid target behind `internal_error` and a caller always
+learns why the steer could not land. Fixtures: positive `steer-immediate`
 (response, then `applied` in the target's sequence), `steer-at-boundary`,
+`steer-target-queued-rejected` (`error.response` with
+`invalid_steer_target`, `details.reason: "queued"`; validated as a
+correct rejection),
 `steer-dropped-at-terminal`, `steer-status-advances-in-flight` (a
 `run.status.updated` to `waiting_for_input` between the steer request and
 its response, the response naming that transition's sequence as
@@ -1707,7 +1749,12 @@ its response, the response naming that transition's sequence as
 reporting `cancelling`); negative
 `steer-status-stale` (`illegal_run_transition`; the same transition
 before the response, the response naming its sequence but still
-reporting `running`), `steer-target-sequence-ahead`
+reporting `running`), `steer-target-wrong-refusal`
+(`illegal_run_transition` on the error response; a queued target refused
+with `internal_error`), `steer-target-wrong-reason`
+(`illegal_run_transition` on the error response; a queued target refused
+`invalid_steer_target` with `details.reason: "terminal"`),
+`steer-target-sequence-ahead`
 (`illegal_run_transition`; a `target_sequence` beyond the target's
 cursor at the response),
 `steer-settled-before-response`
@@ -2057,22 +2104,35 @@ every later unit relies on:
   cursor only for the types `isRunEvent` enumerates, so a tolerated
   unknown run envelope at sequence N would be ignored and the next known
   event at N+1 diagnosed as `sequence_gap`. In tolerant mode an envelope
-  of unknown `type` is classified by its wire scope, as the T2 client
-  change classifies frames: one carrying `run_id` is a run-scoped event
-  that enters `runEvent` for the type-independent bookkeeping (scope
-  agreement, an accepted admission, sequence contiguity and regression,
-  nothing after a terminal, `duplicate_envelope_id`) and for no
-  type-specific rule, including the pre-`run.started` rule, which exempts
-  pre-start settlements by type and cannot be applied to a type it does
-  not know; one carrying `session_id` alone is session-scoped and joins
-  the scope checks only; one carrying neither is endpoint or protocol
-  scoped and is passed through. Strict mode is unchanged: an unknown
-  type fails the schema before the stateful pass sees it. The step's
-  tests feed a trace with an additive run envelope at sequence 2 between
-  `run.started` and `run.completed` (tolerant: valid, with the cursor
-  advanced; strict: the schema rejection and nothing else), and the same
-  envelope after the terminal (tolerant: `event_after_terminal`, because
-  scope classification makes the domain rules apply).
+  of unknown `type` is classified by its wire scope, on the same
+  principle as the T3c client slice (which keys the client's cursor on
+  `run_id` and `sequence`; the validator's classification is finer
+  because it must also keep unsequenced operations out of event
+  bookkeeping): one carrying both `run_id` and `sequence` is a run-scoped
+  event that enters `runEvent` for the type-independent bookkeeping
+  (scope agreement, an accepted admission, sequence contiguity and
+  regression, nothing after a terminal) and for no type-specific rule,
+  including the pre-`run.started` rule, which exempts pre-start
+  settlements by type and cannot be applied to a type it does not know;
+  one carrying `run_id` without `sequence` is an unsequenced run-scoped
+  operation (a future `run.pause.request` or its response) that joins
+  the generic scope and correlation checks only and never enters
+  run-event bookkeeping, so it can neither be reported as
+  `event_after_terminal` nor disturb the cursor; one carrying `sequence`
+  without `run_id` is a session-scoped event, and one carrying
+  `session_id` alone a session-scoped operation, both joining the scope
+  checks only; one carrying none of these is endpoint or protocol
+  scoped and is passed through. `duplicate_envelope_id` needs no
+  classification: the intake pass (`apply`) checks every envelope's `id`
+  before type dispatch, known type or not. Strict mode is unchanged: an
+  unknown type fails the schema before the stateful pass sees it. The
+  step's tests feed a trace with an additive run event at sequence 2
+  between `run.started` and `run.completed` (tolerant: valid, with the
+  cursor advanced; strict: the schema rejection and nothing else), the
+  same event after the terminal (tolerant: `event_after_terminal`,
+  because scope classification makes the domain rules apply), and an
+  unsequenced run-scoped operation after the terminal (tolerant: valid,
+  with the cursor untouched).
 - Fixture validation stays strict against the bundle at its own revision.
   That is the conformance validator's job and how a misspelled new field is
   caught; each unit extends the bundle in place under `schema/v0.1`.
