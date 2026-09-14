@@ -270,9 +270,10 @@ No new envelope types. Changes to
   since the requirement binds a completed response). An adapter that
   cannot make its harness honor `required` or `named` advertises
   `run.tool_selection` accordingly or rejects the policy as unsatisfiable;
-  it never completes the run as if the requirement were met. Under a
-  `per_run` descriptor, a `session.state` snapshot whose `current_model_id`
-  changed to a run's admitted `model_id` is also `unapplied_control`: the
+  it never completes the run as if the requirement were met. For a run
+  admitted under `per_run` (the mode `runState` retains from admission,
+  below), a `session.state` snapshot whose `current_model_id` changed to
+  that run's admitted `model_id` is also `unapplied_control`: the
   per-run rule leaves the session default untouched, and this is exactly
   the Codex and Makai overwrite T1 fixes, so the fix is verifiable.
 - New diagnostic `unsatisfiable_control`: a `tool_choice` that is not the
@@ -301,7 +302,18 @@ No new envelope types. Changes to
   checks under T3. Introduced here so the `run-controls` unit is sound before
   T3; T3a applies the same diagnostic to every session catalog.
 - `runState` gains `controls` (the admitted request's control set) so the
-  checks above are keyed off the request, not the response.
+  checks above are keyed off the request, not the response, and
+  `capabilityRevision` with the `run.model_selection` mode and the levels
+  of the admitted controls as the descriptor active at admission declared
+  them. Every per-run judgement above and under T2 (the `per_run`
+  snapshot rule, `premature_session_mutation`, the degraded opt-in) reads
+  the run's retained mode and levels, never the current descriptor's: the
+  core draft fixes the effective capability revision for an admitted run,
+  so a `capabilities.updated` that changes the mode while a controlled run
+  is nonterminal, started or still queued, changes how later admissions
+  are judged and never how that run is. A queued run's `session_mutation`
+  therefore applies at promotion under the mode it was admitted with
+  (T2 fixture `queue-mode-refreshed-while-queued`).
 
 ### Reference adapter
 
@@ -478,10 +490,16 @@ serve one catalog for its lifetime.
   `session.open.response` or `session.state` value, advanced by a
   `session_mutation` application at the run it applies to), otherwise
   `session_state_mismatch`; a picker is never shown a current model the
-  session does not report.
+  session does not report. A nonempty `current_model_id` must also name
+  one of the response's own model ids (`model_not_in_catalog`, with
+  `details.field: "current_model_id"`): a picker shown a current model
+  the catalog does not describe could not resolve it, and re-selecting
+  the same id would be refused by the catalog rule, so the adapter that
+  serves such a catalog is diagnosed rather than the caller.
 - New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
   `models.response` in the same trace names an id the response did not
-  list. The catalog is stored with the `capability_revision` it was served
+  list, or a `models.response` whose own `current_model_id` is not among
+  its ids (above). The catalog is stored with the `capability_revision` it was served
   under: a `capabilities.updated` or a new `capabilities.response` that
   changes the active revision discards it, so no admission is judged
   against a stale catalog (a newly added model is not falsely diagnosed,
@@ -543,6 +561,8 @@ listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `models-unadvertised` (`unavailable_capability`), `models-duplicate-id`
 (`duplicate_model_id`), `models-current-mismatch`
 (`session_state_mismatch`; state reports one model, the catalog another),
+`models-current-not-listed` (`model_not_in_catalog`; state and the
+response agree on one model, the catalog lists only another),
 `models-select-removed-after-refresh` (`model_not_in_catalog`; a model
 listed under revision 1, dropped by the revision 2 catalog, then
 selected), `models-catalog-mutates-within-revision`
@@ -673,10 +693,11 @@ No new envelope types. Additive fields:
   promotion adds no run; `sessionTrack` keeps both bounds from the
   descriptor. Absent limits enforce nothing here, since absence
   advertises no bound.
-- New diagnostic `premature_session_mutation`: when the descriptor discloses
-  `run.model_selection` with mode `session_mutation`, a `session.state`
-  snapshot taken while a run is started reports a `current_model_id` other
-  than that run's admitted model.
+- New diagnostic `premature_session_mutation`: when the started run was
+  admitted under a descriptor disclosing `run.model_selection` with mode
+  `session_mutation` (the mode `runState` retains from admission, T1), a
+  `session.state` snapshot taken while that run is started reports a
+  `current_model_id` other than its admitted model.
 - `session.state` snapshots: `active_runs` is required whenever the
   validator tracks a queued reservation, more than one nonterminal run,
   or, on an endpoint advertising any unit that introduces `active_runs`
@@ -845,6 +866,10 @@ advertised `degraded`, no opt-in, admitted `queued`), and the correct
 rejection `queue-degraded-without-optin` (`error.response` with
 `capability_degraded`, then no admission) as a positive fixture,
 `queue-model-mutation-early` (`premature_session_mutation`),
+`queue-mode-refreshed-while-queued` (positive; a `session_mutation`
+descriptor, a queued controlled submit, a `capabilities.updated` to
+`per_run` while it waits, then promotion with the mutation reflected in
+`current_model_id`: judged under the retained mode, no diagnostic),
 `queue-over-limit` (`queue_limit_exceeded`; `max_queued_runs_per_session:
 1`, one started run, two queued admissions), `queue-over-active-limit`
 (`queue_limit_exceeded`; `max_active_runs_per_session: 1`, a queued
@@ -1270,7 +1295,10 @@ the request used.
   `InteractionResolution.ToolCall`; optional interface `adapter.ToolLister`
   (`Tools(ctx) (protocol.ToolsListResponse, error)`) for the catalog.
 - `serve`: `Session.Tools(ctx)`; `Session.Resolve` passes the new arm
-  under the same publication gate T4 specifies for steer, because a
+  under the same publication gate T4 specifies for steer, armed here for
+  the interaction's `action.call.started` and terminal rather than for a
+  settlement (envelopes before them pass through, those from them on are
+  withheld), because a
   participant that resolves synchronously lets the adapter emit
   `action.call.started` and the terminal inside `Resolve`, before the
   binding has written the accepted resolve response, which is the order
@@ -1434,8 +1462,9 @@ therefore needs a steer settlement, not only a steer admission.
   `steer-with-controls-rejected`, a correct rejection, and
   `steer-with-controls-admitted`, `unsatisfiable_control`).
 - Response: `admission: "steered"`, `effective_delivery: "steer"`, `run_id`
-  set to the target, `status` equal to the target's current status, and the
-  `submission_id` that names the pending steer.
+  set to the target, `status` equal to the target's status at admission
+  (after every target-run envelope the adapter had emitted by then), and
+  the `submission_id` that names the pending steer.
 - Settlement, two new run-scoped events in the target run's sequence domain:
   `run.steer.applied` `{ "session_id", "run_id", "submission_id",
   "request_id", "message_ids", "boundary": "immediate" | "turn" |
@@ -1489,9 +1518,14 @@ with `delivery: "steer"` (the `submitResponse` combination table gains
 the `steered`/`steer` row and rejects it for `auto`, so "`auto` never
 resolves to `steer`" is enforced), and only with a `run_id` equal to the
 request's `target_run_id` when one was supplied (`scope_mismatch`) and a
-`status` equal to the target's tracked `runState.status` at that point
-(`illegal_run_transition`), so the submitter is never handed stale run
-state; `applied`/`dropped` must name a
+`status` the target held while the request was in flight: the tracked
+`runState.status` at the response, or a status the target held between
+the request and the response before a transition that precedes the
+response (`illegal_run_transition` otherwise), so the submitter is never
+handed a status the target did not have at admission, and a transition
+the adapter emitted during the call, which the hub publishes ahead of the
+response (Surfaces), does not falsify a response that reports the status
+the steer was admitted against; `applied`/`dropped` must name a
 pending steer once (`unmatched_steer`, `duplicate_steer`), and a `steered`
 response whose `submission_id` is already pending on that run is
 `duplicate_steer` as well, since the pending set could not represent two
@@ -1509,7 +1543,10 @@ is `pending_steer_at_terminal`. A settlement whose
 `unmatched_steer`, which makes the ordering barrier below a conformance
 rule rather than a hub detail. Fixtures: positive `steer-immediate`
 (response, then `applied` in the target's sequence), `steer-at-boundary`,
-`steer-dropped-at-terminal`; negative `steer-settled-before-response`
+`steer-dropped-at-terminal`, `steer-status-advances-in-flight` (a
+`run.status.updated` to `waiting_for_input` between the steer request and
+its response, the response reporting `running`, the status at admission);
+negative `steer-settled-before-response`
 (`unmatched_steer`), `steer-duplicate-settlement` (`duplicate_steer`),
 `steer-pending-at-terminal` (`pending_steer_at_terminal`),
 `steer-unadvertised` (`unavailable_capability`),
@@ -1562,10 +1599,16 @@ and hub contract is explicit rather than inherited from `start`:
   settlement and releases it onto the target stream after return, and the
   memory adapter does the same, so an in-process consumer that takes the
   response from `Submit`'s return value and then reads the stream sees
-  them in that order. A non-nil stream with a `steered` admission is a
+  them in that order. Every target-run envelope the adapter emits before
+  returning is readable from the target stream when `Submit` returns
+  (emission is synchronous, as the adapters' `emit` under their operation
+  lock already is), and the response's `status` is the target's status
+  after the last of them, so the hub can order those envelopes ahead of
+  the response. A non-nil stream with a `steered` admission is a
   contract violation the hub reports as an adapter error; `adaptertest`
-  asserts the nil stream, the settlement on the target's stream, and that
-  the settlement is not readable before `Submit` returns.
+  asserts the nil stream, the settlement on the target's stream, that
+  the settlement is not readable before `Submit` returns, and that a
+  status transition emitted inside the call is.
 - `serve`: `Session.Submit` today calls `adoptRun` for every successful
   admission, which allocates an admission serial, counts a reader, and
   starts a drainer; for `steered` it does none of that. It releases the
@@ -1575,10 +1618,23 @@ and hub contract is explicit rather than inherited from `start`:
   `run.steer.dropped` to subscribers in the target's sequence. Because
   that drainer is another goroutine, the hub adds a barrier of its own
   rather than trusting the adapter's: before calling the adapter with
-  `delivery: "steer"` it gates the target run's drainer (envelopes are
-  read and buffered, not published), and after the adapter returns it
-  registers the pending steer (`submission_id` to target run, reflected
-  in `active_runs`). The gate is not lifted inside `Submit`: the hub
+  `delivery: "steer"` it arms a gate on the target run's drainer that
+  withholds a steer settlement and, to keep the run's sequence contiguous,
+  everything the drainer reads after it; every envelope before the first
+  settlement is published as it is read, during the call and after it, so
+  the gate never reorders a status transition or any other pre-response
+  envelope behind the response. When the adapter returns, the hub drains
+  the target stream without blocking and publishes what it finds up to
+  that first settlement before handing the response to the binding, so
+  every envelope the adapter emitted before returning (readable at return
+  by the adapter contract above) precedes the response in the hub's
+  trace, and the response's `status`, the target's status at admission,
+  is one the validator has already tracked. A settlement read before the
+  adapter has returned is the contract violation above and is reported
+  as an adapter error rather than published. After the adapter returns
+  the hub registers the pending steer (`submission_id` to target run,
+  reflected in `active_runs`). The gate is not lifted inside `Submit`:
+  the hub
   cannot know when the response has reached the caller, and an SSE
   subscriber could otherwise see `run.steer.applied` before the submit
   caller learns the `submission_id`. `Session.Submit` returns with the
@@ -1607,7 +1663,8 @@ and hub contract is explicit rather than inherited from `start`:
   records, therefore see the admission before the settlement even when an
   adapter emits inside `Submit`; the `servehttp` e2e test subscribes
   before a synchronously settling steer and asserts the settlement arrives
-  after the response. The same branch
+  after the response and a status transition emitted during the call
+  before it. The same branch
   is where a queued admission (T2) differs from `start`: it adopts the
   queued run's stream under a new serial but does not supersede the
   started run.
