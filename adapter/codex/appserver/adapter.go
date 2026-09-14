@@ -28,8 +28,8 @@ var (
 type Client interface {
 	Call(context.Context, string, any, any) error
 	Notify(context.Context, string, any) error
-	Requests() <-chan *rpc.IncomingRequest
-	Notifications() <-chan rpc.NotificationMessage
+	// Inbound delivers reverse requests and notifications in wire order.
+	Inbound() <-chan rpc.InboundMessage
 	Done() <-chan struct{}
 	Err() error
 	Close() error
@@ -109,12 +109,8 @@ func (client *processClient) Notify(ctx context.Context, method string, params a
 	return client.Process.Client.Notify(ctx, method, params)
 }
 
-func (client *processClient) Requests() <-chan *rpc.IncomingRequest {
-	return client.Process.Client.Requests()
-}
-
-func (client *processClient) Notifications() <-chan rpc.NotificationMessage {
-	return client.Process.Client.Notifications()
+func (client *processClient) Inbound() <-chan rpc.InboundMessage {
+	return client.Process.Client.Inbound()
 }
 
 func (client *processClient) Done() <-chan struct{} { return client.Process.Client.Done() }

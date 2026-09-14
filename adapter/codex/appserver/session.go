@@ -487,11 +487,16 @@ func (session *session) Close(ctx context.Context) error {
 func (session *session) dispatch() {
 	for {
 		select {
-		case notification := <-session.client.Notifications():
-			session.handleNotification(notification)
-		case request := <-session.client.Requests():
-			if request != nil {
-				session.handleRequest(request)
+		case message := <-session.client.Inbound():
+			// One ordered queue carries both kinds, so a reverse request is
+			// reduced after every notification that preceded it on the wire:
+			// a turn's requestUserInput cannot be handled before its
+			// turn/started.
+			switch {
+			case message.Notification != nil:
+				session.handleNotification(*message.Notification)
+			case message.Request != nil:
+				session.handleRequest(message.Request)
 			}
 		case <-session.client.Done():
 			session.opMu.Lock()
