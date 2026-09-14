@@ -784,8 +784,12 @@ serve one catalog for its lifetime.
   response that satisfies neither is wrong under either outcome and is
   diagnosed at once, without waiting: an `internal_error` to a busy
   submit naming an unknown model cannot become right if the catalog
-  lists the id and cannot become right if it omits it, and is
-  `queue_limit_exceeded` on the `error.response` immediately. Only a
+  lists the id and cannot become right if it omits it, and is diagnosed
+  on the `error.response` immediately, under whichever code the held
+  lower-rung expectation carries — `illegal_run_transition` for the
+  busy-session refusal in this example, where queueing is unavailable,
+  and `queue_limit_exceeded` only where the lower rung is an advertised
+  queue bound. Only a
   response consistent with one branch is held, and the trace's end
   settles what remains: at the final envelope the validator sweeps the
   retained expectations, and a held response whose code belongs to the
@@ -793,9 +797,10 @@ serve one catalog for its lifetime.
   evidence of a miss, and diagnosing one on silence would convict an
   adapter for a query nobody made), while a held response carrying the
   higher rung's typed code stands. Fixtures
-  `queue-busy-unknown-model-impossible-refusal` (`internal_error` to the
-  busy in-gap submit, diagnosed at the response, no catalog in the
-  trace) and `queue-busy-unknown-model-no-catalog` (positive; the same
+  `queue-busy-unknown-model-impossible-refusal`
+  (`illegal_run_transition`; `internal_error` to the busy in-gap submit
+  on an endpoint without queueing, diagnosed at the response, no catalog
+  in the trace) and `queue-busy-unknown-model-no-catalog` (positive; the same
   race refused `model_not_found`, the trace ending before any catalog).
   Fixtures `queue-busy-unknown-model-refused` (positive;
   a busy `auto` selecting an unlisted id before the catalog, refused
@@ -1560,7 +1565,23 @@ Wire:
   response `{ "interaction_id", "session_id", "run_id", "tool_call_id",
   "accepted", "reason"? }` (`reason` present only with `accepted: false`:
   `late_acknowledgement`, `repeated_acknowledgement`, `already_resolved`,
-  `wrong_responder`, `unknown_interaction`). `started` is an
+  `wrong_responder`, `unknown_interaction`). A refusal can satisfy
+  several at once — a foreign responder sending a second `started` is
+  both `wrong_responder` and `repeated_acknowledgement`, a foreign result
+  after settlement both `wrong_responder` and `already_resolved` — and
+  the response carries one reason, so they are ranked and the adapter
+  reports, and the validator requires, the highest the request satisfies:
+  `unknown_interaction`, `wrong_responder`, `already_resolved`,
+  `repeated_acknowledgement`, `late_acknowledgement`. The order asks
+  what the sender most needs to know. Whether the interaction exists
+  comes first, then whether this sender may speak for it at all — a
+  foreign responder's request is refused for being foreign however the
+  interaction stands, since the state of a call it does not own is not
+  its business — and only then how far the call has progressed, most
+  advanced first. Fixture
+  `control-call-foreign-responder-after-settlement` (positive; a foreign
+  `result` after an accepted terminal, refused `wrong_responder`).
+  `started` is an
   acknowledgement, not a resolution: it may
   appear at most once and only before the resolution.
 - New capability key `action.tools.provide`: the control layer may supply
@@ -2011,8 +2032,25 @@ the request used.
   `Resolve`, the binding lifts it with `Session.Published(token)`, the
   request-unique barrier T4 specifies, serialized per run with every
   other gated operation so that overlapping resolutions never share a
-  gate,
-  after writing the response. The context-done fallback reconciles as the
+  gate, after writing the response. Cancellation joins that
+  serialization. `Session.Cancel` takes the run's gate like any other
+  gated operation, because a cancel that wins the adapter's operation
+  lock while a resolve gate is armed makes the call cancelled and the
+  adapter's `accepted: false` with `already_resolved` correct — while
+  the `action.call.cancelled` that proves it sits withheld in the buffer
+  until after the resolve response, so the validator would see a pending,
+  valid resolution and diagnose the refusal. Serializing it removes the
+  race rather than teaching the validator to compensate for it: a cancel
+  arriving while a resolution holds the gate waits, subject to its own
+  context, so either the resolution settles first and the cancel finds
+  the call settled, or the cancel settles first and its
+  `action.call.cancelled` is published before the resolve request is ever
+  passed to the adapter. Cancellation is not thereby delayed
+  indefinitely — the gate is held only across one adapter call — and a
+  caller that needs to abandon work regardless keeps the context it
+  already had. Fixture `control-call-cancel-races-resolution` (positive;
+  a cancel issued while a resolution is in flight, the resolution
+  answered `already_resolved` after the cancellation is published). The context-done fallback reconciles as the
   steer fallback does rather than lifting the gate blind: the hub first
   publishes a `session.state.updated` whose `active_runs` entry for the
   run reflects `pending_interactions` after the request was answered:
