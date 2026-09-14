@@ -13,8 +13,7 @@ import (
 var (
 	ErrClosed                 = errors.New("codex app-server rpc: client closed")
 	ErrResponseNotFound       = errors.New("codex app-server rpc: response id is not pending")
-	ErrNotificationQueue      = errors.New("codex app-server rpc: notification queue is full")
-	ErrRequestQueue           = errors.New("codex app-server rpc: reverse request queue is full")
+	ErrInboundQueue           = errors.New("codex app-server rpc: inbound queue is full")
 	ErrReverseRequestResolved = errors.New("codex app-server rpc: reverse request already resolved")
 )
 
@@ -71,6 +70,17 @@ type NotificationMessage struct {
 	Params json.RawMessage
 }
 
+// InboundMessage is one server-to-client frame in wire order. Exactly one
+// field is set. Reverse requests and notifications share a single queue so a
+// consumer observes them in the order the reader decoded them. Separate
+// queues would let a consumer selecting across both handle a later request
+// before an earlier notification, such as a turn's requestUserInput before
+// its turn/started.
+type InboundMessage struct {
+	Request      *IncomingRequest
+	Notification *NotificationMessage
+}
+
 type callResult struct {
 	result json.RawMessage
 	err    error
@@ -93,13 +103,12 @@ type Client struct {
 	closed  bool
 	err     error
 
-	nextID        atomic.Int64
-	writes        chan writeRequest
-	requests      chan *IncomingRequest
-	notifications chan NotificationMessage
-	diagnostics   chan error
-	done          chan struct{}
-	readDone      chan struct{}
+	nextID      atomic.Int64
+	writes      chan writeRequest
+	inbound     chan InboundMessage
+	diagnostics chan error
+	done        chan struct{}
+	readDone    chan struct{}
 }
 
 type ClientOptions struct {
@@ -125,8 +134,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 		strictResponseIDs: options.StrictResponseIDs,
 		pending:           make(map[RequestID]chan callResult),
 		writes:            make(chan writeRequest),
-		requests:          make(chan *IncomingRequest, capacity),
-		notifications:     make(chan NotificationMessage, capacity),
+		inbound:           make(chan InboundMessage, capacity),
 		diagnostics:       make(chan error, capacity),
 		done:              make(chan struct{}),
 		readDone:          make(chan struct{}),
@@ -137,10 +145,12 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	return client
 }
 
-func (client *Client) Requests() <-chan *IncomingRequest         { return client.requests }
-func (client *Client) Notifications() <-chan NotificationMessage { return client.notifications }
-func (client *Client) Diagnostics() <-chan error                 { return client.diagnostics }
-func (client *Client) Done() <-chan struct{}                     { return client.done }
+// Inbound is the ordered stream of reverse requests and notifications. The
+// reader goroutine is its sole producer and enqueues frames as it decodes
+// them, so a consumer that reads it sequentially sees wire order.
+func (client *Client) Inbound() <-chan InboundMessage { return client.inbound }
+func (client *Client) Diagnostics() <-chan error      { return client.diagnostics }
+func (client *Client) Done() <-chan struct{}          { return client.done }
 
 // ReadDone closes once the reader goroutine has stopped, after every frame
 // already buffered on the input has been decoded and delivered. A process
@@ -265,21 +275,28 @@ func (client *Client) readLoop() {
 			}
 		case MessageRequest:
 			incoming := &IncomingRequest{ID: message.ID, Method: message.Method, Params: cloneRaw(message.Params), Trace: cloneRaw(message.Trace), client: client}
-			select {
-			case client.requests <- incoming:
-			default:
-				client.shutdown(ErrRequestQueue)
+			if !client.enqueue(InboundMessage{Request: incoming}) {
 				return
 			}
 		case MessageNotification:
 			notification := NotificationMessage{Method: message.Method, Params: cloneRaw(message.Params)}
-			select {
-			case client.notifications <- notification:
-			default:
-				client.shutdown(ErrNotificationQueue)
+			if !client.enqueue(InboundMessage{Notification: &notification}) {
 				return
 			}
 		}
+	}
+}
+
+// enqueue hands one inbound frame to the consumer without blocking the
+// reader. A full queue is terminal: the consumer is a whole queue behind, and
+// blocking here would also stall response delivery for pending calls.
+func (client *Client) enqueue(message InboundMessage) bool {
+	select {
+	case client.inbound <- message:
+		return true
+	default:
+		client.shutdown(ErrInboundQueue)
+		return false
 	}
 }
 

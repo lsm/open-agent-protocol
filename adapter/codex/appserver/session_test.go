@@ -47,8 +47,7 @@ type fakeClient struct {
 	turnID        string
 	calls         []string
 	interruptGate chan struct{}
-	requests      chan *rpc.IncomingRequest
-	notifications chan rpc.NotificationMessage
+	inbound       chan rpc.InboundMessage
 	done          chan struct{}
 	closeOnce     sync.Once
 	err           error
@@ -56,7 +55,7 @@ type fakeClient struct {
 }
 
 func newFakeClient() *fakeClient {
-	return &fakeClient{threadID: "native-thread", turnID: "native-turn", requests: make(chan *rpc.IncomingRequest, 8), notifications: make(chan rpc.NotificationMessage, 32), done: make(chan struct{})}
+	return &fakeClient{threadID: "native-thread", turnID: "native-turn", inbound: make(chan rpc.InboundMessage, 40), done: make(chan struct{})}
 }
 
 func (client *fakeClient) Call(ctx context.Context, method string, params, result any) error {
@@ -91,11 +90,10 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 	return nil
 }
 
-func (client *fakeClient) Notify(context.Context, string, any) error     { return nil }
-func (client *fakeClient) Requests() <-chan *rpc.IncomingRequest         { return client.requests }
-func (client *fakeClient) Notifications() <-chan rpc.NotificationMessage { return client.notifications }
-func (client *fakeClient) Done() <-chan struct{}                         { return client.done }
-func (client *fakeClient) Err() error                                    { return client.err }
+func (client *fakeClient) Notify(context.Context, string, any) error { return nil }
+func (client *fakeClient) Inbound() <-chan rpc.InboundMessage        { return client.inbound }
+func (client *fakeClient) Done() <-chan struct{}                     { return client.done }
+func (client *fakeClient) Err() error                                { return client.err }
 func (client *fakeClient) Close() error {
 	client.closeOnce.Do(func() { close(client.done) })
 	return nil
@@ -107,10 +105,31 @@ func (client *fakeClient) send(t *testing.T, method string, payload any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.notifications <- rpc.NotificationMessage{Method: method, Params: data}
+	client.notify(method, data)
 }
 
+// notify queues one notification frame behind everything already queued.
+func (client *fakeClient) notify(method string, params json.RawMessage) {
+	client.inbound <- rpc.InboundMessage{Notification: &rpc.NotificationMessage{Method: method, Params: params}}
+}
+
+// enqueue queues one reverse request frame behind everything already queued.
+func (client *fakeClient) enqueue(request *rpc.IncomingRequest) {
+	client.inbound <- rpc.InboundMessage{Request: request}
+}
+
+// request decodes a reverse request through a real rpc client, queues it, and
+// returns the channel that yields the adapter's native response frame.
 func (client *fakeClient) request(t *testing.T, id int64, method string, payload any) (*rpc.IncomingRequest, <-chan rpc.Message) {
+	t.Helper()
+	request, response := client.newRequest(t, id, method, payload)
+	client.enqueue(request)
+	return request, response
+}
+
+// newRequest builds the reverse request without queueing it, so a test can
+// decide exactly where it lands relative to surrounding notifications.
+func (client *fakeClient) newRequest(t *testing.T, id int64, method string, payload any) (*rpc.IncomingRequest, <-chan rpc.Message) {
 	t.Helper()
 	serverToClientReader, serverToClientWriter := io.Pipe()
 	clientToServerReader, clientToServerWriter := io.Pipe()
@@ -127,15 +146,17 @@ func (client *fakeClient) request(t *testing.T, id int64, method string, payload
 	go func() {
 		_ = rpc.NewEncoder(serverToClientWriter).Encode(rpc.Request(rpc.IntegerID(id), method, data))
 	}()
-	request := <-rpcClient.Requests()
+	inbound := <-rpcClient.Inbound()
+	if inbound.Request == nil {
+		t.Fatalf("decoded frame is not a reverse request: %+v", inbound)
+	}
 	response := make(chan rpc.Message, 1)
 	go func() {
 		decoder := rpc.NewDecoder(clientToServerReader, 0)
 		message, _ := decoder.Decode()
 		response <- message
 	}()
-	client.requests <- request
-	return request, response
+	return inbound.Request, response
 }
 
 // Approval and user-input events copy the participant into responded_by; an
@@ -720,6 +741,59 @@ func TestUserInputRoundTrip(t *testing.T) {
 	}
 	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
 	_ = drainClosed(t, stream)
+}
+
+// A reverse request that follows a notification on the wire must be reduced
+// after it. The rpc client used to split the two kinds onto separate queues
+// and dispatch selected across both, so a turn's requestUserInput could be
+// handled before its turn/started and the run emitted user.input.requested
+// and run.status.updated before run.started (issue #10, the
+// TestCodexEvidenceCorpus/user-input flake). Both frames are queued while the
+// dispatch loop is parked inside a handler, so it finds both ready at once;
+// the old select reordered them about half the time.
+func TestDispatchReducesRequestAfterPrecedingNotification(t *testing.T) {
+	client, sess, descriptor := openFake(t)
+	admission, stream := submitFake(t, sess)
+	options := []native.UserInputOption{{Label: "Fast", Description: "Lower latency"}, {Label: "Safe", Description: "More checks"}}
+	request, nativeResponse := client.newRequest(t, 9, native.MethodUserInput, native.UserInputRequestParams{
+		ThreadID: client.threadID, TurnID: client.turnID, ItemID: "tool-item", IsBlocking: true,
+		Questions: []native.UserInputQuestion{{ID: "mode", Header: "Mode", Question: "Choose mode", Options: &options}},
+	})
+	// Hold the reducer lock so the dispatch loop blocks inside the handler of
+	// a notification it ignores while turn/started and the request queue up
+	// behind it. Without the absorber a parked dispatch loop would receive
+	// turn/started by direct handoff and the two frames would never be
+	// buffered together.
+	reducer := sess.(*session)
+	reducer.opMu.Lock()
+	client.send(t, "thread/status/changed", map[string]any{"threadId": client.threadID})
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	client.enqueue(request)
+	reducer.opMu.Unlock()
+
+	events := []protocol.Envelope{nextEvent(t, stream), nextEvent(t, stream), nextEvent(t, stream)}
+	adaptertest.AssertTypes(t, events, protocol.TypeRunStarted, protocol.TypeUserInputRequested, protocol.TypeRunStatusUpdated)
+	var payload protocol.UserInputRequestedPayload
+	if err := events[1].DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	err := sess.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: admission.RunID, RespondedBy: "user",
+		Input: &protocol.UserInputResolveRequest{
+			InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			SessionID: "session-1", RunID: admission.RunID,
+			Answers: []protocol.InputAnswer{{QuestionID: "mode", SelectedOptionIDs: []string{"option-2"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := <-nativeResponse; response.Kind != rpc.MessageResponse {
+		t.Fatalf("native response: %+v", response)
+	}
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	events = append(events, drainClosed(t, stream)...)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
 }
 
 func TestUserInputEmptyOptionsSurfacesAsText(t *testing.T) {

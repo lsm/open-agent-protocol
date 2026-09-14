@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -109,13 +110,14 @@ func TestClientRoutesNotificationAndReverseRequest(t *testing.T) {
 	writeWire(t, writer, Notification("turn/started", json.RawMessage(`{"turn":{"id":"t1"}}`)))
 	writeWire(t, writer, Message{Kind: MessageRequest, ID: StringID("approval"), Method: "item/commandExecution/requestApproval", Params: json.RawMessage(`{"turnId":"t1"}`), Trace: json.RawMessage(`{"traceparent":"x"}`)})
 
-	notification := <-client.Notifications()
-	if notification.Method != "turn/started" {
-		t.Fatalf("notification: %+v", notification)
+	first := <-client.Inbound()
+	if first.Request != nil || first.Notification == nil || first.Notification.Method != "turn/started" {
+		t.Fatalf("first inbound: %+v", first)
 	}
-	request := <-client.Requests()
-	if request.Method != "item/commandExecution/requestApproval" || !request.ID.IsString() || len(request.Trace) == 0 {
-		t.Fatalf("request: %+v", request)
+	second := <-client.Inbound()
+	request := second.Request
+	if request == nil || second.Notification != nil || request.Method != "item/commandExecution/requestApproval" || !request.ID.IsString() || len(request.Trace) == 0 {
+		t.Fatalf("second inbound: %+v", second)
 	}
 	responded := make(chan error, 1)
 	go func() {
@@ -207,11 +209,53 @@ func TestClientQueueOverflowIsTerminal(t *testing.T) {
 	writeWire(t, writer, Notification("two", nil))
 	select {
 	case <-client.Done():
-		if !errors.Is(client.Err(), ErrNotificationQueue) {
+		if !errors.Is(client.Err(), ErrInboundQueue) {
 			t.Fatalf("got %v", client.Err())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("client did not fail on overflow")
+	}
+}
+
+// Reverse requests and notifications share one queue and one order. A reader
+// that split them across two channels would let a consumer selecting over
+// both observe a request ahead of the notification that preceded it on the
+// wire; the adapter relies on wire order to reduce turn/started before the
+// turn's first reverse request.
+func TestClientDeliversRequestsAndNotificationsInWireOrder(t *testing.T) {
+	const frames = 64
+	client, _, writer := clientPipes(t, frames)
+	var want []string
+	for index := range frames {
+		// Cluster requests unevenly so every adjacency (n→r, r→n, r→r, n→n) occurs.
+		if index%5 == 1 || index%5 == 2 || index%7 == 0 {
+			method := "request-" + strconv.Itoa(index)
+			writeWire(t, writer, Request(IntegerID(int64(index)), method, nil))
+			want = append(want, method)
+			continue
+		}
+		method := "notification-" + strconv.Itoa(index)
+		writeWire(t, writer, Notification(method, nil))
+		want = append(want, method)
+	}
+	for index, method := range want {
+		select {
+		case message := <-client.Inbound():
+			switch {
+			case message.Request != nil && message.Notification == nil:
+				if message.Request.Method != method {
+					t.Fatalf("frame %d: got request %s, want %s", index, message.Request.Method, method)
+				}
+			case message.Notification != nil && message.Request == nil:
+				if message.Notification.Method != method {
+					t.Fatalf("frame %d: got notification %s, want %s", index, message.Notification.Method, method)
+				}
+			default:
+				t.Fatalf("frame %d: malformed inbound message %+v", index, message)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("frame %d (%s) was not delivered", index, method)
+		}
 	}
 }
 
@@ -284,7 +328,7 @@ func TestClientReverseRequestOverflowDoesNotBlockShutdown(t *testing.T) {
 	writeWire(t, serverToClientWriter, Message{Kind: MessageRequest, ID: IntegerID(2), Method: "two"})
 	select {
 	case <-client.Done():
-		if !errors.Is(client.Err(), ErrRequestQueue) {
+		if !errors.Is(client.Err(), ErrInboundQueue) {
 			t.Fatalf("got %v", client.Err())
 		}
 	case <-time.After(time.Second):

@@ -176,7 +176,7 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	for _, frame := range frames {
 		switch {
 		case frame.Direction == "server_to_client" && frame.Kind == "notification":
-			client.notifications <- rpc.NotificationMessage{Method: frame.Method, Params: frame.Params}
+			client.notify(frame.Method, frame.Params)
 			for range frame.AwaitEvents {
 				prefix = append(prefix, adaptertest.Next(t, stream, time.Second))
 			}
