@@ -750,7 +750,28 @@ serve one catalog for its lifetime.
   owned the response and the held expectation is discharged; if it lists
   them, there was no higher-rung failure and the lower rung is judged
   then, against the response it was correlated to. The same holds for
-  `unjudgedTools`. Fixtures `queue-busy-unknown-model-refused` (positive;
+  `unjudgedTools`.
+  Holding is not a reprieve. The catalog is an optional query no client
+  need ever make, so a trace can end with the expectation unsettled, and
+  what is held is only the *choice* between two rungs, never whether the
+  response was conforming at all. Both branches name a typed code, so a
+  response that satisfies neither is wrong under either outcome and is
+  diagnosed at once, without waiting: an `internal_error` to a busy
+  submit naming an unknown model cannot become right if the catalog
+  lists the id and cannot become right if it omits it, and is
+  `queue_limit_exceeded` on the `error.response` immediately. Only a
+  response consistent with one branch is held, and the trace's end
+  settles what remains: at the final envelope the validator sweeps the
+  retained expectations, and a held response whose code belongs to the
+  lower rung is judged as if the catalog had listed the id (there is no
+  evidence of a miss, and diagnosing one on silence would convict an
+  adapter for a query nobody made), while a held response carrying the
+  higher rung's typed code stands. Fixtures
+  `queue-busy-unknown-model-impossible-refusal` (`internal_error` to the
+  busy in-gap submit, diagnosed at the response, no catalog in the
+  trace) and `queue-busy-unknown-model-no-catalog` (positive; the same
+  race refused `model_not_found`, the trace ending before any catalog).
+  Fixtures `queue-busy-unknown-model-refused` (positive;
   a busy `auto` selecting an unlisted id before the catalog, refused
   `model_not_found`, the catalog omitting it afterwards) and
   `queue-busy-listed-model-wrong-refusal` (the same race where the
@@ -1065,7 +1086,18 @@ No new envelope types. Additive fields:
   `run_active` or `queue_limit_exceeded` reports a bound that no longer
   binds. That is `queue_limit_exceeded` on the error response, naming the
   bound and the counts as of the response, so a caller is not told to
-  wait for capacity it already has. Other codes on that response stay
+  wait for capacity it already has — but only once every other state-rung
+  condition that independently owes `run_active` has been excluded. The
+  code is not the queue's alone: T1 lets a busy adapter that cannot defer
+  a queued `session_mutation` refuse with it, and if the queued
+  reservation terminates in flight while the started run remains, that
+  adapter still owes `run_active` for the mutation constraint even though
+  the bound has cleared. Diagnosing it would convict a conforming
+  refusal, so the stale-limit check runs only when the response's code
+  is explained by no surviving condition. Fixture
+  `queue-limit-cleared-mutation-still-busy` (positive; the bound clears
+  in flight, a started run remains, and the `session_mutation` submit is
+  still refused `run_active`). Other codes on that response stay
   outside this rule: the adapter may have refused for a reason the queue
   knows nothing about. Fixture `queue-limit-cleared-stale-refusal` (the
   bound reached at the request, the queued run terminated before the
@@ -2747,7 +2779,8 @@ every later unit relies on:
   unknown run status is nonterminal (terminality is a property of event
   types, not of status strings) and neither the transition into it nor
   the next transition out of it is judged, an unknown admission or
-  delivery skips the combination table but keeps the correlation, scope,
+  delivery suspends the combination-table predicates that read it (never
+  the whole table, as below) but keeps the correlation, scope,
   and capability checks, with opaque run bookkeeping so the run's own
   events are not orphaned. Suspension is per member, not per envelope:
   every semantic a known member still carries is applied, and only the
@@ -2759,7 +2792,16 @@ every later unit relies on:
   nothing, so a future delivery value cannot let a malformed response
   conjure a run and make its later events look valid, and `queued` and
   `started` register their run as that kind with the rules keyed on it
-  live; only the rules keyed on the delivery itself (which bound applies,
+  live. The combination table is split on the same principle rather than
+  skipped whole: its predicates that read only the request's delivery and
+  the admission — T4's rule that an `auto` request is never admitted
+  `steered` among them — are known on both sides and stay live under an
+  unknown `effective_delivery`, so a future delivery value cannot license
+  treating an ordinary submit as a steer; only the predicates that
+  actually read the effective delivery are suspended. A tolerant
+  validator suspends the rules that need the member it does not
+  understand, never the rules that merely sit near them.
+  Beyond the table, the rules keyed on the delivery itself (which bound applies,
   whether the delivery was advertised) are quarantined. Opaque run
   creation is reserved for an unknown `admission`: a response carrying
   one that names a `run_id` the validator does not yet track registers
