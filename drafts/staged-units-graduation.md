@@ -278,6 +278,21 @@ No new envelope types. Changes to
   4. **State** — the request is well formed and supported but the
      session cannot take it now (`run_active`, `queue_limit_exceeded`,
      `invalid_steer_target`).
+  Peers within a rung are ordered too, or the ladder would leave a tie
+  unbreakable: a `session.open.request` carrying both `tool_sources` and
+  `tools` on a descriptor advertising neither fails the capability rung
+  twice, under `action.tool_sources.attach` and `action.tools.provide`,
+  and the two demand different `details.feature`. Within a rung the
+  expectation whose capability key sorts first lexicographically wins and
+  the rest are discharged. The rule is arbitrary only in the sense that
+  some rule was needed; it is total, stable, needs no amendment when a
+  later unit adds a key, and on the one pair this plan actually produces
+  it agrees with the dependency order, since `action.tool_sources.attach`
+  precedes `action.tools.provide` and a source must exist before a
+  provided tool can cite it. Where a rung's peers are not capability
+  failures the same ordering applies to the diagnostic names. Fixture
+  `open-unadvertised-sources-and-tools` (positive; both supplied, neither
+  advertised, refused under `action.tool_sources.attach`).
   The ladder runs from the most permanent failure to the most transient,
   which is the order in which the caller can act: what it must stop
   sending outranks what it must send differently, which outranks what it
@@ -2131,9 +2146,10 @@ with `internal_error`),
 `run.status.updated` to `waiting_for_input` between the steer request and
 its response, the response naming that transition's sequence as
 `target_sequence` and reporting `waiting_for_input`),
-`steer-status-multi-transition` (`running` to `waiting_for_input` to
-`cancelling` during the call, the response naming the last sequence and
-reporting `cancelling`); negative
+`steer-status-multi-transition` (`running` to `waiting_for_input` back to
+`running` during the call, the response naming the last sequence and
+reporting `running`; more than one transition in flight, all of them
+leaving the target steerable, so the admission stands); negative
 `steer-status-stale` (`illegal_run_transition`; the same transition
 before the response, the response naming its sequence but still
 reporting `running`), `steer-target-wrong-refusal`
