@@ -501,10 +501,15 @@ serve one catalog for its lifetime.
   correlation and scope checks: each envelope's top-level `session_id` must
   agree with its payload (`scope_mismatch`), and the response must repeat
   the request's session.
-- Both envelopes invoke the existing `feature()` gate with `models.list`
-  (`unavailable_capability` when the descriptor omits the key or advertises
-  it `unavailable`), so a catalog served without being advertised fails
-  the gate's rule that nothing is applied without being advertised.
+- `models.response` invokes the existing `feature()` gate with
+  `models.list` (`unavailable_capability` when the descriptor omits the
+  key or advertises it `unavailable`), so a catalog served without being
+  advertised fails the gate's rule that nothing is applied without being
+  advertised; the request is remembered rather than gated, as T1 and T2
+  do for controls and deliveries, and a correlated `error.response` must
+  carry `unsupported_feature` with `details.feature: "models.list"`
+  (`unavailable_capability` on the error response otherwise), so an
+  endpoint that correctly refuses the query is conforming.
 - `current_model_id` on `models.response` must equal the effective session
   model the validator tracks (`sessionTrack.currentModel`: the latest
   `session.open.response` or `session.state` value, advanced by a
@@ -588,7 +593,11 @@ listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `models-two-defaults` (`ambiguous_default_model`),
 `models-request-scope-mismatch` (`scope_mismatch`; envelope and payload
 `session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`),
-`models-unadvertised` (`unavailable_capability`), `models-duplicate-id`
+`models-unadvertised` (`unavailable_capability` on the response; a
+catalog served unadvertised), the correct rejection
+`models-unadvertised-rejected` (`error.response` with
+`unsupported_feature`, `details.feature: "models.list"`),
+`models-duplicate-id`
 (`duplicate_model_id`), `models-current-mismatch`
 (`session_state_mismatch`; state reports one model, the catalog another),
 `models-current-not-listed` (`model_not_in_catalog`; state and the
@@ -1292,11 +1301,18 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   resolution", "at most one acknowledgement", and "no acknowledgement
   once resolved" are all enforced at the response, not only at the
   events that follow.
-- `session.open.request` with `tool_sources` or `tools` invokes the
-  `feature()` gate with `action.tool_sources.attach` or
-  `action.tools.provide`; a `remote` source additionally requires the
-  attach capability to disclose `mode: "remote"`, else
-  `unavailable_capability` on the admitted open. Each supplied tool's
+- `session.open.request` with `tool_sources` or `tools` is judged through
+  the `feature()` gate with `action.tool_sources.attach` or
+  `action.tools.provide` on the correlated response, as T1 and T2 judge
+  controls and deliveries: an admitted open (`session.open.response`) on
+  a descriptor that omits the key or advertises it `unavailable` is
+  `unavailable_capability` on the response, and a correlated
+  `error.response` must carry `unsupported_feature` with `details.feature`
+  naming that key (`unavailable_capability` on the error response
+  otherwise), so the fail-closed refusal the wire requires is itself
+  conforming; a `remote` source additionally requires the attach
+  capability to disclose `mode: "remote"`, else `unavailable_capability`
+  on the admitted open. Each supplied tool's
   `source`, when present, must name a source in the union of the same
   open's `tool_sources` and the sources the capability descriptor
   declares, checked when the open is admitted (`unmatched_tool_source` on
@@ -1483,7 +1499,12 @@ the tool as harness-owned, the call names the control participant),
 `control-tool-called-despite-none` (`unapplied_control`),
 `control-tool-wrong-owner` (`wrong_interaction_responder`),
 `control-tool-pending-at-terminal` (`pending_interaction_at_terminal`),
-`open-attach-unadvertised` (`unavailable_capability`),
+`open-attach-unadvertised` (`unavailable_capability` on the admission;
+the open admitted), the correct rejections
+`open-attach-unadvertised-rejected` and
+`open-provide-unadvertised-rejected` (`error.response` with
+`unsupported_feature`, `details.feature` naming
+`action.tool_sources.attach` or `action.tools.provide`, then no open),
 `open-attach-remote-unadvertised` (`unavailable_capability`; a `remote`
 source attached on a descriptor whose attach capability lacks `mode:
 "remote"`), `open-provide-dangling-source-admitted`
@@ -1945,6 +1966,28 @@ every later unit relies on:
   as the regression guard, every fixture in the manifest under the
   tolerant compile, which must accept everything the strict compile
   accepts.
+- The stateful validator tolerates on the same terms when it runs in
+  tolerant mode, because a schema that admits an unknown envelope is not
+  enough on its own: `validation/state.go` advances a run's sequence
+  cursor only for the types `isRunEvent` enumerates, so a tolerated
+  unknown run envelope at sequence N would be ignored and the next known
+  event at N+1 diagnosed as `sequence_gap`. In tolerant mode an envelope
+  of unknown `type` is classified by its wire scope, as the T2 client
+  change classifies frames: one carrying `run_id` is a run-scoped event
+  that enters `runEvent` for the type-independent bookkeeping (scope
+  agreement, an accepted admission, sequence contiguity and regression,
+  nothing after a terminal, `duplicate_envelope_id`) and for no
+  type-specific rule, including the pre-`run.started` rule, which exempts
+  pre-start settlements by type and cannot be applied to a type it does
+  not know; one carrying `session_id` alone is session-scoped and joins
+  the scope checks only; one carrying neither is endpoint or protocol
+  scoped and is passed through. Strict mode is unchanged: an unknown
+  type fails the schema before the stateful pass sees it. The step's
+  tests feed a trace with an additive run envelope at sequence 2 between
+  `run.started` and `run.completed` (tolerant: valid, with the cursor
+  advanced; strict: the schema rejection and nothing else), and the same
+  envelope after the terminal (tolerant: `event_after_terminal`, because
+  scope classification makes the domain rules apply).
 - Fixture validation stays strict against the bundle at its own revision.
   That is the conformance validator's job and how a misspelled new field is
   caught; each unit extends the bundle in place under `schema/v0.1`.
