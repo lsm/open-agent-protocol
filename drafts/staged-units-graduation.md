@@ -229,9 +229,24 @@ No new envelope types. Changes to
 
 ### Validator
 
-- `session.message.submit.request` with any control invokes the existing
-  `feature()` gate with the control's key (diagnostic
-  `unavailable_capability` when unadvertised or `unavailable`).
+- `session.message.submit.request` with any control is judged through the
+  existing `feature()` gate with the control's key, but on the correlated
+  response rather than on the request, because the semantics above make
+  refusal the required behavior and a conforming refusal must validate:
+  the request's unadvertised or `unavailable` controls are remembered, an
+  admission correlated to it (`session.message.submit.response`) is
+  `unavailable_capability` on the response, and a correlated
+  `error.response` must carry `unsupported_feature` with `details.feature`
+  naming the control's key (`unavailable_capability` on the error response
+  otherwise: the refusal happened, but under a code that does not tell the
+  caller what to stop sending). The stale-revision and missing-descriptor
+  branches of `feature()` stay on the request, as for every optional
+  envelope. Fixtures: `controls-unadvertised-model` (`unavailable_capability`
+  on the admission) and the correct rejection
+  `controls-unadvertised-model-rejected` (`error.response` with
+  `unsupported_feature`, `details.feature: "run.model_selection"`,
+  `details.reason: "unadvertised"`, then no admission), which is also the
+  shape of the Codex `instructions` rejection T1 keeps.
 - New diagnostic `degraded_without_optin`: `feature()` today accepts every
   level but `unavailable`, so a request carrying a control, or an
   explicit non-`auto` delivery, whose key the descriptor advertises
@@ -382,9 +397,14 @@ Positive: `controls-model-admitted`, `controls-instructions-emulated`,
 schema with no required members and an empty-object `result`, valid),
 `controls-auto-degraded-admitted` (an `auto` submit admitted without
 `allow_degraded_features` on a descriptor whose `auto` delivery is
-`degraded`, legal under the exemption above). Negative:
+`degraded`, legal under the exemption above),
+`controls-unadvertised-model-rejected` (`error.response` with
+`unsupported_feature`, `details.feature: "run.model_selection"`,
+`details.reason: "unadvertised"`, then no admission; validated as a
+correct rejection). Negative:
 `controls-unadvertised-model`
-(`unavailable_capability`), `controls-model-mismatch` (`unapplied_control`),
+(`unavailable_capability` on the admission), `controls-model-mismatch`
+(`unapplied_control`),
 `controls-structured-missing-result` (`unapplied_control`),
 `controls-structured-nonconforming-result` (`unapplied_control`; `result`
 present but invalid against the admitted schema),
@@ -642,6 +662,11 @@ No new envelope types. Additive fields:
   that would resolve to it alike; otherwise `capability_degraded` before
   admission, exactly as T1 rules for controls. T4 applies the same to
   `session.message.delivery.steer`.
+- Explicit `queue` on a descriptor that omits
+  `session.message.delivery.queue` or advertises it `unavailable` is
+  refused before admission with `unsupported_feature` (`details.feature`
+  naming the delivery key, `details.reason: "unadvertised"`), never
+  admitted or silently started; T4 applies the same to `steer`.
 - Promotion is in admission order: a queued run may emit `run.started` only
   when every earlier-admitted run in the session is terminal. Only one run
   per session is started at a time; Decision 0001's cancellation scope
@@ -670,12 +695,18 @@ No new envelope types. Additive fields:
   advertises `session.message.delivery.queue`; otherwise the existing
   `illegal_run_transition` ("session already has a nonterminal run").
 - The capability gate does not depend on session state. The validator
-  already invokes `feature()` with `delivery.<mode>` for every explicit
-  non-`auto` delivery on the request, which covers an explicit `queue` on
-  an idle session; T2 adds the same gate on the admission side, so a
-  `queued` admission response (from an explicit or an `auto` request) on a
-  descriptor that omits `session.message.delivery.queue` or advertises it
-  `unavailable` is `unavailable_capability` whatever the session held.
+  today invokes `feature()` with `delivery.<mode>` on the request itself
+  for every explicit non-`auto` delivery; T2 moves that judgement to the
+  correlated response on the same terms as T1's control gate, so that an
+  adapter's required refusal of an unadvertised `queue` validates: the
+  request is remembered, a `queued` admission response (from an explicit
+  or an `auto` request) on a descriptor that omits
+  `session.message.delivery.queue` or advertises it `unavailable` is
+  `unavailable_capability` on the response whatever the session held, and
+  a correlated `error.response` must carry `unsupported_feature` naming
+  the delivery key. No fixture in the current manifest expects
+  `unavailable_capability` for a delivery, so the move changes no
+  existing fixture's meaning; T4 applies the same shape to `steer`.
   T1's `degraded_without_optin` covers the delivery keys too: a `queued`
   admission on a descriptor advertising the queue capability `degraded`
   without the caller's opt-in is diagnosed on the response.
@@ -873,8 +904,12 @@ first run's terminal). Negative:
 `queue-promoted-out-of-order` (`queue_order_violation`),
 `queue-prestart-terminal-interleaved` (`queue_order_violation`; a queued
 run's pre-start `run.cancelled` before the started run's terminal),
-`queue-idle-unadvertised` (`unavailable_capability`; explicit `queue` on an
-idle session with the capability unadvertised),
+`queue-idle-unadvertised` (`unavailable_capability` on the admission;
+explicit `queue` on an idle session with the capability unadvertised,
+admitted `queued`), the correct rejection
+`queue-idle-unadvertised-rejected` (`error.response` with
+`unsupported_feature`, `details.feature:
+"session.message.delivery.queue"`, then no admission),
 `queue-degraded-admitted-without-optin` (`degraded_without_optin`; queue
 advertised `degraded`, no opt-in, admitted `queued`), and the correct
 rejection `queue-degraded-without-optin` (`error.response` with
@@ -1203,7 +1238,27 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   sourced call is judged against stale names, owners, or sources until a
   list under the new revision replaces it; the open-time sources and
   provided tools are kept across the refresh, because they are
-  session-lifetime facts the next list must still carry.
+  session-lifetime facts the next list must still carry. What arrives in
+  the gap is not skipped but retained, as T5a retains in-gap model
+  selections: once a session has listed its catalog, the list is the
+  authority and a gap defers rather than falls back to the descriptor's
+  `tools` (a session that never lists is judged against the descriptor's
+  effective catalog plus its open-time tools, as T1 rules), so
+  `sessionTrack.unjudgedTools` keeps every `tool_choice` admitted, and
+  every `action.call.requested` emitted with a `source` or an
+  `execution_owner`, while the session has no catalog under the active
+  revision, and the first `action.tools.list.response` under that
+  revision reconciles them: a retained policy that lists or names a tool
+  the catalog does not carry, or that is `required` or `named` against an
+  empty filtered set, is `unsatisfiable_control` on that response with
+  `details` naming the admission; a retained call whose `name` the
+  catalog lists under another source or another owner, or does not list
+  while its source is undeclared, is `unmatched_tool_source` or
+  `wrong_tool_owner` on that response, naming the call. An adapter
+  therefore cannot accept an unlisted policy or route a call under a
+  stale attribution in the window between a refresh and its list and
+  have the window hide it. Reconciliation runs at `native` and `emulated`
+  `action.tools.list`, on the same terms as the models catalog.
 - `action.call.requested` with `execution_owner` equal to a declared control
   participant must carry `interaction_id` and `responded_by`
   (`illegal_tool_transition`); `action.call.started` for such a call must
@@ -1400,6 +1455,13 @@ tool `foo`, then a refreshed descriptor whose native tools include
 `foo`), `tools-refresh-removes-provided-source` (`unmatched_tool_source`;
 a provided tool referencing a descriptor-declared source, then a refresh
 that no longer declares it),
+`tools-select-in-gap-unlisted` (`unsatisfiable_control` on the revision 2
+list; a `named` policy admitted between `capabilities.updated` and the
+new list, which then omits the tool), `tools-call-in-gap-wrong-source`
+(`unmatched_tool_source` on the revision 2 list; a sourced call emitted
+in the gap that the new list attributes to another source), and the
+positive `tools-select-in-gap-listed` (the retained policy found listed
+when the revision 2 list arrives),
 `open-attach-colliding-source-admitted` (`duplicate_tool_source`; an
 attached source reusing an id the descriptor declares, and the open
 admitted),
@@ -1577,7 +1639,8 @@ before the response, the response still reporting `running`),
 `steer-settled-before-response`
 (`unmatched_steer`), `steer-duplicate-settlement` (`duplicate_steer`),
 `steer-pending-at-terminal` (`pending_steer_at_terminal`),
-`steer-unadvertised` (`unavailable_capability`),
+`steer-unadvertised` (`unavailable_capability` on the admission; the
+request admitted `steered`),
 `steer-auto-resolved-to-steer` (`illegal_run_transition`; an `auto`
 request answered `steered`), `steer-target-mismatch` (`scope_mismatch`;
 `target_run_id` naming one run, the response another),
