@@ -308,15 +308,19 @@ No new envelope types. Changes to
   unknown tools, an open carrying two independent source collisions —
   and those expectations share a capability key and a diagnostic name,
   so the ordering is carried down to the offending value itself: among
-  peers of the same rule, the one whose offending member appears first
-  in the request wins, by document order of the field and then by index
-  within an array, and its peers are discharged. Document order, not the
-  value's own collation: the caller wrote the list, the first entry it
-  can fix is the one it wrote first, and an adapter reporting it need
-  not sort anything. The detail the refusal carries (`details.tool`,
-  `details.source`) is that member's, so the validator and the adapter
-  name the same entry and a conforming refusal cannot be rejected for
-  having picked the other one. Fixtures
+  peers of the same rule, the winner is the one whose offending member
+  has the lowest JSON Pointer, compared segment by segment — object
+  member names lexicographically, array indices numerically — and its
+  peers are discharged. Pointer order, not serialized document order:
+  JSON object member order carries no meaning, and a client, a proxy, or
+  the Go decoder this plan proposes may reorder or drop it, so two
+  encodings of the same request would otherwise owe different refusals.
+  Within an array the pointer's numeric segment is the caller's own
+  order, so the first entry it wrote is still the first it is told about.
+  The detail the refusal carries (`details.tool`, `details.source`) is
+  that member's, so the validator and the adapter name the same entry and
+  a conforming refusal cannot be rejected for having picked the other
+  one. Fixtures
   `controls-tool-choice-two-unknown-entries` (positive; `allowed` naming
   two tools outside the catalog, refused with `details.tool` naming the
   first) and `tool-source-two-collisions` (positive; two duplicated ids,
@@ -709,7 +713,15 @@ serve one catalog for its lifetime.
   A refused selection made before the first catalog under the active
   revision is retained too, alongside the admitted ones, in
   `sessionTrack.unjudgedModels` (which records the requested id, the
-  correlating response, and whether it was admitted or refused): when
+  correlating response, and whether it was admitted or refused) — unless
+  a higher rung already owned that response. A submit carrying both an
+  unadvertised control and a selectable-but-unknown model is answered by
+  the capability rung, and that answer was conforming when it was given;
+  a catalog arriving later cannot retroactively make it owe
+  `model_not_found`, because precedence is a property of the request, not
+  of what the trace learns afterwards. Such a selection is discharged at
+  the response rather than retained, and `unjudgedTools` discharges an
+  in-gap `tool_choice` on the same terms. For a retained selection, when
   the first `models.response` under that revision arrives and omits the
   id, a retained admission is `model_not_in_catalog` as before and a
   retained refusal is held to exactly the code-and-detail test the
@@ -1358,10 +1370,30 @@ so a wire caller cannot read an ambient credential the operator did not
 expose; a `NAME=value` literal is the caller's own secret on a loopback,
 single-user wire, exactly as it is for the registry document today.
 
+`session.state` gains `sources: [ToolSourceDescriptor]`, the field the
+open response and later snapshots report the session's attached and
+declared sources in; `schema/v0.1/session.schema.json`'s state object is
+closed and has no such member today, so without adding it an endpoint
+would have to choose between omitting state the plan requires and
+emitting a schema-invalid response, and the
+`attachment_field_in_catalog` check above would have nothing legal to
+inspect. It is the descriptor shape, never `ToolSourceAttachment`: the
+sanitized projection is exactly the point, so `command`, `args`, and
+`environment` cannot reach a client through state any more than through
+a catalog.
+
 Semantics: attachment is for the session's lifetime; the open response's
-state and the first `action.tools.list.response` reflect the attached
+`sources` and the first `action.tools.list.response` reflect the attached
 sources; an endpoint that cannot attach at open rejects the open with
-`unsupported_feature` (`action.tool_sources.attach`). Runtime attach and
+`unsupported_feature` (`action.tool_sources.attach`). The two must agree:
+the open response's `sources`, every later snapshot's, and the `sources`
+of a list under the same revision are the union of the open's attachments
+and the descriptor's declared sources, compared by `id` and by each
+descriptor's published members, and a snapshot that omits an attached
+source, adds one never attached or declared, or describes one
+differently is `session_state_mismatch` (fixtures
+`open-sources-state-omits-attachment` and
+`open-sources-state-disagrees-with-catalog`). Runtime attach and
 detach are deferred until evidence beyond Claude's `mcp_set_servers` exists.
 
 Evidence: ACP `session/new.mcpServers` is a required array
