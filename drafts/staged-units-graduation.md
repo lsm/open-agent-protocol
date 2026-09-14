@@ -788,7 +788,17 @@ No new envelope types. Additive fields:
   `1`, both settle, then one new admission) and
   `queue-limit-lowered-then-admitted` (`queue_limit_exceeded`; the same
   refresh, then a `queued` admission while both runs are still
-  nonterminal).
+  nonterminal). The refusal is validated as well as the admission: a
+  submit that would exceed a bound (an explicit `queue`, or an `auto` on
+  a busy session whose descriptor advertises the queue capability) is
+  remembered from the request, and its correlated `error.response` must
+  be the wire's typed `run_active`; a refusal under any other code is
+  `queue_limit_exceeded` on the error response (`/payload/code`), so an
+  adapter cannot hide a reached bound behind `internal_error`. Fixtures:
+  `queue-over-limit-rejected` (`error.response` with `run_active`;
+  validated as a correct rejection) and `queue-over-limit-wrong-refusal`
+  (`queue_limit_exceeded` on the error response; the same request
+  refused with `internal_error`).
 - New diagnostic `premature_session_mutation`: when the started run was
   admitted under a descriptor disclosing `run.model_selection` with mode
   `session_mutation` (the mode `runState` retains from admission, T1), a
@@ -1122,12 +1132,14 @@ Wire:
   neither the descriptor nor the same open's `tool_sources` declares
   (`details.source`), for the same reason: a dangling source cannot be
   attributed or routed. Both are adapter rules that the validator enforces
-  on the admission, not on the request (validator, below): a refusal is
-  conforming and produces no diagnostic, and an open the adapter admitted
-  despite either condition is `wrong_tool_owner` or
-  `unmatched_tool_source` on the `session.open.response`, so the negative
-  fixtures for both are traces of an adapter that admitted what it should
-  have refused. Per-submit tool provisioning
+  on the admission and on the refusal's code, not on the request
+  (validator, below): the typed refusal is conforming and produces no
+  diagnostic, a refusal under another code is diagnosed on the error
+  response, and an open the adapter admitted despite either condition is
+  `wrong_tool_owner` or `unmatched_tool_source` on the
+  `session.open.response`, so the negative fixtures for both are traces
+  of an adapter that admitted what it should have refused or refused it
+  without saying why. Per-submit tool provisioning
   (Makai supplies tools per `agent_start`) is deferred; session-open is what
   Claude and ACP support and what Makai can accept at start.
 - New envelope types `action.call.resolve.request` and
@@ -1137,7 +1149,10 @@ Wire:
   "result"? | "error"? }` with exactly one of `started` (an empty object:
   the control participant has begun executing), `result`, or `error`;
   response `{ "interaction_id", "session_id", "run_id", "tool_call_id",
-  "accepted" }`. `started` is an acknowledgement, not a resolution: it may
+  "accepted", "reason"? }` (`reason` present only with `accepted: false`:
+  `late_acknowledgement`, `repeated_acknowledgement`, `already_resolved`,
+  `wrong_responder`, `unknown_interaction`). `started` is an
+  acknowledgement, not a resolution: it may
   appear at most once and only before the resolution.
 - New capability key `action.tools.provide`: the control layer may supply
   tool definitions at session open and executes their calls. The existing
@@ -1374,9 +1389,16 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   declares, checked when the open is admitted (`unmatched_tool_source` on
   the `session.open.response`), so a trace that ends after the open cannot
   carry a provided catalog entry that resolves to no source. An adapter
-  that refuses such an open, as the wire rule requires, produces no
-  diagnostic; the diagnostic names an admission the adapter should have
-  refused.
+  that refuses such an open with the typed `unsupported_feature`
+  (`details.feature: "action.tools.provide"`, `details.reason:
+  "unsatisfiable"`, `details.source` naming the dangling source), as the
+  wire rule requires, produces no diagnostic: the condition is remembered
+  from the request, and a correlated refusal under any other code or
+  without that detail is `unmatched_tool_source` on the error response,
+  as the remote-attachment clause validates its refusal. The owner rule
+  and the name collision are validated the same way (`unsupported_feature`
+  with `details.tool`; `wrong_tool_owner` or `duplicate_tool_name` on a
+  refusal under another code).
 - `session.open.request.tools[*].execution_owner` must be the declared
   control participant (`wrong_tool_owner`, diagnosed on the
   `session.open.response` when the open is admitted, on the same terms as
@@ -1440,6 +1462,22 @@ the request used.
 - `adapter`: `OpenRequest` gains `ToolSources` and `Tools`;
   `InteractionResolution.ToolCall`; optional interface `adapter.ToolLister`
   (`Tools(ctx) (protocol.ToolsListResponse, error)`) for the catalog.
+  `Session.Resolve` keeps its error-only signature, which today cannot
+  express the `accepted: false` answer the semantics require for a
+  repeated or late `started` (every error becomes an `error.response`,
+  `resolution_rejected` for the interaction-state errors, and
+  `accepted: true` is built only after a nil return), so T3c adds the
+  sentinel `adapter.ErrResolutionRefused`, wrapping one of the typed
+  reasons above, for the tool-call arm's protocol-level refusals; the
+  hub and every binding (`servehttp`, the stdio frontend, an in-process
+  embedder) map it to an `action.call.resolve.response` with
+  `accepted: false` and that `reason`, and every other error keeps the
+  existing `error.response` mapping. The permission and user-input arms
+  keep their current behavior; aligning them is a question for the 0007
+  decision, not a change this unit makes. The memory adapter returns the
+  sentinel for a repeated or late `started` and for a resolution after
+  the interaction settled; `adaptertest` asserts the sentinel, and the
+  `servehttp` test asserts the `accepted: false` response on the wire.
 - `serve`: `Session.Tools(ctx)`; `Session.Resolve` passes the new arm
   under the same publication gate T4 specifies for steer, held here
   across the whole of `Resolve`: the run's drainer buffers everything it
@@ -1521,6 +1559,11 @@ open admitted),
 `open-provide-dangling-source` (`error.response` with
 `unsupported_feature` and `details.source: "ghost"`, then no open;
 validated as a correct rejection),
+`open-provide-dangling-source-wrong-refusal` (`unmatched_tool_source` on
+the error response; the same open refused with `internal_error`),
+`open-provide-wrong-owner-wrong-refusal` (`wrong_tool_owner` on the
+error response), `open-provide-colliding-name-wrong-refusal`
+(`duplicate_tool_name` on the error response),
 `open-provide-colliding-name-admitted` (`duplicate_tool_name`; two
 supplied tools sharing a name, and the open admitted),
 `tools-refresh-collides-with-provided` (`duplicate_tool_name`; a provided
@@ -1623,7 +1666,15 @@ therefore needs a steer settlement, not only a steer admission.
   session's started run; a supplied target must be that run. Any other
   target, or no started run, fails before admission with typed
   `invalid_steer_target` (`details.reason`: `no_active_run`, `terminal`,
-  `queued`, `cross_session`, `not_steerable`). A steer carries no run
+  `queued`, `cross_session`, `not_steerable`). `not_steerable` names
+  exactly one lifecycle state: the target is started and nonterminal but
+  `cancelling`, where accepted cancellation forecloses further guidance
+  (a steer already pending on such a run is dropped with `run_terminated`
+  at the terminal, as the barrier rules). A harness-specific inability to
+  steer a running run is not a target condition: an adapter that meets
+  one reports it as evidence for the 0008 decision, which may extend the
+  vocabulary, and until then `not_steerable` for a target that is not
+  `cancelling` is a wrong reason. A steer carries no run
   controls: `model_id`, `instructions`, `tool_choice`, and
   `output_schema` on a `delivery: "steer"` submit are rejected before
   admission with `unsupported_feature` (`details.feature` naming the
@@ -1691,7 +1742,8 @@ therefore needs a steer settlement, not only a steer admission.
 ### Validator
 
 `runState` gains `steers` (pending submissions); `steered` admissions are
-legal only against a started nonterminal run in the same session with
+legal only against a started nonterminal run that is not `cancelling`, in
+the same session, with
 `session.message.delivery.steer` advertised, only in answer to a request
 with `delivery: "steer"` (the `submitResponse` combination table gains
 the `steered`/`steer` row and rejects it for `auto`, so "`auto` never
@@ -1726,11 +1778,13 @@ is `pending_steer_at_terminal`. A settlement whose
 `unmatched_steer`, which makes the ordering barrier below a conformance
 rule rather than a hub detail. A request with `delivery: "steer"` whose
 target (`target_run_id`, or the session's started run when absent) is
-not a started nonterminal run of that session (queued, terminal, another
-session's, or no started run at all) is remembered from the request, and
-its correlated `error.response` must carry `invalid_steer_target` with
-the `details.reason` the wire assigns to that condition (`queued`,
-`terminal`, `cross_session`, `no_active_run`); an admission is the
+not a started nonterminal run of that session that can still take
+guidance (queued, terminal, another session's, no started run at all,
+or a started run that is `cancelling`) is remembered from the request,
+and its correlated `error.response` must carry `invalid_steer_target`
+with the `details.reason` the wire assigns to that condition (`queued`,
+`terminal`, `cross_session`, `no_active_run`, `not_steerable` for the
+`cancelling` case); an admission is the
 `illegal_run_transition` above, and a refusal under any other code, or
 under `invalid_steer_target` with a reason that does not match the
 condition, is `illegal_run_transition` on the error response
@@ -1740,7 +1794,9 @@ learns why the steer could not land. Fixtures: positive `steer-immediate`
 (response, then `applied` in the target's sequence), `steer-at-boundary`,
 `steer-target-queued-rejected` (`error.response` with
 `invalid_steer_target`, `details.reason: "queued"`; validated as a
-correct rejection),
+correct rejection), `steer-target-cancelling-rejected` (`error.response`
+with `invalid_steer_target`, `details.reason: "not_steerable"` against a
+`cancelling` target; validated as a correct rejection),
 `steer-dropped-at-terminal`, `steer-status-advances-in-flight` (a
 `run.status.updated` to `waiting_for_input` between the steer request and
 its response, the response naming that transition's sequence as
