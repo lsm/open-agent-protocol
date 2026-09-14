@@ -304,6 +304,23 @@ No new envelope types. Changes to
   failures the same ordering applies to the diagnostic names. Fixture
   `open-unadvertised-sources-and-tools` (positive; both supplied, neither
   advertised, refused under `action.tool_sources.attach`).
+  One rule can fail twice over — a `tool_choice.allowed` naming two
+  unknown tools, an open carrying two independent source collisions —
+  and those expectations share a capability key and a diagnostic name,
+  so the ordering is carried down to the offending value itself: among
+  peers of the same rule, the one whose offending member appears first
+  in the request wins, by document order of the field and then by index
+  within an array, and its peers are discharged. Document order, not the
+  value's own collation: the caller wrote the list, the first entry it
+  can fix is the one it wrote first, and an adapter reporting it need
+  not sort anything. The detail the refusal carries (`details.tool`,
+  `details.source`) is that member's, so the validator and the adapter
+  name the same entry and a conforming refusal cannot be rejected for
+  having picked the other one. Fixtures
+  `controls-tool-choice-two-unknown-entries` (positive; `allowed` naming
+  two tools outside the catalog, refused with `details.tool` naming the
+  first) and `tool-source-two-collisions` (positive; two duplicated ids,
+  refused with `details.source` naming the first).
   The ladder runs from the most permanent failure to the most transient,
   which is the order in which the caller can act: what it must stop
   sending outranks what it must send differently, which outranks what it
@@ -762,15 +779,17 @@ pi follows with `get_available_models`; Claude at `degraded` from the
 ### Fixtures
 
 Positive: `models-list-then-select` (catalog, then a submit selecting a
-listed id). Negative: `models-select-unlisted` (`model_not_in_catalog`),
+listed id), `models-unadvertised-rejected` (`error.response` with
+`unsupported_feature`, `details.feature: "models.list"`, against an
+unadvertised `models.list`; the validator section defines this correlated
+refusal as the conforming answer, so it carries `valid: true` and no
+diagnostic — a fail-closed refusal is behaviour to require, never to
+diagnose). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `models-two-defaults` (`ambiguous_default_model`),
 `models-request-scope-mismatch` (`scope_mismatch`; envelope and payload
 `session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`),
 `models-unadvertised` (`unavailable_capability` on the response; a
-catalog served unadvertised), the correct rejection
-`models-unadvertised-rejected` (`error.response` with
-`unsupported_feature`, `details.feature: "models.list"`),
-`models-duplicate-id`
+catalog served unadvertised), `models-duplicate-id`
 (`duplicate_model_id`), `models-current-mismatch`
 (`session_state_mismatch`; state reports one model, the catalog another),
 `models-current-not-listed` (`model_not_in_catalog`; state and the
@@ -1311,10 +1330,25 @@ graduates T3a; its corpus case `tools-catalog-sources` projects the
 
 ### T3b. Attachment at session open
 
-Wire: `session.open.request` gains `tool_sources: [ToolSourceDescriptor]`.
-A `process` source additionally carries `command`, `args`, and
-`environment` (the registry's allowlist form: bare `NAME` forwards from the
-endpoint's own environment, `NAME=value` passes literally); a `remote`
+Wire: `session.open.request` gains `tool_sources: [ToolSourceAttachment]`
+— a shape of its own, not the catalog's `ToolSourceDescriptor`. It
+carries the descriptor's members and, for a `process` source, the
+attachment-only `command`, `args`, and `environment` (the registry's
+allowlist form: bare `NAME` forwards from the endpoint's own
+environment, `NAME=value` passes literally). The separation is the point:
+`environment` can hold a literal credential, `ToolSourceDescriptor` is
+what `action.tools.list.response` and `session.state` publish back to
+clients, and one schema serving both would make those members legal in a
+catalog — so an implementation that reflected the open-time value
+straight into its catalog would leak the secret and still validate.
+`ToolSourceDescriptor` therefore keeps `additionalProperties: false`
+without them, which makes the leak a schema rejection rather than a
+convention, and the validator adds `attachment_field_in_catalog` for an
+`action.tools.list.response` or `session.state` source carrying
+`command`, `args`, or `environment`, so a tolerant or hand-rolled
+serializer is caught too (fixture `tools-catalog-leaks-attachment-env`).
+Redaction on the daemon's own logging and evidence paths is unchanged and
+still required; this rule governs the wire. A `remote`
 source carries only `endpoint` and is capability-gated (`mode: "remote"`
 on `action.tool_sources.attach`; an open attaching a `remote` source on a
 descriptor without that mode is rejected, and the validator diagnoses an
@@ -2472,7 +2506,8 @@ strings in the schema; the validator does not enumerate them.
 `unannounced_catalog_change`, `queue_order_violation`,
 `queue_limit_exceeded`, `premature_session_mutation`,
 `unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
-`wrong_tool_owner`, `resolution_payload_mismatch`, `catalog_mismatch`,
+`wrong_tool_owner`, `attachment_field_in_catalog`,
+`resolution_payload_mismatch`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
 invariant is the same (`unavailable_capability`, `illegal_run_transition`,
