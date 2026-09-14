@@ -1441,10 +1441,11 @@ the request used.
   `InteractionResolution.ToolCall`; optional interface `adapter.ToolLister`
   (`Tools(ctx) (protocol.ToolsListResponse, error)`) for the catalog.
 - `serve`: `Session.Tools(ctx)`; `Session.Resolve` passes the new arm
-  under the same publication gate T4 specifies for steer, armed here for
-  the interaction's `action.call.started` and terminal rather than for a
-  settlement (envelopes before them pass through, those from them on are
-  withheld), because a
+  under the same publication gate T4 specifies for steer, held here
+  across the whole of `Resolve`: the run's drainer buffers everything it
+  reads from arming until `Published`, since no envelope emitted inside
+  `Resolve` may precede the accepted response and the resolve response
+  names no position for a partial release, because a
   participant that resolves synchronously lets the adapter emit
   `action.call.started` and the terminal inside `Resolve`, before the
   binding has written the accepted resolve response, which is the order
@@ -1833,28 +1834,32 @@ and hub contract is explicit rather than inherited from `start`:
   `run.steer.dropped` to subscribers in the target's sequence. Because
   that drainer is another goroutine, the hub adds a barrier of its own
   rather than trusting the adapter's: before calling the adapter with
-  `delivery: "steer"` it arms a gate on the target run's drainer that
-  withholds a steer settlement and, to keep the run's sequence contiguous,
-  everything the drainer reads after it; every envelope before the first
-  settlement is published as it is read, during the call and after it, so
-  the gate never reorders a status transition or any other pre-response
-  envelope behind the response. When the adapter returns, the hub drains
-  the target stream without blocking and publishes what it finds before
-  handing the response to the binding, up to and including the envelope
-  whose sequence is the response's `target_sequence`; from the next
-  envelope on, and from the first settlement whatever its sequence, the
-  gate withholds. The boundary is the one the adapter stated, not one
-  inferred from intermediate statuses, so a call during which the target
-  moved through several transitions is handled exactly: every envelope
-  the adapter emitted before returning is readable at return (the
-  adapter contract above) and carries a sequence at or below the
-  boundary, so all of them precede the response in the hub's trace,
-  while anything beyond the boundary was emitted after the adapter
-  returned and follows the response; nothing is reordered within the
-  run. A drain that cannot reach `target_sequence` (the adapter returned
-  a boundary it had not made readable) and a settlement read before the
-  adapter has returned are contract violations reported as adapter
-  errors rather than published. After the adapter returns
+  `delivery: "steer"` it arms a gate on the target run's drainer under
+  which the drainer reads and buffers but publishes nothing, so that no
+  envelope can reach subscribers between the adapter's return and the
+  hub's processing of the response; the drainer keeps reading while
+  gated, so the adapter's emission never blocks. When the adapter
+  returns, the submit goroutine takes the drainer's lock, drains the
+  target stream without blocking, publishes the buffered prefix up to
+  and including the envelope whose sequence is the response's
+  `target_sequence`, and leaves the remainder, and any settlement
+  whatever its sequence, withheld, all before handing the response to
+  the binding. The handoff is therefore atomic: the boundary is the one
+  the adapter stated, not one inferred from intermediate statuses, and
+  because the drainer publishes nothing on its own while the gate is
+  armed, an envelope the adapter emits immediately after returning
+  cannot be published before the boundary is applied. Every envelope the
+  adapter emitted before returning is readable at return (the adapter
+  contract above) and carries a sequence at or below the boundary, so
+  all of them precede the response in the hub's trace, delayed by at
+  most the call, the bound the gate already imposes on the settlement;
+  anything beyond the boundary follows the response; nothing is
+  reordered within the run. A drain that cannot reach `target_sequence`
+  (the adapter returned a boundary it had not made readable) and a
+  settlement read before the adapter has returned are contract
+  violations reported as adapter errors rather than published. When the
+  gate lifts, the drainer publishes the withheld remainder in order and
+  resumes publishing live. After the adapter returns
   the hub registers the pending steer (`submission_id` to target run,
   reflected in `active_runs`). The gate is not lifted inside `Submit`:
   the hub
@@ -2133,6 +2138,33 @@ every later unit relies on:
   because scope classification makes the domain rules apply), and an
   unsequenced run-scoped operation after the terminal (tolerant: valid,
   with the cursor untouched).
+- Unknown enum members are opaque to the semantic pass in tolerant mode,
+  for the same reason: the tolerant compile lifts an extensible leaf
+  enum, but `validation/state.go` still keys rules on the members it
+  knows (`legalRunStatusTransition` on `run.status.updated`, the
+  `submitResponse` combination table on `admission` and
+  `effective_delivery`, the interaction and tool transition tables on
+  their `status`, `outcome`, and `kind` values, the `relationship` of an
+  `active_runs` entry), so a known envelope carrying a new member, such
+  as `run.status.updated` with `status: "paused"`, would pass the schema
+  and then be diagnosed `illegal_run_transition`. In tolerant mode a
+  value-level rule keyed on a member the validator does not know is
+  suspended for that envelope while type-level bookkeeping continues:
+  the event still advances the cursor, still counts as the transition it
+  is by type (a resolution still settles its interaction, a terminal
+  event type still terminates the run, a response still answers its
+  request), and the unknown value is recorded as opaque state, so an
+  unknown run status is nonterminal (terminality is a property of event
+  types, not of status strings) and neither the transition into it nor
+  the next transition out of it is judged, an unknown admission or
+  delivery skips the combination table but keeps the correlation, scope,
+  and capability checks, and an unknown interaction `kind`, `status`, or
+  `outcome` skips the value-specific branch and keeps the lifecycle
+  checks. Strict mode is unchanged. The step's tests feed
+  `run.status.updated` with `status: "paused"` followed by a known
+  transition (tolerant: valid; strict: the schema rejection), and a
+  `session.message.submit.response` with an unknown `admission`
+  (tolerant: correlation and scope checked, no combination diagnostic).
 - Fixture validation stays strict against the bundle at its own revision.
   That is the conformance validator's job and how a misspelled new field is
   caught; each unit extends the bundle in place under `schema/v0.1`.
