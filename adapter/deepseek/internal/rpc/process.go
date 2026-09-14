@@ -242,6 +242,11 @@ func (p *Process) drainStderr() {
 // drain completes instead of stalling teardown.
 func (p *Process) killAndRelease() {
 	_ = p.command.Process.Kill()
+	// Release stderr too, not just the client's stdout. Forced shutdown has
+	// already spent its budget; without this the drain in wait() would start a
+	// fresh full timeout against a descendant-held stderr and Close would
+	// overrun its configured bound by a second timeout.
+	_ = p.stderrPipe.Close()
 	p.Client.closeWith(processExitError(nil))
 }
 

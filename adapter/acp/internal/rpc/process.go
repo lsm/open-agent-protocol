@@ -179,15 +179,11 @@ func (process *Process) Close(ctx context.Context) error {
 		case <-process.waitDone:
 			process.closeErr = process.WaitError()
 		case <-ctx.Done():
-			_ = process.command.Process.Kill()
-			// A surviving descendant could still hold stdout open, which would
-			// block the drain; closing the pipes forces the reader to finish.
-			_ = process.pipes.Close()
+			process.killAndRelease()
 			<-process.waitDone
 			process.closeErr = ctx.Err()
 		case <-timer.C:
-			_ = process.command.Process.Kill()
-			_ = process.pipes.Close()
+			process.killAndRelease()
 			<-process.waitDone
 			process.closeErr = errors.New("acp rpc: shutdown timed out")
 		}
@@ -244,13 +240,21 @@ func processExitError(err error) error {
 	return fmt.Errorf("acp rpc: process exited: %w", err)
 }
 func (process *Process) abort() error {
-	_ = process.command.Process.Kill()
-	// A descendant that inherited stdout keeps the reader's drain blocked, so
-	// wait() would never finish; release the pipes before waiting, exactly as
-	// the bounded shutdown paths do.
-	_ = process.pipes.Close()
+	process.killAndRelease()
 	<-process.waitDone
 	return process.WaitError()
+}
+
+// killAndRelease kills the child and closes the read pipes before reaping. A
+// surviving descendant could hold stdout or stderr open, and wait() drains both
+// before reaping; closing our ends forces those drains to finish. Releasing
+// stderr matters as much as stdout here: forced shutdown has already spent its
+// budget, and leaving stderr open would start a fresh full timeout inside
+// drainStderr and overrun the configured bound by a second timeout.
+func (process *Process) killAndRelease() {
+	_ = process.command.Process.Kill()
+	_ = process.pipes.Close()
+	_ = process.stderrPipe.Close()
 }
 
 type pipeCloser struct {

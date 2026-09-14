@@ -74,11 +74,13 @@ func TestProcessHelper(t *testing.T) {
 		}
 		os.Exit(0)
 	case "ready-stderr-descendant":
-		// A descendant inheriting stderr keeps the parent's read end from
-		// reaching EOF once the direct child exits.
+		// A descendant inheriting both pipes keeps either read end from
+		// reaching EOF once the direct child exits, so forced shutdown has to
+		// release both to stay inside one timeout budget.
 		os.Stdout.WriteString(`{"type":"ready","protocol_version":"1"}` + "\n")
 		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
 		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
+		descendant.Stdout = os.Stdout
 		descendant.Stderr = os.Stderr
 		if err := descendant.Start(); err != nil {
 			os.Exit(21)
@@ -294,22 +296,30 @@ func TestProcessLaggingStderrCopierStillReachesBuffer(t *testing.T) {
 	}
 }
 
-// A stderr the child's descendant holds open never reaches EOF. The drain is
-// bounded and closes the read end, so teardown still finishes.
+// A stderr the child's descendant holds open never reaches EOF. Forced shutdown
+// must release it as it releases stdout, so teardown finishes inside a single
+// timeout budget: if only stdout were released, the drain in wait() would start
+// a fresh full timeout and Close would take roughly twice its configured bound.
 func TestProcessShutdownReleasesDescendantHeldStderr(t *testing.T) {
+	const timeout = time.Second
 	config := helperConfig("ready-stderr-descendant")
-	config.ShutdownTimeout = 200 * time.Millisecond
+	config.ShutdownTimeout = timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	p, err := Start(ctx, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	go func() { _ = p.Close(context.Background()); close(done) }()
+	done := make(chan time.Duration, 1)
+	start := time.Now()
+	go func() { _ = p.Close(context.Background()); done <- time.Since(start) }()
 	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
+	case elapsed := <-done:
+		// Generous against a loaded CI box, but well under the doubled bound.
+		if elapsed > timeout+500*time.Millisecond {
+			t.Fatalf("Close took %v, want roughly one %v budget", elapsed, timeout)
+		}
+	case <-time.After(4 * time.Second):
 		t.Fatal("Close blocked while a descendant held stderr open")
 	}
 }
