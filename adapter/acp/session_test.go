@@ -865,3 +865,55 @@ func TestDefinedNonLifecycleUpdatesAreObservedOnly(t *testing.T) {
 		t.Fatalf("final text=%q", text)
 	}
 }
+
+// A consumer may resolve a permission gate the instant it observes the gate on
+// its stream, and the resolution correlates to the gate's request event through
+// in_reply_to. The correlation must therefore exist before the gate is visible:
+// recording it after publication let a fast Resolve read an empty correlation
+// and emit an uncorrelated action.permission.resolved, the
+// tool-lifecycle-permission corpus flake in issue #10.
+func TestPermissionGateIsCorrelatedWhenPublished(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	params, err := json.Marshal(native.PermissionRequest{SessionID: "native-session", ToolCall: native.ToolCall{ToolCallID: "call-1", Title: "Act"}, Options: []native.PermissionOption{{OptionID: "allow", Name: "Allow", Kind: "allow_once"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID("perm-1"), native.MethodSessionRequestPermission, params))}
+	var events []protocol.Envelope
+	var gate protocol.Envelope
+	var requested protocol.PermissionRequestedPayload
+	for requested.InteractionID == "" {
+		gate = adaptertest.Next(t, stream, 2*time.Second)
+		events = append(events, gate)
+		if gate.Type == protocol.TypeActionPermissionRequested {
+			if err := gate.DecodePayload(&requested); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The correlation is recorded by the time the gate can be observed.
+	impl := s.(*session)
+	impl.mu.Lock()
+	recorded := impl.interactions[requested.InteractionID].requestEventID
+	impl.mu.Unlock()
+	if recorded != gate.ID {
+		t.Fatalf("gate observed with request event id %q, want %q", recorded, gate.ID)
+	}
+	// Resolving immediately carries it.
+	if err := s.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true}}); err != nil {
+		t.Fatal(err)
+	}
+	resolved := adaptertest.Next(t, stream, 2*time.Second)
+	events = append(events, resolved)
+	if resolved.Type != protocol.TypeActionPermissionResolved || resolved.InReplyTo != gate.ID {
+		t.Fatalf("got %s in reply to %q, want action.permission.resolved in reply to %q", resolved.Type, resolved.InReplyTo, gate.ID)
+	}
+	status := "completed"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "call-1", Status: &status})
+	waitCursor(t, s, "6")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events = append(events, collect(t, stream)...)
+	assertValidTrace(t, admission, events)
+}

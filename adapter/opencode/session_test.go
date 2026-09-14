@@ -369,17 +369,25 @@ func TestToolLifecycleSettlesBeforeTerminal(t *testing.T) {
 func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
+	// Real wait-idle returns only once the run is quiescent, which implies the
+	// second step is already durable. Hold the fake's wait-idle until the whole
+	// stream is enqueued: an immediate return let the first step's settlement
+	// fence before the producer had enqueued the second step, completing a
+	// one-step run and dropping its text (issue #10).
+	delivered := make(chan struct{})
+	client.idleGate = delivered
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
-	// The second step is delivered while the settlement wait drains the
-	// already-enqueued prefix; settlement must fold it in, not double-settle.
+	// The second step is enqueued while the first step's settlement waits for
+	// idle; the settlement drain must fold it in, not double-settle.
 	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 5, native.TypeTextEnded, native.TextEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "final"})
 	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	close(delivered)
 	events := adaptertest.Drain(t, stream, time.Second)
 	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
