@@ -2019,7 +2019,20 @@ the request used.
 - `client` and `clients/ts`: `Open` options for sources and tools;
   `Session.Tools`; `Session.ResolveToolCall` in all three arms
   (acknowledge, result, error), so a control layer can report that it has
-  begun executing before it has a result.
+  begun executing before it has a result. The cross-stream repair T4
+  states for steer settlements covers this path too, and for the same
+  reason: over HTTP the resolve response is a POST body and the
+  `action.call.started` or terminal it releases travels the SSE
+  connection, so `Published` orders the hub's trace but not the client's
+  two sockets, and a caller could see the call settle before the
+  `accepted: true` that authorized it. The correlation is again already
+  on the wire — the events name the `tool_call_id` the resolve request
+  addressed — so the rule is the same one generalized: a client holds an
+  event derived from an interaction whose own resolve call is still
+  outstanding until that call returns or fails, then delivers it in
+  order. Stating it once for both settlements and resolutions keeps the
+  two arms of the same hazard from drifting apart. The e2e tests cover
+  SSE-first delivery on each.
 
 ### Fixtures
 
@@ -2256,11 +2269,22 @@ with `delivery: "steer"` (the `submitResponse` combination table gains
 the `steered`/`steer` row and rejects it for `auto`, so "`auto` never
 resolves to `steer`" is enforced), and only with a `run_id` equal to the
 request's `target_run_id` when one was supplied (`scope_mismatch`) and a
-`target_sequence` no greater than the target's tracked cursor at the
+`target_sequence` equal to the target's tracked cursor at the
 response and a `status` equal to the status the target held after
 exactly that sequence (`illegal_run_transition` otherwise, on
 `/payload/target_sequence` when the trace has not reached the named
-position, on `/payload/status` when it has and the status differs; the
+position or has passed it, on `/payload/status` when the position is
+right and the status differs; equality, not an upper bound: a run that
+emitted ordinary content or action events during the call but no status
+transition still holds the status the older sequence had, so a stale
+boundary would pass the status check while naming an envelope that is no
+longer the last one emitted before return, and the hub would then place
+those already-emitted envelopes after the response, exactly what the
+boundary contract forbids. Fixture
+`steer-content-advances-in-flight` (positive; content events but no
+transition during the call, the response naming the last of them) and
+`steer-stale-boundary-nonstatus` (`illegal_run_transition`; the same
+trace with the response naming the pre-call sequence); the
 validator keeps the target's status history by sequence for this), so
 the submitter is never handed a status the target did not hold at the
 position the response names: a transition the adapter emitted during
