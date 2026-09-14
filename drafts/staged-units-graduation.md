@@ -923,8 +923,14 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   continues into the later-admitted run or answers with the end signal.
   Against an older daemon, which closes at the terminal with no signal, the
   client bounds that post-terminal resume to one attempt and then reads
-  `session.state`: an empty or absent `active_runs` is the clean end,
-  anything else keeps resuming. The resume checks change in exactly one
+  `session.state`: a present `active_runs` that is empty is the clean
+  end and a nonempty one keeps resuming, while an absent `active_runs`
+  is the older representation rather than an answer, so the client falls
+  back to `active_run_id`, resuming into the run it names when that run
+  is not the finished one and treating an absent or empty
+  `active_run_id` as the clean end, since a legacy daemon that admitted
+  run B after A's terminal reports B only there. The client tests cover
+  a legacy snapshot carrying `active_run_id` and no `active_runs`. The resume checks change in exactly one
   case to make this work: today a cursor-bearing connection whose first
   envelope names another run fails with `ResumeMismatchError`, and one
   whose first envelope is not `lastSeq+1` fails with `SequenceGapError`.
@@ -1488,7 +1494,10 @@ the request used.
   `action.call.started` and the terminal inside `Resolve`, before the
   binding has written the accepted resolve response, which is the order
   the validator rejects. The hub gates the run's drainer across
-  `Resolve`, the binding lifts it with `Session.Published(interactionID)`
+  `Resolve`, the binding lifts it with `Session.Published(token)`, the
+  request-unique barrier T4 specifies, serialized per run with every
+  other gated operation so that overlapping resolutions never share a
+  gate,
   after writing the response. The context-done fallback reconciles as the
   steer fallback does rather than lifting the gate blind: the hub first
   publishes a `session.state.updated` whose `active_runs` entry for the
@@ -1922,11 +1931,28 @@ and hub contract is explicit rather than inherited from `start`:
   cannot know when the response has reached the caller, and an SSE
   subscriber could otherwise see `run.steer.applied` before the submit
   caller learns the `submission_id`. `Session.Submit` returns with the
-  gate held, and the binding that makes the response observable lifts it
-  with `Session.Published(submissionID)`: `servehttp` after writing and
-  flushing the submit response, the stdio frontend after writing the
-  response line, an in-process embedder once it has handed the response
-  to its own caller. If the context passed to `Submit` ends before
+  gate held, together with a request-unique barrier token, and the
+  binding that makes the response observable lifts the gate with
+  `Session.Published(token)`: `servehttp` after writing and flushing the
+  submit response, the stdio frontend after writing the response line,
+  an in-process embedder once it has handed the response to its own
+  caller. Gated operations on one run are serialized, not shared: a run
+  has one gate, a gated operation (a steer, or under T3c a resolution of
+  any interaction on that run) acquires it before calling the adapter
+  and holds it until its own `Published` or its context-done fallback,
+  and a second gated operation arriving while the first holds it waits,
+  in arrival order and subject to its own context, before it calls the
+  adapter. Two overlapping requests therefore never have responses
+  awaiting publication at once, the key that lifts the gate is the token
+  of the operation holding it rather than an interaction or submission
+  id that two requests can share (a `started` acknowledgement followed
+  at once by the terminal resolution of the same interaction is the case
+  that would otherwise release the second's events on the first's
+  `Published`), and a stale or repeated `Published` is a no-op. An
+  in-process embedder that issues a second gated operation on a run
+  before calling `Published` for the first waits, bounded by the first
+  operation's context, which is the contract it accepted by taking the
+  response synchronously. If the context passed to `Submit` ends before
   `Published` is called (the HTTP client disconnected before the response
   was written, or a binding forgot the call), the hub does not simply
   publish the buffered settlement, since the submitter never learned its
