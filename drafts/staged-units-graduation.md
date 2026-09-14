@@ -391,13 +391,28 @@ No new envelope types. Changes to
   admitted under `per_run` (the mode `runState` retains from admission,
   below, together with `defaultModel`, the session default
   `sessionTrack.currentModel` held at that admission), a `session.state`
-  snapshot taken while that run is nonterminal whose `current_model_id`
+  snapshot whose `current_model_id`
   differs from that retained default is also `unapplied_control`,
   whether it moved to the run's admitted `model_id` or to any other
   value: the per-run rule leaves the session default untouched, so the
   comparison is against what the default was, not merely against the
   model the run selected; the Codex and Makai overwrite T1 fixes is the
-  first case, so the fix is verifiable. While the run is still queued
+  first case, so the fix is verifiable. The window does not close at the
+  run's terminal. A `per_run` application leaves the session default
+  untouched for good, not merely for the run's lifetime, and the moment
+  an adapter is most likely to write it back is when it emits the
+  terminal — so limiting the comparison to the nonterminal window would
+  accept a post-`run.completed` snapshot reporting the run's `model_id`
+  and let the next control-free submit use the wrong model, which is the
+  whole failure the diagnostic exists to catch. The retained default
+  therefore survives the terminal as the session's expected default, and
+  every later snapshot is judged against it until something the
+  validator credits moves it: an admitted `session_mutation` application
+  (which sets a new expected default), or a `capabilities` change that
+  discards the session's model bookkeeping. Fixture
+  `controls-per-run-overwrites-default-at-terminal` (`unapplied_control`;
+  a `per_run` submit, its `run.completed`, then a snapshot reporting the
+  run's model as `current_model_id`). While the run is still queued
   (T2), its retained default follows the applications the validator
   itself credits: an earlier-admitted `session_mutation` run promoted
   before it applies its mutation at that promotion and moves the session
