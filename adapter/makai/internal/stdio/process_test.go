@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,6 +71,17 @@ func TestProcessHelper(t *testing.T) {
 		descendant.Stdout = os.Stdout
 		if err := descendant.Start(); err != nil {
 			os.Exit(20)
+		}
+		os.Exit(0)
+	case "ready-stderr-descendant":
+		// A descendant inheriting stderr keeps the parent's read end from
+		// reaching EOF once the direct child exits.
+		os.Stdout.WriteString(`{"type":"ready","protocol_version":"1"}` + "\n")
+		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
+		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(21)
 		}
 		os.Exit(0)
 	case "holder":
@@ -239,5 +252,64 @@ func TestRedactHidesQuotedAndBearerCredentials(t *testing.T) {
 		if got := redact(input); got != want {
 			t.Fatalf("redact %q = %q want %q", input, got, want)
 		}
+	}
+}
+
+// lateReader defers the copier's first read until its gate opens, standing in
+// for a copier that has not yet drained the pipe when the child exits.
+type lateReader struct {
+	io.ReadCloser
+	gate chan struct{}
+	once sync.Once
+}
+
+func (r *lateReader) Read(p []byte) (int, error) {
+	r.once.Do(func() { <-r.gate })
+	return r.ReadCloser.Read(p)
+}
+
+// Reaping must wait for the stderr copier. Cmd.Wait closes the pipes it
+// created, so a copier still holding buffered bytes when the child is reaped
+// reads from a closed file and loses them — which emptied the stderr composed
+// into handshake failures. The gate holds the copier past the point where the
+// old order would have reaped, and the bytes must still arrive.
+func TestProcessLaggingStderrCopierStillReachesBuffer(t *testing.T) {
+	gate := make(chan struct{})
+	config := helperConfig("bad")
+	config.stderrTap = func(pipe io.ReadCloser) io.ReadCloser {
+		return &lateReader{ReadCloser: pipe, gate: gate}
+	}
+	time.AfterFunc(150*time.Millisecond, func() { close(gate) })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := Start(ctx, config)
+	if !errors.Is(err, ErrHandshake) {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("secret leaked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("stderr lost to a lagging copier: %v", err)
+	}
+}
+
+// A stderr the child's descendant holds open never reaches EOF. The drain is
+// bounded and closes the read end, so teardown still finishes.
+func TestProcessShutdownReleasesDescendantHeldStderr(t *testing.T) {
+	config := helperConfig("ready-stderr-descendant")
+	config.ShutdownTimeout = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p, err := Start(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = p.Close(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close blocked while a descendant held stderr open")
 	}
 }

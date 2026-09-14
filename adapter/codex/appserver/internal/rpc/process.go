@@ -171,8 +171,8 @@ func (process *Process) wait() {
 	// shutdown fails the pending calls; otherwise a response the child wrote
 	// immediately before exiting is reported as a process-exit error.
 	<-process.Client.ReadDone()
+	process.drainStderr()
 	err := process.command.Wait()
-	<-process.stderrDone
 	process.waitMu.Lock()
 	process.waitErr = err
 	process.waitMu.Unlock()
@@ -194,8 +194,27 @@ func (process *Process) abort() error {
 	return process.WaitError()
 }
 
+// drainStderr waits for the stderr copier to finish before the child is reaped.
+// Cmd.Wait closes the pipes it created as soon as the child exits, and
+// StderrPipe's contract is that every read must complete first: a copier that
+// has not yet consumed the buffered bytes fails on a closed file and the bytes
+// are lost, which is how a handshake failure ended up composing an empty
+// stderr. A descendant that inherited stderr can keep the read end from
+// reaching EOF, so bound the drain and close our side to release the copier,
+// exactly as the shutdown paths bound the stdout drain.
+func (process *Process) drainStderr() {
+	timer := time.NewTimer(process.timeout)
+	defer timer.Stop()
+	select {
+	case <-process.stderrDone:
+	case <-timer.C:
+		_ = process.stderrPipe.Close()
+		<-process.stderrDone
+	}
+}
+
 // killAndRelease kills the child and closes the read pipes before reaping.
-// wait() drains stdout before Cmd.Wait and then waits for stderr EOF, but a
+// wait() drains both stdout and stderr before Cmd.Wait, but a
 // descendant that inherited either pipe keeps its write end open after the
 // direct child exits, so neither drain would return and Close would block on
 // waitDone past its configured timeout. Closing the read ends forces both

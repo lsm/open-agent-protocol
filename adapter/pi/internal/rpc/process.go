@@ -39,6 +39,7 @@ type Process struct {
 	command      *exec.Cmd
 	stdin        io.WriteCloser
 	pipes        *pipeCloser
+	stderrPipe   io.ReadCloser
 	stderr       *limitedBuffer
 	stderrDone   chan struct{}
 	waitDone     chan struct{}
@@ -88,7 +89,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	stderrDone := make(chan struct{})
 	go func() { _, _ = io.Copy(stderr, stderrPipe); close(stderrDone) }()
 	pipes := &pipeCloser{read: stdout, write: stdin}
-	process := &Process{command: command, stdin: stdin, pipes: pipes, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
+	process := &Process{command: command, stdin: stdin, pipes: pipes, stderrPipe: stderrPipe, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
 	if process.timeout <= 0 {
 		process.timeout = 5 * time.Second
 	}
@@ -197,8 +198,8 @@ func (p *Process) wait() {
 	// pipe is closed; otherwise a response the child wrote immediately before
 	// exiting is reported as a process-exit failure on the pending call.
 	<-p.Client.ReadDone()
+	p.drainStderr()
 	err := p.command.Wait()
-	<-p.stderrDone
 	p.waitMu.Lock()
 	p.waitErr = err
 	p.waitMu.Unlock()
@@ -207,6 +208,25 @@ func (p *Process) wait() {
 	close(p.waitDone)
 }
 func (p *Process) abort() error { p.killAndRelease(); <-p.waitDone; return p.WaitError() }
+
+// drainStderr waits for the stderr copier to finish before the child is reaped.
+// Cmd.Wait closes the pipes it created as soon as the child exits, and
+// StderrPipe's contract is that every read must complete first: a copier that
+// has not yet consumed the buffered bytes fails on a closed file and the bytes
+// are lost, which is how a handshake failure ended up composing an empty
+// stderr. A descendant that inherited stderr can keep the read end from
+// reaching EOF, so bound the drain and close our side to release the copier,
+// exactly as the shutdown paths bound the stdout drain.
+func (p *Process) drainStderr() {
+	timer := time.NewTimer(p.timeout)
+	defer timer.Stop()
+	select {
+	case <-p.stderrDone:
+	case <-timer.C:
+		_ = p.stderrPipe.Close()
+		<-p.stderrDone
+	}
+}
 
 // killAndRelease kills the child and retires the client before reaping. Reaping
 // waits for the reader to drain (see wait), but a reader blocked on a stdout a

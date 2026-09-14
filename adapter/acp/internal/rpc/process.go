@@ -69,6 +69,7 @@ type Process struct {
 	command    *exec.Cmd
 	stdin      io.WriteCloser
 	pipes      *pipeCloser
+	stderrPipe io.ReadCloser
 	stderr     *limitedBuffer
 	stderrDone chan struct{}
 	waitDone   chan struct{}
@@ -129,7 +130,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 
 	pipes := &pipeCloser{read: stdout, write: stdin}
 	process := &Process{
-		command: command, stdin: stdin, pipes: pipes, stderr: stderr, stderrDone: stderrDone,
+		command: command, stdin: stdin, pipes: pipes, stderrPipe: stderrPipe, stderr: stderr, stderrDone: stderrDone,
 		waitDone: make(chan struct{}), timeout: config.ShutdownTimeout,
 	}
 	if process.timeout <= 0 {
@@ -207,14 +208,33 @@ func (process *Process) wait() {
 	// pipes are closed; otherwise a response the child wrote immediately before
 	// exiting becomes a closed-pipe error on the pending call.
 	<-process.Client.ReadDone()
+	process.drainStderr()
 	err := process.command.Wait()
-	<-process.stderrDone
 	process.waitMu.Lock()
 	process.waitErr = err
 	process.waitMu.Unlock()
 	_ = process.pipes.Close()
 	process.Client.shutdown(processExitError(err))
 	close(process.waitDone)
+}
+
+// drainStderr waits for the stderr copier to finish before the child is reaped.
+// Cmd.Wait closes the pipes it created as soon as the child exits, and
+// StderrPipe's contract is that every read must complete first: a copier that
+// has not yet consumed the buffered bytes fails on a closed file and the bytes
+// are lost, which is how a handshake failure ended up composing an empty
+// stderr. A descendant that inherited stderr can keep the read end from
+// reaching EOF, so bound the drain and close our side to release the copier,
+// exactly as the shutdown paths bound the stdout drain.
+func (process *Process) drainStderr() {
+	timer := time.NewTimer(process.timeout)
+	defer timer.Stop()
+	select {
+	case <-process.stderrDone:
+	case <-timer.C:
+		_ = process.stderrPipe.Close()
+		<-process.stderrDone
+	}
 }
 
 func processExitError(err error) error {

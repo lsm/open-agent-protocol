@@ -30,11 +30,16 @@ type ProcessConfig struct {
 	WriteQueueCapacity int
 	StderrLimit        int
 	ShutdownTimeout    time.Duration
+	// stderrTap wraps the stderr read end before the copier is started. It is a
+	// package-private seam for tests that need the copier to lag the child's
+	// exit; production callers leave it nil.
+	stderrTap func(io.ReadCloser) io.ReadCloser
 }
 type Process struct {
 	Client     *Client
 	command    *exec.Cmd
 	stdin      io.WriteCloser
+	stderrPipe io.ReadCloser
 	stderr     *limitedBuffer
 	stderrDone chan struct{}
 	waitDone   chan struct{}
@@ -75,10 +80,13 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	if limit <= 0 {
 		limit = defaultStderrLimit
 	}
+	if config.stderrTap != nil {
+		stderrPipe = config.stderrTap(stderrPipe)
+	}
 	stderr := &limitedBuffer{limit: limit}
 	stderrDone := make(chan struct{})
 	go func() { _, _ = io.Copy(stderr, stderrPipe); close(stderrDone) }()
-	p := &Process{command: cmd, stdin: stdin, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
+	p := &Process{command: cmd, stdin: stdin, stderrPipe: stderrPipe, stderr: stderr, stderrDone: stderrDone, waitDone: make(chan struct{}), timeout: config.ShutdownTimeout}
 	if p.timeout <= 0 {
 		p.timeout = 5 * time.Second
 	}
@@ -136,14 +144,33 @@ func (p *Process) wait() {
 	// pipe is closed; otherwise a response the child wrote immediately before
 	// exiting is reported as a process-exit failure on the pending call.
 	<-p.Client.ReadDone()
+	p.drainStderr()
 	err := p.command.Wait()
-	<-p.stderrDone
 	p.waitMu.Lock()
 	p.waitErr = err
 	p.waitMu.Unlock()
 	_ = p.stdin.Close()
 	p.Client.shutdown(processExitError(err))
 	close(p.waitDone)
+}
+
+// drainStderr waits for the stderr copier to finish before the child is reaped.
+// Cmd.Wait closes the pipes it created as soon as the child exits, and
+// StderrPipe's contract is that every read must complete first: a copier that
+// has not yet consumed the buffered bytes fails on a closed file and the bytes
+// are lost, which is how a handshake failure ended up composing an empty
+// stderr. A descendant that inherited stderr can keep the read end from
+// reaching EOF, so bound the drain and close our side to release the copier,
+// exactly as the shutdown paths bound the stdout drain.
+func (p *Process) drainStderr() {
+	timer := time.NewTimer(p.timeout)
+	defer timer.Stop()
+	select {
+	case <-p.stderrDone:
+	case <-timer.C:
+		_ = p.stderrPipe.Close()
+		<-p.stderrDone
+	}
 }
 
 // killAndRelease kills the child and retires the client before reaping. Reaping
@@ -156,9 +183,8 @@ func (p *Process) killAndRelease() {
 }
 func (p *Process) abortBeforeWait() error {
 	_ = p.command.Process.Kill()
-	err := p.command.Wait()
-	<-p.stderrDone
-	return err
+	p.drainStderr()
+	return p.command.Wait()
 }
 func processExitError(err error) error {
 	if err == nil {
