@@ -1453,7 +1453,19 @@ single-user wire, exactly as it is for the registry document today.
 
 `session.state` gains `sources: [ToolSourceDescriptor]`, the field the
 open response and later snapshots report the session's attached and
-declared sources in; `schema/v0.1/session.schema.json`'s state object is
+declared sources in. In Go that is two places, not one:
+`protocol.SessionState` gains `Sources`, and so does
+`protocol.SessionOpenResponse`, which is a separate struct
+(`protocol/control.go:102`) that `serve/servehttp/server.go:237`
+constructs on its own path — the schema aliases the two payload shapes
+(`session.schema.json`'s `openResponse` is a `$ref` to `state`) but the
+Go types do not, and adding the member to one alone would leave an open
+carrying `tool_sources` unable to report the sources its own response is
+required to carry. The open path populates it from the union the
+attachment produced, and T3b's fixtures exercise the open response and a
+later snapshot separately for that reason. The same split already
+explains `current_model_id`, which T1 adds to `SessionOpenResponse` for
+the same reason; `schema/v0.1/session.schema.json`'s state object is
 closed and has no such member today, so without adding it an endpoint
 would have to choose between omitting state the plan requires and
 emitting a schema-invalid response, and the
@@ -2465,14 +2477,39 @@ and hub contract is explicit rather than inherited from `start`:
   reflected in `active_runs`). The gate is not lifted inside `Submit`:
   the hub
   cannot know when the response has reached the caller, and an SSE
-  subscriber could otherwise see `run.steer.applied` before the submit
-  caller learns the `submission_id`. `Session.Submit` returns with the
+  subscriber could otherwise see `run.steer.applied` ahead of the
+  `submission_id` in the hub's own trace. `Session.Submit` returns with the
   gate held, together with a request-unique barrier token, and the
-  binding that makes the response observable lifts the gate with
+   binding that makes the response observable lifts the gate with
   `Session.Published(token)`: `servehttp` after writing and flushing the
   submit response, the stdio frontend after writing the response line,
   an in-process embedder once it has handed the response to its own
-  caller. Gated operations on one run are serialized, not shared: a run
+  caller.
+  What that buys, and what it does not, has to be said plainly. The gate
+  orders the hub's own trace — the sequence a subscriber is served, the
+  evidence a corpus records, the thing conformance judges — and for the
+  stdio frontend and an in-process embedder, where the response and the
+  events share one stream, it orders what the caller observes as well.
+  Over HTTP it does not: the submit response is a POST body and the
+  events are an SSE connection, and writing and flushing the first
+  establishes nothing about the order the two connections deliver bytes
+  in. No server-side barrier can fix that, because the server does not
+  control the client's sockets, so `run.steer.applied` may legitimately
+  arrive before the POST response that names its `submission_id`.
+  The wire already carries what a client needs to repair the order
+  itself: a settlement names the admitting request's envelope id in
+  `request_id` and the admission's `submission_id`, and the client knows
+  which of its own requests are outstanding. So the obligation is
+  client-side and stated as such: a client that receives a settlement for
+  a submission it has not yet been told about holds it until the
+  correlating response arrives or that request fails, then delivers it in
+  order. `client` and `clients/ts` implement this in their stream
+  readers, and their e2e tests cover the reordered arrival with the SSE
+  event delivered first. The `Published` barrier stays, because the
+  hub's trace is what every other rule in this plan is written against
+  and because it is exactly right for the two single-stream bindings; it
+  is a trace-ordering mechanism, not a delivery guarantee, and the plan
+  no longer claims otherwise. Gated operations on one run are serialized, not shared: a run
   has one gate, a gated operation (a steer, or under T3c a resolution of
   any interaction on that run) acquires it before calling the adapter
   and holds it until its own `Published` or its context-done fallback,
