@@ -244,6 +244,7 @@ func TestMalformedLinesFailClosed(t *testing.T) {
 		{name: "fractional id", line: `{"id":2.5,"op":"adapters"}`},
 		{name: "unknown field", line: `{"id":2,"op":"adapters","extra":1}`},
 		{name: "trailing object", line: `{"id":2,"op":"adapters"} {"id":3}`},
+		{name: "trailing closer", line: `{"id":2,"op":"adapters"}}`},
 		{name: "empty line", line: ""},
 		{name: "carriage return", line: "{\"id\":2,\"op\":\"adapters\"}\r"},
 		{name: "invalid utf8", line: "{\"id\":2,\"op\":\"\xff\"}"},
@@ -293,6 +294,37 @@ func TestOversizedLineFailsClosed(t *testing.T) {
 	var malformed *MalformedLineError
 	if !errors.As(err, &malformed) || malformed.Line != 2 {
 		t.Fatalf("finish returned %v, want MalformedLineError on line 2", err)
+	}
+}
+
+// TestContextEndInterruptsIdleInput pins the cancellation contract: a host
+// that cancels the context without also closing stdin still gets Run back —
+// the end is observed while waiting for the next line, not only between
+// lines.
+func TestContextEndInterruptsIdleInput(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close(); stdoutWriter.Close(); stdoutReader.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx, stdinReader, stdoutWriter) }()
+	f := &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), done: done}
+	f.send(`{"id":1,"op":"adapters"}`)
+	requireOK(t, f.expectResponse(1)) // serving, and now idle with stdin open
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want nil after cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not interrupt the idle input read")
 	}
 }
 

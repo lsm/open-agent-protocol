@@ -144,13 +144,42 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	return err
 }
 
-// serveLoop reads request frames and serves each in order until a clean end
-// or a framing defect. A framing defect — anything readFrame or
-// decodeRequest refuses — fails the frontend closed as *MalformedLineError;
-// op-level refusals are responses the host can correct, and the loop reads
-// on past them. A context end between lines is a clean stop.
-func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byte) error {
+// frameResult is one line read from the host: frame carries the line without
+// its terminator, err the condition that ended the read (io.EOF for the clean
+// host close, a framing defect, or a read failure).
+type frameResult struct {
+	frame []byte
+	err   error
+}
+
+// readFrames reads bounded NDJSON lines from in and forwards each with its
+// outcome. The frames channel is never closed: a reader abandoned by a
+// context end parks on its send and is reclaimed by process exit, the same
+// discipline as the writer's channel.
+func readFrames(in io.Reader, limit int, frames chan<- frameResult) {
 	reader := bufio.NewReader(in)
+	for {
+		frame, err := readFrame(reader, limit)
+		if err != nil {
+			frames <- frameResult{frame: frame, err: err}
+			return
+		}
+		frames <- frameResult{frame: frame}
+	}
+}
+
+// serveLoop reads request frames and serves each in order until a clean end
+// or a framing defect. Reading runs on its own goroutine so a context end is
+// observed while waiting for the next line, not only between lines — an
+// embedding host that cancels without also closing stdin still gets Run
+// back, and the pre-check keeps a frame that raced the cancellation from
+// being dispatched under an already-dead context. A framing defect —
+// anything readFrame or decodeRequest refuses — fails the frontend closed as
+// *MalformedLineError; op-level refusals are responses the host can correct,
+// and the loop reads on past them.
+func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byte) error {
+	frames := make(chan frameResult)
+	go readFrames(in, s.frameLimit, frames)
 	number := 0
 	for {
 		select {
@@ -158,19 +187,23 @@ func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byt
 			return nil
 		default:
 		}
-		frame, err := readFrame(reader, s.frameLimit)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
+		select {
+		case <-ctx.Done():
+			return nil
+		case result := <-frames:
+			number++
+			if result.err != nil {
+				if errors.Is(result.err, io.EOF) {
+					return nil
+				}
+				return &MalformedLineError{Line: number, Detail: result.err.Error()}
 			}
-			return &MalformedLineError{Line: number + 1, Detail: err.Error()}
+			request, err := decodeRequest(result.frame)
+			if err != nil {
+				return &MalformedLineError{Line: number, Detail: err.Error()}
+			}
+			s.serveRequest(ctx, request, lines)
 		}
-		number++
-		request, err := decodeRequest(frame)
-		if err != nil {
-			return &MalformedLineError{Line: number, Detail: err.Error()}
-		}
-		s.serveRequest(ctx, request, lines)
 	}
 }
 
@@ -268,7 +301,11 @@ func decodeRequest(frame []byte) (requestLine, error) {
 	if err := decoder.Decode(&request); err != nil {
 		return requestLine{}, fmt.Errorf("invalid JSON request: %v", trimMessage(err.Error()))
 	}
-	if decoder.More() {
+	// More() is not an end-of-input check — it also reports false for a
+	// stray closing token, which would let frames like {...}} through — so
+	// the only complete frame is one whose next decode reaches end of input.
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return requestLine{}, errors.New("invalid JSON request: trailing data after the request object")
 	}
 	if request.ID == nil {
