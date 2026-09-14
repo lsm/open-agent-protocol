@@ -256,6 +256,36 @@ No new envelope types. Changes to
   admission), which is also the shape of the Codex `instructions`
   rejection T1 keeps, and `controls-unadvertised-wrong-reason` (the right
   code and feature under `details.reason: "unsatisfiable"`).
+- **Refusal precedence.** A request can fail several of this plan's
+  fail-closed tests at once, and a single `error.response` carries one
+  code and one reason, so the retained expectations are ranked rather
+  than conjoined. The validator evaluates them in this order and, once
+  one owns the response, discharges every lower expectation on that
+  request without diagnosis:
+  1. **Capability** — a control, delivery, or open-time attachment whose
+     key the descriptor omits or advertises `unavailable`:
+     `unsupported_feature` with `details.feature` and `details.reason:
+     "unadvertised"`.
+  2. **Degradation** — an advertised-`degraded` key without the opt-in:
+     `capability_degraded` with `details.feature`.
+  3. **Unsatisfiability** — the request is understood and offered, but
+     its content cannot be honoured (a contradictory `tool_choice`, an
+     external `output_schema`, a colliding or dangling tool source, a
+     `remote` source under an attach capability that discloses no such
+     mode, a `model_id` outside the served catalog): the typed
+     `unsupported_feature`/`unsatisfiable` or `model_not_found` each rule
+     names.
+  4. **State** — the request is well formed and supported but the
+     session cannot take it now (`run_active`, `queue_limit_exceeded`,
+     `invalid_steer_target`).
+  The ladder runs from the most permanent failure to the most transient,
+  which is the order in which the caller can act: what it must stop
+  sending outranks what it must send differently, which outranks what it
+  may simply retry. Every precedence decision elsewhere in this plan —
+  the ungated steer, the ungated explicit `queue`, the remote-mode check
+  behind the attach gate — is this ladder applied, not a separate rule,
+  and each unit's fixtures include one trace where two rungs would
+  otherwise claim the same response.
 - New diagnostic `degraded_without_optin`: `feature()` today accepts every
   level but `unavailable`, so a request carrying a control, or an
   explicit non-`auto` delivery, whose key the descriptor advertises
@@ -841,7 +871,15 @@ No new envelope types. Additive fields:
   the submit admissible), and its `error.response` must be the wire's
   `run_active`; a refusal under any other code is `illegal_run_transition`
   on the error response (`/payload/error/code`), so the ordinary busy-session
-  refusal cannot hide behind `internal_error`. Fixtures:
+  refusal cannot hide behind `internal_error`. This is rung 4 of the
+  refusal ladder, so it yields to any T1 expectation the same submit
+  carries: an `auto` on a busy session whose controls are unadvertised,
+  degraded without the opt-in, or unsatisfiable is owed
+  `unsupported_feature`, `capability_degraded`, or the typed
+  `unsatisfiable` refusal respectively, and the retained `run_active`
+  expectation is discharged. Fixture `queue-busy-auto-unadvertised-control`
+  (positive; a busy `auto` carrying an unadvertised control, refused by
+  the capability rung). Fixtures:
   `queue-busy-auto-rejected` (`error.response` with `run_active`;
   validated as a correct rejection) and `queue-busy-auto-wrong-refusal`
   (`illegal_run_transition` on the error response; the same request
@@ -1470,8 +1508,14 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   rules require every `unsupported_feature` to identify the missing
   capability in `details.feature`
   (`drafts/layered-agent-protocol.md:696`), and without it a caller
-  cannot tell that attaching sources is what the endpoint refused.
-  Fixtures `tool-source-collision-refused` (positive),
+  cannot tell that attaching sources is what the endpoint refused. The
+  check is rung 3, so it runs only once attachment is available: where
+  the descriptor omits `action.tool_sources.attach` or advertises it
+  `unavailable`, the capability rung owns the response, its
+  `unadvertised` refusal is the conforming one, and the collision
+  expectation is discharged — the same ordering the remote-mode check
+  takes below. Fixture `tool-source-collision-unadvertised-attach`
+  (positive). Fixtures `tool-source-collision-refused` (positive),
   `tool-source-collision-wrong-refusal` (another code),
   `tool-source-collision-wrong-feature` (`unsupported_feature` naming
   `action.tools.provide`) and `tool-source-collision-missing-detail`
@@ -1524,11 +1568,16 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   authority and a gap defers rather than falls back to the descriptor's
   `tools` (a session that never lists is judged against the descriptor's
   effective catalog plus its open-time tools, as T1 rules), so
-  `sessionTrack.unjudgedTools` keeps every `tool_choice` submitted —
-  admitted or refused, with the correlating response and, for a refusal,
-  its code and details, as `unjudgedModels` keeps refused selections —
-  and every `action.call.requested` emitted with a `source` or an
-  `execution_owner`, while the session has no catalog under the active
+  `sessionTrack.unjudgedTools` keeps every `tool_choice` submitted under
+  an available `run.tool_selection` — admitted or refused, with the
+  correlating response and, for a refusal, its code and details, as
+  `unjudgedModels` keeps refused selections. A choice the capability rung
+  already owns (the descriptor omits `run.tool_selection` or advertises
+  it `unavailable`) is not retained at all, so a later catalog cannot
+  rejudge a correct `unadvertised` refusal as owing `unsatisfiable`; the
+  models rule is scoped the same way. The bookkeeping also keeps
+  every `action.call.requested` emitted with a `source` or an
+  `execution_owner` while the session has no catalog under the active
   revision, and the first `action.tools.list.response` under that
   revision reconciles them: a retained policy that lists or names a tool
   the catalog does not carry, or that is `required` or `named` against an
@@ -1536,8 +1585,15 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   `details` naming the admission when it was admitted, and when it was
   refused is held to the same code-and-detail test the immediately judged
   path applies — `unsupported_feature` with `details.feature:
-  "run.tool_selection"`, `details.reason: "unsatisfiable"`, and
-  `details.tool` naming the offending tool, with anything else
+  "run.tool_selection"`, `details.reason: "unsatisfiable"`, and the
+  detail the condition admits of: `details.tool` naming the offending
+  tool where the policy names one or filters on one, and, where the
+  policy names no tool and is unsatisfiable only because the filtered set
+  is empty (`{ "mode": "required" }` against an empty catalog),
+  `details.field: "tool_choice"` instead — there is no offending tool to
+  name, and demanding one would leave that explicitly listed case with no
+  conforming refusal. The immediately judged path takes the same detail
+  on the same terms. With anything else
   `unsatisfiable_control` on that `action.tools.list.response`, naming
   the refusal it reconciles. Refusing an unlistable policy with
   `internal_error` in the gap is no safer than admitting it. Fixtures
