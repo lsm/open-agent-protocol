@@ -52,7 +52,20 @@ Decision 0003's four steps translate into these exit criteria for every unit:
    codes registered in `validation/diagnostic.go` and
    `validation/manifest.go`; `fixtures/manifest.json` lists the unit's
    positive and negative fixtures under a new unit name; every existing
-   fixture validates unchanged.
+   fixture validates unchanged. A fixture's `valid` comes from its own
+   annotation in the unit's fixture list, never from the `Positive:` or
+   `Negative:` heading it happens to sit under: an entry naming a
+   diagnostic code is `valid: false` and must produce exactly that code,
+   and one marked *(positive)* or *a correct rejection* is `valid: true`
+   with no codes. The lists are grouped by the behaviour each trace
+   exercises, so a unit's refusal cases read together — the admitted
+   negative, the conforming refusal, and the wrongly coded refusal are
+   one story, and splitting them across two headings hides which is
+   which. This matters because half of this plan's rules make a typed
+   refusal the required behaviour: those fixtures sit beside the
+   admission they refuse and are positives, and a generator that read the
+   heading instead of the annotation would demand a diagnostic from
+   correct fail-closed behaviour.
 3. One native adapter executes the unit through its production codec and
    reducer with a corpus case pinned to its ledger commit, its descriptor
    advertises the unit at the evidenced level, and its live gate (where one
@@ -540,10 +553,10 @@ admission; `required` with the only tool disallowed, and `named` outside
 its own allowlist), `controls-tool-choice-unknown-entry`
 (`unsatisfiable_control` on the admission; an `allowed` list naming a
 tool outside the catalog the trace carries),
-`controls-tool-choice-contradictory-rejected` (positive; the same policy
-refused with `unsupported_feature`, `details.feature:
-"run.tool_selection"`, `details.reason: "unsatisfiable"`,
-`details.tool`),
+`controls-tool-choice-contradictory-rejected` (positive, `valid: true`,
+no diagnostic; the same policy refused with `unsupported_feature`,
+`details.feature: "run.tool_selection"`, `details.reason:
+"unsatisfiable"`, `details.tool`),
 `controls-unsatisfiable-wrong-refusal` (`unsatisfiable_control` on the
 `error.response`; the same policy refused with `internal_error`),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
@@ -552,18 +565,19 @@ under `mode: "none"`),
 admission; a root-array `output_schema`), `controls-structured-external-ref`
 (`unsatisfiable_control` on the admission; an `output_schema` with an
 absolute `$ref`, which the validator must diagnose without any resource
-access), `controls-output-schema-external-rejected` (positive; the same
-schema refused with `unsupported_feature`, `details.feature:
-"run.structured_output"`, `details.reason: "unsatisfiable"`,
-`details.field`),
+access), `controls-output-schema-external-rejected` (positive, `valid: true`, no
+diagnostic; the same schema refused with `unsupported_feature`,
+`details.feature: "run.structured_output"`, `details.reason:
+"unsatisfiable"`, `details.field`),
 `controls-required-without-call` (`unapplied_control`; `mode: "required"`,
 `run.completed` with no call), `controls-named-without-call`
 (`unapplied_control`; `named` naming `scripted_tool`, `run.completed` with
 no call),
 `controls-tool-choice-ambiguous-name` (`duplicate_tool_name`; two native
 tools sharing a name in the descriptor, then a `named` policy),
-`controls-degraded-without-optin` (`error.response` with
-`capability_degraded` then no admission; validated as a correct rejection),
+`controls-degraded-without-optin` (positive, `valid: true`, no
+diagnostic; `error.response` with `capability_degraded` then no
+admission),
 `controls-degraded-admitted-without-optin` (`degraded_without_optin`; the
 same request admitted), `controls-degraded-wrong-refusal`
 (`degraded_without_optin` on the error response; the same request
@@ -721,7 +735,28 @@ serve one catalog for its lifetime.
   `model_not_found`, because precedence is a property of the request, not
   of what the trace learns afterwards. Such a selection is discharged at
   the response rather than retained, and `unjudgedTools` discharges an
-  in-gap `tool_choice` on the same terms. For a retained selection, when
+  in-gap `tool_choice` on the same terms. Retention runs the other way
+  too: a lower rung cannot settle while a higher one is still unjudged.
+  An adapter that knows an id is absent must answer rung 3 even before
+  the trace has a catalog to prove it — a busy session with queueing
+  unavailable and an unknown-but-selectable `model_id` is owed
+  `model_not_found`, not `run_active` — and the state rung would
+  otherwise diagnose that refusal as `illegal_run_transition` at the
+  response, a verdict the later catalog could not retract. So while a
+  submit carries a model or tool condition the trace cannot yet judge
+  (no catalog under the active revision), every lower-rung expectation
+  on that submit is held rather than diagnosed, and the first catalog
+  under the revision settles both: if it omits the id or tool, rung 3
+  owned the response and the held expectation is discharged; if it lists
+  them, there was no higher-rung failure and the lower rung is judged
+  then, against the response it was correlated to. The same holds for
+  `unjudgedTools`. Fixtures `queue-busy-unknown-model-refused` (positive;
+  a busy `auto` selecting an unlisted id before the catalog, refused
+  `model_not_found`, the catalog omitting it afterwards) and
+  `queue-busy-listed-model-wrong-refusal` (the same race where the
+  catalog does list the id, so the held `run_active` expectation is
+  judged and an `internal_error` refusal is diagnosed).
+  For a retained selection, when
   the first `models.response` under that revision arrives and omits the
   id, a retained admission is `model_not_in_catalog` as before and a
   retained refusal is held to exactly the code-and-detail test the
@@ -1218,13 +1253,15 @@ run's pre-start `run.cancelled` before the started run's terminal),
 `queue-idle-unadvertised` (`unavailable_capability` on the admission;
 explicit `queue` on an idle session with the capability unadvertised,
 admitted `queued`), the correct rejection
-`queue-idle-unadvertised-rejected` (`error.response` with
-`unsupported_feature`, `details.feature:
-"session.message.delivery.queue"`, then no admission),
+`queue-idle-unadvertised-rejected` (positive, `valid: true`, no
+diagnostic; `error.response` with `unsupported_feature`,
+`details.feature: "session.message.delivery.queue"`, then no
+admission),
 `queue-degraded-admitted-without-optin` (`degraded_without_optin`; queue
 advertised `degraded`, no opt-in, admitted `queued`), and the correct
-rejection `queue-degraded-without-optin` (`error.response` with
-`capability_degraded`, then no admission) as a positive fixture,
+rejection `queue-degraded-without-optin` (positive, `valid: true`, no
+diagnostic; `error.response` with `capability_degraded`, then no
+admission),
 `queue-degraded-wrong-refusal` (`degraded_without_optin` on the error
 response; the same request refused with `internal_error`),
 `queue-model-mutation-early` (`premature_session_mutation`),
@@ -1946,17 +1983,18 @@ listed with another `endpoint`), `tools-catalog-alters-provided-schema`
 `input_schema`), `tools-catalog-moves-provided-source`
 (`catalog_mismatch`; the provided tool listed under another declared
 source),
-`open-provide-colliding-name` (`error.response` with `unsupported_feature`
-then no open; validated as a correct rejection),
+`open-provide-colliding-name` (positive, `valid: true`, no diagnostic;
+`error.response` with `unsupported_feature`, then no open),
 `open-provide-wrong-owner` (`error.response` with `unsupported_feature`,
 `details.feature: "action.tools.provide"`, `details.reason:
-"unsatisfiable"`, then no open; validated as a correct rejection),
+"unsatisfiable"`, then no open; positive, `valid: true`, no
+diagnostic),
 `open-provide-wrong-owner-admitted` (`wrong_tool_owner`; a supplied tool
 whose `execution_owner` is not the declared control participant, and the
 open admitted),
-`open-provide-dangling-source` (`error.response` with
-`unsupported_feature` and `details.source: "ghost"`, then no open;
-validated as a correct rejection),
+`open-provide-dangling-source` (positive, `valid: true`, no diagnostic;
+`error.response` with `unsupported_feature` and `details.source:
+"ghost"`, then no open),
 `open-provide-dangling-source-wrong-refusal` (`unmatched_tool_source` on
 the error response; the same open refused with `internal_error`),
 `open-provide-wrong-owner-wrong-refusal` (`wrong_tool_owner` on the
@@ -2209,14 +2247,14 @@ hide an invalid target behind `internal_error` and a caller always
 learns why the steer could not land. Fixtures: positive `steer-immediate`
 (response, then `applied` in the target's sequence), `steer-at-boundary`,
 `steer-target-queued-rejected` (`error.response` with
-`invalid_steer_target`, `details.reason: "queued"`; validated as a
-correct rejection), `steer-target-cancelling-rejected` (`error.response`
+`invalid_steer_target`, `details.reason: "queued"`; positive,
+`valid: true`, no diagnostic), `steer-target-cancelling-rejected` (`error.response`
 with `invalid_steer_target`, `details.reason: "not_steerable"` against a
-`cancelling` target; validated as a correct rejection),
+`cancelling` target; positive, `valid: true`, no diagnostic),
 `steer-target-terminated-in-flight-rejected` (`error.response` with
 `invalid_steer_target`, `details.reason: "terminal"`; the target was
-running at the request and terminal before the response; validated as a
-correct rejection), `steer-target-terminated-in-flight-wrong-refusal`
+running at the request and terminal before the response; positive,
+`valid: true`, no diagnostic), `steer-target-terminated-in-flight-wrong-refusal`
 (`illegal_run_transition` on the error response; the same race refused
 with `internal_error`),
 `steer-dropped-at-terminal`, `steer-status-advances-in-flight` (a
@@ -2255,7 +2293,7 @@ returns ids A, the settlement reports ids B),
 `request_id` is not the admitting request's envelope id),
 `steer-with-controls-rejected` (`error.response` with
 `unsupported_feature`, `details.reason: "unsatisfiable"`, then no
-admission; validated as a correct rejection),
+admission; positive, `valid: true`, no diagnostic),
 `steer-with-controls-admitted` (`unsatisfiable_control`; a `steered`
 admission of a request carrying `model_id`). `session.state`
 snapshots are checked against the same record: each `active_runs[]`
