@@ -572,6 +572,21 @@ serve one catalog for its lifetime.
   have the gap hide it. Reconciliation runs at `native` and `emulated`
   `models.list` only; at `degraded` the catalog refreshes per turn and an
   earlier admission may have matched a list that was never served.
+- A mismatch is judged on the correlated response, not on the admission
+  alone, so a refusal cannot escape it. When a catalog has been served
+  under the active revision at `native` or `emulated` and a submit's
+  `model_id` names an id that catalog does not list, the validator
+  retains the mismatch from the request (`sessionTrack.pendingModelMiss`:
+  the requested id and the request's envelope id) and re-evaluates it at
+  the correlated response. An admission is `model_not_in_catalog` as
+  above; an `error.response` must carry `model_not_found` with the
+  requested id in `details.model_id`, and any other code on that response
+  — `internal_error` most of all — is `model_not_in_catalog` on the
+  `error.response`, with `details` naming the requested id and the
+  refusing code, so the adapter that swallows a catalog miss behind an
+  untyped failure is diagnosed exactly as the one that accepts it.
+  Fixtures `models-unlisted-selection-refused` (the typed refusal, a
+  positive) and `models-unlisted-selection-wrong-refusal`.
 - New diagnostic `unannounced_catalog_change`: a second `models.response`
   under the same `capability_revision` whose catalog differs from the
   stored one in any descriptor, compared whole (`id`, `display_name`,
@@ -1306,6 +1321,21 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   descriptors that advertise the family key today, `action.tools` as an
   alias; the positive fixture `tools-catalog-list-only` carries a
   descriptor advertising `action.tools.list` alone.
+- The gate is judged on the correlated response, never on the request,
+  exactly as the `models.list` rule is. An endpoint that advertises
+  neither key may still be asked for a catalog, and answering
+  `unsupported_feature` is the correct behaviour — the refusal the
+  proposed optional `ToolLister` surface produces when an adapter does
+  not implement it — so raising `unavailable_capability` on the
+  `action.tools.list.request` would diagnose the one endpoint that got
+  it right. The validator instead remembers the unavailable expectation
+  on the request (`sessionTrack.pendingToolsList`) and settles it at the
+  correlated response: an `action.tools.list.response` that arrives
+  anyway is `unavailable_capability` on that response; an
+  `error.response` must carry `unsupported_feature`, and another code
+  there is `unavailable_capability` on the `error.response`. Fixtures
+  `tools-list-ungated-refused` (positive) and
+  `tools-list-ungated-wrong-refusal`.
 - An `action.tools.list.response` correlated to a request that names a
   session (envelope or payload `session_id`) must carry that session on
   both its envelope and its payload; an unscoped response to a scoped
@@ -1319,7 +1349,15 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   the union of the attached descriptors and the sources the capability
   descriptor already declares, so an attachment reusing a declared id is
   diagnosed even in a trace that ends at the open or later lists a single
-  entry under that id.
+  entry under that id. A refusal is judged too, so the collision cannot
+  be hidden behind an untyped failure: the validator retains it from the
+  `session.open.request` (the duplicated id and the request's envelope
+  id) and, when the correlated response is an `error.response`, requires
+  `unsupported_feature` with `details.reason: "unsatisfiable"` and
+  `details.source` naming the offending id; any other code there —
+  `internal_error` included — is `duplicate_tool_source` on the
+  `error.response`. Fixtures `tool-source-collision-refused` (positive)
+  and `tool-source-collision-wrong-refusal`.
 - Every accepted `capabilities.response`, initial or refreshed:
   `duplicate_tool_name` across its effective catalog (top-level `tools`
   and every `layers.*.tools`, unioned) and `duplicate_tool_source` across
@@ -1981,17 +2019,29 @@ and hub contract is explicit rather than inherited from `start`:
   settlement read before the adapter has returned are contract
   violations reported as adapter errors rather than published. When the
   gate lifts, the drainer publishes the withheld remainder in order and
-  resumes publishing live. The error path has its own drain: when the
-  adapter returns an error instead of an admission (an invalid target, a
-  control on a steer, or any failure), nothing was admitted and no
-  settlement can follow, so the submit goroutine drains the target
-  stream without blocking, publishes the whole buffer in order, and
-  lifts the gate before handing the error to the binding; the hub's
-  trace then records every envelope emitted before return, including a
+  resumes publishing live. The error path carries a boundary of its own,
+  for the same reason the success path does. Releasing the whole buffer
+  there would be wrong: the gated drainer keeps reading, so an envelope
+  the target emits immediately after the adapter returns can land in the
+  buffer before the drain runs, and if that envelope is terminal the
+  validator would read a terminal target ahead of the `error.response`
+  and demand `invalid_steer_target` for a steer the adapter refused
+  while the target was still running. The steer error type therefore
+  carries a `TargetSequence` — the last sequence the adapter made
+  readable on the target before returning — and the submit goroutine
+  applies it exactly as it applies an admission's: drain without
+  blocking, publish the buffered prefix up to and including that
+  sequence, withhold the remainder, hand the error to the binding, then
+  lift the gate so the drainer publishes the remainder in order. An
+  error raised before the adapter looked at the target at all (an
+  unknown run, an unparseable submission) states no boundary, and the
+  hub uses the target's last published sequence at arming, so nothing
+  the adapter did not account for precedes the refusal. The hub's trace
+  then records every envelope emitted before return, including a
   terminal the target reached while the request was in flight, ahead of
-  the `error.response`, which is what the validator's response-time
-  re-evaluation of the target reads. `Session.Resolve` does the same on
-  its error path under T3c. After the adapter returns an admission the
+  the `error.response`, and nothing emitted after it — which is what the
+  validator's response-time re-evaluation of the target reads.
+  `Session.Resolve` does the same on its error path under T3c. After the adapter returns an admission the
   hub registers the pending steer (`submission_id` to target run,
   reflected in `active_runs`). The gate is not lifted inside `Submit`:
   the hub
