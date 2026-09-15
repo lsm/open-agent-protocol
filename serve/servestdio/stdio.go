@@ -447,10 +447,10 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	go func() { loopEnd.report(s.decodeLoop(ctx, callerCtx, frames, lines, writerFail)) }()
 
 	// The owner's stall probe runs only through serving and reports only
-	// to the owner; it is stopped the moment the machine leaves serving.
+	// to the owner; it is stopped once, at the hostEnded entry below —
+	// every path to returning flows through that entry exactly once.
 	stallReport := make(chan struct{})
 	stallProbeStop := make(chan struct{})
-	defer close(stallProbeStop)
 	go watchOutputStall(s.shutdown, probe, func() bool {
 		return len(s.inFlight) == cap(s.inFlight)
 	}, stallReport, stallProbeStop)

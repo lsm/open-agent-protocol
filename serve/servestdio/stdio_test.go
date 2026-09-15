@@ -1085,6 +1085,23 @@ func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 	}
 }
 
+// TestStallProbeStopsOnceAtHostEnded pins the a9d1647 CI panic: the stall
+// probe's stop channel is closed exactly once, at the hostEnded entry that
+// every returning path flows through. The defer this replaced re-closed it
+// at Run's return, and every Run that reached teardown — this smallest
+// shape included — panicked with close of closed channel. The probe firing
+// variant (stop racing a live probe in the overrun state) is pinned by
+// TestShutdownBoundedWhenHostOverrunsDraining below.
+func TestStallProbeStopsOnceAtHostEnded(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{ShutdownTimeout: 100 * time.Millisecond})
+	f.send(`{"id":1,"op":"adapters"}`)
+	requireOK(t, f.expectResponse(1))
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 // TestShutdownBoundedWhenHostOverrunsDraining drives the overrun shape:
 // with the in-flight bound saturated behind a writer parked on a host that
 // stopped draining, the decode loop parks in admission and the reader parks
