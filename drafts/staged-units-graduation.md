@@ -205,7 +205,8 @@ rather than two packs that nest.
 array; `schemas` keeps its 7-of-7 bound, which from here describes the
 core bundle rather than the whole compiled set. Each entry is a pack
 descriptor: `id` (reverse-DNS, the pack's namespace), `version`,
-`schemas` (the files the pack contributes), and an optional `depends_on`
+`schemas` (the files the pack contributes, every one contained beneath
+the pack root, below), and an optional `depends_on`
 — a list of `{ "id", "version" }` naming the packs whose resources this
 pack's schemas may `$ref`. A dependency is satisfied only by a loaded
 pack of that exact `id` and `version`; a missing or mismatched one is a
@@ -448,14 +449,26 @@ and `ext-pack-restates-core-member` (load refusal).
   refuses an external `$ref` in a control), and a third-party pack is a
   document a user loads from someone else, so compiling it with the
   default loader would let a `$ref` reach paths outside the pack on the
-  loading machine. A `$ref` a pack schema cannot satisfy from the
-  registered set — a file path, an unregistered URI, another pack's base
+  loading machine. The refusing loader governs references; the files the
+  descriptor names are read *before* any reference is resolved, so the
+  same containment is owed to them first, or a descriptor could name
+  `/etc/passwd`, `../../.ssh/id_rsa`, or a symlink out of the pack and
+  have the loader read it as a schema. Every `schemas` entry must be a
+  relative path; it is cleaned, joined to the pack root, and the result
+  — after resolving symlinks — must still lie beneath the pack root, or
+  the pack fails to load (`pack_schema_path_escape`) before a single
+  file is opened. The same check applies to a pack's fixture manifest and
+  the fixture files it names. A `$ref` a pack schema cannot satisfy from
+  the registered set — a file path, an unregistered URI, another pack's base
   URI absent from its `depends_on` — is a load refusal
   (`pack_external_ref`) rather than a compile error surfaced later, and
   the validator detects it by compiling with the refusing loader, never
   by resolving it, exactly as T1 does. Fixture `ext-pack-external-ref`
   (load refusal; a pack schema carrying a `$ref` to a path outside its
-  own resources), `ext-pack-cross-ref-declared` (positive; a `$ref` into
+  own resources), `ext-pack-schema-path-escape` (load refusal; a
+  descriptor naming an absolute path, a `../` path, and a symlink
+  resolving outside the pack root, each refused before any file is
+  read), `ext-pack-cross-ref-declared` (positive; a `$ref` into
   a pack named in `depends_on`, loaded together), and
   `ext-pack-dependency-missing` (load refusal; `depends_on` naming a
   pack not loaded, or loaded at another version).
@@ -530,7 +543,8 @@ and `ext-pack-restates-core-member` (load refusal).
   `pack_restates_core_member`, `pack_member_target_unknown`,
   `pack_role_undeclared`, `pack_response_gated`,
   `pack_reply_target_unknown`, `pack_refusal_undeclared`,
-  `pack_external_ref`, `pack_dependency_missing`,
+  `pack_schema_path_escape`, `pack_external_ref`,
+  `pack_dependency_missing`,
   `pack_fixture_claims_core_unit`, and
   `ext_claim_without_pack`, one per load refusal this section names.
   The runner asserts that loading the named pack fails with exactly
@@ -2924,6 +2938,48 @@ so a wire caller cannot read an ambient credential the operator did not
 expose; a `NAME=value` literal is the caller's own secret on a loopback,
 single-user wire, exactly as it is for the registry document today.
 
+That last sentence is true of the wire and false of the daemon, and the
+difference decides who may supply a `command` at all. "Loopback,
+single-user" describes the transport, not the origin of a request on
+it: `serve/servehttp` admits any request whose `Host` names an
+allowlisted hostname (`serve/servehttp/server.go:96-102`) and checks
+nothing else — no `Origin`, no request `Content-Type` — so a page in the
+user's browser can issue a simple cross-origin `text/plain` POST to
+`127.0.0.1` carrying a valid JSON envelope, `Host` is `127.0.0.1` and
+allowlisted, and the hidden response is no obstacle because the damage
+is the request. With `command` and `args` accepted from the wire, that
+request executes a process as the daemon's user. So the daemon's
+client-facing binding does not accept them, whatever the wire shape
+allows: on `POST /adapters/{name}/sessions` (and the stdio `open` op) a
+`process` attachment names an operator-configured source by `id` only,
+and the daemon fills `command`, `args`, and `environment` from its own
+registry entry for that id before forwarding the open. An attachment
+that carries `command`, `args`, or a literal `NAME=value` in
+`environment` on that route is refused before the open is forwarded,
+with the typed `unsupported_feature` (`details.feature:
+"action.tool_sources.attach"`, `details.reason: "unsatisfiable"`,
+`details.source` naming it) — the bare-`NAME` allowlist form is the
+only `environment` a wire caller may write. The literal form is not the
+caller's own secret when the caller may be a webpage; `LD_PRELOAD` into
+an allowlisted executable is the same process execution by another
+member. `command`/`args`/literal `environment` remain legal exactly
+where the sender is the daemon itself (the adapter-facing envelope the
+daemon builds from its registry) or the in-process embedding of
+`serve.Hub`, which has no network boundary to cross. This is a binding
+rule rather than a protocol rule — the validator cannot tell a daemon
+from an embedding — so it is pinned by `servehttp` e2e tests, not
+corpus fixtures: an open carrying `command` refused before any process
+starts, and an open naming an allowlisted id forwarded with the
+registry's command. Alongside it, and not instead of it, `readRequest`
+gains the origin boundary a loopback daemon should have had: it
+requires `Content-Type: application/json` and rejects any request
+bearing an `Origin` header, which turns the browser's simple request
+into a preflight the daemon never answers. That hardening lands in the
+same slice, but the allowlist is what T3b graduates on, because a
+boundary check is defence in depth and an executable the operator
+never configured is not something the daemon should run under any
+boundary.
+
 `session.state` gains `sources: [ToolSourceDescriptor]`, the field the
 open response and later snapshots report the session's attached and
 declared sources in. In Go that is two places, not one:
@@ -3774,7 +3830,11 @@ the request used.
   op takes `allow_degraded_features` directly; `POST /sessions/{id}/resolve` accepts
   `action.call.resolve.request` and calls `Session.Published` after
   writing the response; `POST /adapters/{name}/sessions` forwards
-  `tool_sources`, `tools`, and `allow_degraded_features`. Stdio ops `tools` and the extended `resolve`
+  `tool_sources`, `tools`, and `allow_degraded_features`, with `process`
+  attachments resolved by `id` against the daemon's registry and any
+  wire-supplied `command`, `args`, or literal `environment` refused
+  before forwarding (T3b); `readRequest` requires `Content-Type:
+  application/json` and rejects requests bearing an `Origin` header. Stdio ops `tools` and the extended `resolve`
   (with the same post-write release) and `open`.
 - `client` and `clients/ts`: `Open` options for sources, tools, and
   `AllowDegraded(keys ...string)` / `allowDegradedFeatures`, sent only
