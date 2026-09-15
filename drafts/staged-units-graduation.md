@@ -731,17 +731,31 @@ serve one catalog for its lifetime.
   correctly refuses the query is conforming and one whose refusal points
   the caller at a value to change is not. Fixture
   `models-unadvertised-wrong-reason`.
-- `current_model_id` on `models.response` must equal the effective session
-  model the validator tracks (`sessionTrack.currentModel`: the latest
+- `current_model_id` on `models.response` must equal an effective session
+  model the validator tracks at some point between the `models.request`
+  and its correlated response, not the value at response arrival alone.
+  A catalog overlapping a `session_mutation` is captured at an instant
+  the trace cannot name: the adapter may read the old model and have the
+  mutation's run event reach the trace first, and the reverse ordering
+  can show the new value before the validator has observed the mutation.
+  Either would be reported as a mismatch against a single endpoint value,
+  though both are valid stale or early reads, so the rule takes the set
+  of values the model held across the window — the same treatment the
+  snapshot rules take — and diagnoses only a value that was never the
+  session's model within it. Fixture
+  `models-current-model-mutation-in-flight` (positive; a catalog
+  capturing the pre-mutation model whose response follows the mutation's
+  application). The model the validator tracks is
+  (`sessionTrack.currentModel`: the latest
   `session.open.response` or `session.state` value, advanced by a
   `session_mutation` application at the run it applies to; the open
   response is decoded as `SessionState`, which is what
   `session.schema.json` aliases `openResponse` to, because
   `protocol.SessionOpenResponse` today carries no `current_model_id`,
   and T1 adds that member to the Go type so the daemon and adapters
-  populate on the wire what the schema already promises), otherwise
-  `session_state_mismatch`; a picker is never shown a current model the
-  session does not report. A nonempty `current_model_id` must also name
+  populate on the wire what the schema already promises). A value the
+  session never held in the window is `session_state_mismatch`; a picker
+  is never shown a current model the session does not report. A nonempty `current_model_id` must also name
   one of the response's own model ids (`model_not_in_catalog`, with
   `details.field: "current_model_id"`): a picker shown a current model
   the catalog does not describe could not resolve it, and re-selecting
@@ -1018,9 +1032,15 @@ No new envelope types. Additive fields:
   `undisclosed_queue_limit` on the `capabilities.response` (fixtures
   `queue-advertised-without-limit` and `queue-advertised-zero-limit`). An
   endpoint that genuinely cannot queue advertises the capability
-  `unavailable` rather than available with a bound of zero. Where the capability is `degraded` or
-  absent the disclosure is not required, and `max_active_runs_per_session`
-  stays optional: absent, it means one started run, unenforced.
+  `unavailable` rather than available with a bound of zero. `degraded`
+  is held to the same disclosure: the caller opts in and is entitled to
+  the same promise, and without a bound the limit validation has nothing
+  to test, so an adapter could take the opt-in and refuse every explicit
+  queue submission with `run_active` — the empty promise this rule
+  exists to prevent, reached by another door. Only an `unavailable` or
+  absent capability is exempt, because neither claims anything.
+  `max_active_runs_per_session` stays optional throughout: absent, it
+  means one started run, unenforced.
 - Typed error `run_active` (the daemon's existing code, adopted as the
   protocol code; the research draft's `session_busy` name is superseded): a
   submission that cannot be admitted because the session is busy and no
@@ -1202,7 +1222,22 @@ No new envelope types. Additive fields:
   adapter still owes `run_active` for the mutation constraint even though
   the bound has cleared. Diagnosing it would convict a conforming
   refusal, so the stale-limit check runs only when the response's code
-  is explained by no surviving condition. In-flight reservations are
+  is explained by no surviving condition. It is also judged across the
+  whole request/response window rather than at either end, as the
+  snapshot rules are. `Submit` decides atomically at some instant the
+  trace cannot name, and both edges of that ignorance produce false
+  verdicts: a queue full at the decision whose queued run terminates
+  before the response makes a correct `run_active` look stale, and a
+  queue with room at the request that fills before the response makes a
+  correct refusal look unfounded. So the bound counts as reached if it
+  was reached at any point between the request and its correlated
+  response, and the stale-limit check fires only when the bound was
+  unreached throughout. Neither race then convicts a conforming adapter,
+  and no boundary field is needed, because the window is bracketed by
+  the two envelopes the trace already has. Fixture
+  `queue-limit-cleared-mid-window` (positive; the bound reached at the
+  request, cleared before the response, refused `run_active`).
+  In-flight reservations are
   such a condition. Concurrent submits contend for the last slot, and the
   one that takes it may still be awaiting its own response when a later
   request is correctly refused `run_active`: the trace has the winner's
@@ -2182,9 +2217,26 @@ the request used.
   lifts the gate. The validator's response-time reading of the
   interaction then sees the settlement that justifies the refusal,
   whatever settled it, and no rule has to special-case which producer
-  did. Fixture `control-call-timeout-races-resolution` (positive; a
+  did. That orders the hub's trace, and over HTTP the trace is not what
+  the client reads: the lifecycle event travels the SSE connection and
+  the refusal the POST body, so the refusal can arrive first and a valid
+  rejection look arbitrary. Draining cannot fix that, for the reason T4
+  gives — the server does not control the client's sockets — so the
+  refusal carries its own justification instead of depending on arrival
+  order. An `accepted: false` whose reason is `already_resolved` names
+  the envelope that settled the call in `details.settled_by`, and the
+  validator requires that id to be a settlement the trace actually
+  carries for that interaction (`unmatched_interaction` otherwise, so
+  the field cannot be invented). A client reading the refusal first has
+  the id in hand and can wait for, or look up, the event it names rather
+  than concluding the resolution was refused for no reason; a client
+  reading the event first was never confused. Fixtures
+  `control-call-timeout-races-resolution` (positive; a
   harness timeout settles the call while the resolution is in flight, the
-  `action.call.cancelled` precedes the `accepted: false`). The context-done fallback reconciles as the
+  `action.call.cancelled` precedes the `accepted: false`, which names it)
+  and `control-call-refusal-invents-settlement`
+  (`unmatched_interaction`; `details.settled_by` names an envelope that
+  settled nothing). The context-done fallback reconciles as the
   steer fallback does rather than lifting the gate blind: the hub first
   publishes a `session.state.updated` whose `active_runs` entry for the
   run reflects `pending_interactions` after the request was answered:
