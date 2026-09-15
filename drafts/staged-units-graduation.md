@@ -1557,10 +1557,17 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   observed envelope (`EventStream.runID`, `EventStream.runId`) and expose
   `EventsAfter(RunID, LastSequence)` / `eventsAfter`; the changes are to
   subscribe with `?follow=session`, send that run as `?run=` on
-  reconnect, adopt the wire's own scoping and the `after_session` cursor
+  reconnect, adopt the wire's own scoping and the `after_interleaved` cursor
   member specified under T4's client section (T2 lands them, as the first
-  slice to touch cursor handling; the daemon accepts `?after_session=`
-  from T2 on and, having no journal yet, ignores it until T3c), and stop
+  slice to touch cursor handling; the daemon accepts `?after_interleaved=`
+  from T2 on and honours it for what T2 can actually interleave — the
+  released pre-start terminal of a settled reservation, which it holds in
+  the run buffers it already keeps — while ignoring it for session-scoped
+  envelopes until T3c brings the journal those need. The ignore is
+  scoped, not blanket: T2's own resume test requires the released
+  terminal not to be replayed twice, and since that envelope advances no
+  run cursor the member is the only thing that can suppress it), and
+  stop
   treating a terminal envelope as the end of a following stream. A terminal ends the run; the stream
   ends on `oap-stream-end` (or a closed session). A connection that drops
   after a terminal without that signal is a drop like any other: the
@@ -3192,8 +3199,8 @@ and hub contract is explicit rather than inherited from `start`:
   say whether the subscriber received it: one that received the snapshot
   and dropped before the settlement resumes with a cursor that precedes
   the snapshot's position. The resume cursor therefore gains an additive
-  component for the interleaved position: `?after_session=<envelope
-  id>` beside `?after=` and `?run=` (an `after_session` field on the
+  component for the interleaved position: `?after_interleaved=<envelope
+  id>` beside `?after=` and `?run=` (an `after_interleaved` field on the
   stdio `events` op) names the last journaled session-scoped envelope
   the subscriber delivered at that position, and the hub replays only
   the journaled envelopes at that position that follow it in journal
@@ -3237,7 +3244,7 @@ Both clients therefore switch to the wire's own scoping in the T2
 client slice, the first that changes cursor handling at all (`?run=`,
 `?follow=session`), even though T2 itself interleaves no session-scoped
 envelope on a run stream, so that T3c's and T4's hub-minted snapshots
-find the scoping and the `after_session` cursor member already in place
+find the scoping and the `after_interleaved` cursor member already in place
 rather than landing with the units that first need them: an envelope carrying `run_id` is run-scoped and its sequence advances
 that run's cursor whatever its type; an envelope carrying `session_id`
 without `run_id` is session-scoped and is delivered without touching the
@@ -3246,7 +3253,7 @@ protocol scoped and touches no cursor at all. Scope is read from the
 scope members, never from `sequence`: `capabilities.updated` is
 sequenced and carries no session
 (`schema/v0.1/envelope.schema.json:75`), so a sequence-only test would
-file it into the session cursor and send an `after_session` naming an
+file it into the session cursor and send an `after_interleaved` naming an
 envelope that was never session-scoped. The schema requires `run_id` on every run
 event and session events carry `session_id`, so the rule is exact for known
 types and correct by construction for unknown ones; it is the same rule
@@ -3270,7 +3277,7 @@ cursor becomes `{ run, sequence, interleaved_envelope_id? }`, where the
 third member is the `id` of the last such out-of-domain envelope
 delivered
 since the last cursor-advancing envelope and is cleared whenever the run
-cursor advances; the client sends it as `?after_session=` on every
+cursor advances; the client sends it as `?after_interleaved=` on every
 reconnect and exposes it in the cursor it hands the application
 (`EventsAfter` takes the full cursor, with the two-member form kept as
 a convenience that resumes without it), so a persisted cursor carries
