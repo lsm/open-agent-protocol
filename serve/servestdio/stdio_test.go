@@ -236,6 +236,27 @@ func TestUnknownOpIsARequestError(t *testing.T) {
 	}
 }
 
+// TestAddressBoundRefusalIsARequestError pins the daemon's shared address
+// bound at the request layer: an address one byte beyond
+// serve.MaxAddressBytes is a correlated address_too_long refusal — the same
+// code servehttp answers for an oversized path value or cursor — while an
+// address at the bound is judged on its merits, and the frontend keeps
+// serving either way, because the line framed and the refusal is the
+// host's to correct.
+func TestAddressBoundRefusalIsARequestError(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	over := strings.Repeat("a", serve.MaxAddressBytes+1)
+	f.send(`{"id":1,"op":"state","session_id":"` + over + `"}`)
+	requireCode(t, f.expectResponse(1), "address_too_long")
+	at := strings.Repeat("a", serve.MaxAddressBytes)
+	f.send(`{"id":2,"op":"state","session_id":"` + at + `"}`)
+	requireCode(t, f.expectResponse(2), "unknown_session")
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 // --- fail-closed framing ---
 
 // TestMalformedLinesFailClosed drives one valid request followed by each

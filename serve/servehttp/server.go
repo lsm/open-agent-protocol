@@ -120,6 +120,24 @@ func (s *Server) lookupSession(w http.ResponseWriter, id string) (*serve.Session
 	return entry, true
 }
 
+// addressBound refuses any addressed part beyond serve.MaxAddressBytes, the
+// daemon-wide address budget both transports enforce at their request-shape
+// layer with this same address_too_long refusal, so their acceptance sets
+// agree by construction rather than by one mirroring the other's limits.
+// The refusal echoes no address content — the message stays bounded
+// whatever the host sent. Returns false after writing the refusal.
+func (s *Server) addressBound(w http.ResponseWriter, addresses ...string) bool {
+	for _, address := range addresses {
+		if len(address) > serve.MaxAddressBytes {
+			s.writeError(w, http.StatusBadRequest, "address_too_long",
+				fmt.Sprintf("an addressed session, adapter, or cursor exceeds the daemon's %d-byte address bound", serve.MaxAddressBytes),
+				protocol.Envelope{})
+			return false
+		}
+	}
+	return true
+}
+
 // --- daemon-management surfaces ---
 
 type adapterInfo struct {
@@ -146,6 +164,9 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("name")) {
+		return
+	}
 	// GET carries no request envelope; the response cites a daemon-minted
 	// correlation id, which a client may pair with its own request envelope.
 	correlation := s.nextID("request")
@@ -192,6 +213,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 // --- OAP operations ---
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("name")) {
+		return
+	}
 	envelope, ok := s.readRequest(w, r, protocol.TypeSessionOpenRequest)
 	if !ok {
 		return
@@ -248,6 +272,9 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("id")) {
+		return
+	}
 	envelope, ok := s.readRequest(w, r, protocol.TypeSessionMessageSubmitRequest)
 	if !ok {
 		return
@@ -296,6 +323,9 @@ func (s *Server) writeSubmitError(w http.ResponseWriter, err error, envelope pro
 }
 
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("id")) {
+		return
+	}
 	envelope, ok := s.readRequest(w, r, protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest)
 	if !ok {
 		return
@@ -366,6 +396,9 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("id")) {
+		return
+	}
 	envelope, ok := s.readRequest(w, r, protocol.TypeRunCancelRequest)
 	if !ok {
 		return
@@ -414,6 +447,9 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("id")) {
+		return
+	}
 	entry, ok := s.lookupSession(w, r.PathValue("id"))
 	if !ok {
 		return
@@ -434,6 +470,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("id")) {
+		return
+	}
 	entry, ok := s.lookupSession(w, r.PathValue("id"))
 	if !ok {
 		return
@@ -457,6 +496,9 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.addressBound(w, r.PathValue("id")) {
+		return
+	}
 	entry, ok := s.lookupSession(w, r.PathValue("id"))
 	if !ok {
 		return
@@ -477,6 +519,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	cursor := r.URL.Query().Get("after")
 	if cursor == "" {
 		cursor = r.Header.Get("Last-Event-ID")
+	}
+	if !s.addressBound(w, cursor) {
+		return
 	}
 	var options []serve.SubscribeOption
 	if cursor != "" {

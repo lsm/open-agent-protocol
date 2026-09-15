@@ -37,6 +37,19 @@ import (
 // the timeout zero.
 const DefaultShutdownTimeout = 10 * time.Second
 
+// MaxAddressBytes bounds every address a request carries outside its
+// envelope — the session, adapter, and cursor addressing a host uses — at
+// 64 KiB decoded. Both frontends (serve/servehttp on the URL path and
+// query, serve/servestdio on the request line's params) refuse an address
+// beyond it at their request-shape layer with the same address_too_long
+// refusal, so the two transports' acceptance sets agree by construction
+// instead of by one mirroring the other's transport-specific limits. The
+// value is a daemon-wide budget, chosen in the B′ design (GH #17): generous
+// for any real handle — ids, UUIDs, opaque adapter references — while
+// bounded enough that a request's framing cost stays a known function of
+// its content.
+const MaxAddressBytes = 64 << 10
+
 // DefaultParticipant is the responder identity the hub acts as when it opens
 // an adapter session whose request names no participant: the v0.1
 // session.open exchange carries none, so interactive gates resolve with this

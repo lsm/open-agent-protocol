@@ -88,6 +88,9 @@ func (s *Server) respond(ctx context.Context, lines chan<- []byte, request reque
 }
 
 func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	if werr := request.boundAddresses(); werr != nil {
+		return nil, werr
+	}
 	switch request.Op {
 	case opAdapters:
 		if werr := request.only(); werr != nil {
@@ -141,6 +144,42 @@ const (
 	paramRequest = "request"
 	paramAfter   = "after"
 )
+
+// boundAddresses refuses any present address param beyond the daemon's
+// shared address bound — serve.MaxAddressBytes — with the same
+// address_too_long refusal servehttp answers for an oversized path value
+// or cursor, so the acceptance sets of the two transports agree by
+// construction rather than by one mirroring the other's limits. The
+// refusal is a request error the host can correct; the line itself has
+// already framed. The after param is checked on its JSON token, which
+// bounds the decoded value from above.
+func (request requestLine) boundAddresses() *wireError {
+	check := func(param string, size int) *wireError {
+		if size > serve.MaxAddressBytes {
+			return &wireError{
+				Code:    "address_too_long",
+				Message: fmt.Sprintf("the %s address exceeds the daemon's %d-byte address bound", param, serve.MaxAddressBytes),
+			}
+		}
+		return nil
+	}
+	if request.present[paramAdapter] {
+		if werr := check(paramAdapter, len(request.Adapter)); werr != nil {
+			return werr
+		}
+	}
+	if request.present[paramSession] {
+		if werr := check(paramSession, len(request.SessionID)); werr != nil {
+			return werr
+		}
+	}
+	if request.present[paramAfter] {
+		if werr := check(paramAfter, len(request.After)); werr != nil {
+			return werr
+		}
+	}
+	return nil
+}
 
 // only refuses a well-formed line that carries params its op does not define.
 // Presence is the rule — a supplied-but-empty or null param is still supplied

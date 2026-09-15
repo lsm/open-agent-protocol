@@ -230,33 +230,33 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		nextBudgetID++
 	}
 
-	// The wrapper allowance covers every address the HTTP surface can
-	// accept — Go's server admits request lines only within its 1 MiB
-	// header limit — so a near-limit envelope addressed by a large id rides
-	// both transports to the same op-level verdict instead of
-	// framing-defecting on one.
-	longAddress := strings.Repeat("a", 512<<10)
+	// The address budget is the daemon's explicit shared bound —
+	// serve.MaxAddressBytes — not a mirror of either transport's own
+	// limits: an address at the bound rides both transports to the same
+	// op-level verdict, and one byte over is refused identically as
+	// address_too_long. The encodings still expand the same raw address
+	// differently — a NUL is three bytes as %00 in the HTTP target and six
+	// as a JSON \u escape in the wrapper — so the worst-case-escaped form
+	// at the bound is the widest accepted address, and it rides both
+	// transports alongside the full envelope budget.
 	envelope := sizedEnvelope(maxEnvelopeBytes)
-	if code := postCode(envelope, longAddress); code != "type_mismatch" {
-		t.Fatalf("long addressing: HTTP refused as %s, want type_mismatch", code)
-	}
-	if code := stdioCode(nextBudgetID, envelope, longAddress); code != "type_mismatch" {
-		t.Fatalf("long addressing: stdio refused as %s, want type_mismatch", code)
-	}
-	nextBudgetID++
-
-	// The encodings expand the same raw address differently — a NUL is
-	// three bytes as %00 in the HTTP target and six as a JSON \u escape
-	// of the same byte in the wrapper — so the allowance is sized for the
-	// expansion ratio, not the raw byte count: the control-character id
-	// that worst-cases the ratio rides both transports too.
-	nulAddress := strings.Repeat("%00", 200<<10)
-	nulLineID := strings.Repeat("\\u0000", 200<<10)
-	if code := postCode(envelope, nulAddress); code != "type_mismatch" {
-		t.Fatalf("encoded addressing: HTTP refused as %s, want type_mismatch", code)
-	}
-	if code := stdioCode(nextBudgetID, envelope, nulLineID); code != "type_mismatch" {
-		t.Fatalf("encoded addressing: stdio refused as %s, want type_mismatch", code)
+	for _, row := range []struct {
+		name                 string
+		httpAddress, address string // the URL form and the JSON-escaped form
+		httpCode, code       string
+	}{
+		{"plain address at the bound", strings.Repeat("a", serve.MaxAddressBytes), strings.Repeat("a", serve.MaxAddressBytes), "type_mismatch", "type_mismatch"},
+		{"plain address one byte over", strings.Repeat("a", serve.MaxAddressBytes+1), strings.Repeat("a", serve.MaxAddressBytes+1), "address_too_long", "address_too_long"},
+		{"worst-case escape at the bound", strings.Repeat("%00", serve.MaxAddressBytes), strings.Repeat("\\u0000", serve.MaxAddressBytes), "type_mismatch", "type_mismatch"},
+		{"worst-case escape one byte over", strings.Repeat("%00", serve.MaxAddressBytes+1), strings.Repeat("\\u0000", serve.MaxAddressBytes+1), "address_too_long", "address_too_long"},
+	} {
+		if code := postCode(envelope, row.httpAddress); code != row.httpCode {
+			t.Fatalf("%s: HTTP refused as %s, want %s", row.name, code, row.httpCode)
+		}
+		if code := stdioCode(nextBudgetID, envelope, row.address); code != row.code {
+			t.Fatalf("%s: stdio refused as %s, want %s", row.name, code, row.code)
+		}
+		nextBudgetID++
 	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)

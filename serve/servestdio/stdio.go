@@ -58,19 +58,23 @@ import (
 const maxEnvelopeBytes = 16 << 20
 
 // wrapperAllowance is the headroom the frame limit gives the line around
-// the envelope: the id, op, and session_id params plus the JSON wrapper.
-// opaqueID is unbounded, so no allowance could cover every schema-valid
-// address — the anchor is the other transport's own address bound, through
-// both transports' encodings: HTTP carries addressing percent-encoded in
-// the URL path (at worst 3 bytes per raw byte, %XX of a one-byte control)
-// and admits request lines only within its 1 MiB header limit, while the
-// same raw byte costs at worst 6 in a JSON string (\uXXXX) — a 2x
-// expansion ratio. Twice the server limit therefore reserves framing space
-// for every address whose HTTP encoding the server accepts, so the
-// acceptance sets agree wherever the daemon answers at all; beyond them
-// HTTP answers the server's over-limit refusal and stdio fails the line
-// closed as an ordinary frame-limit defect.
-const wrapperAllowance = 2 << 20
+// the envelope, derived from the daemon's explicit shared address bound —
+// serve.MaxAddressBytes — and from nothing else: no constant here mirrors
+// a limit of the other transport. Three request params carry addressing
+// (adapter, session_id, after); each is refused beyond the bound decoded
+// by the request-shape check both transports share, and a bounded address
+// costs at worst 6x decoded inside a JSON string token (\uXXXX of a
+// one-byte control), so 18x the bound covers all three at their worst-case
+// encoded width, with the fixed wrapper — id, op, JSON punctuation — well
+// inside the 4096-byte slack (op is not an address: it is answered from a
+// closed route set, and an id beyond int64 fails the decode closed). With
+// both transports refusing the same addresses at the same bound before
+// size can matter, their acceptance sets agree by construction; the
+// allowance family that regenerated across review rounds (64 KiB → 1 MiB
+// → 2 MiB → the +4 KiB slop) is closed by the shared bound, not re-sized
+// against it. Provenance: the bound and this derivation are the B′
+// design's structural end for that family (GH #17).
+const wrapperAllowance = 18*serve.MaxAddressBytes + 4096
 
 // DefaultFrameLimit bounds one NDJSON line in both directions: the envelope
 // budget plus the wrapper allowance, with the adapters' rpc-codec discipline

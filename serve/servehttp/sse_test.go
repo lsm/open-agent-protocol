@@ -2,8 +2,10 @@ package servehttp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
@@ -152,6 +154,49 @@ func TestSSECursorErrors(t *testing.T) {
 		t.Fatalf("future cursor status %d", response.StatusCode)
 	}
 	response.Body.Close()
+}
+
+// TestSSEAddressBoundRefusal pins the daemon's shared address bound on the
+// stream route: an oversized cursor or path value is refused before the
+// stream commits, with the same address_too_long code the stdio transport
+// answers for an oversized address param — the two transports' acceptance
+// sets agree by construction.
+func TestSSEAddressBoundRefusal(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "sse-address-bound")
+	errorCode := func(target string) string {
+		t.Helper()
+		response, err := server.Client().Get(server.URL + target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status %d, want 400", target, response.StatusCode)
+		}
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Payload struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			t.Fatalf("%s: response is not an error envelope: %v", target, err)
+		}
+		return envelope.Payload.Error.Code
+	}
+	oversized := strings.Repeat("9", serve.MaxAddressBytes+1)
+	if code := errorCode("/sessions/sse-address-bound/events?after=" + oversized); code != "address_too_long" {
+		t.Fatalf("oversized cursor refused as %s, want address_too_long", code)
+	}
+	if code := errorCode("/sessions/" + oversized + "/state"); code != "address_too_long" {
+		t.Fatalf("oversized session id refused as %s, want address_too_long", code)
+	}
 }
 
 func TestSSENoRunToResume(t *testing.T) {
