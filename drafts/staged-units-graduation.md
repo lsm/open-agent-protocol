@@ -52,7 +52,14 @@ Decision 0003's four steps translate into these exit criteria for every unit:
    codes registered in `validation/diagnostic.go` and
    `validation/manifest.go`; `fixtures/manifest.json` lists the unit's
    positive and negative fixtures under a new unit name; every existing
-   fixture validates unchanged. A fixture's `valid` comes from its own
+   fixture validates unchanged. A unit's inventory is every fixture named
+   anywhere in that unit's section, not only those in its **Fixtures**
+   heading: a rule that introduces a fixture names it where the rule's
+   expectation is defined, which keeps the two from drifting apart, and
+   the **Fixtures** heading collects the rest. Decisions citing a unit's
+   fixtures mean the whole inventory. A fixture belongs to the unit that
+   introduces the diagnostic it asserts, so one expecting a later unit's
+   code lands with that unit however early the rule motivating it appears. A fixture's `valid` comes from its own
    annotation in the unit's fixture list, never from the `Positive:` or
    `Negative:` heading it happens to sit under: an entry naming a
    diagnostic code is `valid: false` and must produce exactly that code,
@@ -169,10 +176,15 @@ No new envelope types. Changes to
   catalog, so the existing rule already covers it and a second one would
   only contradict the first. It is judged on the correlated response
   under T5a's miss rule, with the pre-catalog retention and the
-  precedence ladder applying unchanged. Fixtures
-  `controls-empty-model-id-unadvertised` (the gate's refusal) and
-  `controls-empty-model-id-admitted` (`model_not_in_catalog`; the empty
-  selection admitted).
+  precedence ladder applying unchanged. The fixtures follow the
+  diagnostics rather than the prose: T1 carries
+  `controls-empty-model-id-unadvertised`, whose expectation is the
+  capability gate's own refusal and which T1 can therefore satisfy on its
+  own, while `controls-empty-model-id-admitted` expects
+  `model_not_in_catalog` and the revision-scoped catalog bookkeeping
+  behind it, neither of which exists until T5a, so it lands with T5a. A
+  unit's fixtures must produce exactly the codes it introduces, so a
+  fixture cannot be listed before the diagnostic it asserts.
 - `output_schema` stays a JSON Schema object, and it must describe a JSON
   object: its root `type` is `"object"` (a `type` list may name only
   `"object"`). `run.completed.result` is `type: "object"` in
@@ -1011,6 +1023,11 @@ pi follows with `get_available_models`; Claude at `degraded` from the
 - `client`: `Session.Models(ctx)`; `clients/ts`: `session.models()`.
 
 ### Fixtures
+
+Negative, carried from T1's empty-control rule because its diagnostic
+lands here: `controls-empty-model-id-admitted` (`model_not_in_catalog`; a
+present-but-empty `model_id` admitted on an endpoint advertising
+selection).
 
 Positive: `models-list-then-select` (catalog, then a submit selecting a
 listed id), `models-unadvertised-rejected` (`error.response` with

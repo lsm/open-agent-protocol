@@ -31,8 +31,12 @@ the tool-source shape. Several of the staged controls are already on the wire
 admission enum) but none of them is executable under an advertised
 capability: Codex applies `model_id` to `turn/start` and Makai to
 `agent_message.model_ref`, both natively per run and both without
-advertising model selection, and every executable adapter rejects the rest
-before admission.
+advertising model selection, and every executable adapter rejects
+`instructions`, `tool_choice`, and `output_schema` before admission.
+`allow_degraded_features` is weaker still: only the Codex adapter rejects a
+request carrying it (`adapter/codex/appserver/session.go:102`), and the
+others accept and ignore the member, so the opt-in it expresses is today
+neither honoured nor refused.
 
 What is undecided is the order and the discipline by which those units become
 executable across protocol, validator, adapters, serve, and clients. This
