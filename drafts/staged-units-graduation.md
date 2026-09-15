@@ -1630,15 +1630,36 @@ pi follows with `get_available_models`; Claude at `degraded` from the
 
 ### Surfaces
 
+The request carries the degraded opt-in (wire, above), so every surface
+has to be able to say it, or a `degraded` catalog — Claude's — is one no
+client can lawfully read: the hub would owe `capability_degraded` to
+every call, and the documented `models-list-degraded-optin` request would
+be unconstructible. The parameter therefore threads through all five
+layers as one value, `allow_degraded_features`, with the same meaning at
+each.
+
 - `adapter`: optional interface `adapter.ModelLister` on `Session`
-  (`Models(ctx) (protocol.ModelsResponse, error)`), discovered by type
-  assertion so existing `Session` implementations compile unchanged; the hub
-  returns `unsupported_feature` for sessions whose adapter lacks it.
-- `serve`: `Session.Models(ctx)`.
+  (`Models(ctx, protocol.ModelsRequest) (protocol.ModelsResponse, error)`),
+  discovered by type assertion so existing `Session` implementations
+  compile unchanged; the hub returns `unsupported_feature` for sessions
+  whose adapter lacks it. `protocol.ModelsRequest` is the payload struct,
+  `AllowDegradedFeatures []string` included, so the adapter sees exactly
+  what the wire said and applies T1's opt-in rule itself.
+- `serve`: `Session.Models(ctx, protocol.ModelsRequest)`; the hub
+  forwards the request unchanged.
 - `serve/servehttp`: `GET /sessions/{id}/models` returning `models.response`
   with a daemon-minted correlation id, mirroring `GET
-  /adapters/{name}/capabilities`; stdio op `models`.
-- `client`: `Session.Models(ctx)`; `clients/ts`: `session.models()`.
+  /adapters/{name}/capabilities`. The opt-in travels as a repeatable
+  `?allow_degraded=<key>` query parameter — a GET carries no body, and a
+  header would hide a wire-visible field from logs and curl — which the
+  daemon maps onto the payload's `allow_degraded_features` before
+  minting the `models.request`. The stdio op `models` takes an
+  `allow_degraded_features` field directly.
+- `client`: `Session.Models(ctx, ...ModelsOption)` with
+  `AllowDegraded(keys ...string)`; `clients/ts`:
+  `session.models({ allowDegradedFeatures? })`. Both send the query
+  parameter (or the stdio field) only when the option is given, so an
+  unmodified call is byte-identical to today's.
 
 ### Fixtures
 
