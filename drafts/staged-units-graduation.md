@@ -400,13 +400,95 @@ the regression guard for the invariant that a pack cannot change core
 validity, run against a pack whose declared type is deliberately close
 to a core one).
 
+### Corpus completeness
+
+Every unenforced promise this plan has had to close so far had the same
+shape: a capability key whose advertisement implied behaviour that no
+fixture exercised, so an endpoint could advertise it, refuse everything
+it was given, and pass. `action.tools.provide`, `run.tool_selection`,
+`action.tool_sources.attach`, and the queue's second bound were all found
+by reading, and reading is not repeatable. The check is, so it becomes
+part of the corpus rather than a review habit.
+
+A capability key has two aspects a corpus must falsify, and every key a
+unit introduces or gives executable meaning needs a negative fixture for
+each:
+
+- `gate` — the key unadvertised, its operation admitted anyway, and the
+  admission diagnosed. Every unit already carries these.
+- `honour` — the key advertised, a request that satisfies every
+  constraint the endpoint disclosed and carries no defect any rule names,
+  refused, and the refusal diagnosed. This is the class that was missing,
+  and the class an endpoint can otherwise pass conformance without ever
+  honouring.
+
+Fixture manifest entries declare what they cover, so the check can find
+them: `covers`, a list of `{ "capability", "aspect" }`. `LoadManifest`
+gains, beside `knownUnits`, the capability keys each unit owns, and fails
+the manifest when any key of a claimed unit lacks a negative fixture for
+either aspect. The check runs where the corpus is loaded, so CI fails on
+the first key added without its pair — a T6 key, or a vendor's — rather
+than on the next audit. A key whose `honour` aspect cannot be falsified
+until a later unit says so in the unit's key list, `honour_deferred_to:
+<unit>`, a stated deferral rather than a silent gap; `run.model_selection`
+is the one instance today, deferred to `models`, because a false refusal
+of a model id is only decidable against a catalog
+(`models-listed-selection-false-miss`). Packs are held to the same rule
+over their own `capability_keys` and their own fixture manifest, and a
+pack whose corpus lacks the pair for any key it declares fails to load.
+A vendor therefore cannot claim `+ext:` conformance for a key that
+nothing could show it dishonouring, which is the same protection core
+gets, extended to the surfaces T0 exists for.
+
+The `honour` fixture's expected diagnostic is the unit's specific one
+where a rule already names the failure — `unsatisfiable_control` for a
+control, `queue_limit_exceeded` for a bound that never bound,
+`undisclosed_provide_limit` and `undisclosed_attach_limit` for their
+arrays — and otherwise the generic `unhonoured_capability`, new here: an
+operation within every disclosed constraint refused on an endpoint that
+advertises the governing key, where no unit-specific rule names a
+defect. The generic form is what a pack's fixtures assert unless the pack
+declares a diagnostic of its own, and it is what two core keys turned
+out to need.
+
+Run against the plan as it stands, the check finds five gaps, which is
+the argument for it. Each is closed in its unit's fixture list, and
+recorded here so the first run of the check has nothing left to find:
+
+- `run.instructions`: no `honour` fixture at all. The note under
+  "Cross-cutting vocabulary" stands — whether admitted instructions were
+  *applied* is unobservable — but their *acceptance* is not, and
+  `instructions` has no unsatisfiability condition, so any refusal on an
+  advertised endpoint is a false one. T1 gains
+  `controls-instructions-refused` (`unsatisfiable_control` on the
+  `error.response`), which is the executable content of "this endpoint
+  accepts instructions".
+- `run.structured_output`: the only false-refusal fixture was the
+  reference adapter's disclosed-result case. T1 gains the general form,
+  `controls-structured-satisfiable-refused` (`unsatisfiable_control` on
+  the `error.response`; a compilable, object-rooted, self-contained
+  schema refused as unsatisfiable), and the settlement rule now states
+  that direction in words rather than leaving it to follow from "the
+  validator and the reference adapter reject the same policies".
+- `models.list`: no rule diagnosed refusing a `models.request` on an
+  endpoint advertising the catalog. T5a gains
+  `models-list-refused-advertised` (`unhonoured_capability`).
+- `action.tools.list`: the same, for a list request. T3a gains
+  `tools-list-refused-advertised` (`unhonoured_capability`).
+- `session.message.delivery.queue`: the stale-limit rule had a positive
+  fixture and no negative. T2 gains `queue-limit-unreached-refused`
+  (`queue_limit_exceeded` on the `error.response`; the bound unreached
+  throughout the window, refused `run_active`).
+
 ### Exit criteria
 
 The namespace rule is stated and checked; a pack can be declared, loaded,
 and compiled alongside core; a loaded pack's envelopes are validated
 strictly while the same envelopes are tolerated without it; containment
 refusals are covered; the core fixture corpus passes identically with and
-without packs loaded; and `oap validate -pack` is documented beside
+without packs loaded; the corpus-completeness check runs in CI over the
+core corpus and over every loaded pack's corpus, and passes with the five
+fixtures above in place; and `oap validate -pack` is documented beside
 `-mode`.
 
 ## T1. Run controls
@@ -908,8 +990,16 @@ No new envelope types. Changes to
   identifies (`details.tool` for a `tool_choice` naming or filtering to
   an unavailable tool, `details.field` for an `output_schema`), with a
   refusal under any other code, feature, reason, or without that detail
-  diagnosed as `unsatisfiable_control` on the `error.response`. The empty
-  `model_id` condition settles on the same terms under a different code:
+  diagnosed as `unsatisfiable_control` on the `error.response`. The
+  direction runs both ways, and the second is stated rather than implied:
+  a control the validator finds satisfiable — a `tool_choice` whose tools
+  the catalog carries under a disclosed mode, an `output_schema` that
+  compiles — refused under `unsupported_feature`/`unsatisfiable` is
+  `unsatisfiable_control` on the `error.response` too, because the
+  adapter has claimed a condition the validator can see does not hold.
+  Without that, "the validator and the reference adapter reject the same
+  policies" would bind the reference alone. The empty `model_id`
+  condition settles on the same terms under a different code:
   its conforming refusal is `model_not_found` with `details.model_id: ""`,
   and anything else — including `unsupported_feature` with
   `details.reason: "unsatisfiable"`, which is right for every other
@@ -1068,6 +1158,14 @@ no diagnostic; the same policy refused with `unsupported_feature`,
 "unsatisfiable"`, `details.tool`),
 `controls-unsatisfiable-wrong-refusal` (`unsatisfiable_control` on the
 `error.response`; the same policy refused with `internal_error`),
+`controls-instructions-refused` (`unsatisfiable_control` on the
+`error.response`; `instructions` refused on an endpoint advertising
+`run.instructions` — the control has no unsatisfiability condition, so
+every refusal is false; the `honour` fixture T0's corpus-completeness
+check requires), `controls-structured-satisfiable-refused`
+(`unsatisfiable_control` on the `error.response`; a compilable,
+object-rooted, self-contained `output_schema` refused as unsatisfiable;
+the `honour` fixture for `run.structured_output`),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
 under `mode: "none"`),
 `controls-structured-non-object-schema` (`unsatisfiable_control` on the
@@ -1417,7 +1515,11 @@ decided without a catalog; what lands here is only the catalogued miss
 for non-empty ids, `models-select-unlisted` below.
 
 Positive: `models-list-then-select` (catalog, then a submit selecting a
-listed id), `models-unadvertised-rejected` (`error.response` with
+listed id), `models-list-refused-advertised` (`unhonoured_capability`
+on the `error.response`; a `models.request` refused on an endpoint
+advertising `models.list` as available, or `degraded` with the opt-in —
+the `honour` fixture T0's corpus-completeness check requires),
+`models-unadvertised-rejected` (`error.response` with
 `unsupported_feature`, `details.feature: "models.list"`, against an
 unadvertised `models.list`; the validator section defines this correlated
 refusal as the conforming answer, so it carries `valid: true` and no
@@ -1776,7 +1878,11 @@ No new envelope types. Additive fields:
   and no boundary field is needed, because the window is bracketed by
   the two envelopes the trace already has. Fixture
   `queue-limit-cleared-mid-window` (positive; the bound reached at the
-  request, cleared before the response, refused `run_active`).
+  request, cleared before the response, refused `run_active`) and its
+  negative `queue-limit-unreached-refused` (`queue_limit_exceeded` on the
+  `error.response`; the bound unreached throughout the window, refused
+  `run_active` with no other state-rung condition surviving — the
+  `honour` fixture T0's corpus-completeness check requires).
   The ordering rule creates the same blind spot on the admission side. A
   queued run that settles before promotion has released its reservation
   and the adapter may admit another in its place, but `queue_order_violation`
@@ -2799,7 +2905,11 @@ It adds no wire vocabulary.
   absent or naming an unrelated capability, or without `details.reason:
   "unadvertised"`, is `unavailable_capability`
   on the `error.response`. Fixtures `tools-list-ungated-refused`
-  (positive), `tools-list-ungated-wrong-refusal` (another code),
+  (positive), `tools-list-refused-advertised` (`unhonoured_capability`
+  on the `error.response`; a list request refused on an endpoint
+  advertising `action.tools.list` — the `honour` fixture T0's
+  corpus-completeness check requires),
+  `tools-list-ungated-wrong-refusal` (another code),
   `tools-list-ungated-wrong-feature` (`unsupported_feature` with
   `details.feature: "run.model_selection"`) and
   `tools-list-ungated-wrong-reason` (`details.reason: "unsatisfiable"`).
@@ -4279,6 +4389,7 @@ strings in the schema; the validator does not enumerate them.
 `wrong_tool_owner`, `attachment_field_in_catalog`,
 `undisclosed_queue_limit`, `undisclosed_provide_limit`,
 `undisclosed_attach_limit`, `undisclosed_selection_modes`,
+`unhonoured_capability`,
 `resolution_payload_mismatch`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
@@ -4299,7 +4410,10 @@ per loaded extension pack (T0), which never widens the core claim. The
 not compete: the unit is the core machinery for loading packs, claimed
 like any other unit and present in `knownUnits`; an `ext:` term is one
 pack's own conformance, admitted dynamically from the packs loaded for
-that run, as T0's validator section sets out.
+that run, as T0's validator section sets out. Both corpora are held to
+T0's corpus-completeness check: every key a claimed unit or a loaded
+pack owns must carry a negative `gate` fixture and a negative `honour`
+fixture, or the manifest fails to load.
 
 ### Schema evolution
 
