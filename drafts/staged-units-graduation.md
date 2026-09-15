@@ -1443,8 +1443,9 @@ No new envelope types. Additive fields:
   may mint no response envelope at all — so a snapshot captured after
   admission and before minting could neither name the response nor be
   judged without it. The request id is already in the adapter's hands:
-  T4 carries it into the operation as `adapter.SubmitRequest.EnvelopeID`
-  for the settlement correlation, and this is the same value. It is also
+  it arrives as `adapter.SubmitRequest.EnvelopeID`, which T2 adds for the
+  membership and steer capture markers above and T4 reuses for the
+  settlement correlation. It is also
   strictly better ordered: a request the adapter has seen is by
   construction already in the trace, so unlike `as_of_sequence` this
   marker can never run ahead of it and needs no deferred reconciliation.
@@ -1499,17 +1500,26 @@ No new envelope types. Additive fields:
   and can legitimately omit one admitted after capture whose admission
   reaches the trace first — in both the trace at response arrival
   disagrees with an accurate read. So `session.state` gains `as_of`,
-  `{ "submit_request"?: envelope id, "settled"?: [{ "run_id",
-  "sequence" }] }`: the last submit request on the session the snapshot
-  reflects, and the runs it has already removed with the sequence of each
-  one's terminal. Both are facts the adapter holds at capture — the
-  request id comes in with the operation, and the terminal is one it
-  emitted itself — which is what the response-envelope marker of the
-  previous round was not.
+  `{ "admitted_submit_requests"?: [envelope id], "settled"?: [{ "run_id",
+  "sequence" }] }`: the submit requests on the session the snapshot
+  reflects as admitted, and the runs it has already removed with the
+  sequence of each one's terminal. A set rather than a "last request"
+  for the same reason the per-run steer boundary is one: two overlapping
+  `Submit` calls need not be admitted in the order their requests reached
+  the trace, so a snapshot can hold B and not A, and no scalar describes
+  that — naming B would make A look required, naming A would either
+  exclude B or license arbitrary omissions after it. Both members are
+  facts the adapter holds at capture — the
+  request ids come in with the operations, and the terminals are ones it
+  emitted itself — which is what the response-envelope marker of an
+  earlier round was not.
   Membership is then judged against `as_of` rather than the trace's
-  current state: a run whose admitting submit request follows
-  `as_of.submit_request` may be absent, a run named in `as_of.settled`
+  current state: a run whose admitting submit request is not in
+  `as_of.admitted_submit_requests` may be absent, a run named in
+  `as_of.settled`
   may be absent, and every other tracked nonterminal run must be listed.
+  Every id in the set must name a submit request the trace carries for
+  that session (`session_state_mismatch` otherwise).
   A `settled` entry may name a terminal the trace has not reached, and is
   held and reconciled when it arrives; one whose named terminal never
   arrives, or arrives at another sequence, is `session_state_mismatch` at
@@ -2757,11 +2767,16 @@ therefore needs a steer settlement, not only a steer admission.
   decoded resolve payload (`:63-68`), with `servehttp` discarding the
   outer envelope before either call, so an adapter that applies a steer
   immediately or settles a tool call synchronously cannot name the
-  request it is answering. T4 therefore carries the id through the
-  operation rather than inventing it at the wire: `Submit` takes an
+  request it is answering. The id therefore travels through the
+  operation rather than being invented at the wire, and each half lands
+  in the earliest unit that needs it rather than waiting for T4, so the
+  vertical slices stay independently implementable: `Submit` takes an
   `adapter.SubmitRequest { Request protocol.MessageSubmitRequest;
-  EnvelopeID protocol.EnvelopeID }`, and `InteractionResolution` gains
-  `EnvelopeID`, both populated by every binding — `servehttp` and the
+  EnvelopeID protocol.EnvelopeID }` **in T2**, which needs it for the
+  capture markers under decision 0006, and `InteractionResolution` gains
+  `EnvelopeID` **in T3c**, which needs it for resolve-derived
+  `request_id` under decision 0007; T4 adds no API change of its own and
+  simply reuses both. Each is populated by every binding — `servehttp` and the
   stdio frontend from the request they decoded, an in-process embedder
   from the envelope it built. The `Submit` change is a compile-time break
   across all nine implementations of `adapter.Session` — the eight pinned
@@ -2770,9 +2785,10 @@ therefore needs a steer settlement, not only a steer admission.
   ignores
   the new member keeps compiling only because it does not emit correlated
   events, and one that does emit them cannot silently omit the
-  correlation. `adaptertest` asserts the id reaches the adapter and
-  appears on every settlement derived inside the call. T3c's
-  resolve-derived `request_id` uses the same channel. A settlement is never
+  correlation, and because it lands in T2 the break is absorbed by the
+  first unit rather than by the last. `adaptertest` asserts the id
+  reaches the adapter and
+  appears on every settlement derived inside the call. A settlement is never
   observable before the admission that names its `submission_id`: a
   harness that applies immediately emits `applied` as the first envelope
   after the response, never before it (the barrier is specified under
