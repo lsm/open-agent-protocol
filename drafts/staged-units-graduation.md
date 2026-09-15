@@ -330,8 +330,31 @@ and `ext-pack-restates-core-member` (load refusal).
   the command line for the same reason tolerance is: which vocabulary is
   in force must be the caller's stated choice, not inferred from the
   input.
-- `validation/manifest.go` `knownUnits` is untouched. Pack conformance is
-  claimed separately, below, so a pack can never widen a core claim.
+- `validation/manifest.go` needs two changes, and they are different in
+  kind. `knownUnits` gains `extensions`, because pack loading — the
+  namespace check, containment, composition, gate resolution — is core
+  behaviour implemented by this unit, and its fixtures are core fixtures
+  like any other unit's. That is a static addition to the hard-coded map,
+  as every graduated unit makes.
+- A pack's *own* fixtures are the separate mechanism, and a static unit
+  cannot express them: `LoadManifest` today rejects any unit outside that
+  map (`validation/manifest.go:70`, `:97-100`) and any diagnostic code
+  outside `diagnosticCodes()` (`:89-93`), so a pack's fixtures — which
+  assert the pack's diagnostics under the pack's claim — cannot be loaded
+  at all. Both admissions are therefore derived from the packs actually
+  loaded rather than added to the hard-coded lists: a unit term
+  `ext:<pack id>/<version>` is accepted exactly when that pack is loaded
+  and its version matches, and a diagnostic code is accepted when a
+  loaded pack declares it in `error_codes`. Nothing is widened for a run
+  that loads no packs, which is every core run, so the core lists keep
+  their present meaning and a stale or misspelled pack claim still fails
+  closed.
+- The two directions are kept apart deliberately: a pack's fixture may
+  not claim a core unit, and a core fixture may not claim an `ext:` term.
+  Without that a pack could contribute evidence toward `+queue`, which is
+  the one thing "a pack can never widen a core claim" has to mean.
+  Fixtures `ext-pack-fixture-claims-core-unit` and
+  `ext-claim-without-pack` (both load refusals).
 
 ### Conformance
 
@@ -4271,7 +4294,12 @@ unit list gains `+run-controls`, `+tool-sources`, and `+control-tools`
 beside the existing `+models`, `+queue`, and `+steer`; the executable claim
 becomes `open-agent-protocol.agent-control-core/0.1-executable` plus the
 graduated units, and gains an independent `+ext:<pack id>/<version>` term
-per loaded extension pack (T0), which never widens the core claim.
+per loaded extension pack (T0), which never widens the core claim. The
+`extensions` unit above and an `ext:` term are not the same thing and do
+not compete: the unit is the core machinery for loading packs, claimed
+like any other unit and present in `knownUnits`; an `ext:` term is one
+pack's own conformance, admitted dynamically from the packs loaded for
+that run, as T0's validator section sets out.
 
 ### Schema evolution
 
