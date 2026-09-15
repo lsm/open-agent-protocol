@@ -372,3 +372,72 @@ func TestClientSerializesConcurrentWrites(t *testing.T) {
 		t.Fatalf("decoded %d frames", len(decoded))
 	}
 }
+
+// A client built without a CloseReadWriter — which is how the Codex process
+// owner builds it — cannot interrupt a reader parked in Decode, so settling
+// the pending calls must never wait for the reader to stop: when one call's
+// cancellation retires the client, the other pending call has to fail
+// promptly instead of hanging until the peer closes stdout.
+func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, clientWriterUnused := io.Pipe()
+	defer clientWriterUnused.Close()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- client.Call(ctx, "a", nil, nil) }()
+	other := make(chan error, 1)
+	go func() { other <- client.Call(context.Background(), "b", nil, nil) }()
+	// Both requests are on the wire; nothing ever answers them.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled call err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled call never returned")
+	}
+	select {
+	case err := <-other:
+		if err == nil {
+			t.Fatal("the other call reported success with no response")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the other pending call hung waiting for a reader nothing can interrupt")
+	}
+}
+
+// The malformed-frame corpus shape at the rpc layer: the peer answers the
+// request, then writes a corrupt line and exits. Both the response and the
+// transport's death sit on one ordered stream, back to back, and the response
+// must win — including when the caller's write is still waiting for the pump's
+// result as the reader retires the client.
+func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
+	const runs = 500
+	for i := 0; i < runs; i++ {
+		serverReader, clientWriter := io.Pipe()
+		clientReader, serverWriter := io.Pipe()
+		client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+		go func() {
+			_, _ = bufio.NewReader(serverReader).ReadString('\n')
+			_, _ = serverWriter.Write([]byte(`{"id":1,"result":{}}` + "\n{not json\n"))
+			_ = serverWriter.Close()
+		}()
+		if err := client.Call(context.Background(), "prompt.submit", nil, nil); err != nil {
+			t.Fatalf("run %d: the response lost to the transport's death: %v", i, err)
+		}
+		// The call may return before the reader reaches the corrupt line;
+		// judge the retirement only once the reader has stopped.
+		<-client.ReadDone()
+		if client.Err() == nil {
+			t.Fatalf("run %d: the malformed frame did not retire the client", i)
+		}
+		_ = client.Close()
+		_ = serverReader.Close()
+		_ = clientReader.Close()
+	}
+}

@@ -59,9 +59,10 @@ type pendingCall struct {
 	result  chan callResult
 }
 type writeRequest struct {
-	ctx    context.Context
-	value  any
-	result chan error
+	ctx     context.Context
+	value   any
+	result  chan error
+	started chan struct{}
 }
 
 type Client struct {
@@ -72,6 +73,7 @@ type Client struct {
 	pending   map[string]pendingCall
 	sent      map[string]struct{}
 	closed    bool
+	routing   bool // the reader holds a decoded frame it has not finished routing
 	err       error
 	nextID    atomic.Uint64
 	writes    chan writeRequest
@@ -158,32 +160,12 @@ func (c *Client) Call(ctx context.Context, command native.Command, result any) e
 		c.removePending(command.ID)
 		c.closeWith(ctx.Err())
 		return ctx.Err()
-	case <-c.done:
-		select {
-		case outcome := <-response:
-			return settle(outcome)
-		default:
-		}
-		// The transport is retiring, but a response the reader parsed off the
-		// ordered stream before the death must still win over it. Settle
-		// against the reader's final drain rather than against the close
-		// itself: shutdown leaves the pending id in place, so either the
-		// reader delivers the already-decoded frame or the drain fails it.
-		select {
-		case outcome := <-response:
-			return settle(outcome)
-		case <-c.readDone:
-			select {
-			case outcome := <-response:
-				return settle(outcome)
-			default:
-				return c.closeError()
-			}
-		case <-ctx.Done():
-			c.removePending(command.ID)
-			return ctx.Err()
-		}
 	}
+	// There is deliberately no done case. shutdown settles every registered
+	// call through its channel — at once, or as soon as the reader has routed
+	// the frame it held when the transport died — so waiting here is what
+	// lets a response parsed off the ordered stream before the death win
+	// over it.
 }
 
 func (c *Client) Respond(ctx context.Context, response native.ExtensionUIResponse) error {
@@ -207,22 +189,18 @@ func (c *Client) shutdown(reason error) {
 	c.closed = true
 	c.err = reason
 	close(c.done)
+	// A response parsed off the ordered stream before the transport died must
+	// win over the death. While the reader holds a decoded frame, retiring the
+	// pending map is deferred to settleRouted so that frame is delivered
+	// first; otherwise nothing decoded is outstanding and the calls fail here.
+	// Either way the settlement never waits for the reader to stop, which a
+	// client without a CloseReadWriter has no way to force.
+	var pending map[string]pendingCall
+	if !c.routing {
+		pending = c.retirePendingLocked()
+	}
 	c.mu.Unlock()
-	// The pending map is deliberately left in place. A response parsed off the
-	// ordered stream before the transport died must win over the death, so the
-	// reader's final drain is what settles the outstanding calls: every frame
-	// the reader already decoded is delivered first, and only the ids still
-	// pending once the reader has stopped fail with reason.
-	go func() {
-		<-c.readDone
-		c.mu.Lock()
-		pending := c.pending
-		c.pending = map[string]pendingCall{}
-		c.mu.Unlock()
-		for _, call := range pending {
-			call.result <- callResult{err: reason}
-		}
-	}()
+	c.failPending(pending, reason)
 }
 func (c *Client) closeError() error { return firstError(c.Err(), ErrClosed) }
 func firstError(a, b error) error {
@@ -240,11 +218,48 @@ func (c *Client) readLoop() {
 			c.closeWith(err)
 			return
 		}
+		// The frame is in hand from the moment Decode returns it: a shutdown
+		// that lands while it is being routed defers retiring the pending map
+		// to settleRouted, so the response it may carry is delivered instead
+		// of dropped.
+		c.mu.Lock()
+		c.routing = true
+		c.mu.Unlock()
 		err = c.route(frame)
 		if err != nil {
 			c.closeWith(err)
+		}
+		c.settleRouted()
+		if err != nil {
 			return
 		}
+	}
+}
+
+// settleRouted releases the frame the reader had in hand and, when the client
+// closed while it was being routed, fails the pending calls shutdown left to it.
+func (c *Client) settleRouted() {
+	c.mu.Lock()
+	c.routing = false
+	pending := c.retirePendingLocked()
+	c.mu.Unlock()
+	c.failPending(pending, c.closeError())
+}
+
+// retirePendingLocked takes the pending map once the client is closed. The
+// caller holds c.mu.
+func (c *Client) retirePendingLocked() map[string]pendingCall {
+	if !c.closed {
+		return nil
+	}
+	pending := c.pending
+	c.pending = map[string]pendingCall{}
+	return pending
+}
+
+func (c *Client) failPending(pending map[string]pendingCall, reason error) {
+	for _, call := range pending {
+		call.result <- callResult{err: reason}
 	}
 }
 func (c *Client) route(frame Frame) error {
@@ -319,7 +334,7 @@ func (c *Client) write(ctx context.Context, value any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	request := writeRequest{ctx: ctx, value: value, result: make(chan error, 1)}
+	request := writeRequest{ctx: ctx, value: value, result: make(chan error, 1), started: make(chan struct{})}
 	select {
 	case c.writes <- request:
 	case <-ctx.Done():
@@ -339,6 +354,17 @@ func (c *Client) write(ctx context.Context, value any) error {
 		select {
 		case err := <-request.result:
 			return err
+		case <-request.started:
+			// The pump took the frame before the close and always hands back
+			// the result of a frame it has started encoding, so the bytes may
+			// already be on the wire: settle on that result, not on the death.
+			select {
+			case err := <-request.result:
+				return err
+			case <-ctx.Done():
+				c.closeWith(ctx.Err())
+				return ctx.Err()
+			}
 		default:
 			return c.closeError()
 		}
@@ -352,6 +378,7 @@ func (c *Client) writeLoop() {
 				request.result <- err
 				continue
 			}
+			close(request.started)
 			err := c.encoder.Encode(request.value)
 			request.result <- err
 			if err != nil {

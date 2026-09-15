@@ -370,3 +370,85 @@ func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T)
 	}
 	_ = serverWriter.Close()
 }
+
+// The malformed-frame corpus shape at the rpc layer: the gateway answers the
+// request, then writes a corrupt line and exits. Both the response and the
+// transport's death sit on one ordered stream, back to back, and the response
+// must win. Before the fix roughly one run in five settled on the death
+// instead — the pump had put the request on the wire but the caller's write
+// was still waiting for the pump's result when the reader retired the client.
+func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
+	const runs = 500
+	for i := 0; i < runs; i++ {
+		serverReader, clientWriter := io.Pipe()
+		clientReader, serverWriter := io.Pipe()
+		client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8, CloseReadWriter: &pipeCloser{read: clientReader, write: clientWriter}})
+		inbound := client.Inbound()
+		go func() {
+			for {
+				select {
+				case message := <-inbound:
+					if message.Barrier != nil {
+						close(message.Barrier)
+					}
+				case <-client.ReadDone():
+					return
+				}
+			}
+		}()
+		go func() {
+			_, _ = bufio.NewReader(serverReader).ReadString('\n')
+			_, _ = serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n{not json\n"))
+			_ = serverWriter.Close()
+			_ = serverReader.Close()
+		}()
+		if err := client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil); err != nil {
+			t.Fatalf("run %d: the response lost to the transport's death: %v", i, err)
+		}
+		// The call may return before the reader reaches the corrupt line;
+		// judge the retirement cause only once the reader has stopped.
+		<-client.ReadDone()
+		if err := client.Err(); !errors.Is(err, ErrInvalidMessage) {
+			t.Fatalf("run %d: retirement cause = %v, want the malformed frame", i, err)
+		}
+		_ = client.Close()
+	}
+}
+
+// A client built without a CloseReadWriter cannot interrupt a reader parked
+// in Decode, so settling the pending calls must never wait for the reader to
+// stop: when one call's cancellation retires the client, the other pending
+// call has to fail promptly instead of hanging until the peer closes stdout.
+func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, clientWriterUnused := io.Pipe()
+	defer clientWriterUnused.Close()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	_ = client.Inbound()
+	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- client.CallID(ctx, IntegerID(1), "a", nil, nil) }()
+	other := make(chan error, 1)
+	go func() { other <- client.CallID(context.Background(), IntegerID(2), "b", nil, nil) }()
+	// Both requests are on the wire; nothing ever answers them.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled call err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled call never returned")
+	}
+	select {
+	case err := <-other:
+		if err == nil {
+			t.Fatal("the other call reported success with no response")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the other pending call hung waiting for a reader nothing can interrupt")
+	}
+}
