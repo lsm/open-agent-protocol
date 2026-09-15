@@ -189,6 +189,37 @@ func TestWriterFailureOutranksStallThroughTheZombieLoop(t *testing.T) {
 	}
 }
 
+// TestDefectSurfacesNumberedWhenTheLoopNeverTranslates pins the codex
+// round-1 finding: the reader reports a framing defect to its cell before
+// delivering the frame, so teardown can end the decode loop before it ever
+// numbers the line — and the outcome must still be the documented
+// line-numbered *MalformedLineError, the same translation the loop would
+// have produced, never the raw private frame defect an errors.As caller
+// cannot match. The park holds the defective frame's delivery so the cell
+// is the only translation that ever happens.
+func TestDefectSurfacesNumberedWhenTheLoopNeverTranslates(t *testing.T) {
+	release := newReleaser()
+	t.Cleanup(release.release)
+	stdin, _, done := startParkedFrontend(t, context.Background(),
+		Options{ShutdownTimeout: 100 * time.Millisecond},
+		&parkHooks{readerDeliver: func() { <-release.done() }}, true)
+	if _, err := stdin.Write([]byte("bogus\r\n")); err != nil { // CR is a framing defect
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		var malformed *MalformedLineError
+		if !errors.As(err, &malformed) {
+			t.Fatalf("Run returned %v (%T), want the numbered *MalformedLineError", err, err)
+		}
+		if malformed.Line != 1 {
+			t.Fatalf("defect numbered line %d, want 1", malformed.Line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run hung on the undelivered defect")
+	}
+}
+
 // TestTeardownRacesAgainstParkedSeams is the stress table: each row parks
 // one seam of the lifecycle, lands a terminal condition, and Run must
 // return inside its windows with the outcome class the model harness

@@ -506,8 +506,10 @@ type sessionReport struct {
 //     work wait was abandoned first.
 //  3. readerErr, unless io.EOF — the host's input ended on a framing
 //     defect or its own read failure, including the case where the
-//     abandoned loop never produced its numbered translation; the raw
-//     condition is still the honest report.
+//     abandoned loop never produced its numbered translation; the reader's
+//     cell carries the same line-numbered *MalformedLineError the loop
+//     would have produced, so the diagnostic's type never depends on the
+//     race.
 //  4. ErrShutdownStalled — some teardown stage outlived its bounded
 //     window and was abandoned; the caller's sweep and exit still happen.
 //  5. nil — the clean end.
@@ -540,20 +542,34 @@ type frameResult struct {
 // framing defect, or the input's own read failure — is reported to its
 // custody cell before the final frame is delivered, because the decode
 // loop may be parked in admission behind a saturated bound and never take
-// that frame; the owner's teardown stays bounded even then. A delivery
-// park is backpressure and never ends anything: no delivery-stall window
-// exists — the window this replaced armed on consumer idleness and killed
-// busy-but-draining sessions (INV-A) — and a draining consumer, however
-// slow, frees the whole chain: each delivered line frees the writer, the
-// bound, and the delivery in turn. Neither channel is ever closed: a
-// reader abandoned by teardown parks on its send and is reclaimed at
-// process exit, the same discipline as the writer's channel.
+// that frame; the owner's teardown stays bounded even then. A framing
+// defect is reported to the cell in its line-numbered *MalformedLineError
+// form — the same translation the decode loop produces when it consumes
+// the frame — so the diagnostic an errors.As caller observes does not
+// depend on which of the two translated first: the cell is reported
+// before delivery, and teardown can end the loop before it ever numbers
+// the line. The frame itself still carries the raw defect for the loop's
+// own translation path. A delivery park is backpressure and never ends
+// anything: no delivery-stall window exists — the window this replaced
+// armed on consumer idleness and killed busy-but-draining sessions
+// (INV-A) — and a draining consumer, however slow, frees the whole chain:
+// each delivered line frees the writer, the bound, and the delivery in
+// turn. Neither channel is ever closed: a reader abandoned by teardown
+// parks on its send and is reclaimed at process exit, the same discipline
+// as the writer's channel.
 func readFrames(in io.Reader, limit int, frames chan<- frameResult, end *terminal, parks *parkHooks) {
 	reader := bufio.NewReader(in)
+	number := 0
 	for {
 		frame, err := readFrame(reader, limit)
+		number++
 		if err != nil {
-			end.report(err)
+			reported := err
+			var defect *frameDefect
+			if errors.As(reported, &defect) {
+				reported = &MalformedLineError{Line: number, Detail: defect.Error()}
+			}
+			end.report(reported)
 			parks.beforeDeliver()
 			frames <- frameResult{frame: frame, err: err}
 			return
