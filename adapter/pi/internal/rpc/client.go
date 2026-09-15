@@ -63,6 +63,7 @@ type writeRequest struct {
 	value   any
 	result  chan error
 	started chan struct{}
+	encoded chan struct{} // closed when this frame leaves Encode
 }
 
 type Client struct {
@@ -76,7 +77,6 @@ type Client struct {
 	closed     bool
 	decoding   bool // the reader is inside Decode
 	routing    bool // the reader holds a decoded frame it has not finished routing
-	encoding   bool // the pump is inside Encode
 	err        error
 	nextID     atomic.Uint64
 	writes     chan writeRequest
@@ -374,7 +374,7 @@ func (c *Client) write(ctx context.Context, value any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	request := writeRequest{ctx: ctx, value: value, result: make(chan error, 1), started: make(chan struct{})}
+	request := writeRequest{ctx: ctx, value: value, result: make(chan error, 1), started: make(chan struct{}), encoded: make(chan struct{})}
 	select {
 	case c.writes <- request:
 	case <-ctx.Done():
@@ -400,7 +400,7 @@ func (c *Client) write(ctx context.Context, value any) error {
 			// sure to arrive: the pump is past Encode, or the closer will
 			// unblock an Encode still in progress. Without a closer a blocked
 			// Encode could hold the caller forever, so the death is reported.
-			if !c.pumpSettles() {
+			if !c.pumpSettles(request) {
 				return c.closeError()
 			}
 			select {
@@ -416,12 +416,19 @@ func (c *Client) write(ctx context.Context, value any) error {
 	}
 }
 
-// pumpSettles reports whether a started frame's result is sure to arrive: the
-// pump is past Encode, or the closer will unblock an Encode in progress.
-func (c *Client) pumpSettles() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return !c.encoding || c.closer != nil
+// pumpSettles reports whether this frame's result is sure to arrive. The
+// question is per request, not per pump: a later frame blocked in Encode says
+// nothing about a frame that already left it.
+func (c *Client) pumpSettles(request writeRequest) bool {
+	select {
+	case <-request.encoded:
+		// Past Encode: the pump publishes this frame's result next.
+		return true
+	default:
+		// Still inside this frame's Encode, which only the closer can
+		// interrupt. closer is fixed at construction, so reading it is safe.
+		return c.closer != nil
+	}
 }
 
 func (c *Client) writeLoop() {
@@ -432,17 +439,11 @@ func (c *Client) writeLoop() {
 				request.result <- err
 				continue
 			}
-			// encoding is raised before started, so a caller that sees started
-			// but not encoding knows the frame is past Encode and its result
-			// is imminent.
-			c.mu.Lock()
-			c.encoding = true
-			c.mu.Unlock()
 			close(request.started)
 			err := c.encoder.Encode(request.value)
-			c.mu.Lock()
-			c.encoding = false
-			c.mu.Unlock()
+			// Signal this frame's completion before the retirement below, so
+			// its caller can tell "past Encode" from "blocked in Encode".
+			close(request.encoded)
 			if err != nil {
 				// Retire before publishing the failure. A caller that sees the
 				// write error with done already closed settles on its response

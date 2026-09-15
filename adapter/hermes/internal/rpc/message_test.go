@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -459,24 +460,17 @@ func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T
 // waiting on that frame must be released with the death rather than held
 // until the peer happens to exit.
 func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
-	serverReader, clientWriter := io.Pipe() // never read: Encode blocks
 	clientReader, serverWriter := io.Pipe()
-	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	blocked := &blockedPumpWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(blocked.release)
+	client := NewClient(clientReader, blocked, ClientOptions{QueueCapacity: 8})
 	result := make(chan error, 1)
 	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
-	// Wait for the pump to be inside Encode, blocked on the unread pipe.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		client.mu.Lock()
-		encoding := client.encoding
-		client.mu.Unlock()
-		if encoding {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("pump never entered Encode")
-		}
-		time.Sleep(time.Millisecond)
+	// Wait for the pump to be inside Encode, blocked in the writer.
+	select {
+	case <-blocked.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump never entered Encode")
 	}
 	// The peer emits garbage: the reader retires the client while the pump
 	// is still blocked.
@@ -491,7 +485,6 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("call hung inside write on a pump nothing can unblock")
 	}
-	_ = serverReader.Close()
 	_ = serverWriter.Close()
 }
 
@@ -626,4 +619,39 @@ func TestClientCallSettlesOnResponseWhenEncodeFailsAfterDelivery(t *testing.T) {
 	}
 	_ = serverWriter.Close()
 	_ = serverReader.Close()
+}
+
+// blockedPumpWriter reports when the pump has entered Write and holds it there
+// until the test releases it: a peer that stopped reading stdin.
+type blockedPumpWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockedPumpWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+// The settle decision belongs to the request, not to the pump: a later frame
+// blocked in Encode says nothing about a frame that already left it. With a
+// shared flag, A's caller reported the transport's death for a request the
+// peer had received in full because B happened to be encoding.
+func TestPumpSettlesIsPerRequest(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+	client := NewClient(reader, io.Discard, ClientOptions{}) // no closer
+	past := writeRequest{started: make(chan struct{}), encoded: make(chan struct{}), result: make(chan error, 1)}
+	close(past.started)
+	close(past.encoded)
+	blocked := writeRequest{started: make(chan struct{}), encoded: make(chan struct{}), result: make(chan error, 1)}
+	close(blocked.started)
+	if !client.pumpSettles(past) {
+		t.Fatal("a frame past Encode must settle on its own result")
+	}
+	if client.pumpSettles(blocked) {
+		t.Fatal("a frame still inside Encode without a closer must not be waited on")
+	}
 }
