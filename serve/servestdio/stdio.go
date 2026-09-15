@@ -85,11 +85,11 @@ type Options struct {
 // schema/v0.1 envelopes, exactly as servehttp does; the framing carries the
 // id correlation HTTP gets from its request/response pairing.
 type Server struct {
-	hub         *serve.Hub
-	frameLimit  int
-	writeQueue  int
-	shutdown    time.Duration
-	logger      *log.Logger
+	hub        *serve.Hub
+	frameLimit int
+	writeQueue int
+	shutdown   time.Duration
+	logger     *log.Logger
 }
 
 // New returns a frontend over the hub.
