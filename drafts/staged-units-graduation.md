@@ -1663,27 +1663,30 @@ No new envelope types. Additive fields:
   an
   adapter cannot hide a reached bound behind `internal_error`. The
   inverse is checked too, or the re-evaluation would only ever tighten:
-  where the bound is *not* reached at the response — the queued run that
-  made the request exceed it terminated while `Submit` was in flight —
-  the submit was admissible, and an `error.response` carrying
-  `run_active` reports a bound that no longer binds — `run_active` alone,
+  where the bound was unreached *throughout* the request/response window
+  — not at either edge nor anywhere between, so no atomic decision inside
+  it could have seen a full queue — the submit was admissible, and an
+  `error.response` carrying `run_active` reports a bound that never
+  bound — `run_active` alone,
   because the wire vocabulary for a reached bound is `run_active` and
   `queue_limit_exceeded` is a validator diagnostic, never a code an
   adapter sends; a refusal that did send it would already be diagnosed by
   the reached-bound rule above for using the wrong code. That is
-  `queue_limit_exceeded` on the error response, naming the
-  bound and the counts as of the response, so a caller is not told to
-  wait for capacity it already has — but only once every other state-rung
-  condition that independently owes `run_active` has been excluded. The
+  `queue_limit_exceeded` on the error response, naming the bound and the
+  counts, so a caller is not told to wait for capacity it never lacked —
+  but only once every other state-rung condition that independently owes
+  `run_active` has been excluded. The
   code is not the queue's alone: T1 lets a busy adapter that cannot defer
   a queued `session_mutation` refuse with it, and if the queued
   reservation terminates in flight while the started run remains, that
   adapter still owes `run_active` for the mutation constraint even though
   the bound has cleared. Diagnosing it would convict a conforming
   refusal, so the stale-limit check runs only when the response's code
-  is explained by no surviving condition. It is also judged across the
-  whole request/response window rather than at either end, as the
-  snapshot rules are. `Submit` decides atomically at some instant the
+  is explained by no surviving condition. The window is the only instant
+  rule in play, for this check and the reached-bound check above alike,
+  and it is stated once rather than as a second test at either end, as
+  the snapshot rules are. `Submit` decides atomically at some instant
+  the
   trace cannot name, and both edges of that ignorance produce false
   verdicts: a queue full at the decision whose queued run terminates
   before the response makes a correct `run_active` look stale, and a
