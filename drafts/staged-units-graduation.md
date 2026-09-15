@@ -2342,13 +2342,29 @@ the request used.
   `action.call.started` or terminal it releases travels the SSE
   connection, so `Published` orders the hub's trace but not the client's
   two sockets, and a caller could see the call settle before the
-  `accepted: true` that authorized it. The correlation is again already
-  on the wire — the events name the `tool_call_id` the resolve request
-  addressed — so the rule is the same one generalized: a client holds an
-  event derived from an interaction whose own resolve call is still
-  outstanding until that call returns or fails, then delivers it in
-  order. Stating it once for both settlements and resolutions keeps the
-  two arms of the same hazard from drifting apart. The e2e tests cover
+  `accepted: true` that authorized it. The correlation has to be at the
+  request, not the interaction. `tool_call_id` identifies the call, and
+  two resolutions of one call can be outstanding at once — a result and
+  its retry — so a client holding on the call alone cannot tell which
+  request authorized the event it is holding: it may release on the
+  retry's refusal before the original's acceptance arrives, or hold
+  forever if the request it happened to pair the event with never
+  returns. So a resolve-derived `action.call.started` or terminal carries
+  `request_id`, the envelope id of the `action.call.resolve.request` that
+  produced it, exactly as a steer settlement names its admitting request,
+  and the client rule keys on that: hold an event whose `request_id`
+  names a resolve call still outstanding, release it when that call
+  returns. The validator requires `request_id` to name a resolve request
+  the trace carries for that interaction, and an accepted resolution to
+  be followed by events naming it (`unmatched_interaction` otherwise), so
+  the field cannot be omitted or invented. Stating it once for both
+  settlements and resolutions keeps the
+  two arms of the same hazard from drifting apart. Fixtures
+  `control-call-overlapping-resolutions` (positive; a result and its
+  retry outstanding together, each derived event naming its own request)
+  and `control-call-event-unmatched-request`
+  (`unmatched_interaction`; a derived event whose `request_id` names no
+  resolve request for the interaction). The e2e tests cover
   SSE-first delivery on each.
 
 ### Fixtures
@@ -2623,8 +2639,12 @@ therefore needs a steer settlement, not only a steer admission.
   bounded history could be diagnosed for an omission the rule could not
   place. Eviction is an ordering fact, not a temporal one, and the
   validator already has the order — the trace. Hence the rule below is
-  stated over settlement order rather than time, and no marker is needed
-  on the wire at all. Pending steers stay on the
+  stated over settlement order rather than time. What that removes is the
+  *timestamp* watermark, not the completeness marker: `complete` stays on
+  the wire and is the whole basis of the recovery rule above, since
+  without it an eviction cannot be told from a steer that was never
+  admitted and the caller resends guidance that already landed. No
+  ordering marker is needed beside it. Pending steers stay on the
   `active_runs` entry, where a live run's state belongs; settled ones
   move to the session, where they outlive it. A caller that missed
   the settlement reads the outcome instead of inferring it from silence,
@@ -3122,11 +3142,18 @@ client slice, the first that changes cursor handling at all (`?run=`,
 envelope on a run stream, so that T3c's and T4's hub-minted snapshots
 find the scoping and the `after_session` cursor member already in place
 rather than landing with the units that first need them: an envelope carrying `run_id` is run-scoped and its sequence advances
-that run's cursor whatever its type; an envelope without `run_id` but
-with `sequence` is session-scoped and is delivered without touching the
-run cursor whatever its type. The schema requires `run_id` on every run
-event and session events carry none, so the rule is exact for known
-types and correct by construction for unknown ones; the type lists stay
+that run's cursor whatever its type; an envelope carrying `session_id`
+without `run_id` is session-scoped and is delivered without touching the
+run cursor whatever its type; one carrying neither is endpoint or
+protocol scoped and touches no cursor at all. Scope is read from the
+scope members, never from `sequence`: `capabilities.updated` is
+sequenced and carries no session
+(`schema/v0.1/envelope.schema.json:75`), so a sequence-only test would
+file it into the session cursor and send an `after_session` naming an
+envelope that was never session-scoped. The schema requires `run_id` on every run
+event and session events carry `session_id`, so the rule is exact for known
+types and correct by construction for unknown ones; it is the same rule
+the tolerance step applies, and the type lists stay
 for typing only. A session-scoped envelope interleaved in a run's replay
 is covered by the cursor, not by in-memory state: each client's resume
 cursor becomes `{ run, sequence, session_envelope_id? }`, where the
