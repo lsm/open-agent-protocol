@@ -1052,9 +1052,11 @@ No new envelope types. Additive fields:
 
 - `session.state` gains `active_runs`: an ordered list of every nonterminal
   run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?,
-  "as_of_sequence"?, "as_of_submit_request"? }]`, in admission order, with
+  "as_of_sequence"?, "admitted_submit_requests"? }]`, in admission order,
+  with
   `as_of_sequence` naming the last sequence of that run the entry
-  reflects and `as_of_submit_request` the last submit request on it (the
+  reflects and `admitted_submit_requests` the submit requests on it the
+  entry reflects as admitted (the
   capture positions the validator judges the entry at, below), with `queue_position` on queued entries
   (1-based). `active_run_id` keeps naming the started run, or is absent when
   only queued runs remain (session status `queued`). Each entry also carries
@@ -1421,12 +1423,19 @@ No new envelope types. Additive fields:
   unsequenced and advances no run cursor: two snapshots taken either side
   of that response can carry the same `as_of_sequence` and differ
   legitimately in whether the steer is listed, so the run position alone
-  cannot judge them. The entry therefore also carries
-  `as_of_submit_request`, the envelope id of the last submit *request* on
-  that run the snapshot reflects (absent when it reflects none), and
-  `pending_steers` is judged at that point: a steer whose request is that
-  one or precedes it must be listed, one whose request follows it must
-  not be, and `session_state_mismatch` otherwise.
+  cannot judge them. A scalar boundary will not do either: steers are
+  admitted under the per-run gate in the order they acquire it, which
+  need not be the order their request envelopes reached the trace, so a
+  snapshot can legitimately hold a later-sent steer and not an earlier
+  one — and no single "up to here" id describes that. The entry therefore
+  carries `admitted_submit_requests`, the set of submit request envelope
+  ids on that run the snapshot reflects as admitted (absent when it
+  reflects none), and `pending_steers` is judged against it: a steer
+  whose request is in the set must be listed, one whose request is not
+  must be absent, and `session_state_mismatch` otherwise. A set costs
+  nothing an ordering would save — it is bounded by the steers
+  outstanding on one run — and it says exactly what the adapter knows,
+  which an order it does not control cannot.
   The request, not the response, because the marker has to name something
   the party producing the snapshot can know. Session state comes from the
   adapter, while the response envelope is minted by the binding after
@@ -1441,13 +1450,18 @@ No new envelope types. Additive fields:
   marker can never run ahead of it and needs no deferred reconciliation.
   A marker naming a request the trace does not carry for that run is
   `session_state_mismatch` at once.
-  The two markers must not disagree — a steer whose request follows
-  `as_of_sequence`'s position cannot be claimed by a snapshot that stops
-  earlier — and a snapshot that lists a steer while naming no
-  `as_of_submit_request` at all is judged against the trace as it stands,
-  since it claims no knowledge the trace lacks. Fixture `steer-state-capture-straddles-admission`
+  Every id in the set must name a submit request the trace carries for
+  that run (`session_state_mismatch` otherwise), and a snapshot that
+  lists a steer while naming no
+  `admitted_submit_requests` at all is judged against the trace as it
+  stands,
+  since it claims no knowledge the trace lacks. Fixtures
+  `steer-state-capture-straddles-admission`
   (positive; two snapshots at one `as_of_sequence` either side of a steer
-  admission, each accurate at its own `as_of_submit_request`).
+  admission, each accurate at its own set) and
+  `steer-state-out-of-order-admission` (positive; two overlapping steers
+  admitted in the reverse of their request order, a snapshot listing only
+  the later-sent one).
   `pending_interactions` needs no equivalent: an interaction joins and
   leaves the set on sequenced run events, which `as_of_sequence` already
   orders.
@@ -1498,10 +1512,14 @@ No new envelope types. Additive fields:
   may be absent, and every other tracked nonterminal run must be listed.
   A `settled` entry may name a terminal the trace has not reached, and is
   held and reconciled when it arrives; one whose named terminal never
-  arrives, or arrives at another sequence, or belongs to a run that
-  promoted and started, is `session_state_mismatch` at the run's terminal
-  or the end of the trace, so a snapshot cannot drop a live reservation
-  by declaring it settled. Where `as_of` is absent the snapshot claims no
+  arrives, or arrives at another sequence, is `session_state_mismatch` at
+  the run's terminal or the end of the trace, so a snapshot cannot drop a
+  live reservation by declaring it settled. A started run may be claimed
+  as readily as a queued one: a run that terminates inside the adapter
+  before a concurrent capture, whose terminal the hub's drainer publishes
+  only after the state response, is the same ordinary race, and the claim
+  is judged by whether the named terminal arrives at the named sequence,
+  never by what the run did beforehand. Where `as_of` is absent the snapshot claims no
   knowledge the trace lacks and is judged against the trace as it stands,
   which is the rule that applied before. Ordering throughout
   is read from the trace and from stated positions, never from
@@ -1723,9 +1741,13 @@ waiting on a permission, and a snapshot without `active_runs`),
 `queue-state-drops-unsettled-run` (`session_state_mismatch`; a snapshot
 omits a queued run whose terminal never arrives),
 `queue-state-omits-before-settlement` (`session_state_mismatch`; a
-snapshot omits a queued run whose held terminal carries a later
-`timestamp_ms`), `queue-state-omits-without-timestamps`
-(`session_state_mismatch`; the omitting snapshot lacks `updated_at_ms`).
+snapshot omits a queued run without claiming it in `as_of.settled`),
+`queue-state-false-settled-claim` (`session_state_mismatch`; an
+`as_of.settled` entry whose named terminal never arrives),
+`queue-state-settled-wrong-sequence` (`session_state_mismatch`; the
+terminal arrives at a sequence other than the one claimed),
+`queue-state-pending-without-as-of` (`session_state_mismatch`; an entry
+carrying `pending_interactions` with no `as_of_sequence`).
 
 ### Exit criteria
 
