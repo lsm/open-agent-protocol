@@ -1512,7 +1512,18 @@ No new envelope types. Additive fields:
   `pending_steers`, so the anchor establishes that the snapshot knows of
   the admission, and the capture position then decides which of the two
   surfaces carries it. A steer in the set that appears in neither, or in
-  both, is `session_state_mismatch`. Without that anchor the set would be permissive in the
+  both, is `session_state_mismatch`.
+  The anchor reaches only as far as the state does. `settled_steers` is
+  bounded, so a long-running session evicts its oldest settlements and
+  reports `complete: false`; an anchor that still demanded those steers'
+  request ids would be unsatisfiable, since including an id obliges the
+  snapshot to carry the steer on one of the two surfaces and neither
+  holds it any more. So once `settled_steers.complete` is false, a steer
+  whose settlement has been evicted may be absent from
+  `admitted_submit_requests` as well, and the anchor binds only
+  admissions still represented in the retained state. What it still
+  forbids is the case it was added for: dropping a steer that is pending,
+  or whose settlement is retained, by saying nothing about it. Without that anchor the set would be permissive in the
   wrong direction — omitting an id would license omitting the steer, so
   an adapter could drop a steer admitted long before the read simply by
   saying nothing about it. Every id in the set must name a submit request
@@ -1694,19 +1705,26 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
   first event. Run identity for a cursor travels in an additive `?run=`
-  query parameter beside `?after=`; a cursor without `run` resolves onto
-  the earliest-admitted run in the session whose retained domain reaches
-  that sequence. On a v0.1 single-run session that is the started run,
-  exactly today's behaviour, and with a queue it keeps a legacy client
-  bound to the run its cursor belongs to. Resolving onto the started run
-  instead would break precisely the client this rule exists to protect:
-  a v0.1 client that queues B while A runs, and whose connection drops
-  after B has become the started run but before A's terminal arrives,
-  reconnects with nothing but `?after=<A sequence>` — read against B that
-  is a sequence from the wrong domain, and the client sees a replay gap,
-  skipped B events, or its own `ResumeMismatchError`. Earliest-admitted
-  is deterministic, needs no memory of what a previous connection was
-  serving, and prefers A for as long as A is retained. `oap-overflow` and
+  query parameter beside `?after=`. A cursor without `run` cannot always
+  be resolved, and the plan says so rather than picking a rule that
+  trades one client's correctness for another's. Sequences restart per
+  run, so a bare number can name a position in more than one retained
+  domain: resolving onto the started run breaks a client resuming the
+  earlier run — a v0.1 client that queued B while A ran and dropped
+  before A's terminal reconnects with `?after=<A sequence>` and has it
+  read against B — while resolving onto the earliest retained domain
+  breaks the opposite case, a client reading B whose cursor also falls
+  inside retained A's range. No function of the number alone is right for
+  both. The daemon therefore resolves a bare cursor only when exactly one
+  retained domain reaches that sequence, which covers every single-run
+  session — today's behaviour, unchanged — and when more than one does,
+  it does not guess: it emits `oap-replay-gap` carrying the `run_id`s it
+  could not choose between and resumes from the started run's current
+  position. A client that can send `?run=` then does; one that cannot
+  learns it lost continuity instead of silently receiving another run's
+  stream, which is the outcome worth protecting, since a signalled gap is
+  recoverable and a wrong run is not. `?run=` remains the way to be
+  unambiguous, and both clients send it from T2 on. `oap-overflow` and
   `oap-replay-gap` both carry `run_id` (overflow already does) so a client
   can resume the right run. The stdio frontend's `events` op gains the same
   optional `run` parameter. `?run=` is still needed even with ordered
