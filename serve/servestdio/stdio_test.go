@@ -225,7 +225,9 @@ func TestAdaptersOpRefusesParams(t *testing.T) {
 func TestUnknownOpIsARequestError(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	f := startFrontend(t, hub, Options{})
-	f.send(`{"id":1,"op":"state","session_id":"none"}`)
+	// Re-cut A used the then-unimplemented state op here; the operations
+	// slice implements it, so the fixture is an op no slice ever defines.
+	f.send(`{"id":1,"op":"bogus"}`)
 	requireCode(t, f.expectResponse(1), "unknown_op")
 	f.send(`{"id":2,"op":"adapters"}`)
 	requireOK(t, f.expectResponse(2))
