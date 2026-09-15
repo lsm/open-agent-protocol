@@ -8,7 +8,7 @@ Open Agent Protocol (OAP): a CC0 draft protocol for the boundary between a contr
 
 ## Commands
 
-Go 1.27 module, no Makefile. CI (`.github/workflows/ci.yml`) runs exactly these, in order, and fails on any `gofmt -l` output:
+Go 1.27 module, no Makefile. CI (`.github/workflows/ci.yml`) has two independent jobs. The Go job runs exactly these, in order, and fails on any `gofmt -l` output:
 
 ```sh
 test -z "$(gofmt -l .)"
@@ -18,7 +18,7 @@ go test -race ./...
 go run ./cmd/oap check      # compiles schemas, validates fixtures/manifest.json, drives the memory adapter demo
 ```
 
-The full suite takes about 10 seconds. Single package or single test:
+The TypeScript job runs `npm ci && npm test` in `clients/ts` (see below). A schema or client change can pass every Go command and still fail CI there, so run both before pushing. The Go suite takes about 10 seconds. Single package or single test:
 
 ```sh
 go test ./serve/...
@@ -38,7 +38,7 @@ Its integration test builds `./cmd/oap` and boots the memory adapter; set `OAP_G
 
 ### Opt-in real-process gates
 
-Every `adapter/*/process_integration_test.go` (and `server_integration_test.go` for OpenCode) is skipped unless an `OAP_<HARNESS>_SMOKE=1` or `OAP_<HARNESS>_INTEGRATION=1` variable is set together with an absolute `OAP_<HARNESS>_BIN`. Hermes also requires `OAP_HERMES_ROOT`. Codex and Makai also require `OAP_CODEX_COMMIT` / `OAP_MAKAI_COMMIT` set to exactly the pinned commit, or the gate fails before running. `OAP_<HARNESS>_SHA256` is optional and binds the exact artifact digest. The README's "Real-process gate coverage" table lists them. These never run in CI, never download anything, and never pass ambient credentials to a child. Ordinary tests use fake keys and loopback mocks from `internal/providertest`. Live provider tests (`provider/live_zai_test.go`) are gated the same way (`OAP_LIVE_ZAI=1` plus explicit authorization variables); credential presence alone must never enable network traffic.
+Every `adapter/*/process_integration_test.go` (and `server_integration_test.go` for OpenCode) is skipped unless an `OAP_<HARNESS>_SMOKE=1` or `OAP_<HARNESS>_INTEGRATION=1` variable is set together with an absolute `OAP_<HARNESS>_BIN`. Hermes also requires `OAP_HERMES_ROOT`. Codex and Makai also require `OAP_CODEX_COMMIT` / `OAP_MAKAI_COMMIT` set to exactly the pinned commit, or the gate fails before running. Six gates accept an optional `_SHA256` that binds the exact artifact digest: ACP, Claude, DeepSeek, Hermes, Makai, and Pi. The Codex and OpenCode gates never read a digest variable, so setting one there verifies nothing. The README's "Real-process gate coverage" table lists them. These never run in CI, never download anything, and never pass ambient credentials to a child. Ordinary tests use fake keys and loopback mocks from `internal/providertest`. Live provider tests (`provider/live_zai_test.go`) are gated the same way (`OAP_LIVE_ZAI=1` plus explicit authorization variables); credential presence alone must never enable network traffic.
 
 ### Regenerating a corpus expectation
 
