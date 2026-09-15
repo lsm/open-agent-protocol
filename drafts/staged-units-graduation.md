@@ -176,13 +176,25 @@ No new envelope types. Changes to
   catalog, so the existing rule already covers it and a second one would
   only contradict the first. It is judged on the correlated response
   under T5a's miss rule, with the pre-catalog retention and the
-  precedence ladder applying unchanged. The fixtures follow the
+  precedence ladder applying unchanged — except that the refusal itself
+  cannot wait for T5a. `models.list` graduates there and stays optional,
+  while Codex and Makai advertise `run.model_selection` from T1, so
+  between the two units an empty id would pass the capability gate, find
+  no catalog check to classify it, and reach a native codec that reads it
+  as the default model: exactly the silent selection this whole pointer
+  conversion exists to eliminate, reintroduced for the duration of the
+  staging. Emptiness needs no catalog to decide it, because no catalog
+  can list an empty id, so the refusal is owed at T1 whether or not one
+  was ever served: an admitted empty `model_id` is `model_not_found` with
+  `details.model_id: ""` from T1 on. T5a adds only what genuinely depends
+  on a catalog — the revision-scoped bookkeeping that classifies
+  *non-empty* ids a catalog does not list. The fixtures follow the
   diagnostics rather than the prose: T1 carries
   `controls-empty-model-id-unadvertised`, whose expectation is the
-  capability gate's own refusal and which T1 can therefore satisfy on its
-  own, while `controls-empty-model-id-admitted` expects
-  `model_not_in_catalog` and the revision-scoped catalog bookkeeping
-  behind it, neither of which exists until T5a, so it lands with T5a. A
+  capability gate's own refusal, and `controls-empty-model-id-admitted`,
+  which expects `model_not_found` and needs no catalog to state it; T5a
+  carries `models-miss-uncatalogued-id` for the non-empty miss and the
+  bookkeeping behind it. A
   unit's fixtures must produce exactly the codes it introduces, so a
   fixture cannot be listed before the diagnostic it asserts.
 - `output_schema` stays a JSON Schema object, and it must describe a JSON
@@ -2285,7 +2297,21 @@ not yet contain. Makai graduates T3c by adding that case and advertising
 
 Adapter-side passthrough (T3a and T3b) first: the harness owns the MCP
 client; OAP describes, attaches, and observes. Serve-side connector second,
-as a `serve` feature on T3c: the hub hosts an MCP client as one more
+as a `serve` feature on T3c, and only onto adapters that can carry it: the
+hub can host the MCP client, but it cannot execute a tool the adapter will
+never call. Provisioning requires the adapter to accept
+`session.open.request.tools`, to emit `action.call.requested` for a tool it
+does not own, and to accept the outcome back through the reverse resolution
+channel. Adapters without all three refuse `action.tools.provide` under the
+ordinary capability gate, and two of the pinned ledgers already say they
+will: DeepSeek has no reverse interaction channel on the selected wire
+(`research/deepseek-harness-47f9438-mapping.md:327`) and Pi owns tool
+execution with its interaction extensions disabled
+(`research/pi-v0.85.1-mapping.md:250-253`). The connector therefore widens
+the set of adapters that can host control-owned tools without a native MCP
+client of their own; it does not make every adapter a candidate, and the
+plan does not claim it does. Where it does apply, the hub hosts an MCP
+client as one more
 execution owner, provisions its tools through `session.open.request.tools`,
 routes `action.call.requested` whose `execution_owner` is the hub to the MCP
 server (acknowledging `started` as it dispatches), and resolves through

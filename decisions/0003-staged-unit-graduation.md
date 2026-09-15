@@ -129,8 +129,16 @@ OAP describes the source, attaches it at session open, and observes its tool
 calls. This is what ACP, Claude Code, and Codex already do natively. A
 serve-side connector comes second and is not a protocol feature: once
 control-layer-provided tools are executable, the hub can host an MCP client as
-one more execution owner and provision its tools into any session, including
-sessions on adapters with no native MCP support. The wire is identical in
+one more execution owner and provision its tools into sessions on adapters
+with no native MCP support of their own. That is a widening, not a
+universal: the hub cannot execute a tool the adapter will never call, so
+provisioning is limited to adapters that accept
+`session.open.request.tools`, emit calls for tools they do not own, and
+accept results through the reverse resolution channel. Adapters lacking
+that refuse `action.tools.provide` under the ordinary gate — DeepSeek has no
+reverse interaction channel (`research/deepseek-harness-47f9438-mapping.md:327`)
+and Pi owns tool execution with interaction extensions disabled
+(`research/pi-v0.85.1-mapping.md:250-253`). The wire is identical in
 both placements; only `execution_owner` differs.
 
 ### Skills stay out of the protocol
