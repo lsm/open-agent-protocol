@@ -146,6 +146,10 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The envelope schema's run def requires the addressing on the
+		// envelope itself, not only in the payload.
+		envelope.SessionID = "budget"
+		envelope.RunID = "run-9"
 		data, err := json.Marshal(envelope)
 		if err != nil {
 			t.Fatal(err)
