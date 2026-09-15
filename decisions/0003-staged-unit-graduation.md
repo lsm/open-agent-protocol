@@ -88,7 +88,7 @@ Units graduate in this order, each behind its own decision:
 
 | Order | Unit (issue #13 label) | Planned decision | Why here |
 | --- | --- | --- | --- |
-| 0 | Extension packs: namespace, pack format, pack conformance (T0) | 0004 | Foundational and not harness-gated; the extension seam must exist before the spec mints six more capability keys, and it shares the pre-T1 bundle change with the tolerance step |
+| 0 | Extension packs: namespace, pack format, pack conformance (T0) | 0004 | Foundational and not harness-gated; the extension seam must exist before the spec gives ten capability keys executable meaning, two of them new, and it shares the pre-T1 bundle change with the tolerance step |
 | 1 | Run controls: `model_id` first, fail-closed discipline for all four (T1) | 0005 | Already on the wire; touches no run lifecycle; Codex and Makai apply `model_id` natively today without advertising it |
 | 2 | Models catalog `models.list` (T5, first half) | 0006 | Pure control-plane query with the widest native evidence; makes `model_id` usable by a picker |
 | 3 | Queue delivery: explicit `queue` requests and a second nonterminal run (T2) | 0007 | First change to the one-nonterminal-run invariant; Decision 0002 already made the queued shape canonical |

@@ -147,8 +147,9 @@ the difference between an extension and an unvalidated hole.
 It goes before T1 for two reasons. The tolerance step already lands
 before T1 and already changes what the validator compiles; packs change
 the same seam, and doing them together avoids designing that seam twice.
-And every later unit mints capability keys — six of them in T1 alone.
-Minting the spec's own keys without a stated namespace rule makes the
+And every later unit mints capability keys — four in T1 alone, ten
+across the phase. Minting the spec's own keys without a stated namespace
+rule makes the
 unprefixed form the precedent a third party will copy, and the rule is
 much cheaper to state before that than to retrofit after.
 
@@ -186,8 +187,8 @@ composition needs that separately: `com.example` and
 `com.example.storage` both satisfy it while both legally claiming
 `com.example.storage.read`, and even where their declarations differ,
 "the loaded pack whose prefix matches" stops naming one pack. The loaded
-set is therefore required to be *prefix-free* — no pack `id` may be a
-dot-prefix of another — and that is checked across the set at load, not
+set is therefore required to be *prefix-free* — no pack `id` may equal
+or be a dot-prefix of another — and that is checked across the set at load, not
 per pack, since neither pack is at fault alone. Prefix-freedom makes
 prefix matching a function rather than a search: at most one loaded id
 can prefix any name, so ownership is decided without a precedence rule,
@@ -218,8 +219,9 @@ compiled.
   same way a core type is. This is the whole point of the unit: an
   extension becomes a thing an implementation can be wrong about.
 - **Containment.** A pack may define names only under its own `id`
-  prefix. A pack declaring a key outside it, or one belonging to another
-  pack, or any spec-owned root segment, fails to load — it is not a
+  prefix. A pack declaring a key outside it — one belonging to another
+  pack, or an unprefixed name, which is the spec's namespace entire —
+  fails to load — it is not a
   validation diagnostic but a refusal to compile, because a pack that
   could redefine core or shadow a peer would make every other guarantee
   here conditional on which packs happened to be loaded. This is what
@@ -285,7 +287,8 @@ diagnostic), `ext-pack-claims-foreign-prefix` (a pack declaring a name
 under another pack's id; load refusal), `ext-packs-nested-ids` (two
 individually valid packs whose ids are `com.example` and
 `com.example.storage`, loaded together; load refusal naming both, since
-neither is at fault alone), `ext-pack-branch-undeclared-type`
+neither is at fault alone) and `ext-packs-duplicate-ids` (the same
+refusal for two packs sharing one id, the degenerate prefix case), `ext-pack-branch-undeclared-type`
 (a contributed branch whose `type` `const` is not among the pack's
 declared `envelope_types`; load refusal), `ext-pack-branch-unpinned`
 (a contributed branch that does not pin `type` to a `const` at all, the
@@ -397,21 +400,44 @@ No new envelope types. Changes to
   was ever served: an admitted empty `model_id` is `model_not_found` with
   `details.model_id: ""` from T1 on. T5a adds only what genuinely depends
   on a catalog — the revision-scoped bookkeeping that classifies
-  *non-empty* ids a catalog does not list. The fixtures follow the
-  diagnostics rather than the prose: T1 carries
-  `controls-empty-model-id-unadvertised`, whose expectation is the
-  capability gate's own refusal, and `controls-empty-model-id-admitted`,
-  which expects `unsatisfiable_control`; T5a carries
-  `models-select-unlisted` for the non-empty miss and the bookkeeping
-  behind it. The two names answer different questions and a fixture can
-  only assert the second: `model_not_found` is the `error.response` code
-  the endpoint owes on the wire, while a fixture's expectation is a
-  validator diagnostic, and a response that admits the control instead of
-  refusing it is the fail-closed failure `unsatisfiable_control` already
-  names — a present control the endpoint cannot satisfy and did not
-  refuse. T1 introduces that diagnostic, so the check is executable in
-  T1 without waiting for `model_not_in_catalog`, and an endpoint that
-  admits `model_id: ""` is caught by the unit that forbids it. A
+  *non-empty* ids a catalog does not list. T1 therefore carries the
+  condition itself, in both directions, rather than only the admission.
+  `unsatisfiable_control` is the diagnostic — a present control the
+  endpoint cannot satisfy — and its T1 definition below names the empty
+  `model_id` as a third condition beside the `tool_choice` and
+  `output_schema` ones, since a diagnostic that covered only those two
+  could not be asserted here.
+
+  What the wire owes differs from what a fixture asserts, and the empty
+  id is the one condition in this unit where the two diverge. Every other
+  `unsatisfiable_control` condition is refused with `unsupported_feature`
+  and `details.reason: "unsatisfiable"`; this one is refused with
+  `model_not_found` and `details.model_id: ""`, because an empty string
+  is a catalog miss and the reference adapter already answers
+  `model_not_found` for every id outside its catalog. That carve-out is
+  stated in the settlement rule below rather than left to be inferred
+  from two rules that would otherwise contradict. So the validator
+  retains the empty-id condition from the `session.message.submit.request`
+  and settles it on the correlated response: an admission is
+  `unsatisfiable_control` on the `session.message.submit.response`, and
+  an `error.response` must carry `model_not_found` with
+  `details.model_id: ""`. A refusal under any other code — `internal_error`
+  included, and `unsupported_feature`/`unsatisfiable` included, since the
+  carve-out runs the other way too — or without that detail is
+  `unsatisfiable_control` on the `error.response`. Without that half an
+  adapter could advertise `run.model_selection`, answer `internal_error`
+  to an empty id, and pass T1 while avoiding the response the wire
+  requires.
+
+  T1's fixtures are therefore `controls-empty-model-id-unadvertised`
+  (the capability gate's own refusal),
+  `controls-empty-model-id-rejected` (positive; the typed
+  `model_not_found` refusal with `details.model_id: ""`),
+  `controls-empty-model-id-admitted` (`unsatisfiable_control` on the
+  admission) and `controls-empty-model-id-wrong-refusal`
+  (`unsatisfiable_control` on the error response; the right rejection
+  under `internal_error`). T5a carries `models-select-unlisted` for the
+  non-empty miss and the bookkeeping behind it. A
   unit's fixtures must produce exactly the codes it introduces, so a
   fixture cannot be listed before the diagnostic it asserts.
 - `output_schema` stays a JSON Schema object, and it must describe a JSON
@@ -751,7 +777,13 @@ No new envelope types. Changes to
   trace carries a catalog (capabilities or `action.tools.list.response`,
   plus any `tools` provided at open), lists or names a tool outside that
   catalog or is `required` or `named` against an empty filtered set. The
-  same condition covers an `output_schema` that does not compile. A
+  same condition covers an `output_schema` that does not compile, and a
+  `model_id` that is present and empty — the condition T1 owns outright,
+  since no catalog can list an empty id and none is needed to decide it.
+  That third condition is the one whose conforming refusal is
+  `model_not_found` with `details.model_id: ""` rather than
+  `unsupported_feature`/`unsatisfiable`, as set out above and in the
+  settlement rule below. A
   non-object root and an external reference are the two named cases, but
   they are not the only ways compilation fails: `{"type": "object",
   "required": "x"}` is wire-valid, object-rooted, and self-contained, yet
@@ -784,7 +816,13 @@ No new envelope types. Changes to
   identifies (`details.tool` for a `tool_choice` naming or filtering to
   an unavailable tool, `details.field` for an `output_schema`), with a
   refusal under any other code, feature, reason, or without that detail
-  diagnosed as `unsatisfiable_control` on the `error.response`. The check
+  diagnosed as `unsatisfiable_control` on the `error.response`. The empty
+  `model_id` condition settles on the same terms under a different code:
+  its conforming refusal is `model_not_found` with `details.model_id: ""`,
+  and anything else — including `unsupported_feature` with
+  `details.reason: "unsatisfiable"`, which is right for every other
+  condition here and wrong for this one — is `unsatisfiable_control` on
+  the `error.response`. The check
   runs only when the submit carries a control, so envelopes that do not
   use the unit are untouched. The contradictory-policy and
   external-reference cases therefore appear twice: as positives where the
@@ -2540,10 +2578,15 @@ Semantics, on the interaction contract Decision 0001 fixed:
   conformance while honouring nothing. So a constraint must be
   *advertised to be exercised*: the feature's `FeatureSupport` carries
   `limits` declaring the ones the adapter actually has — `max_tools`, a
-  `name_pattern`, the accepted schema dialect — and a refusal is
-  conforming only where the array violates a declared limit. Refusing an
-  array that satisfies every advertised limit is
-  `undisclosed_provide_limit`, the same diagnostic shape T2 uses for an
+  `name_pattern`, the accepted schema dialect — and refusing a
+  *protocol-valid* array is conforming only where it violates a declared
+  limit. The qualifier is load-bearing: an array carrying a foreign
+  `execution_owner`, a duplicated tool name, or a `source` that resolves
+  to nothing is refused under the rules above, which name the defect and
+  validate the refusal, and those refusals stay conforming however
+  generous the limits are. What this rule reaches is the array with no
+  defect any rule names. Refusing one that also satisfies every
+  advertised limit is `undisclosed_provide_limit`, the same diagnostic shape T2 uses for an
   undisclosed queue bound and for the same reason: the refusal is itself
   the evidence that a constraint exists which the caller was never told
   about. The capability key plus its `limits` therefore tells a caller
@@ -3927,13 +3970,30 @@ and hub contract is explicit rather than inherited from `start`:
   whose members (`ambiguous_run_ids`, and `last_sequence` naming a run
   position) describe a different loss; the interleaved gap carries
   `run_id` and `last_sequence` for the stream it continues on, and no
-  candidates. Recovery is direct rather than approximate, because every
-  envelope this cursor orders is a hub-minted `session.state` snapshot: a
-  client that sees the gap re-reads `session.state`, which supersedes any
-  snapshot it may have missed. A `servehttp` retention test drives the
+  candidates. Recovery is not uniform, because the envelopes
+  this cursor orders are not all of one kind. T3c's hub-minted
+  `session.state` snapshots are superseded exactly by a fresh read: a
+  client that sees the gap re-reads `session.state` and holds, by
+  definition, something newer than whatever it missed. T2's released
+  pre-start terminal of a settled reservation is ordered by the same
+  cursor (the client section above) and is not recoverable that way at
+  all — the run is terminal, so it is absent from `active_runs`, and its
+  outcome and error appear nowhere in the snapshot. A state read would
+  look like success while the client had lost a run's only envelope.
+
+  The gap therefore carries what a state read cannot: `skipped_run_ids`,
+  the runs whose journaled envelopes at that position were not replayed.
+  The client resumes each with `?run=` against that run's own journal,
+  retained independently of the hub journal that evicted the cursor, and
+  reads the terminal there. The signal thus says which half of the
+  recovery applies — re-read state for the snapshots, replay the named
+  runs for their terminals — and where `skipped_run_ids` is empty the
+  state read alone is exact. A `servehttp` retention test drives the
   journal past its bound with the subscriber disconnected and asserts the
   gap is signalled rather than the position silently replayed or
-  silently dropped. The resolve fallback
+  silently dropped; a second covers the T2 shape, where an evicted
+  released pre-start terminal must appear in `skipped_run_ids` and be
+  recoverable from that run's journal. The resolve fallback
   under T3c uses the same journal. The state snapshot is
   the same surface a reconnecting submitter reads to recover the id, so
   every subscriber learns of the admission before the settlement, the
