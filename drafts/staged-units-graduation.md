@@ -477,12 +477,26 @@ No new envelope types. Changes to
   trace carries a catalog (capabilities or `action.tools.list.response`,
   plus any `tools` provided at open), lists or names a tool outside that
   catalog or is `required` or `named` against an empty filtered set. The
-  same condition covers an `output_schema` whose root is not an object
-  schema or that carries an external reference; the validator detects the
-  reference by compiling with the refusing loader, never by resolving it.
-  The validator and the reference adapter therefore reject the same
+  same condition covers an `output_schema` that does not compile. A
+  non-object root and an external reference are the two named cases, but
+  they are not the only ways compilation fails: `{"type": "object",
+  "required": "x"}` is wire-valid, object-rooted, and self-contained, yet
+  no schema compiler will take it. The rule is therefore the general one
+  — any metaschema or compilation failure makes the control
+  unsatisfiable — with the two named cases as instances rather than an
+  enumeration, and the validator detects an external reference by
+  compiling with the refusing loader, never by resolving it. Stating it
+  generally is what keeps the two sides aligned: the reference adapter
+  compiles every requested schema before admission, so anything it
+  refuses must be something the validator also calls unsatisfiable, or an
+  adapter could answer `internal_error` for a schema the reference
+  rejects and escape the typed refusal. The validator and the reference
+  adapter therefore reject the same
   policies: a policy the unit's rules accept is admitted by the
-  reference, and one the reference refuses is diagnosed.
+  reference, and one the reference refuses is diagnosed. Fixture
+  `controls-structured-uncompilable-schema` (`unsatisfiable_control` on
+  the admission; `required` given a string, which the metaschema
+  rejects).
   Like every other gate in this plan the condition is judged on the
   correlated response, never on the request, because the wire requires
   the endpoint to refuse an unsatisfiable control and diagnosing the
@@ -1283,9 +1297,22 @@ No new envelope types. Additive fields:
   `pending_steers` or `pending_interactions` and an omitted field would
   lose it (an absent field would read as an empty queue to a reconnecting
   client); each present entry's `pending_interactions` must equal the
-  validator's set of unresolved interactions for that run
-  (`session_state_mismatch` on omission or on a resolved interaction
-  still listed), a check that lands here with the field so that a
+  validator's set of unresolved interactions for that run, judged across
+  the request/response window rather than at the snapshot's arrival, as
+  the settled-steer history is: state reads are not serialized with
+  lifecycle publication, so an adapter can capture an interaction as
+  pending and emit its resolution before the state response reaches the
+  trace, and the reverse ordering can omit one the validator has not yet
+  seen resolved. Both are valid reads, so an interaction is permitted in
+  the set if it was unresolved at any point between the
+  `session.state.request` and its correlated response, and required only
+  if it was unresolved throughout; an entry naming an interaction that
+  was already resolved before the request, or omitting one still
+  unresolved after the response, is `session_state_mismatch`. The
+  `pending_steers` equality below is bracketed the same way, for the
+  same reason. Fixture `queue-state-interaction-resolved-in-flight`
+  (positive; a snapshot retaining an interaction resolved while the state
+  request was in flight). This check lands here with the field so that a
   T2-only endpoint with a run blocked on a permission or user-input
   interaction cannot emit an entry without the id (T2 fixture
   `queue-state-omits-pending-interaction`); the interaction condition is
@@ -1691,7 +1718,13 @@ Wire:
   "result"? | "error"? }` with exactly one of `started` (an empty object:
   the control participant has begun executing), `result`, or `error`;
   response `{ "interaction_id", "session_id", "run_id", "tool_call_id",
-  "accepted", "reason"? }` (`reason` present only with `accepted: false`:
+  "accepted", "reason"?, "details"? }` (`reason` present only with
+  `accepted: false`, and `details` only alongside it: an object whose one
+  member for now is `settled_by`, the envelope id of the settlement a
+  `already_resolved` refusal points at, required with that reason and
+  absent otherwise — the payload is closed, so the field the validator
+  and the client recovery path depend on has to be declared here and on
+  `protocol.ActionCallResolveResponse` rather than assumed. The reasons:
   `late_acknowledgement`, `repeated_acknowledgement`, `already_resolved`,
   `wrong_responder`, `unknown_interaction`). A refusal can satisfy
   several at once — a foreign responder sending a second `started` is
