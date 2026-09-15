@@ -1718,16 +1718,22 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   both. The daemon therefore resolves a bare cursor only when exactly one
   retained domain reaches that sequence, which covers every single-run
   session — today's behaviour, unchanged — and when more than one does,
-  it does not guess: it emits `oap-replay-gap` carrying the `run_id`s it
-  could not choose between and resumes from the started run's current
+  it does not guess: it emits `oap-replay-gap` naming the candidates in
+  `ambiguous_run_ids` and resumes from the started run's current
   position. A client that can send `?run=` then does; one that cannot
   learns it lost continuity instead of silently receiving another run's
   stream, which is the outcome worth protecting, since a signalled gap is
   recoverable and a wrong run is not. `?run=` remains the way to be
-  unambiguous, and both clients send it from T2 on. `oap-overflow` and
-  `oap-replay-gap` both carry `run_id` (overflow already does) so a client
-  can resume the right run. The stdio frontend's `events` op gains the same
-  optional `run` parameter. `?run=` is still needed even with ordered
+  unambiguous, and both clients send it from T2 on. The payload is stated
+  once, here: `oap-overflow` and `oap-replay-gap` both carry `run_id`, and `run_id` always names the
+  single run whose stream the client is now reading — the run the daemon
+  resumed from, never the ambiguity — so a client can resume the right
+  run (overflow already carries it). Ambiguity does not replace or
+  pluralise `run_id`; it rides an additional optional
+  `ambiguous_run_ids`, present only in the bare-cursor case above and
+  listing every retained domain that reached that sequence, `run_id`
+  among them. The stdio frontend's `events` op gains the same optional
+  `run` parameter. `?run=` is still needed even with ordered
   delivery: a drop between one run's terminal and the next run's first
   envelope leaves the client holding the finished run's cursor while the
   next run is already the started one. Stream end changes with it: today
