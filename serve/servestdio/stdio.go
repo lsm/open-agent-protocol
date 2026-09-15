@@ -147,22 +147,24 @@ var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame lim
 var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")
 
 // Run serves requests from in until the host closes it (clean end), the
-// context ends, or a line violates the framing (fail closed). Responses are
-// written to out by exactly one writer goroutine, one JSON object per
-// LF-terminated line; that writer drains the lines already admitted, bounded
-// by Options.ShutdownTimeout — a host that stops reading stdout cannot
-// stretch shutdown past it, and a stalled drain is abandoned and reported as
-// ErrShutdownStalled. The frontend is a codec and owns no session lifetime:
-// the caller sweeps the hub after Run returns, on every exit path. Run
-// itself never writes to stderr; it returns the failure for the caller to
-// report.
+// context ends, the output fails, or a line violates the framing (fail
+// closed). Responses are written to out by exactly one writer goroutine, one
+// JSON object per LF-terminated line; a write failure ends serving — a host
+// that stopped reading stdout receives nothing further, so no work is
+// admitted behind its back — and the failure is returned once the writer
+// drains the lines already admitted, bounded by Options.ShutdownTimeout: a
+// stalled drain is abandoned and reported as ErrShutdownStalled. The
+// frontend is a codec and owns no session lifetime: the caller sweeps the
+// hub after Run returns, on every exit path. Run itself never writes to
+// stderr; it returns the failure for the caller to report.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	lines := make(chan []byte, s.writeQueue)
 	stop := make(chan struct{})
+	writerFailed := make(chan struct{}, 1)
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- writeLines(out, lines, stop) }()
+	go func() { writerDone <- writeLines(out, lines, stop, writerFailed) }()
 
-	err := s.serveLoop(ctx, in, lines)
+	err := s.serveLoop(ctx, in, lines, writerFailed)
 
 	close(stop)
 	drainWindow := time.NewTimer(s.shutdown)
@@ -204,18 +206,21 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult) {
 	}
 }
 
-// serveLoop reads request frames and serves each in order until a clean end
-// or a framing defect. Reading runs on its own goroutine so a context end is
-// observed while waiting for the next line, not only between lines — an
-// embedding host that cancels without also closing stdin still gets Run
-// back. The loop-top pre-check narrows, but cannot eliminate — a select
-// chooses uniformly among ready cases, so a frame arriving with the
-// cancellation can still be taken — the dispatch of frames under an
-// already-dead context; the bounded teardown owns what remains. A framing
-// defect — anything readFrame or decodeRequest refuses — fails the frontend
-// closed as *MalformedLineError; op-level refusals are responses the host
-// can correct, and the loop reads on past them.
-func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byte) error {
+// serveLoop reads request frames and serves each in order until a clean end,
+// an output failure, or a framing defect. Reading runs on its own goroutine
+// so a context end is observed while waiting for the next line, not only
+// between lines — an embedding host that cancels without also closing stdin
+// still gets Run back — and writerFailed carries the writer's failure the
+// same way, so a host that stopped reading stdout ends serving instead of
+// admitting work whose responses are silently discarded. The loop-top
+// pre-check narrows, but cannot eliminate — a select chooses uniformly among
+// ready cases, so a frame arriving with the cancellation can still be taken —
+// the dispatch of frames under an already-dead context; the bounded teardown
+// owns what remains. A framing defect — anything readFrame or decodeRequest
+// refuses — fails the frontend closed as *MalformedLineError; op-level
+// refusals are responses the host can correct, and the loop reads on past
+// them.
+func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byte, writerFailed <-chan struct{}) error {
 	frames := make(chan frameResult)
 	go readFrames(in, s.frameLimit, frames)
 	number := 0
@@ -223,10 +228,14 @@ func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byt
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-writerFailed:
+			return nil
 		default:
 		}
 		select {
 		case <-ctx.Done():
+			return nil
+		case <-writerFailed:
 			return nil
 		case result := <-frames:
 			number++
@@ -249,10 +258,12 @@ func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byt
 // every marshaled line and writes it whole, so lines never interleave. It
 // ends when stopped, draining the lines already queued; a write failure (the
 // host closed stdout) is remembered while the drain continues, so producers
-// blocked on the channel still hand off instead of deadlocking. The channel
-// is never closed: an abandoned producer parks on its send and is reclaimed
-// by process exit rather than panicking on a closed channel.
-func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}) error {
+// blocked on the channel still hand off instead of deadlocking, and is
+// signalled on failed exactly once so serving stops admitting work behind a
+// dead output. The channel is never closed: an abandoned producer parks on
+// its send and is reclaimed by process exit rather than panicking on a
+// closed channel.
+func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, failed chan<- struct{}) error {
 	var failure error
 	write := func(line []byte) {
 		if failure != nil {
@@ -260,6 +271,7 @@ func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}) error 
 		}
 		if _, err := out.Write(append(line, '\n')); err != nil {
 			failure = err
+			failed <- struct{}{} // buffered one-slot signal, sent only on the first failure
 		}
 	}
 	for {

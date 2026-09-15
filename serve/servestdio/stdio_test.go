@@ -385,6 +385,33 @@ func TestCancellationReturnsDespiteStoppedOutput(t *testing.T) {
 	}
 }
 
+// TestWriterFailureEndsServing drives the half-closed host: stdout fails
+// while stdin stays open, and the frontend must stop admitting work and
+// return the write failure instead of serving on with every response
+// silently discarded.
+func TestWriterFailureEndsServing(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() }) // stdin stays open through the assertion
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, failWriter{}) }()
+	if _, err := stdinWriter.Write([]byte("{\"id\":1,\"op\":\"adapters\"}\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("Run returned %v, want the writer failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer failure did not end serving while stdin stayed open")
+	}
+}
+
 // TestFrameLimitFloorRejectsUnusableLimits guards the floor: a limit no
 // correlated refusal could fit is rejected at construction, not discovered
 // mid-session.
@@ -446,8 +473,9 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
+	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop) }()
+	go func() { done <- writeLines(&buf, lines, stop, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`)
 	lines <- []byte(`{"id":2,"ok":true}`)
 	close(stop)
@@ -471,13 +499,19 @@ func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
+	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(failWriter{}, lines, stop) }()
+	go func() { done <- writeLines(failWriter{}, lines, stop, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
 	lines <- []byte(`{"id":2,"ok":true}`) // dropped, but still consumed
 	close(stop)
 	if err := <-done; !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("writeLines returned %v, want the remembered write failure", err)
+	}
+	select {
+	case <-failed:
+	default:
+		t.Fatal("the write failure was not signalled")
 	}
 	select {
 	case line := <-lines:
@@ -493,8 +527,9 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte)
 	stop := make(chan struct{})
+	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop) }()
+	go func() { done <- writeLines(&buf, lines, stop, failed) }()
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatalf("writeLines returned %v", err)
