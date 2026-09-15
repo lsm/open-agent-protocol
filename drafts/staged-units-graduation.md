@@ -233,9 +233,15 @@ declared envelope type — and each control member a pack adds to an
 existing payload, for which see `payload_members` below — to the
 capability key that must be advertised for it,
 which containment already requires to be one of the pack's own. Every
-declared type must appear in `gates` or be declared ungated, stated
-rather than omitted, so a missing entry is a load refusal and not a
-silent hole. The stateful validator consumes it at the same dispatch
+declared `request` and `event` must appear in `gates` or be declared
+ungated, stated rather than omitted, so a missing entry is a load
+refusal and not a silent hole; a `response` is deliberately excluded,
+because it derives its gate from the request it answers through
+`replies_to` (the role rule below) and an entry of its own would be a
+second, possibly disagreeing, source for the same gate — so a `response`
+that appears in `gates` is itself a load refusal (`pack_response_gated`),
+and an ordinary request/response pack lists the request and nothing
+else. The stateful validator consumes it at the same dispatch
 point the core keys use: a packed type resolves its feature key through
 the loaded pack's `gates` instead of a hard-coded string, and the
 existing gate then applies unchanged — unadvertised means the typed
@@ -368,6 +374,21 @@ and `ext-pack-restates-core-member` (load refusal).
   under their own base URI and contribute branches to the envelope
   `oneOf`; the tolerant fallback branch stays, and now catches only types
   no loaded pack claims.
+- Pack compilation resolves references through the same refusing loader
+  T1 compiles `output_schema` with, restricted to the resources actually
+  registered: the core bundle and the loaded packs, each under its own
+  base URI. The engine's default loader reads local files (the reason T1
+  refuses an external `$ref` in a control), and a third-party pack is a
+  document a user loads from someone else, so compiling it with the
+  default loader would let a `$ref` reach paths outside the pack on the
+  loading machine. A `$ref` a pack schema cannot satisfy from the
+  registered set — a file path, an unregistered URI, another pack's base
+  URI it did not declare a dependency on — is a load refusal
+  (`pack_external_ref`) rather than a compile error surfaced later, and
+  the validator detects it by compiling with the refusing loader, never
+  by resolving it, exactly as T1 does. Fixture `ext-pack-external-ref`
+  (load refusal; a pack schema carrying a `$ref` to a path outside its
+  own resources).
 - A contributed branch must pin `type` to a `const` naming exactly one of
   the pack's declared `envelope_types`, and that is verified at load. The
   check is not bookkeeping: `oneOf` requires exactly one match, so a pack
@@ -437,7 +458,8 @@ and `ext-pack-restates-core-member` (load refusal).
   `pack_id_collision`, `pack_branch_undeclared_type`,
   `pack_branch_unpinned`, `pack_ungated_type`,
   `pack_restates_core_member`, `pack_member_target_unknown`,
-  `pack_role_undeclared`, `pack_reply_target_unknown`,
+  `pack_role_undeclared`, `pack_response_gated`,
+  `pack_reply_target_unknown`, `pack_external_ref`,
   `pack_fixture_claims_core_unit`, and
   `ext_claim_without_pack`, one per load refusal this section names.
   The runner asserts that loading the named pack fails with exactly
@@ -477,8 +499,10 @@ individually valid packs whose ids are `com.example` and
 neither is at fault alone) and `ext-packs-duplicate-ids` (the same
 refusal for two packs sharing one id, the degenerate prefix case), `ext-pack-branch-undeclared-type`
 (a contributed branch whose `type` `const` is not among the pack's
-declared `envelope_types`; load refusal), `ext-pack-ungated-type` (a declared envelope type absent from `gates`
-and not declared ungated; load refusal), `ext-pack-role-undeclared` (a
+declared `envelope_types`; load refusal), `ext-pack-ungated-type` (a declared `request` or `event` absent from
+`gates` and not declared ungated; load refusal),
+`ext-pack-response-gated` (a `response` given a `gates` entry of its
+own instead of deriving it through `replies_to`; load refusal), `ext-pack-role-undeclared` (a
 declared type with no `role`; load refusal),
 `ext-pack-reply-target-unknown` (a `response` whose `replies_to` names
 no declared `request` of the pack; load refusal), `ext-packed-type-unadvertised`
