@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lsm/open-agent-protocol/serve"
@@ -43,17 +44,24 @@ import (
 // bounded line, refused rather than split — applied to the framing.
 const DefaultFrameLimit = 16 << 20
 
-// minFrameLimit is the smallest usable FrameLimit: every control line — an
-// error response with no result — encodes well under it, so a correlated
-// answer always exists even when a result has to be refused. New rejects
-// smaller limits rather than accepting a configuration whose own refusals
-// could not be delivered.
+// minFrameLimit is the smallest usable FrameLimit: the correlated refusal —
+// respond's fixed-size response_too_large fallback, which encodes well under
+// this bound — must always be framable, so an oversized result still gets a
+// correlated answer even at the tightest limit. Control lines themselves are
+// NOT all under the bound (hostile content can swell an error message past
+// it); the fallback, not control-line size, is what the floor buys. New
+// rejects smaller limits rather than accepting a configuration whose own
+// refusals could not be delivered.
 const minFrameLimit = 256
 
 // defaultWriteQueue bounds the lines buffered for the writer goroutine;
 // beyond it producers block, which is the backpressure onto the single
 // consumer of stdout.
 const defaultWriteQueue = 256
+
+// DefaultShutdownTimeout bounds the final output drain once serving ends; a
+// host that stops draining stdout cannot stretch shutdown past it.
+const DefaultShutdownTimeout = 5 * time.Second
 
 // Options tunes the frontend. The zero value is usable.
 type Options struct {
@@ -63,6 +71,11 @@ type Options struct {
 	// WriteQueue bounds the lines buffered for the writer goroutine before
 	// producers block; zero means defaultWriteQueue.
 	WriteQueue int
+	// ShutdownTimeout bounds the final output drain once serving ends — the
+	// writer may be parked inside out.Write on a pipe the host stopped
+	// reading, and shutdown never depends on the host's pipe; zero means
+	// DefaultShutdownTimeout.
+	ShutdownTimeout time.Duration
 	// Logger receives lifecycle diagnostics. Envelope payloads and resolved
 	// environment values are never written to it.
 	Logger *log.Logger
@@ -72,10 +85,11 @@ type Options struct {
 // schema/v0.1 envelopes, exactly as servehttp does; the framing carries the
 // id correlation HTTP gets from its request/response pairing.
 type Server struct {
-	hub        *serve.Hub
-	frameLimit int
-	writeQueue int
-	logger     *log.Logger
+	hub         *serve.Hub
+	frameLimit  int
+	writeQueue  int
+	shutdown    time.Duration
+	logger      *log.Logger
 }
 
 // New returns a frontend over the hub.
@@ -94,11 +108,15 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if writeQueue <= 0 {
 		writeQueue = defaultWriteQueue
 	}
+	shutdown := options.ShutdownTimeout
+	if shutdown <= 0 {
+		shutdown = DefaultShutdownTimeout
+	}
 	logger := options.Logger
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, frameLimit: frameLimit, writeQueue: writeQueue, logger: logger}, nil
+	return &Server{hub: hub, frameLimit: frameLimit, writeQueue: writeQueue, shutdown: shutdown, logger: logger}, nil
 }
 
 // Hub returns the hub the frontend serves.
@@ -122,13 +140,22 @@ func (e *MalformedLineError) Error() string {
 // than emitted.
 var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame limit")
 
+// ErrShutdownStalled reports that the final output drain outlived its
+// bounded window: the host stopped reading stdout, so the writer was parked
+// inside out.Write and was abandoned rather than waited on. The caller's
+// session sweep and the process exit still happen.
+var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")
+
 // Run serves requests from in until the host closes it (clean end), the
 // context ends, or a line violates the framing (fail closed). Responses are
 // written to out by exactly one writer goroutine, one JSON object per
-// LF-terminated line; that writer drains every line already admitted before
-// Run returns. The frontend is a codec and owns no session lifetime: the
-// caller sweeps the hub after Run returns, on every exit path. Run itself
-// never writes to stderr; it returns the failure for the caller to report.
+// LF-terminated line; that writer drains the lines already admitted, bounded
+// by Options.ShutdownTimeout — a host that stops reading stdout cannot
+// stretch shutdown past it, and a stalled drain is abandoned and reported as
+// ErrShutdownStalled. The frontend is a codec and owns no session lifetime:
+// the caller sweeps the hub after Run returns, on every exit path. Run
+// itself never writes to stderr; it returns the failure for the caller to
+// report.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	lines := make(chan []byte, s.writeQueue)
 	stop := make(chan struct{})
@@ -138,8 +165,17 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	err := s.serveLoop(ctx, in, lines)
 
 	close(stop)
-	if writeErr := <-writerDone; err == nil {
-		err = writeErr
+	drainWindow := time.NewTimer(s.shutdown)
+	defer drainWindow.Stop()
+	select {
+	case writeErr := <-writerDone:
+		if err == nil {
+			err = writeErr
+		}
+	case <-drainWindow.C:
+		if err == nil {
+			err = ErrShutdownStalled
+		}
 	}
 	return err
 }
@@ -172,11 +208,13 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult) {
 // or a framing defect. Reading runs on its own goroutine so a context end is
 // observed while waiting for the next line, not only between lines — an
 // embedding host that cancels without also closing stdin still gets Run
-// back, and the pre-check keeps a frame that raced the cancellation from
-// being dispatched under an already-dead context. A framing defect —
-// anything readFrame or decodeRequest refuses — fails the frontend closed as
-// *MalformedLineError; op-level refusals are responses the host can correct,
-// and the loop reads on past them.
+// back. The loop-top pre-check narrows, but cannot eliminate — a select
+// chooses uniformly among ready cases, so a frame arriving with the
+// cancellation can still be taken — the dispatch of frames under an
+// already-dead context; the bounded teardown owns what remains. A framing
+// defect — anything readFrame or decodeRequest refuses — fails the frontend
+// closed as *MalformedLineError; op-level refusals are responses the host
+// can correct, and the loop reads on past them.
 func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byte) error {
 	frames := make(chan frameResult)
 	go readFrames(in, s.frameLimit, frames)
@@ -277,9 +315,9 @@ func readFrame(reader *bufio.Reader, limit int) ([]byte, error) {
 }
 
 // requestLine is one host → daemon line. The id correlates the response; the
-// params each op accepts are enforced per op, so a well-formed line carrying
-// params its op does not define is refused as a response, not a framing
-// defect.
+// params each op accepts are enforced per op by presence, so a well-formed
+// line carrying params its op does not define is refused as a response, not
+// a framing defect.
 type requestLine struct {
 	ID        *int64          `json:"id"`
 	Op        string          `json:"op"`
@@ -287,13 +325,18 @@ type requestLine struct {
 	SessionID string          `json:"session_id,omitempty"`
 	After     json.RawMessage `json:"after,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
+
+	// present records which keys the raw object actually carried, set by
+	// decodeRequest: the per-op shape check refuses on presence, not value,
+	// so a supplied-but-empty or null param is still supplied.
+	present map[string]bool
 }
 
 // decodeRequest parses one frame into a request line. Anything that is not a
-// JSON object with exactly the protocol's fields and a numeric id — invalid
-// JSON, a non-object, an unknown field, a mistyped or missing id — is a
-// framing defect the daemon fails closed on: the host speaks a protocol this
-// frontend cannot correlate.
+// JSON object carrying exactly the protocol's fields, each key once, with a
+// numeric id — invalid JSON, a non-object, an unknown field, a repeated key,
+// a mistyped or missing id — is a framing defect the daemon fails closed on:
+// the host speaks a protocol this frontend cannot correlate.
 func decodeRequest(frame []byte) (requestLine, error) {
 	var request requestLine
 	decoder := json.NewDecoder(bytes.NewReader(frame))
@@ -308,6 +351,11 @@ func decodeRequest(frame []byte) (requestLine, error) {
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return requestLine{}, errors.New("invalid JSON request: trailing data after the request object")
 	}
+	present, err := scanKeys(frame)
+	if err != nil {
+		return requestLine{}, fmt.Errorf("invalid JSON request: %v", trimMessage(err.Error()))
+	}
+	request.present = present
 	if request.ID == nil {
 		return requestLine{}, errors.New("invalid JSON request: id is required")
 	}
@@ -317,13 +365,50 @@ func decodeRequest(frame []byte) (requestLine, error) {
 	return request, nil
 }
 
-// send marshals one output line onto the writer channel. The frame limit
-// bounds both directions: a line whose encoding exceeds it could not be
-// carried by a host enforcing the same limit, so it is refused (and the
-// caller surfaces its own bounded terminal condition) rather than emitted; a
-// value that cannot marshal — near-unreachable, as every line type is a
-// closed struct over already validated JSON — is refused the same way.
-func (s *Server) send(lines chan<- []byte, value any) error {
+// scanKeys walks the raw request object's keys, reporting each key's
+// presence and refusing repeats: Go's decoder keeps the last value of a
+// repeated key, which would make the executed request host-parser-dependent,
+// so a duplicate key is a framing defect rather than a silent last-wins.
+func scanKeys(frame []byte) (map[string]bool, error) {
+	decoder := json.NewDecoder(bytes.NewReader(frame))
+	open, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delim, ok := open.(json.Delim); !ok || delim != '{' {
+		return nil, errors.New("request is not a JSON object")
+	}
+	present := make(map[string]bool)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, isString := keyToken.(string)
+		if !isString {
+			return nil, errors.New("request key is not a string")
+		}
+		if present[key] {
+			return nil, fmt.Errorf("repeated key %q", key)
+		}
+		present[key] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+	}
+	return present, nil
+}
+
+// send marshals one output line onto the writer channel, abandoning the send
+// when the context ends so a full queue behind a stopped consumer cannot
+// park the caller past cancellation. The frame limit bounds both directions:
+// a line whose encoding exceeds it could not be carried by a host enforcing
+// the same limit, so it is refused (and the caller surfaces its own bounded
+// terminal condition) rather than emitted; a value that cannot marshal —
+// near-unreachable, as every line type is a closed struct over already
+// validated JSON — is refused the same way.
+func (s *Server) send(ctx context.Context, lines chan<- []byte, value any) error {
 	line, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("encode line: %w", err)
@@ -331,6 +416,10 @@ func (s *Server) send(lines chan<- []byte, value any) error {
 	if len(line) > s.frameLimit {
 		return ErrLineTooLarge
 	}
-	lines <- line
-	return nil
+	select {
+	case lines <- line:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

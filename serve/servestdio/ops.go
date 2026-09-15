@@ -34,25 +34,25 @@ type wireError struct {
 // serveRequest executes one op and writes its response.
 func (s *Server) serveRequest(ctx context.Context, request requestLine, lines chan<- []byte) {
 	result, werr := s.dispatch(ctx, request)
-	s.respond(lines, request, result, werr)
+	s.respond(ctx, lines, request, result, werr)
 }
 
 // respond writes one op's correlated response line. A response whose
 // encoding exceeds the frame limit is replaced by the bounded
 // response_too_large refusal, so an oversized result still gets a
 // correlated, framable answer.
-func (s *Server) respond(lines chan<- []byte, request requestLine, result json.RawMessage, werr *wireError) {
+func (s *Server) respond(ctx context.Context, lines chan<- []byte, request requestLine, result json.RawMessage, werr *wireError) {
 	response := responseLine{ID: *request.ID, OK: werr == nil, Result: result}
 	if werr != nil {
 		response.Result = json.RawMessage("null")
 		response.Error = werr
 	}
-	if err := s.send(lines, response); err != nil {
+	if err := s.send(ctx, lines, response); err != nil {
 		s.logger.Printf("servestdio: response %d: %v", *request.ID, err)
 		fallback := responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: &wireError{
 			Code: "response_too_large", Message: "the encoded response exceeds the frame limit",
 		}}
-		if fallbackErr := s.send(lines, fallback); fallbackErr != nil {
+		if fallbackErr := s.send(ctx, lines, fallback); fallbackErr != nil {
 			s.logger.Printf("servestdio: response %d: %v", *request.ID, fallbackErr)
 		}
 	}
@@ -78,27 +78,21 @@ const (
 	paramAfter   = "after"
 )
 
-// only refuses a well-formed line that carries params its op does not define:
-// the protocol is closed, and speaking the wrong shape is a request error the
-// host can correct — unlike an unknown field, which fails the whole frontend
-// closed.
+// only refuses a well-formed line that carries params its op does not define.
+// Presence is the rule — a supplied-but-empty or null param is still supplied
+// — because the protocol is closed: speaking the wrong shape is a request
+// error the host can correct, unlike an unknown field, which fails the whole
+// frontend closed.
 func (request requestLine) only(fields ...string) *wireError {
 	allowed := make(map[string]bool, len(fields))
 	for _, field := range fields {
 		allowed[field] = true
 	}
 	var extra []string
-	if !allowed[paramAdapter] && request.Adapter != "" {
-		extra = append(extra, paramAdapter)
-	}
-	if !allowed[paramSession] && request.SessionID != "" {
-		extra = append(extra, paramSession)
-	}
-	if !allowed[paramAfter] && len(request.After) > 0 && string(request.After) != "null" {
-		extra = append(extra, paramAfter)
-	}
-	if !allowed[paramRequest] && len(request.Request) > 0 && string(request.Request) != "null" {
-		extra = append(extra, paramRequest)
+	for _, param := range []string{paramAdapter, paramSession, paramAfter, paramRequest} {
+		if !allowed[param] && request.present[param] {
+			extra = append(extra, param)
+		}
 	}
 	if len(extra) == 0 {
 		return nil

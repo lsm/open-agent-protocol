@@ -196,12 +196,22 @@ func TestAdaptersOpListsRegistry(t *testing.T) {
 
 // TestAdaptersOpRefusesParams pins the closed shape: a well-formed line
 // carrying a param the op does not define is a request error, not a framing
-// defect — the frontend stays up.
+// defect — the frontend stays up. Presence is the rule: a supplied-but-empty
+// or null param is still supplied.
 func TestAdaptersOpRefusesParams(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	f := startFrontend(t, hub, Options{})
-	f.send(`{"id":1,"op":"adapters","session_id":"s"}`)
-	requireCode(t, f.expectResponse(1), "invalid_request")
+	cases := []struct{ name, line string }{
+		{"value param", `{"id":1,"op":"adapters","session_id":"s"}`},
+		{"empty param", `{"id":1,"op":"adapters","adapter":""}`},
+		{"null param", `{"id":1,"op":"adapters","after":null}`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			f.send(testCase.line)
+			requireCode(t, f.expectResponse(1), "invalid_request")
+		})
+	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
@@ -245,6 +255,7 @@ func TestMalformedLinesFailClosed(t *testing.T) {
 		{name: "unknown field", line: `{"id":2,"op":"adapters","extra":1}`},
 		{name: "trailing object", line: `{"id":2,"op":"adapters"} {"id":3}`},
 		{name: "trailing closer", line: `{"id":2,"op":"adapters"}}`},
+		{name: "duplicate key", line: `{"id":1,"id":2,"op":"adapters"}`},
 		{name: "empty line", line: ""},
 		{name: "carriage return", line: "{\"id\":2,\"op\":\"adapters\"}\r"},
 		{name: "invalid utf8", line: "{\"id\":2,\"op\":\"\xff\"}"},
@@ -325,6 +336,50 @@ func TestContextEndInterruptsIdleInput(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancellation did not interrupt the idle input read")
+	}
+}
+
+// blockedWriter parks every write until released, standing in for a host
+// that stopped reading stdout.
+type blockedWriter struct{ release chan struct{} }
+
+func (b blockedWriter) Write([]byte) (int, error) {
+	<-b.release
+	return 0, io.ErrClosedPipe
+}
+
+// TestCancellationReturnsDespiteStoppedOutput drives the stalled-output
+// scenario end to end: with a one-slot queue and a writer parked inside
+// out.Write, the third response's send would park the serving loop forever;
+// cancellation must still return Run inside the bounded drain window, with
+// the abandoned writer reported as ErrShutdownStalled.
+func TestCancellationReturnsDespiteStoppedOutput(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx, stdinReader, blockedWriter{release: release}) }()
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not return Run against the stopped output")
 	}
 }
 
