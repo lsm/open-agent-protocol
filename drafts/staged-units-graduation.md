@@ -1028,8 +1028,10 @@ overlap, ordering, and state.
 No new envelope types. Additive fields:
 
 - `session.state` gains `active_runs`: an ordered list of every nonterminal
-  run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?
-  }]`, in admission order, with `queue_position` on queued entries
+  run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?,
+  "as_of_sequence"? }]`, in admission order, with `as_of_sequence` naming
+  the last sequence of that run the entry reflects (the capture position
+  the validator judges the entry at, below), with `queue_position` on queued entries
   (1-based). `active_run_id` keeps naming the started run, or is absent when
   only queued runs remain (session status `queued`). Each entry also carries
   `pending_interactions: [interaction_id]` (additive), the run's
@@ -1279,21 +1281,33 @@ No new envelope types. Additive fields:
   terminates, so the trace still counts it nonterminal and would report
   `queue_limit_exceeded` against a conforming adapter. The validator
   cannot see the settlement, and waiting for an optional state read is
-  not a rule. So while the ordering rule is withholding anything — that
-  is, while any earlier-admitted run in the session is nonterminal, the
-  condition under which a later run's pre-start terminal cannot yet be
-  published — a bound breach is not diagnosed at the admission. It is not
-  forgotten either: the withheld terminals arrive when the earlier run
-  terminates, the counts reconcile against them, and an admission that
-  really did exceed the bound is diagnosed then, on the envelope that
-  proves it. The deferral costs a later diagnosis and buys never
-  convicting an adapter for capacity the trace was not yet allowed to
-  see. Fixtures `queue-reuses-slot-of-held-terminal` (positive; a queued
+  not a rule. Nor is a blanket deferral: "an earlier-admitted run is
+  nonterminal" is true of essentially every queued admission, so
+  suspending the check on it would suspend it always, and a trace that
+  ends before that run terminates — a conformance trace, a long session —
+  would never reconcile and an over-admitting adapter would simply pass.
+  The adapter therefore states the fact instead of the validator
+  guessing it. A `queued` admission that reuses a reservation whose
+  pre-start terminal is still withheld names that run in
+  `released_run_id` on the `session.message.submit.response` (additive,
+  present only in that case). The claim is narrow, checkable, and
+  self-punishing: the deferral applies to that one named reservation and
+  no other, so an admission over the bound with nothing released is
+  diagnosed immediately as before; and when the withheld terminal is
+  published it must show that run settling pre-start, so a fabricated
+  `released_run_id` — a run that promotes normally, or never settles — is
+  `queue_limit_exceeded` on the admission that claimed it, at the point
+  the claim is disproved. An adapter that cannot or will not disclose the
+  release simply waits for the terminal to publish before reusing the
+  slot, which is always available to it. Fixtures
+  `queue-reuses-slot-of-held-terminal` (positive; a queued
   run cancelled pre-start under `max_queued_runs_per_session: 1`, a new
-  queued admission before the held terminal is published, then both
-  terminals in order) and `queue-over-limit-behind-held-terminal`
-  (`queue_limit_exceeded` at the reconciliation; two new admissions where
-  only one slot was freed).
+  queued admission naming it in `released_run_id`, then both
+  terminals in order), `queue-over-limit-behind-held-terminal`
+  (`queue_limit_exceeded` at the admission; a second queued admission
+  with no release to name) and `queue-false-released-run`
+  (`queue_limit_exceeded`; a `released_run_id` naming a run that
+  afterwards promotes and completes normally).
   In-flight reservations are
   such a condition. Concurrent submits contend for the last slot, and the
   one that takes it may still be awaiting its own response when a later
@@ -1340,22 +1354,29 @@ No new envelope types. Additive fields:
   `pending_steers` or `pending_interactions` and an omitted field would
   lose it (an absent field would read as an empty queue to a reconnecting
   client); each present entry's `pending_interactions` must equal the
-  validator's set of unresolved interactions for that run, judged across
-  the request/response window rather than at the snapshot's arrival, as
-  the settled-steer history is: state reads are not serialized with
-  lifecycle publication, so an adapter can capture an interaction as
-  pending and emit its resolution before the state response reaches the
-  trace, and the reverse ordering can omit one the validator has not yet
-  seen resolved. Both are valid reads, so an interaction is permitted in
-  the set if it was unresolved at any point between the
-  `session.state.request` and its correlated response, and required only
-  if it was unresolved throughout; an entry naming an interaction that
-  was already resolved before the request, or omitting one still
-  unresolved after the response, is `session_state_mismatch`. The
-  `pending_steers` equality below is bracketed the same way, for the
-  same reason. Fixture `queue-state-interaction-resolved-in-flight`
-  (positive; a snapshot retaining an interaction resolved while the state
-  request was in flight). This check lands here with the field so that a
+  validator's set of unresolved interactions for that run as of the
+  position the entry was captured at, which the entry states: `active_runs[]`
+  gains `as_of_sequence`, the last sequence of that run the snapshot
+  reflects. Bracketing by the request and response envelopes is not
+  enough, as it is for the session-level settled-steer history — that one
+  is hub-tracked, so the hub's own two positions do bound it — because a
+  run's state moves on the adapter's timeline, not the trace's. An
+  interaction can resolve internally before the adapter captures state
+  while its lifecycle event is drained only after the state response, so
+  the validator would see it unresolved across the whole window and
+  diagnose an accurate omission. State reads are not serialized with
+  lifecycle publication and should not be; the position makes the read
+  self-describing instead. The entry is then judged exactly: an
+  interaction unresolved at `as_of_sequence` must be listed, one resolved
+  by then must not be, and `session_state_mismatch` otherwise, with no
+  window and no guessing. `as_of_sequence` must not exceed the run's
+  tracked cursor when the response arrives (`session_state_mismatch`, so
+  a snapshot cannot claim a position the run has not reached).
+  `pending_steers` is judged at the same position, for the same reason.
+  Fixtures `queue-state-interaction-resolved-in-flight`
+  (positive; a snapshot whose `as_of_sequence` precedes a resolution
+  published before the state response) and
+  `queue-state-as-of-ahead-of-run` (`session_state_mismatch`). This check lands here with the field so that a
   T2-only endpoint with a run blocked on a permission or user-input
   interaction cannot emit an entry without the id (T2 fixture
   `queue-state-omits-pending-interaction`); the interaction condition is
