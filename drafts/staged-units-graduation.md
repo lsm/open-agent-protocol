@@ -792,8 +792,12 @@ serve one catalog for its lifetime.
   whose run event drains after the response — the validator would observe
   only the old model throughout and diagnose an accurate catalog. The
   response therefore carries its own position: `models.response` gains
-  `as_of_run_sequence`, the run and sequence of the last model-affecting
-  event it reflects, absent when it reflects none. Where it is present
+  `as_of_model_event`, `{ "run_id", "sequence" }`, naming the last
+  model-affecting event it reflects, absent when it reflects none. It is
+  compound, and the same shape as `session.state.as_of.model_run_sequence`
+  beside it, because sequences restart per run: a session with two
+  model-mutating runs can hold several events at one sequence value, and
+  a bare number could not say which an ahead-of-trace catalog meant. Where it is present
   the value is judged at that point rather than across the window, and an
   entry naming a position the trace has not reached is held and
   reconciled when it arrives, as a snapshot's `as_of_sequence` is; where
@@ -802,7 +806,7 @@ serve one catalog for its lifetime.
   `models-current-model-mutation-in-flight` (positive; a catalog
   capturing the pre-mutation model whose response follows the mutation's
   application) and `models-current-model-ahead-of-trace` (positive; a
-  catalog reporting the post-mutation model with an `as_of_run_sequence`
+  catalog reporting the post-mutation model with an `as_of_model_event`
   the mutation's event only reaches afterwards). The model the validator tracks is
   (`sessionTrack.currentModel`: the latest
   `session.open.response` or `session.state` value, advanced by a
@@ -3587,8 +3591,17 @@ phase therefore begins with a tolerance step that lands before T1 and that
 every later unit relies on:
 
 - `validation.CompileSchemas` gains a tolerant variant, used by the Go
-  client's dev-mode validation and by `oap validate` when it is pointed at
-  a live endpoint rather than a fixture. It compiles the same bundle with
+  client's dev-mode validation and by `oap validate` when it is asked
+  for it. Which mode applies has to be a choice the caller makes, not
+  one inferred from the input: `runValidate` takes file operands only
+  (`cmd/oap/main.go:65-90`), and a live envelope saved to a file is
+  indistinguishable from a fixture, so inferring would either weaken the
+  typo-catching the fixture path exists for or fail the
+  forward-compatibility the live path needs. `oap validate` therefore
+  gains `-mode strict|tolerant`, defaulting to `strict` so the fixture
+  behaviour every existing invocation relies on is unchanged, and the
+  tolerant variant is what `-mode tolerant` and the Go client's dev-mode
+  validation compile. Fixture validation in CI keeps the default. It compiles the same bundle with
   `additionalProperties: false` lifted from payload objects (unknown
   members are ignored, as the wire rule requires), with extensible leaf
   `enum` constraints inside payloads lifted to their base type (an
