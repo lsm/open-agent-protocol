@@ -66,16 +66,26 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "human", "output format: human or json")
+	// The mode is the caller's stated choice, never inferred from the input:
+	// a live envelope saved to a file is indistinguishable from a fixture, so
+	// inferring would either weaken the typo-catching the fixture path exists
+	// for or fail the forward compatibility the live path needs. strict is
+	// the default so every existing invocation is unchanged.
+	modeFlag := fs.String("mode", string(validation.ModeStrict), "validation mode: strict (the bundle as published) or tolerant (the extension rules: unknown fields, enum values, and envelope types are accepted)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *format != "human" && *format != "json" {
 		return fmt.Errorf("unsupported output format %q", *format)
 	}
+	mode, err := validation.ParseMode(*modeFlag)
+	if err != nil {
+		return err
+	}
 	if fs.NArg() == 0 {
 		return errors.New("validate requires at least one file")
 	}
-	validator, err := validation.New()
+	validator, err := validation.NewWith(validation.Options{Mode: mode})
 	if err != nil {
 		return err
 	}

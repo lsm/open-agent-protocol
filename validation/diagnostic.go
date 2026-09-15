@@ -12,6 +12,10 @@ const (
 	PhaseDecode   Phase = "decode"
 	PhaseSchema   Phase = "schema"
 	PhaseSemantic Phase = "semantic"
+	// PhaseLoad is the phase of a fixture whose expectation is that loading a
+	// resource — an extension pack — fails before any trace is read. It is
+	// what a `load-invalid` manifest entry asserts.
+	PhaseLoad Phase = "load"
 )
 
 const (

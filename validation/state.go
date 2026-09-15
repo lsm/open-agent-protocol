@@ -76,6 +76,11 @@ type state struct {
 	initialized       bool
 	features          map[string]protocol.SupportLevel
 	recoveries        map[protocol.SessionID]*recoveryExpectation
+	// tolerant lets an envelope of unknown type take part in the
+	// type-independent bookkeeping its wire scope implies, instead of being
+	// skipped. Without it a tolerated unknown run event at sequence N would be
+	// ignored and the next known event at N+1 diagnosed as sequence_gap.
+	tolerant bool
 }
 
 func newState(f string) *state {
@@ -314,8 +319,22 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	default:
 		if isRunEvent(e.Type) {
 			s.runEvent(i, line, e)
+		} else if s.tolerant && !isKnownType(e.Type) && e.RunID != "" && e.Sequence != nil {
+			// Tolerant mode classifies an unknown type by its wire scope: an
+			// envelope carrying both run_id and sequence is a run-scoped event
+			// and enters the type-independent bookkeeping (scope agreement,
+			// an accepted admission, sequence contiguity, terminality). One
+			// carrying session_id alone is session-scoped and advances no
+			// cursor; one carrying neither touches no bookkeeping at all.
+			s.runEvent(i, line, e)
 		}
 	}
+}
+
+// isKnownType reports whether the type is one this revision defines. The
+// payload table is the authority: every known type has a decode target.
+func isKnownType(t protocol.EnvelopeType) bool {
+	return payloadTarget(t) != nil
 }
 func collectFeatures(dst map[string]protocol.SupportLevel, src map[string]protocol.FeatureSupport) {
 	for name, support := range src {

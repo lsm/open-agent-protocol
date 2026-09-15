@@ -16,20 +16,45 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-type Validator struct{ schema *jsonschema.Schema }
+type Validator struct {
+	schema *jsonschema.Schema
+	mode   Mode
+}
+
+// Options configures a Validator. The zero value is strict validation, which is
+// what every existing caller gets.
+type Options struct {
+	Mode Mode
+}
 
 type rawEnvelope struct {
 	raw  json.RawMessage
 	line int
 }
 
+// New returns a strict validator: the bundle exactly as published, which is
+// what fixtures are held to.
 func New() (*Validator, error) {
-	s, err := CompileSchemas()
+	return NewWith(Options{Mode: ModeStrict})
+}
+
+// NewWith returns a validator in the requested mode. Tolerant mode compiles the
+// bundle under the extension rules and lets the stateful validator classify an
+// unknown envelope type by its wire scope rather than ignoring it.
+func NewWith(opts Options) (*Validator, error) {
+	mode := opts.Mode
+	if mode == "" {
+		mode = ModeStrict
+	}
+	s, err := CompileSchemasWith(CompileOptions{Mode: mode})
 	if err != nil {
 		return nil, err
 	}
-	return &Validator{schema: s}, nil
+	return &Validator{schema: s, mode: mode}, nil
 }
+
+// Mode reports the mode the validator was built in.
+func (v *Validator) Mode() Mode { return v.mode }
 
 func MustNew() *Validator {
 	v, err := New()
@@ -83,6 +108,7 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 	}
 	if len(diagnostics) == 0 {
 		s := newState(fixture)
+		s.tolerant = v.mode == ModeTolerant
 		for i := range envelopes {
 			s.apply(i, lines[i], envelopes[i])
 		}
