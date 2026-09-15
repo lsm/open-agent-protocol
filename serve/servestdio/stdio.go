@@ -57,11 +57,16 @@ import (
 const maxEnvelopeBytes = 16 << 20
 
 // wrapperAllowance is the headroom the frame limit gives the line around
-// the envelope: the id, op, and session_id params plus the JSON wrapper. A
-// host keeping its addressing within it can size envelopes without knowing
-// which transport will carry them; a wrapper beyond it is an ordinary
-// frame-limit defect.
-const wrapperAllowance = 64 << 10
+// the envelope: the id, op, and session_id params plus the JSON wrapper.
+// opaqueID is unbounded, so no allowance could cover every schema-valid
+// address — the anchor is the other transport's own address bound: HTTP
+// carries addressing in the URL path, and Go's server admits request lines
+// only within its 1 MiB header limit. An allowance that size reserves
+// framing space for every address the HTTP surface can accept, so the
+// acceptance sets agree wherever the daemon answers at all; beyond them
+// HTTP answers the server's over-limit refusal and stdio fails the line
+// closed as an ordinary frame-limit defect.
+const wrapperAllowance = 1 << 20
 
 // DefaultFrameLimit bounds one NDJSON line in both directions: the envelope
 // budget plus the wrapper allowance, with the adapters' rpc-codec discipline

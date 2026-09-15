@@ -179,9 +179,9 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 	}
 	httpFrontend := httptest.NewServer(server.Handler())
 	defer httpFrontend.Close()
-	postCode := func(body []byte) string {
+	postCode := func(body []byte, sessionID string) string {
 		t.Helper()
-		response, err := http.Post(httpFrontend.URL+"/sessions/nope/submit", "application/json", bytes.NewReader(body))
+		response, err := http.Post(httpFrontend.URL+"/sessions/"+sessionID+"/submit", "application/json", bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,9 +205,9 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 	// envelope budget.
 	f := startFrontend(t, newTestHub(t, 64, 64), Options{})
 	nextBudgetID := int64(1)
-	stdioCode := func(id int64, envelope []byte) string {
+	stdioCode := func(id int64, envelope []byte, sessionID string) string {
 		t.Helper()
-		f.send(`{"id":` + fmt.Sprint(id) + `,"op":"submit","session_id":"nope","request":` + string(envelope) + `}`)
+		f.send(`{"id":` + fmt.Sprint(id) + `,"op":"submit","session_id":"` + sessionID + `","request":` + string(envelope) + `}`)
 		return f.expectResponse(id).Error.Code
 	}
 
@@ -221,13 +221,27 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		{"one byte over", maxEnvelopeBytes + 1, "request_too_large", "request_too_large"},
 	} {
 		envelope := sizedEnvelope(row.size)
-		if code := postCode(envelope); code != row.httpCode {
+		if code := postCode(envelope, "nope"); code != row.httpCode {
 			t.Fatalf("%s: HTTP refused as %s, want %s", row.name, code, row.httpCode)
 		}
-		if code := stdioCode(nextBudgetID, envelope); code != row.code {
+		if code := stdioCode(nextBudgetID, envelope, "nope"); code != row.code {
 			t.Fatalf("%s: stdio refused as %s, want %s", row.name, code, row.code)
 		}
 		nextBudgetID++
+	}
+
+	// The wrapper allowance covers every address the HTTP surface can
+	// accept — Go's server admits request lines only within its 1 MiB
+	// header limit — so a near-limit envelope addressed by a large id rides
+	// both transports to the same op-level verdict instead of
+	// framing-defecting on one.
+	longAddress := strings.Repeat("a", 512<<10)
+	envelope := sizedEnvelope(maxEnvelopeBytes)
+	if code := postCode(envelope, longAddress); code != "type_mismatch" {
+		t.Fatalf("long addressing: HTTP refused as %s, want type_mismatch", code)
+	}
+	if code := stdioCode(nextBudgetID, envelope, longAddress); code != "type_mismatch" {
+		t.Fatalf("long addressing: stdio refused as %s, want type_mismatch", code)
 	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
