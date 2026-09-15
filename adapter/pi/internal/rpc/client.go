@@ -66,23 +66,24 @@ type writeRequest struct {
 }
 
 type Client struct {
-	decoder   *Decoder
-	encoder   *Encoder
-	closer    io.Closer
-	mu        sync.Mutex
-	pending   map[string]pendingCall
-	sent      map[string]struct{}
-	closed    bool
-	decoding  bool // the reader is inside Decode
-	routing   bool // the reader holds a decoded frame it has not finished routing
-	encoding  bool // the pump is inside Encode
-	err       error
-	nextID    atomic.Uint64
-	writes    chan writeRequest
-	inbound   chan Inbound
-	done      chan struct{}
-	readDone  chan struct{}
-	closeOnce sync.Once
+	decoder    *Decoder
+	encoder    *Encoder
+	closer     io.Closer
+	closerOnce sync.Once
+	mu         sync.Mutex
+	pending    map[string]pendingCall
+	sent       map[string]struct{}
+	closed     bool
+	decoding   bool // the reader is inside Decode
+	routing    bool // the reader holds a decoded frame it has not finished routing
+	encoding   bool // the pump is inside Encode
+	err        error
+	nextID     atomic.Uint64
+	writes     chan writeRequest
+	inbound    chan Inbound
+	done       chan struct{}
+	readDone   chan struct{}
+	closeOnce  sync.Once
 }
 
 func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Client {
@@ -192,9 +193,7 @@ func (c *Client) Respond(ctx context.Context, response native.ExtensionUIRespons
 func (c *Client) Close() error { c.closeWith(ErrClosed); return nil }
 func (c *Client) closeWith(reason error) {
 	c.closeOnce.Do(func() {
-		if c.closer != nil {
-			_ = c.closer.Close()
-		}
+		c.closeTransport()
 		c.shutdown(reason)
 	})
 }
@@ -222,11 +221,9 @@ func (c *Client) shutdown(reason error) {
 		pending = c.retirePendingLocked()
 	}
 	c.mu.Unlock()
-	if c.closer != nil {
-		// Done implies the closer is closed: that is what wakes a reader
-		// parked in Decode or a pump blocked in Encode.
-		_ = c.closer.Close()
-	}
+	// Done implies the transport is closed: that is what wakes a reader
+	// parked in Decode or a pump blocked in Encode.
+	c.closeTransport()
 	c.failPending(pending, reason)
 }
 func (c *Client) closeError() error { return firstError(c.Err(), ErrClosed) }
@@ -235,6 +232,17 @@ func firstError(a, b error) error {
 		return a
 	}
 	return b
+}
+
+// closeTransport closes the supplied CloseReadWriter at most once per client:
+// io.Closer does not promise idempotence, and a retirement can reach the
+// closer both from closeWith and from a direct shutdown.
+func (c *Client) closeTransport() {
+	c.closerOnce.Do(func() {
+		if c.closer != nil {
+			_ = c.closer.Close()
+		}
+	})
 }
 
 func (c *Client) readLoop() {

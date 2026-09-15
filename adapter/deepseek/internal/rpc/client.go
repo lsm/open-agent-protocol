@@ -102,6 +102,7 @@ type Client struct {
 	decoder           *Decoder
 	encoder           *Encoder
 	closer            io.Closer
+	closerOnce        sync.Once
 	strictResponseIDs bool
 	queueCapacity     int
 
@@ -350,10 +351,19 @@ func (client *Client) Close() error {
 
 func (client *Client) closeWith(reason error) {
 	client.closeOnce.Do(func() {
+		client.closeTransport()
+		client.shutdown(reason)
+	})
+}
+
+// closeTransport closes the supplied CloseReadWriter at most once per client:
+// io.Closer does not promise idempotence, and a retirement can reach the
+// closer both from closeWith and from a direct shutdown.
+func (client *Client) closeTransport() {
+	client.closerOnce.Do(func() {
 		if client.closer != nil {
 			_ = client.closer.Close()
 		}
-		client.shutdown(reason)
 	})
 }
 
@@ -702,11 +712,9 @@ func (client *Client) shutdown(reason error) {
 		pending = client.retirePendingLocked()
 	}
 	client.mu.Unlock()
-	if client.closer != nil {
-		// Done implies the closer is closed: that is what wakes a reader
-		// parked in Decode or a pump blocked in Encode.
-		_ = client.closer.Close()
-	}
+	// Done implies the transport is closed: that is what wakes a reader
+	// parked in Decode or a pump blocked in Encode.
+	client.closeTransport()
 	client.failPending(pending, reason)
 }
 

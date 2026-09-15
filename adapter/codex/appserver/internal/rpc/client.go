@@ -97,6 +97,7 @@ type Client struct {
 	decoder           *Decoder
 	encoder           *Encoder
 	closer            io.Closer
+	closerOnce        sync.Once
 	strictResponseIDs bool
 
 	mu       sync.Mutex
@@ -253,15 +254,24 @@ func (client *Client) Close() error {
 }
 
 func (client *Client) closeWith(reason error) {
-	// Record the caller's reason before closing the transport. Closing the
-	// closer unblocks the read loop's Decode, which reports the resulting
-	// "read/write on closed pipe" through shutdown; because shutdown is
-	// first-wins, closing first would let that incidental error overwrite the
-	// intended reason (cancellation, ErrClosed, or a shutdown timeout).
+	// shutdown records the caller's reason before it closes the transport.
+	// Closing the transport unblocks the read loop's Decode, which reports
+	// the resulting "read/write on closed pipe" through shutdown; because
+	// shutdown is first-wins, closing first would let that incidental error
+	// overwrite the intended reason (cancellation, ErrClosed, or a shutdown
+	// timeout).
 	client.shutdown(reason)
-	if client.closer != nil {
-		_ = client.closer.Close()
-	}
+}
+
+// closeTransport closes the supplied CloseReadWriter at most once per client:
+// io.Closer does not promise idempotence, and a retirement can reach the
+// closer both from closeWith and from a direct shutdown.
+func (client *Client) closeTransport() {
+	client.closerOnce.Do(func() {
+		if client.closer != nil {
+			_ = client.closer.Close()
+		}
+	})
 }
 
 func (client *Client) readLoop() {
@@ -514,11 +524,9 @@ func (client *Client) shutdown(reason error) {
 		pending = client.retirePendingLocked()
 	}
 	client.mu.Unlock()
-	if client.closer != nil {
-		// Done implies the closer is closed: that is what wakes a reader
-		// parked in Decode or a pump blocked in Encode.
-		_ = client.closer.Close()
-	}
+	// Done implies the transport is closed: that is what wakes a reader
+	// parked in Decode or a pump blocked in Encode.
+	client.closeTransport()
 	client.failPending(pending, reason)
 }
 

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -481,4 +482,37 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	}
 	_ = serverReader.Close()
 	_ = serverWriter.Close()
+}
+
+// transportCloseCounter records how many times the client closed the
+// supplied CloseReadWriter. io.Closer does not promise idempotence, so a
+// retirement must close it exactly once whichever path reaches it first.
+type transportCloseCounter struct {
+	inner io.Closer
+	calls atomic.Int32
+}
+
+func (c *transportCloseCounter) Close() error { c.calls.Add(1); return c.inner.Close() }
+
+func TestClientClosesTransportExactlyOnce(t *testing.T) {
+	for _, order := range []string{"close-then-shutdown", "shutdown-then-close"} {
+		reader, writer := io.Pipe()
+		closer := &transportCloseCounter{inner: reader}
+		client := NewClient(reader, io.Discard, ClientOptions{CloseReadWriter: closer})
+
+		if order == "close-then-shutdown" {
+			_ = client.Close()
+			client.shutdown(errors.New("late"))
+		} else {
+			client.shutdown(errors.New("direct"))
+			_ = client.Close()
+		}
+		// The reader's own retirement on the closed pipe must not close it
+		// again either.
+		<-client.ReadDone()
+		if n := closer.calls.Load(); n != 1 {
+			t.Fatalf("%s: transport closed %d times, want exactly once", order, n)
+		}
+		_ = writer.Close()
+	}
 }
