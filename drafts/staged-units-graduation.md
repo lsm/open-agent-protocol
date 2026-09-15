@@ -1431,9 +1431,21 @@ No new envelope types. Additive fields:
   `models.response` carries for the same reason. Present, the model is
   judged at that point, and a position the trace has not reached is held
   and reconciled when it arrives; absent, the snapshot claims no
-  knowledge the trace lacks and is judged as it stands. Fixture
+  knowledge the trace lacks and is judged as it stands. A capture before
+  the session's first model-affecting event has no such event to name and
+  must still be representable, or the case the marker exists for is the
+  one case it cannot express: a session opening on model A, captured just
+  before the first `session_mutation` promotion whose `run.started`
+  reaches the trace first, would fall to the absent branch and be
+  diagnosed against model B. The marker therefore has a genesis form,
+  `{ "run_id": null, "sequence": 0 }`, naming the position before any
+  model-affecting event — the session's opening model, judged against no
+  run at all. It is a stated position like any other, so omission keeps
+  its own meaning and stays distinct from it. Fixtures
   `queue-state-model-at-promotion` (positive; a snapshot capturing the
-  pre-promotion model whose `run.started` precedes the state response).
+  pre-promotion model whose `run.started` precedes the state response)
+  and `queue-state-model-at-genesis` (positive; the opening model
+  captured before the first promotion, marked at genesis).
 - `session.state` snapshots: `active_runs` is required whenever the
   validator tracks a queued reservation, more than one nonterminal run,
   or, on an endpoint advertising any unit that introduces `active_runs`
@@ -1718,7 +1730,8 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   whose sequence also falls inside a retained earlier run, which must
   resume on the started run with no `oap-replay-gap`, and the mixed
   case — that reconnect arriving after a queued B was promoted — which
-  must be refused with `ambiguous_cursor` rather than read against B.
+  must reach the client as a run mismatch on the first envelope rather
+  than as B's events read against A's cursor.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
@@ -1746,27 +1759,32 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   `ReplayGapError`, so under any other rule upgrading the daemon would
   break the client behaviour this plan promises to leave alone.
 
-  The binding holds only while the started run has not moved, and the
-  reconnect is a fresh GET carrying no subscription history, so the
-  daemon cannot assume it has not. In a mixed session a T2-aware caller
-  can queue B while the legacy client reads A, and a drop after the hub
-  processed A's terminal and promoted B leaves a cursor from A arriving
-  at a stream whose started run is B. Resolving it against B would splice
-  B's events onto A's overlapping sequence numbers, skipping or
-  mismatching silently — the one outcome this rule exists to avoid. So
-  the binding is guarded rather than assumed: the daemon resolves a bare
-  cursor against the started run only when that run's retained domain
-  spans the sequence and no *earlier* retained domain does. When an
-  earlier one also spans it, the client's position is genuinely
-  unrecoverable from the number, and the daemon refuses the request
-  itself rather than opening a stream, answering `ambiguous_cursor` with
-  the candidate `run_id`s in `details` — a typed error on the events
-  request, not an in-stream event. That reaches a v0.1 client correctly
-  today: `client/events.go:190-196` returns a `ServerError` from `open`
-  permanently instead of retrying it, and `no_run_to_resume` already
-  travels this exact path, so the shape is established rather than new. A
-  refusal the caller can see and reopen from is the recoverable outcome;
-  a silently wrong run is not.
+  The started run is not always the run the cursor came from, and the
+  reconnect is a fresh GET carrying no subscription history to say
+  otherwise. In a mixed session a T2-aware caller can queue B while the
+  legacy client reads A, and a drop after the hub processed A's terminal
+  and promoted B leaves a cursor from A arriving at a stream whose
+  started run is B. That case is indistinguishable at the daemon from the
+  ordinary sequential one — finish A, start B, read one event of B,
+  drop — since both are a small bare number that two retained domains
+  span, so no daemon-side test separates them and a rule that refused
+  both would break the ordinary case, which is the common one.
+
+  It does not need one, because the v0.1 client already separates them,
+  and this is the reason the binding is safe rather than merely
+  convenient. A resuming client carries the run it was reading, and the
+  first envelope of a cursor-bearing stream is checked against it:
+  `client/events.go:396-399` raises `ResumeMismatchError` when the run
+  differs, before the sequence is used for anything
+  (`clients/ts/src/events.ts` performs the same check). In the ordinary
+  case the client holds B and receives B and resumes invisibly; in the
+  mixed case it holds A, receives B, and fails loudly and permanently
+  without consuming a single misattributed envelope. The wrong run is
+  therefore caught where the knowledge to catch it lives, and the daemon
+  keeps the v0.1 resolution rather than pre-empting a client check that
+  already works. What the client cannot do is recover A's tail, which is
+  genuinely lost; a loud failure is the recoverable outcome there, and a
+  silent splice is not.
 
   A following subscription is the one that can carry a cursor from a domain
   other than the started run, and only there is a bare number genuinely
@@ -1788,8 +1806,17 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   run (overflow already carries it). Ambiguity does not replace or
   pluralise `run_id`; it rides an additional optional
   `ambiguous_run_ids`, present only in the bare-cursor case above and
-  listing every retained domain that reached that sequence, `run_id`
-  among them. The stdio frontend's `events` op gains the same optional
+  listing every retained domain that reached that sequence. The two
+  members answer different questions and are deliberately not required to
+  intersect: the resumed run is the started one, which on a gap is
+  commonly a run that never reached the ambiguous sequence at all — A and
+  B both retained past 10 while started C sits at 2. Carrying only the
+  candidates would leave the client resuming into a domain it was told
+  was ambiguous, and a retry of `?run=` with the original cursor would
+  ask for a sequence that run has not produced, so `oap-replay-gap` also
+  carries `last_sequence`, the position in `run_id` the stream resumes
+  from. `run_id` with `last_sequence` is what to send back; `ambiguous_run_ids` is
+  what the cursor could have meant. The stdio frontend's `events` op gains the same optional
   `run` parameter. `?run=` is still needed even with ordered
   delivery: a drop between one run's terminal and the next run's first
   envelope leaves the client holding the finished run's cursor while the
