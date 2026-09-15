@@ -55,9 +55,11 @@ const DefaultFrameLimit = 16 << 20
 // refusals could not be delivered.
 const minFrameLimit = 256
 
-// defaultWriteQueue bounds the lines buffered for the writer goroutine;
-// beyond it producers block, which is the backpressure onto the single
-// consumer of stdout.
+// defaultWriteQueue bounds the lines buffered for the writer goroutine and,
+// as the in-flight bound of admitted work, how far the frontend runs ahead
+// of the host's draining: beyond it the decode loop parks, the reader stops
+// reading, and the host's own writes block — the backpressure onto the
+// single consumer of stdout.
 const defaultWriteQueue = 256
 
 // DefaultShutdownTimeout bounds each stage of Run's teardown — the grace for
@@ -71,8 +73,10 @@ type Options struct {
 	// FrameLimit bounds one line in bytes in both directions; zero means
 	// DefaultFrameLimit.
 	FrameLimit int
-	// WriteQueue bounds the lines buffered for the writer goroutine before
-	// producers block; zero means defaultWriteQueue.
+	// WriteQueue bounds the lines buffered for the writer goroutine and the
+	// requests admitted in flight before the decode loop parks — beyond it
+	// the host's own writes block, the backpressure onto the single
+	// consumer of stdout; zero means defaultWriteQueue.
 	WriteQueue int
 	// ShutdownTimeout bounds each stage of Run's teardown independently —
 	// the grace for a serving loop still stuck in a synchronous op, then the
@@ -105,6 +109,17 @@ type Server struct {
 	mu           sync.Mutex
 	shuttingDown bool
 	work         sync.WaitGroup
+
+	// inFlight bounds concurrently admitted workers at the write-queue
+	// depth, so a host that pipelines faster than it drains stdout stops
+	// the frontend at the bound instead of growing goroutines and retained
+	// frames without limit: admission parks, which parks the decode loop,
+	// which parks the reader, so the host's own stdin writes become the
+	// backpressure. shutdownCh, closed exactly once at teardown after
+	// shuttingDown is set, releases an admission parked on the bound so the
+	// abandoned loop still ends inside its grace window.
+	inFlight   chan struct{}
+	shutdownCh chan struct{}
 }
 
 // New returns a frontend over the hub.
@@ -131,7 +146,11 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, frameLimit: frameLimit, writeQueue: writeQueue, shutdown: shutdown, logger: logger}, nil
+	return &Server{
+		hub: hub, frameLimit: frameLimit, writeQueue: writeQueue,
+		shutdown: shutdown, logger: logger,
+		inFlight: make(chan struct{}, writeQueue), shutdownCh: make(chan struct{}),
+	}, nil
 }
 
 // Hub returns the hub the frontend serves.
@@ -259,6 +278,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	s.mu.Lock()
 	s.shuttingDown = true
 	s.mu.Unlock()
+	close(s.shutdownCh)
 	workDone := make(chan struct{})
 	go func() { s.work.Wait(); close(workDone) }()
 	drainWindow := time.NewTimer(s.shutdown)
@@ -323,7 +343,9 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // dispatched to its own admitted worker goroutine, so requests pipeline and
 // run concurrently, correlated by id — one worker per request, exactly as
 // the HTTP server runs one handler per connection — and the loop itself
-// never blocks on an op, only on the next frame. A worker's dispatch runs
+// never blocks on an op, only on the next frame or, when the in-flight
+// bound is reached, on admission: that park is the backpressure that stops
+// a host writing faster than it drains. A worker's dispatch runs
 // on the frontend's context — cancelled at teardown so in-flight handlers
 // detach from the hub — while its response send runs on the caller's, so
 // parked sends deliver through the writer's bounded drain. Reading runs on
@@ -374,7 +396,10 @@ func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameR
 			}
 			if s.admit() {
 				go func(request requestLine) {
-					defer s.work.Done()
+					defer func() {
+						s.work.Done()
+						<-s.inFlight
+					}()
 					s.serveRequest(ctx, callerCtx, request, lines)
 				}(request)
 			}
@@ -603,12 +628,28 @@ func (s *Server) send(ctx context.Context, lines chan<- []byte, value any) error
 // forbids, and its worker would never be waited for. A refused request is
 // dropped without a response: shutdown owns the process, and the host that
 // ended the session is not waiting for one.
+//
+// The in-flight bound is acquired first: when every slot is held by a
+// worker whose response has not reached the writer, admission parks — and
+// with it the decode loop and the reader — so a host that pipelines faster
+// than it drains stdout is stopped at the bound rather than growing
+// unbounded workers, each holding its request frame and marshaled response.
+// A slot acquired in the race against teardown is checked against the latch
+// under mu and released unused, so closing the bound and refusing late
+// Adds stay one atomic decision.
 func (s *Server) admit() bool {
+	select {
+	case s.inFlight <- struct{}{}:
+	case <-s.shutdownCh:
+		return false
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.shuttingDown {
+		s.mu.Unlock()
+		<-s.inFlight // the slot was acquired as teardown began; it is not used
 		return false
 	}
 	s.work.Add(1)
+	s.mu.Unlock()
 	return true
 }

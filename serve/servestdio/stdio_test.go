@@ -848,3 +848,78 @@ func TestAdmissionGateClosesAtTeardown(t *testing.T) {
 		}
 	}
 }
+
+// TestAdmissionBoundedWhenOutputStalls drives this gate's codex admission
+// finding: the host keeps writing stdin while draining nothing — the writer
+// parks inside out.Write, the one-slot queue fills, and the third worker
+// parks on its send holding the only in-flight slot. Admission must then
+// park the decode loop, which parks the reader, so the host's own writes
+// block — the write-queue bound is the backpressure onto the single
+// consumer of stdout — instead of the frontend admitting an unbounded
+// number of workers, each holding its request frame and marshaled
+// response. Releasing the output drains the bound and the parked writes
+// complete.
+func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the stalled writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // the bound is now held by the parked third worker
+
+	// Keep writing past the bound. The frontend has stopped reading, so
+	// after the reader's buffered span is absorbed the host's own writes
+	// park — 200 requests well past that span — and the stream cannot
+	// complete while the output stays stalled.
+	writes := make(chan error, 1)
+	go func() {
+		for id := 4; id <= 200; id++ {
+			if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+				writes <- err
+				return
+			}
+		}
+		writes <- nil
+	}()
+	select {
+	case err := <-writes:
+		t.Fatalf("the host streamed every request through a full admission bound: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// The host resumes draining: the writer consumes the queue, the parked
+	// send delivers, the bound frees, and the parked writes complete. The
+	// released writer fails its held write, so the stream ends with that
+	// failure once everything has been handed off.
+	close(release)
+	select {
+	case err := <-writes:
+		if err != nil {
+			t.Fatalf("releasing the output did not resume the stream: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the admission bound never freed after the output resumed")
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("Run returned %v, want the released writer's failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the stream completed")
+	}
+}
