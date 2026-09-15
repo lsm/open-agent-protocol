@@ -160,7 +160,10 @@ That is fixed first rather than later. Not for completeness, but because
 the alternative is to mint the spec's own keys under no stated namespace
 rule, build five units on the assumption that the compiled bundle is the
 whole vocabulary, and retrofit a seam through all of it afterwards.
-T0 states the namespace rule, gives a pack a way to carry its schemas,
+T0 states the namespace rule — the unprefixed namespace is the spec's,
+an extension name carries a reverse-DNS prefix, and the check lives at
+pack load rather than on the wire — gives a pack a way to carry its
+schemas,
 requires containment so packs compose without colliding or redefining
 core, and gives a pack its own conformance claim that leaves the core
 claim alone. It is the one unit not gated on ledger evidence, because it

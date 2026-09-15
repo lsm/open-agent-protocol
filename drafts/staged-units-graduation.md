@@ -157,20 +157,29 @@ much cheaper to state before that than to retrofit after.
 No envelope change for advertisement, per the open map above. What is
 added is a rule about names and a way to carry schemas.
 
-**Namespace.** The spec owns a closed set of root segments for capability
-keys, envelope `type` values, `error.response` codes, and validator
-diagnostics: `protocol`, `capabilities`, `session`, `run`, `action`,
-`models`, `interaction`, and `auth`. A name whose first dot-separated
-segment is outside that set is an extension name and must carry a
-reverse-DNS prefix of at least two segments, as the layered draft already
-requires of extension fields (`drafts/layered-agent-protocol.md:488`):
-`com.example.storage.objects`, never `storage.objects`. The root-segment
-list is what makes the rule executable — "reverse-DNS" alone cannot be
-checked, but "the root segment is spec-owned or the name is prefixed"
-can, and it does not require the validator to know what a domain is.
-Adding a root segment to that list is a spec change, which is the point:
-it is the one place the core vocabulary can grow, and it grows by
-decision rather than by a vendor's choice of name.
+**Namespace.** The rule is stated the way round that leaves the existing
+vocabulary alone: *the unprefixed namespace is the spec's, in its
+entirety.* Capability keys, envelope `type` values, `error.response`
+codes, and validator diagnostics that carry no prefix are spec-owned,
+whatever their shape — `content.delta`, `user.input.requested` and
+`error.response` sit under no common root, and `unsupported_feature` and
+`scope_mismatch` have no dots at all, so any rule built on a list of
+permitted root segments would classify the protocol's own vocabulary as
+invalid extensions. An extension name is one that carries a reverse-DNS
+prefix, as the layered draft already requires of extension fields
+(`drafts/layered-agent-protocol.md:488`): `com.example.storage.objects`,
+never `storage.objects`.
+
+Stated this way the rule needs no list to maintain, and enforcement has
+one home rather than two. The validator never has to classify a name it
+meets on the wire: a name matching a loaded pack's prefix is validated
+under that pack, a known core name under core, and anything else takes
+the tolerant unknown path exactly as before. What is checked, and
+checked once, is a *pack at load*: every name it declares must begin
+with its own `id` followed by a dot. A pack cannot declare an unprefixed
+name, so it cannot mint into the spec's namespace, and the core
+vocabulary grows only by spec change — which was the property the root
+list was reaching for, obtained without enumerating anything.
 
 **Manifest.** `manifest.schema.json` gains an optional `extensions`
 array; `schemas` keeps its 7-of-7 bound, which from here describes the
@@ -221,6 +230,18 @@ compiled.
   under their own base URI and contribute branches to the envelope
   `oneOf`; the tolerant fallback branch stays, and now catches only types
   no loaded pack claims.
+- A contributed branch must pin `type` to a `const` naming exactly one of
+  the pack's declared `envelope_types`, and that is verified at load. The
+  check is not bookkeeping: `oneOf` requires exactly one match, so a pack
+  that declared `com.example.foo` while supplying a branch broad enough
+  to also match `run.started` would make every `run.started` match two
+  branches and turn a core envelope invalid *because a pack was loaded* —
+  precisely the invariant the previous rule states. Declared names alone
+  cannot prevent it, because the guarantee has to hold over what the
+  schemas actually match, not over what the descriptor says they match.
+  With the discriminator pinned and verified, branch selection is a
+  dispatch on `type`: a core type never reaches a pack branch, and the
+  invariant holds by construction rather than by a pack's good behaviour.
 - Containment is checked at load, before compilation, against the
   declared names in each descriptor.
 - `oap validate` gains a repeatable `-pack <path>`. Packs are opt-in on
@@ -243,11 +264,15 @@ no authority over the core claim beside it.
 
 ### Fixtures
 
-Negative: `ext-unprefixed-key` (an extension capability key whose root
-segment is not spec-owned and which carries no reverse-DNS prefix),
-`ext-pack-claims-core-name` (a pack declaring a spec-owned root segment;
-load refusal, not a diagnostic), `ext-pack-claims-foreign-prefix` (a pack
-declaring a name under another pack's id; load refusal),
+Negative: `ext-pack-claims-unprefixed-name` (a pack declaring a name with
+no reverse-DNS prefix, which is the spec's namespace; load refusal, not a
+diagnostic), `ext-pack-claims-foreign-prefix` (a pack declaring a name
+under another pack's id; load refusal), `ext-pack-branch-undeclared-type`
+(a contributed branch whose `type` `const` is not among the pack's
+declared `envelope_types`; load refusal), `ext-pack-branch-unpinned`
+(a contributed branch that does not pin `type` to a `const` at all, the
+shape that would otherwise match core envelopes and invalidate them by
+double match; load refusal),
 `ext-packed-type-malformed` (an envelope of a loaded pack's type with a
 body its schema rejects — accepted without the pack, rejected with it,
 which is the pair that shows tolerance becoming conformance).
@@ -257,7 +282,10 @@ loaded, accepted on the common fields in tolerant mode),
 `ext-advertised-key-gated` (an extension key advertised and used, and the
 same key unadvertised drawing `unsupported_feature` with
 `details.feature` naming it), `ext-core-claim-unchanged` (the core
-fixture manifest passing identically with and without a pack loaded).
+fixture manifest passing identically with and without a pack loaded —
+the regression guard for the invariant that a pack cannot change core
+validity, run against a pack whose declared type is deliberately close
+to a core one).
 
 ### Exit criteria
 
@@ -355,9 +383,17 @@ No new envelope types. Changes to
   diagnostics rather than the prose: T1 carries
   `controls-empty-model-id-unadvertised`, whose expectation is the
   capability gate's own refusal, and `controls-empty-model-id-admitted`,
-  which expects `model_not_found` and needs no catalog to state it; T5a
-  carries `models-select-unlisted` for the non-empty miss and the
-  bookkeeping behind it. A
+  which expects `unsatisfiable_control`; T5a carries
+  `models-select-unlisted` for the non-empty miss and the bookkeeping
+  behind it. The two names answer different questions and a fixture can
+  only assert the second: `model_not_found` is the `error.response` code
+  the endpoint owes on the wire, while a fixture's expectation is a
+  validator diagnostic, and a response that admits the control instead of
+  refusing it is the fail-closed failure `unsatisfiable_control` already
+  names — a present control the endpoint cannot satisfy and did not
+  refuse. T1 introduces that diagnostic, so the check is executable in
+  T1 without waiting for `model_not_in_catalog`, and an endpoint that
+  admits `model_id: ""` is caught by the unit that forbids it. A
   unit's fixtures must produce exactly the codes it introduces, so a
   fixture cannot be listed before the diagnostic it asserts.
 - `output_schema` stays a JSON Schema object, and it must describe a JSON
@@ -3929,13 +3965,12 @@ executable surface.
 
 ### Extension namespace
 
-The root segments `protocol`, `capabilities`, `session`, `run`, `action`,
-`models`, `interaction`, and `auth` are spec-owned, for capability keys,
-envelope `type` values, `error.response` codes, and validator
-diagnostics alike. Every name below sits under one of them. A name whose
-root segment is outside that set is an extension name and carries a
-reverse-DNS prefix (`com.example.storage.objects`); T0 states the rule
-and the validator checks it.
+The unprefixed namespace is the spec's in its entirety — capability keys,
+envelope `type` values, `error.response` codes, and validator diagnostics
+alike, whatever their shape. Every name below is unprefixed and therefore
+spec-owned. An extension name is one carrying a reverse-DNS prefix
+(`com.example.storage.objects`); T0 states the rule, and it is enforced
+where it can be enforced once, at pack load, against the pack's own `id`.
 
 ### Capability keys introduced or given executable meaning
 
