@@ -318,6 +318,13 @@ func readFrame(reader *bufio.Reader, limit int) ([]byte, error) {
 	frame := make([]byte, 0, min(limit, 4096))
 	for {
 		fragment, err := reader.ReadSlice('\n')
+		// A read failure is not the host's protocol fault, whatever
+		// partial bytes the reader handed back with it — an io.Reader may
+		// return data and an error together — so it passes through before
+		// any framing rule judges the line.
+		if err != nil && !errors.Is(err, bufio.ErrBufferFull) && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
 		if len(frame)+len(fragment) > limit+1 {
 			return nil, &frameDefect{detail: fmt.Sprintf("line exceeds the %d-byte frame limit", limit)}
 		}

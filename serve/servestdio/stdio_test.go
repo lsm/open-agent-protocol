@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 	"testing"
@@ -442,6 +443,83 @@ func TestReadFailureIsNotAMalformedLine(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("read failure did not end Run")
+	}
+}
+
+// partialFailReader hands back one over-limit partial read together with
+// its failure — the combined return io.Reader permits — so the codec must
+// pass the failure through instead of judging the oversized fragment.
+type partialFailReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *partialFailReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	return copy(p, r.data), r.err
+}
+
+// TestPartialReadFailurePassesThrough pins the ordering: a read failure
+// carrying over-limit partial bytes surfaces as itself, never as the
+// frame-limit defect that would blame the host.
+func TestPartialReadFailurePassesThrough(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{FrameLimit: 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readErr := errors.New("device gone")
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Run(context.Background(), &partialFailReader{data: bytes.Repeat([]byte("x"), 300), err: readErr}, io.Discard)
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, readErr) {
+			t.Fatalf("Run returned %v, want the input's read failure", err)
+		}
+		var malformed *MalformedLineError
+		if errors.As(err, &malformed) {
+			t.Fatalf("read failure surfaced as a malformed line: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read failure did not end Run")
+	}
+}
+
+// TestCancelledRespondEmitsNoSizeRefusal pins the fallback guard: after
+// cancellation a failed send — whether it aborted or raced the queue slot —
+// is never answered with the bounded response_too_large refusal, which
+// would blame the response's size for the context's end.
+func TestCancelledRespondEmitsNoSizeRefusal(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	logs := &bytes.Buffer{}
+	server, err := New(hub, Options{Logger: log.New(logs, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := make(chan []byte, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	id := int64(1)
+	server.respond(ctx, lines, requestLine{ID: &id}, nil, nil)
+	for {
+		select {
+		case line := <-lines:
+			if bytes.Contains(line, []byte("response_too_large")) {
+				t.Fatalf("cancelled respond emitted a size refusal: %s", line)
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if strings.Contains(logs.String(), "response_too_large") {
+		t.Fatalf("cancelled respond attempted a size refusal: %s", logs.String())
 	}
 }
 

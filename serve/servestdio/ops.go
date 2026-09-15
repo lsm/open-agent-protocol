@@ -3,6 +3,7 @@ package servestdio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -49,6 +50,12 @@ func (s *Server) respond(ctx context.Context, lines chan<- []byte, request reque
 	}
 	if err := s.send(ctx, lines, response); err != nil {
 		s.logger.Printf("servestdio: response %d: %v", *request.ID, err)
+		// Only a size refusal has a bounded correlated answer. A send
+		// abandoned by the context ended the session, and must not emit a
+		// refusal that blames the response's size.
+		if !errors.Is(err, ErrLineTooLarge) {
+			return
+		}
 		fallback := responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: &wireError{
 			Code: "response_too_large", Message: "the encoded response exceeds the frame limit",
 		}}
