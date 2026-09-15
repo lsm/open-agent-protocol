@@ -88,11 +88,12 @@ Units graduate in this order, each behind its own decision:
 
 | Order | Unit (issue #13 label) | Planned decision | Why here |
 | --- | --- | --- | --- |
-| 1 | Run controls: `model_id` first, fail-closed discipline for all four (T1) | 0004 | Already on the wire; touches no run lifecycle; Codex and Makai apply `model_id` natively today without advertising it |
-| 2 | Models catalog `models.list` (T5, first half) | 0005 | Pure control-plane query with the widest native evidence; makes `model_id` usable by a picker |
-| 3 | Queue delivery: explicit `queue` requests and a second nonterminal run (T2) | 0006 | First change to the one-nonterminal-run invariant; Decision 0002 already made the queued shape canonical |
-| 4 | Tool sources, attachment at open, control-layer tools including MCP (T3) | 0007 | Adds a third interaction kind; evidence spans Claude, ACP, Makai, Codex |
-| 5 | Steer (T4) | 0008 | The only unit with a genuinely new run-semantics question; pre-design in the plan, evidence first |
+| 0 | Extension packs: namespace, pack format, pack conformance (T0) | 0004 | Foundational and not harness-gated; the extension seam must exist before the spec mints six more capability keys, and it shares the pre-T1 bundle change with the tolerance step |
+| 1 | Run controls: `model_id` first, fail-closed discipline for all four (T1) | 0005 | Already on the wire; touches no run lifecycle; Codex and Makai apply `model_id` natively today without advertising it |
+| 2 | Models catalog `models.list` (T5, first half) | 0006 | Pure control-plane query with the widest native evidence; makes `model_id` usable by a picker |
+| 3 | Queue delivery: explicit `queue` requests and a second nonterminal run (T2) | 0007 | First change to the one-nonterminal-run invariant; Decision 0002 already made the queued shape canonical |
+| 4 | Tool sources, attachment at open, control-layer tools including MCP (T3) | 0008 | Adds a third interaction kind; evidence spans Claude, ACP, Makai, Codex |
+| 5 | Steer (T4) | 0009 | The only unit with a genuinely new run-semantics question; pre-design in the plan, evidence first |
 | 6 | Auth state (T5, second half) | staged | Read-only listing only; graduates when a consumer needs the gate |
 
 This reorders issue #13's T1 to T5 sequence in one respect: the models
@@ -140,6 +141,30 @@ reverse interaction channel (`research/deepseek-harness-47f9438-mapping.md:327`)
 and Pi owns tool execution with interaction extensions disabled
 (`research/pi-v0.85.1-mapping.md:250-253`). The wire is identical in
 both placements; only `execution_owner` differs.
+
+### Extension is a first-class seam, not a leftover
+
+The protocol's premise is a small core, a set of units the spec graduates
+on evidence, and room for anyone else to add their own surface. The first
+two were designed; the third was asserted. In practice `layer.features`
+is an open map, so a vendor can already advertise a capability of its
+own and the fail-closed gate already treats it exactly like a core
+one — but `manifest.schema.json` pins the bundle at exactly seven
+schemas and `validation.CompileSchemas` reads only the embedded
+directory, so there is no way to ship the schemas that say what that
+capability means. A third-party surface is therefore tolerated rather
+than supported: its envelopes are accepted because nobody can say what
+they should look like, and no implementation can be wrong about them.
+
+That is fixed first rather than later. Not for completeness, but because
+the alternative is to mint the spec's own keys under no stated namespace
+rule, build five units on the assumption that the compiled bundle is the
+whole vocabulary, and retrofit a seam through all of it afterwards.
+T0 states the namespace rule, gives a pack a way to carry its schemas,
+requires containment so packs compose without colliding or redefining
+core, and gives a pack its own conformance claim that leaves the core
+claim alone. It is the one unit not gated on ledger evidence, because it
+describes the protocol's own seam rather than any harness's behaviour.
 
 ### Skills stay out of the protocol
 

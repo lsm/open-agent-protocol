@@ -87,6 +87,7 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 
 | Order | Unit | Native evidence in the pinned ledgers | Graduating adapter | Follow-on adapters |
 | --- | --- | --- | --- | --- |
+| 0 | T0 extension packs | none, and none required: this unit describes the protocol's own extension seam rather than harness behaviour (see its scope) | — | all, passively |
 | 1 | T1 run controls | Codex `turn/start.model` and Makai `agent_message.model_ref` (native per-run); Claude `set_model` control request and `--model` at spawn; pi model selection commands; ACP `session/set_config_option` model; Hermes `session.create.model`; OpenCode `CreateSession.model`; Makai `agent_start.system_prompt` (session-level) | Codex (`model_id`, native) | Makai (native), Claude (`set_model`, emulated), pi, ACP |
 | 2 | T5a models catalog | OpenCode `model.list`/`provider.list`; pi `get_available_models`; Makai `models_request`; Claude `system/init.models` and `list_models`; Hermes `model.options` | OpenCode (native) | pi, Makai, Claude (degraded) |
 | 3 | T2 queue delivery | OpenCode `SessionInput.Admitted{delivery:"queue", promotedSeq}`; pi `follow_up` with `queue_update`; Hermes busy `queued` status under `busy_input_mode=queue`; Claude `queued_turn_count`/`still_queued` | OpenCode (native) | pi, Hermes |
@@ -105,9 +106,171 @@ Ledgers: [Codex](../research/codex-app-server-8d7cc24-mapping.md) ·
 contributes no native evidence to any unit at its pin and advertises each
 `unavailable`.
 
+## T0. Extension packs
+
+Unit name: `extensions`. Planned decision: 0004.
+
+### Scope
+
+Three things the protocol needs before it mints its next capability key:
+a namespace rule that separates spec vocabulary from everyone else's, a
+pack format that lets a third party ship capability keys *with* their
+schemas so their envelopes are validated rather than merely tolerated,
+and a conformance claim for a pack that leaves the core claim untouched.
+
+This unit is the one exception to the evidence rule in "Order and
+evidence", and the exception is deliberate rather than overlooked: the
+other six units describe harness behaviour, so a pinned ledger is what
+establishes that the behaviour is real. This one describes the
+protocol's own extension seam, where the evidence is the seam's current
+state rather than any harness's. That state is the argument for doing it
+first. `layer.features` is already an open map
+(`capabilities.schema.json#/$defs/layer`,
+`additionalProperties: { "$ref": "#/$defs/featureSupport" }`), so a
+vendor can already advertise `com.example.storage.objects` as `native`
+and the fail-closed gate already treats it exactly like a core key —
+advertisement needs no change at all. What it cannot do is say what the
+key *means*. `manifest.schema.json` pins `schemas` at `minItems: 7`,
+`maxItems: 7` over an `enum` of the seven core files with
+`additionalProperties: false`, and `validation.CompileSchemas`
+(`validation/schema.go:15`) takes no parameters and reads only the
+embedded `schema/v0.1` directory. An extension bundle is therefore not
+unspecified, it is structurally forbidden: there is no way to add a
+schema to a bundle and no way to compile one that includes it.
+
+So a third-party surface today is *tolerated*, not *supported*. Its
+envelopes reach the unknown-type path the tolerance step opens, which
+accepts them because nobody can say what they should look like. Nothing
+distinguishes a well-formed vendor call from a malformed one, which is
+the difference between an extension and an unvalidated hole.
+
+It goes before T1 for two reasons. The tolerance step already lands
+before T1 and already changes what the validator compiles; packs change
+the same seam, and doing them together avoids designing that seam twice.
+And every later unit mints capability keys — six of them in T1 alone.
+Minting the spec's own keys without a stated namespace rule makes the
+unprefixed form the precedent a third party will copy, and the rule is
+much cheaper to state before that than to retrofit after.
+
+### Wire
+
+No envelope change for advertisement, per the open map above. What is
+added is a rule about names and a way to carry schemas.
+
+**Namespace.** The spec owns a closed set of root segments for capability
+keys, envelope `type` values, `error.response` codes, and validator
+diagnostics: `protocol`, `capabilities`, `session`, `run`, `action`,
+`models`, `interaction`, and `auth`. A name whose first dot-separated
+segment is outside that set is an extension name and must carry a
+reverse-DNS prefix of at least two segments, as the layered draft already
+requires of extension fields (`drafts/layered-agent-protocol.md:488`):
+`com.example.storage.objects`, never `storage.objects`. The root-segment
+list is what makes the rule executable — "reverse-DNS" alone cannot be
+checked, but "the root segment is spec-owned or the name is prefixed"
+can, and it does not require the validator to know what a domain is.
+Adding a root segment to that list is a spec change, which is the point:
+it is the one place the core vocabulary can grow, and it grows by
+decision rather than by a vendor's choice of name.
+
+**Manifest.** `manifest.schema.json` gains an optional `extensions`
+array; `schemas` keeps its 7-of-7 bound, which from here describes the
+core bundle rather than the whole compiled set. Each entry is a pack
+descriptor: `id` (reverse-DNS, the pack's namespace), `version`, and
+`schemas` (the files the pack contributes).
+
+**Pack.** A pack is that descriptor plus its schema files and,
+optionally, its own fixture manifest in the existing fixture format. The
+descriptor declares what the pack defines — `capability_keys`,
+`envelope_types`, `error_codes` — rather than leaving it to be inferred
+from the schemas, so containment can be checked before anything is
+compiled.
+
+### Semantics
+
+- **Loading a pack turns tolerance into conformance for its vocabulary.**
+  Without the pack, its envelope types take the tolerant unknown-type
+  path and are accepted on the common envelope fields alone. With the
+  pack, they are validated against the pack's own branches, strictly, the
+  same way a core type is. This is the whole point of the unit: an
+  extension becomes a thing an implementation can be wrong about.
+- **Containment.** A pack may define names only under its own `id`
+  prefix. A pack declaring a key outside it, or one belonging to another
+  pack, or any spec-owned root segment, fails to load — it is not a
+  validation diagnostic but a refusal to compile, because a pack that
+  could redefine core or shadow a peer would make every other guarantee
+  here conditional on which packs happened to be loaded. This is what
+  makes packs composable: two vendors' packs can be loaded together and
+  cannot collide, because their names cannot overlap by construction.
+- **Core validity never depends on a pack.** Core conformance is computed
+  against the core bundle alone, so loading a pack can never make a core
+  envelope valid that would otherwise be invalid, nor the reverse. A pack
+  adds vocabulary; it does not amend the protocol.
+- **The gate is unchanged.** An extension capability is fail-closed like
+  any other: unadvertised means refused, and the refusal is the same
+  typed `unsupported_feature` naming the key in `details.feature`. An
+  agent handed a vendor pack therefore uses that vendor's surface through
+  exactly the machinery it already uses for core capabilities, which is
+  the property this unit exists to deliver.
+
+### Validator
+
+- `validation.CompileSchemas` keeps its signature and its meaning. A
+  variant takes options — the tolerance mode this phase already
+  introduces, and zero or more packs — so the two seam changes land as
+  one API rather than two. Packs are registered as additional resources
+  under their own base URI and contribute branches to the envelope
+  `oneOf`; the tolerant fallback branch stays, and now catches only types
+  no loaded pack claims.
+- Containment is checked at load, before compilation, against the
+  declared names in each descriptor.
+- `oap validate` gains a repeatable `-pack <path>`. Packs are opt-in on
+  the command line for the same reason tolerance is: which vocabulary is
+  in force must be the caller's stated choice, not inferred from the
+  input.
+- `validation/manifest.go` `knownUnits` is untouched. Pack conformance is
+  claimed separately, below, so a pack can never widen a core claim.
+
+### Conformance
+
+The executable claim is unchanged for core and gains an independent term
+per pack: `open-agent-protocol.agent-control-core/0.1-executable` plus
+graduated units, plus `+ext:<pack id>/<pack version>` for each pack an
+endpoint implements. A pack ships its fixtures in the existing manifest
+format and they run under the same runner, so "conformant to Cloudflare's
+extension" is a claim with the same executable meaning as "conformant to
+`+queue`" — stated by the vendor, checked by the same tool, and carrying
+no authority over the core claim beside it.
+
+### Fixtures
+
+Negative: `ext-unprefixed-key` (an extension capability key whose root
+segment is not spec-owned and which carries no reverse-DNS prefix),
+`ext-pack-claims-core-name` (a pack declaring a spec-owned root segment;
+load refusal, not a diagnostic), `ext-pack-claims-foreign-prefix` (a pack
+declaring a name under another pack's id; load refusal),
+`ext-packed-type-malformed` (an envelope of a loaded pack's type with a
+body its schema rejects — accepted without the pack, rejected with it,
+which is the pair that shows tolerance becoming conformance).
+
+Positive: `ext-unpacked-type-tolerated` (the same envelope with no pack
+loaded, accepted on the common fields in tolerant mode),
+`ext-advertised-key-gated` (an extension key advertised and used, and the
+same key unadvertised drawing `unsupported_feature` with
+`details.feature` naming it), `ext-core-claim-unchanged` (the core
+fixture manifest passing identically with and without a pack loaded).
+
+### Exit criteria
+
+The namespace rule is stated and checked; a pack can be declared, loaded,
+and compiled alongside core; a loaded pack's envelopes are validated
+strictly while the same envelopes are tolerated without it; containment
+refusals are covered; the core fixture corpus passes identically with and
+without packs loaded; and `oap validate -pack` is documented beside
+`-mode`.
+
 ## T1. Run controls
 
-Unit name: `run-controls`. Planned decision: 0004.
+Unit name: `run-controls`. Planned decision: 0005.
 
 ### Scope
 
@@ -734,7 +897,7 @@ executable and the other three "shape frozen, evidence pending".
 
 ## T5a. Models catalog
 
-Unit name: `models`. Planned decision: 0005.
+Unit name: `models`. Planned decision: 0006.
 
 ### Scope
 
@@ -1083,7 +1246,7 @@ conformance draft's `+models` unit text cites the fixtures.
 
 ## T2. Queue delivery
 
-Unit name: `queue`. Planned decision: 0006.
+Unit name: `queue`. Planned decision: 0007.
 
 ### Scope
 
@@ -2033,7 +2196,7 @@ reservations".
 ## T3. Tool sources and control-layer tools
 
 Unit names: `tool-sources` (T3a and T3b) and `control-tools` (T3c). Planned
-decision: 0007 (one decision, three sub-units, each independently
+decision: 0008 (one decision, three sub-units, each independently
 advertisable).
 
 ### T3a. Catalog with sources
@@ -2710,7 +2873,7 @@ the request used.
   embedder) map it to an `action.call.resolve.response` with
   `accepted: false` and that `reason`, and every other error keeps the
   existing `error.response` mapping. The permission and user-input arms
-  keep their current behavior; aligning them is a question for the 0007
+  keep their current behavior; aligning them is a question for the 0008
   decision, not a change this unit makes. The memory adapter returns the
   sentinel for a repeated or late `started` and for a resolution after
   the interaction settled; `adaptertest` asserts the sentinel, and the
@@ -2812,7 +2975,7 @@ the request used.
   saw the response learns the outcome from state instead of guessing from
   events it cannot attribute to acceptance. The optional
   MCP connector is a separate package `serve/mcpconnect`, out of scope for
-  the 0007 decision but designed against it.
+  the 0008 decision but designed against it.
 - `serve/servehttp`: `GET /sessions/{id}/tools` returning
   `action.tools.list.response`; `POST /sessions/{id}/resolve` accepts
   `action.call.resolve.request` and calls `Session.Published` after
@@ -2978,7 +3141,7 @@ sources.
 
 ## T4. Steer
 
-Unit name: `steer`. Planned decision: 0008. This section is a pre-design for
+Unit name: `steer`. Planned decision: 0009. This section is a pre-design for
 that decision, not a settled shape: it is the one unit that adds a new
 pending lifecycle inside a run, and its decision must be written from a pi
 corpus case first.
@@ -3016,7 +3179,7 @@ therefore needs a steer settlement, not only a steer admission.
   (a steer already pending on such a run is dropped with `run_terminated`
   at the terminal, as the barrier rules). A harness-specific inability to
   steer a running run is not a target condition: an adapter that meets
-  one reports it as evidence for the 0008 decision, which may extend the
+  one reports it as evidence for the 0009 decision, which may extend the
   vocabulary, and until then `not_steerable` for a target that is not
   `cancelling` is a wrong reason. A steer carries no run
   controls: `model_id`, `instructions`, `tool_choice`, and
@@ -3072,9 +3235,9 @@ therefore needs a steer settlement, not only a steer admission.
   vertical slices stay independently implementable: `Submit` takes an
   `adapter.SubmitRequest { Request protocol.MessageSubmitRequest;
   EnvelopeID protocol.EnvelopeID }` **in T2**, which needs it for the
-  capture markers under decision 0006, and `InteractionResolution` gains
+  capture markers under decision 0007, and `InteractionResolution` gains
   `EnvelopeID` **in T3c**, which needs it for resolve-derived
-  `request_id` under decision 0007; T4 adds no API change of its own and
+  `request_id` under decision 0008; T4 adds no API change of its own and
   simply reuses both. Each is populated by every binding — `servehttp` and the
   stdio frontend from the request they decoded, an in-process embedder
   from the envelope it built. The `Submit` change is a compile-time break
@@ -3574,7 +3737,7 @@ and hub contract is explicit rather than inherited from `start`:
   wedge a stream, and for an in-process embedder the obvious usage
   invites exactly that: `Submit` with a long-lived context, then a
   forgotten call, and the target run's subscribers see silence with no
-  diagnostic and no context to end. Two mitigations, both in the 0008
+  diagnostic and no context to end. Two mitigations, both in the 0009
   decision. `Submit` returns the barrier as a guard value with a single
   `Publish()` method rather than a bare token, so `defer` is the
   idiomatic use and the right thing is the easy thing; and the gate
@@ -3739,7 +3902,7 @@ resumes after it, and a steer event is never delivered twice. Both
 clients' e2e tests drive a steer against the memory adapter and assert
 the settlement event in the target run's sequence.
 
-### Questions the 0008 decision must answer from evidence
+### Questions the 0009 decision must answer from evidence
 
 1. Event naming: `run.steer.applied`/`run.steer.dropped` versus a general
    `run.submission.*` pair that queue promotion could share.
@@ -3763,6 +3926,16 @@ until then `auth_required` on `run.failed` (already a standard code) is the
 executable surface.
 
 ## Cross-cutting vocabulary
+
+### Extension namespace
+
+The root segments `protocol`, `capabilities`, `session`, `run`, `action`,
+`models`, `interaction`, and `auth` are spec-owned, for capability keys,
+envelope `type` values, `error.response` codes, and validator
+diagnostics alike. Every name below sits under one of them. A name whose
+root segment is outside that set is an extension name and carries a
+reverse-DNS prefix (`com.example.storage.objects`); T0 states the rule
+and the validator checks it.
 
 ### Capability keys introduced or given executable meaning
 
@@ -3804,12 +3977,13 @@ invariant is the same (`unavailable_capability`, `illegal_run_transition`,
 
 ### Conformance units
 
-`validation/manifest.go` `knownUnits` gains `run-controls`, `models`,
-`queue`, `tool-sources`, `control-tools`, `steer`. The conformance draft's
+`validation/manifest.go` `knownUnits` gains `extensions`, `run-controls`,
+`models`, `queue`, `tool-sources`, `control-tools`, `steer`. The conformance draft's
 unit list gains `+run-controls`, `+tool-sources`, and `+control-tools`
 beside the existing `+models`, `+queue`, and `+steer`; the executable claim
 becomes `open-agent-protocol.agent-control-core/0.1-executable` plus the
-graduated units.
+graduated units, and gains an independent `+ext:<pack id>/<version>` term
+per loaded extension pack (T0), which never widens the core claim.
 
 ### Schema evolution
 
