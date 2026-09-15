@@ -232,11 +232,15 @@ func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
 // already live, and its identifiers — the run id above all — are minted on
 // the daemon's side of the wire, so an unframable acknowledgement cannot be
 // a generic response_too_large refusal that leaves the run running behind an
-// id the host cannot know. It is rolled back instead: the run is cancelled
-// on a context the request's own end cannot cut short, and the refusal names
-// the rollback. The resolve and cancel acknowledgements echo identifiers the
-// host itself supplied and close answers null, so the generic refusal stays
-// honest for them; nothing they leave behind is unknowable.
+// id the host cannot know. It is rolled back instead — the run cancelled on
+// a context the request's own end cannot cut short — and the refusal reports
+// what the rollback actually observed: a cancelled run only once its own
+// run.cancelled envelope arrived, a run that raced the cancellation to
+// completed or failed as settled under that outcome, and an unsettled
+// cancellation as possibly still live. The resolve and cancel
+// acknowledgements echo identifiers the host itself supplied and close
+// answers null, so the generic refusal stays honest for them; nothing they
+// leave behind is unknowable.
 func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
 	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionMessageSubmitRequest)
 	if werr != nil {
@@ -278,7 +282,7 @@ func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMes
 		// the frame limit's floor: the underlying error goes to the logger,
 		// never the line.
 		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
-		settled, err := s.rollbackRun(rollback, entry, admission.RunID)
+		outcome, err := s.rollbackRun(rollback, entry, admission.RunID)
 		cancelRollback()
 		if err != nil {
 			s.logger.Printf("servestdio: roll back submit %d: %v", *request.ID, err)
@@ -289,39 +293,47 @@ func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMes
 			}
 			return nil, &wireError{Code: "response_too_large", Message: message}
 		}
-		if !settled {
+		switch outcome {
+		case protocol.TypeRunCancelled:
+			return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the run was cancelled"}
+		case "":
 			return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the run's cancellation did not settle within the rollback window and may still be live"}
+		default:
+			// The run raced the cancellation to its own terminal: its
+			// effects happened, so the outcome is named rather than
+			// reported as the cancellation it is not.
+			return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the run settled before the rollback (" + string(outcome) + ")"}
 		}
-		return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the run was cancelled"}
 	}
 	return result, nil
 }
 
-// rollbackRun cancels the run and reports whether it settled within the
-// window. The subscription is registered before the cancel so a synchronous
-// adapter's terminal envelopes cannot slip past the wait, and settlement
-// means the run's own terminal envelope was observed — never merely that
-// the cancel was acknowledged.
-func (s *Server) rollbackRun(ctx context.Context, entry *serve.Session, runID protocol.RunID) (settled bool, err error) {
+// rollbackRun cancels the run and reports the terminal envelope that
+// settled it within the window, or the empty type when none arrived. The
+// subscription is registered before the cancel so a synchronous adapter's
+// terminal envelopes cannot slip past the wait, and settlement means the
+// run's own terminal envelope was observed — never merely that the cancel
+// was acknowledged.
+func (s *Server) rollbackRun(ctx context.Context, entry *serve.Session, runID protocol.RunID) (protocol.EnvelopeType, error) {
 	subscription, err := s.hub.Subscribe(ctx, entry.ID())
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	defer subscription.Close()
 	if _, err = entry.Cancel(ctx, runID); err != nil {
-		return false, err
+		return "", err
 	}
 	for {
 		envelope, nextErr := subscription.Next()
 		if nextErr != nil {
-			return false, nil
+			return "", nil
 		}
 		if envelope.RunID != runID {
 			continue
 		}
 		switch envelope.Type {
 		case protocol.TypeRunCancelled, protocol.TypeRunCompleted, protocol.TypeRunFailed:
-			return true, nil
+			return envelope.Type, nil
 		}
 	}
 }

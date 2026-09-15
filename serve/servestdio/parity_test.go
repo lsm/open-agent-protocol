@@ -243,6 +243,21 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 	if code := stdioCode(nextBudgetID, envelope, longAddress); code != "type_mismatch" {
 		t.Fatalf("long addressing: stdio refused as %s, want type_mismatch", code)
 	}
+	nextBudgetID++
+
+	// The encodings expand the same raw address differently — a NUL is
+	// three bytes as %00 in the HTTP target and six as a JSON \u escape
+	// of the same byte in the wrapper — so the allowance is sized for the
+	// expansion ratio, not the raw byte count: the control-character id
+	// that worst-cases the ratio rides both transports too.
+	nulAddress := strings.Repeat("%00", 200<<10)
+	nulLineID := strings.Repeat("\\u0000", 200<<10)
+	if code := postCode(envelope, nulAddress); code != "type_mismatch" {
+		t.Fatalf("encoded addressing: HTTP refused as %s, want type_mismatch", code)
+	}
+	if code := stdioCode(nextBudgetID, envelope, nulLineID); code != "type_mismatch" {
+		t.Fatalf("encoded addressing: stdio refused as %s, want type_mismatch", code)
+	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
