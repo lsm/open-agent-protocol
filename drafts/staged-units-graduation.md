@@ -2463,25 +2463,24 @@ therefore needs a steer settlement, not only a steer admission.
   indistinguishable from "never admitted" — the one inference this
   surface exists to make safe — and a caller would resend guidance that
   already landed. So `settled_steers` is not a bare list but
-  `{ "entries": [...], "complete": bool, "evicted_before_ms": int? }`:
-  `complete` is true while nothing has been evicted for the session, and
-  once an eviction occurs it is false and `evicted_before_ms` records the
-  settlement time of the oldest retained entry. Recovery reads `complete`
-  and nothing else: while it is true, absence is conclusive; once it is
-  false, absence is inconclusive for every request, and a caller that did
-  not see its settlement must decide as it would on any unknown outcome.
-  It is tempting to let a caller whose request is newer than
-  `evicted_before_ms` keep the conclusive answer, and that would be
-  wrong: the caller would be comparing its own clock against a server
-  timestamp, `timestamp_ms` on the request is optional anyway, and a
-  clock running fast makes an evicted settlement look too new to have
-  been evicted — precisely the case where the caller then resends
-  guidance that already landed. A recoverable server-side marker would
-  not help either, since the caller that needs this is the one that never
-  received a response to recover a marker from. `evicted_before_ms` is
-  therefore a server-side fact for the validator's omission rule below,
-  where both sides of the comparison are the hub's own, and explicitly
-  not a client recovery input. Pending steers stay on the
+  `{ "entries": [...], "complete": bool }`, with `entries` in settlement
+  order and `complete` true while nothing has been evicted for the
+  session. Recovery reads `complete` and nothing else: while it is true,
+  absence is conclusive; once it is false, absence is inconclusive for
+  every request, and a caller that did not see its settlement must decide
+  as it would on any unknown outcome. A timestamp watermark was the
+  obvious alternative and is the wrong tool twice over. For a client it
+  would mean comparing its own clock against a server time, with
+  `timestamp_ms` optional on the request anyway, and a clock running fast
+  makes an evicted settlement look too new to have been evicted —
+  precisely the case that causes a duplicate resend. For the validator it
+  is no better: `timestamp_ms` is optional on the settlement envelope
+  too, and several settlements can share a millisecond, so a conforming
+  bounded history could be diagnosed for an omission the rule could not
+  place. Eviction is an ordering fact, not a temporal one, and the
+  validator already has the order — the trace. Hence the rule below is
+  stated over settlement order rather than time, and no marker is needed
+  on the wire at all. Pending steers stay on the
   `active_runs` entry, where a live run's state belongs; settled ones
   move to the session, where they outlive it. A caller that missed
   the settlement reads the outcome instead of inferring it from silence,
@@ -2684,19 +2683,25 @@ The validator keeps every settlement it observed and requires the
 snapshot's `entries` to match that history — each observed settlement
 present with the `run_id`, `submission_id`, `request_id`, and
 `applied`/`dropped` outcome the trace recorded, no entry the trace never
-settled, and no settlement omitted unless the snapshot admits truncation.
-That last clause is what makes `complete` and `evicted_before_ms`
-load-bearing rather than decorative: an omission is legal only when
-`complete` is false and the missing settlement is older than
-`evicted_before_ms`, and `complete: true` alongside any missing
-settlement is itself the diagnostic. Fixtures
+settled, and omissions only where eviction can explain them. A bounded
+history drops its oldest entries, so what survives is a contiguous
+*suffix* of the session's settlements: `entries` must equal the last N
+settlements the validator observed, in that order, for some N. That is
+the whole omission rule, and it needs no timestamp — an entry missing
+from the middle, or an older entry retained while a newer one is gone,
+is not something eviction can produce. `complete` must then be true
+exactly when N covers every settlement, so `complete: true` alongside
+any missing settlement is itself the diagnostic, and `complete: false`
+with nothing missing is equally wrong. Fixtures
 `steer-settled-history-omits-entry` (a settled steer missing from a
 snapshot claiming `complete: true`),
 `steer-settled-history-wrong-outcome` (`applied` reported for a dropped
 steer), `steer-settled-history-invents-entry` (an entry for a submission
-the trace never settled) and `steer-settled-history-truncated`
-(positive; an omission under `complete: false` with the settlement older
-than the watermark) — all `session_state_mismatch` but the last.
+the trace never settled), `steer-settled-history-gap` (a middle
+settlement omitted under `complete: false`, which no eviction explains)
+and `steer-settled-history-truncated` (positive; the oldest settlements
+omitted under `complete: false`) — all `session_state_mismatch` but the
+last.
 
 ### Reference adapter and evidence
 
