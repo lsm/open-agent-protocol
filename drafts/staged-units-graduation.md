@@ -263,6 +263,40 @@ refusal is itself validated. An extension capability is fail-closed in
 the same machinery as a core one, which is the claim T0 makes, and this
 is what makes it implementable generically rather than per pack.
 
+The gate says when a packed request may be *refused for want of the
+capability*; it says nothing about the refusals a packed request may
+legitimately draw once the capability is present, and the honour check
+needs that or it cannot run on packs at all. A storage read of a missing
+object is refused for a domain reason the validator cannot evaluate —
+T0 gives packs schemas and gate metadata, not stateful rules, and
+deliberately so — and applying `unhonoured_capability` to every refusal
+of a well-formed packed request would convict exactly those valid
+failures, while exempting packs would let one advertise a key and
+refuse everything, which is the class the check exists to catch. What
+*can* be checked without semantics is whether a refusal is one the pack
+promised to be able to give. So each declared `request` carries
+`refusals`, the `error.response` codes the endpoint may answer it with
+for domain reasons — prefixed, drawn from the pack's own `error_codes`,
+so containment already applies and an undeclared one is a load refusal
+(`pack_refusal_undeclared`). The honour rule for a packed request is
+then bounded the way `limits` and `modes` bound the core keys: a refusal
+under a declared code is a domain refusal and conforming, whether or not
+the object was really missing, which is outside the seam; a refusal of a
+schema-valid packed request on an advertising endpoint under any *other*
+code — `internal_error`, `unsupported_feature`/`unsatisfiable`, a core
+code the pack never claimed — is `unhonoured_capability` on the
+`error.response`. The vendor is thereby made to enumerate its refusal
+reasons in advance, which is the disclosure move every other
+honour rule makes, and the corpus-completeness `honour` fixture for a
+packed key asserts a refusal under an undeclared code rather than
+restating the pack's own annotation, so the check is not circular.
+Whether a declared refusal was *warranted* is a question for
+pack-supplied semantics, listed under "Deliberately later". Fixtures
+`ext-packed-request-declared-refusal` (positive; a packed request
+refused under a code in its `refusals`) and
+`ext-packed-request-undeclared-refusal` (`unhonoured_capability`; the
+same request refused with `internal_error`).
+
 A key per type is still not enough to *run* the gate, because the gate
 is judged on the correlated response and never on the request, and the
 validator cannot tell a packed request from a packed event: both omit
@@ -495,8 +529,8 @@ and `ext-pack-restates-core-member` (load refusal).
   `pack_branch_unpinned`, `pack_ungated_type`,
   `pack_restates_core_member`, `pack_member_target_unknown`,
   `pack_role_undeclared`, `pack_response_gated`,
-  `pack_reply_target_unknown`, `pack_external_ref`,
-  `pack_dependency_missing`,
+  `pack_reply_target_unknown`, `pack_refusal_undeclared`,
+  `pack_external_ref`, `pack_dependency_missing`,
   `pack_fixture_claims_core_unit`, and
   `ext_claim_without_pack`, one per load refusal this section names.
   The runner asserts that loading the named pack fails with exactly
@@ -619,7 +653,10 @@ operation within every disclosed constraint refused on an endpoint that
 advertises the governing key, where no unit-specific rule names a
 defect. The generic form is what a pack's fixtures assert — a pack has
 no diagnostics of its own, for the reason the validator section gives —
-and it is what two core keys turned out to need.
+bounded for a packed request by the `refusals` its descriptor declares
+(Wire, above), so that a domain refusal the validator cannot evaluate is
+conforming and only a refusal outside the declared set is diagnosed; and
+it is what two core keys turned out to need.
 
 Run against the plan as it stands, the check finds five gaps, which is
 the argument for it. Each is closed in its unit's fixture list, and
@@ -1029,8 +1066,9 @@ No new envelope types. Changes to
   otherwise claim the same response.
 - New diagnostic `degraded_without_optin`: `feature()` today accepts every
   level but `unavailable`, so a request carrying a control, an
-  explicit non-`auto` delivery, or a `models.request` (T5a) or
-  `action.tools.list.request` (T3a), both of which carry the same field,
+  explicit non-`auto` delivery, or a `models.request` (T5a), an
+  `action.tools.list.request` (T3a), or a `session.open.request` electing
+  attachment or provision (T3b, T3c), all of which carry the same field,
   whose key the descriptor advertises
   `degraded` and whose `allow_degraded_features` omits that key is
   remembered, and an admission correlated to it (a
@@ -3137,9 +3175,34 @@ exchange, and the handler opens every session as a fixed participant
 `serve/serve.go:44`). Asking a client to name an owner it cannot learn
 would make its own configurable participant the only value it has, and
 that is a foreign owner the daemon must reject. So the daemon *stamps*
-`execution_owner` instead: a client supplying `tools` through `POST
-/adapters/{name}/sessions` omits the member, the daemon sets it to its
-own participant id before forwarding the open, and a client that
+`execution_owner` instead — and stamps it *before* the envelope is
+validated, because the order matters and the current binding has it the
+other way. `ToolDefinition` requires `execution_owner`
+(`capabilities.schema.json`), `serve/servehttp.readRequest` validates
+the whole inbound envelope against the bundle before `handleOpen`
+decodes it (`serve/servehttp/server.go:195`, `:556`), and the Go field
+carries no `omitempty` (`protocol/run.go:84`), so an omitted owner would
+be rejected as `schema_invalid` and a zero-valued one serialized as an
+invalid empty string, and the stamping step would never be reached. The
+client-facing open on `POST /adapters/{name}/sessions` therefore takes a
+specified pre-validation projection, scoped to that one route and one
+member: before `readRequest` validates, the daemon walks
+`payload.tools[]`, sets `execution_owner` to its own participant id on
+every entry that omits it, and refuses the request on any entry that
+carries one (below). The projected envelope — now the full protocol
+shape — is what the schema validates, what the hub sees, and what the
+adapter receives, so no core schema is narrowed or relaxed and core
+validity is untouched by the binding; only the bytes a client sends are
+allowed to be short one member the daemon is the authority on. The Go
+client's `ToolDefinition` gains `omitempty` on `ExecutionOwner` so a
+zero value is omitted rather than sent empty, and the TypeScript client
+omits the field; both are client-side serialization, not wire changes.
+The alternative — disclosing the daemon's participant on `GET
+/adapters/{name}/capabilities` and having clients send it — was
+rejected because it makes every client do a round trip to learn a value
+the daemon already knows and then echo it back to be checked. A client
+supplying `tools` through that route omits the member, the daemon sets
+it before forwarding the open, and a client that
 supplies any `execution_owner` at all is refused at the daemon boundary
 with the typed `unsupported_feature` (`details.feature:
 "action.tools.provide"`, `details.reason: "unsatisfiable"`,
@@ -3544,7 +3607,24 @@ the request used.
 
 ### Surfaces
 
-- `adapter`: `OpenRequest` gains `ToolSources` and `Tools`;
+- `session.open.request` gains an optional `allow_degraded_features`,
+  the carrier every other request that elects a capability already has,
+  because `action.tool_sources.attach` and `action.tools.provide` can be
+  advertised `degraded` like any key and the open is where they are
+  elected: without it an endpoint at that level would have to admit
+  degraded behaviour without consent or refuse every open that attaches
+  or provides with `capability_degraded`, making the advertised
+  capability unusable. T1's rule applies unchanged, judged on the
+  `session.open.response` — an open electing a `degraded` key whose
+  `allow_degraded_features` omits it is refused `capability_degraded`
+  with `details.feature` naming the key, and an admission is
+  `degraded_without_optin`. `protocol.SessionOpenRequest` gains the
+  field (`protocol/control.go:96`), and it threads through every open
+  surface below. Fixtures `open-degraded-attach-optin` (positive),
+  `open-degraded-attach-without-optin` (`degraded_without_optin` on the
+  open response) and `open-degraded-attach-refused` (positive).
+- `adapter`: `OpenRequest` gains `ToolSources`, `Tools`, and
+  `AllowDegradedFeatures`;
   `InteractionResolution.ToolCall`; optional interface `adapter.ToolLister`
   (`Tools(ctx, protocol.ToolsListRequest) (protocol.ToolsListResponse,
   error)`) for the catalog, the request being the payload struct so the
@@ -3694,9 +3774,11 @@ the request used.
   op takes `allow_degraded_features` directly; `POST /sessions/{id}/resolve` accepts
   `action.call.resolve.request` and calls `Session.Published` after
   writing the response; `POST /adapters/{name}/sessions` forwards
-  `tool_sources` and `tools`. Stdio ops `tools` and the extended `resolve`
+  `tool_sources`, `tools`, and `allow_degraded_features`. Stdio ops `tools` and the extended `resolve`
   (with the same post-write release) and `open`.
-- `client` and `clients/ts`: `Open` options for sources and tools;
+- `client` and `clients/ts`: `Open` options for sources, tools, and
+  `AllowDegraded(keys ...string)` / `allowDegradedFeatures`, sent only
+  when given;
   `Session.Tools(ctx, ...ToolsOption)` with `AllowDegraded(keys
   ...string)` and `session.tools({ allowDegradedFeatures? })`, sent only
   when given so an unmodified call is byte-identical to today's;
