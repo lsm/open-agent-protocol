@@ -1,12 +1,15 @@
 package rpc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -184,3 +187,403 @@ func (w *lockedShortWriter) Write(p []byte) (int, error) {
 }
 func (w *lockedShortWriter) String() string { w.mu.Lock(); defer w.mu.Unlock(); return w.b.String() }
 func (w *lockedShortWriter) Len() int       { w.mu.Lock(); defer w.mu.Unlock(); return w.b.Len() }
+
+// Regression: a response parsed off the ordered stream before the transport
+// died must win over the death. shutdown used to retire the pending map while
+// the reader was still parked in the response barrier, so the genuine reply —
+// already decoded from the wire — was discarded, the call returned the
+// shutdown reason, and the unmatched-id path raised ErrResponseNotFound over
+// the real cause.
+func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	inbound := client.Inbound()
+	results := make(chan error, 1)
+	go func() {
+		var result struct {
+			Status string `json:"status"`
+		}
+		err := client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, &result)
+		if err == nil && result.Status != "streaming" {
+			err = fmt.Errorf("status = %q", result.Status)
+		}
+		results <- err
+	}()
+	// Drain the whole request line, then push a notification through the same
+	// serialized writer and drain that too. The writer hands back each frame's
+	// result before it accepts the next, so once the notification is on the
+	// wire the call is certainly parked on its response rather than still
+	// inside a write that the close would fail.
+	serverLines := bufio.NewReader(serverReader)
+	if _, err := serverLines.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	synced := make(chan error, 1)
+	go func() { synced <- client.Notify(context.Background(), "sync", nil) }()
+	if _, err := serverLines.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-synced; err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, serverLines) }()
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"streaming"}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Take the barrier without acknowledging it: the reader is now parked
+	// holding a fully decoded response for request 1.
+	select {
+	case message := <-inbound:
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	// The transport dies underneath the parked reader.
+	client.Close()
+	select {
+	case err := <-results:
+		if err != nil {
+			t.Fatalf("the parked response lost to the transport's death: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	if err := client.Err(); errors.Is(err, ErrResponseNotFound) {
+		t.Fatalf("a concurrently retired id was reported as unmatched: %v", err)
+	}
+	_ = serverWriter.Close()
+}
+
+// A client built without a CloseReadWriter cannot interrupt a reader parked
+// in Decode, so settling the pending calls must never wait for the reader to
+// stop: when one call's cancellation retires the client, the other pending
+// call has to fail promptly instead of hanging until the peer closes stdout.
+func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, clientWriterUnused := io.Pipe()
+	defer clientWriterUnused.Close()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	_ = client.Inbound()
+	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- client.CallID(ctx, IntegerID(1), "a", nil, nil) }()
+	other := make(chan error, 1)
+	go func() { other <- client.CallID(context.Background(), IntegerID(2), "b", nil, nil) }()
+	// Both requests are on the wire; nothing ever answers them.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled call err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled call never returned")
+	}
+	select {
+	case err := <-other:
+		if err == nil {
+			t.Fatal("the other call reported success with no response")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the other pending call hung waiting for a reader nothing can interrupt")
+	}
+}
+
+// The malformed-frame corpus shape at the rpc layer: the gateway answers the
+// request, then writes a corrupt line and exits. Both the response and the
+// transport's death sit on one ordered stream, back to back, and the response
+// must win — including when the caller's write is still waiting for the pump's
+// result as the reader retires the client.
+func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
+	const runs = 500
+	for i := 0; i < runs; i++ {
+		serverReader, clientWriter := io.Pipe()
+		clientReader, serverWriter := io.Pipe()
+		client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+		inbound := client.Inbound()
+		go func() {
+			for {
+				select {
+				case message := <-inbound:
+					if message.Barrier != nil {
+						close(message.Barrier)
+					}
+				case <-client.ReadDone():
+					return
+				}
+			}
+		}()
+		go func() {
+			_, _ = bufio.NewReader(serverReader).ReadString('\n')
+			_, _ = serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n{not json\n"))
+			_ = serverWriter.Close()
+		}()
+		if err := client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil); err != nil {
+			t.Fatalf("run %d: the response lost to the transport's death: %v", i, err)
+		}
+		// The call may return before the reader reaches the corrupt line;
+		// judge the retirement only once the reader has stopped.
+		<-client.ReadDone()
+		if client.Err() == nil {
+			t.Fatalf("run %d: the malformed frame did not retire the client", i)
+		}
+		_ = client.Close()
+		_ = serverReader.Close()
+		_ = clientReader.Close()
+	}
+}
+
+// A pump blocked inside Encode — the peer stopped reading stdin — cannot be
+// woken without a closer. When the reader then retires the client, a caller
+// waiting on that frame must be released with the death rather than held
+// until the peer happens to exit.
+func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
+	clientReader, serverWriter := io.Pipe()
+	blocked := &blockedPumpWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(blocked.release)
+	client := NewClient(clientReader, blocked, ClientOptions{QueueCapacity: 8})
+	result := make(chan error, 1)
+	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
+	// Wait for the pump to be inside Encode, blocked in the writer.
+	select {
+	case <-blocked.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump never entered Encode")
+	}
+	// The peer emits garbage: the reader retires the client while the pump
+	// is still blocked.
+	if _, err := serverWriter.Write([]byte("{not json\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("call reported success for a frame that never fully left")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call hung inside write on a pump nothing can unblock")
+	}
+	_ = serverWriter.Close()
+}
+
+// A response whose ordering barrier cannot be enqueued must not be delivered:
+// the client is retiring on queue overflow with wire-earlier observations
+// still unreduced, so releasing the reply would let it overtake them. Only a
+// barrier that was enqueued and then overtaken by the transport's death
+// releases the response.
+func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 1})
+	_ = client.Inbound() // ordered stream active, nobody consuming
+	result := make(chan error, 1)
+	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
+	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
+	// One wire-earlier observation fills the queue; the response's barrier
+	// then cannot be enqueued.
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":"r1","method":"reverse","params":{}}` + "\n" + `{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrNotificationQueue) {
+			t.Fatalf("call settled with %v, want the queue overflow", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	_ = serverWriter.Close()
+	_ = serverReader.Close()
+}
+
+// transportCloseCounter records how many times the client closed the
+// supplied CloseReadWriter. io.Closer does not promise idempotence, so a
+// retirement must close it exactly once whichever path reaches it first.
+type transportCloseCounter struct {
+	inner io.Closer
+	calls atomic.Int32
+}
+
+func (c *transportCloseCounter) Close() error { c.calls.Add(1); return c.inner.Close() }
+
+func TestClientClosesTransportExactlyOnce(t *testing.T) {
+	for _, order := range []string{"close-then-shutdown", "shutdown-then-close"} {
+		reader, writer := io.Pipe()
+		closer := &transportCloseCounter{inner: reader}
+		client := NewClient(reader, io.Discard, ClientOptions{CloseReadWriter: closer})
+		_ = client.Inbound()
+		if order == "close-then-shutdown" {
+			_ = client.Close()
+			client.shutdown(errors.New("late"))
+		} else {
+			client.shutdown(errors.New("direct"))
+			_ = client.Close()
+		}
+		// The reader's own retirement on the closed pipe must not close it
+		// again either.
+		<-client.ReadDone()
+		if n := closer.calls.Load(); n != 1 {
+			t.Fatalf("%s: transport closed %d times, want exactly once", order, n)
+		}
+		_ = writer.Close()
+	}
+}
+
+var errEncodeAfterDelivery = errors.New("encode failed after the frame was delivered")
+
+// releasedFailingWriter forwards each frame to the peer, then holds the write
+// open until released and reports a failure for it: a frame the peer received
+// and answered whose Encode nevertheless returned an error.
+type releasedFailingWriter struct {
+	inner   io.Writer
+	release chan struct{}
+}
+
+func (w *releasedFailingWriter) Write(p []byte) (int, error) {
+	n, err := w.inner.Write(p)
+	if err != nil {
+		return n, err
+	}
+	<-w.release
+	return n, errEncodeAfterDelivery
+}
+
+// A frame the peer received and answered must settle on its response even when
+// Encode reports a failure for it: the client retires before the failure is
+// published, so the caller settles on its channel rather than removing a
+// pending id whose reply is already in hand.
+//
+// Unlike the other regression tests here this one also passes against the
+// client it fixes: there the pump published the failure before closing done,
+// and losing that window needs the caller scheduled in the instant between the
+// two, which 300 runs never hit. It guards the invariant rather than
+// reproducing the defect.
+func TestClientCallSettlesOnResponseWhenEncodeFailsAfterDelivery(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	writer := &releasedFailingWriter{inner: clientWriter, release: make(chan struct{})}
+	client := NewClient(clientReader, writer, ClientOptions{QueueCapacity: 8})
+	inbound := client.Inbound()
+	result := make(chan error, 1)
+	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
+	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	// The peer answers while the pump still holds the write open.
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Take the barrier without acknowledging it: the reply is decoded and in
+	// hand while the pump still holds the write open.
+	select {
+	case message := <-inbound:
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	close(writer.release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("the answered frame lost to its encode failure: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	_ = serverWriter.Close()
+	_ = serverReader.Close()
+}
+
+// CallStarted's admission channel reports what a settled outcome proves: a wire
+// error response still proves the request was completely written, so it must
+// report admission, and the remote error is the call's terminal result.
+func TestCallStartedReportsAdmissionForRemoteErrorAfterEncodeFailure(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	writer := &releasedFailingWriter{inner: clientWriter, release: make(chan struct{})}
+	client := NewClient(clientReader, writer, ClientOptions{QueueCapacity: 8})
+	inbound := client.Inbound()
+	started := make(chan error, 1)
+	result := make(chan error, 1)
+	go func() { result <- client.CallStarted(context.Background(), "prompt.submit", nil, nil, started) }()
+	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"bad"}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-inbound:
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	close(writer.release)
+	var remote *RemoteError
+	select {
+	case err := <-result:
+		if !errors.As(err, &remote) {
+			t.Fatalf("call settled with %v, want the remote error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("admission reported %v for a request the peer answered", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("admission never reported")
+	}
+	_ = serverWriter.Close()
+	_ = serverReader.Close()
+}
+
+// blockedPumpWriter reports when the pump has entered Write and holds it there
+// until the test releases it: a peer that stopped reading stdin.
+type blockedPumpWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockedPumpWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+// The settle decision belongs to the request, not to the pump: a later frame
+// blocked in Encode says nothing about a frame that already left it. With a
+// shared flag, A's caller reported the transport's death for a request the
+// peer had received in full because B happened to be encoding.
+func TestPumpSettlesIsPerRequest(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+	client := NewClient(reader, io.Discard, ClientOptions{}) // no closer
+	past := writeRequest{started: make(chan struct{}), encoded: make(chan struct{}), result: make(chan error, 1)}
+	close(past.started)
+	close(past.encoded)
+	blocked := writeRequest{started: make(chan struct{}), encoded: make(chan struct{}), result: make(chan error, 1)}
+	close(blocked.started)
+	if !client.pumpSettles(past) {
+		t.Fatal("a frame past Encode must settle on its own result")
+	}
+	if client.pumpSettles(blocked) {
+		t.Fatal("a frame still inside Encode without a closer must not be waited on")
+	}
+}
