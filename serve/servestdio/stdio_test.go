@@ -988,3 +988,67 @@ func TestSubmitRollsBackUnframableAcknowledgement(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 }
+
+// neverSettlingAdapter wraps the memory adapter so Cancel acknowledges with
+// run.cancelling but cancels nothing: the run stays parked at its gate, the
+// asynchronous worst case the rollback must survive without claiming a
+// settled cancel.
+type neverSettlingAdapter struct{ inner base.Adapter }
+
+func (a neverSettlingAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	return a.inner.Probe(ctx)
+}
+
+func (a neverSettlingAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	entry, err := a.inner.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return neverSettlingSession{entry}, nil
+}
+
+type neverSettlingSession struct{ base.Session }
+
+func (s neverSettlingSession) Cancel(ctx context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
+	state, err := s.Session.State(ctx)
+	if err != nil {
+		return protocol.RunCancelResponse{}, err
+	}
+	return protocol.RunCancelResponse{SessionID: state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
+}
+
+// TestSubmitRollbackWaitsForSettlement pins the asynchronous half of the
+// rollback custody rule: a cancel that is only acknowledged — never settled
+// — must be reported as unsettled, and the report must be honest about the
+// run still being live to a host that cannot know its id.
+func TestSubmitRollbackWaitsForSettlement(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", neverSettlingAdapter{base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	openSession(t, hub, "unsettled")
+	longID := strings.Repeat("s", 400)
+	line := `{"id":1,"op":"submit","session_id":"unsettled","request":` + string(requestEnvelope(t, longID, protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "unsettled", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "unsettled", "")) + `}`
+	f := startFrontend(t, hub, Options{FrameLimit: len(line) + 8, ShutdownTimeout: 100 * time.Millisecond})
+	f.send(line)
+	response := f.expectResponse(1)
+	requireCode(t, response, "response_too_large")
+	if !strings.Contains(response.Error.Message, "did not settle within the rollback window") {
+		t.Fatalf("refusal does not report the unsettled rollback: %s", response.Error.Message)
+	}
+
+	// The report is honest: the run really is still live behind the refusal
+	// the host cannot see the id of, exactly as the message warns.
+	f.send(`{"id":2,"op":"submit","session_id":"unsettled","request":` + string(requestEnvelope(t, "submit-2", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "unsettled", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "unsettled", "")) + `}`)
+	requireCode(t, f.expectResponse(2), "run_active")
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}

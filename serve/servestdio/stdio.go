@@ -49,11 +49,24 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// DefaultFrameLimit bounds one NDJSON line in both directions. It matches
-// servehttp's request-body budget so both transports of the same daemon
-// accept the same requests, with the adapters' rpc-codec discipline — a
-// bounded line, refused rather than split — applied to the framing.
-const DefaultFrameLimit = 16 << 20
+// maxEnvelopeBytes is the per-request envelope budget both transports of the
+// same daemon enforce on the same unit: servehttp reads it as the request
+// body limit, the op gate applies it to the request param. The frame limit
+// adds the wrapper allowance on top so a line carrying a maximal envelope —
+// plus its id, op, and session addressing — still frames.
+const maxEnvelopeBytes = 16 << 20
+
+// wrapperAllowance is the headroom the frame limit gives the line around
+// the envelope: the id, op, and session_id params plus the JSON wrapper. A
+// host keeping its addressing within it can size envelopes without knowing
+// which transport will carry them; a wrapper beyond it is an ordinary
+// frame-limit defect.
+const wrapperAllowance = 64 << 10
+
+// DefaultFrameLimit bounds one NDJSON line in both directions: the envelope
+// budget plus the wrapper allowance, with the adapters' rpc-codec discipline
+// — a bounded line, refused rather than split — applied to the framing.
+const DefaultFrameLimit = maxEnvelopeBytes + wrapperAllowance
 
 // minFrameLimit is the smallest usable FrameLimit: the correlated refusal —
 // respond's fixed-size response_too_large fallback, which encodes well under

@@ -269,26 +269,61 @@ func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMes
 	if !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
 		// The rollback runs detached from the request's own end — custody —
 		// but bounded by the shutdown window, so a hung adapter cannot wedge
-		// the read loop past every bound the frontend promises. Its refusal
-		// messages are fixed-size, so they stay framable even at the frame
-		// limit's floor: the underlying error goes to the logger, never the
-		// line. A cancel that reports the run already settled leaves nothing
-		// live behind the refusal, and says so.
+		// the read loop past every bound the frontend promises. Settlement
+		// is observed, not assumed: a nil cancel error only acknowledges the
+		// request, and an asynchronous adapter answers run.cancelling and
+		// delivers the terminal envelope later, so the refusal claims a
+		// cancelled run only once the run's own terminal envelope arrived.
+		// The refusal messages are fixed-size, so they stay framable even at
+		// the frame limit's floor: the underlying error goes to the logger,
+		// never the line.
 		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
-		_, err := entry.Cancel(rollback, admission.RunID)
+		settled, err := s.rollbackRun(rollback, entry, admission.RunID)
 		cancelRollback()
 		if err != nil {
 			s.logger.Printf("servestdio: roll back submit %d: %v", *request.ID, err)
 			var terminal *base.RunTerminalError
 			message := "the submit acknowledgement exceeds the frame limit; rolling the run back failed and the run may still be live"
-			if errors.As(err, &terminal) || errors.Is(err, base.ErrRunNotFound) {
+			if errors.As(err, &terminal) || errors.Is(err, base.ErrRunNotFound) || errors.Is(err, base.ErrSessionClosed) {
 				message = "the submit acknowledgement exceeds the frame limit; the run settled before the rollback"
 			}
 			return nil, &wireError{Code: "response_too_large", Message: message}
 		}
+		if !settled {
+			return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the run's cancellation did not settle within the rollback window and may still be live"}
+		}
 		return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the run was cancelled"}
 	}
 	return result, nil
+}
+
+// rollbackRun cancels the run and reports whether it settled within the
+// window. The subscription is registered before the cancel so a synchronous
+// adapter's terminal envelopes cannot slip past the wait, and settlement
+// means the run's own terminal envelope was observed — never merely that
+// the cancel was acknowledged.
+func (s *Server) rollbackRun(ctx context.Context, entry *serve.Session, runID protocol.RunID) (settled bool, err error) {
+	subscription, err := s.hub.Subscribe(ctx, entry.ID())
+	if err != nil {
+		return false, err
+	}
+	defer subscription.Close()
+	if _, err = entry.Cancel(ctx, runID); err != nil {
+		return false, err
+	}
+	for {
+		envelope, nextErr := subscription.Next()
+		if nextErr != nil {
+			return false, nil
+		}
+		if envelope.RunID != runID {
+			continue
+		}
+		switch envelope.Type {
+		case protocol.TypeRunCancelled, protocol.TypeRunCompleted, protocol.TypeRunFailed:
+			return true, nil
+		}
+	}
 }
 
 // fits reports whether one output line's encoding stays within the frame
@@ -468,10 +503,16 @@ func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage
 
 // gateRequest parses one op's request envelope, validates it against the
 // bundled OAP envelope schema, and checks its type against the op — the same
-// gate every HTTP route applies, rejections mapped to the same codes.
+// gate every HTTP route applies, rejections mapped to the same codes. The
+// size check budgets the envelope itself, the unit servehttp's body limit
+// budgets, so an oversized request is one transport-agnostic refusal rather
+// than a framing accident of the line that carried it.
 func (s *Server) gateRequest(payload json.RawMessage, want ...protocol.EnvelopeType) (protocol.Envelope, *wireError) {
 	if len(payload) == 0 || string(payload) == "null" {
 		return protocol.Envelope{}, &wireError{Code: "invalid_request", Message: "the op requires a \"request\" envelope"}
+	}
+	if len(payload) > maxEnvelopeBytes {
+		return protocol.Envelope{}, &wireError{Code: "request_too_large", Message: "request envelope exceeds the daemon limit"}
 	}
 	envelope, err := protocol.ParseEnvelope(payload)
 	if err != nil {

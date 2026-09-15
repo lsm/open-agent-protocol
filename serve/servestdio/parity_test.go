@@ -1,9 +1,11 @@
 package servestdio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/protocol"
 	"github.com/lsm/open-agent-protocol/serve"
 	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
@@ -127,31 +130,59 @@ func normalizedCreatedAt(t *testing.T, body string) string {
 	return createdAtField.ReplaceAllString(body, `"created_at":"<normalized>"`)
 }
 
-// TestRequestBudgetMatchesHTTP pins the inbound budget at its boundary on
-// both transports: a request of exactly the budget is accepted (and refused
-// on its own merits), one byte past it is refused for size. The refusal
-// class differs by design — HTTP answers one request with request_too_large,
-// the framing fails the frontend closed — but the boundary both enforce is
-// the same 16 MiB, so a host can size requests without knowing which
-// transport will carry them.
+// TestRequestBudgetMatchesHTTP carries one schema-valid run-cancel envelope
+// — padded to a chosen size — across both transports: the envelope, not the
+// line, is the budgeted unit (servehttp reads it as the body limit, the op
+// gate budgets the request param), so a wrapper's bytes cannot make one
+// transport accept what the other refuses. At the budget both transports
+// accept the envelope and refuse it on identical merits (the submit route
+// answers type_mismatch); one byte over, both refuse it for size.
 func TestRequestBudgetMatchesHTTP(t *testing.T) {
-	budget := DefaultFrameLimit // the frame limit's documented anchor: servehttp's request-body budget
+	cancelEnvelope := func(pad int) []byte {
+		t.Helper()
+		envelope, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, protocol.EnvelopeID("budget"), protocol.RunCancelRequest{
+			SessionID: "budget", RunID: "run-9", Reason: strings.Repeat("r", pad),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	sizedEnvelope := func(size int) []byte {
+		t.Helper()
+		// The reason field is omitempty, so the empty skeleton omits it
+		// entirely; measuring the one-rune form makes the padding linear.
+		pad := size - len(cancelEnvelope(1)) + 1
+		if pad < 1 {
+			t.Fatalf("envelope skeleton already exceeds %d bytes", size)
+			return nil
+		}
+		data := cancelEnvelope(pad)
+		if len(data) != size {
+			t.Fatalf("padded envelope is %d bytes, want %d", len(data), size)
+		}
+		return data
+	}
 
-	// HTTP: the submit route reads its body through the daemon's byte cap.
+	// HTTP: the submit route budgets the body, then judges the envelope.
 	server, err := servehttp.New(newTestHub(t, 64, 64), servehttp.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	httpFrontend := httptest.NewServer(server.Handler())
 	defer httpFrontend.Close()
-	postCode := func(size int) string {
+	postCode := func(body []byte) string {
 		t.Helper()
-		response, err := http.Post(httpFrontend.URL+"/sessions/nope/submit", "application/json", strings.NewReader(strings.Repeat("a", size)))
+		response, err := http.Post(httpFrontend.URL+"/sessions/nope/submit", "application/json", bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
-		body, _ := io.ReadAll(response.Body)
+		data, _ := io.ReadAll(response.Body)
 		var envelope struct {
 			Payload struct {
 				Error struct {
@@ -159,37 +190,63 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 				} `json:"error"`
 			} `json:"payload"`
 		}
-		if err := json.Unmarshal(body, &envelope); err != nil {
-			t.Fatalf("HTTP response is not an error envelope: %s", body)
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			t.Fatalf("HTTP response is not an error envelope: %s", data)
 		}
 		return envelope.Payload.Error.Code
 	}
-	if code := postCode(budget); code != "malformed_json" {
-		t.Fatalf("at-budget HTTP request refused as %s, want malformed_json — the budget must admit it", code)
-	}
-	if code := postCode(budget + 1); code != "request_too_large" {
-		t.Fatalf("over-budget HTTP request refused as %s, want request_too_large", code)
+
+	// stdio: the same envelope rides the request param of a submit line —
+	// the wrapper's bytes land inside the frame limit's allowance, not the
+	// envelope budget.
+	f := startFrontend(t, newTestHub(t, 64, 64), Options{})
+	nextBudgetID := int64(1)
+	stdioCode := func(id int64, envelope []byte) string {
+		t.Helper()
+		f.send(`{"id":` + fmt.Sprint(id) + `,"op":"submit","session_id":"nope","request":` + string(envelope) + `}`)
+		return f.expectResponse(id).Error.Code
 	}
 
-	// stdio: the same boundary as the default frame limit, one line per
-	// request. The at-budget line is a well-formed frame the op layer
-	// answers on its own merits; one byte past it is a framing defect the
-	// frontend fails closed on.
-	prefix, suffix := `{"id":1,"op":"bogus","request":"`, `"}`
-	f := startFrontend(t, newTestHub(t, 64, 64), Options{})
-	f.send(prefix + strings.Repeat("b", budget-len(prefix)-len(suffix)) + suffix)
-	requireCode(t, f.expectResponse(1), "unknown_op")
+	for _, row := range []struct {
+		name     string
+		size     int
+		httpCode string
+		code     string
+	}{
+		{"at the budget", maxEnvelopeBytes, "type_mismatch", "type_mismatch"},
+		{"one byte over", maxEnvelopeBytes + 1, "request_too_large", "request_too_large"},
+	} {
+		envelope := sizedEnvelope(row.size)
+		if code := postCode(envelope); code != row.httpCode {
+			t.Fatalf("%s: HTTP refused as %s, want %s", row.name, code, row.httpCode)
+		}
+		if code := stdioCode(nextBudgetID, envelope); code != row.code {
+			t.Fatalf("%s: stdio refused as %s, want %s", row.name, code, row.code)
+		}
+		nextBudgetID++
+	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 
+	// The frame limit itself still bounds the line: a line of exactly the
+	// limit frames (and is answered on its merits), one byte past it is the
+	// fail-closed defect — the wrapper allowance is headroom, not a second
+	// budget.
+	prefix, suffix := `{"id":1,"op":"bogus","request":"`, `"}`
+	atLimit := startFrontend(t, newTestHub(t, 64, 64), Options{})
+	atLimit.send(prefix + strings.Repeat("b", DefaultFrameLimit-len(prefix)-len(suffix)) + suffix)
+	requireCode(t, atLimit.expectResponse(1), "unknown_op")
+	if err := atLimit.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
 	over := startFrontend(t, newTestHub(t, 64, 64), Options{})
-	over.send(prefix + strings.Repeat("b", budget+1-len(prefix)-len(suffix)) + suffix)
+	over.send(prefix + strings.Repeat("b", DefaultFrameLimit+1-len(prefix)-len(suffix)) + suffix)
 	select {
 	case err := <-over.done:
 		var defect *MalformedLineError
 		if !errors.As(err, &defect) || !strings.Contains(defect.Detail, "frame limit") {
-			t.Fatalf("over-budget line ended serving with %v, want a frame-limit defect", err)
+			t.Fatalf("over-limit line ended serving with %v, want a frame-limit defect", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("frontend did not stop after the oversized line")
