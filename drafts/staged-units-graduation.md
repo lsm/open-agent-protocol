@@ -777,10 +777,23 @@ serve one catalog for its lifetime.
   though both are valid stale or early reads, so the rule takes the set
   of values the model held across the window — the same treatment the
   snapshot rules take — and diagnoses only a value that was never the
-  session's model within it. Fixture
+  session's model within it. The window is bounded by the trace, so it
+  cannot see a mutation that happened inside the adapter before capture
+  whose run event drains after the response — the validator would observe
+  only the old model throughout and diagnose an accurate catalog. The
+  response therefore carries its own position: `models.response` gains
+  `as_of_run_sequence`, the run and sequence of the last model-affecting
+  event it reflects, absent when it reflects none. Where it is present
+  the value is judged at that point rather than across the window, and an
+  entry naming a position the trace has not reached is held and
+  reconciled when it arrives, as a snapshot's `as_of_sequence` is; where
+  it is absent the window rule stands, since an endpoint that reports no
+  position is claiming no knowledge the trace lacks. Fixtures
   `models-current-model-mutation-in-flight` (positive; a catalog
   capturing the pre-mutation model whose response follows the mutation's
-  application). The model the validator tracks is
+  application) and `models-current-model-ahead-of-trace` (positive; a
+  catalog reporting the post-mutation model with an `as_of_run_sequence`
+  the mutation's event only reaches afterwards). The model the validator tracks is
   (`sessionTrack.currentModel`: the latest
   `session.open.response` or `session.state` value, advanced by a
   `session_mutation` application at the run it applies to; the open
@@ -1029,9 +1042,10 @@ No new envelope types. Additive fields:
 
 - `session.state` gains `active_runs`: an ordered list of every nonterminal
   run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?,
-  "as_of_sequence"? }]`, in admission order, with `as_of_sequence` naming
-  the last sequence of that run the entry reflects (the capture position
-  the validator judges the entry at, below), with `queue_position` on queued entries
+  "as_of_sequence"?, "as_of_submission"? }]`, in admission order, with
+  `as_of_sequence` naming the last sequence of that run the entry
+  reflects and `as_of_submission` the last submit response on it (the
+  capture positions the validator judges the entry at, below), with `queue_position` on queued entries
   (1-based). `active_run_id` keeps naming the started run, or is absent when
   only queued runs remain (session status `queued`). Each entry also carries
   `pending_interactions: [interaction_id]` (additive), the run's
@@ -1392,7 +1406,25 @@ No new envelope types. Additive fields:
   last sequence the run reached, and a position that run never reaches is
   `session_state_mismatch` then — a snapshot may describe a position the
   trace has not yet seen, but not one that never exists.
-  `pending_steers` is judged at the same position, for the same reason.
+  `pending_steers` needs one thing more, because a steer joins the
+  pending set at the `session.message.submit.response`, which is
+  unsequenced and advances no run cursor: two snapshots taken either side
+  of that response can carry the same `as_of_sequence` and differ
+  legitimately in whether the steer is listed, so the run position alone
+  cannot judge them. The entry therefore also carries
+  `as_of_submission`, the envelope id of the last submit response on that
+  run the snapshot reflects (absent when it reflects none), and
+  `pending_steers` is judged at that point: a steer admitted at or before
+  it must be listed, one admitted after must not be, and
+  `session_state_mismatch` otherwise. The id must name a submit response
+  the trace carries for that run, and the pair must not disagree — a
+  submission admitted after `as_of_sequence`'s position cannot be claimed
+  by a snapshot that stops earlier. Fixture `steer-state-capture-straddles-admission`
+  (positive; two snapshots at one `as_of_sequence` either side of a steer
+  admission, each accurate at its own `as_of_submission`).
+  `pending_interactions` needs no equivalent: an interaction joins and
+  leaves the set on sequenced run events, which `as_of_sequence` already
+  orders.
   The marker is optional on the wire only for entries that do not carry
   either collection; an entry carrying `pending_interactions` or
   `pending_steers` must carry `as_of_sequence`
@@ -1456,17 +1488,31 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
 - `serve`: subscriptions deliver one run domain at a time in admission
   order. The hub already drains every run's adapter stream independently
   and numbers runs by admission serial; T2 adds holding a later-admitted
-  run's envelopes until the earlier run's terminal has been delivered, so
-  a queued run's pre-start terminal never interleaves with the started
-  run's events on any subscription. A subscription's replay cursor already
+  run's envelopes until the earlier run's terminal has been delivered,
+  with the one exception the delivery rule names: the pre-start terminal
+  of a run that never started is released as soon as it is read, while
+  the earlier run is still nonterminal. Holding it would hide the
+  released reservation and make a valid replacement admission look
+  over-limit, which is the failure the exception exists to prevent; and
+  because that run never started, the envelope is the only one its domain
+  will ever produce. A subscription's replay cursor already
   carries `(RunID, AfterSequence)`: resume replays that run's retained
   suffix and, when the subscription follows the session (below), continues
   into later-admitted runs in order, and the hub stops assuming the newest
-  admission is the run a bare sequence refers to. A cursor's run and sequence therefore stay correct: the run it names
-  is always the only run in flight on the stream. The cursor's third
-  member, for session-scoped envelopes interleaved into a run's replay,
-  is specified under T4's client section and landed by T2's client slice
-  (below), since T2 is the first slice to touch cursor handling.
+  admission is the run a bare sequence refers to. A cursor's run and
+  sequence therefore stay correct: the run it names is the only run whose
+  *execution* is in flight on the stream, and a settled reservation's
+  terminal is delivered beside it without advancing it, the same way a
+  session-scoped envelope is. The cursor's third
+  member carries both, and the hub retains a released terminal for replay
+  under it exactly as it retains an interleaved session-scoped envelope;
+  the member is specified under T4's client section and landed by T2's
+  client slice
+  (below), since T2 is the first slice to touch cursor handling. T2's own
+  tests cover the interleaving end to end, because T2 is where it first
+  occurs: a queued reservation cancelled pre-start under a started run,
+  its terminal delivered live, and a resume across the drop that replays
+  it exactly once.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
@@ -3208,7 +3254,17 @@ the tolerance step applies, and the type lists stay
 for typing only. An envelope interleaved in a run's replay from outside
 that run's domain — a session-scoped one, or the pre-start terminal of a
 reservation that settled, which T2's delivery rule allows through for
-exactly one envelope per released run — is covered by the cursor, not by
+exactly one envelope per released run — is delivered to the application
+without advancing the run cursor and without being read as a switch to
+another run: the client's run-switch check, which otherwise moves to a
+later-admitted run only once the followed run is terminal, admits a
+terminal for a run that never started as an interleaved delivery rather
+than a mismatch, and rejects it only if that run is one it has already
+seen start. Because this first occurs in T2, the cursor member and this
+rule land in T2's client slice and the daemon honours the corresponding
+query parameter from T2, not from T3c; T3c and T4 then find both in
+place for their hub-minted snapshots. Such an envelope is covered by the
+cursor, not by
 in-memory state: each client's resume
 cursor becomes `{ run, sequence, interleaved_envelope_id? }`, where the
 third member is the `id` of the last such out-of-domain envelope
