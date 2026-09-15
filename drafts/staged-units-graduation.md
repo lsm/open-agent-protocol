@@ -1560,8 +1560,24 @@ No new envelope types. Additive fields:
   A `settled` entry may name a terminal the trace has not reached, and is
   held and reconciled when it arrives; one whose named terminal never
   arrives, or arrives at another sequence, is `session_state_mismatch` at
-  the run's terminal or the end of the trace, so a snapshot cannot drop a
-  live reservation by declaring it settled. A started run may be claimed
+  the run's terminal or the end of the trace. That alone would not be
+  enough, since a sequence is predictable: a snapshot could drop a live
+  run, name the sequence its terminal will eventually carry, and be
+  vindicated whenever the run happens to end there, having reported false
+  membership to a client in the meantime. Two things close it. The
+  validator requires the claimed terminal to be the next envelope
+  published for that run after the snapshot — any other envelope from
+  that run in between is `session_state_mismatch` — so a claim about a
+  run that is still doing anything at all is caught. And the hub, which
+  forwards the snapshot and is the party that has actually read the run's
+  stream, verifies each `as_of.settled` claim against what it has read
+  before forwarding, and refuses to serve a claim for a run whose
+  terminal it has not: the adapter asserts, the hub corroborates, and the
+  validator checks the outcome, which is the same division that lets the
+  hub rather than the adapter classify a cross-session steer target.
+  Fixture `queue-state-settled-claim-then-activity`
+  (`session_state_mismatch`; a claim for a run that emits content before
+  the terminal it predicted). A started run may be claimed
   as readily as a queued one: a run that terminates inside the adapter
   before a concurrent capture, whose terminal the hub's drainer publishes
   only after the state response, is the same ordinary race, and the claim
@@ -2512,9 +2528,26 @@ the request used.
   for an accepted resolution, where no envelope may precede the accepted
   response; a refusal accepts nothing, so there is nothing to order
   behind. On `accepted: false` the hub drains the run's stream without
-  blocking and publishes what the adapter emitted before returning —
-  the timeout's terminal among it — ahead of the resolve response, then
-  lifts the gate. The validator's response-time reading of the
+  blocking and publishes the prefix up to the boundary the adapter states
+  — the timeout's terminal among it — ahead of the resolve response, then
+  lifts the gate. The boundary has to be stated, exactly as T4's steer
+  error path states one and for the same reason: the hub cannot tell from
+  the buffer which envelopes the adapter emitted before returning, and
+  the gated drainer keeps reading, so a settlement the harness performs
+  immediately *after* `Resolve` returns can land in the buffer before the
+  drain runs. Publishing it would be worse than useless here, because it
+  is the reason the refusal gives that is at stake: an adapter that
+  correctly answers `repeated_acknowledgement` or `late_acknowledgement`
+  would be read at response time as owing `already_resolved` under the
+  reason precedence, and its valid decision rejected. So the refusal
+  carries `TargetSequence`, the last sequence of the run the adapter made
+  readable before returning; the hub publishes to it and no further, and
+  the remainder follows the response when the gate lifts. A refusal that
+  states no boundary examined nothing, and nothing emitted since arming
+  precedes it. Fixture `control-call-settles-after-refusal` (positive; a
+  repeated acknowledgement refused `repeated_acknowledgement` while the
+  harness settles the call immediately after the return, the settlement
+  published after the response). The validator's response-time reading of the
   interaction then sees the settlement that justifies the refusal,
   whatever settled it, and no rule has to special-case which producer
   did. That orders the hub's trace, and over HTTP the trace is not what
