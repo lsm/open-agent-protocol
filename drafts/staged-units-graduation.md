@@ -3045,9 +3045,33 @@ is the declared control participant (the daemon is what sends
 whether a client supplied it through `POST /adapters/{name}/sessions` or
 the connector provisioned it, carries the hub's participant id as
 `execution_owner`, and T3c's ownership rule holds without the hub
-borrowing a client's identity. Clients supply tools with that id, which
-the daemon publishes to them as its own identity on the client-facing
-wire, and the daemon rejects any other owner before forwarding the open.
+borrowing a client's identity. Clients do not supply that id, because nothing on the client-facing
+wire tells them what it is: the HTTP binding has no `protocol.initialize`
+exchange, and the handler opens every session as a fixed participant
+(`serve/servehttp/server.go:209`, `serve.DefaultParticipant` at
+`serve/serve.go:44`). Asking a client to name an owner it cannot learn
+would make its own configurable participant the only value it has, and
+that is a foreign owner the daemon must reject. So the daemon *stamps*
+`execution_owner` instead: a client supplying `tools` through `POST
+/adapters/{name}/sessions` omits the member, the daemon sets it to its
+own participant id before forwarding the open, and a client that
+supplies any `execution_owner` at all is refused at the daemon boundary
+with the typed `unsupported_feature` (`details.feature:
+"action.tools.provide"`, `details.reason: "unsatisfiable"`,
+`details.tool` naming the entry), since there is no value it could
+legitimately have chosen. The stdio frontend stamps the same way. The
+id is then disclosed rather than guessed: `session.open.response` gains
+`participant_id`, the identity the daemon acts as for that session, on
+the same additive terms T1 uses for `current_model_id` on
+`protocol.SessionOpenResponse`, so a client reading
+`action.call.requested` can recognise the owner it will see there and a
+trace can tie the two together. Ownership on the client-facing wire is
+therefore something the daemon asserts and reveals, never something a
+client has to know in advance. Fixtures `open-provide-client-owner-set`
+(positive; a client-supplied `execution_owner` refused with the typed
+refusal) and `open-provide-daemon-stamps-owner` (positive; tools
+supplied without an owner, forwarded carrying the daemon's id, and the
+open response disclosing that id).
 Inside, the hub keeps a provisioning registry (tool name to the client
 subscription that supplied it, or to the connector) to route each
 `action.call.requested` and to accept a resolution only from the party
@@ -3486,9 +3510,20 @@ the request used.
   passed to the adapter. Cancellation is not thereby delayed
   indefinitely — the gate is held only across one adapter call — and a
   caller that needs to abandon work regardless keeps the context it
-  already had. Fixture `control-call-cancel-races-resolution` (positive;
-  a cancel issued while a resolution is in flight, the resolution
-  answered `already_resolved` after the cancellation is published).
+  already had. The fixtures describe the two orders the gate permits and no other,
+  since a cancel that arrives while a resolution holds the gate cannot
+  overtake it: `control-call-cancel-wins-gate` (positive; a cancel and a
+  resolution issued concurrently where the cancel takes the run's gate
+  first — its `action.call.cancelled` is published, then the resolution,
+  which waited on the gate, is passed to the adapter and answered
+  `already_resolved`, correctly, because the cancellation it reflects
+  precedes it in the trace) and `control-call-resolution-wins-gate`
+  (positive; the resolution takes the gate first, is accepted and
+  published, and the cancel, which waited, finds the call settled and
+  reports nothing to cancel). A trace in which a resolution holding the
+  gate is answered `already_resolved` by a cancellation published
+  *during* it is not a third case but a serialization violation, and the
+  validator diagnoses it as the pending-resolution refusal above.
   Serialization only reaches what the hub schedules, and a harness-side
   timeout that emits `action.call.cancelled` or `.failed` is not that: it
   can settle the call after the gate is armed and before `Resolve` reads
