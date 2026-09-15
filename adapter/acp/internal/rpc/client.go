@@ -397,18 +397,13 @@ func (client *Client) route(message Message) bool {
 	mode := client.routeMode.Load()
 	switch message.Kind {
 	case MessageResponse:
-		if mode == 2 {
-			// The barrier orders the response behind wire-earlier
-			// observations. When the transport retires before the barrier is
-			// acknowledged, the frame was still decoded from the wire —
-			// deliver the evidence rather than dropping it; there are no
-			// later frames to order against.
-			client.barrier()
+		if mode == 2 && !client.barrier() {
+			return true
 		}
 		return !client.deliver(message.ID, callResult{result: cloneRaw(message.Result)}) && client.unmatched(message.ID)
 	case MessageError:
-		if mode == 2 {
-			client.barrier()
+		if mode == 2 && !client.barrier() {
+			return true
 		}
 		return !client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}}) && client.unmatched(message.ID)
 	case MessageRequest:
@@ -478,6 +473,13 @@ func (client *Client) enqueueInbound(message InboundMessage, overflow error) boo
 	}
 }
 
+// barrier orders a response behind every wire-earlier observation and reports
+// whether the response may be delivered. Delivery is refused only when the
+// barrier could not be enqueued: the client is retiring on queue overflow with
+// earlier observations still unreduced, so the response must not overtake
+// them. A barrier that was enqueued but never acknowledged because the
+// transport retired first still releases the response — the frame was decoded
+// from the wire, and there are no later frames to order against.
 func (client *Client) barrier() bool {
 	ack := make(chan struct{})
 	if !client.enqueueInbound(InboundMessage{Barrier: ack}, ErrNotificationQueue) {
@@ -485,10 +487,9 @@ func (client *Client) barrier() bool {
 	}
 	select {
 	case <-ack:
-		return true
 	case <-client.done:
-		return false
 	}
+	return true
 }
 
 func (client *Client) unmatched(id RequestID) bool {

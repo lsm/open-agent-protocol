@@ -378,3 +378,36 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	_ = serverReader.Close()
 	_ = serverWriter.Close()
 }
+
+// A response whose ordering barrier cannot be enqueued must not be delivered:
+// the client is retiring on queue overflow with wire-earlier observations
+// still unreduced, so releasing the reply would let it overtake them. Only a
+// barrier that was enqueued and then overtaken by the transport's death
+// releases the response.
+func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 1})
+	_ = client.Inbound() // ordered stream active, nobody consuming
+	result := make(chan error, 1)
+	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
+	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
+	// One wire-earlier observation fills the queue; the response's barrier
+	// then cannot be enqueued.
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":"r1","method":"reverse","params":{}}` + "\n" + `{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrNotificationQueue) {
+			t.Fatalf("call settled with %v, want the queue overflow", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	_ = serverWriter.Close()
+	_ = serverReader.Close()
+}

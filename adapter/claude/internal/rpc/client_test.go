@@ -550,3 +550,42 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	_ = downstreamRead.Close()
 	_ = upstreamWrite.Close()
 }
+
+// A response whose ordering barrier cannot be enqueued must not be delivered:
+// the client is retiring on queue overflow with wire-earlier observations
+// still unreduced, so releasing the reply would let it overtake them. Only a
+// barrier that was enqueued and then overtaken by the transport's death
+// releases the response.
+func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
+	upstreamRead, upstreamWrite := io.Pipe()     // peer -> client
+	downstreamRead, downstreamWrite := io.Pipe() // client -> peer
+	client := NewClient(upstreamRead, downstreamWrite, ClientOptions{QueueCapacity: 1})
+	result := make(chan error, 1)
+	go func() {
+		result <- client.Call(context.Background(), json.RawMessage(`{"subtype":"initialize","hooks":null}`), nil)
+	}()
+	line, err := bufio.NewReader(downstreamRead).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := ParseMessage([]byte(strings.TrimSuffix(line, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, downstreamRead) }()
+	// One wire-earlier observation fills the queue; the response's barrier
+	// then cannot be enqueued.
+	if _, err := upstreamWrite.Write([]byte(`{"type":"command_lifecycle","command_uuid":"u1","state":"queued","session_id":"s1","uuid":"c1"}` + "\n" + `{"type":"control_response","response":{"subtype":"success","request_id":"` + request.RequestID + `","response":{}}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrObservationQueue) {
+			t.Fatalf("call settled with %v, want the queue overflow", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	_ = upstreamWrite.Close()
+	_ = downstreamRead.Close()
+}

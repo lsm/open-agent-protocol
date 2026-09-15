@@ -374,12 +374,8 @@ func (client *Client) route(message Message) bool {
 		client.mu.Lock()
 		_, pending := client.pending[message.Response.RequestID]
 		client.mu.Unlock()
-		if pending {
-			// When the transport retires before the barrier is acknowledged,
-			// the frame was still decoded from the wire — deliver the
-			// evidence rather than dropping it; there are no later frames to
-			// order against.
-			client.barrier()
+		if pending && !client.barrier() {
+			return true
 		}
 		outcome := controlResult{response: cloneRaw(message.Response.Response)}
 		if !message.Response.Success {
@@ -443,6 +439,13 @@ func (client *Client) enqueue(message InboundMessage, overflow error) bool {
 	}
 }
 
+// barrier orders a response behind every wire-earlier observation and reports
+// whether the response may be delivered. Delivery is refused only when the
+// barrier could not be enqueued: the client is retiring on queue overflow with
+// earlier observations still unreduced, so the response must not overtake
+// them. A barrier that was enqueued but never acknowledged because the
+// transport retired first still releases the response — the frame was decoded
+// from the wire, and there are no later frames to order against.
 func (client *Client) barrier() bool {
 	ack := make(chan struct{})
 	if !client.enqueue(InboundMessage{Barrier: ack}, ErrObservationQueue) {
@@ -450,10 +453,9 @@ func (client *Client) barrier() bool {
 	}
 	select {
 	case <-ack:
-		return true
 	case <-client.done:
-		return false
 	}
+	return true
 }
 
 func (client *Client) deliver(id string, outcome controlResult) bool {
