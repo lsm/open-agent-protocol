@@ -1007,10 +1007,18 @@ No new envelope types. Additive fields:
   refuse every queued submission with `run_active` while remaining
   conforming. Advertising a queue is a claim that some submission will be
   queued, and the bound is what makes the claim checkable — one is
-  enough, and `1` is an honest answer. A descriptor advertising the
-  capability with no `max_queued_runs_per_session` is
-  `undisclosed_queue_limit` on the `capabilities.response` (fixture
-  `queue-advertised-without-limit`). Where the capability is `degraded` or
+  enough, and `1` is an honest answer — but it must be at least one. A
+  disclosed `max_queued_runs_per_session` of `0`, or any nonpositive
+  value, is the same empty promise with a number attached: every queued
+  reservation exceeds it, so the adapter refuses them all and still
+  claims support, which is exactly what the disclosure was added to
+  prevent. The wire constrains both limits to `minimum: 1`, and a
+  descriptor advertising the capability with no
+  `max_queued_runs_per_session`, or with a nonpositive one, is
+  `undisclosed_queue_limit` on the `capabilities.response` (fixtures
+  `queue-advertised-without-limit` and `queue-advertised-zero-limit`). An
+  endpoint that genuinely cannot queue advertises the capability
+  `unavailable` rather than available with a bound of zero. Where the capability is `degraded` or
   absent the disclosure is not required, and `max_active_runs_per_session`
   stays optional: absent, it means one started run, unenforced.
 - Typed error `run_active` (the daemon's existing code, adopted as the
@@ -2457,14 +2465,23 @@ therefore needs a steer settlement, not only a steer admission.
   already landed. So `settled_steers` is not a bare list but
   `{ "entries": [...], "complete": bool, "evicted_before_ms": int? }`:
   `complete` is true while nothing has been evicted for the session, and
-  once an eviction occurs it is false and `evicted_before_ms` gives the
-  settlement time of the oldest retained entry. Recovery reads it
-  directly: with `complete` true, absence is conclusive; with it false, a
-  caller whose request predates `evicted_before_ms` learns only that the
-  answer is no longer available and must decide as it would on any
-  unknown outcome, rather than being told a falsehood. A caller whose
-  request is newer than the watermark still gets a conclusive answer, so
-  truncation degrades the surface gradually instead of silently. Pending steers stay on the
+  once an eviction occurs it is false and `evicted_before_ms` records the
+  settlement time of the oldest retained entry. Recovery reads `complete`
+  and nothing else: while it is true, absence is conclusive; once it is
+  false, absence is inconclusive for every request, and a caller that did
+  not see its settlement must decide as it would on any unknown outcome.
+  It is tempting to let a caller whose request is newer than
+  `evicted_before_ms` keep the conclusive answer, and that would be
+  wrong: the caller would be comparing its own clock against a server
+  timestamp, `timestamp_ms` on the request is optional anyway, and a
+  clock running fast makes an evicted settlement look too new to have
+  been evicted — precisely the case where the caller then resends
+  guidance that already landed. A recoverable server-side marker would
+  not help either, since the caller that needs this is the one that never
+  received a response to recover a marker from. `evicted_before_ms` is
+  therefore a server-side fact for the validator's omission rule below,
+  where both sides of the comparison are the hub's own, and explicitly
+  not a client recovery input. Pending steers stay on the
   `active_runs` entry, where a live run's state belongs; settled ones
   move to the session, where they outlive it. A caller that missed
   the settlement reads the outcome instead of inferring it from silence,
@@ -2556,10 +2573,14 @@ that exists, the reason describes *that* run:
 never applies, because the caller asked about a particular run and
 telling it the session has no started run answers a question it did not
 put. Without a `target_run_id`, or with one naming no run the validator
-knows, the order is `cross_session`, `no_active_run`, `terminal`,
-`not_steerable`, `queued`, and a new `unknown_target` — the reason for an
-explicit `target_run_id` the endpoint has no run for, which none of the
-existing conditions describes: it is not another session's run, has no
+knows, the order is `cross_session`, `unknown_target`, `no_active_run`,
+`terminal`, `not_steerable`, `queued`. `unknown_target` is the reason for
+an
+explicit `target_run_id` the endpoint has no run for, and it ranks
+immediately after `cross_session`, ahead of `no_active_run`, because a
+caller that named a run is owed an answer about that run: told
+`no_active_run` it would wait for a run to start and retry an id that
+will never resolve. None of the existing conditions describes it: it is not another session's run, has no
 lifecycle state to report, and the session may well have a started run,
 so `no_active_run` would be false as well as unhelpful. Without it, a
 caller naming a run that never existed (a typo, a stale id from a
