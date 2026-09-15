@@ -158,6 +158,56 @@ type Server struct {
 	// abandoned loop still ends inside its grace window.
 	inFlight   chan struct{}
 	shutdownCh chan struct{}
+
+	// parks holds test-only hooks at the lifecycle's park seams; nil in
+	// production. See parkHooks.
+	parks *parkHooks
+}
+
+// parkHooks blocks the lifecycle's four park seams under test control —
+// the reader handing a frame to the loop, the loop acquiring admission, a
+// worker entering its request, and the writer entering out.Write. The
+// hooks observe and block; they never terminate anything (INV-A), and
+// exist so tests can hold each goroutine at a park and release it on
+// schedule, widening the interleaving space the corpus reaches beyond
+// what real timing jitter produces. In-package tests attach them with
+// setParkHooks before Run.
+type parkHooks struct {
+	readerDeliver func()
+	loopAdmit     func()
+	workerStart   func()
+	writerWrite   func()
+}
+
+// setParkHooks attaches test-only park hooks. Call before Run.
+func (s *Server) setParkHooks(hooks *parkHooks) { s.parks = hooks }
+
+// beforeDeliver parks the reader before it hands a frame to the loop.
+func (h *parkHooks) beforeDeliver() {
+	if h != nil && h.readerDeliver != nil {
+		h.readerDeliver()
+	}
+}
+
+// beforeAdmit parks the loop inside admission, before the latch check.
+func (h *parkHooks) beforeAdmit() {
+	if h != nil && h.loopAdmit != nil {
+		h.loopAdmit()
+	}
+}
+
+// beforeWork parks a worker immediately before its request runs.
+func (h *parkHooks) beforeWork() {
+	if h != nil && h.workerStart != nil {
+		h.workerStart()
+	}
+}
+
+// beforeWrite parks the writer immediately before out.Write.
+func (h *parkHooks) beforeWrite() {
+	if h != nil && h.writerWrite != nil {
+		h.writerWrite()
+	}
 }
 
 // New compiles the request gate and returns a frontend over the hub.
@@ -332,7 +382,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	stop := make(chan struct{})
 	writerFail, writerEnd := newTerminal(), newTerminal()
 	probe := &writerProbe{}
-	go writeLines(out, lines, stop, writerFail, writerEnd, probe)
+	go writeLines(out, lines, stop, writerFail, writerEnd, probe, s.parks)
 
 	// The reader reports its own end on its custody cell before the final
 	// frame is delivered, because the loop may be parked in admission
@@ -340,7 +390,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// bounded even then.
 	readerEnd := newTerminal()
 	frames := make(chan frameResult)
-	go readFrames(in, s.frameLimit, frames, readerEnd)
+	go readFrames(in, s.frameLimit, frames, readerEnd, s.parks)
 
 	loopEnd := newTerminal()
 	go func() { loopEnd.report(s.decodeLoop(ctx, callerCtx, frames, lines, writerFail)) }()
@@ -498,15 +548,17 @@ type frameResult struct {
 // bound, and the delivery in turn. Neither channel is ever closed: a
 // reader abandoned by teardown parks on its send and is reclaimed at
 // process exit, the same discipline as the writer's channel.
-func readFrames(in io.Reader, limit int, frames chan<- frameResult, end *terminal) {
+func readFrames(in io.Reader, limit int, frames chan<- frameResult, end *terminal, parks *parkHooks) {
 	reader := bufio.NewReader(in)
 	for {
 		frame, err := readFrame(reader, limit)
 		if err != nil {
 			end.report(err)
+			parks.beforeDeliver()
 			frames <- frameResult{frame: frame, err: err}
 			return
 		}
+		parks.beforeDeliver()
 		frames <- frameResult{frame: frame}
 	}
 }
@@ -577,6 +629,7 @@ func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameR
 						s.work.Done()
 						<-s.inFlight
 					}()
+					s.parks.beforeWork()
 					s.serveRequest(ctx, callerCtx, request, lines)
 				}(request)
 			}
@@ -597,12 +650,13 @@ func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameR
 // stall evidence. The channel is never closed: an abandoned producer parks
 // on its send and is reclaimed by process exit rather than panicking on a
 // closed channel.
-func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, fail, end *terminal, probe *writerProbe) error {
+func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, fail, end *terminal, probe *writerProbe, parks *parkHooks) error {
 	var failure error
 	write := func(line []byte) {
 		if failure != nil {
 			return
 		}
+		parks.beforeWrite()
 		probe.inWrite.Store(true)
 		_, err := out.Write(append(line, '\n'))
 		probe.inWrite.Store(false)
@@ -824,6 +878,7 @@ func (s *Server) send(ctx context.Context, lines chan<- []byte, value any) error
 // under mu and released unused, so closing the bound and refusing late
 // Adds stay one atomic decision.
 func (s *Server) admit() bool {
+	s.parks.beforeAdmit()
 	select {
 	case s.inFlight <- struct{}{}:
 	case <-s.shutdownCh:

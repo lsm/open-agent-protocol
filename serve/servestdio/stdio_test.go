@@ -612,7 +612,7 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	fail, end := newTerminal(), newTerminal()
 	probe := &writerProbe{}
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, fail, end, probe) }()
+	go func() { done <- writeLines(&buf, lines, stop, fail, end, probe, nil) }()
 	lines <- []byte(`{"id":1,"ok":true}`)
 	lines <- []byte(`{"id":2,"ok":true}`)
 	close(stop)
@@ -646,7 +646,7 @@ func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	fail, end := newTerminal(), newTerminal()
 	probe := &writerProbe{}
 	done := make(chan error, 1)
-	go func() { done <- writeLines(failWriter{}, lines, stop, fail, end, probe) }()
+	go func() { done <- writeLines(failWriter{}, lines, stop, fail, end, probe, nil) }()
 	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
 	lines <- []byte(`{"id":2,"ok":true}`) // dropped, but still consumed
 	close(stop)
@@ -678,7 +678,7 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	fail, end := newTerminal(), newTerminal()
 	probe := &writerProbe{}
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, fail, end, probe) }()
+	go func() { done <- writeLines(&buf, lines, stop, fail, end, probe, nil) }()
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatalf("writeLines returned %v", err)
