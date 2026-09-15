@@ -204,8 +204,21 @@ rather than two packs that nest.
 **Manifest.** `manifest.schema.json` gains an optional `extensions`
 array; `schemas` keeps its 7-of-7 bound, which from here describes the
 core bundle rather than the whole compiled set. Each entry is a pack
-descriptor: `id` (reverse-DNS, the pack's namespace), `version`, and
-`schemas` (the files the pack contributes).
+descriptor: `id` (reverse-DNS, the pack's namespace), `version`,
+`schemas` (the files the pack contributes), and an optional `depends_on`
+— a list of `{ "id", "version" }` naming the packs whose resources this
+pack's schemas may `$ref`. A dependency is satisfied only by a loaded
+pack of that exact `id` and `version`; a missing or mismatched one is a
+load refusal (`pack_dependency_missing`), and version ranges are
+deliberately not offered, since the loader would then be choosing
+between schemas on a vendor's behalf and a mismatch caught at load is
+the fail-closed outcome. `depends_on` is what makes a cross-pack `$ref`
+distinguishable from an external one: a reference into a declared
+dependency resolves through the registered set, and a reference into a
+loaded pack that is *not* declared is `pack_external_ref` like any
+other, so a pack's reachable schema surface is exactly what it said it
+was. Prefix-freedom still holds across the whole loaded set,
+dependencies included.
 
 **Pack.** A pack is that descriptor plus its schema files and,
 optionally, its own fixture manifest in the existing fixture format. The
@@ -299,18 +312,30 @@ type, the member it adds — prefixed, like every other declared name, so
 containment and prefix-freedom already keep two packs apart — and the
 subschema that member's value must satisfy.
 
-Composition is additive and stated as such. The compile adds each
-declared member to that payload's `properties` and nothing else: it does
-not lift `additionalProperties`, so an *undeclared* member is still
-rejected in strict mode exactly as today; it does not touch `required`,
-so a pack cannot make a core member optional or a new one mandatory; and
-it cannot restate a member the core payload already defines, which is a
-load refusal rather than an override, since a pack that could narrow
-`model_id` would change core validity through the door T0 closes
-everywhere else. The result is that core payloads accept precisely their
-own members plus the declared ones, in both modes, and the member is
-validated when its pack is loaded and tolerated as unknown when it is
-not — the same tolerance-becomes-conformance the envelope types get.
+Composition does not patch the core branch, because patching would
+break the invariant Semantics states: adding a pack's property to a
+closed core payload makes an envelope the core bundle rejects for that
+extra member valid the moment the pack is loaded, and a regression guard
+that only re-runs the existing core fixtures with and without packs
+would never see it. Validation is two passes over the same envelope
+instead. The core pass judges the envelope's core projection — the
+envelope with every loaded pack's declared members removed — against
+the untouched core bundle in the mode in force, so a strict core payload
+still rejects an *undeclared* member exactly as today and a core rule on
+a core member is never relaxed or tightened by a pack. The pack pass
+then validates each declared member that is present against its
+subschema, keyed by payload type and member name. A pack cannot touch
+`required`, so it can make no core member optional and no new one
+mandatory; and it cannot restate a member the core payload already
+defines, which is a load refusal rather than an override, since a pack
+that could narrow `model_id` would change core validity through the door
+T0 closes everywhere else. The result is the same as before from the
+caller's side — the member is validated when its pack is loaded and
+tolerated as unknown when it is not — with the difference that the core
+bundle is never modified to get there. Fixture
+`ext-core-invalid-stays-invalid` (an envelope missing a required core
+member and carrying a valid packed member, rejected by the core pass
+with the pack loaded; the regression guard for the projection).
 
 Where a member's gate settles follows from the role of the payload it is
 added to, and that is defined for every permitted target rather than for
@@ -355,9 +380,17 @@ and `ext-pack-restates-core-member` (load refusal).
   makes packs composable: two vendors' packs can be loaded together and
   cannot collide, because their names cannot overlap by construction.
 - **Core validity never depends on a pack.** Core conformance is computed
-  against the core bundle alone, so loading a pack can never make a core
-  envelope valid that would otherwise be invalid, nor the reverse. A pack
-  adds vocabulary; it does not amend the protocol.
+  against the core bundle alone, as a separate pass, and the invariant is
+  stated precisely enough to be tested: for an envelope carrying only
+  core vocabulary, loading a pack changes nothing about its validity in
+  either mode; for an envelope carrying a loaded pack's members, core
+  validity is the validity of its *core projection* — the envelope with
+  that pack's declared members removed — judged against the core bundle
+  in the mode in force, so a pack can only ever add a member that its own
+  pass then judges, never relax a core rule on a core member. That is
+  why composition (Wire, above) patches no core branch: a pack never
+  alters what the core bundle accepts. A pack adds vocabulary; it does
+  not amend the protocol.
 - **The gate is unchanged.** An extension capability is fail-closed like
   any other: unadvertised means refused, and the refusal is the same
   typed `unsupported_feature` naming the key in `details.feature`. An
@@ -383,12 +416,15 @@ and `ext-pack-restates-core-member` (load refusal).
   default loader would let a `$ref` reach paths outside the pack on the
   loading machine. A `$ref` a pack schema cannot satisfy from the
   registered set — a file path, an unregistered URI, another pack's base
-  URI it did not declare a dependency on — is a load refusal
+  URI absent from its `depends_on` — is a load refusal
   (`pack_external_ref`) rather than a compile error surfaced later, and
   the validator detects it by compiling with the refusing loader, never
   by resolving it, exactly as T1 does. Fixture `ext-pack-external-ref`
   (load refusal; a pack schema carrying a `$ref` to a path outside its
-  own resources).
+  own resources), `ext-pack-cross-ref-declared` (positive; a `$ref` into
+  a pack named in `depends_on`, loaded together), and
+  `ext-pack-dependency-missing` (load refusal; `depends_on` naming a
+  pack not loaded, or loaded at another version).
 - A contributed branch must pin `type` to a `const` naming exactly one of
   the pack's declared `envelope_types`, and that is verified at load. The
   check is not bookkeeping: `oneOf` requires exactly one match, so a pack
@@ -460,6 +496,7 @@ and `ext-pack-restates-core-member` (load refusal).
   `pack_restates_core_member`, `pack_member_target_unknown`,
   `pack_role_undeclared`, `pack_response_gated`,
   `pack_reply_target_unknown`, `pack_external_ref`,
+  `pack_dependency_missing`,
   `pack_fixture_claims_core_unit`, and
   `ext_claim_without_pack`, one per load refusal this section names.
   The runner asserts that loading the named pack fails with exactly
@@ -2967,9 +3004,33 @@ Wire:
   the run's unresolved permission and user-input interactions) extends
   to control-owned calls, so the list names the run's unresolved
   interactions of every kind. It is the
-  state surface a resolver that lost its resolve response reads: an
-  interaction absent from the list was resolved, one still present was
-  not, so a rejected resolution is re-sent and an accepted one is not.
+  state surface a resolver that lost its resolve response reads, and for
+  that it has to distinguish one case the bare list cannot. For a
+  `result` or `error` resolution, absence is the answer: an interaction
+  absent from the list was resolved, one still present was not, so a
+  rejected resolution is re-sent and an accepted one is not. For a
+  `started` acknowledgement both outcomes leave the interaction present —
+  an accepted `started` does not settle the call, and a rejected request
+  changes nothing — so presence alone cannot say whether the
+  acknowledgement landed, and a resolver that guessed would either resend
+  an acknowledgement (refused `already_resolved`, which it would then
+  misread as the call having settled) or never send one the harness is
+  still waiting for. Each entry therefore also carries
+  `acknowledged_interactions: [interaction_id]` (additive, T3c), the
+  subset of its `pending_interactions` whose `started` acknowledgement
+  the adapter has accepted. Recovery reads both: present and
+  acknowledged means the `started` landed and only the result is owed;
+  present and unacknowledged means the acknowledgement is owed (or the
+  original was refused, which the same resend now settles); absent means
+  resolved. The validator holds the new member to the same standard as
+  the list it subsets — every id in it must be in `pending_interactions`
+  and must have an accepted `started` acknowledgement in the trace as of
+  the entry's `as_of_sequence`, and an acknowledged call missing from it
+  is `session_state_mismatch`. Fixtures `control-call-ack-recovered`
+  (positive; a `started` acknowledgement whose response was lost, the
+  snapshot listing the id as acknowledged, the resolver sending only the
+  result) and `control-state-omits-acknowledged`
+  (`session_state_mismatch`).
 
 Semantics, on the interaction contract Decision 0001 fixed:
 
@@ -3519,8 +3580,20 @@ the request used.
   request-unique barrier T4 specifies, serialized per run with every
   other gated operation so that overlapping resolutions never share a
   gate, after writing the response. Cancellation joins that
-  serialization. `Session.Cancel` takes the run's gate like any other
-  gated operation, because a cancel that wins the adapter's operation
+  serialization, and joining it means taking the publication gate, not a
+  separate lock beside it: today `serve.Session.Cancel` returns only
+  `(protocol.RunCancelResponse, error)` (`serve/session.go:191`), and
+  with no barrier to hand back an implementation would have to either
+  leave the gate held or release it before the binding had written the
+  cancel response, letting `action.call.cancelled` or `run.cancelled`
+  precede `run.cancel.response` — the same cross-stream order the gate
+  exists to forbid for submit and resolve. So `Cancel` gains the
+  request-unique token the other two return, every binding (`servehttp`,
+  the stdio frontend, and the in-process embedding) calls
+  `Session.Published(token)` after writing the cancel response, and the
+  hub withholds the run's derived events across `Cancel` exactly as it
+  does across `Resolve`. `Session.Cancel` thereby takes the run's gate
+  like any other gated operation, because a cancel that wins the adapter's operation
   lock while a resolve gate is armed makes the call cancelled and the
   adapter's `accepted: false` with `already_resolved` correct — while
   the `action.call.cancelled` that proves it sits withheld in the buffer
