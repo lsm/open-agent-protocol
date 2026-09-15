@@ -1474,7 +1474,7 @@ func TestOpenOpRefusesUnknownAdapterAndExistingSession(t *testing.T) {
 	requireCode(t, f.expectResponse(3), "session_exists")
 	f.send(`{"id":4,"op":"open","request":` + string(requestEnvelope(t, "open-4", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "x"}, "", "")) + `}`)
 	requireCode(t, f.expectResponse(4), "invalid_request")
-	f.send(`{"id":5,"op":"events","session_id":"none","after":"4"}`)
+	f.send(`{"id":5,"op":"events","session_id":"dup","after":"4"}`)
 	requireCode(t, f.expectResponse(5), "invalid_cursor")
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
@@ -1523,21 +1523,6 @@ type stagedAdapter struct {
 	generatedID string
 	// closeFails makes Close fail, for the rollback-honesty shapes.
 	closeFails bool
-	// runID, when set, overrides the run's minted id everywhere — an
-	// adapter-minted identifier of any length.
-	runID string
-	// bareEnvelopes emits envelopes whose JSON carries neither session nor
-	// run addressing, so the line-level correlation is the only place the
-	// (here huge) run id does not appear and the overflow signal alone
-	// crosses the frame limit under test.
-	bareEnvelopes bool
-}
-
-func (a *stagedAdapter) run() protocol.RunID {
-	if a.runID != "" {
-		return protocol.RunID(a.runID)
-	}
-	return "run-staged"
 }
 
 func (a *stagedAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -1582,8 +1567,7 @@ func (s *stagedSession) Submit(_ context.Context, request protocol.MessageSubmit
 		return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
 	}
 	s.state.Status = protocol.SessionRunning
-	s.state.ActiveRunID = s.adapter.run()
-	runID := s.adapter.run()
+	s.state.ActiveRunID = "run-staged"
 	s.mu.Unlock()
 	stream := make(chan base.Result, 32)
 	go func() {
@@ -1604,7 +1588,7 @@ func (s *stagedSession) Submit(_ context.Context, request protocol.MessageSubmit
 		close(stream)
 	}()
 	return protocol.MessageSubmitResponse{
-		SessionID: s.id, Accepted: true, RunID: runID, Status: protocol.RunRunning,
+		SessionID: s.id, Accepted: true, RunID: "run-staged", Status: protocol.RunRunning,
 	}, stream, nil
 }
 
@@ -1621,10 +1605,8 @@ func (s *stagedSession) emit(sequence uint64) protocol.Envelope {
 		panic(err)
 	}
 	envelope.Sequence = &sequence
-	if !s.adapter.bareEnvelopes {
-		envelope.SessionID = s.id
-		envelope.RunID = s.adapter.run()
-	}
+	envelope.SessionID = s.id
+	envelope.RunID = "run-staged"
 	s.mu.Lock()
 	s.journal = append(s.journal, envelope)
 	s.mu.Unlock()
@@ -1640,14 +1622,14 @@ func (s *stagedSession) State(context.Context) (protocol.SessionState, error) {
 func (s *stagedSession) Resolve(context.Context, base.InteractionResolution) error { return nil }
 
 func (s *stagedSession) Cancel(context.Context, protocol.RunID) (protocol.RunCancelResponse, error) {
-	return protocol.RunCancelResponse{SessionID: s.id, RunID: s.adapter.run(), Accepted: true, Status: protocol.RunCancelled}, nil
+	return protocol.RunCancelResponse{SessionID: s.id, RunID: "run-staged", Accepted: true, Status: protocol.RunCancelled}, nil
 }
 
 func (s *stagedSession) Resume(_ context.Context, request base.ResumeRequest) (base.Recovery, base.EventStream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stream := make(chan base.Result, 32)
-	recovery := base.Recovery{State: s.state, RunID: s.adapter.run(), RequestedAfter: request.AfterSequence}
+	recovery := base.Recovery{State: s.state, RunID: "run-staged", RequestedAfter: request.AfterSequence}
 	for _, envelope := range s.journal {
 		if envelope.Sequence != nil && *envelope.Sequence > request.AfterSequence {
 			replayed := envelope
@@ -1673,9 +1655,8 @@ func (s *stagedSession) Close(context.Context) error {
 }
 
 // startStagedFrontend serves one staged adapter through real pipes with the
-// given options, for tests that meter or stall the consumer; the hub comes
-// along for runs admitted on the hub side.
-func startStagedFrontend(t *testing.T, staged *stagedAdapter, streamQueue int, options Options) (*frontend, *serve.Hub) {
+// given options, for tests that meter or stall the consumer.
+func startStagedFrontend(t *testing.T, staged *stagedAdapter, streamQueue int, options Options) *frontend {
 	t.Helper()
 	registry := serve.NewRegistry()
 	if err := registry.Register("staged", staged); err != nil {
@@ -1690,7 +1671,7 @@ func startStagedFrontend(t *testing.T, staged *stagedAdapter, streamQueue int, o
 	stdoutReader, stdoutWriter := io.Pipe()
 	done := make(chan error, 1)
 	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
-	return &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), done: done}, hub
+	return &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), done: done}
 }
 
 // TestSlowConsumerBackpressure stalls the consumer across a run's second
@@ -1802,7 +1783,7 @@ func TestSlowConsumerBackpressure(t *testing.T) {
 // for the pump that once ended oversized envelopes silently.
 func TestOversizedEnvelopeEndsWithFrameLimitTerminal(t *testing.T) {
 	staged := &stagedAdapter{release: make(chan struct{}), hugeAt: 5}
-	f, _ := startStagedFrontend(t, staged, 8, Options{FrameLimit: 4096})
+	f := startStagedFrontend(t, staged, 8, Options{FrameLimit: 4096})
 
 	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "big"}, "", "")) + `}`)
 	requireOK(t, f.expectResponse(1))
@@ -1843,7 +1824,7 @@ func TestOversizedEnvelopeEndsWithFrameLimitTerminal(t *testing.T) {
 // believes a session failed while it stays live behind an unknowable id.
 func TestOversizedOpenRollsBack(t *testing.T) {
 	staged := &stagedAdapter{generatedID: strings.Repeat("s", 400)}
-	f, _ := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
+	f := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
 	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-big", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")) + `}`)
 	response := f.expectResponse(1)
 	requireCode(t, response, "response_too_large")
@@ -1875,7 +1856,7 @@ func TestOversizedOpenRollsBack(t *testing.T) {
 // refusal names the possibly-live session instead.
 func TestOpenRollbackFailureIsReportedHonestly(t *testing.T) {
 	staged := &stagedAdapter{generatedID: strings.Repeat("s", 400), closeFails: true}
-	f, _ := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
+	f := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
 	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-big", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")) + `}`)
 	response := f.expectResponse(1)
 	requireCode(t, response, "response_too_large")
@@ -1900,19 +1881,6 @@ func TestOpenRollbackFailureIsReportedHonestly(t *testing.T) {
 	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
-	}
-}
-
-// TestFrameLimitTerminalAlwaysFits pins the guarantee the frame-limit floor
-// buys: the minimal terminal signal encodes under the floor even at the
-// widest numeric ids, so a subscription never ends uncorrelated.
-func TestFrameLimitTerminalAlwaysFits(t *testing.T) {
-	line, err := json.Marshal(frameLimitLine{Event: signalFrameLimit, ID: int64(1) << 62, Sequence: uint64(1) << 63})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(line) > minFrameLimit {
-		t.Fatalf("minimal terminal encodes to %d bytes, over the %d-byte floor", len(line), minFrameLimit)
 	}
 }
 
@@ -1979,61 +1947,29 @@ func TestOversizedSessionClosedSignalFallsBackToMinimal(t *testing.T) {
 	}
 }
 
-// TestOversizedOverflowSignalFallsBackToMinimal pins the overflow signal's
-// terminal fallback: an adapter-minted run id long enough that the full
-// oap-overflow line would not frame still gets its correlated minimal form
-// with the resume cursor. The envelopes themselves are emitted without
-// embedded addressing, so they frame while only the signal crosses the
-// limit.
-func TestOversizedOverflowSignalFallsBackToMinimal(t *testing.T) {
-	staged := &stagedAdapter{
-		release:       make(chan struct{}),
-		runID:         "run-" + strings.Repeat("r", 600),
-		bareEnvelopes: true,
+// TestMinimalSignalFormsAlwaysFit pins the guarantee the frame-limit floor
+// buys for every signal's minimal fallback form: at the widest numeric ids
+// and cursors, each minimal line encodes under the floor, so a subscription
+// never ends uncorrelated. (The overflow form's full line is unreachable
+// oversized with a coherent adapter — a subscription positioned to receive
+// a run's overflow has been delivering that run's envelopes, whose lines
+// are strictly larger than the signal — so it is pinned here rather than
+// end to end; the gap, session-closed, and frame-limit fallbacks are driven
+// end to end above.)
+func TestMinimalSignalFormsAlwaysFit(t *testing.T) {
+	widest := []any{
+		frameLimitLine{Event: signalFrameLimit, ID: int64(1) << 62, Sequence: uint64(1) << 63},
+		overflowLine{Event: signalOverflow, ID: int64(1) << 62, LastSequence: uint64(1) << 63},
+		gapLine{Event: signalReplayGap, ID: int64(1) << 62, RequestedAfter: uint64(1) << 63, OldestAvailable: uint64(1) << 63, LatestAvailable: uint64(1) << 63},
+		sessionClosedLine{Event: signalSessionClosed, ID: int64(1) << 62},
 	}
-	f, hub := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
-	close(staged.release)
-
-	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "ovf"}, "", "")) + `}`)
-	requireOK(t, f.expectResponse(1))
-	f.send(`{"id":2,"op":"events","session_id":"ovf"}`)
-	requireOK(t, f.expectResponse(2))
-
-	// The run is admitted on the hub side, so its acknowledgement (which
-	// carries the oversized run id) never crosses the framing.
-	entry, err := hub.Session(protocol.SessionID("ovf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "ovf", Delivery: protocol.DeliveryAuto,
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Both bursts frame; the overflow signal alone does not, and its minimal
-	// form names the subscription and the resume cursor.
-	responses, events := f.group(8)
-	if len(responses) != 0 || len(events) != 8 {
-		t.Fatalf("run phase: %d responses, %d events", len(responses), len(events))
-	}
-	requireSequences(t, events, 1, 8)
-	signal := f.line()
-	var overflow overflowLine
-	if err := json.Unmarshal([]byte(signal), &overflow); err != nil {
-		t.Fatalf("overflow line %q: %v", signal, err)
-	}
-	if overflow.Event != signalOverflow || overflow.ID != 2 {
-		t.Fatalf("minimal overflow line %q does not name its subscription", signal)
-	}
-	if overflow.RunID != "" || overflow.SessionID != "" {
-		t.Fatalf("minimal overflow line %q still carries the oversized identifiers", signal)
-	}
-	if overflow.LastSequence != 8 {
-		t.Fatalf("minimal overflow line %q lost its resume cursor", signal)
-	}
-	if err := f.finish(); err != nil {
-		t.Fatalf("finish: %v", err)
+	for _, minimal := range widest {
+		line, err := json.Marshal(minimal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(line) > minFrameLimit {
+			t.Fatalf("minimal signal %s encodes to %d bytes, over the %d-byte floor", line, len(line), minFrameLimit)
+		}
 	}
 }

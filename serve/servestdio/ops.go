@@ -836,7 +836,11 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 // them can cross the same limit that ended the subscription. The minimal
 // form keeps the correlation id and the resume-relevant numbers — the parts
 // the host cannot do without — which the frame-limit floor guarantees
-// always fits.
+// always fits. For the overflow signal the fallback fires only under an
+// adapter whose envelope run ids diverge from its admission's: a coherent
+// adapter's envelope lines are strictly larger than its overflow line, so a
+// subscription positioned to receive the signal has already framed larger
+// lines; the rule stays uniform across the signals regardless.
 func (s *Server) sendSignal(ctx context.Context, lines chan<- []byte, id int64, full, minimal any) {
 	if err := s.send(ctx, lines, full); err != nil {
 		s.logger.Printf("servestdio: subscription %d: %v", id, err)
