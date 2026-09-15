@@ -1115,16 +1115,33 @@ No new envelope types. Additive fields:
   promotion, not at admission, so the started run's model stays
   authoritative; the T1 semantics fix the failure and cancel paths.
 - Delivery order on a session stream is one run domain at a time, in
-  admission order: a later-admitted run's envelopes, including a queued
-  run's pre-start terminal, are delivered only after every earlier-admitted
-  run's terminal. The events themselves are unchanged (timestamps and the
-  state snapshot say when a queued run actually settled); this is a rule
-  about the ordered timeline a binding presents, and it keeps a single
-  `(run, sequence)` cursor sufficient for every run-domain envelope. T2
+  admission order: a later-admitted run's envelopes are delivered only
+  after every earlier-admitted run's terminal. The rule is about
+  execution, so it has exactly one exception, and the exception is the
+  reason it can be exact elsewhere: the pre-start terminal of a run that
+  never started is delivered when it happens. Such a run has no execution
+  to interleave, and its release of a queue slot is capacity a subscriber
+  and the validator both need to see at the moment it occurs rather than
+  whenever the earlier run happens to end — holding it is what previously
+  left a legitimate reuse of a freed slot indistinguishable from an
+  over-admission.
+  The cursor model follows rather than resists that. What the exception
+  interleaves is bounded: a queued run that settles pre-start emits one
+  sequenced envelope in its own domain and, being terminal, never another,
+  so a session-following subscriber sees at most one out-of-domain
+  envelope per released reservation. That is the same shape as an
+  interleaved session-scoped envelope, and it takes the same cursor
+  member: the third component of the resume cursor below is the id of the
+  last delivered envelope that lies outside the followed run's domain,
+  whether it is session-scoped or a settled reservation's terminal. A
+  single `(run, sequence)` pair therefore still carries the followed
+  run's position, with the interleave member carrying everything beside
+  it. T2
   itself interleaves no session-scoped envelope on a run stream (queue
   state travels in `session.state` and its `active_runs`), but the
-  cursor member for interleaved session-scoped envelopes that T3c's and
-  T4's hub-minted snapshots need lands in T2's client slice below, so
+  cursor member that T3c's and
+  T4's hub-minted snapshots need lands in T2's client slice below and is
+  what a pre-start terminal uses too, so
   those units find it in place.
 
 ### Validator
@@ -1376,6 +1393,19 @@ No new envelope types. Additive fields:
   `session_state_mismatch` then — a snapshot may describe a position the
   trace has not yet seen, but not one that never exists.
   `pending_steers` is judged at the same position, for the same reason.
+  The marker is optional on the wire only for entries that do not carry
+  either collection; an entry carrying `pending_interactions` or
+  `pending_steers` must carry `as_of_sequence`
+  (`session_state_mismatch` otherwise), because those are precisely the
+  entries whose reconciliation depends on it, and a serializer that
+  omitted it would put the validator back to guessing whether a stale
+  snapshot is accurate — the race the marker exists to settle. Requiring
+  it conditionally rather than outright keeps the field off entries that
+  have nothing to reconcile, and an endpoint unwilling to report a
+  capture position can only conform by capturing the pending sets at the
+  run's current cursor and saying so, which is the serialized behaviour
+  the marker was meant to make unnecessary but not to forbid. Fixture
+  `queue-state-pending-without-as-of` (`session_state_mismatch`).
   Fixtures `queue-state-interaction-resolved-in-flight`
   (positive; a snapshot whose `as_of_sequence` names a resolution
   drained only after the state response, reconciled when it arrives) and
@@ -3175,10 +3205,14 @@ envelope that was never session-scoped. The schema requires `run_id` on every ru
 event and session events carry `session_id`, so the rule is exact for known
 types and correct by construction for unknown ones; it is the same rule
 the tolerance step applies, and the type lists stay
-for typing only. A session-scoped envelope interleaved in a run's replay
-is covered by the cursor, not by in-memory state: each client's resume
-cursor becomes `{ run, sequence, session_envelope_id? }`, where the
-third member is the `id` of the last session-scoped envelope delivered
+for typing only. An envelope interleaved in a run's replay from outside
+that run's domain — a session-scoped one, or the pre-start terminal of a
+reservation that settled, which T2's delivery rule allows through for
+exactly one envelope per released run — is covered by the cursor, not by
+in-memory state: each client's resume
+cursor becomes `{ run, sequence, interleaved_envelope_id? }`, where the
+third member is the `id` of the last such out-of-domain envelope
+delivered
 since the last cursor-advancing envelope and is cleared whenever the run
 cursor advances; the client sends it as `?after_session=` on every
 reconnect and exposes it in the cursor it hands the application
