@@ -546,6 +546,33 @@ reference-adapter behavior in the same slice; native adapters advertise them
 native surfaces are the Codex and Makai model parameters). Nothing here
 changes run lifecycle.
 
+That is one decision covering four controls whose evidence arrives at
+different times, and the claim has to be shaped so it never says more
+than the evidence does — the same problem T3 solves with sub-units, and
+solved here the same way, using the four capability keys the controls
+already have. `+run-controls` claims two things. The first is the
+*discipline*, common to all four: presence-carrying types, the
+fail-closed gate, the refusal ladder, and the `unsatisfiable_control` /
+`unapplied_control` machinery. Every endpoint implements it whether or
+not it supports a single control, because refusing an unadvertised
+control correctly *is* the discipline, and it has native evidence today:
+Codex and Makai refuse three of the four. The second is *execution*,
+claimed per control and only for the controls the endpoint advertises
+above `unavailable`: an endpoint claiming `+run-controls` passes the
+discipline fixtures for all four and the executable fixtures for each
+control it advertises, and nothing for the ones it does not. Gate item 3
+therefore binds per advertised control, not per unit. Decision 0005
+graduates the discipline and `model_id` execution on the Codex and Makai
+evidence; `instructions`, `tool_choice`, and `output_schema` keep their
+frozen shapes and reference-adapter execution, and each graduates as
+executable when a native adapter advertises its key against a pinned
+ledger, recorded as an amendment to 0005 rather than a fresh design. An
+endpoint advertising only `run.model_selection` is fully conformant to
+`+run-controls`; one advertising `run.instructions` before that control
+has graduated is making a claim the corpus checks but the spec has not
+yet endorsed, and the core draft's per-control status is what says
+which.
+
 ### Wire
 
 No new envelope types. Changes to
@@ -1240,9 +1267,13 @@ nor the admitted one).
 
 ### Exit criteria
 
-The five gate items; the Codex and Makai descriptors advertise
-`run.model_selection`; the core draft's "Message Submit And Run Admission" section marks `model_id`
-executable and the other three "shape frozen, evidence pending".
+The five gate items for the discipline and for `model_id` execution, with
+gate item 3 met per advertised control as the scope states; the Codex and
+Makai descriptors advertise `run.model_selection`; the core draft's
+"Message Submit And Run Admission" section marks `model_id` executable
+and the other three "shape frozen, evidence pending", each moving to
+executable by an amendment to 0005 when its native evidence lands. The
+unit does not wait for all four, and does not claim all four.
 
 ## T5a. Models catalog
 
@@ -4461,7 +4492,9 @@ invariant is the same (`unavailable_capability`, `illegal_run_transition`,
 
 `validation/manifest.go` `knownUnits` gains `extensions`, `run-controls`,
 `models`, `queue`, `tool-sources`, `control-tools`, `steer`. The conformance draft's
-unit list gains `+run-controls`, `+tool-sources`, and `+control-tools`
+unit list gains `+run-controls` (the control discipline for all four
+controls plus execution of each control the endpoint advertises, per
+T1's scope), `+tool-sources`, and `+control-tools`
 beside the existing `+models`, `+queue`, and `+steer`; the executable claim
 becomes `open-agent-protocol.agent-control-core/0.1-executable` plus the
 graduated units, and gains an independent `+ext:<pack id>/<version>` term
