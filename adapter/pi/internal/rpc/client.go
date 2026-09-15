@@ -73,7 +73,9 @@ type Client struct {
 	pending   map[string]pendingCall
 	sent      map[string]struct{}
 	closed    bool
+	decoding  bool // the reader is inside Decode
 	routing   bool // the reader holds a decoded frame it has not finished routing
+	encoding  bool // the pump is inside Encode
 	err       error
 	nextID    atomic.Uint64
 	writes    chan writeRequest
@@ -134,10 +136,6 @@ func (c *Client) Call(ctx context.Context, command native.Command, result any) e
 	c.sent[command.ID] = struct{}{}
 	c.pending[command.ID] = pendingCall{command: command.Type, result: response}
 	c.mu.Unlock()
-	if err := c.write(ctx, command); err != nil {
-		c.removePending(command.ID)
-		return err
-	}
 	settle := func(outcome callResult) error {
 		if outcome.err != nil {
 			return outcome.err
@@ -152,6 +150,26 @@ func (c *Client) Call(ctx context.Context, command native.Command, result any) e
 			return fmt.Errorf("decode %s response: %w", command.Type, err)
 		}
 		return nil
+	}
+	if err := c.write(ctx, command); err != nil {
+		select {
+		case <-c.done:
+			// The client retired while the frame was in the pump, so whether
+			// the frame reached the wire is unknowable here — but the response
+			// channel is authoritative: shutdown settles every registered call
+			// through it, and a response the reader parsed off the ordered
+			// stream before the death wins over the write's verdict.
+			select {
+			case outcome := <-response:
+				return settle(outcome)
+			case <-ctx.Done():
+				c.removePending(command.ID)
+				return ctx.Err()
+			}
+		default:
+			c.removePending(command.ID)
+			return err
+		}
 	}
 	select {
 	case outcome := <-response:
@@ -190,16 +208,25 @@ func (c *Client) shutdown(reason error) {
 	c.err = reason
 	close(c.done)
 	// A response parsed off the ordered stream before the transport died must
-	// win over the death. While the reader holds a decoded frame, retiring the
-	// pending map is deferred to settleRouted so that frame is delivered
-	// first; otherwise nothing decoded is outstanding and the calls fail here.
-	// Either way the settlement never waits for the reader to stop, which a
-	// client without a CloseReadWriter has no way to force.
+	// win over the death, so the calls are settled by the reader whenever
+	// shutdown can force it to a settle point: a frame in hand is always
+	// routed to completion (nothing in route blocks once done is closed), and
+	// a reader parked in Decode is woken by the closer, which shutdown closes
+	// below. Without a closer nothing can wake a parked reader, so the calls
+	// fail here instead; the only window left is a frame decoded in the
+	// instant before this lock was taken, and no client without a closer can
+	// close it.
+	deferToReader := c.routing || (c.decoding && c.closer != nil)
 	var pending map[string]pendingCall
-	if !c.routing {
+	if !deferToReader {
 		pending = c.retirePendingLocked()
 	}
 	c.mu.Unlock()
+	if c.closer != nil {
+		// Done implies the closer is closed: that is what wakes a reader
+		// parked in Decode or a pump blocked in Encode.
+		_ = c.closer.Close()
+	}
 	c.failPending(pending, reason)
 }
 func (c *Client) closeError() error { return firstError(c.Err(), ErrClosed) }
@@ -213,32 +240,37 @@ func firstError(a, b error) error {
 func (c *Client) readLoop() {
 	defer close(c.readDone)
 	for {
+		// Flag the reader's state before every blocking step, for shutdown: a
+		// reader parked in Decode can be woken only through the closer, and a
+		// reader holding a decoded frame always routes it to completion.
+		c.mu.Lock()
+		c.decoding = true
+		c.mu.Unlock()
 		frame, err := c.decoder.Decode()
+		c.mu.Lock()
+		c.decoding = false
+		c.routing = err == nil
+		c.mu.Unlock()
 		if err != nil {
 			c.closeWith(err)
+			c.settleReader()
 			return
 		}
-		// The frame is in hand from the moment Decode returns it: a shutdown
-		// that lands while it is being routed defers retiring the pending map
-		// to settleRouted, so the response it may carry is delivered instead
-		// of dropped.
-		c.mu.Lock()
-		c.routing = true
-		c.mu.Unlock()
 		err = c.route(frame)
 		if err != nil {
 			c.closeWith(err)
 		}
-		c.settleRouted()
+		c.settleReader()
 		if err != nil {
 			return
 		}
 	}
 }
 
-// settleRouted releases the frame the reader had in hand and, when the client
-// closed while it was being routed, fails the pending calls shutdown left to it.
-func (c *Client) settleRouted() {
+// settleReader releases whatever the reader had in hand and, when the client
+// closed while shutdown was deferring to the reader, fails the pending calls it
+// left behind.
+func (c *Client) settleReader() {
 	c.mu.Lock()
 	c.routing = false
 	pending := c.retirePendingLocked()
@@ -355,9 +387,14 @@ func (c *Client) write(ctx context.Context, value any) error {
 		case err := <-request.result:
 			return err
 		case <-request.started:
-			// The pump took the frame before the close and always hands back
-			// the result of a frame it has started encoding, so the bytes may
-			// already be on the wire: settle on that result, not on the death.
+			// The pump took the frame before the close, so the bytes may
+			// already be on the wire. Its result is waited for whenever it is
+			// sure to arrive: the pump is past Encode, or the closer will
+			// unblock an Encode still in progress. Without a closer a blocked
+			// Encode could hold the caller forever, so the death is reported.
+			if !c.pumpSettles() {
+				return c.closeError()
+			}
 			select {
 			case err := <-request.result:
 				return err
@@ -370,6 +407,15 @@ func (c *Client) write(ctx context.Context, value any) error {
 		}
 	}
 }
+
+// pumpSettles reports whether a started frame's result is sure to arrive: the
+// pump is past Encode, or the closer will unblock an Encode in progress.
+func (c *Client) pumpSettles() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.encoding || c.closer != nil
+}
+
 func (c *Client) writeLoop() {
 	for {
 		select {
@@ -378,8 +424,17 @@ func (c *Client) writeLoop() {
 				request.result <- err
 				continue
 			}
+			// encoding is raised before started, so a caller that sees started
+			// but not encoding knows the frame is past Encode and its result
+			// is imminent.
+			c.mu.Lock()
+			c.encoding = true
+			c.mu.Unlock()
 			close(request.started)
 			err := c.encoder.Encode(request.value)
+			c.mu.Lock()
+			c.encoding = false
+			c.mu.Unlock()
 			request.result <- err
 			if err != nil {
 				c.closeWith(err)

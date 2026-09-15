@@ -437,3 +437,44 @@ func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
 		}
 	}
 }
+
+// A pump blocked inside Encode — the peer stopped reading stdin — cannot be
+// woken without a closer. When the reader then retires the client, a caller
+// waiting on that frame must be released with the death rather than held
+// until the peer happens to exit.
+func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
+	serverToClientR, serverToClientW := io.Pipe()
+	clientToServerR, clientToServerW := io.Pipe() // never read: Encode blocks
+	client := NewClient(serverToClientR, clientToServerW, ClientOptions{QueueCapacity: 8, WriteQueueCapacity: 8})
+	result := make(chan error, 1)
+	go func() { result <- client.Call(context.Background(), native.Command{Type: native.CommandGetState}, nil) }()
+	// Wait for the pump to be inside Encode, blocked on the unread pipe.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		client.mu.Lock()
+		encoding := client.encoding
+		client.mu.Unlock()
+		if encoding {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pump never entered Encode")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The peer emits garbage: the reader retires the client while the pump
+	// is still blocked.
+	if _, err := serverToClientW.Write([]byte("{not json\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("call reported success for a frame that never fully left")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call hung inside write on a pump nothing can unblock")
+	}
+	_ = clientToServerR.Close()
+	_ = serverToClientW.Close()
+}
