@@ -244,6 +244,42 @@ refusal is itself validated. An extension capability is fail-closed in
 the same machinery as a core one, which is the claim T0 makes, and this
 is what makes it implementable generically rather than per pack.
 
+A key per type is still not enough to *run* the gate, because the gate
+is judged on the correlated response and never on the request, and the
+validator cannot tell a packed request from a packed event: both omit
+`in_reply_to`, and the format has no naming convention to lean on. For
+an unadvertised key the two need opposite treatment — a request is
+permissible and is retained until its correlated response says whether
+the endpoint refused it, whereas an event or a success response is
+already the endpoint acting on a capability it does not have, and is
+`unavailable_capability` the moment it appears. Without the distinction
+the validator would either convict every packed request on sight, which
+diagnoses the fail-closed behaviour the wire requires, or retain every
+packed event forever, which diagnoses nothing.
+
+So each declared envelope type carries a `role` — `request`, `response`,
+or `event` — and a `response` names the request type it answers in
+`replies_to`. The stateful validator then treats packed types exactly as
+it treats core ones. A `request` is retained with its envelope id and
+its gating key, and the gate settles on the correlated response: a
+success response of the declared `replies_to` type admitted while the
+key is unadvertised is `unavailable_capability` on that response, and a
+correlated `error.response` — the core type, so a packed request is
+refused with the vocabulary every other refusal uses — must carry
+`unsupported_feature` with `details.feature` naming the key and
+`details.reason: "unadvertised"`, anything else being
+`unavailable_capability` on the error response, as the ladder rules for
+every capability-rung refusal. A `response` must carry `in_reply_to`,
+which is what correlation is; it takes its gate from the request it
+answers and needs no `gates` entry of its own, and a `response` naming a
+`replies_to` that is not a declared `request` of the same pack is a load
+refusal (`pack_reply_target_unknown`). An `event` has no correlation and
+takes its own `gates` entry, judged on arrival. A declared type with no
+`role` is a load refusal (`pack_role_undeclared`), on the same rule as an
+ungated type: stated, not inferred. `payload_members` need none of this
+— a member added to `session.message.submit.request` is judged where the
+submit is, on its own response.
+
 A control member added to an existing core payload needs more than a
 gate, because nothing in the format so far can carry its *shape*. New
 envelope types arrive as whole branches, but a member on
@@ -380,7 +416,8 @@ and `ext-pack-restates-core-member` (load refusal).
   trace — `pack_unprefixed_name`, `pack_foreign_prefix`,
   `pack_id_collision`, `pack_branch_undeclared_type`,
   `pack_branch_unpinned`, `pack_ungated_type`,
-  `pack_restates_core_member`, `pack_fixture_claims_core_unit`, and
+  `pack_restates_core_member`, `pack_role_undeclared`,
+  `pack_reply_target_unknown`, `pack_fixture_claims_core_unit`, and
   `ext_claim_without_pack`, one per load refusal this section names.
   The runner asserts that loading the named pack fails with exactly
   those codes, and a `load-invalid` entry that loads cleanly, or fails
@@ -420,7 +457,10 @@ neither is at fault alone) and `ext-packs-duplicate-ids` (the same
 refusal for two packs sharing one id, the degenerate prefix case), `ext-pack-branch-undeclared-type`
 (a contributed branch whose `type` `const` is not among the pack's
 declared `envelope_types`; load refusal), `ext-pack-ungated-type` (a declared envelope type absent from `gates`
-and not declared ungated; load refusal), `ext-packed-type-unadvertised`
+and not declared ungated; load refusal), `ext-pack-role-undeclared` (a
+declared type with no `role`; load refusal),
+`ext-pack-reply-target-unknown` (a `response` whose `replies_to` names
+no declared `request` of the pack; load refusal), `ext-packed-type-unadvertised`
 (a packed operation admitted while its gating key is unadvertised;
 `unavailable_capability`), `ext-pack-branch-unpinned`
 (a contributed branch that does not pin `type` to a `const` at all, the
@@ -435,7 +475,14 @@ loaded, accepted on the common fields in tolerant mode),
 `ext-advertised-key-gated` (an extension key advertised and used, and the
 same key unadvertised drawing `unsupported_feature` with
 `details.feature` naming it — the gate resolved through the pack's
-`gates` rather than a hard-coded name), `ext-core-claim-unchanged` (the core
+`gates` rather than a hard-coded name, and the refusal reached by
+retaining the packed `request` and judging its correlated
+`error.response`, as the `role` makes possible),
+`ext-packed-event-unadvertised` (`unavailable_capability` on arrival; a
+packed `event` emitted while its key is unadvertised — the case that
+must *not* be retained), `ext-packed-request-wrong-refusal`
+(`unavailable_capability` on the error response; the packed request
+refused under `internal_error` instead of the typed refusal), `ext-core-claim-unchanged` (the core
 fixture manifest passing identically with and without a pack loaded —
 the regression guard for the invariant that a pack cannot change core
 validity, run against a pack whose declared type is deliberately close
