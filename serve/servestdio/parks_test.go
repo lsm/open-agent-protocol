@@ -58,45 +58,37 @@ func startParkedFrontend(t *testing.T, ctx context.Context, options Options, hoo
 	return stdinWriter, reader, doneCh
 }
 
-// readLine reads one stdout line within a deadline.
-func readLine(t *testing.T, stdout *bufio.Reader) string {
-	t.Helper()
-	type read struct {
-		text string
-		err  error
-	}
-	readDone := make(chan read, 1)
-	go func() {
-		text, err := stdout.ReadString('\n')
-		readDone <- read{text: text, err: err}
-	}()
-	select {
-	case result := <-readDone:
-		if result.err != nil {
-			t.Fatalf("read line: %v (got %q)", result.err, result.text)
-		}
-		return result.text
-	case <-time.After(10 * time.Second):
-		t.Fatal("frontend produced no line within the deadline")
-		return ""
-	}
-}
-
 // TestBusyWorkIsBackpressureNotATimeout is the R4a tombstone: the round-4
 // finding fired with WriteQueue 1 and adapter ops slower than
 // ShutdownTimeout — the delivery-stall window armed on consumer idleness,
 // which busy workers cause exactly like a stalled writer, so a
 // normally-draining pipelined session was torn down mid-flight and
-// ShutdownTimeout silently became a request-execution timeout. Under the
-// supervision owner no timer exists in serving: an admitted worker parked
-// on its op is backpressure, the bound saturates, the reader parks
-// delivering — and past three windows the session is still serving. The
-// host that then closes stdin gets its remaining answers and a clean end.
+// ShutdownTimeout silently became a request-execution timeout. The host
+// here drains normally throughout (the collector reads every response as
+// it is written): an admitted worker parked on its op is backpressure,
+// the bound saturates, the loop parks in admission, the reader parks
+// delivering — and the owner's stall probe stays silent, because a
+// healthy drain keeps the writer's progress moving. Past three windows
+// the session is still serving; the host that then closes stdin gets its
+// remaining answers and a clean end.
 func TestBusyWorkIsBackpressureNotATimeout(t *testing.T) {
 	work := make(chan struct{})
 	stdin, stdout, done := startParkedFrontend(t, context.Background(),
 		Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond},
 		&parkHooks{workerStart: func() { <-work }}, false)
+	// The collector is the normally-draining host: it reads each response
+	// as it is written, so the writer's progress never stagnates.
+	responses := make(chan string, 3)
+	go func() {
+		for i := 0; i < 3; i++ {
+			line, err := stdout.ReadString('\n')
+			if err != nil {
+				responses <- fmt.Sprintf("read error: %v", err)
+				return
+			}
+			responses <- line
+		}
+	}()
 	for id := 1; id <= 3; id++ {
 		if _, err := stdin.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
 			t.Fatal(err)
@@ -113,8 +105,13 @@ func TestBusyWorkIsBackpressureNotATimeout(t *testing.T) {
 	}
 	close(work)
 	for id := 1; id <= 3; id++ {
-		if line := readLine(t, stdout); !strings.HasPrefix(line, fmt.Sprintf(`{"id":%d,"ok":true`, id)) {
-			t.Fatalf("response %d after the work released: %q", id, line)
+		select {
+		case line := <-responses:
+			if !strings.HasPrefix(line, fmt.Sprintf(`{"id":%d,"ok":true`, id)) {
+				t.Fatalf("response %d after the work released: %q", id, line)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no response for id %d after the work released", id)
 		}
 	}
 	if err := stdin.Close(); err != nil {
@@ -240,12 +237,16 @@ func TestTeardownRacesAgainstParkedSeams(t *testing.T) {
 	}{
 		{
 			// The host closes stdin while the reader is parked delivering
-			// into the backlog the host itself created: the closure rides
-			// behind it, and no timer exists mid-flight to kill the
-			// session (INV-A). Run is still up past three windows; the
-			// release frees the chain and the end is clean.
+			// the only request into a chain the host itself stopped
+			// draining: the closure rides behind the delivery, and the
+			// owner's stall probe must stay silent — one parked response
+			// without a saturated bound is backpressure the host may
+			// still come back for. Run is still up past three windows;
+			// the release frees the chain and the end is clean. (One
+			// request: io.Pipe is unbuffered, and a second write would
+			// park the driver itself behind the hooked reader.)
 			name:     "reader delivery parked across a clean close",
-			requests: 2,
+			requests: 1,
 			hook: func(release <-chan struct{}) *parkHooks {
 				return &parkHooks{readerDeliver: func() { <-release }}
 			},

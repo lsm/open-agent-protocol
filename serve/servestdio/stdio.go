@@ -317,16 +317,57 @@ func (t *terminal) peek() (error, bool) {
 	}
 }
 
-// writerProbe is the output-bound evidence the supervision owner reads
-// when a drain window expires (INV-A): inWrite is latched around every
-// out.Write call and progress bumps once per completed write, so a pending
-// line with the writer demonstrably inside out.Write — the one mid-flight
-// stall that may appear in any termination decision — is observable as
-// the truthful cause of an abandoned drain. The probe is evidence for the
-// report, never a trigger: nothing reads it to end anything.
+// writerProbe is the output-bound evidence the supervision owner reads:
+// inWrite is latched around every out.Write call and progress bumps once
+// per completed write, so a pending line with the writer demonstrably
+// inside out.Write is observable, as the truthful cause of an abandoned
+// drain (INV-A: the evidence is read for the report) and as the one
+// admissible mid-flight stall, via watchOutputStall below.
 type writerProbe struct {
 	inWrite  atomic.Bool
 	progress atomic.Uint64
+}
+
+// watchOutputStall is the supervision owner's stall probe — direction 2's
+// one admissible mid-flight stall, restored with evidence the round-4
+// redesign can hold: a pending line the writer demonstrably cannot write
+// (inside out.Write, progress flat) while the admission bound is
+// saturated, sustained for a whole window. It reports by closing report
+// and holds no authority of its own (INV-A): only the owner acts on the
+// report, as host-bound evidence. Without it the host's close can sit
+// forever behind a backlog the host itself created — the reader parks
+// delivering into the saturated chain and never reads the EOF behind it,
+// and no other report can fire. The saturation clause is what keeps the
+// probe off the round-4 false kill: a busy-but-draining session never
+// looks like this, however long its ops — a healthy drain keeps the
+// writer's progress moving — and a merely slow consumer without a
+// saturated bound is backpressure the host may still come back for.
+func watchOutputStall(window time.Duration, probe *writerProbe, saturated func() bool, report chan<- struct{}, stop <-chan struct{}) {
+	interval := window / 4
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	baseline := probe.progress.Load()
+	stalled := 0
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			progress := probe.progress.Load()
+			if probe.inWrite.Load() && progress == baseline && saturated() {
+				if stalled++; stalled >= 4 { // one whole window sustained
+					close(report)
+					return
+				}
+				continue
+			}
+			baseline = progress
+			stalled = 0
+		}
+	}
 }
 
 // Run serves requests from in until the host closes it (clean end), the
@@ -343,7 +384,7 @@ type writerProbe struct {
 //
 // The supervision owner. Run alone may end the session, and only on
 // host-bound evidence — exactly these reports, each owned by one custody
-// cell (INV-A):
+// cell or by the owner's own probe (INV-A):
 //
 //   - readerEnd: the host's input ended — io.EOF at a line boundary (the
 //     clean close, and how a host process exit manifests on stdin), a
@@ -352,20 +393,30 @@ type writerProbe struct {
 //     shape — the loop's numbered *MalformedLineError translation;
 //   - writerFail: the host's output failed — out.Write returned an error
 //     (the host closed stdout);
-//   - the caller's context: the embedding host ended the session.
+//   - the caller's context: the embedding host ended the session;
+//   - the owner's stall probe: the host overran its own draining — a
+//     pending line the writer demonstrably cannot write, inside out.Write
+//     with flat progress, while the admission bound is saturated, for a
+//     whole window. This is direction 2's one admissible mid-flight
+//     stall, and it must exist: behind a saturated chain the reader parks
+//     delivering and never reads the EOF behind the backlog, so a host
+//     that overruns its draining and closes stdin is otherwise
+//     unobservable forever.
 //
-// Everything else — busy workers, queued frames, a saturated admission
-// bound, a full lines queue — is work-bound saturation: backpressure onto
-// the host, never evidence, and no timer exists anywhere in serving, so
-// nothing mid-flight can time out (the false-kill class of the fourth
-// round, where a delivery window armed on consumer idleness made
-// ShutdownTimeout a request-execution timeout for busy-but-draining
-// sessions, is unexpressible). The first report moves the machine from
-// serving to hostEnded; teardown then runs three bounded stages — the
-// grace for a loop still stuck in a synchronous op, the wait for admitted
-// work, and the final output drain — each abandoned, not waited on, when
-// its window expires. The single selection site at the end returns
-// exactly one error by the documented precedence.
+// Everything else — busy workers, queued frames, a full lines queue — is
+// work-bound saturation: backpressure onto the host, never evidence. Even
+// a saturated admission bound alone is not evidence; only the output's
+// own stagnation on top of it is, and nothing mid-flight times out except
+// the owner's probe (the false-kill class of the fourth round, where a
+// delivery window armed on consumer idleness made ShutdownTimeout a
+// request-execution timeout for busy-but-draining sessions, is
+// unexpressible: a healthy drain keeps the writer's progress moving,
+// however long the ops). The first report moves the machine from serving
+// to hostEnded; teardown then runs three bounded stages — the grace for a
+// loop still stuck in a synchronous op, the wait for admitted work, and
+// the final output drain — each abandoned, not waited on, when its window
+// expires. The single selection site at the end returns exactly one error
+// by the documented precedence.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// A worker's dispatch runs on the frontend's own context, cancelled at
 	// hostEnded below so in-flight handlers detach from the hub and settle
@@ -395,20 +446,31 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	loopEnd := newTerminal()
 	go func() { loopEnd.report(s.decodeLoop(ctx, callerCtx, frames, lines, writerFail)) }()
 
-	// serving: the state's event set is exactly the four host-bound
-	// reports above — no timer case, no saturation case is expressible
-	// here, which is the invariant itself.
+	// The owner's stall probe runs only through serving and reports only
+	// to the owner; it is stopped the moment the machine leaves serving.
+	stallReport := make(chan struct{})
+	stallProbeStop := make(chan struct{})
+	defer close(stallProbeStop)
+	go watchOutputStall(s.shutdown, probe, func() bool {
+		return len(s.inFlight) == cap(s.inFlight)
+	}, stallReport, stallProbeStop)
+
+	// serving: the state's event set is exactly the host-bound reports
+	// above — no saturation case is expressible here, and the only timer
+	// is the owner's own probe, which is the invariant itself.
 	select {
 	case <-readerEnd.ready():
 	case <-loopEnd.ready():
 	case <-writerFail.ready():
 	case <-callerCtx.Done():
+	case <-stallReport:
 	}
 
 	// hostEnded: cancel detaches in-flight handlers from the hub and
 	// releases the loop's admission parks; the admission latch closes
 	// atomically with it, so no late WaitGroup Add can race the work Wait
 	// below.
+	close(stallProbeStop)
 	cancel()
 	s.mu.Lock()
 	s.shuttingDown = true

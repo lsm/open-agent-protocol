@@ -1089,12 +1089,14 @@ func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 // with the in-flight bound saturated behind a writer parked on a host that
 // stopped draining, the decode loop parks in admission and the reader parks
 // delivering the next frame — so a stdin closure lands unread behind the
-// host's own backlog. The reader's custody cell is what makes the closure
-// observable anyway: the terminal is reported before the final frame is
-// delivered, parked or not, so the owner enters hostEnded without needing
-// the delivery — the delivery-stall window this replaces was the round-4
-// false kill — and Run returns ErrShutdownStalled bounded, never hanging
-// on the closure it cannot read.
+// host's own backlog and no custody cell can ever report it. The owner's
+// stall probe is what covers the wedge: a pending line the writer
+// demonstrably cannot write, on top of the saturated bound, for a whole
+// window is the host's constructive end (the pre-redesign delivery window
+// bounded exactly this), while the busy-but-draining sessions the round-4
+// false kill hit never trip it — their writer's progress keeps moving. Run
+// returns ErrShutdownStalled bounded, never hanging on the closure it
+// cannot read.
 func TestShutdownBoundedWhenHostOverrunsDraining(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
