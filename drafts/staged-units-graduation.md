@@ -305,6 +305,26 @@ everywhere else. The result is that core payloads accept precisely their
 own members plus the declared ones, in both modes, and the member is
 validated when its pack is loaded and tolerated as unknown when it is
 not — the same tolerance-becomes-conformance the envelope types get.
+
+Where a member's gate settles follows from the role of the payload it is
+added to, and that is defined for every permitted target rather than for
+submit requests alone — otherwise a pack could legally add a member to
+`run.completed`, have its schema compiled, and never meet the gate,
+which is unadvertised extension behaviour with T0's fail-closed
+guarantee stamped on it. A core type's role is already known, so the
+rule needs no new declaration: a member added to a core *request* is
+retained with that request and its `gates` key settles on the request's
+correlated response, exactly as a control on
+`session.message.submit.request` settles on the submit response; a
+member added to a core *response* or *event* is the endpoint acting on
+the capability, and is judged on arrival — present while the key is
+unadvertised, `unavailable_capability` on that envelope. A
+`payload_members` entry naming a type that is not a core envelope type is
+a load refusal (`pack_member_target_unknown`), since a target with no
+known role has no gate point. Fixtures `ext-member-on-event-unadvertised`
+(`unavailable_capability` on a `run.completed` carrying a packed member
+while its key is unadvertised) and `ext-pack-member-target-unknown`
+(load refusal).
 Fixtures `ext-member-validated` (a packed member with a body its
 subschema rejects: tolerated without the pack, diagnosed with it),
 `ext-member-undeclared-still-rejected` (positive; a different unknown
@@ -416,8 +436,9 @@ and `ext-pack-restates-core-member` (load refusal).
   trace — `pack_unprefixed_name`, `pack_foreign_prefix`,
   `pack_id_collision`, `pack_branch_undeclared_type`,
   `pack_branch_unpinned`, `pack_ungated_type`,
-  `pack_restates_core_member`, `pack_role_undeclared`,
-  `pack_reply_target_unknown`, `pack_fixture_claims_core_unit`, and
+  `pack_restates_core_member`, `pack_member_target_unknown`,
+  `pack_role_undeclared`, `pack_reply_target_unknown`,
+  `pack_fixture_claims_core_unit`, and
   `ext_claim_without_pack`, one per load refusal this section names.
   The runner asserts that loading the named pack fails with exactly
   those codes, and a `load-invalid` entry that loads cleanly, or fails
@@ -947,8 +968,9 @@ No new envelope types. Changes to
   otherwise claim the same response.
 - New diagnostic `degraded_without_optin`: `feature()` today accepts every
   level but `unavailable`, so a request carrying a control, an
-  explicit non-`auto` delivery, or a `models.request` (T5a, which
-  carries the same field), whose key the descriptor advertises
+  explicit non-`auto` delivery, or a `models.request` (T5a) or
+  `action.tools.list.request` (T3a), both of which carry the same field,
+  whose key the descriptor advertises
   `degraded` and whose `allow_degraded_features` omits that key is
   remembered, and an admission correlated to it (a
   `session.message.submit.response`, or the `models.response`) is
@@ -2721,7 +2743,18 @@ Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and
 - `action.tools.list.request` gains an optional `session_id` payload
   member, and both list envelopes carry the envelope `session_id` when the
   catalog is a session's effective catalog; the response repeats it in its
-  payload. Today's empty request stays valid for an endpoint-level catalog
+  payload. It also gains an optional `allow_degraded_features`, the
+  carrier `session.message.submit.request` and `models.request` have,
+  because `action.tools.list` can be advertised `degraded` like any key
+  and a list request is a request of its own: without a field to consent
+  on, a caller could never construct the consenting query, and the
+  endpoint would have to refuse every list with `capability_degraded` or
+  serve degraded behaviour without consent, which T1's rule forbids. The
+  rule is T1's unchanged — a list request on a descriptor advertising
+  `action.tools.list` as `degraded` whose `allow_degraded_features` omits
+  the key is refused `capability_degraded` with `details.feature` naming
+  it, and a list response correlated to it is `degraded_without_optin`.
+  The parameter threads through the surfaces below exactly as T5a's does. Today's empty request stays valid for an endpoint-level catalog
   (a static adapter). A session opened with `tool_sources` or `tools`
   answers session-scoped lists only, so a trace, a stdio consumer, and the
   validator can tie a catalog to the attachment it reflects.
@@ -3067,7 +3100,13 @@ It adds no wire vocabulary.
   (positive), `tools-list-refused-advertised` (`unhonoured_capability`
   on the `error.response`; a list request refused on an endpoint
   advertising `action.tools.list` — the `honour` fixture T0's
-  corpus-completeness check requires),
+  corpus-completeness check requires), `tools-list-degraded-optin`
+  (positive; a list request carrying `allow_degraded_features:
+  ["action.tools.list"]` served by a `degraded` catalog),
+  `tools-list-degraded-without-optin` (`degraded_without_optin` on the
+  list response; the same request without the field, served anyway),
+  `tools-list-degraded-refused` (positive; the same request refused
+  `capability_degraded` with `details.feature: "action.tools.list"`),
   `tools-list-ungated-wrong-refusal` (another code),
   `tools-list-ungated-wrong-feature` (`unsupported_feature` with
   `details.feature: "run.model_selection"`) and
@@ -3398,7 +3437,9 @@ the request used.
 
 - `adapter`: `OpenRequest` gains `ToolSources` and `Tools`;
   `InteractionResolution.ToolCall`; optional interface `adapter.ToolLister`
-  (`Tools(ctx) (protocol.ToolsListResponse, error)`) for the catalog.
+  (`Tools(ctx, protocol.ToolsListRequest) (protocol.ToolsListResponse,
+  error)`) for the catalog, the request being the payload struct so the
+  adapter applies the opt-in rule on exactly what the wire said.
   `Session.Resolve` keeps its error-only signature, which today cannot
   express the `accepted: false` answer the semantics require for a
   repeated or late `started` (every error becomes an `error.response`,
@@ -3415,7 +3456,8 @@ the request used.
   sentinel for a repeated or late `started` and for a resolution after
   the interaction settled; `adaptertest` asserts the sentinel, and the
   `servehttp` test asserts the `accepted: false` response on the wire.
-- `serve`: `Session.Tools(ctx)`; `Session.Resolve` passes the new arm
+- `serve`: `Session.Tools(ctx, protocol.ToolsListRequest)`, forwarded
+  unchanged; `Session.Resolve` passes the new arm
   under the same publication gate T4 specifies for steer, held here
   across the whole of `Resolve`: the run's drainer buffers everything it
   reads from arming until `Published`, since no envelope emitted inside
@@ -3514,13 +3556,19 @@ the request used.
   MCP connector is a separate package `serve/mcpconnect`, out of scope for
   the 0008 decision but designed against it.
 - `serve/servehttp`: `GET /sessions/{id}/tools` returning
-  `action.tools.list.response`; `POST /sessions/{id}/resolve` accepts
+  `action.tools.list.response`, with the opt-in as a repeatable
+  `?allow_degraded=<key>` query parameter mapped onto the payload before
+  the daemon mints the request, as the models GET does; the stdio `tools`
+  op takes `allow_degraded_features` directly; `POST /sessions/{id}/resolve` accepts
   `action.call.resolve.request` and calls `Session.Published` after
   writing the response; `POST /adapters/{name}/sessions` forwards
   `tool_sources` and `tools`. Stdio ops `tools` and the extended `resolve`
   (with the same post-write release) and `open`.
 - `client` and `clients/ts`: `Open` options for sources and tools;
-  `Session.Tools`; `Session.ResolveToolCall` in all three arms
+  `Session.Tools(ctx, ...ToolsOption)` with `AllowDegraded(keys
+  ...string)` and `session.tools({ allowDegradedFeatures? })`, sent only
+  when given so an unmodified call is byte-identical to today's;
+  `Session.ResolveToolCall` in all three arms
   (acknowledge, result, error), so a control layer can report that it has
   begun executing before it has a result. The cross-stream repair T4
   states for steer settlements covers this path too, and for the same
