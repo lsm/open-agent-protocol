@@ -564,8 +564,29 @@ any schema that object does not satisfy (`unsupported_feature`,
 `details.feature: "run.structured_output"`, `details.reason:
 "unsatisfiable"`); under an accepted schema `run.completed` carries that
 object as `result`, so the reference never emits a nonconforming success.
-The descriptor's `reason` for `run.structured_output` discloses the fixed
-result. Unknown model ids fail with `model_not_found`.
+A fixed result is an endpoint-specific constraint, and leaving it in
+`FeatureSupport.reason` — prose, for a human — would let any adapter
+advertise `run.structured_output` and refuse every usable schema while
+the validator, unable to know the constraint, accepted each refusal as
+typed and conforming. So T1 makes it machine-readable:
+`FeatureSupport` (`protocol/control.go:39`) gains an optional
+`constraints` object whose member for this key is `fixed_result`, the
+exact object every `run.completed` under an accepted schema will carry.
+Disclosing it turns the refusal into something checkable in both
+directions. Where an endpoint declares `fixed_result`, a refusal of a
+schema that object *does* satisfy is `unsatisfiable_control` on the
+`error.response` — the endpoint said the result would do and then
+refused it — and an admission of a schema it does not satisfy is
+`unsatisfiable_control` on the admission, since the run could only
+complete nonconforming. Where no `fixed_result` is declared the endpoint
+is claiming no such constraint, and a refusal citing one is
+`unsatisfiable_control` all the same: an adapter cannot both withhold
+the constraint and rely on it. Fixtures
+`controls-structured-fixed-result-refuses-satisfiable`
+(`unsatisfiable_control`; a schema the disclosed result satisfies,
+refused) and `controls-structured-undisclosed-constraint`
+(`unsatisfiable_control`; a refusal for an unmet result on a descriptor
+declaring no `fixed_result`). Unknown model ids fail with `model_not_found`.
 
 ### Native evidence
 
@@ -3294,11 +3315,17 @@ every later unit relies on:
   operation (a future `run.pause.request` or its response) that joins
   the generic scope and correlation checks only and never enters
   run-event bookkeeping, so it can neither be reported as
-  `event_after_terminal` nor disturb the cursor; one carrying `sequence`
-  without `run_id` is a session-scoped event, and one carrying
-  `session_id` alone a session-scoped operation, both joining the scope
-  checks only; one carrying none of these is endpoint or protocol
-  scoped and is passed through. `duplicate_envelope_id` needs no
+  `event_after_terminal` nor disturb the cursor; scope below the run is
+  decided by `session_id`, not by `sequence`, because a sequenced
+  envelope need not be session-scoped — `capabilities.updated` requires
+  `sequence` and carries no `session_id`
+  (`schema/v0.1/envelope.schema.json:75`), so an additive successor with
+  that shape would be misfiled by a sequence-only test and given session
+  handling it has no session for. An envelope carrying `session_id` is
+  therefore session-scoped, sequenced or not, and joins the scope checks
+  only; one carrying neither `run_id` nor `session_id` is endpoint or
+  protocol scoped and is passed through whether or not it is
+  sequenced. `duplicate_envelope_id` needs no
   classification: the intake pass (`apply`) checks every envelope's `id`
   before type dispatch, known type or not. Strict mode is unchanged: an
   unknown type fails the schema before the stateful pass sees it. The
