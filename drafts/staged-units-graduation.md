@@ -2717,7 +2717,10 @@ therefore needs a steer settlement, not only a steer admission.
   `EnvelopeID`, both populated by every binding — `servehttp` and the
   stdio frontend from the request they decoded, an in-process embedder
   from the envelope it built. The `Submit` change is a compile-time break
-  across the seven adapters and is meant to be: an adapter that ignores
+  across all nine implementations of `adapter.Session` — the eight pinned
+  native adapters (ACP, Claude, Codex, DeepSeek, Hermes, Makai, OpenCode,
+  pi) and the memory reference — and is meant to be: an adapter that
+  ignores
   the new member keeps compiling only because it does not emit correlated
   events, and one that does emit them cannot silently omit the
   correlation. `adaptertest` asserts the id reaches the adapter and
