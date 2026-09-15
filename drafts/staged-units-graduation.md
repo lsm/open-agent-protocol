@@ -181,6 +181,21 @@ name, so it cannot mint into the spec's namespace, and the core
 vocabulary grows only by spec change — which was the property the root
 list was reaching for, obtained without enumerating anything.
 
+The own-prefix rule alone does not make two packs non-overlapping, and
+composition needs that separately: `com.example` and
+`com.example.storage` both satisfy it while both legally claiming
+`com.example.storage.read`, and even where their declarations differ,
+"the loaded pack whose prefix matches" stops naming one pack. The loaded
+set is therefore required to be *prefix-free* — no pack `id` may be a
+dot-prefix of another — and that is checked across the set at load, not
+per pack, since neither pack is at fault alone. Prefix-freedom makes
+prefix matching a function rather than a search: at most one loaded id
+can prefix any name, so ownership is decided without a precedence rule,
+and collision handling is a load refusal naming both ids rather than a
+runtime tie-break. Two vendors then compose by construction, and a vendor
+subdividing its own namespace ships one pack that declares both families
+rather than two packs that nest.
+
 **Manifest.** `manifest.schema.json` gains an optional `extensions`
 array; `schemas` keeps its 7-of-7 bound, which from here describes the
 core bundle rather than the whole compiled set. Each entry is a pack
@@ -267,7 +282,10 @@ no authority over the core claim beside it.
 Negative: `ext-pack-claims-unprefixed-name` (a pack declaring a name with
 no reverse-DNS prefix, which is the spec's namespace; load refusal, not a
 diagnostic), `ext-pack-claims-foreign-prefix` (a pack declaring a name
-under another pack's id; load refusal), `ext-pack-branch-undeclared-type`
+under another pack's id; load refusal), `ext-packs-nested-ids` (two
+individually valid packs whose ids are `com.example` and
+`com.example.storage`, loaded together; load refusal naming both, since
+neither is at fault alone), `ext-pack-branch-undeclared-type`
 (a contributed branch whose `type` `const` is not among the pack's
 declared `envelope_types`; load refusal), `ext-pack-branch-unpinned`
 (a contributed branch that does not pin `type` to a `const` at all, the
@@ -2489,9 +2507,24 @@ Semantics, on the interaction contract Decision 0001 fixed:
 - `tools` is accepted whole or not at all: an adapter that cannot provision
   every supplied definition rejects the open with `unsupported_feature`
   (`details.feature: "action.tools.provide"`, `details.reason:
-  "unsatisfiable"`) rather than accepting a subset, and no adapter carries
-  an unadvertised cardinality limit. The capability key alone therefore
-  tells a caller that any well-formed `tools` array is honored.
+  "unsatisfiable"`) rather than accepting a subset.
+- That refusal has to be bounded, or the capability promises nothing. A
+  native name shape, a schema dialect, a cardinality ceiling — any of
+  these can make a well-formed array unprovisionable, and an adapter
+  permitted to say so about any array could advertise
+  `action.tools.provide`, refuse every array it is ever given, and pass
+  conformance while honouring nothing. So a constraint must be
+  *advertised to be exercised*: the feature's `FeatureSupport` carries
+  `limits` declaring the ones the adapter actually has — `max_tools`, a
+  `name_pattern`, the accepted schema dialect — and a refusal is
+  conforming only where the array violates a declared limit. Refusing an
+  array that satisfies every advertised limit is
+  `undisclosed_provide_limit`, the same diagnostic shape T2 uses for an
+  undisclosed queue bound and for the same reason: the refusal is itself
+  the evidence that a constraint exists which the caller was never told
+  about. The capability key plus its `limits` therefore tells a caller
+  exactly which `tools` arrays are honored, and the key alone tells it
+  that an unlimited one is.
 
 Evidence: Makai's `tool_execute`/`tool_result` bridge is exactly this
 boundary: the adapter's native codec already decodes both frames, every
@@ -3091,6 +3124,13 @@ source),
 `details.feature: "action.tools.provide"`, `details.reason:
 "unsatisfiable"`, then no open; positive, `valid: true`, no
 diagnostic),
+`open-provide-refused-within-limits` (`undisclosed_provide_limit`; an
+`unsatisfiable` refusal of a `tools` array that satisfies every limit the
+endpoint advertised, which is the check that stops an endpoint
+advertising `action.tools.provide` and honouring nothing) and its
+positive counterpart `open-provide-refused-over-limit` (`valid: true`, no
+diagnostic; the same refusal where the array exceeds an advertised
+`max_tools`),
 `open-provide-wrong-owner-admitted` (`wrong_tool_owner`; a supplied tool
 whose `execution_owner` is not the declared control participant, and the
 open admitted),
@@ -4002,7 +4042,7 @@ strings in the schema; the validator does not enumerate them.
 `queue_limit_exceeded`, `premature_session_mutation`,
 `unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
 `wrong_tool_owner`, `attachment_field_in_catalog`,
-`undisclosed_queue_limit`,
+`undisclosed_queue_limit`, `undisclosed_provide_limit`,
 `resolution_payload_mismatch`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
