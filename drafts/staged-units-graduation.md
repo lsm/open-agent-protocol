@@ -1731,7 +1731,9 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   resume on the started run with no `oap-replay-gap`, and the mixed
   case — that reconnect arriving after a queued B was promoted — which
   must reach the client as a run mismatch on the first envelope rather
-  than as B's events read against A's cursor.
+  than as B's events read against A's cursor, together with its
+  common variant — the same drop at a position B has not yet reached,
+  which must resolve onto A and resume invisibly.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
@@ -1770,7 +1772,19 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   span, so no daemon-side test separates them and a rule that refused
   both would break the ordinary case, which is the common one.
 
-  It does not need one, because the v0.1 client already separates them,
+  One test does separate a large part of it, and it is not a guess: a run
+  that has not itself reached sequence `n` cannot be where a cursor at
+  `n` came from, and resuming there would ask for a position that run has
+  not produced. So resolution is restricted before it is preferred — a
+  bare cursor resolves only onto a retained domain that has reached the
+  sequence, and among those the started run wins. A promoted B is usually
+  at the very beginning of its own numbering while the legacy client had
+  read some way into A, so most mixed drops resolve onto A and recover
+  invisibly after all. What survives is the narrow overlap where B has
+  already passed the client's position in A, and there the daemon has
+  nothing left to distinguish with.
+
+  For that remainder the v0.1 client itself separates them,
   and this is the reason the binding is safe rather than merely
   convenient. A resuming client carries the run it was reading, and the
   first envelope of a cursor-bearing stream is checked against it:
@@ -1782,9 +1796,21 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   without consuming a single misattributed envelope. The wrong run is
   therefore caught where the knowledge to catch it lives, and the daemon
   keeps the v0.1 resolution rather than pre-empting a client check that
-  already works. What the client cannot do is recover A's tail, which is
-  genuinely lost; a loud failure is the recoverable outcome there, and a
-  silent splice is not.
+  already works.
+
+  This is the plan's stated residual, not an oversight: in that narrow
+  overlap a v0.1 subscriber's resume ends in `ResumeMismatchError` rather
+  than invisibly, and the plan takes that over a silent splice of B's
+  envelopes onto A's cursor, which is the only alternative left once the
+  number is all the daemon has. The failure is diagnosable and the data
+  is not lost: the error names both the expected and the observed run
+  (`ExpectedRunID`, `ObservedRunID`), A's domain stays retained, and
+  `?run=A&after=n` recovers its tail exactly — which is what `?run=`
+  exists for and what a T2-aware client, which never reaches this branch,
+  sends from the start. The cost is bounded to sessions that mix a
+  queue-aware caller with a v0.1 subscriber, during the window between a
+  terminal being processed and being read, at a position the promoted run
+  has already passed.
 
   A following subscription is the one that can carry a cursor from a domain
   other than the started run, and only there is a bare number genuinely
