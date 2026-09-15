@@ -987,7 +987,8 @@ No new envelope types. Additive fields:
   unresolved permission and user-input interactions, so the single-run
   recovery path this unit requires can read the id it needs from a
   T2-only endpoint; T3c extends the list to control-owned calls and T4
-  adds `pending_steers` and `settled_steers`.
+  adds `pending_steers`, with settled steers on the session-level
+  `settled_steers` surface T4 specifies.
 - `capabilities.response` gains optional `limits`: `{
   "max_active_runs_per_session": int, "max_queued_runs_per_session": int }`,
   where `max_active_runs_per_session` bounds the nonterminal set, which is
@@ -1874,10 +1875,18 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   does not name — session-specific entries are explicitly allowed to
   differ — so judging an early `tool_choice` against the descriptor
   would call a policy unsatisfiable that the adapter can satisfy
-  perfectly well. A trace that never lists is still judged against the
-  descriptor's effective catalog plus its open-time tools, as T1 rules,
-  since nothing better exists and the end-of-trace sweep settles it; but
-  where a list is advertised, a choice submitted before the first one is
+  perfectly well. Where `action.tools.list` is advertised and the trace
+  never lists, the end-of-trace sweep does not fall back to the
+  descriptor either: the list was the authority and the client simply
+  never asked for it, so a retained choice is settled as the listed
+  branch, exactly as the model sweep reads silence as the id being
+  listed. Inferring a miss from a catalog nobody requested would convict
+  an adapter for a query the client chose not to make, and the
+  descriptor is known to be incomplete for precisely the tools at issue.
+  The descriptor's effective catalog plus the open-time tools remains the
+  authority only where no list is advertised at all, as T1 rules, since
+  there nothing better exists and none is promised. Where a list is
+  advertised, a choice submitted before the first one is
   retained rather than judged, and the first
   `action.tools.list.response` reconciles it exactly as a post-refresh
   gap is reconciled. Fixture `tools-select-before-first-list` (positive;
@@ -2342,7 +2351,12 @@ therefore needs a steer settlement, not only a steer admission.
   session's started run; a supplied target must be that run. Any other
   target, or no started run, fails before admission with typed
   `invalid_steer_target` (`details.reason`: `no_active_run`, `terminal`,
-  `queued`, `cross_session`, `not_steerable`). `not_steerable` names
+  `queued`, `cross_session`, `unknown_target`, `not_steerable`).
+  `unknown_target` is the reason for a supplied `target_run_id` the
+  endpoint has no run for; it ranks with `cross_session` ahead of every
+  lifecycle reason, as the validator section sets out, because both say
+  the caller has the wrong run rather than a badly timed one.
+  `not_steerable` names
   exactly one lifecycle state: the target is started and nonterminal but
   `cancelling`, where accepted cancellation forecloses further guidance
   (a steer already pending on such a run is dropped with `run_terminated`
@@ -2422,12 +2436,22 @@ therefore needs a steer settlement, not only a steer admission.
   nothing — the steer may have been admitted and applied inside the gap.
   Two things close that. A resume that cannot be served from the window
   is reported as such rather than silently starting fresh, so a client
-  knows its view has a hole and knows not to draw the conclusion; and the
-  run's recoverable state retains settled steers, not only pending ones —
-  each `active_runs` entry carries `settled_steers` beside
-  `pending_steers`, listing each `submission_id` with its
-  `request_id` and whether it was `applied` or `dropped`, retained for
-  the life of the run including after its terminal. A caller that missed
+  knows its view has a hole and knows not to draw the conclusion; and
+  settled steers are retained where a terminated run's history can
+  survive. Not on `active_runs`, which T2 defines as the nonterminal set
+  and which drops each entry at its terminal — putting the history there
+  would lose it at exactly the moment the caller most needs it, since the
+  terminal is when absence was supposed to become conclusive. Instead
+  `session.state` gains a session-level `settled_steers`, listing each
+  settled submission with its `run_id`, `submission_id`, `request_id`,
+  and whether it was `applied` or `dropped`, and entries survive their
+  run's terminal. It is bounded like any recovery surface — the hub keeps
+  the most recent entries per session, the same retention the journal
+  uses, and a caller reading a truncated list is told so by the same
+  mechanism that reports a replay gap — so the surface cannot grow
+  without limit over a long session. Pending steers stay on the
+  `active_runs` entry, where a live run's state belongs; settled ones
+  move to the session, where they outlive it. A caller that missed
   the settlement reads the outcome instead of inferring it from silence,
   which is the same answer T2 gives a reconnecting submitter recovering a
   `submission_id`: state is the recovery surface, and the stream is the
