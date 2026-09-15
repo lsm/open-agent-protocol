@@ -15,8 +15,12 @@ the fixtures, and the exit criteria its own decision will cite. It does not
 graduate anything: each unit's decision does that when the gate is met.
 
 The units keep issue #13's labels. The plan's order is Decision 0003's:
-T1 run controls, T5a models catalog, T2 queue delivery, T3 tool sources and
-control-layer tools, T4 steer, T5b auth state.
+T0 extension packs, T1 run controls, T5a models catalog, T2 queue
+delivery, T3 tool sources and control-layer tools, T4 steer, T5b auth
+state. T0 comes first because the later units give capability keys
+executable meaning and T0 is what makes a key's namespace and its gate
+well defined; it is also the one unit not gated on ledger evidence,
+for the reason its own section gives.
 
 ## Where v0.1 leaves the staged surface
 
@@ -210,6 +214,34 @@ descriptor declares what the pack defines — `capability_keys`,
 from the schemas, so containment can be checked before anything is
 compiled.
 
+Those lists are independent, and independence is not enough: a pack
+declaring the key `com.example.foo` and the type
+`com.example.foo.request` has said nothing tying one to the other, so
+nothing would require the key to be advertised before the type is used.
+The fail-closed gate this plan is built on would then stop at the edge
+of core — the strongest promise the protocol makes, silently not
+extended to the surfaces T0 exists to support. Neither existing
+mechanism can supply the link: a schema cannot see the capability
+descriptor that preceded it in the trace, and the stateful validator
+reaches its feature keys by hard-coded name at each known-type case
+(`validation/state.go:256-300`, `612-639`, `943-961`), which by
+construction knows nothing a pack declares.
+
+So the descriptor carries the mapping explicitly: `gates`, from each
+declared envelope type — and each control member a pack adds to an
+existing payload — to the capability key that must be advertised for it,
+which containment already requires to be one of the pack's own. Every
+declared type must appear in `gates` or be declared ungated, stated
+rather than omitted, so a missing entry is a load refusal and not a
+silent hole. The stateful validator consumes it at the same dispatch
+point the core keys use: a packed type resolves its feature key through
+the loaded pack's `gates` instead of a hard-coded string, and the
+existing gate then applies unchanged — unadvertised means the typed
+refusal is owed, an admission is `unavailable_capability`, and the
+refusal is itself validated. An extension capability is fail-closed in
+the same machinery as a core one, which is the claim T0 makes, and this
+is what makes it implementable generically rather than per pack.
+
 ### Semantics
 
 - **Loading a pack turns tolerance into conformance for its vocabulary.**
@@ -290,7 +322,10 @@ individually valid packs whose ids are `com.example` and
 neither is at fault alone) and `ext-packs-duplicate-ids` (the same
 refusal for two packs sharing one id, the degenerate prefix case), `ext-pack-branch-undeclared-type`
 (a contributed branch whose `type` `const` is not among the pack's
-declared `envelope_types`; load refusal), `ext-pack-branch-unpinned`
+declared `envelope_types`; load refusal), `ext-pack-ungated-type` (a declared envelope type absent from `gates`
+and not declared ungated; load refusal), `ext-packed-type-unadvertised`
+(a packed operation admitted while its gating key is unadvertised;
+`unavailable_capability`), `ext-pack-branch-unpinned`
 (a contributed branch that does not pin `type` to a `const` at all, the
 shape that would otherwise match core envelopes and invalidate them by
 double match; load refusal),
@@ -302,7 +337,8 @@ Positive: `ext-unpacked-type-tolerated` (the same envelope with no pack
 loaded, accepted on the common fields in tolerant mode),
 `ext-advertised-key-gated` (an extension key advertised and used, and the
 same key unadvertised drawing `unsupported_feature` with
-`details.feature` naming it), `ext-core-claim-unchanged` (the core
+`details.feature` naming it — the gate resolved through the pack's
+`gates` rather than a hard-coded name), `ext-core-claim-unchanged` (the core
 fixture manifest passing identically with and without a pack loaded —
 the regression guard for the invariant that a pack cannot change core
 validity, run against a pack whose declared type is deliberately close
