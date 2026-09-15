@@ -516,3 +516,73 @@ func TestClientClosesTransportExactlyOnce(t *testing.T) {
 		_ = writer.Close()
 	}
 }
+
+var errEncodeAfterDelivery = errors.New("encode failed after the frame was delivered")
+
+// releasedFailingWriter forwards each frame to the peer, then holds the write
+// open until released and reports a failure for it: a frame the peer received
+// and answered whose Encode nevertheless returned an error.
+type releasedFailingWriter struct {
+	inner   io.Writer
+	release chan struct{}
+}
+
+func (w *releasedFailingWriter) Write(p []byte) (int, error) {
+	n, err := w.inner.Write(p)
+	if err != nil {
+		return n, err
+	}
+	<-w.release
+	return n, errEncodeAfterDelivery
+}
+
+// A frame the peer received and answered must settle on its response even when
+// Encode reports a failure for it: the client retires before the failure is
+// published, so the caller settles on its channel rather than removing a
+// pending id whose reply is already in hand.
+//
+// Unlike the other regression tests here this one also passes against the
+// client it fixes: there the pump published the failure before closing done,
+// and losing that window needs the caller scheduled in the instant between the
+// two, which 300 runs never hit. It guards the invariant rather than
+// reproducing the defect.
+func TestClientCallSettlesOnResponseWhenEncodeFailsAfterDelivery(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	writer := &releasedFailingWriter{inner: clientWriter, release: make(chan struct{})}
+	client := NewClient(clientReader, writer, ClientOptions{QueueCapacity: 8})
+	result := make(chan error, 1)
+	go func() { result <- client.Call(context.Background(), "prompt.submit", nil, nil) }()
+	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	// The peer answers while the pump still holds the write open; wait until
+	// the reply has been delivered to the pending call.
+	if _, err := serverWriter.Write([]byte(`{"id":1,"result":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		client.mu.Lock()
+		delivered := len(client.pending) == 0
+		client.mu.Unlock()
+		if delivered {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reply never delivered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(writer.release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("the answered frame lost to its encode failure: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	_ = serverWriter.Close()
+	_ = serverReader.Close()
+}

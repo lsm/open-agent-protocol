@@ -744,3 +744,118 @@ func TestClientClosesTransportExactlyOnce(t *testing.T) {
 		_ = writer.Close()
 	}
 }
+
+var errEncodeAfterDelivery = errors.New("encode failed after the frame was delivered")
+
+// releasedFailingWriter forwards each frame to the peer, then holds the write
+// open until released and reports a failure for it: a frame the peer received
+// and answered whose Encode nevertheless returned an error.
+type releasedFailingWriter struct {
+	inner   io.Writer
+	release chan struct{}
+}
+
+func (w *releasedFailingWriter) Write(p []byte) (int, error) {
+	n, err := w.inner.Write(p)
+	if err != nil {
+		return n, err
+	}
+	<-w.release
+	return n, errEncodeAfterDelivery
+}
+
+// A frame the peer received and answered must settle on its response even when
+// Encode reports a failure for it: the client retires before the failure is
+// published, so the caller settles on its channel rather than removing a
+// pending id whose reply is already in hand.
+//
+// Unlike the other regression tests here this one also passes against the
+// client it fixes: there the pump published the failure before closing done,
+// and losing that window needs the caller scheduled in the instant between the
+// two, which 300 runs never hit. It guards the invariant rather than
+// reproducing the defect.
+func TestClientCallSettlesOnResponseWhenEncodeFailsAfterDelivery(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	writer := &releasedFailingWriter{inner: clientWriter, release: make(chan struct{})}
+	client := NewClient(clientReader, writer, ClientOptions{QueueCapacity: 8})
+	inbound := client.Inbound()
+	result := make(chan error, 1)
+	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
+	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	// The peer answers while the pump still holds the write open.
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Take the barrier without acknowledging it: the reply is decoded and in
+	// hand while the pump still holds the write open.
+	select {
+	case message := <-inbound:
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	close(writer.release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("the answered frame lost to its encode failure: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	_ = serverWriter.Close()
+	_ = serverReader.Close()
+}
+
+// CallStarted's admission channel reports what a settled outcome proves: a wire
+// error response still proves the request was completely written, so it must
+// report admission, and the remote error is the call's terminal result.
+func TestCallStartedReportsAdmissionForRemoteErrorAfterEncodeFailure(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	writer := &releasedFailingWriter{inner: clientWriter, release: make(chan struct{})}
+	client := NewClient(clientReader, writer, ClientOptions{QueueCapacity: 8})
+	inbound := client.Inbound()
+	started := make(chan error, 1)
+	result := make(chan error, 1)
+	go func() { result <- client.CallStarted(context.Background(), "prompt.submit", nil, nil, started) }()
+	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"bad"}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-inbound:
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	close(writer.release)
+	var remote *RemoteError
+	select {
+	case err := <-result:
+		if !errors.As(err, &remote) {
+			t.Fatalf("call settled with %v, want the remote error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("admission reported %v for a request the peer answered", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("admission never reported")
+	}
+	_ = serverWriter.Close()
+	_ = serverReader.Close()
+}

@@ -443,9 +443,15 @@ func (c *Client) writeLoop() {
 			c.mu.Lock()
 			c.encoding = false
 			c.mu.Unlock()
+			if err != nil {
+				// Retire before publishing the failure. A caller that sees the
+				// write error with done already closed settles on its response
+				// channel, so a reply the peer managed to send for the frame
+				// is not discarded along with the pending id.
+				c.closeWith(err)
+			}
 			request.result <- err
 			if err != nil {
-				c.closeWith(err)
 				return
 			}
 		case <-c.done:

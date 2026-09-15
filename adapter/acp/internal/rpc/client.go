@@ -280,7 +280,7 @@ func (client *Client) callID(ctx context.Context, id RequestID, method string, p
 			// stream before the death wins over the write's verdict.
 			select {
 			case outcome := <-response:
-				report(outcome.err)
+				report(admissionError(outcome))
 				return decodeCallResult(method, outcome, result)
 			case <-ctx.Done():
 				client.removePending(id)
@@ -310,6 +310,18 @@ func (client *Client) callID(ctx context.Context, id RequestID, method string, p
 	// the frame it held when the transport died — so waiting here is what
 	// lets a response parsed off the ordered stream before the death win
 	// over it.
+}
+
+// admissionError reports what a settled outcome proves about the request's
+// admission: any wire response — a remote error included — proves the request
+// was completely written, so only a synthetic settlement from shutdown is an
+// admission failure.
+func admissionError(outcome callResult) error {
+	var remote *RemoteError
+	if outcome.err == nil || errors.As(outcome.err, &remote) {
+		return nil
+	}
+	return outcome.err
 }
 
 func (client *Client) Notify(ctx context.Context, method string, params any) error {
@@ -633,9 +645,15 @@ func (client *Client) writeLoop() {
 			client.mu.Lock()
 			client.encoding = false
 			client.mu.Unlock()
+			if err != nil {
+				// Retire before publishing the failure. A caller that sees the
+				// write error with done already closed settles on its response
+				// channel, so a reply the peer managed to send for the frame
+				// is not discarded along with the pending id.
+				client.closeWith(err)
+			}
 			request.result <- err
 			if err != nil {
-				client.closeWith(err)
 				return
 			}
 		case <-client.done:
