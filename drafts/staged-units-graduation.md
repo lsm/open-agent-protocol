@@ -1843,7 +1843,11 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   run (overflow already carries it). Ambiguity does not replace or
   pluralise `run_id`; it rides an additional optional
   `ambiguous_run_ids`, present only in the bare-cursor case above and
-  listing every retained domain that reached that sequence. The two
+  listing every retained domain that reached that sequence. A gap has a
+  `scope` besides — `run` for a cursor the run journal no longer spans,
+  `interleaved` for an `after_interleaved` the hub journal has evicted
+  (T3c) — since the two lose different things and a client recovers from
+  them differently. The two
   members answer different questions and are deliberately not required to
   intersect: the resumed run is the started one, which on a gap is
   commonly a run that never reached the ambiguous sequence at all — A and
@@ -3623,7 +3627,29 @@ and hub contract is explicit rather than inherited from `start`:
   than by state a client instance keeps in memory (client rule below);
   the e2e test drops between the snapshot and the settlement, resumes
   with the full cursor from a fresh client, and asserts the application
-  sees the snapshot once. The resolve fallback
+  sees the snapshot once.
+
+  That promise has a floor, because the journal is bounded like every
+  other recovery surface here. Once the named envelope has been evicted
+  the hub cannot order the position at all: it no longer knows which
+  journaled envelopes followed the one the subscriber holds, so replaying
+  the position would duplicate what was already delivered and skipping it
+  would hide what was not. Neither is something to choose silently, so an
+  `after_interleaved` the journal no longer holds is a stated gap, the
+  same treatment an expired run-sequence cursor gets: the hub emits
+  `oap-replay-gap` carrying `scope: "interleaved"` and replays no
+  journaled envelope at that position, then continues the run stream from
+  `?after=` normally. `scope` distinguishes it from the run-cursor gap,
+  whose members (`ambiguous_run_ids`, and `last_sequence` naming a run
+  position) describe a different loss; the interleaved gap carries
+  `run_id` and `last_sequence` for the stream it continues on, and no
+  candidates. Recovery is direct rather than approximate, because every
+  envelope this cursor orders is a hub-minted `session.state` snapshot: a
+  client that sees the gap re-reads `session.state`, which supersedes any
+  snapshot it may have missed. A `servehttp` retention test drives the
+  journal past its bound with the subscriber disconnected and asserts the
+  gap is signalled rather than the position silently replayed or
+  silently dropped. The resolve fallback
   under T3c uses the same journal. The state snapshot is
   the same surface a reconnecting submitter reads to recover the id, so
   every subscriber learns of the admission before the settlement, the
