@@ -765,8 +765,13 @@ the bundle's file inventory and the manifest schema are untouched.
   } }
 ```
 
-`ModelDescriptor` fields: `id` (required, unique within a response, the
-value `model_id` accepts),
+`ModelDescriptor` fields: `id` (required, `minLength: 1`, unique within a
+response, the value `model_id` accepts — non-emptiness is a schema
+constraint rather than a validator rule because T1 refuses an empty
+`model_id` unconditionally, so a catalog that listed one would offer a
+picker a value the endpoint is required to reject, and the two rules
+would contradict each other on the wire; `current_model_id` carries the
+same constraint for the same reason),
 `display_name`, `provider_id`, `context_window`, `features` (the layered
 draft's `model.*` keys as `FeatureSupport`), `default` (boolean; at most one
 per response). `current_model_id` repeats session state. Both envelopes
@@ -1052,7 +1057,8 @@ diagnose). Negative: `models-select-unlisted` (`model_not_in_catalog`),
 `session_id` differ), `models-response-scope-mismatch` (`scope_mismatch`),
 `models-unadvertised` (`unavailable_capability` on the response; a
 catalog served unadvertised), `models-duplicate-id`
-(`duplicate_model_id`), `models-current-mismatch`
+(`duplicate_model_id`), `models-empty-id` (schema; a descriptor with
+`id: ""`, which T1's unconditional refusal would otherwise contradict), `models-current-mismatch`
 (`session_state_mismatch`; state reports one model, the catalog another),
 `models-current-not-listed` (`model_not_in_catalog`; state and the
 response agree on one model, the catalog lists only another),
