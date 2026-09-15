@@ -38,11 +38,17 @@ Its integration test builds `./cmd/oap` and boots the memory adapter; set `OAP_G
 
 ### Opt-in real-process gates
 
-Every `adapter/*/process_integration_test.go` (and `server_integration_test.go` for OpenCode) is skipped unless an `OAP_<HARNESS>_SMOKE=1` or `OAP_<HARNESS>_INTEGRATION=1` variable is set together with an absolute `OAP_<HARNESS>_BIN` (plus `_ROOT` for Hermes, optional `_SHA256`/`_COMMIT` for provenance). The README's "Real-process gate coverage" table lists them. These never run in CI, never download anything, and never pass ambient credentials to a child. Ordinary tests use fake keys and loopback mocks from `internal/providertest`. Live provider tests (`provider/live_zai_test.go`) are gated the same way (`OAP_LIVE_ZAI=1` plus explicit authorization variables); credential presence alone must never enable network traffic.
+Every `adapter/*/process_integration_test.go` (and `server_integration_test.go` for OpenCode) is skipped unless an `OAP_<HARNESS>_SMOKE=1` or `OAP_<HARNESS>_INTEGRATION=1` variable is set together with an absolute `OAP_<HARNESS>_BIN`. Hermes also requires `OAP_HERMES_ROOT`. Codex and Makai also require `OAP_CODEX_COMMIT` / `OAP_MAKAI_COMMIT` set to exactly the pinned commit, or the gate fails before running. `OAP_<HARNESS>_SHA256` is optional and binds the exact artifact digest. The README's "Real-process gate coverage" table lists them. These never run in CI, never download anything, and never pass ambient credentials to a child. Ordinary tests use fake keys and loopback mocks from `internal/providertest`. Live provider tests (`provider/live_zai_test.go`) are gated the same way (`OAP_LIVE_ZAI=1` plus explicit authorization variables); credential presence alone must never enable network traffic.
 
 ### Regenerating a corpus expectation
 
-`adapter/<harness>/corpus_test.go` compares the reducer output against `expected-oap.json` in each case directory. An empty or `[]` expectation file is only rewritten when `OAP_UPDATE_<HARNESS>_CORPUS=1` is set (e.g. `OAP_UPDATE_HERMES_CORPUS=1`, `OAP_UPDATE_DSH_CORPUS=1` for DeepSeek); otherwise the test fails. Existing expectations are never overwritten silently, so to regenerate one, empty the file first.
+`adapter/<harness>/corpus_test.go` compares the reducer output against `expected-oap.json` in each case directory. An expectation is only rewritten when it is blank and `OAP_UPDATE_<HARNESS>_CORPUS=1` is set (`OAP_UPDATE_DSH_CORPUS` for DeepSeek); otherwise the test fails. Existing expectations are never overwritten silently, so to regenerate one, blank the file first. What counts as blank differs per adapter, because each corpus helper is hand-written:
+
+| Adapters | Blank means |
+| --- | --- |
+| Hermes, Claude | zero-byte file or `[]` |
+| DeepSeek, Pi, OpenCode | zero-byte file only (`[]` decodes to an empty expectation and fails the comparison) |
+| ACP, Codex, Makai | `[]` only (a zero-byte file fails to decode) |
 
 ## Architecture
 
@@ -70,7 +76,7 @@ These are what the validator enforces and what every adapter's reducer must prod
 - Exactly one terminal per run: `run.completed`, `run.failed`, or `run.cancelled`. A run may settle with `failed`/`cancelled` before `run.started` but never `completed`.
 - `run.cancel.response` is intent, not settlement; `run.cancelled` needs an accepted cancel exchange as evidence (`AssertProtocolValidWithCancellation`).
 - Resume (reattach), reconciliation (authoritative state), and replay (journal suffix from a cursor) are distinct. An expired cursor returns `*adapter.ReplayGap`, never fake continuity.
-- Every envelope repeats the `capability_revision` it was produced under. Capabilities report effective fidelity (`native`/`emulated`/`degraded`/`unavailable`), never an idealized harness.
+- `capability_revision` is schema-required only on `capabilities.response` and `capabilities.updated`. The validator adds: a request that supplies a revision must cite the current one (`protocol.initialize.request` and `capabilities.request` are exempt so discovery is never blocked) and its successful response must repeat it; and any envelope exercising an optional feature (non-`auto` delivery, tools, permissions, user input) must cite the active descriptor revision. As an implementation convention, not a validator rule, the adapters in this repo stamp the revision on every event they emit so consumers can bind an event to its descriptor snapshot. Capabilities report effective fidelity (`native`/`emulated`/`degraded`/`unavailable`), never an idealized harness.
 - Only the declared responder resolves an interaction, once. Answers are validated with `adapter.ValidateInputAnswer` before any native write.
 
 ### Anatomy of a harness adapter
