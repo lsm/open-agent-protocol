@@ -356,7 +356,7 @@ func (b blockedWriter) Write([]byte) (int, error) {
 
 // TestCancellationReturnsDespiteStoppedOutput drives the stalled-output
 // scenario end to end: with a one-slot queue and a writer parked inside
-// out.Write, the third response's send would park the serving loop forever;
+// out.Write, the third response's send would park its worker forever;
 // cancellation must still return Run inside the bounded drain window, with
 // the abandoned writer reported as ErrShutdownStalled.
 func TestCancellationReturnsDespiteStoppedOutput(t *testing.T) {
@@ -378,6 +378,7 @@ func TestCancellationReturnsDespiteStoppedOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	time.Sleep(50 * time.Millisecond) // let the writer park holding one response, the queue fill, and the third worker park on its send
 	cancel()
 	select {
 	case err := <-done:
@@ -587,7 +588,7 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
-	failed := make(chan struct{}, 1)
+	failed := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() { done <- writeLines(&buf, lines, stop, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`)
@@ -613,7 +614,7 @@ func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
-	failed := make(chan struct{}, 1)
+	failed := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() { done <- writeLines(failWriter{}, lines, stop, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
@@ -641,7 +642,7 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte)
 	stop := make(chan struct{})
-	failed := make(chan struct{}, 1)
+	failed := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() { done <- writeLines(&buf, lines, stop, failed) }()
 	close(stop)
@@ -762,6 +763,333 @@ func requireEqualLines(t *testing.T, want, got []string) {
 	}
 	if len(got) != len(want) {
 		t.Fatalf("%d lines, want %d", len(got), len(want))
+	}
+}
+
+// --- the Run lifecycle: bounded, disconnect-anchored shutdown ---
+
+// TestShutdownDoesNotWaitOnStalledOutput drives the r1 regression: the host
+// stops reading stdout, so the single writer parks inside out.Write with the
+// response line in hand, and the host then closes stdin. The final drain is
+// bounded by its window — Run returns ErrShutdownStalled instead of waiting
+// on the host's pipe forever — and the caller's sweep and exit still happen.
+func TestShutdownDoesNotWaitOnStalledOutput(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+
+	// One request whose response parks the writer inside out.Write.
+	if _, err := stdinWriter.Write([]byte("{\"id\":1,\"op\":\"adapters\"}\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stalled writer")
+	}
+}
+
+// TestShutdownBoundedWhileWorkStuck drives the r2 shape on this slice's op
+// surface: with the one-slot queue full and the writer parked, an admitted
+// worker's response send is stuck when the host closes stdin, and shutdown
+// starts from that host-end signal — the reader's side-channel report — not
+// from the stuck work finishing. Each teardown stage gets its window, Run
+// abandons what outlives it, and the process is never wedged behind the
+// stuck send. (The synchronous hung-adapter-open variant of this regression
+// rides the subscription slice, whose registration ops make the decode loop
+// itself stickable.)
+func TestShutdownBoundedWhileWorkStuck(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // let the third worker park on its send
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stuck in-flight work")
+	}
+}
+
+// TestShutdownWindowStartsAtDisconnect drives the codex-r3 anchor: the disconnect
+// arrives a full window after Run started, with the writer parked inside the
+// synchronous pipe write holding the response. The teardown window must be
+// created at that disconnect — not at Run's start, or a daemon that served
+// longer than the window would abandon the drain before it began — so the
+// parked write completes and is acknowledged inside one fresh window. (The
+// grace-stage end-to-end variant — a hung registration op completing inside
+// its fresh grace — rides the subscription slice with the ops that hang it.)
+func TestShutdownWindowStartsAtDisconnect(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{ShutdownTimeout: 250 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close(); stdoutWriter.Close(); stdoutReader.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+
+	// io.Pipe is synchronous: the writer parks inside out.Write holding the
+	// response until the host reads it, standing in for a slow consumer
+	// whose drain is held at the disconnect, without failing the write.
+	if _, err := stdinWriter.Write([]byte("{\"id\":1,\"op\":\"adapters\"}\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(600 * time.Millisecond) // idle past one whole window since Run started
+	disconnect := time.Now()
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err) // the disconnect, after the window has already elapsed once
+	}
+	time.Sleep(100 * time.Millisecond) // the write is still parked; the window must still be live
+	line, err := bufio.NewReader(stdoutReader).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read the parked line: %v", err)
+	}
+	if !strings.HasPrefix(line, `{"id":1,`) {
+		t.Fatalf("drained line %q is not the response for id 1", line)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want the drain to finish inside its fresh window", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the parked write completed")
+	}
+	if elapsed := time.Since(disconnect); elapsed > 240*time.Millisecond {
+		t.Fatalf("drain finished %v after the disconnect, outside the fresh window", elapsed)
+	}
+}
+
+// TestAdmitRefusesOnceShutdownBegins pins the admission gate's contract
+// directly: workers are registered only while serving lasts, and once
+// teardown begins the gate refuses, so no Add can race the teardown Wait.
+func TestAdmitRefusesOnceShutdownBegins(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !server.admit() {
+		t.Fatal("admit refused a worker before shutdown began")
+	}
+	server.mu.Lock()
+	server.shuttingDown = true
+	server.mu.Unlock()
+	if server.admit() {
+		t.Fatal("admit accepted a worker after shutdown began")
+	}
+	// Release the admitted worker exactly as a spawned worker's defer
+	// does — the WaitGroup Done and the in-flight slot are a pair: a
+	// direct admit() caller that releases only one leaks the other.
+	server.work.Done()
+	<-server.inFlight
+}
+
+// TestAdmissionGateClosesAtTeardown drives the hyperneo-r3 WaitGroup race: requests
+// stream in while the context is cancelled mid-stream, so the decode loop
+// can hold a frame at the exact moment teardown begins. The gate must
+// refuse that late dispatch rather than Add a worker the teardown Wait may
+// already have seen return — an ungated Add is a WaitGroup misuse the race
+// detector (this suite runs under -race in CI) reports or the runtime
+// panics on. The test drives many interleavings and requires only a clean,
+// bounded return from every round.
+func TestAdmissionGateClosesAtTeardown(t *testing.T) {
+	for round := 0; round < 8; round++ {
+		hub := newTestHub(t, 64, 64)
+		server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 50 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdinReader, stdinWriter := io.Pipe()
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		done := make(chan error, 1)
+		go func() { done <- server.Run(ctx, stdinReader, io.Discard) }()
+		streamed := make(chan struct{})
+		go func() {
+			defer close(streamed)
+			for id := 1; id <= 200; id++ {
+				if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+					return
+				}
+			}
+		}()
+		time.Sleep(time.Duration(round) * time.Millisecond) // cancel at varied points in the stream
+		cancel()
+		stdinWriter.Close() // unblock the stream writer's parked pipe send
+		<-streamed
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, ErrShutdownStalled) {
+				t.Fatalf("round %d: Run returned %v", round, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: shutdown did not return against the mid-stream cancellation", round)
+		}
+	}
+}
+
+// TestAdmissionBoundedWhenOutputStalls drives this gate's codex admission
+// finding: the host keeps writing stdin while draining nothing — the writer
+// parks inside out.Write, the one-slot queue fills, and the third worker
+// parks on its send holding the only in-flight slot. Admission must then
+// park the decode loop, which parks the reader, so the host's own writes
+// block — the write-queue bound is the backpressure onto the single
+// consumer of stdout — instead of the frontend admitting an unbounded
+// number of workers, each holding its request frame and marshaled
+// response. Releasing the output drains the bound and the parked writes
+// complete.
+func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	// The window must outlast the stall assertion below: the delivery
+	// stall bounds a host that overruns its draining for a whole window,
+	// and this host resumes draining as soon as the overrun is proven.
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close(); stdoutWriter.Close(); stdoutReader.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // the writer parks holding one response, the queue fills, the third worker parks on its send
+
+	// Keep writing past the bound. The frontend has stopped reading — the
+	// parked worker holds the only in-flight slot and the decode loop is
+	// parked in admission — so the host's own writes park behind it: the
+	// write-queue bound is the backpressure onto the single consumer of
+	// stdout, and the frontend admits no unbounded workers.
+	writes := make(chan error, 1)
+	go func() {
+		for id := 4; id <= 200; id++ {
+			if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+				writes <- err
+				return
+			}
+		}
+		writes <- nil
+	}()
+	select {
+	case err := <-writes:
+		t.Fatalf("the host streamed every request through a full admission bound: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// The host resumes draining: reading the synchronous pipe completes
+	// the parked write, the queue drains, the bound frees, and the parked
+	// writes complete — the stall was backpressure, not a wedge.
+	go func() {
+		reader := bufio.NewReader(stdoutReader)
+		for {
+			if _, err := reader.ReadString('\n'); err != nil {
+				return // the pipe closes with the test
+			}
+		}
+	}()
+	select {
+	case err := <-writes:
+		if err != nil {
+			t.Fatalf("releasing the output did not resume the stream: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the admission bound never freed after the output resumed")
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want a clean end after the stream completed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the stream completed")
+	}
+}
+
+// TestShutdownBoundedWhenHostOverrunsDraining drives this round's codex P1:
+// with the in-flight bound saturated behind a writer parked on a host that
+// stopped draining, the decode loop parks in admission and the reader parks
+// delivering the next frame — so a stdin closure lands unread behind the
+// host's own backlog and no shutdown signal would ever fire. The delivery
+// stall is that signal: an overrun the host lets outlive one window is the
+// host's end of the session, and Run returns ErrShutdownStalled bounded,
+// never hanging on the closure it cannot read.
+func TestShutdownBoundedWhenHostOverrunsDraining(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+
+	// Five requests through a one-slot bound: one response in the parked
+	// writer's hand, one queued, one worker parked on its send holding the
+	// slot, one frame parked in the loop's admission, and one frame parked
+	// in the reader's delivery — the overrun. The closure then lands
+	// unread behind it.
+	for id := 1; id <= 5; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run hung on a stdin closure stuck behind the host's own overrun")
 	}
 }
 
