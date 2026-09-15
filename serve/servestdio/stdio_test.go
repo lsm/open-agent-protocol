@@ -803,7 +803,11 @@ func TestAdmitRefusesOnceShutdownBegins(t *testing.T) {
 	if server.admit() {
 		t.Fatal("admit accepted a worker after shutdown began")
 	}
-	server.work.Done() // release the admitted worker
+	// Release the admitted worker exactly as a spawned worker's defer
+	// does — the WaitGroup Done and the in-flight slot are a pair: a
+	// direct admit() caller that releases only one leaks the other.
+	server.work.Done()
+	<-server.inFlight
 }
 
 // TestAdmissionGateClosesAtTeardown drives the hyperneo-r3 WaitGroup race: requests
@@ -862,7 +866,10 @@ func TestAdmissionGateClosesAtTeardown(t *testing.T) {
 // complete.
 func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
-	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	// The window must outlast the stall assertion below: the delivery
+	// stall bounds a host that overruns its draining for a whole window,
+	// and this host resumes draining as soon as the overrun is proven.
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -928,5 +935,49 @@ func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after the stream completed")
+	}
+}
+
+// TestShutdownBoundedWhenHostOverrunsDraining drives this round's codex P1:
+// with the in-flight bound saturated behind a writer parked on a host that
+// stopped draining, the decode loop parks in admission and the reader parks
+// delivering the next frame — so a stdin closure lands unread behind the
+// host's own backlog and no shutdown signal would ever fire. The delivery
+// stall is that signal: an overrun the host lets outlive one window is the
+// host's end of the session, and Run returns ErrShutdownStalled bounded,
+// never hanging on the closure it cannot read.
+func TestShutdownBoundedWhenHostOverrunsDraining(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+
+	// Five requests through a one-slot bound: one response in the parked
+	// writer's hand, one queued, one worker parked on its send holding the
+	// slot, one frame parked in the loop's admission, and one frame parked
+	// in the reader's delivery — the overrun. The closure then lands
+	// unread behind it.
+	for id := 1; id <= 5; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run hung on a stdin closure stuck behind the host's own overrun")
 	}
 }

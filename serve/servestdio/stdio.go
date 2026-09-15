@@ -178,9 +178,12 @@ var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame lim
 // the host ended the session and either the serving loop never finished —
 // a synchronous op that hung, a response send parked behind a stopped
 // consumer — or in-flight work or the final output drain never completed
-// because the host stopped reading stdout. The stalled stage is abandoned
-// rather than waited on, so the caller's bounded session sweep and the
-// process exit still happen.
+// because the host stopped reading stdout. A host that overruns its own
+// draining — frames the frontend cannot take because the writer is parked
+// on a consumer that stopped reading — ends the session the same way once
+// the overrun outlives its window. The stalled stage is abandoned rather
+// than waited on, so the caller's bounded session sweep and the process
+// exit still happen.
 var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")
 
 // Run serves requests from in until the host closes it (clean end), the
@@ -200,7 +203,12 @@ var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded w
 // Options.ShutdownTimeout bounds each stage independently. A stage that
 // outlives its window is abandoned and Run returns ErrShutdownStalled, so
 // the caller's bounded session sweep and the process exit still happen;
-// nothing ever waits indefinitely on the host's pipe or a stuck op. The
+// nothing ever waits indefinitely on the host's pipe or a stuck op. A host
+// that overruns its own draining is that host's end too: when the frontend
+// cannot take another frame — the in-flight bound saturated behind a writer
+// the host stopped draining — the overrun ends the session after one
+// window, so even a stdin closure stuck unread behind the host's own
+// backlog cannot park Run. The
 // frontend serves one session: teardown closes admission for good, so a
 // Server is not reusable across Run calls — embed one frontend per
 // session, as the CLI does per process.
@@ -227,7 +235,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// consume the final frame: shutdown must be bounded even then.
 	readerDone := make(chan error, 1)
 	frames := make(chan frameResult)
-	go readFrames(in, s.frameLimit, frames, readerDone)
+	go readFrames(in, s.frameLimit, frames, readerDone, s.shutdown)
 
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- s.decodeLoop(ctx, callerCtx, frames, lines, writerFailed) }()
@@ -249,10 +257,11 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}
 	var err error
+	var readerErr error
 	stuck := false
 	select {
 	case err = <-serveDone:
-	case <-readerDone:
+	case readerErr = <-readerDone:
 		if graceErr, finished := serveGrace(); finished {
 			err = graceErr
 		} else {
@@ -310,12 +319,22 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}
 	if (stuck || !drained) && err == nil {
-		// A stall is reported only when it is the session's own terminal
-		// condition: under an already-reported error — the malformed line,
-		// the read failure, the writer failure — joining a second error
-		// would break the one-bounded-diagnostic fail-closed contract, and
-		// the caller's sweep and exit happen regardless.
-		err = ErrShutdownStalled
+		if stuck && readerErr != nil && !errors.Is(readerErr, io.EOF) {
+			// The host's end of the session carried its own terminal
+			// condition — a framing defect, a read failure — and the
+			// abandoned loop lost its numbered translation of it: that
+			// condition, not the secondary stall, is the one bounded
+			// diagnostic the caller reports.
+			err = readerErr
+		} else {
+			// A stall is reported only when it is the session's own
+			// terminal condition: under an already-reported error — the
+			// malformed line, the read failure, the writer failure —
+			// joining a second error would break the one-bounded-diagnostic
+			// fail-closed contract, and the caller's sweep and exit happen
+			// regardless.
+			err = ErrShutdownStalled
+		}
 	}
 	return err
 }
@@ -334,10 +353,20 @@ type frameResult struct {
 // framing defect, or the input's own read failure — is also reported on
 // done, buffered and before the final frame is delivered, because the
 // consumer may be stuck inside a synchronous op and never take that frame;
-// shutdown stays bounded even then. Neither channel is ever closed: a reader
-// abandoned by a context end parks on its send and is reclaimed by process
-// exit, the same discipline as the writer's channel.
-func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- error) {
+// shutdown stays bounded even then.
+//
+// A non-terminal delivery that outlives the stall window reports
+// ErrShutdownStalled on done and abandons the stream: the consumer is not
+// taking frames — a saturated in-flight bound behind a writer parked on a
+// consumer the host stopped draining — and past one window that is the
+// host's end of the session, exactly like closing stdin, so shutdown stays
+// bounded even when the closure itself is stuck unread behind the backlog
+// the host created. A draining consumer, however slow, never trips this:
+// each delivered line frees the writer, the bound, and the delivery in
+// turn. Neither channel is ever closed: a reader abandoned by the window or
+// by a context end parks on its send and is reclaimed by process exit, the
+// same discipline as the writer's channel.
+func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- error, stall time.Duration) {
 	reader := bufio.NewReader(in)
 	for {
 		frame, err := readFrame(reader, limit)
@@ -346,7 +375,12 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 			frames <- frameResult{frame: frame, err: err}
 			return
 		}
-		frames <- frameResult{frame: frame}
+		select {
+		case frames <- frameResult{frame: frame}:
+		case <-time.After(stall):
+			done <- ErrShutdownStalled
+			return
+		}
 	}
 }
 
@@ -365,7 +399,10 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // line, not only between lines — an embedding host that cancels without also
 // closing stdin still gets Run back — and writerFailed carries the writer's
 // failure the same way, so a host that stopped reading stdout ends serving
-// instead of admitting work whose responses are silently discarded. The
+// instead of admitting work whose responses are silently discarded; the
+// loop returns that failure rather than consuming it, so it survives even
+// when teardown's work wait later times out on a worker that ignores the
+// cancellation. The
 // loop-top pre-check narrows, but cannot eliminate — a select chooses
 // uniformly among ready cases, so a frame arriving with the cancellation can
 // still be taken — the dispatch of frames under an already-dead context; the
@@ -379,15 +416,15 @@ func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameR
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-writerFailed:
-			return nil
+		case writeErr := <-writerFailed:
+			return writeErr
 		default:
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-writerFailed:
-			return nil
+		case writeErr := <-writerFailed:
+			return writeErr
 		case result := <-frames:
 			number++
 			if result.err != nil {
