@@ -333,10 +333,11 @@ type requestLine struct {
 }
 
 // decodeRequest parses one frame into a request line. Anything that is not a
-// JSON object carrying exactly the protocol's fields, each key once, with a
-// numeric id — invalid JSON, a non-object, an unknown field, a repeated key,
-// a mistyped or missing id — is a framing defect the daemon fails closed on:
-// the host speaks a protocol this frontend cannot correlate.
+// JSON object carrying exactly the protocol's fields, each key once and
+// exactly spelled, with a numeric id — invalid JSON, a non-object, an
+// unknown field, a case-aliased or repeated key, a mistyped or missing id —
+// is a framing defect the daemon fails closed on: the host speaks a protocol
+// this frontend cannot correlate.
 func decodeRequest(frame []byte) (requestLine, error) {
 	var request requestLine
 	decoder := json.NewDecoder(bytes.NewReader(frame))
@@ -365,10 +366,20 @@ func decodeRequest(frame []byte) (requestLine, error) {
 	return request, nil
 }
 
+// canonicalKeys is the exact spelling of every field a request line may
+// carry. encoding/json matches struct fields case-insensitively even with
+// DisallowUnknownFields, so a case-aliased key would both last-win a
+// canonical one and record presence under a name the per-op shape check
+// never reads; scanKeys therefore accepts only these spellings, byte-exact.
+var canonicalKeys = map[string]bool{
+	"id": true, "op": true, "adapter": true, "session_id": true, "after": true, "request": true,
+}
+
 // scanKeys walks the raw request object's keys, reporting each key's
-// presence and refusing repeats: Go's decoder keeps the last value of a
-// repeated key, which would make the executed request host-parser-dependent,
-// so a duplicate key is a framing defect rather than a silent last-wins.
+// presence and refusing non-canonical spellings and repeats: Go's decoder
+// keeps the last value of a repeated key, which would make the executed
+// request host-parser-dependent, so a duplicate key is a framing defect
+// rather than a silent last-wins.
 func scanKeys(frame []byte) (map[string]bool, error) {
 	decoder := json.NewDecoder(bytes.NewReader(frame))
 	open, err := decoder.Token()
@@ -387,6 +398,9 @@ func scanKeys(frame []byte) (map[string]bool, error) {
 		key, isString := keyToken.(string)
 		if !isString {
 			return nil, errors.New("request key is not a string")
+		}
+		if !canonicalKeys[key] {
+			return nil, fmt.Errorf("field %q must use its exact protocol spelling", key)
 		}
 		if present[key] {
 			return nil, fmt.Errorf("repeated key %q", key)

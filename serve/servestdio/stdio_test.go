@@ -256,6 +256,8 @@ func TestMalformedLinesFailClosed(t *testing.T) {
 		{name: "trailing object", line: `{"id":2,"op":"adapters"} {"id":3}`},
 		{name: "trailing closer", line: `{"id":2,"op":"adapters"}}`},
 		{name: "duplicate key", line: `{"id":1,"id":2,"op":"adapters"}`},
+		{name: "case-aliased id", line: `{"id":1,"ID":2,"op":"adapters"}`},
+		{name: "case-aliased param", line: `{"id":1,"op":"adapters","Adapter":"ignored"}`},
 		{name: "empty line", line: ""},
 		{name: "carriage return", line: "{\"id\":2,\"op\":\"adapters\"}\r"},
 		{name: "invalid utf8", line: "{\"id\":2,\"op\":\"\xff\"}"},
