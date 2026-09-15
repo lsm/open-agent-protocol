@@ -1477,18 +1477,43 @@ No new envelope types. Additive fields:
   changes meaning. When present it must list the tracked nonterminal runs
   in admission
   order with consistent `queue_position`; `active_run_id` must be the
-  started run; otherwise `session_state_mismatch`. One reconciliation
-  follows from the delivery rule: a queued run that settles before
-  promotion now publishes its terminal at once, so a snapshot that omits
-  a queued run is checked against that terminal rather than against a
-  timestamp: the omission is conforming when the run's pre-start terminal
-  precedes the snapshot in the trace, and `session_state_mismatch` when
-  it does not, since the snapshot dropped a run still reserved. Ordering
-  is read from the trace, which is total, rather than from
+  started run; otherwise `session_state_mismatch`. Membership needs a
+  boundary of its own, and it has to be session-level: the per-entry
+  markers above describe an entry, and the hard case is a run with no
+  entry at all. A snapshot can legitimately drop a queued run it settled
+  before capture whose terminal is drained only after the state response,
+  and can legitimately omit one admitted after capture whose admission
+  reaches the trace first — in both the trace at response arrival
+  disagrees with an accurate read. So `session.state` gains `as_of`,
+  `{ "submit_request"?: envelope id, "settled"?: [{ "run_id",
+  "sequence" }] }`: the last submit request on the session the snapshot
+  reflects, and the runs it has already removed with the sequence of each
+  one's terminal. Both are facts the adapter holds at capture — the
+  request id comes in with the operation, and the terminal is one it
+  emitted itself — which is what the response-envelope marker of the
+  previous round was not.
+  Membership is then judged against `as_of` rather than the trace's
+  current state: a run whose admitting submit request follows
+  `as_of.submit_request` may be absent, a run named in `as_of.settled`
+  may be absent, and every other tracked nonterminal run must be listed.
+  A `settled` entry may name a terminal the trace has not reached, and is
+  held and reconciled when it arrives; one whose named terminal never
+  arrives, or arrives at another sequence, or belongs to a run that
+  promoted and started, is `session_state_mismatch` at the run's terminal
+  or the end of the trace, so a snapshot cannot drop a live reservation
+  by declaring it settled. Where `as_of` is absent the snapshot claims no
+  knowledge the trace lacks and is judged against the trace as it stands,
+  which is the rule that applied before. Ordering throughout
+  is read from the trace and from stated positions, never from
   `updated_at_ms` and `timestamp_ms`, which are optional and can tie
   inside one millisecond — two events stamped the same would have let a
   premature drop pass. No run is settled-pending-delivery any more, and a
-  started run's terminal was never held in any case.
+  started run's terminal was never held in any case. Fixtures
+  `queue-state-omits-settled-before-terminal` (positive; a snapshot
+  dropping a queued run it settled at capture, naming it in
+  `as_of.settled`, with the terminal published after the state response)
+  and `queue-state-false-settled-claim` (`session_state_mismatch`; an
+  `as_of.settled` entry for a run that afterwards promotes and starts).
 
 ### Reference adapter
 
