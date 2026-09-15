@@ -609,9 +609,10 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
-	failed := make(chan error, 1)
+	fail, end := newTerminal(), newTerminal()
+	probe := &writerProbe{}
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, failed) }()
+	go func() { done <- writeLines(&buf, lines, stop, fail, end, probe) }()
 	lines <- []byte(`{"id":1,"ok":true}`)
 	lines <- []byte(`{"id":2,"ok":true}`)
 	close(stop)
@@ -621,6 +622,11 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	if want := "{\"id\":1,\"ok\":true}\n{\"id\":2,\"ok\":true}\n"; buf.String() != want {
 		t.Fatalf("writer drained %q, want %q", buf.String(), want)
 	}
+	select {
+	case <-fail.ready():
+		t.Fatal("the writer reported a failure on a clean drain")
+	default:
+	}
 }
 
 // failWriter refuses every write, standing in for a host that closed stdout.
@@ -629,25 +635,31 @@ type failWriter struct{}
 func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 // TestWriterRemembersFailureAndKeepsDraining pins the failure contract: the
-// first write failure is remembered and returned, while the drain keeps
-// consuming queued lines so a producer blocked on the channel hands off
-// instead of deadlocking.
+// first write failure is latched on the fail cell and returned, while the
+// drain keeps consuming queued lines so a producer blocked on the channel
+// hands off instead of deadlocking — and the fail cell is a broadcast, so
+// the failure is observable by any number of readers, none of whom
+// consumes it.
 func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
-	failed := make(chan error, 1)
+	fail, end := newTerminal(), newTerminal()
+	probe := &writerProbe{}
 	done := make(chan error, 1)
-	go func() { done <- writeLines(failWriter{}, lines, stop, failed) }()
+	go func() { done <- writeLines(failWriter{}, lines, stop, fail, end, probe) }()
 	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
 	lines <- []byte(`{"id":2,"ok":true}`) // dropped, but still consumed
 	close(stop)
 	if err := <-done; !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("writeLines returned %v, want the remembered write failure", err)
 	}
-	select {
-	case <-failed:
-	default:
-		t.Fatal("the write failure was not signalled")
+	// Two readers, both served the same failure — the broadcast-latch
+	// property the old one-slot channel broke.
+	if err := fail.outcome(); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("first fail-cell read got %v, want the write failure", err)
+	}
+	if err := fail.outcome(); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("second fail-cell read got %v, want the same failure again", err)
 	}
 	select {
 	case line := <-lines:
@@ -663,9 +675,10 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte)
 	stop := make(chan struct{})
-	failed := make(chan error, 1)
+	fail, end := newTerminal(), newTerminal()
+	probe := &writerProbe{}
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, failed) }()
+	go func() { done <- writeLines(&buf, lines, stop, fail, end, probe) }()
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatalf("writeLines returned %v", err)
@@ -998,9 +1011,11 @@ func TestAdmissionGateClosesAtTeardown(t *testing.T) {
 // complete.
 func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
-	// The window must outlast the stall assertion below: the delivery
-	// stall bounds a host that overruns its draining for a whole window,
-	// and this host resumes draining as soon as the overrun is proven.
+	// Nothing mid-flight times out under the supervision owner (INV-A: no
+	// timer exists in serving), so a host that overruns its draining but
+	// then resumes gets its whole stream served — this test's stall
+	// assertions are backpressure, never a kill, and the generous window
+	// only keeps the frontend alive across them.
 	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -1070,14 +1085,16 @@ func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 	}
 }
 
-// TestShutdownBoundedWhenHostOverrunsDraining drives this round's codex P1:
+// TestShutdownBoundedWhenHostOverrunsDraining drives the overrun shape:
 // with the in-flight bound saturated behind a writer parked on a host that
 // stopped draining, the decode loop parks in admission and the reader parks
 // delivering the next frame — so a stdin closure lands unread behind the
-// host's own backlog and no shutdown signal would ever fire. The delivery
-// stall is that signal: an overrun the host lets outlive one window is the
-// host's end of the session, and Run returns ErrShutdownStalled bounded,
-// never hanging on the closure it cannot read.
+// host's own backlog. The reader's custody cell is what makes the closure
+// observable anyway: the terminal is reported before the final frame is
+// delivered, parked or not, so the owner enters hostEnded without needing
+// the delivery — the delivery-stall window this replaces was the round-4
+// false kill — and Run returns ErrShutdownStalled bounded, never hanging
+// on the closure it cannot read.
 func TestShutdownBoundedWhenHostOverrunsDraining(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
