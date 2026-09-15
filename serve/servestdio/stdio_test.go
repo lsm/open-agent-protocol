@@ -375,6 +375,7 @@ func TestCancellationReturnsDespiteStoppedOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	time.Sleep(50 * time.Millisecond) // let the writer park holding one response, the queue fill, and the third worker park on its send
 	cancel()
 	select {
 	case err := <-done:
@@ -584,7 +585,7 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
-	failed := make(chan struct{}, 1)
+	failed := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() { done <- writeLines(&buf, lines, stop, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`)
@@ -610,7 +611,7 @@ func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
-	failed := make(chan struct{}, 1)
+	failed := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() { done <- writeLines(failWriter{}, lines, stop, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
@@ -638,7 +639,7 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte)
 	stop := make(chan struct{})
-	failed := make(chan struct{}, 1)
+	failed := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() { done <- writeLines(&buf, lines, stop, failed) }()
 	close(stop)
@@ -865,23 +866,23 @@ func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) }) // let the stalled writer finish after the assertion
 	stdinReader, stdinWriter := io.Pipe()
-	t.Cleanup(func() { stdinWriter.Close() })
+	stdoutReader, stdoutWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close(); stdoutWriter.Close(); stdoutReader.Close() })
 	done := make(chan error, 1)
-	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
 	for id := 1; id <= 3; id++ {
 		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(50 * time.Millisecond) // the bound is now held by the parked third worker
+	time.Sleep(50 * time.Millisecond) // the writer parks holding one response, the queue fills, the third worker parks on its send
 
-	// Keep writing past the bound. The frontend has stopped reading, so
-	// after the reader's buffered span is absorbed the host's own writes
-	// park — 200 requests well past that span — and the stream cannot
-	// complete while the output stays stalled.
+	// Keep writing past the bound. The frontend has stopped reading — the
+	// parked worker holds the only in-flight slot and the decode loop is
+	// parked in admission — so the host's own writes park behind it: the
+	// write-queue bound is the backpressure onto the single consumer of
+	// stdout, and the frontend admits no unbounded workers.
 	writes := make(chan error, 1)
 	go func() {
 		for id := 4; id <= 200; id++ {
@@ -898,11 +899,17 @@ func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	// The host resumes draining: the writer consumes the queue, the parked
-	// send delivers, the bound frees, and the parked writes complete. The
-	// released writer fails its held write, so the stream ends with that
-	// failure once everything has been handed off.
-	close(release)
+	// The host resumes draining: reading the synchronous pipe completes
+	// the parked write, the queue drains, the bound frees, and the parked
+	// writes complete — the stall was backpressure, not a wedge.
+	go func() {
+		reader := bufio.NewReader(stdoutReader)
+		for {
+			if _, err := reader.ReadString('\n'); err != nil {
+				return // the pipe closes with the test
+			}
+		}
+	}()
 	select {
 	case err := <-writes:
 		if err != nil {
@@ -916,8 +923,8 @@ func TestAdmissionBoundedWhenOutputStalls(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if !errors.Is(err, io.ErrClosedPipe) {
-			t.Fatalf("Run returned %v, want the released writer's failure", err)
+		if err != nil {
+			t.Fatalf("Run returned %v, want a clean end after the stream completed", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after the stream completed")

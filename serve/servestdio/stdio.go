@@ -218,7 +218,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	lines := make(chan []byte, s.writeQueue)
 	stop := make(chan struct{})
-	writerFailed := make(chan struct{}, 1)
+	writerFailed := make(chan error, 1)
 	writerDone := make(chan error, 1)
 	go func() { writerDone <- writeLines(out, lines, stop, writerFailed) }()
 
@@ -296,6 +296,18 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		case <-drainWindow.C:
 		}
 	case <-drainWindow.C:
+		// Work never settled inside the window. The writer may have
+		// failed while a stuck worker ignored the teardown — its writer's
+		// done channel is never read on this path — and that failure is
+		// the session's own terminal condition, so it outranks the stall
+		// report; the stalled worker stays abandoned either way.
+		select {
+		case writeErr := <-writerFailed:
+			if err == nil {
+				err = writeErr
+			}
+		default:
+		}
 	}
 	if (stuck || !drained) && err == nil {
 		// A stall is reported only when it is the session's own terminal
@@ -361,7 +373,7 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // defect — anything readFrame or decodeRequest refuses — fails the frontend
 // closed as *MalformedLineError; op-level refusals are responses the host
 // can correct, and the loop reads on past them.
-func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan struct{}) error {
+func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan error) error {
 	number := 0
 	for {
 		select {
@@ -412,11 +424,12 @@ func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameR
 // ends when stopped, draining the lines already queued; a write failure (the
 // host closed stdout) is remembered while the drain continues, so producers
 // blocked on the channel still hand off instead of deadlocking, and is
-// signalled on failed exactly once so serving stops admitting work behind a
-// dead output. The channel is never closed: an abandoned producer parks on
-// its send and is reclaimed by process exit rather than panicking on a
-// closed channel.
-func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, failed chan<- struct{}) error {
+// signalled on failed — which carries the failure itself, so the teardown
+// can prefer the output's error over the stall report when work never
+// settles — exactly once, on the first failure. The channel is never
+// closed: an abandoned producer parks on its send and is reclaimed by
+// process exit rather than panicking on a closed channel.
+func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, failed chan<- error) error {
 	var failure error
 	write := func(line []byte) {
 		if failure != nil {
@@ -424,7 +437,7 @@ func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, failed
 		}
 		if _, err := out.Write(append(line, '\n')); err != nil {
 			failure = err
-			failed <- struct{}{} // buffered one-slot signal, sent only on the first failure
+			failed <- failure // buffered one-slot signal, sent only on the first failure
 		}
 	}
 	for {
