@@ -1202,7 +1202,23 @@ No new envelope types. Additive fields:
   adapter still owes `run_active` for the mutation constraint even though
   the bound has cleared. Diagnosing it would convict a conforming
   refusal, so the stale-limit check runs only when the response's code
-  is explained by no surviving condition. Fixture
+  is explained by no surviving condition. In-flight reservations are
+  such a condition. Concurrent submits contend for the last slot, and the
+  one that takes it may still be awaiting its own response when a later
+  request is correctly refused `run_active`: the trace has the winner's
+  request but not yet its admission, so counting only admitted runs sees
+  a free slot that is not free. The validator therefore counts every
+  unanswered `session.message.submit.request` on the session that could
+  still be admitted into the set alongside the admitted runs, and the
+  stale-limit check fires only when the bound is unreached even on that
+  reckoning. The count is deliberately pessimistic — an outstanding
+  request that is ultimately refused will have inflated it — because the
+  cost of the two errors is not symmetric: a missed diagnosis leaves one
+  stale refusal unflagged, while a false one convicts an adapter that
+  did exactly the right thing under contention it could see and the
+  validator could not. Fixture `queue-limit-concurrent-reservation`
+  (positive; two submits contend for the last slot, the loser refused
+  `run_active` before the winner's admission reaches the trace). Fixture
   `queue-limit-cleared-mutation-still-busy` (positive; the bound clears
   in flight, a started run remains, and the `session_mutation` submit is
   still refused `run_active`). Other codes on that response stay
@@ -2683,10 +2699,19 @@ The validator keeps every settlement it observed and requires the
 snapshot's `entries` to match that history — each observed settlement
 present with the `run_id`, `submission_id`, `request_id`, and
 `applied`/`dropped` outcome the trace recorded, no entry the trace never
-settled, and omissions only where eviction can explain them. A bounded
+settled, and omissions only where eviction can explain them. The
+settlements a snapshot is held to are those of its own capture point,
+not of its arrival: an adapter can capture state before a settlement
+that enters the trace before the state response is serialized, and
+demanding the snapshot already contain it would diagnose a valid stale
+read. The window is bounded on both sides and needs no new field, since
+the request and the response bracket it — a snapshot must carry every
+settlement observed before its `session.state.request` and may carry any
+that landed while the request was in flight, either being conforming for
+those. Beyond that window the shape is exact. A bounded
 history drops its oldest entries, so what survives is a contiguous
-*suffix* of the session's settlements: `entries` must equal the last N
-settlements the validator observed, in that order, for some N. That is
+*suffix* of the settlements in scope: `entries` must equal the last N of
+them, in that order, for some N. That is
 the whole omission rule, and it needs no timestamp — an entry missing
 from the middle, or an older entry retained while a newer one is gone,
 is not something eviction can produce. `complete` must then be true
