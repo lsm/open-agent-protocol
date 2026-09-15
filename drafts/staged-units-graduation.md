@@ -193,7 +193,7 @@ No new envelope types. Changes to
   `controls-empty-model-id-unadvertised`, whose expectation is the
   capability gate's own refusal, and `controls-empty-model-id-admitted`,
   which expects `model_not_found` and needs no catalog to state it; T5a
-  carries `models-miss-uncatalogued-id` for the non-empty miss and the
+  carries `models-select-unlisted` for the non-empty miss and the
   bookkeeping behind it. A
   unit's fixtures must produce exactly the codes it introduces, so a
   fixture cannot be listed before the diagnostic it asserts.
@@ -1036,10 +1036,9 @@ pi follows with `get_available_models`; Claude at `degraded` from the
 
 ### Fixtures
 
-Negative, carried from T1's empty-control rule because its diagnostic
-lands here: `controls-empty-model-id-admitted` (`model_not_in_catalog`; a
-present-but-empty `model_id` admitted on an endpoint advertising
-selection).
+T1's empty-control rule keeps both its fixtures, because emptiness is
+decided without a catalog; what lands here is only the catalogued miss
+for non-empty ids, `models-select-unlisted` below.
 
 Positive: `models-list-then-select` (catalog, then a submit selecting a
 listed id), `models-unadvertised-rejected` (`error.response` with
@@ -2331,8 +2330,12 @@ subscription that supplied it, or to the connector) to route each
 that provisioned the tool; a client resolving a connector-backed call is
 refused at the hub with `wrong_interaction_responder`, exactly as the
 adapter would refuse a foreign responder. The connector
-serves adapters with no native MCP support (DeepSeek, pi, memory) and the
-HyperNeo-style embedding; it adds no wire vocabulary.
+serves adapters that lack a native MCP client but do carry the three
+requirements above — the reference `memory` adapter and the
+HyperNeo-style embedding — and not the ones that lack the requirements
+themselves: DeepSeek and pi refuse `action.tools.provide` for the reasons
+given above, and hosting the MCP client elsewhere does not change that.
+It adds no wire vocabulary.
 
 ### Validator
 
