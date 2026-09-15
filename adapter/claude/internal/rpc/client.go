@@ -245,7 +245,25 @@ func (client *Client) Call(ctx context.Context, request any, result any) error {
 		case outcome := <-response:
 			return decodeControlResult(id, outcome, result)
 		default:
-			return client.closeError()
+		}
+		// The transport is retiring, but a response the reader parsed off the
+		// ordered stream before the death must still win over it. Settle
+		// against the reader's final drain rather than against the close
+		// itself: shutdown leaves the pending id in place, so either the
+		// reader delivers the already-decoded frame or the drain fails it.
+		select {
+		case outcome := <-response:
+			return decodeControlResult(id, outcome, result)
+		case <-client.readDone:
+			select {
+			case outcome := <-response:
+				return decodeControlResult(id, outcome, result)
+			default:
+				return client.closeError()
+			}
+		case <-ctx.Done():
+			client.removePending(id)
+			return ctx.Err()
 		}
 	}
 }
@@ -315,8 +333,12 @@ func (client *Client) route(message Message) bool {
 		client.mu.Lock()
 		_, pending := client.pending[message.Response.RequestID]
 		client.mu.Unlock()
-		if pending && !client.barrier() {
-			return true
+		if pending {
+			// When the transport retires before the barrier is acknowledged,
+			// the frame was still decoded from the wire — deliver the
+			// evidence rather than dropping it; there are no later frames to
+			// order against.
+			client.barrier()
 		}
 		outcome := controlResult{response: cloneRaw(message.Response.Response)}
 		if !message.Response.Success {
@@ -504,13 +526,23 @@ func (client *Client) shutdown(reason error) {
 	}
 	client.closed = true
 	client.err = reason
-	pending := client.pending
-	client.pending = make(map[string]chan controlResult)
 	close(client.done)
 	client.mu.Unlock()
-	for _, response := range pending {
-		response <- controlResult{err: reason}
-	}
+	// The pending map is deliberately left in place. A response parsed off the
+	// ordered stream before the transport died must win over the death, so the
+	// reader's final drain is what settles the outstanding calls: every frame
+	// the reader already decoded is delivered first, and only the ids still
+	// pending once the reader has stopped fail with reason.
+	go func() {
+		<-client.readDone
+		client.mu.Lock()
+		pending := client.pending
+		client.pending = make(map[string]chan controlResult)
+		client.mu.Unlock()
+		for _, response := range pending {
+			response <- controlResult{err: reason}
+		}
+	}()
 }
 
 func decodeControlResult(id string, outcome controlResult, result any) error {

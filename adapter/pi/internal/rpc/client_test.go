@@ -316,3 +316,52 @@ func TestGeneratedIDsAreDistinct(t *testing.T) {
 		}
 	}
 }
+
+// Regression: a response parsed off the ordered stream before the transport
+// died must win over the death. The reader parked in the response barrier used
+// to abandon the already-decoded frame when the client retired, and shutdown
+// retired the pending map underneath it, so the call returned the shutdown
+// reason instead of the reply the gateway had already written.
+func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T) {
+	client, reader, writer := clientPipes(t, 8)
+	inbound := client.Inbound()
+	result := make(chan error, 1)
+	go func() {
+		result <- client.Call(context.Background(), native.Command{Type: native.CommandGetState}, nil)
+	}()
+	command := readCommand(t, reader)
+	// Push a second frame through the same serialized writer and drain it. The
+	// writer hands back each frame's result before it accepts the next, so once
+	// this frame is on the wire the call is certainly parked on its response
+	// rather than still inside a write that the close would fail.
+	synced := make(chan error, 1)
+	go func() {
+		synced <- client.Respond(context.Background(), native.ExtensionUIResponse{Type: "extension_ui_response", ID: "sync", Cancelled: true})
+	}()
+	if _, err := reader.ReadBytes('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-synced; err != nil {
+		t.Fatal(err)
+	}
+	writeLine(t, writer, `{"id":"`+command.ID+`","type":"response","command":"get_state","success":true}`)
+	// Take the barrier without acknowledging it: the reader is now parked
+	// holding a fully decoded response for this command.
+	barrier := <-inbound
+	if barrier.Barrier == nil {
+		t.Fatalf("expected the response barrier first, got %+v", barrier)
+	}
+	// The transport dies underneath the parked reader.
+	_ = client.Close()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("the parked response lost to the transport's death: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("call never settled")
+	}
+	if err := client.Err(); errors.Is(err, ErrResponseNotFound) {
+		t.Fatalf("a concurrently retired id was reported as unmatched: %v", err)
+	}
+}

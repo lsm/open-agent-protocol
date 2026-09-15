@@ -308,7 +308,25 @@ func (client *Client) callID(ctx context.Context, id RequestID, method string, p
 		case outcome := <-response:
 			return decodeCallResult(method, outcome, result)
 		default:
-			return client.closeError()
+		}
+		// The transport is retiring, but a response the reader parsed off the
+		// ordered stream before the death must still win over it. Settle
+		// against the reader's final drain rather than against the close
+		// itself: shutdown leaves the pending id in place, so either the
+		// reader delivers the already-decoded frame or the drain fails it.
+		select {
+		case outcome := <-response:
+			return decodeCallResult(method, outcome, result)
+		case <-client.readDone:
+			select {
+			case outcome := <-response:
+				return decodeCallResult(method, outcome, result)
+			default:
+				return client.closeError()
+			}
+		case <-ctx.Done():
+			client.removePending(id)
+			return ctx.Err()
 		}
 	}
 }
@@ -359,13 +377,18 @@ func (client *Client) route(message Message) bool {
 	mode := client.routeMode.Load()
 	switch message.Kind {
 	case MessageResponse:
-		if mode == 2 && !client.barrier() {
-			return true
+		if mode == 2 {
+			// The barrier orders the response behind wire-earlier
+			// observations. When the transport retires before the barrier is
+			// acknowledged, the frame was still decoded from the wire —
+			// deliver the evidence rather than dropping it; there are no
+			// later frames to order against.
+			client.barrier()
 		}
 		return !client.deliver(message.ID, callResult{result: cloneRaw(message.Result)}) && client.unmatched(message.ID)
 	case MessageError:
-		if mode == 2 && !client.barrier() {
-			return true
+		if mode == 2 {
+			client.barrier()
 		}
 		return !client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}}) && client.unmatched(message.ID)
 	case MessageRequest:
@@ -454,6 +477,16 @@ func (client *Client) barrier() bool {
 }
 
 func (client *Client) unmatched(id RequestID) bool {
+	client.mu.Lock()
+	closed := client.closed
+	client.mu.Unlock()
+	if closed {
+		// A concurrent shutdown, or a call that gave up on its context,
+		// retired the id. The response is correlated evidence that lost the
+		// race with the transport's death, not an unmatched correlation, so
+		// it must not raise ErrResponseNotFound over the real cause.
+		return true
+	}
 	err := fmt.Errorf("%w: %s", ErrResponseNotFound, id)
 	if client.strictResponseIDs {
 		client.closeWith(err)
@@ -578,13 +611,23 @@ func (client *Client) shutdown(reason error) {
 	}
 	client.closed = true
 	client.err = reason
-	pending := client.pending
-	client.pending = make(map[RequestID]chan callResult)
 	close(client.done)
 	client.mu.Unlock()
-	for _, response := range pending {
-		response <- callResult{err: reason}
-	}
+	// The pending map is deliberately left in place. A response parsed off the
+	// ordered stream before the transport died must win over the death, so the
+	// reader's final drain is what settles the outstanding calls: every frame
+	// the reader already decoded is delivered first, and only the ids still
+	// pending once the reader has stopped fail with reason.
+	go func() {
+		<-client.readDone
+		client.mu.Lock()
+		pending := client.pending
+		client.pending = make(map[RequestID]chan callResult)
+		client.mu.Unlock()
+		for _, response := range pending {
+			response <- callResult{err: reason}
+		}
+	}()
 }
 
 func decodeCallResult(method string, outcome callResult, result any) error {

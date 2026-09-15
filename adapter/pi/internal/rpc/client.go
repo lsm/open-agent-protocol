@@ -136,8 +136,7 @@ func (c *Client) Call(ctx context.Context, command native.Command, result any) e
 		c.removePending(command.ID)
 		return err
 	}
-	select {
-	case outcome := <-response:
+	settle := func(outcome callResult) error {
 		if outcome.err != nil {
 			return outcome.err
 		}
@@ -151,6 +150,10 @@ func (c *Client) Call(ctx context.Context, command native.Command, result any) e
 			return fmt.Errorf("decode %s response: %w", command.Type, err)
 		}
 		return nil
+	}
+	select {
+	case outcome := <-response:
+		return settle(outcome)
 	case <-ctx.Done():
 		c.removePending(command.ID)
 		c.closeWith(ctx.Err())
@@ -158,9 +161,27 @@ func (c *Client) Call(ctx context.Context, command native.Command, result any) e
 	case <-c.done:
 		select {
 		case outcome := <-response:
-			return outcome.err
+			return settle(outcome)
 		default:
-			return c.closeError()
+		}
+		// The transport is retiring, but a response the reader parsed off the
+		// ordered stream before the death must still win over it. Settle
+		// against the reader's final drain rather than against the close
+		// itself: shutdown leaves the pending id in place, so either the
+		// reader delivers the already-decoded frame or the drain fails it.
+		select {
+		case outcome := <-response:
+			return settle(outcome)
+		case <-c.readDone:
+			select {
+			case outcome := <-response:
+				return settle(outcome)
+			default:
+				return c.closeError()
+			}
+		case <-ctx.Done():
+			c.removePending(command.ID)
+			return ctx.Err()
 		}
 	}
 }
@@ -185,13 +206,23 @@ func (c *Client) shutdown(reason error) {
 	}
 	c.closed = true
 	c.err = reason
-	pending := c.pending
-	c.pending = map[string]pendingCall{}
 	close(c.done)
 	c.mu.Unlock()
-	for _, call := range pending {
-		call.result <- callResult{err: reason}
-	}
+	// The pending map is deliberately left in place. A response parsed off the
+	// ordered stream before the transport died must win over the death, so the
+	// reader's final drain is what settles the outstanding calls: every frame
+	// the reader already decoded is delivered first, and only the ids still
+	// pending once the reader has stopped fail with reason.
+	go func() {
+		<-c.readDone
+		c.mu.Lock()
+		pending := c.pending
+		c.pending = map[string]pendingCall{}
+		c.mu.Unlock()
+		for _, call := range pending {
+			call.result <- callResult{err: reason}
+		}
+	}()
 }
 func (c *Client) closeError() error { return firstError(c.Err(), ErrClosed) }
 func firstError(a, b error) error {
@@ -232,8 +263,17 @@ func (c *Client) route(frame Frame) error {
 		if exists {
 			delete(c.pending, response.ID)
 		}
+		closed := c.closed
 		c.mu.Unlock()
 		if !exists {
+			if closed {
+				// A concurrent shutdown, or a call that gave up on its
+				// context, retired the id. The response is correlated
+				// evidence that lost the race with the transport's death,
+				// not an unmatched correlation, so it must not raise
+				// ErrResponseNotFound over the real cause.
+				return c.closeError()
+			}
 			return fmt.Errorf("%w: %s", ErrResponseNotFound, response.ID)
 		}
 		if pending.command != response.Command {
@@ -246,12 +286,20 @@ func (c *Client) route(frame Frame) error {
 			pending.result <- callResult{err: err}
 			return err
 		}
+		closing := false
 		select {
 		case <-ack:
 		case <-c.done:
-			return c.closeError()
+			// The transport retired before the barrier was acknowledged, but
+			// the frame was still decoded from the wire — deliver the
+			// evidence rather than dropping it; there are no later frames to
+			// order against.
+			closing = true
 		}
 		pending.result <- callResult{response: response}
+		if closing {
+			return c.closeError()
+		}
 		return nil
 	default:
 		return ErrInvalidFrame

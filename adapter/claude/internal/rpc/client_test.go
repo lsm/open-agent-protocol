@@ -378,3 +378,41 @@ func TestConcurrentCallsStayCorrelated(t *testing.T) {
 	_ = consumerDone
 	_ = dispatcherDone
 }
+
+// Regression: a control response parsed off the ordered stream before the
+// transport died must win over the death. shutdown used to retire the pending
+// map while the reader was still parked in the response barrier, so the
+// genuine reply — already decoded from the wire — was discarded and the call
+// returned the shutdown reason instead.
+func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T) {
+	p := newPeer(t)
+	result := make(chan error, 1)
+	go func() {
+		result <- p.client.Call(context.Background(), json.RawMessage(`{"subtype":"initialize","hooks":null}`), nil)
+	}()
+	request, err := p.readFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.send(`{"type":"control_response","response":{"subtype":"success","request_id":"` + request.RequestID + `","response":{}}}`)
+	// Take the barrier without acknowledging it: the reader is now parked
+	// holding a fully decoded response for this control request.
+	select {
+	case message := <-p.client.Inbound():
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	// The transport dies underneath the parked reader.
+	_ = p.client.Close()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("the parked response lost to the transport's death: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("call never settled")
+	}
+}

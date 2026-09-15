@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -483,4 +484,73 @@ func TestClientSerializesConcurrentPartialWrites(t *testing.T) {
 			t.Fatalf("interleaved %q: %v", line, err)
 		}
 	}
+}
+
+// Regression: a response parsed off the ordered stream before the transport
+// died must win over the death. shutdown used to retire the pending map while
+// the reader was still parked in the response barrier, so the genuine reply —
+// already decoded from the wire — was discarded, the call returned the
+// shutdown reason, and the unmatched-id path raised ErrResponseNotFound over
+// the real cause.
+func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
+	inbound := client.Inbound()
+	results := make(chan error, 1)
+	go func() {
+		var result struct {
+			Status string `json:"status"`
+		}
+		err := client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, &result)
+		if err == nil && result.Status != "streaming" {
+			err = fmt.Errorf("status = %q", result.Status)
+		}
+		results <- err
+	}()
+	// Drain the whole request line, then push a notification through the same
+	// serialized writer and drain that too. The writer hands back each frame's
+	// result before it accepts the next, so once the notification is on the
+	// wire the call is certainly parked on its response rather than still
+	// inside a write that the close would fail.
+	serverLines := bufio.NewReader(serverReader)
+	if _, err := serverLines.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	synced := make(chan error, 1)
+	go func() { synced <- client.Notify(context.Background(), "sync", nil) }()
+	if _, err := serverLines.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-synced; err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, serverLines) }()
+	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"streaming"}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Take the barrier without acknowledging it: the reader is now parked
+	// holding a fully decoded response for request 1.
+	select {
+	case message := <-inbound:
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	// The transport dies underneath the parked reader.
+	client.Close()
+	select {
+	case err := <-results:
+		if err != nil {
+			t.Fatalf("the parked response lost to the transport's death: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call never settled")
+	}
+	if err := client.Err(); errors.Is(err, ErrResponseNotFound) {
+		t.Fatalf("a concurrently retired id was reported as unmatched: %v", err)
+	}
+	_ = serverWriter.Close()
 }

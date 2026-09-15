@@ -189,8 +189,7 @@ func (client *Client) Call(ctx context.Context, method string, params any, resul
 		client.removePending(id)
 		return err
 	}
-	select {
-	case outcome := <-response:
+	settle := func(outcome callResult) error {
 		if outcome.err != nil {
 			return outcome.err
 		}
@@ -201,6 +200,10 @@ func (client *Client) Call(ctx context.Context, method string, params any, resul
 			return fmt.Errorf("decode %s response: %w", method, err)
 		}
 		return nil
+	}
+	select {
+	case outcome := <-response:
+		return settle(outcome)
 	case <-ctx.Done():
 		client.removePending(id)
 		client.closeWith(ctx.Err())
@@ -208,12 +211,27 @@ func (client *Client) Call(ctx context.Context, method string, params any, resul
 	case <-client.done:
 		select {
 		case outcome := <-response:
-			return outcome.err
+			return settle(outcome)
 		default:
-			if err := client.Err(); err != nil {
-				return err
+		}
+		// The transport is retiring, but a response the reader parsed off the
+		// ordered stream before the death must still win over it. Settle
+		// against the reader's final drain rather than against the close
+		// itself: shutdown leaves the pending id in place, so either the
+		// reader delivers the already-decoded frame or the drain fails it.
+		select {
+		case outcome := <-response:
+			return settle(outcome)
+		case <-client.readDone:
+			select {
+			case outcome := <-response:
+				return settle(outcome)
+			default:
+				return client.closeError()
 			}
-			return ErrClosed
+		case <-ctx.Done():
+			client.removePending(id)
+			return ctx.Err()
 		}
 	}
 }
@@ -257,21 +275,15 @@ func (client *Client) readLoop() {
 		switch message.Kind {
 		case MessageResponse:
 			if !client.deliver(message.ID, callResult{result: cloneRaw(message.Result)}) {
-				err := fmt.Errorf("%w: %s", ErrResponseNotFound, message.ID)
-				if client.strictResponseIDs {
-					client.shutdown(err)
+				if client.unmatched(message.ID) {
 					return
 				}
-				client.diagnose(err)
 			}
 		case MessageError:
 			if !client.deliver(message.ID, callResult{err: &RemoteError{ID: message.ID, Object: *message.Error}}) {
-				err := fmt.Errorf("%w: %s", ErrResponseNotFound, message.ID)
-				if client.strictResponseIDs {
-					client.shutdown(err)
+				if client.unmatched(message.ID) {
 					return
 				}
-				client.diagnose(err)
 			}
 		case MessageRequest:
 			incoming := &IncomingRequest{ID: message.ID, Method: message.Method, Params: cloneRaw(message.Params), Trace: cloneRaw(message.Trace), client: client}
@@ -298,6 +310,28 @@ func (client *Client) enqueue(message InboundMessage) bool {
 		client.shutdown(ErrInboundQueue)
 		return false
 	}
+}
+
+// unmatched reports whether the reader must stop after a response whose id is
+// no longer pending.
+func (client *Client) unmatched(id RequestID) bool {
+	client.mu.Lock()
+	closed := client.closed
+	client.mu.Unlock()
+	if closed {
+		// A concurrent shutdown, or a call that gave up on its context,
+		// retired the id. The response is correlated evidence that lost the
+		// race with the transport's death, not an unmatched correlation, so
+		// it must not raise ErrResponseNotFound over the real cause.
+		return true
+	}
+	err := fmt.Errorf("%w: %s", ErrResponseNotFound, id)
+	if client.strictResponseIDs {
+		client.shutdown(err)
+		return true
+	}
+	client.diagnose(err)
+	return false
 }
 
 func (client *Client) deliver(id RequestID, outcome callResult) bool {
@@ -389,13 +423,23 @@ func (client *Client) shutdown(reason error) {
 	}
 	client.closed = true
 	client.err = reason
-	pending := client.pending
-	client.pending = make(map[RequestID]chan callResult)
 	close(client.done)
 	client.mu.Unlock()
-	for _, response := range pending {
-		response <- callResult{err: reason}
-	}
+	// The pending map is deliberately left in place. A response parsed off the
+	// ordered stream before the transport died must win over the death, so the
+	// reader's final drain is what settles the outstanding calls: every frame
+	// the reader already decoded is delivered first, and only the ids still
+	// pending once the reader has stopped fail with reason.
+	go func() {
+		<-client.readDone
+		client.mu.Lock()
+		pending := client.pending
+		client.pending = make(map[RequestID]chan callResult)
+		client.mu.Unlock()
+		for _, response := range pending {
+			response <- callResult{err: reason}
+		}
+	}()
 }
 
 func marshalValue(value any) (json.RawMessage, error) {
