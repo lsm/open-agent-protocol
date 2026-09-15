@@ -1180,9 +1180,15 @@ No new envelope types. Additive fields:
   The refusal is validated too: an `auto` submit on a session with a
   nonterminal run whose descriptor does not advertise
   `session.message.delivery.queue`, or advertises it `unavailable`, is
-  remembered from the request and re-evaluated at the correlated
-  response (a run that terminated in flight leaves the session idle and
-  the submit admissible), and its `error.response` must be the wire's
+  remembered from the request and judged across the request/response
+  window, as the queue bound beside it is: `Submit` decides at an instant
+  the trace cannot name, so a session busy when the adapter looked and
+  idle when the response lands admits either answer — an admission is
+  conforming because the run had gone, and `run_active` is conforming
+  because it had not when the decision was made. Only a session idle
+  throughout the window makes `run_active` wrong. Where the session was
+  busy at the decision and the adapter refuses, its `error.response` must
+  be the wire's
   `run_active`; a refusal under any other code is `illegal_run_transition`
   on the error response (`/payload/error/code`), so the ordinary busy-session
   refusal cannot hide behind `internal_error`. This is rung 4 of the
@@ -1383,7 +1389,21 @@ No new envelope types. Additive fields:
   admitted under a descriptor disclosing `run.model_selection` with mode
   `session_mutation` (the mode `runState` retains from admission, T1), a
   `session.state` snapshot taken while that run is started reports a
-  `current_model_id` other than its admitted model.
+  `current_model_id` other than its admitted model — judged at the
+  position the snapshot states, not at its arrival. A queued
+  `session_mutation` promoting concurrently with a state read straddles
+  this both ways: the snapshot can capture the old model while
+  `run.started` reaches the trace first, or the new one while that event
+  drains afterwards, and either accurate reading would be diagnosed
+  against the trace as it stands. So `session.state.as_of` gains
+  `model_run_sequence`, `{ "run_id", "sequence" }`, naming the last
+  model-affecting event the snapshot reflects, the same marker
+  `models.response` carries for the same reason. Present, the model is
+  judged at that point, and a position the trace has not reached is held
+  and reconciled when it arrives; absent, the snapshot claims no
+  knowledge the trace lacks and is judged as it stands. Fixture
+  `queue-state-model-at-promotion` (positive; a snapshot capturing the
+  pre-promotion model whose `run.started` precedes the state response).
 - `session.state` snapshots: `active_runs` is required whenever the
   validator tracks a queued reservation, more than one nonterminal run,
   or, on an endpoint advertising any unit that introduces `active_runs`
@@ -1451,12 +1471,23 @@ No new envelope types. Additive fields:
   marker can never run ahead of it and needs no deferred reconciliation.
   A marker naming a request the trace does not carry for that run is
   `session_state_mismatch` at once.
-  Every id in the set must name a submit request the trace carries for
+  The set disambiguates the overlap and nothing more: an admission whose
+  response precedes the `session.state.request` is settled fact, so its
+  request must appear in the set and its steer must be listed, and only
+  admissions whose responses fall inside the request/response window may
+  be left out. Without that anchor the set would be permissive in the
+  wrong direction — omitting an id would license omitting the steer, so
+  an adapter could drop a steer admitted long before the read simply by
+  saying nothing about it. Every id in the set must name a submit request
+  the trace carries for
   that run (`session_state_mismatch` otherwise), and a snapshot that
   lists a steer while naming no
   `admitted_submit_requests` at all is judged against the trace as it
   stands,
-  since it claims no knowledge the trace lacks. Fixtures
+  since it claims no knowledge the trace lacks. Fixture
+  `steer-state-omits-settled-admission` (`session_state_mismatch`; a
+  steer admitted before the state request, absent from both the set and
+  `pending_steers`). Fixtures
   `steer-state-capture-straddles-admission`
   (positive; two snapshots at one `as_of_sequence` either side of a steer
   admission, each accurate at its own set) and
@@ -1501,7 +1532,7 @@ No new envelope types. Additive fields:
   reaches the trace first — in both the trace at response arrival
   disagrees with an accurate read. So `session.state` gains `as_of`,
   `{ "admitted_submit_requests"?: [envelope id], "settled"?: [{ "run_id",
-  "sequence" }] }`: the submit requests on the session the snapshot
+  "sequence" }], "model_run_sequence"?: { "run_id", "sequence" } }`: the submit requests on the session the snapshot
   reflects as admitted, and the runs it has already removed with the
   sequence of each one's terminal. A set rather than a "last request"
   for the same reason the per-run steer boundary is one: two overlapping
@@ -1514,12 +1545,18 @@ No new envelope types. Additive fields:
   emitted itself — which is what the response-envelope marker of an
   earlier round was not.
   Membership is then judged against `as_of` rather than the trace's
-  current state: a run whose admitting submit request is not in
-  `as_of.admitted_submit_requests` may be absent, a run named in
-  `as_of.settled`
+  current state, with the same anchor the per-run set takes: a run
+  admitted before the `session.state.request` — its response already in
+  the trace — must be listed whatever the set says, and only admissions
+  whose responses fall inside the request/response window may be omitted
+  on the strength of being absent from
+  `as_of.admitted_submit_requests`. A run named in `as_of.settled`
   may be absent, and every other tracked nonterminal run must be listed.
   Every id in the set must name a submit request the trace carries for
-  that session (`session_state_mismatch` otherwise).
+  that session (`session_state_mismatch` otherwise). Fixture
+  `queue-state-omits-established-run` (`session_state_mismatch`; a run
+  admitted well before the read, omitted with its request left out of the
+  set).
   A `settled` entry may name a terminal the trace has not reached, and is
   held and reconciled when it arrives; one whose named terminal never
   arrives, or arrives at another sequence, is `session_state_mismatch` at
