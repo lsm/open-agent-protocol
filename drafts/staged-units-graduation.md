@@ -669,9 +669,33 @@ No new envelope types. Changes to
   no `action.call.requested`, or with `mode: "named"` that emitted none
   naming that tool (a run that fails or is cancelled first is not judged,
   since the requirement binds a completed response). An adapter that
-  cannot make its harness honor `required` or `named` advertises
-  `run.tool_selection` accordingly or rejects the policy as unsatisfiable;
-  it never completes the run as if the requirement were met. For a run
+  cannot make its harness honor `required` or `named` discloses that and
+  rejects such a policy as unsatisfiable; it never completes the run as
+  if the requirement were met. "Discloses" is machine-readable, not
+  editorial: `run.tool_selection`'s `FeatureSupport` carries `modes`,
+  the `tool_choice` modes the endpoint can actually enforce, and a
+  refusal is conforming only for a mode outside it. Without that, the
+  key would promise nothing — an adapter could advertise
+  `run.tool_selection`, refuse every `required` and `named` policy as
+  `unsatisfiable`, and pass, which is the same empty advertisement
+  `max_queued_runs_per_session` was disclosed to prevent on the queue.
+  A descriptor advertising the key with no `modes`, or with an empty
+  one, is `undisclosed_selection_modes` on the `capabilities.response`.
+
+  The catalog binds in both directions here as it does for models. A
+  policy whose named and filtered tools are all carried by the active
+  catalog, whose mode is one the endpoint disclosed, and whose filtered
+  set is non-empty is satisfiable, and refusing it is
+  `unsatisfiable_control` on the `error.response` — the mirror of the
+  `models-listed-selection-false-miss` rule, and the more damaging
+  direction for the same reason: the caller discards a policy that was
+  valid, and re-listing only confirms the tools it was just refused for.
+  Where a retained choice is reconciled at the first list (the gap rule
+  below), the false refusal is diagnosed there instead, on the same
+  terms. Fixtures `controls-tool-choice-listed-false-refusal`
+  (`unsatisfiable_control`; a policy naming a listed tool under a
+  disclosed mode, refused) and `controls-tool-choice-undisclosed-mode`
+  (positive; the same refusal for a mode the endpoint never disclosed). For a run
   admitted under `per_run` (the mode `runState` retains from admission,
   below, together with `defaultModel`, the session default
   `sessionTrack.currentModel` held at that admission), a `session.state`
@@ -2868,6 +2892,21 @@ It adds no wire vocabulary.
   and the name collision are validated the same way (`unsupported_feature`
   with `details.tool`; `wrong_tool_owner` or `duplicate_tool_name` on a
   refusal under another code).
+- Attachment is bounded the same way provision is, and for the same
+  reason: every rule above judges a refusal that names a defect the
+  validator can see — a dangling source, a duplicate id, an undisclosed
+  mode — and none of them reaches a refusal of an attachment with no
+  defect at all. An adapter could advertise `action.tool_sources.attach`,
+  refuse every well-formed `tool_sources` array as `unsatisfiable`, and
+  satisfy every rule here. So the attach capability discloses its
+  constraints in `limits` — `max_sources` and the `transports` it
+  accepts — and refusing an array that violates none of them is
+  `undisclosed_attach_limit` on the `error.response`, the shape the queue
+  bound and the provide limits already use. Fixtures
+  `tool-source-attach-refused-within-limits`
+  (`undisclosed_attach_limit`) and its positive counterpart
+  `tool-source-attach-refused-over-limit` (a refusal of an array
+  exceeding a disclosed `max_sources`).
 - `session.open.request.tools[*].execution_owner` must be the declared
   control participant (`wrong_tool_owner`, diagnosed on the
   `session.open.response` when the open is admitted, on the same terms as
@@ -4017,13 +4056,32 @@ where it can be enforced once, at pack load, against the pack's own `id`.
 | Key | Unit | Note |
 | --- | --- | --- |
 | `run.model_selection` | T1 | new; `mode` discloses `per_run` or `session_mutation` |
-| `run.instructions`, `run.tool_selection`, `run.structured_output` | T1 | existing names, executable gate |
+| `run.tool_selection` | T1 | existing name; `modes` discloses the `tool_choice` modes the endpoint enforces |
+| `run.structured_output` | T1 | existing name, executable gate |
+| `run.instructions` | T1 | existing name; gated, but see the note below |
 | `models.list` | T5a | existing name |
 | `session.message.delivery.queue` | T2 | existing name; `limits` adds the bound |
 | `action.tools.list` with sources | T3a | existing name |
 | `action.tool_sources.attach` | T3b | existing name; `mode` discloses `session_open` and `remote` |
 | `action.tools.provide` | T3c | new; `action.tools.execute` keeps its `+tools` meaning |
 | `session.message.delivery.steer` | T4 | existing name |
+
+`run.instructions` is the one key in this phase whose promise is not
+executable, and the plan says so rather than implying a gate it does not
+have. The capability gate applies — an unadvertised `instructions` is
+refused and the refusal is validated — but there is no wire observable
+for whether an admitted `instructions` was *applied*: the model's output
+is not a conformance surface, unlike a model id echoed in state, a tool
+call emitted or withheld, or a structured result checked against its
+schema. The reference adapter makes the effect observable by prepending
+`instructions` to its scripted text, which pins the reference and
+nothing else. An endpoint that advertises `run.instructions`, admits the
+control, and ignores it is therefore conforming, and a caller should
+read the key as "this endpoint accepts instructions" rather than as a
+checked promise that they take effect. Closing it would need an
+observable on the wire — an echo of the effective instructions in
+`session.state`, say — which is a design question for the 0005 decision
+and not something to invent here.
 
 ### Typed error codes on `error.response`
 
@@ -4043,6 +4101,7 @@ strings in the schema; the validator does not enumerate them.
 `unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
 `wrong_tool_owner`, `attachment_field_in_catalog`,
 `undisclosed_queue_limit`, `undisclosed_provide_limit`,
+`undisclosed_attach_limit`, `undisclosed_selection_modes`,
 `resolution_payload_mismatch`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
