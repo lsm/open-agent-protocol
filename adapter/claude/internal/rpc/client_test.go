@@ -378,3 +378,175 @@ func TestConcurrentCallsStayCorrelated(t *testing.T) {
 	_ = consumerDone
 	_ = dispatcherDone
 }
+
+// Regression: a control response parsed off the ordered stream before the
+// transport died must win over the death. shutdown used to retire the pending
+// map while the reader was still parked in the response barrier, so the
+// genuine reply — already decoded from the wire — was discarded and the call
+// returned the shutdown reason instead.
+func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T) {
+	p := newPeer(t)
+	result := make(chan error, 1)
+	go func() {
+		result <- p.client.Call(context.Background(), json.RawMessage(`{"subtype":"initialize","hooks":null}`), nil)
+	}()
+	request, err := p.readFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.send(`{"type":"control_response","response":{"subtype":"success","request_id":"` + request.RequestID + `","response":{}}}`)
+	// Take the barrier without acknowledging it: the reader is now parked
+	// holding a fully decoded response for this control request.
+	select {
+	case message := <-p.client.Inbound():
+		if message.Barrier == nil {
+			t.Fatalf("expected the response barrier first, got %+v", message)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no barrier was delivered")
+	}
+	// The transport dies underneath the parked reader.
+	_ = p.client.Close()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("the parked response lost to the transport's death: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("call never settled")
+	}
+}
+
+// A client built without a CloseReadWriter cannot interrupt a reader parked
+// in Decode, so settling the pending calls must never wait for the reader to
+// stop: when one call's cancellation retires the client, the other pending
+// call has to fail promptly instead of hanging until the peer closes stdout.
+func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T) {
+	p := newPeer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := make(chan error, 1)
+	go func() {
+		cancelled <- p.client.Call(ctx, json.RawMessage(`{"subtype":"initialize","hooks":null}`), nil)
+	}()
+	other := make(chan error, 1)
+	go func() {
+		other <- p.client.Call(context.Background(), json.RawMessage(`{"subtype":"interrupt"}`), nil)
+	}()
+	// Both requests are on the wire; nothing ever answers them.
+	for i := 0; i < 2; i++ {
+		if _, err := p.readFrame(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cancel()
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled call err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled call never returned")
+	}
+	select {
+	case err := <-other:
+		if err == nil {
+			t.Fatal("the other call reported success with no response")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the other pending call hung waiting for a reader nothing can interrupt")
+	}
+}
+
+// The malformed-frame corpus shape at the rpc layer: the peer answers the
+// control request, then writes a corrupt line and exits. Both the response and
+// the transport's death sit on one ordered stream, back to back, and the
+// response must win — including when the caller's write is still waiting for
+// the pump's result as the reader retires the client.
+func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
+	const runs = 500
+	for i := 0; i < runs; i++ {
+		upstreamRead, upstreamWrite := io.Pipe()     // peer -> client
+		downstreamRead, downstreamWrite := io.Pipe() // client -> peer
+		client := NewClient(upstreamRead, downstreamWrite, ClientOptions{})
+		go func() {
+			for {
+				message, ok := <-client.Inbound()
+				if !ok {
+					return
+				}
+				if message.Barrier != nil {
+					close(message.Barrier)
+				}
+			}
+		}()
+		go func() {
+			line, err := bufio.NewReader(downstreamRead).ReadString('\n')
+			if err != nil {
+				return
+			}
+			request, err := ParseMessage([]byte(strings.TrimSuffix(line, "\n")))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = upstreamWrite.Write([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"` + request.RequestID + `","response":{}}}` + "\n{not json\n"))
+			_ = upstreamWrite.Close()
+		}()
+		if err := client.Call(context.Background(), json.RawMessage(`{"subtype":"initialize","hooks":null}`), nil); err != nil {
+			t.Fatalf("run %d: the response lost to the transport's death: %v", i, err)
+		}
+		// The call may return before the reader reaches the corrupt line;
+		// judge the retirement only once the reader has stopped.
+		<-client.ReadDone()
+		if client.Err() == nil {
+			t.Fatalf("run %d: the malformed frame did not retire the client", i)
+		}
+		_ = client.Close()
+		_ = downstreamRead.Close()
+		_ = upstreamRead.Close()
+	}
+}
+
+// A pump blocked inside Encode — the peer stopped reading stdin — cannot be
+// woken without a closer. When the reader then retires the client, a caller
+// waiting on that frame must be released with the death rather than held
+// until the peer happens to exit.
+func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
+	upstreamRead, upstreamWrite := io.Pipe()     // peer -> client
+	downstreamRead, downstreamWrite := io.Pipe() // client -> peer, never read: Encode blocks
+	client := NewClient(upstreamRead, downstreamWrite, ClientOptions{})
+	result := make(chan error, 1)
+	go func() {
+		result <- client.Call(context.Background(), json.RawMessage(`{"subtype":"initialize","hooks":null}`), nil)
+	}()
+	// Wait for the pump to be inside Encode, blocked on the unread pipe.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		client.mu.Lock()
+		encoding := client.encoding
+		client.mu.Unlock()
+		if encoding {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pump never entered Encode")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The peer emits garbage: the reader retires the client while the pump
+	// is still blocked.
+	if _, err := upstreamWrite.Write([]byte("{not json\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("call reported success for a frame that never fully left")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("call hung inside write on a pump nothing can unblock")
+	}
+	_ = downstreamRead.Close()
+	_ = upstreamWrite.Close()
+}
