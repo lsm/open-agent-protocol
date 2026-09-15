@@ -363,6 +363,29 @@ and `ext-pack-restates-core-member` (load refusal).
   gate, not stateful semantics. Pack-supplied validation rules, and with
   them pack-defined diagnostics, are deliberately later and listed as
   such below.
+- Load refusals need a fixture kind of their own, because the existing
+  manifest cannot express them. `FixtureEntry` admits `positive`,
+  `schema-invalid`, and `semantic-invalid`, and requires a diagnostic
+  code and a decode/schema/semantic phase for every invalid entry
+  (`validation/manifest.go:78-87`) — but a pack that declares an
+  unprefixed name fails before any trace is read, in a phase that has no
+  name and with no diagnostic, since the validator never ran. Half of
+  T0's negative fixtures are of that shape, and without a way to state
+  their expectation the unit's own fixture gate could not pass. So the
+  manifest gains kind `load-invalid` with phase `load`: the entry's
+  `path` names a pack directory rather than a trace, and its `codes` are
+  drawn from a small load-error vocabulary that is deliberately *not*
+  added to `diagnosticCodes()`, because a load error is what the loader
+  says about a pack and a diagnostic is what the validator says about a
+  trace — `pack_unprefixed_name`, `pack_foreign_prefix`,
+  `pack_id_collision`, `pack_branch_undeclared_type`,
+  `pack_branch_unpinned`, `pack_ungated_type`,
+  `pack_restates_core_member`, `pack_fixture_claims_core_unit`, and
+  `ext_claim_without_pack`, one per load refusal this section names.
+  The runner asserts that loading the named pack fails with exactly
+  those codes, and a `load-invalid` entry that loads cleanly, or fails
+  with different codes, fails the fixture. Every other T0 fixture is an
+  ordinary trace fixture validated with the pack loaded.
 - The two directions are kept apart deliberately: a pack's fixture may
   not claim a core unit, and a core fixture may not claim an `ext:` term.
   Without that a pack could contribute evidence toward `+queue`, which is
@@ -382,6 +405,10 @@ extension" is a claim with the same executable meaning as "conformant to
 no authority over the core claim beside it.
 
 ### Fixtures
+
+Every entry described as a load refusal below is a `load-invalid`
+fixture asserting the corresponding `pack_*` load-error code (validator
+section); the rest are trace fixtures run with the pack loaded.
 
 Negative: `ext-pack-claims-unprefixed-name` (a pack declaring a name with
 no reverse-DNS prefix, which is the spec's namespace; load refusal, not a
@@ -845,11 +872,13 @@ No new envelope types. Changes to
   and each unit's fixtures include one trace where two rungs would
   otherwise claim the same response.
 - New diagnostic `degraded_without_optin`: `feature()` today accepts every
-  level but `unavailable`, so a request carrying a control, or an
-  explicit non-`auto` delivery, whose key the descriptor advertises
+  level but `unavailable`, so a request carrying a control, an
+  explicit non-`auto` delivery, or a `models.request` (T5a, which
+  carries the same field), whose key the descriptor advertises
   `degraded` and whose `allow_degraded_features` omits that key is
   remembered, and an admission correlated to it (a
-  `session.message.submit.response`) is diagnosed on the response, while
+  `session.message.submit.response`, or the `models.response`) is
+  diagnosed on the response, while
   a correlated `error.response` must carry `capability_degraded` with
   `details.feature` naming that key (otherwise `degraded_without_optin`
   on the error response, so a refusal under `internal_error` or naming
@@ -1261,8 +1290,19 @@ per response). `current_model_id` repeats session state. Both envelopes
 are session-scoped in the envelope `oneOf`: `models.request` extends the
 `session` base that requires the top-level `session_id`, as
 `session.state.request` does, and the payload's `session_id` must agree
-with it. Capability key:
-`models.list` (already named). The catalog is part of the capability
+with it. The payload also carries an optional `allow_degraded_features`,
+the same carrier `session.message.submit.request` has
+(`protocol/control.go:156`), because the opt-in is per request and the
+catalog query is a request of its own: Claude exposes `models.list` at
+`degraded`, and without a field to consent on, a caller could never
+construct the consenting query — the endpoint would have to refuse every
+catalog request with `capability_degraded` or serve degraded behaviour
+without consent, and T1 forbids both. The rule is T1's, unchanged: a
+`models.request` on a descriptor advertising `models.list` as `degraded`
+whose `allow_degraded_features` omits the key is refused
+`capability_degraded` with `details.feature: "models.list"`, and a
+`models.response` correlated to it is `degraded_without_optin`. Capability
+key: `models.list` (already named). The catalog is part of the capability
 snapshot: a catalog change is a `capabilities.updated` invalidation on
 endpoints that advertise `capabilities.updates`, and a static endpoint may
 serve one catalog for its lifetime.
@@ -1533,6 +1573,12 @@ listed id), `models-list-refused-advertised` (`unhonoured_capability`
 on the `error.response`; a `models.request` refused on an endpoint
 advertising `models.list` as available, or `degraded` with the opt-in —
 the `honour` fixture T0's corpus-completeness check requires),
+`models-list-degraded-optin` (positive; a `models.request` carrying
+`allow_degraded_features: ["models.list"]` served by a `degraded`
+catalog), `models-list-degraded-without-optin` (`degraded_without_optin`
+on the `models.response`; the same query without the field, served
+anyway), `models-list-degraded-refused` (positive; the same query
+refused `capability_degraded` with `details.feature: "models.list"`),
 `models-unadvertised-rejected` (`error.response` with
 `unsupported_feature`, `details.feature: "models.list"`, against an
 unadvertised `models.list`; the validator section defines this correlated
