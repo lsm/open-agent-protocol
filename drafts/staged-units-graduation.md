@@ -1052,9 +1052,9 @@ No new envelope types. Additive fields:
 
 - `session.state` gains `active_runs`: an ordered list of every nonterminal
   run, `[{ "run_id", "status", "relationship": "primary", "queue_position"?,
-  "as_of_sequence"?, "as_of_submission"? }]`, in admission order, with
+  "as_of_sequence"?, "as_of_submit_request"? }]`, in admission order, with
   `as_of_sequence` naming the last sequence of that run the entry
-  reflects and `as_of_submission` the last submit response on it (the
+  reflects and `as_of_submit_request` the last submit request on it (the
   capture positions the validator judges the entry at, below), with `queue_position` on queued entries
   (1-based). `active_run_id` keeps naming the started run, or is absent when
   only queued runs remain (session status `queued`). Each entry also carries
@@ -1422,26 +1422,32 @@ No new envelope types. Additive fields:
   of that response can carry the same `as_of_sequence` and differ
   legitimately in whether the steer is listed, so the run position alone
   cannot judge them. The entry therefore also carries
-  `as_of_submission`, the envelope id of the last submit response on that
-  run the snapshot reflects (absent when it reflects none), and
-  `pending_steers` is judged at that point: a steer admitted at or before
-  it must be listed, one admitted after must not be, and
-  `session_state_mismatch` otherwise. The marker is allowed to run ahead
-  of the trace exactly as `as_of_sequence` is, and for a closer reason: a
-  state read can capture a steer as pending after the adapter admits it
-  but before the hub has published — or even minted — the correlated
-  submit response, so an accurate snapshot must be able to name a
-  response the trace has not yet carried. Such an entry is held and
-  reconciled when the response arrives; a marker naming a response that
-  never arrives, or one that belongs to another run, is
-  `session_state_mismatch` at the run's terminal or the end of the trace.
-  The two markers must not disagree — a submission admitted after
+  `as_of_submit_request`, the envelope id of the last submit *request* on
+  that run the snapshot reflects (absent when it reflects none), and
+  `pending_steers` is judged at that point: a steer whose request is that
+  one or precedes it must be listed, one whose request follows it must
+  not be, and `session_state_mismatch` otherwise.
+  The request, not the response, because the marker has to name something
+  the party producing the snapshot can know. Session state comes from the
+  adapter, while the response envelope is minted by the binding after
+  `serve.Session.Submit` returns — and an in-process `serve.Hub` caller
+  may mint no response envelope at all — so a snapshot captured after
+  admission and before minting could neither name the response nor be
+  judged without it. The request id is already in the adapter's hands:
+  T4 carries it into the operation as `adapter.SubmitRequest.EnvelopeID`
+  for the settlement correlation, and this is the same value. It is also
+  strictly better ordered: a request the adapter has seen is by
+  construction already in the trace, so unlike `as_of_sequence` this
+  marker can never run ahead of it and needs no deferred reconciliation.
+  A marker naming a request the trace does not carry for that run is
+  `session_state_mismatch` at once.
+  The two markers must not disagree — a steer whose request follows
   `as_of_sequence`'s position cannot be claimed by a snapshot that stops
   earlier — and a snapshot that lists a steer while naming no
-  `as_of_submission` at all is judged against the trace as it stands,
+  `as_of_submit_request` at all is judged against the trace as it stands,
   since it claims no knowledge the trace lacks. Fixture `steer-state-capture-straddles-admission`
   (positive; two snapshots at one `as_of_sequence` either side of a steer
-  admission, each accurate at its own `as_of_submission`).
+  admission, each accurate at its own `as_of_submit_request`).
   `pending_interactions` needs no equivalent: an interaction joins and
   leaves the set on sequenced run events, which `as_of_sequence` already
   orders.
