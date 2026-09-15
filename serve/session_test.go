@@ -1999,6 +1999,79 @@ func TestCloseReportingClosedClosesEntry(t *testing.T) {
 	}
 }
 
+// deadResumeSession reports a healthy state — as a process-backed adapter
+// whose child was idle when the open confirmed it — but refuses every
+// Resume with the already-closed sentinel, as one whose child died before a
+// cursor subscription arrived.
+type deadResumeSession struct{ id protocol.SessionID }
+
+func (s *deadResumeSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+}
+
+func (s *deadResumeSession) State(context.Context) (protocol.SessionState, error) {
+	return protocol.SessionState{SessionID: s.id, Status: protocol.SessionIdle}, nil
+}
+
+func (s *deadResumeSession) Resolve(context.Context, base.InteractionResolution) error {
+	return base.ErrSessionClosed
+}
+
+func (s *deadResumeSession) Cancel(context.Context, protocol.RunID) (protocol.RunCancelResponse, error) {
+	return protocol.RunCancelResponse{}, base.ErrSessionClosed
+}
+
+func (s *deadResumeSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, base.ErrSessionClosed
+}
+
+func (s *deadResumeSession) Close(context.Context) error { return nil }
+
+var _ base.Session = (*deadResumeSession)(nil)
+
+type deadResumeAdapter struct{}
+
+func (deadResumeAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{
+		Capabilities:       protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "reference.dead-resume"}},
+		CapabilityRevision: "dead-resume-v1",
+	}, nil
+}
+
+func (deadResumeAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+	return &deadResumeSession{id: request.SessionID}, nil
+}
+
+// TestSubscribeMarksEntryClosedOnClosedResume pins the cursor path of
+// Subscribe: an adapter whose resume discovers the session already closed
+// has confirmed it can never publish again, so the hub-side entry closes —
+// a later live subscription would otherwise park forever, the live path
+// never probing the adapter — while the sentinel still returns for the
+// caller's already-closed refusal.
+func TestSubscribeMarksEntryClosedOnClosedResume(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register("dead-resume", deadResumeAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	hub := New(registry, Options{StreamQueue: 8})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	entry, _, err := hub.Open(ctx, "dead-resume", base.OpenRequest{SessionID: "resume-death"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.bindRun("run-dead", 1)
+	if _, err := hub.Subscribe(ctx, entry.ID(), After("", 0)); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("cursor subscribe error %v, want the adapter's already-closed sentinel", err)
+	}
+	if !entry.IsClosed() {
+		t.Fatal("the entry did not record the closed adapter session")
+	}
+	if _, err := hub.Subscribe(ctx, entry.ID()); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("live subscribe on the closed entry error %v, want the refusal", err)
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.

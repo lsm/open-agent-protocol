@@ -88,6 +88,15 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		return nil, gap
 	}
 	if err != nil {
+		// An adapter that reports the session closed from a resume has
+		// confirmed the session can never publish again: close the
+		// hub-side entry — a later live subscription would otherwise park
+		// forever, since the live path never probes the adapter —
+		// mirroring the State, Submit, and Close rejections, while the
+		// sentinel still returns for the caller's already-closed refusal.
+		if errors.Is(err, base.ErrSessionClosed) {
+			entry.markClosed()
+		}
 		return nil, err
 	}
 	return &Subscription{session: entry, ctx: ctx, replay: replay, run: runID, last: *config.after}, nil

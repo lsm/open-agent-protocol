@@ -1632,6 +1632,9 @@ func (s *stagedSession) Cancel(context.Context, protocol.RunID) (protocol.RunCan
 func (s *stagedSession) Resume(_ context.Context, request base.ResumeRequest) (base.Recovery, base.EventStream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.adapter.alreadyClosed {
+		return base.Recovery{}, nil, base.ErrSessionClosed
+	}
 	stream := make(chan base.Result, 32)
 	recovery := base.Recovery{State: s.state, RunID: "run-staged", RequestedAfter: request.AfterSequence}
 	for _, envelope := range s.journal {
@@ -1977,6 +1980,45 @@ func TestOpenRollbackOfAlreadyClosedSession(t *testing.T) {
 	// on a session that can never run again.
 	f.send(fmt.Sprintf(`{"id":2,"op":"events","session_id":%q}`, staged.generatedID))
 	requireCode(t, f.expectResponse(2), "session_closed")
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestEventsCursorOnDeadSessionClosesEntry guards the cursor path's
+// adapter-closed discovery: a session that dies after its run settles
+// surfaces the death through the resume's ErrSessionClosed — the events op
+// answers session_closed, and the hub-side entry closes, so a later
+// cursorless events op is refused instead of parking forever on a session
+// that can never publish again.
+func TestEventsCursorOnDeadSessionClosesEntry(t *testing.T) {
+	staged := &stagedAdapter{release: make(chan struct{}), alreadyClosed: true}
+	f := startStagedFrontend(t, staged, 8, Options{})
+	close(staged.release)
+
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "dead"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(1))
+	f.send(`{"id":2,"op":"events","session_id":"dead"}`)
+	requireOK(t, f.expectResponse(2))
+	f.send(`{"id":3,"op":"submit","session_id":"dead","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "dead", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "dead", "")) + `}`)
+	responses, events := f.group(9)
+	if len(responses) != 1 || len(events) != 8 {
+		t.Fatalf("run phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	requireSequences(t, events, 1, 8)
+	var overflow overflowLine
+	if err := json.Unmarshal([]byte(f.line()), &overflow); err != nil || overflow.Event != signalOverflow {
+		t.Fatalf("run did not end on the overflow signal: %v", err)
+	}
+
+	f.send(`{"id":4,"op":"events","session_id":"dead","after":4}`)
+	requireCode(t, f.expectResponse(4), "session_closed")
+	f.send(`{"id":5,"op":"events","session_id":"dead"}`)
+	requireCode(t, f.expectResponse(5), "session_closed")
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
