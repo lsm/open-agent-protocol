@@ -184,7 +184,8 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 // frameResult is one line read from the host: frame carries the line without
 // its terminator, err the condition that ended the read (io.EOF for the clean
-// host close, a framing defect, or a read failure).
+// host close, a *frameDefect for a framing violation, or the input's own
+// read failure, passed through).
 type frameResult struct {
 	frame []byte
 	err   error
@@ -243,7 +244,13 @@ func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byt
 				if errors.Is(result.err, io.EOF) {
 					return nil
 				}
-				return &MalformedLineError{Line: number, Detail: result.err.Error()}
+				var defect *frameDefect
+				if errors.As(result.err, &defect) {
+					return &MalformedLineError{Line: number, Detail: defect.Error()}
+				}
+				// A read failure is not the host's protocol fault: fail
+				// closed, but let the caller see the input's own error.
+				return result.err
 			}
 			request, err := decodeRequest(result.frame)
 			if err != nil {
@@ -291,17 +298,28 @@ func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, failed
 	}
 }
 
+// frameDefect marks a framing error the codec itself raised — the line
+// violates the NDJSON rules — distinguishing it from a read failure on the
+// input (EIO, a closed descriptor), which is not the host's protocol fault.
+// Both fail the frontend closed; only the defect becomes a MalformedLineError.
+type frameDefect struct {
+	detail string
+}
+
+func (e *frameDefect) Error() string { return e.detail }
+
 // readFrame reads one NDJSON line from the reader, without its terminator.
 // The framing rules mirror the adapter rpc codecs: a line is LF-terminated,
 // carries no CR, is non-empty, valid UTF-8, and within the limit; an
 // unterminated final line is a defect, while EOF at a line boundary is the
-// clean host close.
+// clean host close. Rule violations return *frameDefect; anything else is
+// the reader's own failure, passed through untouched.
 func readFrame(reader *bufio.Reader, limit int) ([]byte, error) {
 	frame := make([]byte, 0, min(limit, 4096))
 	for {
 		fragment, err := reader.ReadSlice('\n')
 		if len(frame)+len(fragment) > limit+1 {
-			return nil, fmt.Errorf("line exceeds the %d-byte frame limit", limit)
+			return nil, &frameDefect{detail: fmt.Sprintf("line exceeds the %d-byte frame limit", limit)}
 		}
 		frame = append(frame, fragment...)
 		switch {
@@ -309,17 +327,17 @@ func readFrame(reader *bufio.Reader, limit int) ([]byte, error) {
 			frame = frame[:len(frame)-1]
 			switch {
 			case bytes.IndexByte(frame, '\r') >= 0:
-				return nil, errors.New("carriage return is not valid framing")
+				return nil, &frameDefect{detail: "carriage return is not valid framing"}
 			case len(frame) == 0:
-				return nil, errors.New("empty line")
+				return nil, &frameDefect{detail: "empty line"}
 			case !utf8.Valid(frame):
-				return nil, errors.New("line is not UTF-8")
+				return nil, &frameDefect{detail: "line is not UTF-8"}
 			}
 			return frame, nil
 		case errors.Is(err, bufio.ErrBufferFull):
 			continue
 		case errors.Is(err, io.EOF) && len(frame) > 0:
-			return nil, errors.New("unterminated final line")
+			return nil, &frameDefect{detail: "unterminated final line"}
 		default:
 			return nil, err
 		}

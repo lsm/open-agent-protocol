@@ -412,6 +412,39 @@ func TestWriterFailureEndsServing(t *testing.T) {
 	}
 }
 
+// failingReader fails every read with its own error, standing in for an OS
+// or transport-level stdin failure.
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestReadFailureIsNotAMalformedLine pins the error boundary: a transport
+// read failure fails the frontend closed but surfaces as itself — not as a
+// MalformedLineError — so a host can tell its broken pipe from hostile
+// input.
+func TestReadFailureIsNotAMalformedLine(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readErr := errors.New("device gone")
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), failingReader{err: readErr}, io.Discard) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, readErr) {
+			t.Fatalf("Run returned %v, want the input's read failure", err)
+		}
+		var malformed *MalformedLineError
+		if errors.As(err, &malformed) {
+			t.Fatalf("read failure surfaced as a malformed line: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read failure did not end Run")
+	}
+}
+
 // TestFrameLimitFloorRejectsUnusableLimits guards the floor: a limit no
 // correlated refusal could fit is rejected at construction, not discovered
 // mid-session.
