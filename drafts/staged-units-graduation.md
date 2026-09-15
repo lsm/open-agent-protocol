@@ -1473,9 +1473,16 @@ No new envelope types. Additive fields:
   `session_state_mismatch` at once.
   The set disambiguates the overlap and nothing more: an admission whose
   response precedes the `session.state.request` is settled fact, so its
-  request must appear in the set and its steer must be listed, and only
+  request must appear in the set and the snapshot must account for its
+  steer, and only
   admissions whose responses fall inside the request/response window may
-  be left out. Without that anchor the set would be permissive in the
+  be left out. Accounting for it is not the same as listing it as
+  pending: a steer that settled at or before `as_of_sequence` belongs in
+  the session's `settled_steers` and must be *absent* from
+  `pending_steers`, so the anchor establishes that the snapshot knows of
+  the admission, and the capture position then decides which of the two
+  surfaces carries it. A steer in the set that appears in neither, or in
+  both, is `session_state_mismatch`. Without that anchor the set would be permissive in the
   wrong direction — omitting an id would license omitting the steer, so
   an adapter could drop a steer admitted long before the read simply by
   saying nothing about it. Every id in the set must name a submit request
@@ -1569,10 +1576,18 @@ No new envelope types. Additive fields:
   published for that run after the snapshot — any other envelope from
   that run in between is `session_state_mismatch` — so a claim about a
   run that is still doing anything at all is caught. And the hub, which
-  forwards the snapshot and is the party that has actually read the run's
-  stream, verifies each `as_of.settled` claim against what it has read
-  before forwarding, and refuses to serve a claim for a run whose
-  terminal it has not: the adapter asserts, the hub corroborates, and the
+  forwards the snapshot and is the party that reads the run's stream,
+  corroborates each `as_of.settled` claim before forwarding — by draining
+  that run to the claimed sequence, not by checking whether it happens to
+  have read it already. The adapter can settle a run and capture state
+  before the hub's drainer has caught up, which is ordinary scheduling,
+  so refusing an unread claim would make conformance depend on drainer
+  timing and defeat the ahead-of-trace reconciliation the marker exists
+  for. The hub therefore reads on, bounded by the state request's own
+  context, and serves the snapshot once the claimed terminal is in hand;
+  a claim the drain cannot reach — the stream ends, or the context does,
+  without it — is refused, and the run stays listed. The adapter asserts,
+  the hub corroborates, and the
   validator checks the outcome, which is the same division that lets the
   hub rather than the adapter classify a cross-session steer target.
   Fixture `queue-state-settled-claim-then-activity`
