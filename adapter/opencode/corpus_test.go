@@ -168,9 +168,10 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		capacity = 64
 	}
 	client := newFakeClient()
-	// Hold wait-idle until every frame has been delivered, so settlement at an
-	// intermediate step boundary cannot race the producer and complete the run
-	// with only the steps seen so far. The gate is released after the feed loop.
+	// Report the session as natively active until every frame has been
+	// delivered, so settlement at an intermediate step boundary cannot race the
+	// producer and complete the run with only the steps seen so far. The gate is
+	// released after the feed loop.
 	fed := make(chan struct{})
 	client.mu.Lock()
 	client.historyPage = native.HistoryPage{Events: presetHistory}
@@ -182,7 +183,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	} else {
 		client.promoted = !strings.Contains(entry.ID, "queued")
 	}
-	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity, SettlePollMin: time.Millisecond, SettlePollMax: 2 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,8 +268,8 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 			t.Fatalf("unsupported action %q", frame.Action)
 		}
 	}
-	// Every frame is delivered; release wait-idle so settlement can drain the
-	// ordered prefix and derive the terminal from the full run.
+	// Every frame is delivered; report the loop idle so settlement can drain
+	// the ordered prefix and derive the terminal from the full run.
 	close(fed)
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
 	// Decision 0002 made both former mismatch shapes canonical: a queued
