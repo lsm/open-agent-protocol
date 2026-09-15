@@ -32,10 +32,15 @@ type wireError struct {
 	Message string `json:"message"`
 }
 
-// serveRequest executes one op and writes its response.
-func (s *Server) serveRequest(ctx context.Context, request requestLine, lines chan<- []byte) {
-	result, werr := s.dispatch(ctx, request)
-	s.respond(ctx, lines, request, result, werr)
+// serveRequest executes one op and writes its response. The op runs on the
+// frontend's dispatch context, which teardown cancels so an in-flight
+// handler detaches from the hub and settles as an error response; the
+// response send runs on the caller's context, so a send parked behind a
+// slow consumer still delivers through the writer's bounded drain and is
+// cut loose only by the caller's own cancellation.
+func (s *Server) serveRequest(dispatchCtx, sendCtx context.Context, request requestLine, lines chan<- []byte) {
+	result, werr := s.dispatch(dispatchCtx, request)
+	s.respond(sendCtx, lines, request, result, werr)
 }
 
 // respond writes one op's correlated response line. A response whose

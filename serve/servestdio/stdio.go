@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -59,8 +60,10 @@ const minFrameLimit = 256
 // consumer of stdout.
 const defaultWriteQueue = 256
 
-// DefaultShutdownTimeout bounds the final output drain once serving ends; a
-// host that stops draining stdout cannot stretch shutdown past it.
+// DefaultShutdownTimeout bounds each stage of Run's teardown — the grace for
+// a serving loop still stuck in a synchronous op, then the wait for in-flight
+// work and the final output drain — once the host ends the session; a host
+// that stops draining stdout cannot stretch shutdown past it.
 const DefaultShutdownTimeout = 5 * time.Second
 
 // Options tunes the frontend. The zero value is usable.
@@ -71,9 +74,11 @@ type Options struct {
 	// WriteQueue bounds the lines buffered for the writer goroutine before
 	// producers block; zero means defaultWriteQueue.
 	WriteQueue int
-	// ShutdownTimeout bounds the final output drain once serving ends — the
-	// writer may be parked inside out.Write on a pipe the host stopped
-	// reading, and shutdown never depends on the host's pipe; zero means
+	// ShutdownTimeout bounds each stage of Run's teardown independently —
+	// the grace for a serving loop still stuck in a synchronous op, then the
+	// wait for in-flight work and the final output drain. The writer may be
+	// parked inside out.Write on a pipe the host stopped reading, and
+	// shutdown never depends on the host's pipe; zero means
 	// DefaultShutdownTimeout.
 	ShutdownTimeout time.Duration
 	// Logger receives lifecycle diagnostics. Envelope payloads and resolved
@@ -90,6 +95,16 @@ type Server struct {
 	writeQueue int
 	shutdown   time.Duration
 	logger     *log.Logger
+
+	// mu guards shuttingDown and the work WaitGroup's admission gate: once
+	// teardown begins no further workers may be Added, because a late
+	// positive Add — from a decode loop abandoned mid-op that then finishes
+	// and dispatches another frame — would race the Wait that may already
+	// have seen the counter reach zero, which the WaitGroup contract
+	// forbids, and its worker would never be waited for.
+	mu           sync.Mutex
+	shuttingDown bool
+	work         sync.WaitGroup
 }
 
 // New returns a frontend over the hub.
@@ -140,10 +155,13 @@ func (e *MalformedLineError) Error() string {
 // than emitted.
 var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame limit")
 
-// ErrShutdownStalled reports that the final output drain outlived its
-// bounded window: the host stopped reading stdout, so the writer was parked
-// inside out.Write and was abandoned rather than waited on. The caller's
-// session sweep and the process exit still happen.
+// ErrShutdownStalled reports that shutdown outlived its bounded windows:
+// the host ended the session and either the serving loop never finished —
+// a synchronous op that hung, a response send parked behind a stopped
+// consumer — or in-flight work or the final output drain never completed
+// because the host stopped reading stdout. The stalled stage is abandoned
+// rather than waited on, so the caller's bounded session sweep and the
+// process exit still happen.
 var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")
 
 // Run serves requests from in until the host closes it (clean end), the
@@ -151,33 +169,121 @@ var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded w
 // closed). Responses are written to out by exactly one writer goroutine, one
 // JSON object per LF-terminated line; a write failure ends serving — a host
 // that stopped reading stdout receives nothing further, so no work is
-// admitted behind its back — and the failure is returned once the writer
-// drains the lines already admitted, bounded by Options.ShutdownTimeout: a
-// stalled drain is abandoned and reported as ErrShutdownStalled. The
-// frontend is a codec and owns no session lifetime: the caller sweeps the
-// hub after Run returns, on every exit path. Run itself never writes to
-// stderr; it returns the failure for the caller to report.
+// admitted behind its back. The frontend is a codec and owns no session
+// lifetime: the caller sweeps the hub after Run returns, on every exit path.
+// Run itself never writes to stderr; it returns the failure for the caller
+// to report.
+//
+// Shutdown is bounded from the moment the host ends the session — stdin
+// closed, the read failed, or the context cancelled — not from when the
+// serving loop notices: the loop may be stuck inside a synchronous op (a
+// hung adapter call, a response send parked behind a stopped consumer), and
+// Options.ShutdownTimeout bounds each stage independently. A stage that
+// outlives its window is abandoned and Run returns ErrShutdownStalled, so
+// the caller's bounded session sweep and the process exit still happen;
+// nothing ever waits indefinitely on the host's pipe or a stuck op. The
+// frontend serves one session: teardown closes admission for good, so a
+// Server is not reusable across Run calls — embed one frontend per
+// session, as the CLI does per process.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
+	// A worker's dispatch runs on the frontend's own context, cancelled in
+	// the teardown below so in-flight handlers detach from the hub and
+	// settle as error responses; its response send runs on the caller's
+	// context, so a send parked behind a slow consumer delivers through the
+	// writer's bounded drain rather than being dropped by the frontend's
+	// own teardown, and is cut loose only when the caller abandons the
+	// session.
+	callerCtx := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	lines := make(chan []byte, s.writeQueue)
 	stop := make(chan struct{})
 	writerFailed := make(chan struct{}, 1)
 	writerDone := make(chan error, 1)
 	go func() { writerDone <- writeLines(out, lines, stop, writerFailed) }()
 
-	err := s.serveLoop(ctx, in, lines, writerFailed)
+	// The reader reports its own end on a buffered side channel, because
+	// the serving loop may be stuck inside a synchronous op and never
+	// consume the final frame: shutdown must be bounded even then.
+	readerDone := make(chan error, 1)
+	frames := make(chan frameResult)
+	go readFrames(in, s.frameLimit, frames, readerDone)
 
-	close(stop)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- s.decodeLoop(ctx, callerCtx, frames, lines, writerFailed) }()
+
+	// End of input: the serving loop returning is the session's normal
+	// end. When the host has ended the session while the loop is stuck, a
+	// fresh window — started at the host's end, never at Run's start, so a
+	// daemon that served longer than the window still grants the full
+	// grace — bounds how much longer the stuck op gets before it is
+	// abandoned.
+	serveGrace := func() (result error, finished bool) {
+		window := time.NewTimer(s.shutdown)
+		defer window.Stop()
+		select {
+		case result = <-serveDone:
+			return result, true
+		case <-window.C:
+			return nil, false
+		}
+	}
+	var err error
+	stuck := false
+	select {
+	case err = <-serveDone:
+	case <-readerDone:
+		if graceErr, finished := serveGrace(); finished {
+			err = graceErr
+		} else {
+			stuck = true
+		}
+	case <-ctx.Done():
+		if graceErr, finished := serveGrace(); finished {
+			err = graceErr
+		} else {
+			stuck = true
+		}
+	}
+
+	// Teardown: cancel detaches in-flight handlers from the hub and the
+	// lines channel, and the admission gate closes so a decode loop
+	// abandoned mid-op cannot Add a late worker racing this Wait. The
+	// second window bounds waiting for the admitted work and for the
+	// writer's final drain — the writer may be parked inside out.Write on a
+	// pipe the host stopped reading, and shutdown must never depend on the
+	// host's pipe. The lines channel is never closed: producers abandoned
+	// by the window park on their send and are reclaimed by process exit.
+	cancel()
+	s.mu.Lock()
+	s.shuttingDown = true
+	s.mu.Unlock()
+	workDone := make(chan struct{})
+	go func() { s.work.Wait(); close(workDone) }()
 	drainWindow := time.NewTimer(s.shutdown)
 	defer drainWindow.Stop()
+	drained := false
 	select {
-	case writeErr := <-writerDone:
-		if err == nil {
-			err = writeErr
+	case <-workDone:
+		close(stop)
+		select {
+		case writeErr := <-writerDone:
+			drained = true
+			if err == nil {
+				err = writeErr
+			}
+		case <-drainWindow.C:
 		}
 	case <-drainWindow.C:
-		if err == nil {
-			err = ErrShutdownStalled
-		}
+	}
+	if (stuck || !drained) && err == nil {
+		// A stall is reported only when it is the session's own terminal
+		// condition: under an already-reported error — the malformed line,
+		// the read failure, the writer failure — joining a second error
+		// would break the one-bounded-diagnostic fail-closed contract, and
+		// the caller's sweep and exit happen regardless.
+		err = ErrShutdownStalled
 	}
 	return err
 }
@@ -192,14 +298,19 @@ type frameResult struct {
 }
 
 // readFrames reads bounded NDJSON lines from in and forwards each with its
-// outcome. The frames channel is never closed: a reader abandoned by a
-// context end parks on its send and is reclaimed by process exit, the same
-// discipline as the writer's channel.
-func readFrames(in io.Reader, limit int, frames chan<- frameResult) {
+// outcome. The terminal read outcome — io.EOF for the clean host close, a
+// framing defect, or the input's own read failure — is also reported on
+// done, buffered and before the final frame is delivered, because the
+// consumer may be stuck inside a synchronous op and never take that frame;
+// shutdown stays bounded even then. Neither channel is ever closed: a reader
+// abandoned by a context end parks on its send and is reclaimed by process
+// exit, the same discipline as the writer's channel.
+func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- error) {
 	reader := bufio.NewReader(in)
 	for {
 		frame, err := readFrame(reader, limit)
 		if err != nil {
+			done <- err
 			frames <- frameResult{frame: frame, err: err}
 			return
 		}
@@ -207,23 +318,28 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult) {
 	}
 }
 
-// serveLoop reads request frames and serves each in order until a clean end,
-// an output failure, or a framing defect. Reading runs on its own goroutine
-// so a context end is observed while waiting for the next line, not only
-// between lines — an embedding host that cancels without also closing stdin
-// still gets Run back — and writerFailed carries the writer's failure the
-// same way, so a host that stopped reading stdout ends serving instead of
-// admitting work whose responses are silently discarded. The loop-top
-// pre-check narrows, but cannot eliminate — a select chooses uniformly among
-// ready cases, so a frame arriving with the cancellation can still be taken —
-// the dispatch of frames under an already-dead context; the bounded teardown
-// owns what remains. A framing defect — anything readFrame or decodeRequest
-// refuses — fails the frontend closed as *MalformedLineError; op-level
-// refusals are responses the host can correct, and the loop reads on past
-// them.
-func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byte, writerFailed <-chan struct{}) error {
-	frames := make(chan frameResult)
-	go readFrames(in, s.frameLimit, frames)
+// decodeLoop consumes request frames, dispatching each as it arrives, until
+// a clean end, an output failure, or a framing defect. Each request is
+// dispatched to its own admitted worker goroutine, so requests pipeline and
+// run concurrently, correlated by id — one worker per request, exactly as
+// the HTTP server runs one handler per connection — and the loop itself
+// never blocks on an op, only on the next frame. A worker's dispatch runs
+// on the frontend's context — cancelled at teardown so in-flight handlers
+// detach from the hub — while its response send runs on the caller's, so
+// parked sends deliver through the writer's bounded drain. Reading runs on
+// its own goroutine so a context end is observed while waiting for the next
+// line, not only between lines — an embedding host that cancels without also
+// closing stdin still gets Run back — and writerFailed carries the writer's
+// failure the same way, so a host that stopped reading stdout ends serving
+// instead of admitting work whose responses are silently discarded. The
+// loop-top pre-check narrows, but cannot eliminate — a select chooses
+// uniformly among ready cases, so a frame arriving with the cancellation can
+// still be taken — the dispatch of frames under an already-dead context; the
+// admission gate and the bounded teardown own what remains. A framing
+// defect — anything readFrame or decodeRequest refuses — fails the frontend
+// closed as *MalformedLineError; op-level refusals are responses the host
+// can correct, and the loop reads on past them.
+func (s *Server) decodeLoop(ctx, callerCtx context.Context, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan struct{}) error {
 	number := 0
 	for {
 		select {
@@ -256,7 +372,12 @@ func (s *Server) serveLoop(ctx context.Context, in io.Reader, lines chan<- []byt
 			if err != nil {
 				return &MalformedLineError{Line: number, Detail: err.Error()}
 			}
-			s.serveRequest(ctx, request, lines)
+			if s.admit() {
+				go func(request requestLine) {
+					defer s.work.Done()
+					s.serveRequest(ctx, callerCtx, request, lines)
+				}(request)
+			}
 		}
 	}
 }
@@ -473,4 +594,21 @@ func (s *Server) send(ctx context.Context, lines chan<- []byte, value any) error
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// admit registers one worker with the teardown WaitGroup, refusing once
+// shutdown began: a late positive Add — from a decode loop abandoned mid-op
+// that then finishes and dispatches another frame — would race the Wait that
+// may already have seen the counter reach zero, which the WaitGroup contract
+// forbids, and its worker would never be waited for. A refused request is
+// dropped without a response: shutdown owns the process, and the host that
+// ended the session is not waiting for one.
+func (s *Server) admit() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.shuttingDown {
+		return false
+	}
+	s.work.Add(1)
+	return true
 }
