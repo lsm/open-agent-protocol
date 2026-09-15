@@ -159,10 +159,20 @@ No new envelope types. Changes to
   the wire's meaning depend on a Go convention and still leave
   `{"model_id": ""}` silently admitted on an endpoint that advertises
   nothing. A present-but-empty control is a control, judged through the
-  gate like any other and, once past it, an unsatisfiable value
-  (`unsatisfiable_control`, `details.field`). Fixtures
+  gate like any other and, once past it, a model id like any other — one
+  that no catalog can list, so it is a catalog miss and takes the miss's
+  refusal, `model_not_found` with `details.model_id: ""`, not a separate
+  unsatisfiability. The classification matters because the reference
+  adapter answers `model_not_found` for every id outside its fixed
+  catalog and would have disagreed with a rule calling this one
+  `unsatisfiable_control`; an empty string is necessarily outside every
+  catalog, so the existing rule already covers it and a second one would
+  only contradict the first. It is judged on the correlated response
+  under T5a's miss rule, with the pre-catalog retention and the
+  precedence ladder applying unchanged. Fixtures
   `controls-empty-model-id-unadvertised` (the gate's refusal) and
-  `controls-empty-model-id-admitted` (`unsatisfiable_control`).
+  `controls-empty-model-id-admitted` (`model_not_in_catalog`; the empty
+  selection admitted).
 - `output_schema` stays a JSON Schema object, and it must describe a JSON
   object: its root `type` is `"object"` (a `type` list may name only
   `"object"`). `run.completed.result` is `type: "object"` in
@@ -977,7 +987,7 @@ No new envelope types. Additive fields:
   unresolved permission and user-input interactions, so the single-run
   recovery path this unit requires can read the id it needs from a
   T2-only endpoint; T3c extends the list to control-owned calls and T4
-  adds `pending_steers`.
+  adds `pending_steers` and `settled_steers`.
 - `capabilities.response` gains optional `limits`: `{
   "max_active_runs_per_session": int, "max_queued_runs_per_session": int }`,
   where `max_active_runs_per_session` bounds the nonterminal set, which is
@@ -1858,8 +1868,21 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   the gap is not skipped but retained, as T5a retains in-gap model
   selections: once a session has listed its catalog, the list is the
   authority and a gap defers rather than falls back to the descriptor's
-  `tools` (a session that never lists is judged against the descriptor's
-  effective catalog plus its open-time tools, as T1 rules), so
+  `tools`. The window before the *first* list defers on the same terms,
+  not only a post-refresh gap: where `action.tools.list` is advertised
+  the session catalog may carry native tools the endpoint descriptor
+  does not name — session-specific entries are explicitly allowed to
+  differ — so judging an early `tool_choice` against the descriptor
+  would call a policy unsatisfiable that the adapter can satisfy
+  perfectly well. A trace that never lists is still judged against the
+  descriptor's effective catalog plus its open-time tools, as T1 rules,
+  since nothing better exists and the end-of-trace sweep settles it; but
+  where a list is advertised, a choice submitted before the first one is
+  retained rather than judged, and the first
+  `action.tools.list.response` reconciles it exactly as a post-refresh
+  gap is reconciled. Fixture `tools-select-before-first-list` (positive;
+  `action.tools.list` advertised, a `tool_choice` naming a tool the
+  descriptor omits, then a first list carrying it). So
   `sessionTrack.unjudgedTools` keeps every `tool_choice` submitted under
   an available `run.tool_selection` — admitted or refused, with the
   correlating response and, for a refusal, its code and details, as
@@ -2391,7 +2414,24 @@ therefore needs a steer settlement, not only a steer admission.
   resending, and absence becomes conclusive at the target run's terminal,
   since every pending steer settles before it and a `steered` admission
   is legal only against a nonterminal run: a request id that has appeared
-  in neither by then was never admitted, and what to submit to the
+  in neither by then was never admitted. That conclusion holds only for a
+  caller whose view of the run is gap-free, and the plan says so rather
+  than leaving it implied. A client whose cursor fell outside the bounded
+  replay window may reach the terminal having seen neither the admission
+  response nor the settlement, and absence from both surfaces then proves
+  nothing — the steer may have been admitted and applied inside the gap.
+  Two things close that. A resume that cannot be served from the window
+  is reported as such rather than silently starting fresh, so a client
+  knows its view has a hole and knows not to draw the conclusion; and the
+  run's recoverable state retains settled steers, not only pending ones —
+  each `active_runs` entry carries `settled_steers` beside
+  `pending_steers`, listing each `submission_id` with its
+  `request_id` and whether it was `applied` or `dropped`, retained for
+  the life of the run including after its terminal. A caller that missed
+  the settlement reads the outcome instead of inferring it from silence,
+  which is the same answer T2 gives a reconnecting submitter recovering a
+  `submission_id`: state is the recovery surface, and the stream is the
+  live one. What to submit to the
   session's next run is a fresh decision. Nothing is ever adopted by
   mistake, because the caller never has to guess which fresh
   `submission_id` is its own; guidance is injected twice only by a caller
@@ -2465,8 +2505,8 @@ while the request was in flight is judged as `terminal` or
 the already-published terminal), and its correlated `error.response`
 must carry `invalid_steer_target`
 with the `details.reason` the wire assigns to that condition (`queued`,
-`terminal`, `cross_session`, `no_active_run`, `not_steerable` for the
-`cancelling` case). A target can meet more than one — a queued or
+`terminal`, `cross_session`, `no_active_run`, `unknown_target`,
+`not_steerable` for the `cancelling` case). A target can meet more than one — a queued or
 terminal run belonging to another session is both `cross_session` and
 `queued` or `terminal` — and these are peers on the state rung sharing a
 diagnostic, a pointer, and a value, so the global tie-break cannot
@@ -2478,7 +2518,18 @@ never applies, because the caller asked about a particular run and
 telling it the session has no started run answers a question it did not
 put. Without a `target_run_id`, or with one naming no run the validator
 knows, the order is `cross_session`, `no_active_run`, `terminal`,
-`not_steerable`, `queued`. Ownership outranks lifecycle either way,
+`not_steerable`, `queued`, and a new `unknown_target` — the reason for an
+explicit `target_run_id` the endpoint has no run for, which none of the
+existing conditions describes: it is not another session's run, has no
+lifecycle state to report, and the session may well have a started run,
+so `no_active_run` would be false as well as unhelpful. Without it, a
+caller naming a run that never existed (a typo, a stale id from a
+previous session, a resume against a restarted daemon) leaves the adapter
+with no conforming refusal at all. It ranks immediately after
+`cross_session`: both say the caller has the wrong run rather than a
+badly timed one. Fixture `steer-unknown-target-run` (positive; an
+explicit `target_run_id` naming no run while another run is started,
+refused `unknown_target`). Ownership outranks lifecycle either way,
 because a caller steering another session's
 run has the wrong run, not a badly timed one, and must be told so rather
 than sent to wait for a state it will never see; among lifecycle
