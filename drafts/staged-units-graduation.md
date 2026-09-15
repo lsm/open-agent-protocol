@@ -1716,7 +1716,9 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   does not follow, which must see A's envelopes alone and B's terminal
   never, plus a bare-cursor reconnect on a non-following subscription
   whose sequence also falls inside a retained earlier run, which must
-  resume on the started run with no `oap-replay-gap`.
+  resume on the started run with no `oap-replay-gap`, and the mixed
+  case — that reconnect arriving after a queued B was promoted — which
+  must be refused with `ambiguous_cursor` rather than read against B.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
@@ -1735,16 +1737,38 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   because the two kinds of subscriber cannot hold the same kind of
   cursor. A subscription that does not follow the session has only ever
   delivered one run domain and ends at that run's terminal, so a bare
-  cursor on it can only have come from the current run: the daemon keeps
-  the v0.1 binding and resolves it against the started run, ambiguity or
-  not. That is not a guess — the subscription's own history makes it the
-  single possible origin — and it matters, because emitting a gap here
-  would break a case that needs no queue at all to reach: finish A,
-  submit B, read one event, drop, reconnect with `?after=n` that retained
-  A also spans. Both current clients surface `oap-replay-gap` as a
-  terminal `ReplayGapError`, so under any other rule upgrading the daemon
-  would break the client behaviour this plan promises to leave alone. A
-  following subscription is the one that can carry a cursor from a domain
+  cursor on it can only have come from the run that was started when it
+  was reading: the daemon keeps the v0.1 binding and resolves it against
+  the started run. That matters because emitting a gap here would break a
+  case that needs no queue at all to reach: finish A, submit B, read one
+  event, drop, reconnect with `?after=n` that retained A also spans. Both
+  current clients surface `oap-replay-gap` as a terminal
+  `ReplayGapError`, so under any other rule upgrading the daemon would
+  break the client behaviour this plan promises to leave alone.
+
+  The binding holds only while the started run has not moved, and the
+  reconnect is a fresh GET carrying no subscription history, so the
+  daemon cannot assume it has not. In a mixed session a T2-aware caller
+  can queue B while the legacy client reads A, and a drop after the hub
+  processed A's terminal and promoted B leaves a cursor from A arriving
+  at a stream whose started run is B. Resolving it against B would splice
+  B's events onto A's overlapping sequence numbers, skipping or
+  mismatching silently — the one outcome this rule exists to avoid. So
+  the binding is guarded rather than assumed: the daemon resolves a bare
+  cursor against the started run only when that run's retained domain
+  spans the sequence and no *earlier* retained domain does. When an
+  earlier one also spans it, the client's position is genuinely
+  unrecoverable from the number, and the daemon refuses the request
+  itself rather than opening a stream, answering `ambiguous_cursor` with
+  the candidate `run_id`s in `details` — a typed error on the events
+  request, not an in-stream event. That reaches a v0.1 client correctly
+  today: `client/events.go:190-196` returns a `ServerError` from `open`
+  permanently instead of retrying it, and `no_run_to_resume` already
+  travels this exact path, so the shape is established rather than new. A
+  refusal the caller can see and reopen from is the recoverable outcome;
+  a silently wrong run is not.
+
+  A following subscription is the one that can carry a cursor from a domain
   other than the started run, and only there is a bare number genuinely
   ambiguous. So on a following subscription the daemon resolves a bare
   cursor when exactly one retained domain reaches that sequence, which
@@ -3259,9 +3283,20 @@ The validator keeps every settlement it observed and requires the
 snapshot's `entries` to match that history — each observed settlement
 present with the `run_id`, `submission_id`, `request_id`, and
 `applied`/`dropped` outcome the trace recorded, no entry the trace never
-settled, and omissions only where eviction can explain them. The
-settlements a snapshot is held to are those of its own capture point,
-not of its arrival: an adapter can capture state before a settlement
+settled, and omissions only where eviction can explain them. Both of
+those run against the trace at the snapshot's capture point, and the
+capture point is not the arrival point in either direction. State reads
+are not serialized with run-event publication, so a steer can settle
+inside the adapter before a concurrent capture and have its run event
+drained only after the state response: the snapshot is accurate and the
+trace has not caught up. The invented-entry rule therefore defers rather
+than fires. An entry naming a settlement the trace has not yet reached
+is held, like any other capture marker that runs ahead of its position,
+and reconciled when the position arrives — it becomes
+`session_state_mismatch` only once the settlement can no longer appear,
+which is the run's terminal or the session's close, or once a settlement
+does arrive and contradicts the entry's outcome. The symmetric direction
+is already covered: an adapter can capture state before a settlement
 that enters the trace before the state response is serialized, and
 demanding the snapshot already contain it would diagnose a valid stale
 read. The window is bounded on both sides and needs no new field, since
@@ -3282,11 +3317,14 @@ with nothing missing is equally wrong. Fixtures
 snapshot claiming `complete: true`),
 `steer-settled-history-wrong-outcome` (`applied` reported for a dropped
 steer), `steer-settled-history-invents-entry` (an entry for a submission
-the trace never settled), `steer-settled-history-gap` (a middle
+the trace never settled, held until the run's terminal and diagnosed
+there) and its positive counterpart
+`steer-settled-history-ahead-of-trace` (an entry whose settlement is
+drained after the state response, reconciled and accepted), `steer-settled-history-gap` (a middle
 settlement omitted under `complete: false`, which no eviction explains)
 and `steer-settled-history-truncated` (positive; the oldest settlements
-omitted under `complete: false`) — all `session_state_mismatch` but the
-last.
+omitted under `complete: false`) — `session_state_mismatch` but for the
+two positives.
 
 ### Reference adapter and evidence
 
