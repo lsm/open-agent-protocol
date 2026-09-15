@@ -1052,3 +1052,988 @@ func TestSubmitRollbackWaitsForSettlement(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 }
+
+// --- the open and events registration ops ---
+
+// lines reads count daemon lines in order.
+func (f *frontend) lines(count int) []string {
+	f.t.Helper()
+	lines := make([]string, 0, count)
+	for len(lines) < count {
+		lines = append(lines, f.line())
+	}
+	return lines
+}
+
+// group reads count lines and partitions them into responses and event
+// lines. The single writer makes every line atomic and preserves per-session
+// event order, but responses and events interleave freely; tests therefore
+// assert each class exactly and never the interleaving across classes.
+func (f *frontend) group(count int) (responses []responseLine, events []string) {
+	f.t.Helper()
+	for _, line := range f.lines(count) {
+		if strings.HasPrefix(line, `{"id":`) {
+			var response responseLine
+			if err := json.Unmarshal([]byte(line), &response); err != nil {
+				f.t.Fatalf("response line %q: %v", line, err)
+			}
+			responses = append(responses, response)
+			continue
+		}
+		var kind struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal([]byte(line), &kind); err != nil || kind.Event == "" {
+			f.t.Fatalf("line %q is neither a response nor an event line", line)
+		}
+		events = append(events, line)
+	}
+	return responses, events
+}
+
+// resolveFromEvent builds the resolve request envelope for the interaction
+// gate one event line delivered, the way a host reading the stream resolves
+// it: approve the permission, answer the input.
+func resolveFromEvent(t *testing.T, id string, gateLine string, sessionID string) json.RawMessage {
+	t.Helper()
+	var event envelopeLine
+	if err := json.Unmarshal([]byte(gateLine), &event); err != nil {
+		t.Fatalf("event line %q: %v", gateLine, err)
+	}
+	envelope, err := protocol.ParseEnvelope(event.Envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolveEnvelope(t, id, envelope, sessionID)
+}
+
+// requireSequences asserts one phase's event lines carry the expected run
+// sequences in order.
+func requireSequences(t *testing.T, events []string, from, to uint64) {
+	t.Helper()
+	if uint64(len(events)) != to-from+1 {
+		t.Fatalf("%d event lines, want %d", len(events), to-from+1)
+	}
+	for index, line := range events {
+		var event envelopeLine
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("event line %q: %v", line, err)
+		}
+		if event.Event != signalEnvelope || event.Sequence == nil || *event.Sequence != from+uint64(index) {
+			t.Fatalf("event line %q is not envelope sequence %d", line, from+uint64(index))
+		}
+	}
+}
+
+// runToCompletion drives one scripted memory run — submit, resolve the
+// permission gate, resolve the input gate — against an already-subscribed
+// session, reading the admitted envelopes in phases so every expected line is
+// consumed. The scripted shapes are fixed: the submit admits four envelopes
+// and parks; the permission resolution continues through five (the park's
+// run.status.update included) and parks at the input gate; the input
+// resolution settles the final three. It returns the run id.
+func runToCompletion(t *testing.T, f *frontend, sessionID string, submitID, resolveA, resolveB int64) protocol.RunID {
+	t.Helper()
+	f.send(fmt.Sprintf(`{"id":%d,"op":"submit","session_id":%q,"request":%s}`, submitID, sessionID, requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: protocol.SessionID(sessionID), Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, sessionID, "")))
+	responses, events := f.group(5)
+	if len(responses) != 1 || len(events) != 4 {
+		t.Fatalf("submit phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	var admission protocol.MessageSubmitResponse
+	if err := json.Unmarshal(responses[0].Result, &admission); err != nil {
+		t.Fatal(err)
+	}
+	requireSequences(t, events, 1, 4)
+
+	f.send(fmt.Sprintf(`{"id":%d,"op":"resolve","session_id":%q,"request":%s}`, resolveA, sessionID, resolveFromEvent(t, "resolve-p", events[3], sessionID)))
+	responses, events = f.group(6)
+	if len(responses) != 1 || len(events) != 5 {
+		t.Fatalf("permission phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	requireSequences(t, events, 5, 9)
+
+	f.send(fmt.Sprintf(`{"id":%d,"op":"resolve","session_id":%q,"request":%s}`, resolveB, sessionID, resolveFromEvent(t, "resolve-i", events[3], sessionID)))
+	responses, events = f.group(4)
+	if len(responses) != 1 || len(events) != 3 {
+		t.Fatalf("input phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	requireSequences(t, events, 10, 12)
+	if last := events[2]; !strings.Contains(last, `"run.completed"`) {
+		t.Fatalf("run did not end on run.completed: %s", last)
+	}
+	return admission.RunID
+}
+
+// settleMemoryRun drives one scripted memory run to completion entirely on
+// the hub side — submit and both gate resolutions through the session entry,
+// the gates read through a hub-side subscription — for tests that need a
+// settled, journaled run without crossing the frontend (a frame limit too
+// small to carry the run's own envelopes, say).
+func settleMemoryRun(t *testing.T, hub *serve.Hub, id string) {
+	t.Helper()
+	entry, err := hub.Session(protocol.SessionID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription, err := hub.Subscribe(context.Background(), protocol.SessionID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: protocol.SessionID(id), Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []protocol.EnvelopeType{protocol.TypeActionPermissionRequested, protocol.TypeUserInputRequested} {
+		gate := readGate(t, subscription, want)
+		envelope, err := protocol.ParseEnvelope(resolveEnvelope(t, "resolve-"+string(want), gate, id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolution := base.InteractionResolution{RunID: gate.RunID}
+		switch gate.Type {
+		case protocol.TypeActionPermissionRequested:
+			var payload protocol.PermissionResolveRequest
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			resolution.RespondedBy = payload.RespondedBy
+			resolution.Permission = &payload
+		default:
+			var payload protocol.UserInputResolveRequest
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			resolution.RespondedBy = payload.RespondedBy
+			resolution.Input = &payload
+		}
+		if err := entry.Resolve(context.Background(), resolution); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// openViaOp opens one session through the open op — the registration path
+// under test — and requires its acknowledgement.
+func openViaOp(t *testing.T, f *frontend, id, adapter string, requestID int64) {
+	t.Helper()
+	f.send(fmt.Sprintf(`{"id":%d,"op":"open","adapter":%q,"request":%s}`, requestID, adapter, requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: protocol.SessionID(id)}, "", "")))
+	requireOK(t, f.expectResponse(requestID))
+}
+
+// TestPipelinedEventsBeforeSubmit sends the events op and the submit back to
+// back without waiting for the events ack: the subscription is registered
+// synchronously in the read loop, so the run's first envelope cannot be
+// missed — the stdio counterpart of the client's subscribe-before-submit.
+func TestPipelinedEventsBeforeSubmit(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	openViaOp(t, f, "pipe", "memory", 1)
+	f.send(`{"id":2,"op":"events","session_id":"pipe"}`)
+	f.send(`{"id":3,"op":"submit","session_id":"pipe","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "pipe", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "pipe", "")) + `}`)
+	responses, events := f.group(6)
+	if len(responses) != 2 || len(events) != 4 {
+		t.Fatalf("pipelined phase: %d responses, %d events", len(responses), len(events))
+	}
+	for _, response := range responses {
+		requireOK(t, response)
+	}
+	requireSequences(t, events, 1, 4)
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestEventsCursorReplay replays a settled run from a mid-run cursor: the
+// after subscription delivers the retained suffix and ends at the terminal
+// event with no further line, exactly as the SSE replay stream would.
+func TestEventsCursorReplay(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	openViaOp(t, f, "replay", "memory", 1)
+	f.send(`{"id":2,"op":"events","session_id":"replay"}`)
+	requireOK(t, f.expectResponse(2))
+	runToCompletion(t, f, "replay", 3, 4, 5)
+
+	f.send(`{"id":6,"op":"events","session_id":"replay","after":4}`)
+	requireOK(t, f.expectResponse(6))
+	responses, events := f.group(8)
+	if len(responses) != 0 || len(events) != 8 {
+		t.Fatalf("replay: %d responses, %d events", len(responses), len(events))
+	}
+	requireSequences(t, events, 5, 12)
+
+	// The replayed subscription ended at the run's terminal event with no
+	// further line; a state op proves the frontend is still live.
+	f.send(`{"id":7,"op":"state","session_id":"replay"}`)
+	requireOK(t, f.expectResponse(7))
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestEventsGapAndResume drives a journal too small to retain a run's start,
+// observes the oap-replay-gap signal, and resumes at the documented cursor —
+// the acceptance path for recovering after a gap via after.
+func TestEventsGapAndResume(t *testing.T) {
+	hub := newTestHub(t, 2, 64)
+	f := startFrontend(t, hub, Options{})
+	openViaOp(t, f, "gap", "memory", 1)
+	f.send(`{"id":2,"op":"events","session_id":"gap"}`)
+	requireOK(t, f.expectResponse(2))
+	runToCompletion(t, f, "gap", 3, 4, 5)
+
+	// A cursor at zero asks for the whole run; the journal retains only its
+	// tail, so the gap signal reports what is still available.
+	f.send(`{"id":6,"op":"events","session_id":"gap","after":0}`)
+	requireOK(t, f.expectResponse(6))
+	signal := f.line()
+	var gap gapLine
+	if err := json.Unmarshal([]byte(signal), &gap); err != nil {
+		t.Fatalf("gap line %q: %v", signal, err)
+	}
+	if gap.Event != signalReplayGap || gap.SessionID != "gap" || gap.ID != 6 {
+		t.Fatalf("gap line %q is not a replay gap for the session", signal)
+	}
+	if gap.RequestedAfter != 0 || gap.OldestAvailable != 11 || gap.LatestAvailable != 12 {
+		t.Fatalf("gap cursor bounds: %+v", gap)
+	}
+
+	// Resuming at oldest_available - 1 replays exactly the retained suffix.
+	f.send(`{"id":7,"op":"events","session_id":"gap","after":10}`)
+	requireOK(t, f.expectResponse(7))
+	responses, events := f.group(2)
+	if len(responses) != 0 || len(events) != 2 {
+		t.Fatalf("resume: %d responses, %d events", len(responses), len(events))
+	}
+	requireSequences(t, events, 11, 12)
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestSessionClosedSignal parks one subscription with no run and closes the
+// session: the close response and the oap-session-closed line may interleave
+// freely, and both must arrive.
+func TestSessionClosedSignal(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	openViaOp(t, f, "quiet", "memory", 1)
+	f.send(`{"id":2,"op":"events","session_id":"quiet"}`)
+	requireOK(t, f.expectResponse(2))
+
+	f.send(`{"id":3,"op":"close","session_id":"quiet"}`)
+	responses, events := f.group(2)
+	if len(responses) != 1 || len(events) != 1 {
+		t.Fatalf("close phase: %d responses, %d signals", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	if responses[0].ID != 3 {
+		t.Fatalf("close response id %d", responses[0].ID)
+	}
+	var closed sessionClosedLine
+	if err := json.Unmarshal([]byte(events[0]), &closed); err != nil {
+		t.Fatalf("signal line %q: %v", events[0], err)
+	}
+	if closed.Event != signalSessionClosed || closed.SessionID != "quiet" || closed.ID != 2 {
+		t.Fatalf("signal line %q is not a session-closed signal", events[0])
+	}
+
+	// A fresh subscription to the closed session is refused, mirroring the
+	// HTTP 409 session_closed.
+	f.send(`{"id":4,"op":"events","session_id":"quiet"}`)
+	requireCode(t, f.expectResponse(4), "session_closed")
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestEventLinesCorrelateSubscriptions overlaps subscriptions on one session
+// and requires every event and signal line to name the events request whose
+// subscription produced it — the correlation stdout needs because, unlike
+// separate SSE connections, the lines share one stream.
+func TestEventLinesCorrelateSubscriptions(t *testing.T) {
+	hub := newTestHub(t, 2, 64)
+	f := startFrontend(t, hub, Options{})
+	openViaOp(t, f, "multi", "memory", 1)
+
+	// Two live subscriptions admitted before the run.
+	f.send(`{"id":2,"op":"events","session_id":"multi"}`)
+	requireOK(t, f.expectResponse(2))
+	f.send(`{"id":3,"op":"events","session_id":"multi"}`)
+	requireOK(t, f.expectResponse(3))
+	f.send(`{"id":4,"op":"submit","session_id":"multi","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "multi", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "multi", "")) + `}`)
+	responses, events := f.group(9)
+	if len(responses) != 1 || len(events) != 8 {
+		t.Fatalf("admission phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	bySubscription := make(map[int64][]uint64)
+	for _, line := range events {
+		var event envelopeLine
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("event line %q: %v", line, err)
+		}
+		if event.SessionID != "multi" || event.Sequence == nil {
+			t.Fatalf("event line %q lacks scope", line)
+		}
+		bySubscription[event.ID] = append(bySubscription[event.ID], *event.Sequence)
+	}
+	if len(bySubscription) != 2 {
+		t.Fatalf("%d subscriptions attributed, want 2", len(bySubscription))
+	}
+	for id, sequences := range bySubscription {
+		if len(sequences) != 4 {
+			t.Fatalf("subscription %d delivered %d envelopes, want 4", id, len(sequences))
+		}
+		for index, sequence := range sequences {
+			if sequence != uint64(index+1) {
+				t.Fatalf("subscription %d delivered %v, want 1..4", id, sequences)
+			}
+		}
+	}
+
+	// Settle the run through both gates; both subscriptions deliver every
+	// burst, interleaved but each attributed to its own id.
+	var permission, input string
+	for _, line := range events {
+		if strings.Contains(line, `"sequence":4`) {
+			permission = line
+		}
+	}
+	f.send(`{"id":7,"op":"resolve","session_id":"multi","request":` + string(resolveFromEvent(t, "resolve-p", permission, "multi")) + `}`)
+	responses, events = f.group(11)
+	if len(responses) != 1 || len(events) != 10 {
+		t.Fatalf("permission phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	for _, line := range events {
+		if strings.Contains(line, `"sequence":8`) {
+			input = line
+		}
+	}
+	f.send(`{"id":8,"op":"resolve","session_id":"multi","request":` + string(resolveFromEvent(t, "resolve-i", input, "multi")) + `}`)
+	responses, events = f.group(7)
+	if len(responses) != 1 || len(events) != 6 {
+		t.Fatalf("input phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+
+	// Cursor subscriptions after the settled run: the gap and the replayed
+	// suffix each name their own request.
+	f.send(`{"id":5,"op":"events","session_id":"multi","after":0}`)
+	requireOK(t, f.expectResponse(5))
+	signal := f.line()
+	var gap gapLine
+	if err := json.Unmarshal([]byte(signal), &gap); err != nil {
+		t.Fatalf("gap line %q: %v", signal, err)
+	}
+	if gap.Event != signalReplayGap || gap.ID != 5 {
+		t.Fatalf("gap line %q does not name subscription 5", signal)
+	}
+	f.send(`{"id":6,"op":"events","session_id":"multi","after":10}`)
+	requireOK(t, f.expectResponse(6))
+	_, replayed := f.group(2)
+	for index, line := range replayed {
+		var event envelopeLine
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("replay line %q: %v", line, err)
+		}
+		if event.ID != 6 || event.Sequence == nil || *event.Sequence != uint64(11+index) {
+			t.Fatalf("replay line %q does not name subscription 6 at sequence %d", line, 11+index)
+		}
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestOpenOpRefusesUnknownAdapterAndExistingSession pins the open op's
+// error parity with the HTTP route it mirrors.
+func TestOpenOpRefusesUnknownAdapterAndExistingSession(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	openViaOp(t, f, "dup", "memory", 1)
+	f.send(`{"id":2,"op":"open","adapter":"none","request":` + string(requestEnvelope(t, "open-2", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "x"}, "", "")) + `}`)
+	requireCode(t, f.expectResponse(2), "unknown_adapter")
+	f.send(`{"id":3,"op":"open","adapter":"memory","request":` + string(requestEnvelope(t, "open-3", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "dup"}, "", "")) + `}`)
+	requireCode(t, f.expectResponse(3), "session_exists")
+	f.send(`{"id":4,"op":"open","request":` + string(requestEnvelope(t, "open-4", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "x"}, "", "")) + `}`)
+	requireCode(t, f.expectResponse(4), "invalid_request")
+	f.send(`{"id":5,"op":"events","session_id":"none","after":"4"}`)
+	requireCode(t, f.expectResponse(5), "invalid_cursor")
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// --- the staged adapter: overflow, oversized envelopes, rollback shapes ---
+
+// creditOut is a consumer whose reading the test meters write by write: the
+// frontend's writer may emit one line per granted credit, so a host that
+// stops reading stdout — no further credits — stalls the pipeline exactly.
+type creditOut struct {
+	credits chan struct{}
+	inner   io.Writer
+}
+
+func newCreditOut(inner io.Writer) *creditOut {
+	return &creditOut{credits: make(chan struct{}, 64), inner: inner}
+}
+
+func (c *creditOut) grant(count int) {
+	for index := 0; index < count; index++ {
+		c.credits <- struct{}{}
+	}
+}
+
+func (c *creditOut) Write(p []byte) (int, error) {
+	<-c.credits
+	return c.inner.Write(p)
+}
+
+// stagedAdapter is a test adapter whose run emits a first envelope burst,
+// parks until the test releases it, then emits a second burst and reports
+// the adapter-side event-stream overflow: the deterministic trigger for the
+// daemon's oap-overflow signal while the consumer is stalled. The hub-side
+// mailbox-drop path that produces the same signal is covered by the serve
+// package's own tests; the frontend converges both onto one line.
+type stagedAdapter struct {
+	release chan struct{}
+	// hugeAt, when nonzero, emits that sequence's envelope with a payload
+	// far larger than the frame limit under test.
+	hugeAt uint64
+	// generatedID, when set, is minted for opens that name no session id —
+	// an adapter whose generated identifiers can outrun a small frame
+	// limit.
+	generatedID string
+	// closeFails makes Close fail, for the rollback-honesty shapes.
+	closeFails bool
+	// runID, when set, overrides the run's minted id everywhere — an
+	// adapter-minted identifier of any length.
+	runID string
+	// bareEnvelopes emits envelopes whose JSON carries neither session nor
+	// run addressing, so the line-level correlation is the only place the
+	// (here huge) run id does not appear and the overflow signal alone
+	// crosses the frame limit under test.
+	bareEnvelopes bool
+}
+
+func (a *stagedAdapter) run() protocol.RunID {
+	if a.runID != "" {
+		return protocol.RunID(a.runID)
+	}
+	return "run-staged"
+}
+
+func (a *stagedAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{
+		Capabilities: protocol.CapabilityDescriptor{
+			Endpoint:         protocol.EndpointDescriptor{ID: "staged.test", Name: "Staged test adapter", Version: "0.1", Adapter: "process-memory-script"},
+			ProtocolVersions: []string{protocol.Version},
+			Profiles:         []string{protocol.Profile},
+		},
+		CapabilityRevision: "staged-test-v1",
+	}, nil
+}
+
+func (a *stagedAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	id := request.SessionID
+	if id == "" {
+		id = "staged-1"
+		if a.generatedID != "" {
+			id = protocol.SessionID(a.generatedID)
+		}
+	}
+	return &stagedSession{
+		adapter: a, id: id,
+		state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle},
+	}, nil
+}
+
+type stagedSession struct {
+	adapter *stagedAdapter
+	mu      sync.Mutex
+	id      protocol.SessionID
+	state   protocol.SessionState
+	journal []protocol.Envelope
+	settled bool
+	closed  bool
+}
+
+func (s *stagedSession) Submit(_ context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+	}
+	s.state.Status = protocol.SessionRunning
+	s.state.ActiveRunID = s.adapter.run()
+	runID := s.adapter.run()
+	s.mu.Unlock()
+	stream := make(chan base.Result, 32)
+	go func() {
+		for sequence := uint64(1); sequence <= 4; sequence++ {
+			stream <- base.Result{Envelope: s.emit(sequence)}
+		}
+		// Park: the test holds the second burst until the consumer stalls.
+		<-s.adapter.release
+		for sequence := uint64(5); sequence <= 8; sequence++ {
+			stream <- base.Result{Envelope: s.emit(sequence)}
+		}
+		s.mu.Lock()
+		s.settled = true
+		s.state.Status = protocol.SessionIdle
+		s.state.ActiveRunID = ""
+		s.mu.Unlock()
+		stream <- base.Result{Error: base.ErrEventStreamOverflow}
+		close(stream)
+	}()
+	return protocol.MessageSubmitResponse{
+		SessionID: s.id, Accepted: true, RunID: runID, Status: protocol.RunRunning,
+	}, stream, nil
+}
+
+func (s *stagedSession) emit(sequence uint64) protocol.Envelope {
+	text := fmt.Sprintf("staged %d", sequence)
+	if s.adapter.hugeAt == sequence {
+		text = strings.Repeat("x", 8192)
+	}
+	envelope, err := protocol.NewEnvelope(protocol.TypeContentDelta, protocol.EnvelopeID(fmt.Sprintf("staged-%02d", sequence)), protocol.ContentDeltaPayload{
+		MessageID: "staged-message",
+		Part:      protocol.ContentPart{Type: protocol.ContentText, Text: text},
+	})
+	if err != nil {
+		panic(err)
+	}
+	envelope.Sequence = &sequence
+	if !s.adapter.bareEnvelopes {
+		envelope.SessionID = s.id
+		envelope.RunID = s.adapter.run()
+	}
+	s.mu.Lock()
+	s.journal = append(s.journal, envelope)
+	s.mu.Unlock()
+	return envelope
+}
+
+func (s *stagedSession) State(context.Context) (protocol.SessionState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state, nil
+}
+
+func (s *stagedSession) Resolve(context.Context, base.InteractionResolution) error { return nil }
+
+func (s *stagedSession) Cancel(context.Context, protocol.RunID) (protocol.RunCancelResponse, error) {
+	return protocol.RunCancelResponse{SessionID: s.id, RunID: s.adapter.run(), Accepted: true, Status: protocol.RunCancelled}, nil
+}
+
+func (s *stagedSession) Resume(_ context.Context, request base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stream := make(chan base.Result, 32)
+	recovery := base.Recovery{State: s.state, RunID: s.adapter.run(), RequestedAfter: request.AfterSequence}
+	for _, envelope := range s.journal {
+		if envelope.Sequence != nil && *envelope.Sequence > request.AfterSequence {
+			replayed := envelope
+			stream <- base.Result{Envelope: replayed}
+		}
+	}
+	if s.settled {
+		close(stream)
+	}
+	return recovery, stream, nil
+}
+
+func (s *stagedSession) Close(context.Context) error {
+	if s.adapter.closeFails {
+		return errors.New("staged: close failed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	s.state.Status = protocol.SessionClosed
+	s.state.ActiveRunID = ""
+	return nil
+}
+
+// startStagedFrontend serves one staged adapter through real pipes with the
+// given options, for tests that meter or stall the consumer; the hub comes
+// along for runs admitted on the hub side.
+func startStagedFrontend(t *testing.T, staged *stagedAdapter, streamQueue int, options Options) (*frontend, *serve.Hub) {
+	t.Helper()
+	registry := serve.NewRegistry()
+	if err := registry.Register("staged", staged); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: streamQueue})
+	server, err := New(hub, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+	return &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), done: done}, hub
+}
+
+// TestSlowConsumerBackpressure stalls the consumer across a run's second
+// envelope burst: the writer blocks on the ungranted credit, the line queue,
+// the pump, and the bounded mailbox absorb only a bounded amount, and the
+// adapter-reported overflow surfaces as the correlated oap-overflow signal
+// with the resume cursor once the consumer returns; an events op resuming
+// after the cursor replays cleanly.
+func TestSlowConsumerBackpressure(t *testing.T) {
+	staged := &stagedAdapter{release: make(chan struct{})}
+	registry := serve.NewRegistry()
+	if err := registry.Register("staged", staged); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8})
+	server, err := New(hub, Options{WriteQueue: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	out := newCreditOut(stdoutWriter)
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, out) }()
+	f := &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), done: done}
+
+	out.grant(2)
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "slow"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(1))
+	f.send(`{"id":2,"op":"events","session_id":"slow"}`)
+	requireOK(t, f.expectResponse(2))
+
+	// The consumer keeps up through the first burst: five lines, granted.
+	out.grant(5)
+	f.send(`{"id":3,"op":"submit","session_id":"slow","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "slow", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "slow", "")) + `}`)
+	responses, events := f.group(5)
+	if len(responses) != 1 || len(events) != 4 {
+		t.Fatalf("submit phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	requireSequences(t, events, 1, 4)
+
+	// The consumer stops reading; the second burst and the adapter's
+	// overflow report flow into the bounded pipeline and stop there.
+	close(staged.release)
+	time.Sleep(100 * time.Millisecond)
+	out.grant(16)
+
+	lastSequence := uint64(4)
+	cursor := uint64(0)
+	deadline := time.After(10 * time.Second)
+	for cursor == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("frontend did not drain after the consumer returned")
+		default:
+		}
+		line := f.line()
+		if strings.HasPrefix(line, `{"id":`) {
+			continue
+		}
+		if strings.Contains(line, signalOverflow) {
+			var signal overflowLine
+			if err := json.Unmarshal([]byte(line), &signal); err != nil {
+				t.Fatalf("overflow line %q: %v", line, err)
+			}
+			if signal.RunID != "run-staged" || signal.SessionID != "slow" || signal.ID != 2 {
+				t.Fatalf("overflow signal %+v does not name the run", signal)
+			}
+			if signal.LastSequence != lastSequence {
+				t.Fatalf("overflow cursor %d, want the last delivered sequence %d", signal.LastSequence, lastSequence)
+			}
+			cursor = signal.LastSequence
+			continue
+		}
+		var event envelopeLine
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("event line %q: %v", line, err)
+		}
+		if *event.Sequence != lastSequence+1 {
+			t.Fatalf("delivered sequence %d after %d: delivery is not contiguous", *event.Sequence, lastSequence)
+		}
+		lastSequence = *event.Sequence
+	}
+	if lastSequence != 8 {
+		t.Fatalf("second burst delivered through sequence %d, want 8", lastSequence)
+	}
+
+	// The cursor at the burst's end replays nothing further; an earlier
+	// cursor replays the retained suffix exactly.
+	f.send(`{"id":4,"op":"events","session_id":"slow","after":6}`)
+	requireOK(t, f.expectResponse(4))
+	_, replayed := f.group(2)
+	requireSequences(t, replayed, 7, 8)
+	f.send(`{"id":5,"op":"state","session_id":"slow"}`)
+	requireOK(t, f.expectResponse(5))
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestOversizedEnvelopeEndsWithFrameLimitTerminal drives a staged run whose
+// second burst opens with an envelope no line can carry: the subscription
+// ends with the correlated oap-frame-limit terminal naming the position a
+// cursor resumes after, and nothing further arrives for it — the regression
+// for the pump that once ended oversized envelopes silently.
+func TestOversizedEnvelopeEndsWithFrameLimitTerminal(t *testing.T) {
+	staged := &stagedAdapter{release: make(chan struct{}), hugeAt: 5}
+	f, _ := startStagedFrontend(t, staged, 8, Options{FrameLimit: 4096})
+
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "big"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(1))
+	f.send(`{"id":2,"op":"events","session_id":"big"}`)
+	requireOK(t, f.expectResponse(2))
+	f.send(`{"id":3,"op":"submit","session_id":"big","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "big", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "big", "")) + `}`)
+	responses, events := f.group(5)
+	if len(responses) != 1 || len(events) != 4 {
+		t.Fatalf("first burst: %d responses, %d events", len(responses), len(events))
+	}
+	requireOK(t, responses[0])
+	requireSequences(t, events, 1, 4)
+
+	close(staged.release)
+	// The oversized envelope ends the subscription with the correlated
+	// terminal; nothing further arrives for it.
+	terminal := f.line()
+	var limited frameLimitLine
+	if err := json.Unmarshal([]byte(terminal), &limited); err != nil {
+		t.Fatalf("terminal line %q: %v", terminal, err)
+	}
+	if limited.Event != signalFrameLimit || limited.ID != 2 || limited.SessionID != "big" || limited.RunID != "run-staged" || limited.Sequence != 5 {
+		t.Fatalf("terminal line %q does not name the oversized position", terminal)
+	}
+	f.send(`{"id":4,"op":"state","session_id":"big"}`)
+	requireOK(t, f.expectResponse(4))
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestOversizedOpenRollsBack drives an adapter whose generated session id
+// outruns the frame limit: the open's acknowledgement cannot frame, so the
+// session is closed again before the refusal is sent — the host never
+// believes a session failed while it stays live behind an unknowable id.
+func TestOversizedOpenRollsBack(t *testing.T) {
+	staged := &stagedAdapter{generatedID: strings.Repeat("s", 400)}
+	f, _ := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-big", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")) + `}`)
+	response := f.expectResponse(1)
+	requireCode(t, response, "response_too_large")
+	if !strings.Contains(response.Error.Message, "the session was rolled back") {
+		t.Fatalf("refusal does not report the rollback: %s", response.Error.Message)
+	}
+
+	// The rolled-back session is listed with its final state, not live.
+	f.send(`{"id":2,"op":"sessions"}`)
+	var listing struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+			Status    string `json:"status"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(f.expectResponse(2).Result, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Sessions) != 1 || listing.Sessions[0].Status != "closed" {
+		t.Fatalf("rolled-back open left %+v, want one closed entry", listing.Sessions)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestOpenRollbackFailureIsReportedHonestly guards the rollback's custody:
+// a close that fails must not be reported as a rollback that happened — the
+// refusal names the possibly-live session instead.
+func TestOpenRollbackFailureIsReportedHonestly(t *testing.T) {
+	staged := &stagedAdapter{generatedID: strings.Repeat("s", 400), closeFails: true}
+	f, _ := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-big", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")) + `}`)
+	response := f.expectResponse(1)
+	requireCode(t, response, "response_too_large")
+	if !strings.Contains(response.Error.Message, "rolling the session back failed and it may still be live") {
+		t.Fatalf("refusal claims a rollback the adapter refused: %s", response.Error.Message)
+	}
+
+	// The report is honest: the session really is still live behind the
+	// refusal, exactly as the message warns.
+	f.send(`{"id":2,"op":"sessions"}`)
+	var listing struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+			Status    string `json:"status"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(f.expectResponse(2).Result, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Sessions) != 1 || listing.Sessions[0].Status != "idle" {
+		t.Fatalf("refused open left %+v, want one live idle entry", listing.Sessions)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestFrameLimitTerminalAlwaysFits pins the guarantee the frame-limit floor
+// buys: the minimal terminal signal encodes under the floor even at the
+// widest numeric ids, so a subscription never ends uncorrelated.
+func TestFrameLimitTerminalAlwaysFits(t *testing.T) {
+	line, err := json.Marshal(frameLimitLine{Event: signalFrameLimit, ID: int64(1) << 62, Sequence: uint64(1) << 63})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(line) > minFrameLimit {
+		t.Fatalf("minimal terminal encodes to %d bytes, over the %d-byte floor", len(line), minFrameLimit)
+	}
+}
+
+// TestOversizedGapSignalFallsBackToMinimal pins the gap signal's terminal
+// fallback: a session address long enough that the full oap-replay-gap line
+// would not frame — while the request line carrying it still does — gets
+// the correlated minimal form with the cursor bounds the host cannot know
+// on its own, at the frame-limit floor itself.
+func TestOversizedGapSignalFallsBackToMinimal(t *testing.T) {
+	hub := newTestHub(t, 2, 64)
+	f := startFrontend(t, hub, Options{FrameLimit: minFrameLimit})
+	longID := strings.Repeat("g", 190)
+	openSession(t, hub, longID)
+	settleMemoryRun(t, hub, longID)
+
+	f.send(fmt.Sprintf(`{"id":5,"op":"events","session_id":%q,"after":0}`, longID))
+	requireOK(t, f.expectResponse(5))
+	signal := f.line()
+	var gap gapLine
+	if err := json.Unmarshal([]byte(signal), &gap); err != nil {
+		t.Fatalf("gap line %q: %v", signal, err)
+	}
+	if gap.Event != signalReplayGap || gap.ID != 5 {
+		t.Fatalf("minimal gap line %q does not name its subscription", signal)
+	}
+	if gap.SessionID != "" {
+		t.Fatalf("minimal gap line %q still carries the oversized session address", signal)
+	}
+	if gap.OldestAvailable != 11 || gap.LatestAvailable != 12 || gap.RequestedAfter != 0 {
+		t.Fatalf("minimal gap line %q lost its cursor bounds", signal)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestOversizedSessionClosedSignalFallsBackToMinimal pins the session-closed
+// signal's terminal fallback: the minimal form carries the correlation the
+// host cannot do without when the full line's session address would not
+// frame.
+func TestOversizedSessionClosedSignalFallsBackToMinimal(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{FrameLimit: minFrameLimit})
+	longID := strings.Repeat("c", 190)
+	openSession(t, hub, longID)
+
+	f.send(fmt.Sprintf(`{"id":2,"op":"events","session_id":%q}`, longID))
+	requireOK(t, f.expectResponse(2))
+	f.send(fmt.Sprintf(`{"id":3,"op":"close","session_id":%q}`, longID))
+	requireOK(t, f.expectResponse(3))
+	signal := f.line()
+	var closed sessionClosedLine
+	if err := json.Unmarshal([]byte(signal), &closed); err != nil {
+		t.Fatalf("signal line %q: %v", signal, err)
+	}
+	if closed.Event != signalSessionClosed || closed.ID != 2 {
+		t.Fatalf("minimal signal line %q does not name its subscription", signal)
+	}
+	if closed.SessionID != "" {
+		t.Fatalf("minimal signal line %q still carries the oversized session address", signal)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestOversizedOverflowSignalFallsBackToMinimal pins the overflow signal's
+// terminal fallback: an adapter-minted run id long enough that the full
+// oap-overflow line would not frame still gets its correlated minimal form
+// with the resume cursor. The envelopes themselves are emitted without
+// embedded addressing, so they frame while only the signal crosses the
+// limit.
+func TestOversizedOverflowSignalFallsBackToMinimal(t *testing.T) {
+	staged := &stagedAdapter{
+		release:       make(chan struct{}),
+		runID:         "run-" + strings.Repeat("r", 600),
+		bareEnvelopes: true,
+	}
+	f, hub := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
+	close(staged.release)
+
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-1", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "ovf"}, "", "")) + `}`)
+	requireOK(t, f.expectResponse(1))
+	f.send(`{"id":2,"op":"events","session_id":"ovf"}`)
+	requireOK(t, f.expectResponse(2))
+
+	// The run is admitted on the hub side, so its acknowledgement (which
+	// carries the oversized run id) never crosses the framing.
+	entry, err := hub.Session(protocol.SessionID("ovf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "ovf", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both bursts frame; the overflow signal alone does not, and its minimal
+	// form names the subscription and the resume cursor.
+	responses, events := f.group(8)
+	if len(responses) != 0 || len(events) != 8 {
+		t.Fatalf("run phase: %d responses, %d events", len(responses), len(events))
+	}
+	requireSequences(t, events, 1, 8)
+	signal := f.line()
+	var overflow overflowLine
+	if err := json.Unmarshal([]byte(signal), &overflow); err != nil {
+		t.Fatalf("overflow line %q: %v", signal, err)
+	}
+	if overflow.Event != signalOverflow || overflow.ID != 2 {
+		t.Fatalf("minimal overflow line %q does not name its subscription", signal)
+	}
+	if overflow.RunID != "" || overflow.SessionID != "" {
+		t.Fatalf("minimal overflow line %q still carries the oversized identifiers", signal)
+	}
+	if overflow.LastSequence != 8 {
+		t.Fatalf("minimal overflow line %q lost its resume cursor", signal)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}

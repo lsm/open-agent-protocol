@@ -8,16 +8,24 @@
 // Host → daemon lines are one JSON object each, {"id":N,"op":...}, and ops
 // may be sent repeatedly, correlated by id; daemon → host lines are
 // responses {"id":N,"ok":true,"result":...} / {"id":N,"ok":false,"error":...},
-// interleaved by exactly one ordered writer goroutine, so every line is
-// atomic and no response is ever broken by interleaving. stderr carries
-// bounded diagnostics only.
+// envelope lines {"event":"envelope",...} for each events op's subscription,
+// and named signal lines — oap-overflow, oap-replay-gap, oap-session-closed,
+// oap-frame-limit — each correlated with the events request's id, interleaved
+// by exactly one ordered writer goroutine, so every line is atomic, no
+// response is ever broken by interleaving, and every subscription line is
+// attributable on the one shared stream. stderr carries bounded diagnostics
+// only.
 //
 // The operations mirror serve/servehttp one to one with identical semantics
 // — the same verbatim schema/v0.1 envelopes, the same request gate, the same
-// error codes — with the session-registration ops (open, events) joining the
-// surface with their ordering slice. The line-shape refusals
-// (invalid_request, unknown_op) and the frame-limit refusal are this
-// framing's own layer and have no HTTP counterpart.
+// error codes. The open and events registration ops run synchronously in the
+// read loop — open registers its session and events its subscription before
+// the next line is read — so a host that pipelines the canonical
+// open → events → submit cannot race a registration or miss the run's first
+// envelope; each events op then serves its subscription from its own pump
+// goroutine. The line-shape refusals (invalid_request, unknown_op) and the
+// frame-limit refusal are this framing's own layer and have no HTTP
+// counterpart.
 //
 // Framing is strict in both directions, the same discipline the adapters'
 // internal rpc codecs apply to their own child stdio: one LF-terminated
@@ -196,6 +204,14 @@ var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded w
 // hub after Run returns, on every exit path. Run itself never writes to
 // stderr; it returns the failure for the caller to report.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
+	// The serving context ends with Run: a subscription pump parked in its
+	// next delivery or in a send is released by the cancellation rather
+	// than parking on a writer that already drained and exited — the lines
+	// channel is never closed, so the send would otherwise park until
+	// process exit.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	lines := make(chan []byte, s.writeQueue)
 	stop := make(chan struct{})
 	writerFailed := make(chan struct{}, 1)
