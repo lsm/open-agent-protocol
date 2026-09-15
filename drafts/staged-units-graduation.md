@@ -1184,17 +1184,28 @@ No new envelope types. Additive fields:
   The response already has to repeat the requested delivery
   (`scope_mismatch`), so a resolution cannot be hidden by rewriting it.
 - New diagnostic `queue_order_violation`: any sequenced stream event of a
-  later-admitted run, not only `run.started` but also a pre-start
-  `run.cancelled` or `run.failed` and anything else the adapter emits in
-  its domain, appearing while an earlier-admitted run in the session is
-  nonterminal. Requests and responses addressed to the queued run are
-  exempt (`run.cancel.request` and `.response` are run-scoped envelopes,
-  and cancelling a queued run before promotion necessarily happens while
-  the earlier run is nonterminal): the rule governs the adapter's
-  timeline, not the control layer's commands. This is the one-run-domain
-  delivery rule above applied to the trace, so a queued run cancelled
-  before promotion has its cancel exchange at once and its terminal after
-  the earlier run's terminal in every conforming trace.
+  later-admitted run appearing while an earlier-admitted run in the
+  session is nonterminal. Two things are exempt. Requests and responses
+  addressed to the queued run (`run.cancel.request` and `.response` are
+  run-scoped envelopes, and cancelling a queued run before promotion
+  necessarily happens while the earlier run is nonterminal): the rule
+  governs the adapter's timeline, not the control layer's commands. And
+  the pre-start terminal of a run that never started — a `run.cancelled`
+  or `run.failed` for a queued reservation that settles before promotion
+  — which is published at once rather than held until the earlier run's
+  terminal. Holding it was the stricter reading and it bought nothing:
+  the rule exists to keep one run's *execution* from interleaving with
+  another's, and a run that never started has no execution to interleave.
+  Holding it cost a great deal, because the release of a queued
+  reservation is capacity, and withholding the only evidence of it left
+  the trace unable to tell a legitimate reuse of a freed slot from an
+  over-admission, with every repair for that — a deferral, a declared
+  release, a timestamp comparison — either too weak to catch the real
+  breach or too broad to spare the conforming adapter. Publishing the
+  terminal when it happens makes the release observable in the trace at
+  the moment it occurs, so ordering is provable by construction and the
+  bound is checked against what actually happened. Everything else the
+  adapter emits in a later-admitted run's domain still violates the rule.
 - New diagnostic `queue_limit_exceeded`: when the descriptor carries
   `limits`, a `queued` admission that would put the session's nonterminal
   set above `max_active_runs_per_session` or its queued subset above
@@ -1281,33 +1292,19 @@ No new envelope types. Additive fields:
   terminates, so the trace still counts it nonterminal and would report
   `queue_limit_exceeded` against a conforming adapter. The validator
   cannot see the settlement, and waiting for an optional state read is
-  not a rule. Nor is a blanket deferral: "an earlier-admitted run is
-  nonterminal" is true of essentially every queued admission, so
-  suspending the check on it would suspend it always, and a trace that
-  ends before that run terminates — a conformance trace, a long session —
-  would never reconcile and an over-admitting adapter would simply pass.
-  The adapter therefore states the fact instead of the validator
-  guessing it. A `queued` admission that reuses a reservation whose
-  pre-start terminal is still withheld names that run in
-  `released_run_id` on the `session.message.submit.response` (additive,
-  present only in that case). The claim is narrow, checkable, and
-  self-punishing: the deferral applies to that one named reservation and
-  no other, so an admission over the bound with nothing released is
-  diagnosed immediately as before; and when the withheld terminal is
-  published it must show that run settling pre-start, so a fabricated
-  `released_run_id` — a run that promotes normally, or never settles — is
-  `queue_limit_exceeded` on the admission that claimed it, at the point
-  the claim is disproved. An adapter that cannot or will not disclose the
-  release simply waits for the terminal to publish before reusing the
-  slot, which is always available to it. Fixtures
-  `queue-reuses-slot-of-held-terminal` (positive; a queued
-  run cancelled pre-start under `max_queued_runs_per_session: 1`, a new
-  queued admission naming it in `released_run_id`, then both
-  terminals in order), `queue-over-limit-behind-held-terminal`
-  (`queue_limit_exceeded` at the admission; a second queued admission
-  with no release to name) and `queue-false-released-run`
-  (`queue_limit_exceeded`; a `released_run_id` naming a run that
-  afterwards promotes and completes normally).
+  not a rule. The ordering rule is what made the settlement invisible, so
+  the fix is there rather than here: a queued run's pre-start terminal is
+  published when it happens, as the exemption above sets out. Capacity is
+  then observable in the trace at the moment it changes, and this rule
+  needs no deferral, no declared release, and no timestamp: an admission
+  is judged against the reservations the trace shows outstanding, and one
+  that reuses a slot the trace has already seen freed is simply within
+  the bound. Fixtures `queue-reuses-slot-of-settled-reservation`
+  (positive; a queued run cancelled pre-start under
+  `max_queued_runs_per_session: 1`, its terminal published at once, then
+  a new queued admission) and `queue-over-limit-after-settlement`
+  (`queue_limit_exceeded`; two new admissions where one slot was
+  freed).
   In-flight reservations are
   such a condition. Concurrent submits contend for the last slot, and the
   one that takes it may still be awaiting its own response when a later
@@ -1369,14 +1366,21 @@ No new envelope types. Additive fields:
   self-describing instead. The entry is then judged exactly: an
   interaction unresolved at `as_of_sequence` must be listed, one resolved
   by then must not be, and `session_state_mismatch` otherwise, with no
-  window and no guessing. `as_of_sequence` must not exceed the run's
-  tracked cursor when the response arrives (`session_state_mismatch`, so
-  a snapshot cannot claim a position the run has not reached).
+  window and no guessing. `as_of_sequence` may name a position the trace has not reached: an
+  interaction can resolve inside the adapter before capture while the
+  event carrying that sequence is drained after the state response, and
+  an accurate snapshot must be able to point at it. Such an entry is not
+  rejected but held, and reconciled when the named sequence arrives; if
+  the run terminates or the trace ends first, the entry is judged at the
+  last sequence the run reached, and a position that run never reaches is
+  `session_state_mismatch` then — a snapshot may describe a position the
+  trace has not yet seen, but not one that never exists.
   `pending_steers` is judged at the same position, for the same reason.
   Fixtures `queue-state-interaction-resolved-in-flight`
-  (positive; a snapshot whose `as_of_sequence` precedes a resolution
-  published before the state response) and
-  `queue-state-as-of-ahead-of-run` (`session_state_mismatch`). This check lands here with the field so that a
+  (positive; a snapshot whose `as_of_sequence` names a resolution
+  drained only after the state response, reconciled when it arrives) and
+  `queue-state-as-of-never-reached` (`session_state_mismatch`; a position
+  the run never reaches before its terminal). This check lands here with the field so that a
   T2-only endpoint with a run blocked on a permission or user-input
   interaction cannot emit an entry without the id (T2 fixture
   `queue-state-omits-pending-interaction`); the interaction condition is
@@ -1387,24 +1391,16 @@ No new envelope types. Additive fields:
   order with consistent `queue_position`; `active_run_id` must be the
   started run; otherwise `session_state_mismatch`. One reconciliation
   follows from the delivery rule: a queued run that settles before
-  promotion has its terminal held until the earlier run's terminal, while
-  the snapshot says when it actually settled, so a snapshot may already
-  omit a tracked queued run whose terminal has not been delivered. The
-  validator then marks that run settled-pending-delivery: its pre-start
-  terminal must still arrive, after the earlier run's terminal
-  (`queue_order_violation` if earlier, `session_state_mismatch` at the end
-  of the trace if never), no later snapshot may list it again, and the
-  omission must be true when made: the held terminal's `timestamp_ms`,
-  when it is delivered, must be no later than the omitting snapshot's
-  `updated_at_ms`, otherwise the snapshot is diagnosed
-  `session_state_mismatch` at that point, since it dropped a run that was
-  still reserved. Both fields are optional in the schemas, so the
-  reconciliation is available only with evidence: an omitting snapshot
-  without `updated_at_ms`, or a held terminal without `timestamp_ms`,
-  leaves the validator unable to tell an early settlement from a
-  premature drop and is diagnosed as the drop (the reference adapter and
-  the daemon stamp both, so conforming traces always qualify). A started
-  run is never reconciled this way; its terminal is never held.
+  promotion now publishes its terminal at once, so a snapshot that omits
+  a queued run is checked against that terminal rather than against a
+  timestamp: the omission is conforming when the run's pre-start terminal
+  precedes the snapshot in the trace, and `session_state_mismatch` when
+  it does not, since the snapshot dropped a run still reserved. Ordering
+  is read from the trace, which is total, rather than from
+  `updated_at_ms` and `timestamp_ms`, which are optional and can tie
+  inside one millisecond — two events stamped the same would have let a
+  premature drop pass. No run is settled-pending-delivery any more, and a
+  started run's terminal was never held in any case.
 
 ### Reference adapter
 
@@ -1534,16 +1530,20 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
 ### Fixtures
 
 Positive: `queue-explicit-idle-promoted`, `queue-busy-then-promoted`,
-`queue-busy-cancelled-prestart` (its pre-start terminal after the first
-run's terminal), `queue-state-active-runs`,
+`queue-busy-cancelled-prestart` (its pre-start terminal published at
+once, while the first run is still nonterminal),
+`queue-state-active-runs`,
 `queue-state-reflects-early-settlement` (a snapshot omitting the
-cancelled queued run before its held terminal is delivered),
+cancelled queued run, after its pre-start terminal),
 `queue-model-mutation-at-promotion` (a `session_mutation` descriptor, a
 queued submit naming another model, `current_model_id` unchanged until the
 first run's terminal). Negative:
 `queue-promoted-out-of-order` (`queue_order_violation`),
 `queue-prestart-terminal-interleaved` (`queue_order_violation`; a queued
-run's pre-start `run.cancelled` before the started run's terminal),
+run's `run.started` before the earlier run's terminal — its pre-start
+`run.cancelled` is exempt and covered by the positive above),
+`queue-state-drops-reserved-run` (`session_state_mismatch`; a snapshot
+omitting a queued run whose pre-start terminal has not been published),
 `queue-idle-unadvertised` (`unavailable_capability` on the admission;
 explicit `queue` on an idle session with the capability unadvertised,
 admitted `queued`), the correct rejection
