@@ -2447,9 +2447,24 @@ therefore needs a steer settlement, not only a steer admission.
   and whether it was `applied` or `dropped`, and entries survive their
   run's terminal. It is bounded like any recovery surface — the hub keeps
   the most recent entries per session, the same retention the journal
-  uses, and a caller reading a truncated list is told so by the same
-  mechanism that reports a replay gap — so the surface cannot grow
-  without limit over a long session. Pending steers stay on the
+  uses — so it cannot grow without limit over a long session. The bound
+  needs a marker of its own: `oap-replay-gap` reports a run-stream cursor
+  that fell outside the window and says nothing about this list, which is
+  retained independently and can evict an older entry while every stream
+  a caller reads is intact. Without a signal, an eviction is
+  indistinguishable from "never admitted" — the one inference this
+  surface exists to make safe — and a caller would resend guidance that
+  already landed. So `settled_steers` is not a bare list but
+  `{ "entries": [...], "complete": bool, "evicted_before_ms": int? }`:
+  `complete` is true while nothing has been evicted for the session, and
+  once an eviction occurs it is false and `evicted_before_ms` gives the
+  settlement time of the oldest retained entry. Recovery reads it
+  directly: with `complete` true, absence is conclusive; with it false, a
+  caller whose request predates `evicted_before_ms` learns only that the
+  answer is no longer available and must decide as it would on any
+  unknown outcome, rather than being told a falsehood. A caller whose
+  request is newer than the watermark still gets a conclusive answer, so
+  truncation degrades the surface gradually instead of silently. Pending steers stay on the
   `active_runs` entry, where a live run's state belongs; settled ones
   move to the session, where they outlive it. A caller that missed
   the settlement reads the outcome instead of inferring it from silence,
@@ -2640,7 +2655,27 @@ for that run, submission and request id alike, so an omitted pending
 steer, a wrong `request_id`, or a settled one still listed
 is `session_state_mismatch` (fixtures `steer-state-omits-pending`,
 `steer-state-retains-settled`); without this the state surface a
-submitter recovers the id from could silently lie.
+submitter recovers the id from could silently lie. The session-level
+`settled_steers` is held to the same standard, and for the stronger
+reason: a caller consults it precisely when it did not see the
+settlement, so it has nothing of its own to check the answer against.
+The validator keeps every settlement it observed and requires the
+snapshot's `entries` to match that history — each observed settlement
+present with the `run_id`, `submission_id`, `request_id`, and
+`applied`/`dropped` outcome the trace recorded, no entry the trace never
+settled, and no settlement omitted unless the snapshot admits truncation.
+That last clause is what makes `complete` and `evicted_before_ms`
+load-bearing rather than decorative: an omission is legal only when
+`complete` is false and the missing settlement is older than
+`evicted_before_ms`, and `complete: true` alongside any missing
+settlement is itself the diagnostic. Fixtures
+`steer-settled-history-omits-entry` (a settled steer missing from a
+snapshot claiming `complete: true`),
+`steer-settled-history-wrong-outcome` (`applied` reported for a dropped
+steer), `steer-settled-history-invents-entry` (an entry for a submission
+the trace never settled) and `steer-settled-history-truncated`
+(positive; an omission under `complete: false` with the settlement older
+than the watermark) — all `session_state_mismatch` but the last.
 
 ### Reference adapter and evidence
 
