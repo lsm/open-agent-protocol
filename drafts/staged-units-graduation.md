@@ -1251,6 +1251,28 @@ No new envelope types. Additive fields:
   the two envelopes the trace already has. Fixture
   `queue-limit-cleared-mid-window` (positive; the bound reached at the
   request, cleared before the response, refused `run_active`).
+  The ordering rule creates the same blind spot on the admission side. A
+  queued run that settles before promotion has released its reservation
+  and the adapter may admit another in its place, but `queue_order_violation`
+  withholds its pre-start terminal until the earlier-admitted run
+  terminates, so the trace still counts it nonterminal and would report
+  `queue_limit_exceeded` against a conforming adapter. The validator
+  cannot see the settlement, and waiting for an optional state read is
+  not a rule. So while the ordering rule is withholding anything — that
+  is, while any earlier-admitted run in the session is nonterminal, the
+  condition under which a later run's pre-start terminal cannot yet be
+  published — a bound breach is not diagnosed at the admission. It is not
+  forgotten either: the withheld terminals arrive when the earlier run
+  terminates, the counts reconcile against them, and an admission that
+  really did exceed the bound is diagnosed then, on the envelope that
+  proves it. The deferral costs a later diagnosis and buys never
+  convicting an adapter for capacity the trace was not yet allowed to
+  see. Fixtures `queue-reuses-slot-of-held-terminal` (positive; a queued
+  run cancelled pre-start under `max_queued_runs_per_session: 1`, a new
+  queued admission before the held terminal is published, then both
+  terminals in order) and `queue-over-limit-behind-held-terminal`
+  (`queue_limit_exceeded` at the reconciliation; two new admissions where
+  only one slot was freed).
   In-flight reservations are
   such a condition. Concurrent submits contend for the last slot, and the
   one that takes it may still be awaiting its own response when a later
@@ -2680,7 +2702,21 @@ explicit `target_run_id` the endpoint has no run for, and it ranks
 immediately after `cross_session`, ahead of `no_active_run`, because a
 caller that named a run is owed an answer about that run: told
 `no_active_run` it would wait for a run to start and retry an id that
-will never resolve. None of the existing conditions describes it: it is not another session's run, has no
+will never resolve. Telling the two apart is the hub's job, not the
+adapter's, and the plan says which surface owns it. `adapter.Session`'s
+registry is session-local and `serve.Session.Submit` delegates straight
+through, so an adapter handed another session's run id cannot
+distinguish it from a fabricated one and would answer `unknown_target`
+for both. The hub can: `serve`'s `sessionRegistry` already holds every
+session for the endpoint's lifetime (`serve/session.go:18-21`, entries
+surviving close), so it gains a run-owner index over that registry and
+classifies an explicit `target_run_id` before delegating — refusing
+`cross_session` itself when the id belongs to another of its sessions
+and passing the submit through otherwise. The validator's rule follows
+the same division: `cross_session` is required where the trace shows the
+run in another session of the same endpoint, and `unknown_target` where
+the trace shows the run nowhere, so each party is held only to what it
+can know. None of the existing conditions describes it: it is not another session's run, has no
 lifecycle state to report, and the session may well have a started run,
 so `no_active_run` would be false as well as unhelpful. Without it, a
 caller naming a run that never existed (a typo, a stale id from a
