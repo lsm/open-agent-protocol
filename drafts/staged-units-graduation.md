@@ -210,7 +210,8 @@ descriptor: `id` (reverse-DNS, the pack's namespace), `version`, and
 **Pack.** A pack is that descriptor plus its schema files and,
 optionally, its own fixture manifest in the existing fixture format. The
 descriptor declares what the pack defines — `capability_keys`,
-`envelope_types`, `error_codes` — rather than leaving it to be inferred
+`envelope_types`, `error_codes`, and the `payload_members` it adds to
+core payloads — rather than leaving it to be inferred
 from the schemas, so containment can be checked before anything is
 compiled.
 
@@ -229,7 +230,8 @@ construction knows nothing a pack declares.
 
 So the descriptor carries the mapping explicitly: `gates`, from each
 declared envelope type — and each control member a pack adds to an
-existing payload — to the capability key that must be advertised for it,
+existing payload, for which see `payload_members` below — to the
+capability key that must be advertised for it,
 which containment already requires to be one of the pack's own. Every
 declared type must appear in `gates` or be declared ungated, stated
 rather than omitted, so a missing entry is a load refusal and not a
@@ -241,6 +243,37 @@ refusal is owed, an admission is `unavailable_capability`, and the
 refusal is itself validated. An extension capability is fail-closed in
 the same machinery as a core one, which is the claim T0 makes, and this
 is what makes it implementable generically rather than per pack.
+
+A control member added to an existing core payload needs more than a
+gate, because nothing in the format so far can carry its *shape*. New
+envelope types arrive as whole branches, but a member on
+`session.message.submit.request` has no branch of its own: the strict
+core payload is `additionalProperties: false` and rejects it, the
+tolerant compile ignores it, and loading the pack would validate it in
+neither. A packed control would then be gated but unchecked — worse than
+an unknown one, because the gate implies it was understood. So the
+descriptor declares `payload_members`, each entry naming a core payload
+type, the member it adds — prefixed, like every other declared name, so
+containment and prefix-freedom already keep two packs apart — and the
+subschema that member's value must satisfy.
+
+Composition is additive and stated as such. The compile adds each
+declared member to that payload's `properties` and nothing else: it does
+not lift `additionalProperties`, so an *undeclared* member is still
+rejected in strict mode exactly as today; it does not touch `required`,
+so a pack cannot make a core member optional or a new one mandatory; and
+it cannot restate a member the core payload already defines, which is a
+load refusal rather than an override, since a pack that could narrow
+`model_id` would change core validity through the door T0 closes
+everywhere else. The result is that core payloads accept precisely their
+own members plus the declared ones, in both modes, and the member is
+validated when its pack is loaded and tolerated as unknown when it is
+not — the same tolerance-becomes-conformance the envelope types get.
+Fixtures `ext-member-validated` (a packed member with a body its
+subschema rejects: tolerated without the pack, diagnosed with it),
+`ext-member-undeclared-still-rejected` (positive; a different unknown
+member still refused by the strict core payload with the pack loaded),
+and `ext-pack-restates-core-member` (load refusal).
 
 ### Semantics
 
@@ -1464,8 +1497,30 @@ No new envelope types. Additive fields:
   queue submission with `run_active` — the empty promise this rule
   exists to prevent, reached by another door. Only an `unavailable` or
   absent capability is exempt, because neither claims anything.
-  `max_active_runs_per_session` stays optional throughout: absent, it
-  means one started run, unenforced.
+  The two bounds have to agree, or the disclosure can be satisfied by
+  numbers that still forbid what the capability claims. Queued
+  reservations are listed in `active_runs` and counted by
+  `max_active_runs_per_session`, so an endpoint advertising the queue
+  with `max_active_runs_per_session: 1` beside
+  `max_queued_runs_per_session: 1` has disclosed a positive queue bound
+  the active bound can never let it reach: one started run fills the
+  active set, and every queued reservation beside it exceeds that set, so
+  the adapter refuses every busy submission with `run_active` and passes
+  both disclosure rules. That is the same empty promise those rules
+  exist to prevent, reached through the second number rather than the
+  first. Where the capability is available or `degraded`, the active
+  bound must therefore leave room for the queued subset beside a started
+  run — `max_active_runs_per_session` at least
+  `max_queued_runs_per_session + 1`, so at least 2 for any queue at
+  all — and a descriptor whose bounds do not satisfy that is
+  `undisclosed_queue_limit` on the `capabilities.response`, the same
+  diagnostic for the same failure (fixture
+  `queue-advertised-active-bound-one`). `max_active_runs_per_session`
+  stays optional throughout, and its absence still means one started run,
+  unenforced — but absent is not the same as disclosed-and-incompatible:
+  an endpoint that never states an active bound has promised nothing
+  about it and is judged on the queue bound alone, while one that states
+  a bound is held to the arithmetic it implies.
 - Typed error `run_active` (the daemon's existing code, adopted as the
   protocol code; the research draft's `session_busy` name is superseded): a
   submission that cannot be admitted because the session is busy and no
