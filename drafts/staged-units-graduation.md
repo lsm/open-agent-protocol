@@ -338,17 +338,31 @@ and `ext-pack-restates-core-member` (load refusal).
   as every graduated unit makes.
 - A pack's *own* fixtures are the separate mechanism, and a static unit
   cannot express them: `LoadManifest` today rejects any unit outside that
-  map (`validation/manifest.go:70`, `:97-100`) and any diagnostic code
-  outside `diagnosticCodes()` (`:89-93`), so a pack's fixtures — which
-  assert the pack's diagnostics under the pack's claim — cannot be loaded
-  at all. Both admissions are therefore derived from the packs actually
-  loaded rather than added to the hard-coded lists: a unit term
-  `ext:<pack id>/<version>` is accepted exactly when that pack is loaded
-  and its version matches, and a diagnostic code is accepted when a
-  loaded pack declares it in `error_codes`. Nothing is widened for a run
-  that loads no packs, which is every core run, so the core lists keep
-  their present meaning and a stale or misspelled pack claim still fails
-  closed.
+  map (`validation/manifest.go:70`, `:97-100`), so a pack's fixtures
+  cannot be loaded at all. The unit term is therefore derived from the
+  packs actually loaded rather than added to the hard-coded list: an
+  `ext:<pack id>/<version>` term is accepted exactly when that pack is
+  loaded and its version matches. Nothing is widened for a run that
+  loads no packs, which is every core run, so the list keeps its present
+  meaning and a stale or misspelled pack claim still fails closed.
+- Diagnostic codes are *not* admitted the same way, and the reason is a
+  boundary the plan draws everywhere else: an `error.response` code is
+  wire vocabulary the endpoint emits, and a validator diagnostic is what
+  the validator says about a trace, and the two do not correspond
+  (T1's empty `model_id` is refused `model_not_found` and diagnosed
+  `unsatisfiable_control`). A pack's `error_codes` are the first kind. A
+  pack ships schemas and gate metadata, not code, so there is no
+  mechanism by which it could *produce* a diagnostic of its own, and
+  admitting one into a manifest would load an expectation nothing can
+  ever emit. `diagnosticCodes()` (`:89-93`) is therefore untouched: a
+  pack's fixtures assert only what the validator can actually say about
+  packed content — a schema-phase failure on the pack's own branch or
+  member, the gate diagnostics `unavailable_capability` and
+  `unhonoured_capability` resolved through `gates`, and the load
+  refusals. That is the honest extent of the seam T0 opens: schema and
+  gate, not stateful semantics. Pack-supplied validation rules, and with
+  them pack-defined diagnostics, are deliberately later and listed as
+  such below.
 - The two directions are kept apart deliberately: a pack's fixture may
   not claim a core unit, and a core fixture may not claim an `ext:` term.
   Without that a pack could contribute evidence toward `+queue`, which is
@@ -447,9 +461,9 @@ control, `queue_limit_exceeded` for a bound that never bound,
 arrays — and otherwise the generic `unhonoured_capability`, new here: an
 operation within every disclosed constraint refused on an endpoint that
 advertises the governing key, where no unit-specific rule names a
-defect. The generic form is what a pack's fixtures assert unless the pack
-declares a diagnostic of its own, and it is what two core keys turned
-out to need.
+defect. The generic form is what a pack's fixtures assert — a pack has
+no diagnostics of its own, for the reason the validator section gives —
+and it is what two core keys turned out to need.
 
 Run against the plan as it stands, the check finds five gaps, which is
 the argument for it. Each is closed in its unit's fixture list, and
@@ -4628,6 +4642,11 @@ idempotent admission; cross-process replay and continuity leases; orphan
 terminals; retained-interaction reassociation and deadlines; runtime
 tool-source attach and detach; per-submit control-layer tools; model
 resolution and aliases; auth login flows; skills at the wire level.
+Added by T0: pack-supplied stateful validation rules and pack-defined
+diagnostics — T0's seam is schema and gate only, since a pack ships no
+code and the validator cannot run what it does not contain; a way for a
+pack to carry semantics is a separate design with its own evidence
+question.
 
 ## Open items for the per-unit decisions
 
