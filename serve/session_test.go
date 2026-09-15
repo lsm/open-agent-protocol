@@ -1970,6 +1970,35 @@ func TestStateReportingClosedClosesEntry(t *testing.T) {
 	}
 }
 
+// TestCloseReportingClosedClosesEntry pins the Close wrapper's own half of
+// the adapter-closed convention: an adapter whose Close reports the session
+// already closed has confirmed the outcome the close sought — the hub-side
+// entry closes (a live subscriber would otherwise park forever on a session
+// that can never run again) while the sentinel still returns for the
+// caller's already-closed refusal.
+func TestCloseReportingClosedClosesEntry(t *testing.T) {
+	entry := newSession("close-death", "stub", &idleClosedSession{id: "close-death"})
+	sub, ok := entry.subscribe(8)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+	if err := entry.Close(context.Background()); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("close error %v, want the adapter's already-closed sentinel", err)
+	}
+	if !entry.IsClosed() {
+		t.Fatal("the entry did not record the closed adapter session")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	subscription := &Subscription{session: entry, ctx: ctx, sub: sub}
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal %v, want the clean end of a closed session", err)
+	}
+	if _, ok := entry.subscribe(8); ok {
+		t.Fatal("subscribe on the closed entry was accepted")
+	}
+}
+
 // stubSession settles its run asynchronously after Cancel: Close keeps
 // refusing until settleAfter cancels have been issued, mimicking adapters
 // that acknowledge a cancel before the run settles.

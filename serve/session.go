@@ -194,13 +194,21 @@ func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.Ru
 
 // Close closes the adapter session. An active run refuses the close by
 // contract; cancel it first. On success the entry stays listed with its
-// final state and subscriptions are refused from then on.
+// final state and subscriptions are refused from then on; an adapter
+// reporting the session already closed confirms that state hub-side too,
+// mirroring the terminal Submit and State rejections, while the sentinel
+// still returns for the caller's already-closed refusal.
 func (s *Session) Close(ctx context.Context) error {
-	if err := s.session.Close(ctx); err != nil {
-		return err
+	err := s.session.Close(ctx)
+	// An adapter that reports the session already closed has confirmed the
+	// outcome this close sought: the hub-side entry is marked closed either
+	// way — a live subscriber would otherwise park forever on a session
+	// that can never run again — while the sentinel still surfaces, so the
+	// callers' already-closed refusals keep their shape.
+	if err == nil || errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
 	}
-	s.markClosed()
-	return nil
+	return err
 }
 
 // subscriber is one subscription's bounded mailbox. The channel is never

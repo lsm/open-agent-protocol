@@ -1523,6 +1523,10 @@ type stagedAdapter struct {
 	generatedID string
 	// closeFails makes Close fail, for the rollback-honesty shapes.
 	closeFails bool
+	// alreadyClosed makes Close report the session already closed — the
+	// shape of an adapter whose child died between the open's confirmed
+	// state and the rollback's close.
+	alreadyClosed bool
 }
 
 func (a *stagedAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -1645,6 +1649,9 @@ func (s *stagedSession) Resume(_ context.Context, request base.ResumeRequest) (b
 func (s *stagedSession) Close(context.Context) error {
 	if s.adapter.closeFails {
 		return errors.New("staged: close failed")
+	}
+	if s.adapter.alreadyClosed {
+		return base.ErrSessionClosed
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1942,6 +1949,34 @@ func TestOversizedSessionClosedSignalFallsBackToMinimal(t *testing.T) {
 	if closed.SessionID != "" {
 		t.Fatalf("minimal signal line %q still carries the oversized session address", signal)
 	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// TestOpenRollbackOfAlreadyClosedSession guards the rollback's
+// already-closed branch: an adapter whose session died between the open's
+// confirmation and the rollback reports ErrSessionClosed from Close — the
+// outcome the rollback sought — so the refusal still reports the session as
+// rolled back, and the hub-side entry is closed: a fresh events op is
+// refused rather than parking forever on a session that can never run
+// again.
+func TestOpenRollbackOfAlreadyClosedSession(t *testing.T) {
+	staged := &stagedAdapter{generatedID: strings.Repeat("s", 400), alreadyClosed: true}
+	f := startStagedFrontend(t, staged, 8, Options{FrameLimit: 640})
+	f.send(`{"id":1,"op":"open","adapter":"staged","request":` + string(requestEnvelope(t, "open-big", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")) + `}`)
+	response := f.expectResponse(1)
+	requireCode(t, response, "response_too_large")
+	if !strings.Contains(response.Error.Message, "the session was rolled back") {
+		t.Fatalf("refusal does not report the rollback: %s", response.Error.Message)
+	}
+
+	// The entry is closed hub-side — the adapter's state read still races
+	// the death it discovered at close, so the listing is not the marker; a
+	// fresh subscription on the entry is refused instead of parking forever
+	// on a session that can never run again.
+	f.send(fmt.Sprintf(`{"id":2,"op":"events","session_id":%q}`, staged.generatedID))
+	requireCode(t, f.expectResponse(2), "session_closed")
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
