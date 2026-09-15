@@ -1683,7 +1683,19 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   released reservation and make a valid replacement admission look
   over-limit, which is the failure the exception exists to prevent; and
   because that run never started, the envelope is the only one its domain
-  will ever produce. A subscription's replay cursor already
+  will ever produce. The exception is scoped to subscriptions that follow
+  the session (`?follow=session`, below), and a subscription that does
+  not follow never receives it. A legacy client is not merely uninformed
+  by a second domain, it is broken by one: both clients read a sequence-1
+  envelope naming another run as a live run switch, mark that run
+  terminal, and then fail the next envelope from the still-running
+  earlier run, which is long past sequence 1. And the failure the
+  exception exists to prevent cannot reach that client — it cannot queue,
+  so it has no reservation to be misled about; the accounting it would
+  distort belongs to the T2-aware caller, which is following, and which
+  can read `active_runs` besides. Non-following subscriptions therefore
+  keep single-domain delivery exactly: the run they are bound to and
+  nothing else. A subscription's replay cursor already
   carries `(RunID, AfterSequence)`: resume replays that run's retained
   suffix and, when the subscription follows the session (below), continues
   into later-admitted runs in order, and the hub stops assuming the newest
@@ -1700,7 +1712,11 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   tests cover the interleaving end to end, because T2 is where it first
   occurs: a queued reservation cancelled pre-start under a started run,
   its terminal delivered live, and a resume across the drop that replays
-  it exactly once.
+  it exactly once — and the same scenario read by a subscription that
+  does not follow, which must see A's envelopes alone and B's terminal
+  never, plus a bare-cursor reconnect on a non-following subscription
+  whose sequence also falls inside a retained earlier run, which must
+  resume on the started run with no `oap-replay-gap`.
 - `serve/servehttp`: the SSE `id:` field stays the bare sequence, because
   both v0.1 clients parse it as an unsigned integer (`strconv.ParseUint` in
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
@@ -1715,16 +1731,33 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   read against B — while resolving onto the earliest retained domain
   breaks the opposite case, a client reading B whose cursor also falls
   inside retained A's range. No function of the number alone is right for
-  both. The daemon therefore resolves a bare cursor only when exactly one
-  retained domain reaches that sequence, which covers every single-run
-  session — today's behaviour, unchanged — and when more than one does,
-  it does not guess: it emits `oap-replay-gap` naming the candidates in
+  both. The rule therefore splits on what the subscription asked for,
+  because the two kinds of subscriber cannot hold the same kind of
+  cursor. A subscription that does not follow the session has only ever
+  delivered one run domain and ends at that run's terminal, so a bare
+  cursor on it can only have come from the current run: the daemon keeps
+  the v0.1 binding and resolves it against the started run, ambiguity or
+  not. That is not a guess — the subscription's own history makes it the
+  single possible origin — and it matters, because emitting a gap here
+  would break a case that needs no queue at all to reach: finish A,
+  submit B, read one event, drop, reconnect with `?after=n` that retained
+  A also spans. Both current clients surface `oap-replay-gap` as a
+  terminal `ReplayGapError`, so under any other rule upgrading the daemon
+  would break the client behaviour this plan promises to leave alone. A
+  following subscription is the one that can carry a cursor from a domain
+  other than the started run, and only there is a bare number genuinely
+  ambiguous. So on a following subscription the daemon resolves a bare
+  cursor when exactly one retained domain reaches that sequence, which
+  still covers every single-run session, and when more than one does it
+  does not guess: it emits `oap-replay-gap` naming the candidates in
   `ambiguous_run_ids` and resumes from the started run's current
-  position. A client that can send `?run=` then does; one that cannot
-  learns it lost continuity instead of silently receiving another run's
-  stream, which is the outcome worth protecting, since a signalled gap is
-  recoverable and a wrong run is not. `?run=` remains the way to be
-  unambiguous, and both clients send it from T2 on. The payload is stated
+  position. Such a client is T2-aware by construction and sends `?run=`,
+  so the gap is the rare repair path, not the ordinary one: it responds
+  by sending `?run=`, and until it does it learns it lost continuity
+  instead of silently receiving another run's stream, which is the
+  outcome worth protecting there, since a signalled gap is recoverable
+  and a wrong run is not. `?run=` remains the way to be unambiguous, and
+  both clients send it from T2 on. The payload is stated
   once, here: `oap-overflow` and `oap-replay-gap` both carry `run_id`, and `run_id` always names the
   single run whose stream the client is now reading — the run the daemon
   resumed from, never the ambiguity — so a client can resume the right
