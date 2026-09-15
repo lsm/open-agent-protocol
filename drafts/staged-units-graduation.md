@@ -581,12 +581,22 @@ refused it — and an admission of a schema it does not satisfy is
 complete nonconforming. Where no `fixed_result` is declared the endpoint
 is claiming no such constraint, and a refusal citing one is
 `unsatisfiable_control` all the same: an adapter cannot both withhold
-the constraint and rely on it. Fixtures
+the constraint and rely on it. The promise also binds at the other end,
+or it is only half a promise: where `fixed_result` is declared, every
+`run.completed` under an admitted `output_schema` must carry exactly
+that object as `result` (`unapplied_control` otherwise). Checking the
+result against the schema alone would not do it — a permissive schema
+admits many objects, so an endpoint could promise `{"ok": true}`, accept
+the schema, emit `{}`, and satisfy every rule while breaking the
+machine-readable commitment a consumer planned against. Fixtures
 `controls-structured-fixed-result-refuses-satisfiable`
 (`unsatisfiable_control`; a schema the disclosed result satisfies,
-refused) and `controls-structured-undisclosed-constraint`
+refused), `controls-structured-undisclosed-constraint`
 (`unsatisfiable_control`; a refusal for an unmet result on a descriptor
-declaring no `fixed_result`). Unknown model ids fail with `model_not_found`.
+declaring no `fixed_result`) and
+`controls-structured-fixed-result-not-emitted` (`unapplied_control`; a
+declared `{"ok": true}`, a permissive admitted schema, and `{}` at
+`run.completed`). Unknown model ids fail with `model_not_found`.
 
 ### Native evidence
 
@@ -1416,10 +1426,20 @@ No new envelope types. Additive fields:
   run the snapshot reflects (absent when it reflects none), and
   `pending_steers` is judged at that point: a steer admitted at or before
   it must be listed, one admitted after must not be, and
-  `session_state_mismatch` otherwise. The id must name a submit response
-  the trace carries for that run, and the pair must not disagree — a
-  submission admitted after `as_of_sequence`'s position cannot be claimed
-  by a snapshot that stops earlier. Fixture `steer-state-capture-straddles-admission`
+  `session_state_mismatch` otherwise. The marker is allowed to run ahead
+  of the trace exactly as `as_of_sequence` is, and for a closer reason: a
+  state read can capture a steer as pending after the adapter admits it
+  but before the hub has published — or even minted — the correlated
+  submit response, so an accurate snapshot must be able to name a
+  response the trace has not yet carried. Such an entry is held and
+  reconciled when the response arrives; a marker naming a response that
+  never arrives, or one that belongs to another run, is
+  `session_state_mismatch` at the run's terminal or the end of the trace.
+  The two markers must not disagree — a submission admitted after
+  `as_of_sequence`'s position cannot be claimed by a snapshot that stops
+  earlier — and a snapshot that lists a steer while naming no
+  `as_of_submission` at all is judged against the trace as it stands,
+  since it claims no knowledge the trace lacks. Fixture `steer-state-capture-straddles-admission`
   (positive; two snapshots at one `as_of_sequence` either side of a steer
   admission, each accurate at its own `as_of_submission`).
   `pending_interactions` needs no equivalent: an interaction joins and
@@ -2677,7 +2697,26 @@ therefore needs a steer settlement, not only a steer admission.
   "run_id", "submission_id", "request_id", "reason": ProtocolError }`,
   where `request_id` is the envelope `id` of the submit request the
   admission answered, so a settlement is attributable to the caller that
-  submitted it without the caller ever having seen the admission. A settlement is never
+  submitted it without the caller ever having seen the admission. The
+  adapter is the party that emits these, so it has to be given the id:
+  `adapter.Session.Submit` takes only `protocol.MessageSubmitRequest`
+  today (`adapter/adapter.go:20`) and `InteractionResolution` only the
+  decoded resolve payload (`:63-68`), with `servehttp` discarding the
+  outer envelope before either call, so an adapter that applies a steer
+  immediately or settles a tool call synchronously cannot name the
+  request it is answering. T4 therefore carries the id through the
+  operation rather than inventing it at the wire: `Submit` takes an
+  `adapter.SubmitRequest { Request protocol.MessageSubmitRequest;
+  EnvelopeID protocol.EnvelopeID }`, and `InteractionResolution` gains
+  `EnvelopeID`, both populated by every binding — `servehttp` and the
+  stdio frontend from the request they decoded, an in-process embedder
+  from the envelope it built. The `Submit` change is a compile-time break
+  across the seven adapters and is meant to be: an adapter that ignores
+  the new member keeps compiling only because it does not emit correlated
+  events, and one that does emit them cannot silently omit the
+  correlation. `adaptertest` asserts the id reaches the adapter and
+  appears on every settlement derived inside the call. T3c's
+  resolve-derived `request_id` uses the same channel. A settlement is never
   observable before the admission that names its `submission_id`: a
   harness that applies immediately emits `applied` as the first envelope
   after the response, never before it (the barrier is specified under
