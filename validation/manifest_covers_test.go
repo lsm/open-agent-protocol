@@ -150,6 +150,15 @@ func TestCorpusCompleteness(t *testing.T) {
 			t.Fatalf("honour gap not reported alone: %v", err)
 		}
 	})
+	t.Run("a gate fixture under an unrelated unit does not stand in", func(t *testing.T) {
+		withUnitKeys(t, map[string][]string{"run-controls": {"run.model_selection"}}, nil)
+		// tools claims the pair; run-controls owns the key and has nothing.
+		entries := []FixtureEntry{negative("tools-gate", "tools", gate), negative("controls-honour", "run-controls", honour)}
+		_, err := LoadManifest(writeManifest(t, entries))
+		if err == nil || !strings.Contains(err.Error(), "no negative gate fixture under unit run-controls") {
+			t.Fatalf("gate under an unrelated unit was accepted: %v", err)
+		}
+	})
 	t.Run("both aspects satisfy the check", func(t *testing.T) {
 		withUnitKeys(t, map[string][]string{"run-controls": {"run.model_selection"}}, nil)
 		entries := []FixtureEntry{negative("controls-gate", "run-controls", gate), negative("controls-honour", "run-controls", honour)}

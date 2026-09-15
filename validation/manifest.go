@@ -266,23 +266,28 @@ func checkCorpusCompleteness(m FixtureManifest) error {
 	}
 	sort.Strings(units)
 	var missing []string
+	coveredUnder := func(c Coverage, unit string) bool {
+		for _, u := range covered[c] {
+			if u == unit {
+				return true
+			}
+		}
+		return false
+	}
 	for _, unit := range units {
 		for _, key := range unitCapabilities[unit] {
-			if len(covered[Coverage{Capability: key, Aspect: AspectGate}]) == 0 {
-				missing = append(missing, fmt.Sprintf("%s: %s has no negative %s fixture", unit, key, AspectGate))
+			// Both aspects must be covered under the unit that owns the key
+			// (or, for honour, the unit it is deferred to): a fixture under
+			// an unrelated unit naming the same pair does not stand in for
+			// the owning unit's own corpus.
+			if !coveredUnder(Coverage{Capability: key, Aspect: AspectGate}, unit) {
+				missing = append(missing, fmt.Sprintf("%s: %s has no negative %s fixture under unit %s", unit, key, AspectGate, unit))
 			}
 			honourUnit := unit
 			if deferred, ok := honourDeferred[key]; ok {
 				honourUnit = deferred
 			}
-			found := false
-			for _, u := range covered[Coverage{Capability: key, Aspect: AspectHonour}] {
-				if u == honourUnit {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !coveredUnder(Coverage{Capability: key, Aspect: AspectHonour}, honourUnit) {
 				missing = append(missing, fmt.Sprintf("%s: %s has no negative %s fixture under unit %s", unit, key, AspectHonour, honourUnit))
 			}
 		}

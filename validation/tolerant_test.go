@@ -276,6 +276,171 @@ func TestTolerantStateClassifiesUnknownRunEvent(t *testing.T) {
 	}
 }
 
+// validateBoth runs a trace through both validators and returns the results.
+func validateBoth(t *testing.T, trace []map[string]any, name string) (strict, tolerant Result) {
+	t.Helper()
+	data, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewWith(Options{Mode: ModeStrict})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl, err := NewWith(Options{Mode: ModeTolerant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.ValidateBytes(data, name), tl.ValidateBytes(data, name)
+}
+
+func hasCode(r Result, code string) bool {
+	for _, d := range r.Diagnostics {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// A known envelope carrying an unknown enum value is the other half of
+// tolerance: the schema accepts it, and the state must treat the value as
+// opaque — suspending the rule that reads it, keeping every rule that does
+// not — rather than judging it against a table it is not in.
+func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
+	t.Run("run.status.updated with an unknown status", func(t *testing.T) {
+		trace := loadTrace(t, "core-completed.json")
+		var out []map[string]any
+		inserted := false
+		for _, e := range trace {
+			out = append(out, e)
+			if e["type"] == "run.started" && !inserted {
+				seq, _ := e["sequence"].(json.Number).Int64()
+				out = append(out, map[string]any{
+					"protocol": e["protocol"], "version": e["version"], "profile": e["profile"],
+					"type": "run.status.updated", "id": "ext-paused",
+					"session_id": e["session_id"], "run_id": e["run_id"],
+					"sequence": json.Number(itoa(seq + 1)),
+					"payload":  map[string]any{"session_id": e["session_id"], "run_id": e["run_id"], "status": "paused"},
+				})
+				inserted = true
+				continue
+			}
+			if inserted && e["run_id"] != nil && e["sequence"] != nil {
+				seq, _ := e["sequence"].(json.Number).Int64()
+				e["sequence"] = json.Number(itoa(seq + 1))
+			}
+		}
+		strict, tolerant := validateBoth(t, out, "paused")
+		if strict.Valid() {
+			t.Fatal("strict accepted an unknown run status")
+		}
+		if !tolerant.Valid() {
+			t.Fatalf("tolerant rejected an unknown run status: %v", tolerant.Diagnostics)
+		}
+	})
+	t.Run("submit response with an unknown admission still registers the run", func(t *testing.T) {
+		trace := loadTrace(t, "core-completed.json")
+		resp := firstOfType(t, trace, "session.message.submit.response")
+		resp["payload"].(map[string]any)["admission"] = "parked"
+		strict, tolerant := validateBoth(t, trace, "parked")
+		if strict.Valid() {
+			t.Fatal("strict accepted an unknown admission")
+		}
+		if !tolerant.Valid() {
+			t.Fatalf("tolerant rejected an unknown admission: %v", tolerant.Diagnostics)
+		}
+		// The run must have been registered: without that every later run
+		// event would carry "run event has no accepted admission".
+		if hasCode(tolerant, CodeIllegalRunTransition) {
+			t.Fatalf("run was not registered under an unknown admission: %v", tolerant.Diagnostics)
+		}
+	})
+	t.Run("a missing status is a shape defect, not an extension", func(t *testing.T) {
+		// The schema leaves status optional on submit.response; the state rule
+		// requires it for a started admission. An absent member is not a
+		// foreign value, so tolerant mode must keep that rule.
+		trace := loadTrace(t, "core-completed.json")
+		resp := firstOfType(t, trace, "session.message.submit.response")
+		delete(resp["payload"].(map[string]any), "status")
+		strict, tolerant := validateBoth(t, trace, "nostatus")
+		if !hasCode(strict, CodeIllegalRunTransition) {
+			t.Fatalf("strict accepted a started admission without status: %v", strict.Diagnostics)
+		}
+		if !hasCode(tolerant, CodeIllegalRunTransition) {
+			t.Fatalf("tolerant suspended the shape rule for a missing status: %v", tolerant.Diagnostics)
+		}
+	})
+}
+
+// An unknown run-scoped event before run.started takes only the
+// type-independent bookkeeping: the pre-start rule is a known-type rule, since
+// only a known terminal may settle a run early and an unknown type cannot say
+// whether it is one.
+func TestTolerantStateSkipsPreStartRuleForUnknownEvents(t *testing.T) {
+	trace := loadTrace(t, "core-completed.json")
+	var out []map[string]any
+	inserted := false
+	for _, e := range trace {
+		if e["type"] == "run.started" && !inserted {
+			// Before run.started, at sequence 1; run.started and everything
+			// after shift by one.
+			out = append(out, map[string]any{
+				"protocol": e["protocol"], "version": e["version"], "profile": e["profile"],
+				"type": "com.example.run.prelude", "id": "ext-prelude",
+				"session_id": e["session_id"], "run_id": e["run_id"],
+				"sequence": json.Number("1"),
+				"payload":  map[string]any{},
+			})
+			inserted = true
+		}
+		if inserted && e["run_id"] != nil && e["sequence"] != nil {
+			seq, _ := e["sequence"].(json.Number).Int64()
+			e["sequence"] = json.Number(itoa(seq + 1))
+		}
+		out = append(out, e)
+	}
+	_, tolerant := validateBoth(t, out, "prelude")
+	if hasCode(tolerant, CodeMissingRunStarted) {
+		t.Fatalf("unknown pre-start event was judged by the known-type rule: %v", tolerant.Diagnostics)
+	}
+	if !tolerant.Valid() {
+		t.Fatalf("tolerant rejected an unknown pre-start event: %v", tolerant.Diagnostics)
+	}
+}
+
+// An unknown request/response pair is scoped by its envelope, so the generic
+// correlation check still binds the response to the request's run: a request
+// on run A answered on run B is a scope_mismatch whatever the operation is
+// called.
+func TestTolerantStateScopesUnknownRequestResponse(t *testing.T) {
+	base := firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
+	common := func(typ, id string, extra map[string]any) map[string]any {
+		e := map[string]any{
+			"protocol": base["protocol"], "version": base["version"], "profile": base["profile"],
+			"type": typ, "id": id, "session_id": base["session_id"], "payload": map[string]any{},
+		}
+		for k, v := range extra {
+			e[k] = v
+		}
+		return e
+	}
+	trace := []map[string]any{
+		common("com.example.run.pause.request", "pause-req", map[string]any{"run_id": "rA"}),
+		common("com.example.run.pause.response", "pause-resp", map[string]any{"run_id": "rB", "in_reply_to": "pause-req"}),
+	}
+	_, tolerant := validateBoth(t, trace, "pause")
+	if !hasCode(tolerant, CodeScopeMismatch) {
+		t.Fatalf("response on another run was not diagnosed: %v", tolerant.Diagnostics)
+	}
+	// The same pair on one run correlates cleanly.
+	trace[1]["run_id"] = "rA"
+	_, tolerant = validateBoth(t, trace, "pause-ok")
+	if hasCode(tolerant, CodeScopeMismatch) {
+		t.Fatalf("matching scope was diagnosed: %v", tolerant.Diagnostics)
+	}
+}
+
 // The regression guard the plan requires: every fixture the strict compile
 // accepts, the tolerant compile accepts too.
 func TestTolerantAcceptsEveryPositiveFixture(t *testing.T) {

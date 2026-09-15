@@ -105,6 +105,14 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	s.ids[e.ID] = i
 	if isRequest(e.Type) {
 		session, run := requestScope(e)
+		if s.tolerant && !isKnownType(e.Type) {
+			// An unknown request has no payload decoder to read scope from,
+			// but its envelope scope is the wire's own and is retained so the
+			// generic correlation checks still bind its response: a request
+			// on run A answered on run B is a scope_mismatch whatever the
+			// operation is called.
+			session, run = e.SessionID, e.RunID
+		}
 		// A request that declares scope in both its envelope and payload must
 		// agree; otherwise its stored correlation scope is self-contradictory.
 		s.checkScope(i, line, e, session, run)
@@ -380,6 +388,11 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	// A scoped response must answer within the request's scope: an internally
 	// consistent response for another session or run cannot answer this request.
 	session, run := responseScope(e)
+	if s.tolerant && !isKnownType(e.Type) {
+		// An unknown response, like an unknown request, is scoped by its
+		// envelope: the correlation check binds it to the request it answers.
+		session, run = e.SessionID, e.RunID
+	}
 	if req.session != "" && session != "" && session != req.session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "response session does not match the request scope", string(req.session), string(session), string(e.InReplyTo))
 	}
@@ -524,6 +537,11 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		return
 	case p.Admission == protocol.AdmissionStarted && p.EffectiveDelivery == protocol.DeliveryStart && p.Status == protocol.RunRunning:
 	case p.Admission == protocol.AdmissionQueued && p.EffectiveDelivery == protocol.EffectiveDeliveryQueue && p.Status == protocol.RunQueued:
+	case s.tolerant && (foreignAdmission(p.Admission) || foreignEffectiveDelivery(p.EffectiveDelivery) || foreignRunStatus(p.Status)):
+		// Tolerant mode treats a value outside this revision's vocabulary as
+		// opaque: the shape rule is suspended, because it cannot judge an
+		// admission it does not know, while the type-independent bookkeeping
+		// below — the run identity is reserved exactly once — still applies.
 	default:
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "v0.1 admission must resolve auto to one started (status running) or queued (status queued) run (decision 0002)")
 		return
@@ -614,15 +632,25 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		return
 	}
-	if !r.started && !preStartSettlement(e.Type) {
+	// The pre-start rule is a known-type rule: only a known terminal may
+	// settle a run before run.started, and only a known type can be judged
+	// against that list. An unknown type (tolerant mode) says nothing about
+	// whether it is a valid pre-start event, so it takes only the
+	// type-independent bookkeeping.
+	if !r.started && !preStartSettlement(e.Type) && isKnownType(e.Type) {
 		s.add(CodeMissingRunStarted, i, line, e, "/type", "run-scoped event occurred before run.started")
 	}
 	if e.Type == protocol.TypeRunStatusUpdated {
 		var p protocol.RunStatusUpdatedPayload
 		_ = e.DecodePayload(&p)
-		if !legalRunStatusTransition(r.status, p.Status) {
+		switch {
+		case s.tolerant && foreignRunStatus(p.Status):
+			// An unknown status is opaque in tolerant mode: the transition
+			// table cannot judge it, and adopting it would make every later
+			// transition illegal, so the run keeps the status it had.
+		case !legalRunStatusTransition(r.status, p.Status):
 			s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/status", "illegal run status transition", legalRunStatusTargets(r.status), string(p.Status))
-		} else {
+		default:
 			r.status = p.Status
 		}
 	}
@@ -1034,6 +1062,34 @@ func isRunEvent(t protocol.EnvelopeType) bool {
 		return true
 	}
 	return false
+}
+
+// A foreign value is one present on the wire but outside the vocabulary this
+// revision defines for the field. Tolerant mode treats it as opaque: the
+// value-specific rule is suspended, since it cannot judge what it does not
+// know, while the type-independent bookkeeping around it still applies. An
+// absent value is not foreign — a missing member is a shape defect in any
+// revision, and the strict rule keeps judging it.
+func foreignRunStatus(s protocol.RunStatus) bool {
+	switch s {
+	case "", protocol.RunQueued, protocol.RunRunning, protocol.RunWaitingForInput, protocol.RunCancelling, protocol.RunCompleted, protocol.RunFailed, protocol.RunCancelled:
+		return false
+	}
+	return true
+}
+func foreignAdmission(a protocol.Admission) bool {
+	switch a {
+	case "", protocol.AdmissionStarted, protocol.AdmissionQueued, protocol.AdmissionSteered, protocol.AdmissionSideRun, protocol.AdmissionRejected:
+		return false
+	}
+	return true
+}
+func foreignEffectiveDelivery(d protocol.EffectiveDeliveryMode) bool {
+	switch d {
+	case "", protocol.DeliveryStart, protocol.EffectiveDeliveryQueue, protocol.EffectiveDeliverySteer, protocol.EffectiveDeliveryBTW:
+		return false
+	}
+	return true
 }
 func legalRunStatusTransition(from, to protocol.RunStatus) bool {
 	switch from {
