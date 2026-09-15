@@ -7,9 +7,21 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// releaser closes its channel exactly once however many times release is
+// called — the test body may release mid-test and t.Cleanup again after.
+type releaser struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func newReleaser() *releaser              { return &releaser{ch: make(chan struct{})} }
+func (r *releaser) release()              { r.once.Do(func() { close(r.ch) }) }
+func (r *releaser) done() <-chan struct{} { return r.ch }
 
 // The round-4 tombstones and the park-point stress corpus of the B′ design
 // (GH #17). The two tombstones pin the exact firing evidence of the round
@@ -143,8 +155,8 @@ func (w blockingFailWriter) Write([]byte) (int, error) {
 // invariant; its end-to-end driver rides the subscriptions slice, whose
 // registration ops are the first that can park the loop mid-op.)
 func TestWriterFailureOutranksStallThroughTheZombieLoop(t *testing.T) {
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	release := newReleaser()
+	t.Cleanup(release.release)
 	hub := newTestHub(t, 64, 64)
 	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
 	if err != nil {
@@ -153,7 +165,9 @@ func TestWriterFailureOutranksStallThroughTheZombieLoop(t *testing.T) {
 	stdinReader, stdinWriter := io.Pipe()
 	t.Cleanup(func() { stdinWriter.Close() })
 	done := make(chan error, 1)
-	go func() { done <- server.Run(context.Background(), stdinReader, blockingFailWriter{release: release}) }()
+	go func() {
+		done <- server.Run(context.Background(), stdinReader, blockingFailWriter{release: release.done()})
+	}()
 	// Four requests through a one-slot bound: one response parked inside
 	// the blocked write, one queued, one worker parked on its send holding
 	// the slot, and one frame that leaves the loop parked in admission —
@@ -164,7 +178,7 @@ func TestWriterFailureOutranksStallThroughTheZombieLoop(t *testing.T) {
 		}
 	}
 	time.Sleep(50 * time.Millisecond) // let the chain park: write, queue, send, admission
-	close(release)                    // the host's stdout breaks with work behind it
+	release.release()                 // the host's stdout breaks with work behind it
 	select {
 	case err := <-done:
 		if !errors.Is(err, io.ErrClosedPipe) {
@@ -210,10 +224,12 @@ func TestTeardownRacesAgainstParkedSeams(t *testing.T) {
 			wantStall: false,
 		},
 		{
-			// The loop is parked in admission when the host closes stdin:
-			// the reader's custody cell reports the closure independently
-			// of the delivery, teardown begins, and the admission latch
-			// releases the park — bounded, clean.
+			// The loop has not yet reached the admission select when the
+			// host closes stdin: the reader's custody cell reports the
+			// closure independently of the delivery, teardown begins, and
+			// when the loop then arrives at admission the closed latch
+			// refuses it — the request is dropped, the loop ends inside
+			// its grace, and the end is bounded and clean.
 			name:     "admission parked across a clean close",
 			requests: 1,
 			hook: func(release <-chan struct{}) *parkHooks {
@@ -221,7 +237,7 @@ func TestTeardownRacesAgainstParkedSeams(t *testing.T) {
 			},
 			terminal:  func(t *testing.T, stdin io.WriteCloser, _ context.CancelFunc) { stdin.Close() },
 			holdCheck: 0,
-			releaseAt: 0,
+			releaseAt: 50 * time.Millisecond,
 			wantStall: false,
 		},
 		{
@@ -255,12 +271,12 @@ func TestTeardownRacesAgainstParkedSeams(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			release := make(chan struct{})
-			t.Cleanup(func() { close(release) })
+			release := newReleaser()
+			t.Cleanup(release.release)
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			stdin, _, done := startParkedFrontend(t, ctx,
-				Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond}, row.hook(release), true)
+				Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond}, row.hook(release.done()), true)
 			for id := 1; id <= row.requests; id++ {
 				if _, err := stdin.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
 					t.Fatal(err)
@@ -276,7 +292,7 @@ func TestTeardownRacesAgainstParkedSeams(t *testing.T) {
 				}
 			}
 			if row.releaseAt > 0 {
-				time.AfterFunc(row.releaseAt, func() { close(release) })
+				time.AfterFunc(row.releaseAt, release.release)
 			}
 			select {
 			case err := <-done:
