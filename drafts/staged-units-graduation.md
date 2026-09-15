@@ -258,8 +258,17 @@ No new envelope types. Changes to
   adds an optional `model_id` to it. The addition earns its place beyond
   making the rule enforceable — it lets a consumer check which model
   produced the final response without correlating back to the admission,
-  which matters most where the answer is surprising — and it is additive
-  on an open payload, so an old reader ignores it. The validator
+  which matters most where the answer is surprising. It is additive in
+  the sense that no existing member changes and no reader needs the new
+  one, but the payload is *not* open: `completed` carries
+  `additionalProperties: false`, so a strict reader on the unmodified
+  bundle rejects the member rather than ignoring it. That is what the
+  tolerance step before T1 is for, and why it lands first — under the
+  tolerant variant an unknown payload member is ignored as the wire rule
+  requires, which is the compatibility this addition relies on. Fixture
+  validation stays strict against the bundle at its own revision, so the
+  member is added to `run.schema.json` in the same change. The
+  validator
   diagnoses `unapplied_control` when a present `model_id` on
   `run.completed` differs from the admitted one, and says nothing when it
   is absent. Absent an admitted `model_id`, the response reports the
@@ -1669,7 +1678,18 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   Go, `/^\d+$/` in TypeScript) and a qualified id would break them on the
   first event. Run identity for a cursor travels in an additive `?run=`
   query parameter beside `?after=`; a cursor without `run` resolves onto
-  the session's started run, exactly today's behavior. `oap-overflow` and
+  the earliest-admitted run in the session whose retained domain reaches
+  that sequence. On a v0.1 single-run session that is the started run,
+  exactly today's behaviour, and with a queue it keeps a legacy client
+  bound to the run its cursor belongs to. Resolving onto the started run
+  instead would break precisely the client this rule exists to protect:
+  a v0.1 client that queues B while A runs, and whose connection drops
+  after B has become the started run but before A's terminal arrives,
+  reconnects with nothing but `?after=<A sequence>` — read against B that
+  is a sequence from the wrong domain, and the client sees a replay gap,
+  skipped B events, or its own `ResumeMismatchError`. Earliest-admitted
+  is deterministic, needs no memory of what a previous connection was
+  serving, and prefers A for as long as A is retained. `oap-overflow` and
   `oap-replay-gap` both carry `run_id` (overflow already does) so a client
   can resume the right run. The stdio frontend's `events` op gains the same
   optional `run` parameter. `?run=` is still needed even with ordered
