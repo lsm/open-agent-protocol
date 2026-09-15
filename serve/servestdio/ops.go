@@ -1,23 +1,40 @@
 package servestdio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
+	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
 )
 
 // The op names, one per HTTP route of serve/servehttp; semantics are
-// identical, only the framing differs.
-const opAdapters = "adapters"
+// identical, only the framing differs. The open and events routes join the
+// surface with the registration-ordering slice — until then those ops are
+// refused as unknown, and the session-scoped ops here serve sessions the
+// embedding host opened on the hub directly.
+const (
+	opAdapters     = "adapters"
+	opCapabilities = "capabilities"
+	opSessions     = "sessions"
+	opState        = "state"
+	opSubmit       = "submit"
+	opResolve      = "resolve"
+	opCancel       = "cancel"
+	opClose        = "close"
+)
 
 // responseLine is one daemon → host response, correlated by the request id.
-// Result is the HTTP route's success body verbatim — a plain JSON document
-// for the listings — and the JSON null for the routes HTTP answers without a
-// body.
+// Result is the HTTP route's success body verbatim — an OAP response envelope
+// for the envelope exchanges, the plain JSON document for the listings — and
+// the JSON null for the routes HTTP answers without a body (close).
 type responseLine struct {
 	ID     int64           `json:"id"`
 	OK     bool            `json:"ok"`
@@ -72,6 +89,41 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.adaptersOp(ctx)
+	case opCapabilities:
+		if werr := request.only(paramAdapter); werr != nil {
+			return nil, werr
+		}
+		if request.Adapter == "" {
+			return nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
+		}
+		return s.capabilitiesOp(ctx, request.Adapter)
+	case opSessions:
+		if werr := request.only(); werr != nil {
+			return nil, werr
+		}
+		return s.sessionsOp(ctx)
+	case opState:
+		if werr := request.only(paramSession); werr != nil {
+			return nil, werr
+		}
+		return s.stateOp(ctx, request.SessionID)
+	case opSubmit, opResolve, opCancel:
+		if werr := request.only(paramSession, paramRequest); werr != nil {
+			return nil, werr
+		}
+		switch request.Op {
+		case opSubmit:
+			return s.submitOp(ctx, request)
+		case opResolve:
+			return s.resolveOp(ctx, request)
+		default:
+			return s.cancelOp(ctx, request)
+		}
+	case opClose:
+		if werr := request.only(paramSession); werr != nil {
+			return nil, werr
+		}
+		return s.closeOp(ctx, request.SessionID)
 	default:
 		return nil, &wireError{Code: "unknown_op", Message: fmt.Sprintf("no op %q", trimMessage(request.Op))}
 	}
@@ -132,7 +184,339 @@ func (s *Server) adaptersOp(ctx context.Context) (json.RawMessage, *wireError) {
 	return marshalResult(map[string]any{"adapters": infos})
 }
 
-// --- encoding helpers ---
+func (s *Server) capabilitiesOp(ctx context.Context, name string) (json.RawMessage, *wireError) {
+	// The op carries no request envelope; the response cites a daemon-minted
+	// correlation id, which a host may pair with its own request envelope.
+	correlation := protocol.EnvelopeID(s.nextID("request"))
+	descriptor, err := s.hub.Probe(ctx, name)
+	if err != nil {
+		if errors.Is(err, serve.ErrUnknownAdapter) {
+			return nil, &wireError{Code: "unknown_adapter", Message: trimMessage(err.Error())}
+		}
+		return nil, &wireError{Code: "probe_failed", Message: trimMessage(err.Error())}
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, protocol.EnvelopeID(s.nextID("response")), descriptor.Capabilities)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = correlation
+	response.CapabilityRevision = descriptor.CapabilityRevision
+	return envelopeResult(response)
+}
+
+type sessionInfo struct {
+	SessionID   string `json:"session_id"`
+	Adapter     string `json:"adapter"`
+	Status      string `json:"status"`
+	ActiveRunID string `json:"active_run_id,omitempty"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
+	statuses := s.hub.Sessions(ctx)
+	infos := make([]sessionInfo, 0, len(statuses))
+	for _, status := range statuses {
+		infos = append(infos, sessionInfo{
+			SessionID: string(status.SessionID), Adapter: status.Adapter,
+			Status: string(status.Status), ActiveRunID: string(status.ActiveRunID),
+			CreatedAt: status.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return marshalResult(map[string]any{"sessions": infos})
+}
+
+// --- OAP operations ---
+
+// submitOp admits one run and acknowledges it with the admission envelope.
+// The acknowledgement is framability-checked before it is sent: the run is
+// already live, and its identifiers — the run id above all — are minted on
+// the daemon's side of the wire, so an unframable acknowledgement cannot be
+// a generic response_too_large refusal that leaves the run running behind an
+// id the host cannot know. It is rolled back instead: the run is cancelled
+// on a context the request's own end cannot cut short, and the refusal names
+// the rollback. The resolve and cancel acknowledgements echo identifiers the
+// host itself supplied and close answers null, so the generic refusal stays
+// honest for them; nothing they leave behind is unknowable.
+func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionMessageSubmitRequest)
+	if werr != nil {
+		return nil, werr
+	}
+	var payload protocol.MessageSubmitRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+	}
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	admission, err := entry.Submit(ctx, payload)
+	if err != nil {
+		return nil, submitError(err)
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, protocol.EnvelopeID(s.nextID("response")), admission)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = admission.SessionID
+	response.RunID = admission.RunID
+	response.CapabilityRevision = envelope.CapabilityRevision
+	result, werr := envelopeResult(response)
+	if werr != nil {
+		return nil, werr
+	}
+	if !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
+		// The rollback runs detached from the request's own end — custody —
+		// but bounded by the shutdown window, so a hung adapter cannot wedge
+		// the read loop past every bound the frontend promises. Its refusal
+		// messages are fixed-size, so they stay framable even at the frame
+		// limit's floor: the underlying error goes to the logger, never the
+		// line. A cancel that reports the run already settled leaves nothing
+		// live behind the refusal, and says so.
+		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
+		_, err := entry.Cancel(rollback, admission.RunID)
+		cancelRollback()
+		if err != nil {
+			s.logger.Printf("servestdio: roll back submit %d: %v", *request.ID, err)
+			var terminal *base.RunTerminalError
+			message := "the submit acknowledgement exceeds the frame limit; rolling the run back failed and the run may still be live"
+			if errors.As(err, &terminal) || errors.Is(err, base.ErrRunNotFound) {
+				message = "the submit acknowledgement exceeds the frame limit; the run settled before the rollback"
+			}
+			return nil, &wireError{Code: "response_too_large", Message: message}
+		}
+		return nil, &wireError{Code: "response_too_large", Message: "the submit acknowledgement exceeds the frame limit; the run was cancelled"}
+	}
+	return result, nil
+}
+
+// fits reports whether one output line's encoding stays within the frame
+// limit, so its send would not be refused.
+func (s *Server) fits(value any) bool {
+	line, err := json.Marshal(value)
+	return err == nil && len(line) <= s.frameLimit
+}
+
+func submitError(err error) *wireError {
+	code := "internal"
+	switch {
+	case errors.Is(err, serve.ErrScopeMismatch):
+		code = "scope_mismatch"
+	case errors.Is(err, base.ErrSessionClosed):
+		code = "session_closed"
+	case errors.Is(err, base.ErrRunActive):
+		code = "run_active"
+	case errors.Is(err, base.ErrInvalidSubmission), errors.Is(err, base.ErrUnsupportedInput):
+		code = "invalid_submission"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		code = "request_cancelled"
+	}
+	return &wireError{Code: code, Message: adapterMessage(err)}
+}
+
+func (s *Server) resolveOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest)
+	if werr != nil {
+		return nil, werr
+	}
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	resolution := base.InteractionResolution{}
+	switch envelope.Type {
+	case protocol.TypeActionPermissionResolveRequest:
+		var payload protocol.PermissionResolveRequest
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+		}
+		resolution = base.InteractionResolution{RunID: payload.RunID, RespondedBy: payload.RespondedBy, Permission: &payload}
+	case protocol.TypeUserInputResolveRequest:
+		var payload protocol.UserInputResolveRequest
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+		}
+		resolution = base.InteractionResolution{RunID: payload.RunID, RespondedBy: payload.RespondedBy, Input: &payload}
+	}
+	if err := entry.Resolve(ctx, resolution); err != nil {
+		code := "internal"
+		switch {
+		case errors.Is(err, serve.ErrScopeMismatch):
+			code = "scope_mismatch"
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
+		case errors.Is(err, base.ErrRunNotFound):
+			code = "run_not_found"
+		case errors.Is(err, base.ErrInteractionNotFound), errors.Is(err, base.ErrInteractionResolved), errors.Is(err, base.ErrWrongResponder), errors.Is(err, base.ErrInvalidResolution):
+			code = "resolution_rejected"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		}
+		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+	}
+	var response protocol.Envelope
+	var err error
+	if envelope.Type == protocol.TypeActionPermissionResolveRequest {
+		var payload protocol.PermissionResolveRequest
+		_ = envelope.DecodePayload(&payload)
+		response, err = protocol.NewEnvelope(protocol.TypeActionPermissionResolveResponse, protocol.EnvelopeID(s.nextID("response")), protocol.PermissionResolveResponse{
+			InteractionID: payload.InteractionID, SessionID: payload.SessionID, RunID: payload.RunID, Accepted: true,
+		})
+	} else {
+		var payload protocol.UserInputResolveRequest
+		_ = envelope.DecodePayload(&payload)
+		response, err = protocol.NewEnvelope(protocol.TypeUserInputResolveResponse, protocol.EnvelopeID(s.nextID("response")), protocol.UserInputResolveResponse{
+			InteractionID: payload.InteractionID, SessionID: payload.SessionID, RunID: payload.RunID, Accepted: true,
+		})
+	}
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = entry.ID()
+	response.RunID = resolution.RunID
+	response.CapabilityRevision = envelope.CapabilityRevision
+	return envelopeResult(response)
+}
+
+func (s *Server) cancelOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeRunCancelRequest)
+	if werr != nil {
+		return nil, werr
+	}
+	var payload protocol.RunCancelRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+	}
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	if payload.SessionID != entry.ID() {
+		message := trimMessage(fmt.Sprintf("payload session_id %q does not match the addressed session %q", payload.SessionID, entry.ID()))
+		return nil, &wireError{Code: "scope_mismatch", Message: message}
+	}
+	ack, err := entry.Cancel(ctx, payload.RunID)
+	if err != nil {
+		code := "internal"
+		var terminal *base.RunTerminalError
+		switch {
+		case errors.As(err, &terminal):
+			code = "run_terminal"
+		case errors.Is(err, base.ErrRunNotFound):
+			code = "run_not_found"
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		}
+		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeRunCancelResponse, protocol.EnvelopeID(s.nextID("response")), ack)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = ack.SessionID
+	response.RunID = ack.RunID
+	response.CapabilityRevision = envelope.CapabilityRevision
+	return envelopeResult(response)
+}
+
+func (s *Server) stateOp(ctx context.Context, sessionID string) (json.RawMessage, *wireError) {
+	entry, werr := s.lookupSession(sessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	state, err := entry.State(ctx)
+	if err != nil && !errors.Is(err, base.ErrSessionClosed) {
+		return nil, &wireError{Code: "state_failed", Message: adapterMessage(err)}
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeSessionStateResponse, protocol.EnvelopeID(s.nextID("response")), state)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
+	response.SessionID = state.SessionID
+	return envelopeResult(response)
+}
+
+func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage, *wireError) {
+	entry, werr := s.lookupSession(sessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	// v0.1 defines no session.close envelope, so a successful close carries
+	// no result — the null the HTTP route answers with a bodyless 204.
+	if err := entry.Close(ctx); err != nil {
+		code := "internal"
+		switch {
+		case errors.Is(err, base.ErrRunActive):
+			code = "run_active"
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		}
+		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+	}
+	return json.RawMessage("null"), nil
+}
+
+// --- request gate and encoding helpers ---
+
+// gateRequest parses one op's request envelope, validates it against the
+// bundled OAP envelope schema, and checks its type against the op — the same
+// gate every HTTP route applies, rejections mapped to the same codes.
+func (s *Server) gateRequest(payload json.RawMessage, want ...protocol.EnvelopeType) (protocol.Envelope, *wireError) {
+	if len(payload) == 0 || string(payload) == "null" {
+		return protocol.Envelope{}, &wireError{Code: "invalid_request", Message: "the op requires a \"request\" envelope"}
+	}
+	envelope, err := protocol.ParseEnvelope(payload)
+	if err != nil {
+		return protocol.Envelope{}, &wireError{Code: "malformed_json", Message: trimMessage(err.Error())}
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return protocol.Envelope{}, &wireError{Code: "malformed_json", Message: trimMessage(err.Error())}
+	}
+	if err := s.schema.Validate(value); err != nil {
+		return protocol.Envelope{}, &wireError{Code: "schema_invalid", Message: trimMessage(err.Error())}
+	}
+	if len(want) > 0 && !slices.Contains(want, envelope.Type) {
+		return protocol.Envelope{}, &wireError{Code: "type_mismatch", Message: fmt.Sprintf("op expects %s, got %s", envelopeTypes(want), envelope.Type)}
+	}
+	return envelope, nil
+}
+
+func (s *Server) lookupSession(id string) (*serve.Session, *wireError) {
+	entry, err := s.hub.Session(protocol.SessionID(id))
+	if err != nil {
+		return nil, &wireError{Code: "unknown_session", Message: trimMessage(err.Error())}
+	}
+	return entry, nil
+}
+
+// nextID mints the daemon-side correlation ids of envelopes the frontend
+// itself builds — the same oap-<kind>-<n> scheme servehttp mints.
+func (s *Server) nextID(kind string) string {
+	return fmt.Sprintf("oap-%s-%d", kind, s.nextIDValue.Add(1))
+}
+
+func envelopeTypes(types []protocol.EnvelopeType) string {
+	names := make([]string, len(types))
+	for index, typ := range types {
+		names[index] = string(typ)
+	}
+	return strings.Join(names, " or ")
+}
+
+func envelopeResult(envelope protocol.Envelope) (json.RawMessage, *wireError) {
+	return marshalResult(envelope)
+}
 
 func marshalResult(value any) (json.RawMessage, *wireError) {
 	data, err := json.Marshal(value)
@@ -144,6 +528,13 @@ func marshalResult(value any) (json.RawMessage, *wireError) {
 
 func internalError(err error) *wireError {
 	return &wireError{Code: "internal", Message: trimMessage(err.Error())}
+}
+
+// adapterMessage flattens adapter errors into a bounded, credential-free
+// string: adapter diagnostics never carry resolved environment values, and
+// the bound keeps a runaway native error from flooding the line.
+func adapterMessage(err error) string {
+	return trimMessage(err.Error())
 }
 
 // trimMessage bounds an error message on a rune boundary so the truncated

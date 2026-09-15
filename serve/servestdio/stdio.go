@@ -12,6 +12,13 @@
 // atomic and no response is ever broken by interleaving. stderr carries
 // bounded diagnostics only.
 //
+// The operations mirror serve/servehttp one to one with identical semantics
+// — the same verbatim schema/v0.1 envelopes, the same request gate, the same
+// error codes — with the session-registration ops (open, events) joining the
+// surface with their ordering slice. The line-shape refusals
+// (invalid_request, unknown_op) and the frame-limit refusal are this
+// framing's own layer and have no HTTP counterpart.
+//
 // Framing is strict in both directions, the same discipline the adapters'
 // internal rpc codecs apply to their own child stdio: one LF-terminated
 // JSON object per line with a bounded line length. An inbound line that
@@ -32,10 +39,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/lsm/open-agent-protocol/serve"
+	"github.com/lsm/open-agent-protocol/validation"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // DefaultFrameLimit bounds one NDJSON line in both directions. It matches
@@ -85,17 +96,23 @@ type Options struct {
 // schema/v0.1 envelopes, exactly as servehttp does; the framing carries the
 // id correlation HTTP gets from its request/response pairing.
 type Server struct {
-	hub        *serve.Hub
-	frameLimit int
-	writeQueue int
-	shutdown   time.Duration
-	logger     *log.Logger
+	hub         *serve.Hub
+	schema      *jsonschema.Schema
+	frameLimit  int
+	writeQueue  int
+	shutdown    time.Duration
+	logger      *log.Logger
+	nextIDValue atomic.Uint64
 }
 
-// New returns a frontend over the hub.
+// New compiles the request gate and returns a frontend over the hub.
 func New(hub *serve.Hub, options Options) (*Server, error) {
 	if hub == nil {
 		return nil, errors.New("servestdio: hub is required")
+	}
+	schema, err := validation.CompileSchemas()
+	if err != nil {
+		return nil, fmt.Errorf("servestdio: compile request schema: %w", err)
 	}
 	frameLimit := options.FrameLimit
 	if frameLimit <= 0 {
@@ -116,7 +133,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, frameLimit: frameLimit, writeQueue: writeQueue, shutdown: shutdown, logger: logger}, nil
+	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, shutdown: shutdown, logger: logger}, nil
 }
 
 // Hub returns the hub the frontend serves.
