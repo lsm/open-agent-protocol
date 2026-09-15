@@ -6,8 +6,8 @@ listed by `../fixtures/manifest.json`.
 
 `core-run-stream.json`, `capability-refresh.json`, and `core-user-input.json`
 are source material for corrected normative fixtures. The broader capability
-files and `agent-control-run-stream.json` use staging concepts that are not all
-part of executable v0.1. In particular, nested `scope`/`trace` fields do not
+files, `agent-control-run-stream.json`, and `tool-source.json` use staging
+concepts that are not all part of executable v0.1. In particular, nested `scope`/`trace` fields do not
 replace the flat core envelope, and `model.content.delta` belongs to a future
 model-IO boundary rather than the core `content.delta` stream.
 
@@ -25,7 +25,12 @@ model-IO boundary rather than the core `content.delta` stream.
   and descriptor refresh flow.
 - `tool-source.json`: session-scoped action/tool discovery (request and
   response) from a generic process-backed tool source, with each tool naming
-  its source by id.
+  its source by id. Staged, not executable v0.1: the tools-list request payload
+  is closed with no members today, and neither the list response nor
+  `ToolDefinition` admits `session_id`, `sources`, `source`, or `features`, so
+  the v0.1 validator rejects this document. It shows the shape the tool-sources
+  unit (T3a) introduces — see
+  [`drafts/staged-units-graduation.md`](../drafts/staged-units-graduation.md).
 - `agent-control-run-stream.json`: ordered agent-control stream for a simple
   model/tool/model
   run.

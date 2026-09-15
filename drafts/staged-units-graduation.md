@@ -148,7 +148,21 @@ No new envelope types. Changes to
   `protocol.ToolChoice` (today `Mode` and `Name` only) gains `Allowed
   []string` and `Disallowed []string`, and a strict
   `MessageSubmitRequest.ToolChoicePolicy()` accessor decodes the typed
-  shape, rejecting unknown members.
+  shape, rejecting unknown members. `ModelID` and `Instructions` become
+  `*string`. They are plain `string` with `omitempty` today, and the
+  schema permits an empty one, so a decoder cannot tell an absent control
+  from `{"model_id": ""}` — and since adapters test these fields with
+  `!= ""`, such a request slips past the fail-closed gate entirely, with
+  an empty `model_id` read as "no selection" rather than as a control the
+  endpoint must refuse. Presence is what the gate is about, so the type
+  has to carry it; the alternative, defining empty as absence, would make
+  the wire's meaning depend on a Go convention and still leave
+  `{"model_id": ""}` silently admitted on an endpoint that advertises
+  nothing. A present-but-empty control is a control, judged through the
+  gate like any other and, once past it, an unsatisfiable value
+  (`unsatisfiable_control`, `details.field`). Fixtures
+  `controls-empty-model-id-unadvertised` (the gate's refusal) and
+  `controls-empty-model-id-admitted` (`unsatisfiable_control`).
 - `output_schema` stays a JSON Schema object, and it must describe a JSON
   object: its root `type` is `"object"` (a `type` list may name only
   `"object"`). `run.completed.result` is `type: "object"` in
@@ -228,7 +242,17 @@ No new envelope types. Changes to
   `run.instructions`).
 - An admitted `model_id` is authoritative for the run: the submit response
   repeats it in `model_id`, `run.started` repeats it, and `run.completed`
-  may not name another model. Absent `model_id`, the response reports the
+  may not name another model. That last clause needs wire to stand on:
+  `run.schema.json`'s `completed` payload carries `final_response`,
+  `stop_reason`, `result`, `usage`, and `duration_ms` and no model, so T1
+  adds an optional `model_id` to it. The addition earns its place beyond
+  making the rule enforceable — it lets a consumer check which model
+  produced the final response without correlating back to the admission,
+  which matters most where the answer is surprising — and it is additive
+  on an open payload, so an old reader ignores it. The validator
+  diagnoses `unapplied_control` when a present `model_id` on
+  `run.completed` differs from the admitted one, and says nothing when it
+  is absent. Absent an admitted `model_id`, the response reports the
   effective model when known, as today.
 - `current_model_id` in session state is the model the next `auto`
   submission without `model_id` would use. A `per_run` application leaves it
@@ -690,9 +714,13 @@ serve one catalog for its lifetime.
   advertised fails the gate's rule that nothing is applied without being
   advertised; the request is remembered rather than gated, as T1 and T2
   do for controls and deliveries, and a correlated `error.response` must
-  carry `unsupported_feature` with `details.feature: "models.list"`
-  (`unavailable_capability` on the error response otherwise), so an
-  endpoint that correctly refuses the query is conforming.
+  carry `unsupported_feature` with `details.feature: "models.list"` and
+  `details.reason: "unadvertised"`, the reason the ladder assigns to
+  every capability-rung refusal (`unavailable_capability` on the error
+  response under any other code, feature, or reason), so an endpoint that
+  correctly refuses the query is conforming and one whose refusal points
+  the caller at a value to change is not. Fixture
+  `models-unadvertised-wrong-reason`.
 - `current_model_id` on `models.response` must equal the effective session
   model the validator tracks (`sessionTrack.currentModel`: the latest
   `session.open.response` or `session.state` value, advanced by a
@@ -709,6 +737,18 @@ serve one catalog for its lifetime.
   the catalog does not describe could not resolve it, and re-selecting
   the same id would be refused by the catalog rule, so the adapter that
   serves such a catalog is diagnosed rather than the caller.
+- The catalog binds in both directions. A refusal is checked against it
+  as well as an admission: when the active `native` or `emulated` catalog
+  *does* list the requested id and the correlated response is an
+  `error.response` carrying `model_not_found`, that is
+  `model_not_in_catalog` on the `error.response`, naming the id and the
+  catalog that listed it. A catalog is a promise that its ids are
+  selectable, and a false miss is the more damaging failure of the two:
+  the client discards a selection that was valid, and re-listing only
+  confirms the id it was just told does not exist. The rule runs
+  alongside the miss rule and under the same precedence — where a higher
+  rung owns the response it is discharged, as a catalog miss is. Fixture
+  `models-listed-selection-false-miss`.
 - New diagnostic `model_not_in_catalog`: an admitted `model_id` after a
   `models.response` in the same trace names an id the response did not
   list, or a `models.response` whose own `current_model_id` is not among
@@ -948,9 +988,20 @@ No new envelope types. Additive fields:
   admission bounds: no admission may raise the set above the bound
   advertised at that admission, and a refresh that lowers a bound below
   a session's current set grandfathers that set and admits nothing more
-  until it falls below the new bound (validator, below). Absent means no
-  bound is advertised: one started run and at least one queued
-  reservation, unenforced.
+  until it falls below the new bound (validator, below). A descriptor that
+  advertises `session.message.delivery.queue` as available must disclose
+  `max_queued_runs_per_session`, because otherwise the capability
+  promises nothing: with no bound present the refusal validation never
+  engages, and an adapter could advertise queueing, omit `limits`, and
+  refuse every queued submission with `run_active` while remaining
+  conforming. Advertising a queue is a claim that some submission will be
+  queued, and the bound is what makes the claim checkable — one is
+  enough, and `1` is an honest answer. A descriptor advertising the
+  capability with no `max_queued_runs_per_session` is
+  `undisclosed_queue_limit` on the `capabilities.response` (fixture
+  `queue-advertised-without-limit`). Where the capability is `degraded` or
+  absent the disclosure is not required, and `max_active_runs_per_session`
+  stays optional: absent, it means one started run, unenforced.
 - Typed error `run_active` (the daemon's existing code, adopted as the
   protocol code; the research draft's `session_busy` name is superseded): a
   submission that cannot be admitted because the session is busy and no
@@ -1038,7 +1089,10 @@ No new envelope types. Additive fields:
   `session.message.delivery.queue` or advertises it `unavailable` is
   `unavailable_capability` on the response whatever the session held, and
   a correlated `error.response` must carry `unsupported_feature` naming
-  the delivery key. No fixture in the current manifest expects
+  the delivery key in `details.feature` with `details.reason:
+  "unadvertised"`, anything else being `unavailable_capability` on the
+  error response (fixture `queue-idle-unadvertised-wrong-reason`). No
+  fixture in the current manifest expects
   `unavailable_capability` for a delivery, so the move changes no
   existing fixture's meaning; T4 applies the same shape to `steer`.
   T1's `degraded_without_optin` covers the delivery keys too: a `queued`
@@ -1114,8 +1168,12 @@ No new envelope types. Additive fields:
   where the bound is *not* reached at the response — the queued run that
   made the request exceed it terminated while `Submit` was in flight —
   the submit was admissible, and an `error.response` carrying
-  `run_active` or `queue_limit_exceeded` reports a bound that no longer
-  binds. That is `queue_limit_exceeded` on the error response, naming the
+  `run_active` reports a bound that no longer binds — `run_active` alone,
+  because the wire vocabulary for a reached bound is `run_active` and
+  `queue_limit_exceeded` is a validator diagnostic, never a code an
+  adapter sends; a refusal that did send it would already be diagnosed by
+  the reached-bound rule above for using the wrong code. That is
+  `queue_limit_exceeded` on the error response, naming the
   bound and the counts as of the response, so a caller is not told to
   wait for capacity it already has — but only once every other state-rung
   condition that independently owes `run_active` has been excluded. The
@@ -1707,11 +1765,13 @@ HyperNeo-style embedding; it adds no wire vocabulary.
   control refusal names its control's key — the code alone does not tell
   the caller which capability to stop requesting — so a refusal under
   another code, or under `unsupported_feature` with `details.feature`
-  absent or naming an unrelated capability, is `unavailable_capability`
+  absent or naming an unrelated capability, or without `details.reason:
+  "unadvertised"`, is `unavailable_capability`
   on the `error.response`. Fixtures `tools-list-ungated-refused`
-  (positive), `tools-list-ungated-wrong-refusal` (another code) and
+  (positive), `tools-list-ungated-wrong-refusal` (another code),
   `tools-list-ungated-wrong-feature` (`unsupported_feature` with
-  `details.feature: "run.model_selection"`).
+  `details.feature: "run.model_selection"`) and
+  `tools-list-ungated-wrong-reason` (`details.reason: "unsatisfiable"`).
 - An `action.tools.list.response` correlated to a request that names a
   session (envelope or payload `session_id`) must carry that session on
   both its envelope and its payload; an unscoped response to a scoped
@@ -2050,7 +2110,25 @@ the request used.
   caller that needs to abandon work regardless keeps the context it
   already had. Fixture `control-call-cancel-races-resolution` (positive;
   a cancel issued while a resolution is in flight, the resolution
-  answered `already_resolved` after the cancellation is published). The context-done fallback reconciles as the
+  answered `already_resolved` after the cancellation is published).
+  Serialization only reaches what the hub schedules, and a harness-side
+  timeout that emits `action.call.cancelled` or `.failed` is not that: it
+  can settle the call after the gate is armed and before `Resolve` reads
+  adapter state, making `already_resolved` correct while the event
+  proving it sits in the buffer. The refusal path therefore takes the
+  boundary treatment T4 gives its error path, for the same reason and to
+  the same shape. Withholding everything until `Published` is right only
+  for an accepted resolution, where no envelope may precede the accepted
+  response; a refusal accepts nothing, so there is nothing to order
+  behind. On `accepted: false` the hub drains the run's stream without
+  blocking and publishes what the adapter emitted before returning —
+  the timeout's terminal among it — ahead of the resolve response, then
+  lifts the gate. The validator's response-time reading of the
+  interaction then sees the settlement that justifies the refusal,
+  whatever settled it, and no rule has to special-case which producer
+  did. Fixture `control-call-timeout-races-resolution` (positive; a
+  harness timeout settles the call while the resolution is in flight, the
+  `action.call.cancelled` precedes the `accepted: false`). The context-done fallback reconciles as the
   steer fallback does rather than lifting the gate blind: the hub first
   publishes a `session.state.updated` whose `active_runs` entry for the
   run reflects `pending_interactions` after the request was answered:
@@ -2392,13 +2470,22 @@ with the `details.reason` the wire assigns to that condition (`queued`,
 terminal run belonging to another session is both `cross_session` and
 `queued` or `terminal` — and these are peers on the state rung sharing a
 diagnostic, a pointer, and a value, so the global tie-break cannot
-separate them. They are ranked instead, most fundamental first:
-`cross_session`, `no_active_run`, `terminal`, `not_steerable`, `queued`.
-Ownership outranks lifecycle because a caller steering another session's
+separate them. They are ranked instead, and the ranking turns on whether
+the caller named a target. With an explicit `target_run_id` naming a run
+that exists, the reason describes *that* run:
+`cross_session`, `terminal`, `not_steerable`, `queued` — `no_active_run`
+never applies, because the caller asked about a particular run and
+telling it the session has no started run answers a question it did not
+put. Without a `target_run_id`, or with one naming no run the validator
+knows, the order is `cross_session`, `no_active_run`, `terminal`,
+`not_steerable`, `queued`. Ownership outranks lifecycle either way,
+because a caller steering another session's
 run has the wrong run, not a badly timed one, and must be told so rather
 than sent to wait for a state it will never see; among lifecycle
 conditions the permanent outranks the transient, on the same reasoning as
-the ladder itself. The validator requires the highest-ranked reason the
+the ladder itself. Fixture `steer-named-queued-target-no-started-run`
+(positive; an explicit `target_run_id` naming a queued run of the same
+session while nothing is started, refused `queued`, not `no_active_run`). The validator requires the highest-ranked reason the
 target satisfies and the adapter reports it, so the two cannot diverge.
 Fixture `steer-cross-session-terminal-target` (positive; another
 session's terminal run, refused `cross_session`). When the same request is also ungated — an explicit
@@ -2632,13 +2719,48 @@ and hub contract is explicit rather than inherited from `start`:
   in-process embedder that issues a second gated operation on a run
   before calling `Published` for the first waits, bounded by the first
   operation's context, which is the contract it accepted by taking the
-  response synchronously. If the context passed to `Submit` ends before
+  response synchronously. Forgetting `Published` must not be able to
+  wedge a stream, and for an in-process embedder the obvious usage
+  invites exactly that: `Submit` with a long-lived context, then a
+  forgotten call, and the target run's subscribers see silence with no
+  diagnostic and no context to end. Two mitigations, both in the 0008
+  decision. `Submit` returns the barrier as a guard value with a single
+  `Publish()` method rather than a bare token, so `defer` is the
+  idiomatic use and the right thing is the easy thing; and the gate
+  carries a bounded deadline of its own, independent of the caller's
+  context, whose expiry runs the same fallback described next and records
+  that it fired, so a forgotten call degrades to late, accounted-for
+  events instead of a wedged run. The deadline is a backstop, not a
+  policy: expiring it is a defect the hub reports, not a supported way to
+  use the API. The README's embedding example discards `Submit`'s return
+  today and is updated with the unit.
+  If the context passed to `Submit` ends before
   `Published` is called (the HTTP client disconnected before the response
   was written, or a binding forgot the call), the hub does not simply
   publish the buffered settlement, since the submitter never learned its
   `submission_id`: it first publishes a `session.state.updated` on the
   session stream whose `active_runs` entry for the target lists the steer
-  in `pending_steers`, and only then lifts the gate. A snapshot the hub
+  in `pending_steers`, and only then lifts the gate. Minting that snapshot commits the hub to two things the plan should say
+  outright. The session-scoped sequence domain is hub-owned: the schema
+  requires `sequence` on `session.state.updated`, so the hub allocates
+  it, and adapters never emit sequenced session-scoped envelopes — they
+  emit run events, whose domain is the run. Nothing emits
+  `session.state.updated` today, so the domain is uncontended now, and
+  fixing ownership before T4 lands is what keeps it that way: two
+  producers in one domain would show subscribers duplicate or regressed
+  positions. `capabilities.updated` is the same at endpoint scope, and
+  the same rule applies. And a minted snapshot carries only what the hub
+  itself knows: `session_id`, the `status` the hub tracks, and the
+  `active_runs` entries with their `pending_steers` and
+  `pending_interactions` — the facts the fallback exists to convey. The
+  adapter-owned optional members (`current_model_id`, `transcript_cursor`,
+  `updated_at_ms` beyond the hub's own clock) are omitted rather than
+  reconstructed: guessing them risks contradicting the adapter and
+  tripping `session_state_mismatch`, and querying `Session.State` would
+  put a blocking adapter call on an error path that runs precisely when
+  something has already gone wrong. The validator's state rules read an
+  omitted optional member as "not reported", so a minted snapshot is
+  never judged against facts it never claimed. A snapshot the hub
   mints is not in the adapter's run journal, which the T2 resume path
   replays from, so the hub journals every snapshot it mints, keyed by the
   run domain and sequence it preceded, and interleaves it at that position
@@ -2778,6 +2900,7 @@ strings in the schema; the validator does not enumerate them.
 `queue_limit_exceeded`, `premature_session_mutation`,
 `unmatched_tool_source`, `duplicate_tool_source`, `duplicate_tool_name`,
 `wrong_tool_owner`, `attachment_field_in_catalog`,
+`undisclosed_queue_limit`,
 `resolution_payload_mismatch`, `catalog_mismatch`,
 `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`.
 Existing codes are reused wherever the
