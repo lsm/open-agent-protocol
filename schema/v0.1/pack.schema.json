@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pack.schema.json",
+  "title": "Open Agent Protocol extension pack descriptor",
+  "description": "A pack.json: what an extension pack defines, declared rather than inferred from its schemas, so containment can be checked before anything is compiled. Shape only; the namespace, containment, prefix-freedom, gate, role, and reference rules are checked by the loader, which refuses the pack rather than diagnosing a trace.",
+  "type": "object",
+  "required": ["id", "version", "schemas"],
+  "properties": {
+    "id": {
+      "description": "The pack's namespace: a reverse-DNS name. The unprefixed namespace is the spec's, in its entirety.",
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+    },
+    "version": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+    "schemas": {
+      "description": "The schema files the pack contributes, each a relative path contained beneath the pack root.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/relativePath" }
+    },
+    "depends_on": {
+      "description": "The packs whose resources this pack's schemas may $ref. A dependency is satisfied only by a loaded pack of that exact id and version.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version"],
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "version": { "$ref": "common.schema.json#/$defs/nonEmptyString" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "capability_keys": { "type": "array", "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" } },
+    "error_codes": { "type": "array", "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" } },
+    "envelope_types": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "role", "schema"],
+        "properties": {
+          "type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "role": {
+            "description": "Stated, never inferred: a request and an event both omit in_reply_to and need opposite treatment under an unadvertised key.",
+            "enum": ["request", "response", "event"]
+          },
+          "schema": {
+            "description": "The branch this type contributes to the envelope union, as <file>#<pointer> into one of the pack's own schemas. The branch must pin type to a const naming this type.",
+            "$ref": "common.schema.json#/$defs/nonEmptyString"
+          },
+          "replies_to": {
+            "description": "For a response: the declared request of this pack that it answers. A response takes its gate from that request and carries no gate of its own.",
+            "$ref": "common.schema.json#/$defs/nonEmptyString"
+          },
+          "refusals": {
+            "description": "For a request: the pack's own error codes the endpoint may answer it with for domain reasons. A refusal outside the declared set is unhonoured_capability.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "gates": {
+      "description": "From each declared request and event, and each member the pack adds to a core payload, to the capability key that must be advertised for it. Stated for every one of them: a missing entry is a load refusal, not a silent hole.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "payload_type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "member": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "capability": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "ungated": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "payload_members": {
+      "description": "Members the pack adds to core payloads. A member has no branch of its own, so the subschema its value must satisfy is declared here and judged in a pass of its own; the core payload is never patched.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["payload_type", "member", "schema"],
+        "properties": {
+          "payload_type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "member": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+          "schema": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "fixtures": {
+      "description": "The pack's own fixture manifest, in the core manifest format, contained beneath the pack root. Its entries claim the pack's ext: term and never a core unit.",
+      "$ref": "#/$defs/relativePath"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/]"
+    }
+  }
+}
