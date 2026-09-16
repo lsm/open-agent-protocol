@@ -521,7 +521,17 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 	}
 
 	core := coreVocabulary()
+	declaredMembers := map[string]bool{}
 	for _, member := range p.Descriptor.PayloadMembers {
+		if key := member.PayloadType + "#" + member.Member; declaredMembers[key] {
+			// Two declarations of one member would be resolved
+			// inconsistently — one subschema compiled, the other indexed —
+			// so neither is taken.
+			refuse(LoadPackMemberDuplicate, "payload member %q on %q is declared more than once", member.Member, member.PayloadType)
+			continue
+		} else {
+			declaredMembers[key] = true
+		}
 		payload, ok := core[member.PayloadType]
 		if !ok {
 			refuse(LoadPackMemberTargetUnknown, "payload member %q targets %q, which is not a core envelope type; a target with no known role has no gate point", member.Member, member.PayloadType)
@@ -933,6 +943,18 @@ func checkReferences(packs []*Pack) []PackRefusal {
 				allowed[uri] = true
 				for _, id := range documentIdentifiers(owner, uri, document) {
 					allowed[id] = true
+				}
+			}
+			// A payload member's inline schema is registered under its own
+			// generated URI, so its local references resolve there.
+			for i, member := range owner.Descriptor.PayloadMembers {
+				uri := owner.memberURI(i)
+				allowed[uri] = true
+				var document any
+				if err := json.Unmarshal(member.Schema, &document); err == nil {
+					for _, id := range documentIdentifiers(owner, uri, document) {
+						allowed[id] = true
+					}
 				}
 			}
 		}

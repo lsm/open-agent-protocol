@@ -40,6 +40,7 @@ func TestPackLoadRefusals(t *testing.T) {
 		{[]string{"bad-refusal-undeclared"}, []string{LoadPackRefusalUndeclared}},
 		{[]string{"bad-restates-core-member"}, []string{LoadPackRestatesCoreMember}},
 		{[]string{"bad-member-target-unknown"}, []string{LoadPackMemberTargetUnknown}},
+		{[]string{"bad-member-duplicate"}, []string{LoadPackMemberDuplicate}},
 		{[]string{"bad-member-on-capabilities-updated"}, []string{LoadPackMemberTargetUnknown}},
 		{[]string{"bad-schema-path-escape"}, []string{LoadPackSchemaPathEscape}},
 		{[]string{"bad-external-ref"}, []string{LoadPackExternalRef}},
@@ -465,5 +466,52 @@ func TestInPackIdentifiersAreReferable(t *testing.T) {
 	p.order = []string{uri}
 	if refusals := checkReferences([]*Pack{p}); len(refusals) != 0 {
 		t.Fatalf("reference to an in-pack $id resource refused: %v", refusals)
+	}
+}
+
+// A packed key is matched exactly: the core shorthand aliases never apply, so
+// a descriptor advertising only an alias does not admit the packed vocabulary.
+func TestPackedKeyIsMatchedExactly(t *testing.T) {
+	packs, err := LoadPacks(packDir(t, "storage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",`
+	trace := func(advertised string) string {
+		return "[" + strings.Join([]string{
+			head + `"type":"capabilities.request","id":"capq","payload":{}}`,
+			head + `"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"` + advertised + `":{"level":"native"}}}}`,
+			head + `"type":"session.message.submit.request","id":"req1","session_id":"s1","payload":{"delivery":"auto","session_id":"s1","messages":[{"role":"user","content":"go"}]}}`,
+			head + `"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","payload":{"accepted":true,"admission":"started","effective_delivery":"start","requested_delivery":"auto","run_id":"r1","session_id":"s1","status":"running","submission_id":"sub1"}}`,
+			head + `"type":"run.started","id":"ev1","session_id":"s1","run_id":"r1","sequence":1,"payload":{"run_id":"r1","session_id":"s1","status":"running"}}`,
+			head + `"type":"com.example.storage.objects.changed","id":"ev2","session_id":"s1","run_id":"r1","sequence":2,"capability_revision":"v1","payload":{"session_id":"s1","key":"q3.csv"}}`,
+			head + `"type":"run.completed","id":"ev3","session_id":"s1","run_id":"r1","sequence":3,"payload":{"final_response":{"role":"assistant","content":"ok"},"run_id":"r1","session_id":"s1","stop_reason":"end_turn"}}`,
+		}, ",") + "]"
+	}
+	if result := v.ValidateBytes([]byte(trace("com.example.storage.objects")), "exact"); !result.Valid() {
+		t.Fatalf("the pack's own key did not admit its event: %v", result.Diagnostics)
+	}
+	for _, alias := range []string{"session.message.com.example.storage.objects", "agent_control.com.example.storage.objects", "action.com.example.storage.objects"} {
+		if result := v.ValidateBytes([]byte(trace(alias)), alias); !result.HasCode(CodeUnavailableCapability) {
+			t.Fatalf("alias %s admitted a packed event: %v", alias, result.Diagnostics)
+		}
+	}
+}
+
+// A payload member's inline schema is its own resource: a local reference
+// inside it resolves to the member's generated URI and is allowed.
+func TestPayloadMemberLocalReferencesAreAllowed(t *testing.T) {
+	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/", documents: map[string]any{}}
+	p.Descriptor.ID, p.Descriptor.Version = "com.example.a", "1.0.0"
+	p.Descriptor.PayloadMembers = []PackPayloadMember{{
+		PayloadType: "run.completed", Member: "com.example.a.extra",
+		Schema: json.RawMessage(`{"$defs":{"value":{"type":"string"}},"$ref":"#/$defs/value"}`),
+	}}
+	if refusals := checkReferences([]*Pack{p}); len(refusals) != 0 {
+		t.Fatalf("self-contained member schema refused: %v", refusals)
 	}
 }

@@ -97,14 +97,14 @@ func (s *state) packEnvelope(i, line int, e protocol.Envelope) {
 		role = PackRoleEvent
 	}
 	if packed != nil && role == PackRoleEvent && packed.Capability != "" {
-		s.feature(i, line, e, packed.Capability)
+		s.packFeature(i, line, e, packed.Capability)
 	}
 	if role != PackRoleRequest {
 		// A member added to a core response or event is the endpoint acting on
 		// the capability, so it is judged where it appears. A member on a
 		// request is not: it settles with that request's response, below.
 		for _, gate := range s.memberGates(e.Type, e.Payload) {
-			s.feature(i, line, e, gate.key)
+			s.packFeature(i, line, e, gate.key)
 		}
 	}
 	if role != PackRoleResponse && e.Type != protocol.TypeErrorResponse {
@@ -123,7 +123,7 @@ func (s *state) packEnvelope(i, line int, e protocol.Envelope) {
 		if !s.advertised(gate.key) {
 			// A successful response to a request gated on an unadvertised
 			// key is the endpoint acting on a capability it does not have.
-			s.feature(i, line, e, gate.key)
+			s.packFeature(i, line, e, gate.key)
 		}
 	}
 }
@@ -206,6 +206,14 @@ func (s *state) settleRefusal(i, line int, e protocol.Envelope, gates []packGate
 // advertised reports whether a capability key is affirmatively advertised by
 // the current descriptor. A packed key is fully qualified, so it is looked up
 // as declared; the core prefixes the gate tries are core spellings.
+// packFeature judges an envelope's use of a packed capability key. A pack's
+// key is fully qualified and is matched exactly: the core shorthand that lets
+// "tools" stand for "action.tools" would otherwise let a descriptor advertise
+// an alias the pack never declared and admit the packed vocabulary on it.
+func (s *state) packFeature(i, line int, e protocol.Envelope, key string) {
+	s.featureKeys(i, line, e, []string{key})
+}
+
 func (s *state) advertised(key string) bool {
 	if s.currentCapability == "" || s.capabilitiesStale {
 		return false

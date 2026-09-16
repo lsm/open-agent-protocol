@@ -1085,6 +1085,14 @@ func (s *state) lookupInteraction(run protocol.RunID, id protocol.InteractionID)
 	return nil
 }
 func (s *state) feature(i, line int, e protocol.Envelope, name string) {
+	// A core feature name is shorthand for the descriptor keys it may live
+	// under; a packed key (see packFeature) is never expanded.
+	s.featureKeys(i, line, e, []string{name, "session.message." + name, "agent_control." + name, "action." + name})
+}
+
+// featureKeys judges an envelope's use of an optional feature against the
+// first of the given descriptor keys the descriptor names.
+func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
 	if s.currentCapability == "" || s.capabilitiesStale {
 		s.add(CodeUnavailableCapability, i, line, e, "/type", "optional feature requires a current capability descriptor")
 		return
@@ -1093,7 +1101,7 @@ func (s *state) feature(i, line int, e protocol.Envelope, name string) {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "optional feature must cite the active capability descriptor", s.currentCapability, string(e.CapabilityRevision))
 		return
 	}
-	for _, key := range []string{name, "session.message." + name, "agent_control." + name, "action." + name} {
+	for _, key := range keys {
 		if level, ok := s.features[key]; ok {
 			switch level {
 			case protocol.SupportNative, protocol.SupportEmulated, protocol.SupportDegraded:

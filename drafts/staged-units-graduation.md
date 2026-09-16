@@ -402,6 +402,9 @@ The same refusal covers a gated member on `capabilities.updated`: that
 envelope introduces a revision and marks the descriptor stale until the
 next `capabilities.response`, so no descriptor of its own governs the
 gate; an ungated member there is schema only.
+Two `payload_members` entries naming the same payload type and member
+are a load refusal (`pack_member_duplicate`): one would be compiled and
+the other indexed, and neither declaration is what the pack meant.
 Fixtures `ext-member-validated` (a packed member with a body its
 subschema rejects: tolerated without the pack, diagnosed with it),
 `ext-member-undeclared-still-rejected` (positive; a different unknown
@@ -552,6 +555,7 @@ and `ext-pack-restates-core-member` (load refusal).
   `pack_id_collision`, `pack_branch_undeclared_type`,
   `pack_branch_unpinned`, `pack_ungated_type`,
   `pack_restates_core_member`, `pack_member_target_unknown`,
+  `pack_member_duplicate`,
   `pack_role_undeclared`, `pack_response_gated`,
   `pack_reply_target_unknown`, `pack_reply_target_ambiguous`,
   `pack_refusal_undeclared`,
