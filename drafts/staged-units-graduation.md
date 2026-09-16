@@ -794,7 +794,13 @@ No new envelope types. Changes to
   "mode": "auto" | "none" | "required" | "named", "name"?: string,
   "allowed"?: [string], "disallowed"?: [string] }`, with `name` present
   when and only when `mode` is `named`, and `allowed`/`disallowed` mutually
-  exclusive. Precedence is fixed so no two implementations can read one
+  exclusive. Both rules are about *presence*, and a reader must decode
+  presence rather than infer it from a decoded value: `"name": ""` and
+  `"name": null` are present members, and `allowed` and `disallowed` both
+  present as empty lists are two members, not none. A reader that unmarshals
+  into value fields cannot tell those from absence, and would run under a
+  policy nobody wrote. A present `name` is a non-empty tool name and a present
+  `allowed` or `disallowed` is a list; null is neither. Precedence is fixed so no two implementations can read one
   policy differently: `allowed` or `disallowed` filters the catalog first,
   then `mode` applies to the filtered set; every entry of `allowed` and
   `disallowed` must name a tool in the advertised catalog (an unknown entry
@@ -803,7 +809,11 @@ No new envelope types. Changes to
   in the filtered set, and `required` needs a non-empty filtered set;
   otherwise the policy is unsatisfiable and is rejected before admission
   (`unsupported_feature`, `details.reason: "unsatisfiable"`), never
-  resolved by choosing one member over another. The catalog a policy is
+  resolved by choosing one member over another. Every `unsupported_feature`
+  refusal names its subject in `details.feature`: it answers about one
+  capability, and a refusal that omits the key or names another tells the
+  caller only that something was unsupported, when what it must do next is
+  stop sending one particular control. The catalog a policy is
   judged against is the session's full catalog, including tools the control
   layer provides at open (T3c), so a policy governs those tools the same
   way. Plain names suffice only because the catalog a policy is judged
@@ -1450,6 +1460,12 @@ no diagnostic; the same policy refused with `unsupported_feature`,
 "unsatisfiable"`, `details.tool`),
 `controls-unsatisfiable-wrong-refusal` (`unsatisfiable_control` on the
 `error.response`; the same policy refused with `internal_error`),
+`controls-refusal-omits-feature` and `controls-refusal-names-wrong-feature`
+(`unsatisfiable_control` on the `error.response`; the same policy refused
+under the right code and reason with `details.feature` absent, and naming
+another capability), `controls-tool-choice-empty-filters`
+(`unsatisfiable_control` on the admission; `allowed` and `disallowed` both
+present as empty lists),
 `controls-instructions-refused` (`unsatisfiable_control` on the
 `error.response`; `instructions` refused on an endpoint advertising
 `run.instructions` — the control has no unsatisfiability condition, so

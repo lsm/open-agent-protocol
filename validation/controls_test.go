@@ -362,3 +362,73 @@ func TestStartedRepeatsTheAdmittedModel(t *testing.T) {
 		t.Fatalf("an uncontrolled run was judged against a volunteered model: %+v", attribution.Diagnostics)
 	}
 }
+
+// unsupported_feature answers about one capability, so the key is the
+// refusal's subject: a refusal that omits it, or names another key, tells the
+// caller no more than that something was unsupported — and the caller's next
+// move is to stop sending a control it now cannot identify. The
+// unsatisfiability rung carries the offending member in details.tool or
+// details.field, so the feature there is checked by nothing else.
+func TestRefusalMustNameTheFeatureItAnswersFor(t *testing.T) {
+	v := MustNew()
+	features := `{"run.tool_selection":{"level":"emulated","modes":["auto","none","required","named"]}}`
+	control := `,"tool_choice":{"mode":"named","name":"absent_tool"}`
+	for name, details := range map[string]map[string]any{
+		"feature omitted":      {"reason": "unsatisfiable", "tool": "absent_tool"},
+		"wrong feature":        {"feature": "run.structured_output", "reason": "unsatisfiable", "tool": "absent_tool"},
+		"feature not a string": {"feature": 7, "reason": "unsatisfiable", "tool": "absent_tool"},
+	} {
+		result := v.ValidateBytes(controlsTrace(features, control, refusalEnvelope("unsupported_feature", details)), "refusal-"+name)
+		if !result.HasCode(CodeUnsatisfiableControl) {
+			t.Fatalf("%s: want %s: %+v", name, CodeUnsatisfiableControl, result.Diagnostics)
+		}
+	}
+	conforming := refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.tool_selection", "reason": "unsatisfiable", "tool": "absent_tool"})
+	if result := v.ValidateBytes(controlsTrace(features, control, conforming), "refusal-conforming"); !result.Valid() {
+		t.Fatalf("a refusal naming its own feature was rejected: %+v", result.Diagnostics)
+	}
+}
+
+// The typed policy is stated in terms of member presence: `name` when and only
+// when the mode is `named`, `allowed` and `disallowed` mutually exclusive. A
+// decode into value fields cannot see presence — `"name": ""` and `"name":
+// null` both land as the empty string, two empty lists as two empty slices —
+// so a policy whose shape is wrong would read as one whose members were simply
+// absent, and the endpoint would run under a policy nobody wrote.
+func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
+	for name, encoded := range map[string]string{
+		"empty name off named mode": `{"mode":"auto","name":""}`,
+		"null name off named mode":  `{"mode":"auto","name":null}`,
+		"null name on named mode":   `{"mode":"named","name":null}`,
+		"empty name on named mode":  `{"mode":"named","name":""}`,
+		"both filters empty":        `{"mode":"auto","allowed":[],"disallowed":[]}`,
+		"both filters present":      `{"mode":"auto","allowed":["scripted_tool"],"disallowed":[]}`,
+		"null allowed":              `{"mode":"auto","allowed":null}`,
+		"null disallowed":           `{"mode":"auto","disallowed":null}`,
+	} {
+		policy, err := (protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(encoded)}).ToolChoicePolicy()
+		if err == nil {
+			t.Fatalf("%s: %s decoded as the typed policy %+v", name, encoded, policy)
+		}
+	}
+	// One filter, empty or not, is still the typed shape: an empty allowed
+	// list filters every tool out, which is empty rather than contradictory.
+	for name, encoded := range map[string]string{
+		"empty allowed":    `{"mode":"auto","allowed":[]}`,
+		"empty disallowed": `{"mode":"auto","disallowed":[]}`,
+		"named with name":  `{"mode":"named","name":"scripted_tool"}`,
+		"bare auto":        `{"mode":"auto"}`,
+	} {
+		if _, err := (protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(encoded)}).ToolChoicePolicy(); err != nil {
+			t.Fatalf("%s: %s was refused as untyped: %v", name, encoded, err)
+		}
+	}
+	// Every shape above is a control the endpoint must refuse as
+	// unsatisfiable, not one it may read past.
+	v := MustNew()
+	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
+	admitted := v.ValidateBytes(controlsTrace(features, `,"tool_choice":{"mode":"auto","allowed":[],"disallowed":[]}`, controlsAdmission), "empty-filters")
+	if !admitted.HasCode(CodeUnsatisfiableControl) {
+		t.Fatalf("want %s when both filters are present: %+v", CodeUnsatisfiableControl, admitted.Diagnostics)
+	}
+}

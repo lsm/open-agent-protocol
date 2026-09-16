@@ -253,9 +253,10 @@ func (r MessageSubmitRequest) AllowsDegraded(key string) bool {
 // ToolChoicePolicy decodes the typed policy a submission carries. It reports
 // (nil, nil) when no tool_choice is present, and an error when the member is
 // present but is not the typed shape: an unknown member, an unknown mode, a
-// name on a mode other than "named" or missing on "named", or both allowed and
-// disallowed. A policy that decodes here may still be unsatisfiable against a
-// catalog; ToolChoice.Unsatisfiable judges that.
+// name present on a mode other than "named" or absent on "named", a name that
+// is null or empty, a null allowed or disallowed, or both of them present. A
+// policy that decodes here may still be unsatisfiable against a catalog;
+// ToolChoice.Unsatisfiable judges that.
 //
 // A present `null` is a control, not an absent one. The schema admits any JSON
 // value here, and presence is what the gate judges — the same rule that makes
@@ -279,16 +280,42 @@ func (r MessageSubmitRequest) ToolChoicePolicy() (*ToolChoice, error) {
 	if decoder.More() {
 		return nil, fmt.Errorf("tool_choice carries trailing content")
 	}
+	// Presence is read off the wire rather than off the decoded value.
+	// Unmarshalling into value fields loses it: `"name": ""` and `"name":
+	// null` both land as the empty string, and `"allowed": []` alongside
+	// `"disallowed": []` as two empty slices, so a policy whose typed shape is
+	// wrong would read as one whose members were simply absent. The shape is
+	// stated in terms of presence — `name` when and only when the mode is
+	// `named`, `allowed` and `disallowed` mutually exclusive — so presence is
+	// what must be judged.
+	var members struct {
+		Name       json.RawMessage `json:"name"`
+		Allowed    json.RawMessage `json:"allowed"`
+		Disallowed json.RawMessage `json:"disallowed"`
+	}
+	if err := json.Unmarshal(r.ToolChoice, &members); err != nil {
+		return nil, fmt.Errorf("tool_choice is not the typed policy: %w", err)
+	}
 	switch policy.Mode {
 	case ToolChoiceAuto, ToolChoiceNone, ToolChoiceRequired, ToolChoiceNamed:
 	default:
 		return nil, fmt.Errorf("tool_choice mode %q is not one of auto, none, required, named", policy.Mode)
 	}
-	if (policy.Name != "") != (policy.Mode == ToolChoiceNamed) {
+	if (members.Name != nil) != (policy.Mode == ToolChoiceNamed) {
 		return nil, fmt.Errorf("tool_choice name is present when and only when mode is %q", ToolChoiceNamed)
 	}
-	if len(policy.Allowed) > 0 && len(policy.Disallowed) > 0 {
+	// A null is a present member of the wrong type, and an empty name can
+	// name no tool in any catalog, so neither is the typed shape.
+	if members.Name != nil && policy.Name == "" {
+		return nil, fmt.Errorf("tool_choice name must be a non-empty tool name")
+	}
+	if members.Allowed != nil && members.Disallowed != nil {
 		return nil, fmt.Errorf("tool_choice allowed and disallowed are mutually exclusive")
+	}
+	for name, raw := range map[string]json.RawMessage{"allowed": members.Allowed, "disallowed": members.Disallowed} {
+		if raw != nil && string(bytes.TrimSpace(raw)) == "null" {
+			return nil, fmt.Errorf("tool_choice %s is null, which is not a list of tool names", name)
+		}
 	}
 	return &policy, nil
 }

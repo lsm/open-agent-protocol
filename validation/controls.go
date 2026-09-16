@@ -471,6 +471,16 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 	}
 	if expectation := pending.expectation; expectation != nil {
 		conforming := payload.Error.Code == expectation.code
+		if conforming && expectation.code == errorUnsupportedFeature {
+			// unsupported_feature answers about one capability, so the key is
+			// the refusal's subject: omitted, or naming another key, it tells
+			// the caller no more than that something was unsupported. The
+			// unsatisfiability rung carries the offending member in
+			// details.tool or details.field, so without this the feature on
+			// those refusals would go unjudged.
+			feature, ok := detail("feature")
+			conforming = ok && feature == expectation.key
+		}
 		if conforming && expectation.reason != "" {
 			reason, ok := detail("reason")
 			conforming = ok && reason == expectation.reason
@@ -502,6 +512,9 @@ func (e *controlExpectation) describe() string {
 	description := e.code
 	if e.reason != "" {
 		description += "/" + e.reason
+	}
+	if e.code == errorUnsupportedFeature && e.detailName != "feature" {
+		description += " feature=" + e.key
 	}
 	if e.detailName != "" {
 		description += " " + e.detailName + "=" + e.detailValue

@@ -2328,6 +2328,9 @@
         "drafts/staged-units-graduation.md",
         "decisions/0005-run-controls.md"
       ]
-    }
+    },
+    {"id":"controls-refusal-omits-feature","path":"semantic-invalid/controls-refusal-omits-feature.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-refusal-names-wrong-feature","path":"semantic-invalid/controls-refusal-names-wrong-feature.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-tool-choice-empty-filters","path":"semantic-invalid/controls-tool-choice-empty-filters.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]}
   ]
 }
