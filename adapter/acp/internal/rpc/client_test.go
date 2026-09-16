@@ -466,7 +466,7 @@ func TestClientCancelledQueuedWriteIsNotEncoded(t *testing.T) {
 	// rather than assuming the race went one way.
 	err := <-first
 	if retired := client.Err(); retired != nil {
-		if err != nil && !errors.Is(err, retired) && !errors.Is(err, ErrClosed) {
+		if err != nil && !errors.Is(err, retired) {
 			t.Fatalf("first: %v, want its own result or the retirement %v", err, retired)
 		}
 	} else if err != nil {
