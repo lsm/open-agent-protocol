@@ -184,6 +184,19 @@ func (c *child) response(id int64, onSignal func(line string)) responseShape {
 	}
 }
 
+// hold keeps a response line a reader met while waiting for something else.
+// Any loop that reads the stream can meet one, because every op runs on its
+// own worker; dropping it would make a later response(id) wait forever on an
+// answer that already arrived.
+func (c *child) hold(line string) {
+	c.t.Helper()
+	var shape responseShape
+	if err := json.Unmarshal([]byte(line), &shape); err != nil {
+		c.t.Fatalf("line %q: %v", line, err)
+	}
+	c.held[shape.ID] = shape
+}
+
 func (c *child) require(id int64, shape responseShape) responseShape {
 	c.t.Helper()
 	if !shape.OK {
@@ -267,7 +280,12 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		if signal.Event == "" {
-			// A resolve acknowledgement; correlated, already awaited below.
+			// A response, not a stream line — a resolve acknowledgement,
+			// which runs on its own worker and may land anywhere in here. It
+			// is held rather than dropped: this test does not await them, but
+			// a reader that drops a response by position is the same fault in
+			// a different place.
+			c.hold(line)
 			continue
 		}
 		if signal.Event != "envelope" {
@@ -313,6 +331,10 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 		var signal signalShape
 		if err := json.Unmarshal([]byte(line), &signal); err != nil {
 			t.Fatal(err)
+		}
+		if signal.Event == "" {
+			c.hold(line)
+			continue
 		}
 		if signal.Event != "envelope" || signal.ID != 21 {
 			t.Fatalf("unexpected line during replay: %s", line)
@@ -514,6 +536,10 @@ func TestStdioExampleSessionRuns(t *testing.T) {
 				var signal signalShape
 				if err := json.Unmarshal([]byte(line), &signal); err != nil {
 					t.Fatal(err)
+				}
+				if signal.Event == "" {
+					c.hold(line)
+					continue
 				}
 				if signal.Event != "envelope" {
 					continue
