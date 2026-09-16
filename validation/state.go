@@ -219,8 +219,15 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		_ = e.DecodePayload(&p)
 		// What this descriptor said about the catalog before it was replaced,
 		// so a response repeating the active revision can be held to repeating
-		// the descriptor too.
-		previousRevision, previousModels := s.currentCapability, s.features[protocol.FeatureModelsList]
+		// the descriptor too. The staleness travels with it: after an
+		// announced update the revision has already moved while the features
+		// still describe the descriptor being replaced, and comparing those
+		// two would hold an announcement against the announcement.
+		outgoing := descriptorSnapshot{
+			revision: s.currentCapability,
+			stale:    s.capabilitiesStale,
+			models:   s.features[protocol.FeatureModelsList],
+		}
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = false
 		s.features = map[string]protocol.SupportLevel{}
@@ -231,7 +238,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		s.catalog, s.catalogKnown = collectCatalog(p), true
 		s.checkSelectionModes(i, line, e, p)
-		s.checkCatalogAdvertisement(i, line, e, previousRevision, previousModels)
+		s.checkCatalogAdvertisement(i, line, e, outgoing)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)

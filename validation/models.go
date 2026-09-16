@@ -117,6 +117,16 @@ func (s *state) observeModel(session protocol.SessionID, model string, run proto
 	s.reconcileHeldCatalogs(st)
 }
 
+// descriptorSnapshot is what the active descriptor said before a
+// capabilities.response replaced it: which revision it was, whether an
+// announced update had already invalidated it, and how it advertised the
+// catalog.
+type descriptorSnapshot struct {
+	revision string
+	stale    bool
+	models   protocol.SupportLevel
+}
+
 // checkCatalogAdvertisement holds a capabilities.response that repeats the
 // active revision to repeating what that revision said about the catalog.
 //
@@ -133,15 +143,24 @@ func (s *state) observeModel(session protocol.SessionID, model string, run proto
 // descriptor is the thing that changed: one fault, one diagnosis, and the fix
 // is to introduce a new revision.
 //
+// The rule is about an *unannounced* change, so an announced one is exempt and
+// must be, or the rule would fire on conforming behaviour. After
+// capabilities.updated the revision has already advanced while the features
+// still describe the descriptor being replaced, so the mandatory refresh would
+// otherwise compare the old descriptor's level against the new one under what
+// looks like a single revision — and report the very announcement that made
+// the change legitimate. An outgoing descriptor already invalidated by an
+// update is exactly that case, and nothing it said is compared.
+//
 // Only the advertised level is compared, because that is what every rule in
 // this unit keys on. A reason reworded under one revision is prose, and
 // diagnosing prose would make the rule noisy without making it stronger.
-func (s *state) checkCatalogAdvertisement(i, line int, e protocol.Envelope, previousRevision string, previous protocol.SupportLevel) {
-	if previousRevision == "" || previousRevision != s.currentCapability {
+func (s *state) checkCatalogAdvertisement(i, line int, e protocol.Envelope, outgoing descriptorSnapshot) {
+	if outgoing.revision == "" || outgoing.stale || outgoing.revision != s.currentCapability {
 		return
 	}
-	if current := s.features[protocol.FeatureModelsList]; current != previous {
-		s.addExpected(CodeUnannouncedCatalogChange, i, line, e, "/payload/features/"+protocol.FeatureModelsList, "models.list changed under one capability revision without a capabilities.updated", describeSupport(previous), describeSupport(current))
+	if current := s.features[protocol.FeatureModelsList]; current != outgoing.models {
+		s.addExpected(CodeUnannouncedCatalogChange, i, line, e, "/payload/features/"+protocol.FeatureModelsList, "models.list changed under one capability revision without a capabilities.updated", describeSupport(outgoing.models), describeSupport(current))
 	}
 }
 
@@ -243,15 +262,27 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	for _, model := range p.Models {
 		served.models[model.ID] = model
 	}
-	// Only a catalog under the active revision is recorded. One that is not
-	// can bind nothing — binds() requires the active revision — so recording
-	// it would have exactly one effect: displacing a catalog that can. A
-	// delayed listing from an earlier revision would then silence the
-	// catalog-miss rule for every later admission, which is the opposite of
-	// what a stale response should cost. It is fully judged as an envelope
-	// above, and its own gate has already reported the stale revision; what it
-	// does not get is authority it never had.
-	if served.revision == "" || served.revision != s.currentCapability {
+	// Only a catalog under the active revision, served while that revision's
+	// descriptor is actually in hand, is recorded.
+	//
+	// One under another revision can bind nothing — binds() requires the
+	// active revision — so recording it would have exactly one effect:
+	// displacing a catalog that can. A delayed listing from an earlier
+	// revision would then silence the catalog-miss rule for every later
+	// admission, which is the opposite of what a stale response should cost.
+	//
+	// One that cites the new revision in the window between capabilities.updated
+	// and the descriptor that resolves it is the same problem from the other
+	// side: the revision matches, but what the trace knows about models.list
+	// is still the *old* descriptor's, so the catalog would be recorded as
+	// binding — or not — on a level the new descriptor has not stated yet, and
+	// would then govern submissions under a descriptor that may advertise the
+	// key degraded or not at all.
+	//
+	// Either way the response is fully judged as an envelope above, and its
+	// own gate has already reported what is wrong with it; what it does not
+	// get is authority it never had.
+	if served.revision == "" || served.revision != s.currentCapability || s.capabilitiesStale {
 		return
 	}
 	if binding && st.catalog != nil && st.catalog.known && st.catalog.binding && st.catalog.revision == served.revision && !reflect.DeepEqual(st.catalog.models, served.models) {
@@ -430,11 +461,27 @@ func (s *state) reconcileEveryHeldCatalog() {
 func (s *state) reconcileHeldCatalogs(st *sessionTrack) {
 	remaining := st.heldCatalogs[:0]
 	for _, held := range st.heldCatalogs {
-		if known, owned := s.positionOwner(held.session, held.position); known && !owned {
+		known, owned := s.positionOwner(held.session, held.position)
+		if known && !owned {
 			// The run the claim named has appeared and belongs to another
 			// session, which is decided here because it could not be decided
 			// when the catalog arrived.
 			s.foreignPosition(held.index, held.line, held.envelope, held.session, held.position)
+			continue
+		}
+		if held.model == "" {
+			// The catalog named a position and claimed no model at it, so
+			// ownership is the whole of what was held — and ownership is
+			// decided the moment the run appears, whatever sequence it
+			// reaches and whatever model that event turns out to record.
+			// Settled here rather than below, because the checks below are
+			// about a claim this entry never made: reading the mark at the
+			// position and comparing it to an absent model would diagnose a
+			// catalog that the immediate path, which returns before that
+			// comparison, validates.
+			if !known {
+				remaining = append(remaining, held)
+			}
 			continue
 		}
 		if mark, ok := st.markAt(held.position); ok {
@@ -445,12 +492,6 @@ func (s *state) reconcileHeldCatalogs(st *sessionTrack) {
 		}
 		if !s.positionReached(held.session, held.position) {
 			remaining = append(remaining, held)
-			continue
-		}
-		if held.model == "" {
-			// The claim was held for its ownership alone — the catalog named a
-			// position without saying what the model was at it — and that is
-			// now settled.
 			continue
 		}
 		// The window is taken as it stands now rather than as it stood at the
