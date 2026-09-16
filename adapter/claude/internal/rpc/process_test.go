@@ -40,6 +40,26 @@ func claudeHelperConfig() ProcessConfig {
 	}
 }
 
+// awaitChildRunning blocks until the child has run far enough to write its
+// first frame. Unlike every sibling transport, Start returns before any
+// handshake — readiness on this boundary is the initialize control exchange
+// the adapter layer issues afterwards — so a Close issued straight after Start
+// spends its exit grace on process startup instead of on the EOF teardown it
+// means to bound. On a loaded machine that startup alone outlasts a short
+// grace, so a test that is not about the bound synchronises on the child
+// first, the way a sibling's handshake does for free.
+func awaitChildRunning(t *testing.T, process *Process) {
+	t.Helper()
+	select {
+	case message := <-process.Client.Inbound():
+		if message.Observation == nil || message.Observation.Type != TypeKeepAlive {
+			t.Fatalf("first inbound = %+v", message)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("child never wrote its first frame")
+	}
+}
+
 func TestProcessSpawnObservesAndEOFTearsDown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
@@ -81,13 +101,15 @@ func TestProcessExitCodeIsNotACloseError(t *testing.T) {
 	dir := t.TempDir()
 	// The CLI exits non-zero on purpose after an error result; settlement is
 	// owned by wire evidence, so Close must not convert the exit code.
-	script := writeScript(t, dir, `while IFS= read -r line; do :; done
+	script := writeScript(t, dir, `printf '%s\n' '{"type":"keep_alive"}'
+while IFS= read -r line; do :; done
 exit 1
 `)
-	process, err := Start(context.Background(), ProcessConfig{Path: script, Dir: dir, Env: []string{}, ExitTimeout: time.Second})
+	process, err := Start(context.Background(), ProcessConfig{Path: script, Dir: dir, Env: []string{}, ExitTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitChildRunning(t, process)
 	if err := process.Close(context.Background()); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -103,13 +125,16 @@ func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "env")
 	script := writeScript(t, dir, `printf '%s' "${CLAUDE_ENV_PROBE-unset}" > "$1"
+printf '%s\n' '{"type":"keep_alive"}'
 while IFS= read -r line; do :; done
 `)
 	t.Setenv("CLAUDE_ENV_PROBE", "ambient-value")
-	process, err := Start(context.Background(), ProcessConfig{Path: script, Args: []string{envFile}, Dir: dir, Env: []string{}, ExitTimeout: time.Second})
+	process, err := Start(context.Background(), ProcessConfig{Path: script, Args: []string{envFile}, Dir: dir, Env: []string{}, ExitTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The frame also orders the probe write before the read below.
+	awaitChildRunning(t, process)
 	if err := process.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
