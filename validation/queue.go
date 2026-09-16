@@ -532,6 +532,7 @@ const (
 	claimSettled = iota + 1
 	claimCapture
 	claimModel
+	claimQueued
 )
 
 // reconcileDeferred settles every claim this run envelope answers.
@@ -567,6 +568,18 @@ func (s *state) reconcileDeferred(i, line int, e protocol.Envelope, r *runState)
 			}
 			claim.done = true
 			s.judgeCaptureModel(claim, r)
+		case claimQueued:
+			// The run's start is what decides this, whatever sequence it
+			// lands on: from there onwards the run is not queued at any
+			// position, and before it the entry was accurate.
+			if !r.started {
+				continue
+			}
+			claim.done = true
+			if claim.sequence < r.startSequence {
+				continue
+			}
+			s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/active_runs", "active_runs reports a run as queued at a position it had already started at", "a started status", string(protocol.RunQueued), string(claim.run))
 		}
 	}
 }
@@ -665,6 +678,10 @@ func (s *state) closeQueue() {
 			// is how a snapshot would evade the authority check by pointing
 			// at a start that never comes.
 			s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/as_of/model_run_sequence", "capture position names a promotion that never arrived", fmt.Sprintf("run.started at sequence %d", claim.sequence), "the run never started", string(claim.run))
+		case claimQueued:
+			// The run never started, so queued is what it stayed. A stated
+			// position the run never reaches is the capture claim's business,
+			// and it is raised there rather than twice.
 		}
 	}
 }

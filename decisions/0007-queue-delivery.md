@@ -174,7 +174,12 @@ A terminal status there contradicts the membership it is part of:
 a snapshot that knows a run settled drops it and names it in `as_of.settled`
 rather than listing it as completed. A run the trace has seen start is not
 `queued` at any position from its start onwards, though a capture stated before
-that position may still call it queued and is judged there. The converse — a
+that position may still call it queued and is judged there. Where the start has
+not arrived yet, the claim is deferred rather than accepted: the position the
+entry states may be one the run turns out to be running at, and only its start
+decides that. Deciding it at the response instead would let a snapshot name a
+position past a promotion that has not drained, call the run queued there, and
+never be judged at all. The converse — a
 reservation listed as running — is deliberately not diagnosed: a promotion
 happens inside the endpoint and its `run.started` may drain after the snapshot,
 which is the race the capture positions exist to allow. And `active_run_id`
@@ -226,7 +231,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 70 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 72 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -280,6 +285,25 @@ terminal, and settles a cancelled reservation pre-start.
   accounting, and settle it on a boundary it never reached. Any other unowned
   turn — a foreign input among them — takes the same path, and suppression
   lifts at the next `prompted` an OAP run does own.
+- Shutdown selects the runs it settles from `active_runs`, not from
+  `active_run_id`. The two now differ: a reservation is admitted work that owes
+  a terminal, so an adapter's Close refuses for it, while `active_run_id` is
+  deliberately absent where only reservations remain. A sweep reading the id
+  alone would cancel nothing, exhaust its retries, and leave the child process
+  and an accepted submission alive — on the reference adapter as well as on
+  OpenCode, since both refuse a close for a reservation. `active_run_id`
+  remains the fallback for an endpoint that keeps no entries.
+- A run's projected status moves with the envelope that reports it, inside the
+  publication rather than after it. A state read between a published
+  `run.started` and the next envelope would otherwise describe a run the trace
+  has seen start as still queued, which is the one direction the entry rules
+  reject.
+- A held run is projected at what it has published, which is nothing: its
+  status stays the reservation's and its stated position stays where the trace
+  left it. A promoted reservation can finish natively while the earlier run is
+  still outstanding, and copying its own status there would list a settled run
+  in a field defined as the session's nonterminal ones. This is the third form
+  of the same rule as the queue slot and the journal.
 - A reservation is admitted work, so it refuses a session close exactly as a
   started run does. Between a started run's terminal and a reservation's
   promotion the reservation is the session's only nonterminal run, and a close

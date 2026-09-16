@@ -227,6 +227,12 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 // seen start is no longer queued at any position from its start onwards; a
 // capture before that position may still call it queued, and is judged there.
 //
+// A queued entry whose run has not started yet is the ahead-of-trace case, and
+// it is deferred rather than accepted: the position it states may be one the
+// run turns out to be running at, and only the run's start decides that. A
+// snapshot could otherwise name a position past a promotion that has not
+// drained, call the run queued there, and never be judged.
+//
 // The converse — a reservation listed as running — is deliberately not
 // diagnosed. A promotion happens inside the endpoint and its run.started may
 // drain after the snapshot, so an accurate entry can lead the trace, which is
@@ -237,7 +243,13 @@ func (s *state) checkEntryStatus(i, line int, e protocol.Envelope, pointer strin
 		s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs lists a run with a terminal status; a settled run is dropped and named in as_of.settled", "a nonterminal status", string(entry.Status), string(r.id))
 		return
 	}
-	if entry.Status != protocol.RunQueued || !r.started {
+	if entry.Status != protocol.RunQueued {
+		return
+	}
+	if !r.started {
+		if entry.AsOfSequence != nil {
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimQueued, session: r.session, run: r.id, sequence: *entry.AsOfSequence, index: i, line: line, envelope: e})
+		}
 		return
 	}
 	if entry.AsOfSequence != nil && *entry.AsOfSequence < r.startSequence {
