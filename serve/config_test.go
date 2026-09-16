@@ -203,3 +203,52 @@ func TestRegistryRegister(t *testing.T) {
 		t.Fatal("empty name must be rejected")
 	}
 }
+
+// TestLoadRegistryToolSources pins the operator-configured attachment surface:
+// the entry a client may name by id, with the environment allowlist resolved
+// at load — a bare NAME takes the daemon's own value, a name the operator
+// never exported is dropped, and NAME=value passes through literally. Resolving
+// here rather than at open means a misconfigured source fails at hub start.
+func TestLoadRegistryToolSources(t *testing.T) {
+	path := writeConfig(t, `{
+		"adapters": {"memory": {"type": "memory"}},
+		"tool_sources": {
+			"filesystem": {
+				"kind": "process", "protocol": "mcp", "display_name": "Filesystem",
+				"endpoint": "stdio:filesystem-tools",
+				"command": "/usr/local/bin/mcp-filesystem", "args": ["--root", "/workspace"],
+				"environment": ["MCP_TOKEN", "NEVER_EXPORTED", "MCP_MODE=readonly"]
+			}
+		}
+	}`)
+	registry, err := LoadRegistry(path, staticEnviron(map[string]string{"MCP_TOKEN": "operator-secret"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := registry.ToolSourceNames(); len(names) != 1 || names[0] != "filesystem" {
+		t.Fatalf("tool source names: %v", names)
+	}
+	source, ok := registry.ToolSource("filesystem")
+	if !ok {
+		t.Fatal("configured tool source missing")
+	}
+	if source.ID != "filesystem" || source.Command != "/usr/local/bin/mcp-filesystem" || len(source.Args) != 2 {
+		t.Fatalf("tool source: %+v", source)
+	}
+	if strings.Join(source.Environment, ",") != "MCP_TOKEN=operator-secret,MCP_MODE=readonly" {
+		t.Fatalf("resolved environment: %v", source.Environment)
+	}
+	if _, ok := registry.ToolSource("never-configured"); ok {
+		t.Fatal("an unconfigured tool source resolved")
+	}
+}
+
+// TestLoadRegistryToolSourceNeedsKind refuses an entry that says nothing about
+// what it is: kind is what decides whether an attachment is even eligible for
+// the transports an adapter discloses.
+func TestLoadRegistryToolSourceNeedsKind(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"bare": {"command": "/bin/true"}}}`)
+	if _, err := LoadRegistry(path, os.LookupEnv); err == nil || !strings.Contains(err.Error(), "kind is required") {
+		t.Fatalf("load error = %v", err)
+	}
+}
