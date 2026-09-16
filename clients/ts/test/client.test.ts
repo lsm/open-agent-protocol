@@ -472,6 +472,25 @@ test('a response payload naming another session is refused', async () => {
   );
 });
 
+test('a catalog with no capability revision is refused', async () => {
+  const transport = new FakeTransport([
+    {
+      match: '/models',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.ModelsResponse,
+          id: 'resp-1',
+          inReplyTo: 'req-1',
+          sessionId: 's-1',
+          payload: { session_id: 's-1', models: [{ id: 'm1' }] },
+        }),
+      ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(session.models(), /carries no capability revision/);
+});
+
 test('a resolution answered for the wrong interaction is refused', async () => {
   const transport = new FakeTransport([
     {

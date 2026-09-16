@@ -164,6 +164,16 @@ func (s *Session) Models(ctx context.Context, options ...ModelsOption) (Catalog,
 	if response.SessionID != s.id {
 		return listing, fmt.Errorf("client: %s response is scoped to session %q, want %q", s.path("/models"), response.SessionID, s.id)
 	}
+	// The revision is checked with the scope, and for the same reason: the
+	// envelope's own labels are read before the catalog inside it. A listing
+	// nothing can bind to a descriptor cannot be cached or invalidated, so it
+	// is refused rather than handed back with an empty revision the caller has
+	// to notice on its own. The schema requires the field and the daemon
+	// refuses to serve a catalog without it, so this rejects a peer that
+	// honours neither.
+	if response.CapabilityRevision == "" {
+		return listing, fmt.Errorf("client: %s response carries no capability revision", s.path("/models"))
+	}
 	if err := response.DecodePayload(&listing.Models); err != nil {
 		return listing, err
 	}

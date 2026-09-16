@@ -220,13 +220,20 @@ export class OapSession {
         `client: ${this.path('/models')} response is scoped to session "${response.session_id ?? ''}", want "${this.sessionId}"`,
       );
     }
+    // The revision is checked with the scope, and for the same reason: a
+    // listing nothing can bind to a descriptor cannot be cached or
+    // invalidated, so it is refused rather than handed back with an empty
+    // revision the caller has to notice on its own.
+    if (!response.capability_revision) {
+      throw new Error(`client: ${this.path('/models')} response carries no capability revision`);
+    }
     const catalog = payload<ModelsResponse>(response);
     if (catalog.session_id !== response.session_id) {
       throw new Error(
         `client: ${this.path('/models')} payload names session "${catalog.session_id}", envelope "${response.session_id}"`,
       );
     }
-    return { revision: response.capability_revision ?? '', models: catalog };
+    return { revision: response.capability_revision, models: catalog };
   }
 
   /** Closes the session. An active run refuses the close; cancel it first. */

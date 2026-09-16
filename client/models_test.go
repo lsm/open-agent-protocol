@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
@@ -74,6 +76,36 @@ func TestSessionModels(t *testing.T) {
 	}
 	if refusal.Details["model_id"] != "absent-model" {
 		t.Fatalf("refusal does not name the id to stop sending: %+v", refusal.Details)
+	}
+}
+
+// A catalog with no revision is refused rather than returned with an empty
+// one. The schema requires the field and the daemon refuses to serve a listing
+// without it, but a client validates envelopes only on request, so a
+// third-party endpoint that honours neither reaches an unvalidating client
+// intact — and a listing nothing can bind to a descriptor cannot be cached
+// against one or invalidated when it moves.
+func TestModelsRejectsAnUnlabelledCatalog(t *testing.T) {
+	response, err := protocol.NewEnvelope(protocol.TypeModelsResponse, protocol.EnvelopeID("resp-1"), protocol.ModelsResponse{
+		SessionID: "wire", Models: []protocol.ModelDescriptor{{ID: "m1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.InReplyTo = "req-1"
+	response.SessionID = "wire"
+	body, err := response.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	if _, err := session.Models(context.Background()); err == nil || !strings.Contains(err.Error(), "no capability revision") {
+		t.Fatalf("an unlabelled catalog was accepted: %v", err)
 	}
 }
 
