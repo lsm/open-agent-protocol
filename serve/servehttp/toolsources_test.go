@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -326,6 +327,63 @@ func TestDaemonFillsTheRegistrysCommand(t *testing.T) {
 	}
 	if len(forwarded.Environment) != 1 || forwarded.Environment[0] != "MCP_TOKEN=operator-secret" {
 		t.Fatalf("the daemon forwarded environment %v", forwarded.Environment)
+	}
+}
+
+// TestCallerEnvironmentNeverNamesAVariableTwice pins what the adapter actually
+// receives when the caller's allowlist and the operator's name one variable.
+//
+// The two lists resolve against different things: the operator's entries are
+// already literal `NAME=value` by the time the route sees them, resolved at
+// load from the daemon's own environment, while the caller's are bare names an
+// adapter resolves against *its* allowlist. Concatenated, one variable reached
+// the child twice with two values that can differ, and which one applies is
+// defined nowhere — not by the adapter, not by this protocol, not by ACP's
+// schema. `uniqueItems` on the wire never had a chance: it compares strings,
+// and `MCP_TOKEN=secret` and `MCP_TOKEN` are two strings naming one variable.
+func TestCallerEnvironmentNeverNamesAVariableTwice(t *testing.T) {
+	recorder := &recordingAdapter{}
+	registry := registryWithToolSource(t)
+	if err := registry.Register("recorder", recorder); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	envelope := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-env", protocol.SessionOpenRequest{
+		SessionID: "env",
+		ToolSources: []protocol.ToolSourceAttachment{{
+			ID: "workspace-files", Kind: protocol.ToolSourceProcess,
+			// One name the operator already configured, one it did not.
+			Environment: []string{"MCP_TOKEN", "EXTRA_TOKEN"},
+		}},
+	}, "env", "", adapterRevision(t, server, "recorder"))
+	if status, response := postEnvelope(t, server, "/adapters/recorder/sessions", envelope); status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, response.Payload)
+	}
+	if len(recorder.request.ToolSources) != 1 {
+		t.Fatalf("the adapter received %d attachments", len(recorder.request.ToolSources))
+	}
+	forwarded := recorder.request.ToolSources[0].Environment
+	seen := map[string]int{}
+	for _, entry := range forwarded {
+		name, _, _ := strings.Cut(entry, "=")
+		seen[name]++
+	}
+	for name, count := range seen {
+		if count != 1 {
+			t.Fatalf("variable %q reaches the adapter %d times: %v", name, count, forwarded)
+		}
+	}
+	// The operator's value is the one that survives, and it survives resolved:
+	// a caller cannot replace a credential the operator configured for its own
+	// MCP server by naming it.
+	if !slices.Contains(forwarded, "MCP_TOKEN=operator-secret") {
+		t.Fatalf("the operator's own value did not survive: %v", forwarded)
+	}
+	// A name the operator did not configure is still added, bare, for the
+	// adapter to resolve against its own allowlist. That is what makes the
+	// caller's list additive rather than decorative.
+	if !slices.Contains(forwarded, "EXTRA_TOKEN") {
+		t.Fatalf("an unconfigured name was dropped: %v", forwarded)
 	}
 }
 

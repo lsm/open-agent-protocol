@@ -920,10 +920,67 @@ func (s *Server) resolveAttachments(attachments []protocol.ToolSourceAttachment)
 				}
 			}
 		}
-		configured.Environment = append(append([]string(nil), configured.Environment...), attachment.Environment...)
+		configured.Environment = mergeEnvironment(configured.Environment, attachment.Environment)
 		resolved = append(resolved, configured)
 	}
 	return resolved, nil
+}
+
+// mergeEnvironment adds the caller's allowlist entries to the operator's,
+// keeping the operator's where both name one variable.
+//
+// The two lists resolve against different things. By the time it gets here the
+// operator's entries are literal `NAME=value` pairs, resolved at load from the
+// daemon's own environment; the caller's are bare names, which the adapter
+// later resolves against *its* allowlist. Concatenating them put one variable
+// in the array twice, with two values that can genuinely differ — and what a
+// child does with a duplicate name is defined nowhere: not by ACP's schema, not
+// by this protocol, not by the adapter. The environment is the last place to
+// leave an outcome undefined, because the values in it are credentials.
+//
+// The wire schema was never going to catch it. `uniqueItems` compares strings,
+// and `MCP_TOKEN=operator-secret` and `MCP_TOKEN` are two different strings
+// naming one variable — so this is not a case of validation being skipped on
+// the merged array, but of string uniqueness not being name uniqueness.
+//
+// The operator wins, and the caller's entry is dropped rather than the open
+// refused. A caller cannot discover which names an operator configured: the
+// published projection carries no environment at all, by design. So naming one
+// defensively is a legitimate request the caller had no way to know was
+// redundant, and refusing it would fail an open for a collision only the daemon
+// can see. Dropping it satisfies the request exactly — the variable is present,
+// with the value the operator chose — and an override the caller might have
+// intended is refused by the same act, which is the outcome refusing would have
+// produced anyway.
+//
+// This is deliberately not the reasoning the registry's own bare-`NAME` rule
+// takes, and the difference is the point: there, dropping an unresolvable name
+// starts the MCP server *without* its token, to fail later as though the server
+// were broken. Here nothing is missing — a second request for a variable
+// already supplied is answered by the one already there.
+//
+// A name the operator did not configure is still added, which is what makes the
+// caller's list additive rather than decorative; its value comes from the
+// adapter's own operator-configured allowlist and never from the wire.
+func mergeEnvironment(operator, caller []string) []string {
+	merged := append([]string(nil), operator...)
+	if len(caller) == 0 {
+		return merged
+	}
+	configured := make(map[string]bool, len(operator))
+	for _, entry := range operator {
+		name, _, _ := strings.Cut(entry, "=")
+		configured[name] = true
+	}
+	for _, entry := range caller {
+		name, _, _ := strings.Cut(entry, "=")
+		if configured[name] {
+			continue
+		}
+		configured[name] = true
+		merged = append(merged, entry)
+	}
+	return merged
 }
 
 // hasLiteralEnvironment reports whether any entry carries a literal value

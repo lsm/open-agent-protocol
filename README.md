@@ -128,7 +128,11 @@ operator's own MCP server in the catalog a user reads would be spoofing it, one
 that could set its `kind` would choose how it is reached, and overwriting either
 silently would leave the request and its response disagreeing about one source.
 The bare-`NAME` allowlist form is the only `environment` a wire caller may
-write. An attaching open must also cite the descriptor it elected against:
+write, and it is additive only for names the operator did not configure: a
+caller naming one the registry entry already carries is dropped, so the
+operator's value is the one the source runs with and one variable never reaches
+a child twice. A registry entry naming one variable twice is refused at
+registration for the same reason. An attaching open must also cite the descriptor it elected against:
 `capability_revision` on the open envelope has to equal the endpoint's current
 one, or the route answers `stale_capabilities` with `expected_revision` and
 `current_revision`. That is the core profile's rule for any envelope exercising

@@ -802,6 +802,33 @@ rediscovered from the code.
   moves from positive to `semantic-invalid` with this code, and it proves the
   refusal more sharply there than it did as a positive: the descriptor is now
   the only defect the trace carries, so a wrong refusal would add a second.
+- **A caller's allowlist entry for a name the operator already configured is
+  dropped, not appended.** The two lists resolve against different things: by
+  the time the route merges them the operator's entries are literal
+  `NAME=value` pairs resolved at load from the daemon's own environment, while
+  the caller's are bare names an adapter later resolves against *its* allowlist.
+  Concatenated, one variable reached the child twice with two values that can
+  differ, and which one applies is defined nowhere. The environment is the last
+  place to leave an outcome undefined, because what is in it is credentials.
+  `uniqueItems` was never going to catch it either: it compares strings, and
+  `MCP_TOKEN=secret` and `MCP_TOKEN` are two strings naming one variable.
+
+  The operator wins and the open is not refused, which is the opposite of the
+  reflex the trust model suggests, for one reason: a caller cannot discover
+  which names an operator configured — the published projection carries no
+  environment at all, by design — so naming one defensively is a legitimate
+  request it had no way to know was redundant, and refusing would fail an open
+  for a collision only the daemon can see. Dropping satisfies the request
+  exactly, with the value the operator chose, and refuses the override a caller
+  might have intended by the same act. A name the operator did not configure is
+  still added, which is what keeps the caller's list additive.
+
+  This is deliberately not the reasoning the registry's bare-`NAME` rule takes,
+  and the difference is the whole of it: there, dropping an unresolvable name
+  starts the MCP server *without* its token, to fail later as though the server
+  were broken. Here nothing is missing. The operator's own list is held to the
+  same rule at registration — one variable, one entry — so the collision is
+  closed from both sides rather than only the caller's.
 - **An attaching open cites the descriptor it elected against.** This is not a
   rule this unit invents: the core profile already says an envelope exercising
   an optional feature must cite the active descriptor, and the validator

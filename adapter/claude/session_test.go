@@ -1283,24 +1283,52 @@ func TestServingACatalogRacesNoToolCall(t *testing.T) {
 		t.Fatal("the session serves no catalog")
 	}
 	const rounds = 64
-	// The stream is drained while the frames are fed, because the point is the
-	// interleaving and a parked consumer would overflow the journal before the
-	// two goroutines had met.
-	drained := make(chan []protocol.Envelope, 1)
+	// The stream is drained while the frames are fed, and each reduced call is
+	// announced, because the feeder waits for it. That handshake is what keeps
+	// the test inside the transport's own bounds: rpc.Client.enqueue is
+	// non-blocking and retires the transport with ErrObservationQueue the moment
+	// its inbound queue is full — fail-closed by design, since an adapter that
+	// buffered without limit would hide a consumer falling behind. Feeding as
+	// fast as an io.Pipe accepts, while the reducer is slowed by contention on
+	// the very mutex this test contends, overran that queue: the transport
+	// retired mid-test, the next peer write hit a closed pipe, and the subscriber
+	// got a partial stream with no terminal. Both were the same overrun, and how
+	// soon it happened was a property of the machine — which is why yielding made
+	// it rarer here and CI hit it in ten milliseconds.
+	//
+	// With the handshake at most one call is in flight, so the queue cannot fill
+	// however contended the machine is. This is not the bounded loop that
+	// certified nothing: that one bounded the *catalog* calls, which could then
+	// all finish before the first frame was reduced. Here only the frames are
+	// paced, and the pacing makes the overlap certain rather than likely —
+	// every round the reducer is inside startTool while the catalog goroutine
+	// runs.
+	type drainResult struct {
+		events []protocol.Envelope
+		err    error
+	}
+	reduced := make(chan struct{}, 1)
+	drained := make(chan drainResult, 1)
 	go func() {
-		var events []protocol.Envelope
-		for result := range admitted.stream {
-			if result.Error != nil {
+		var result drainResult
+		for delivery := range admitted.stream {
+			if delivery.Error != nil {
+				result.err = delivery.Error
 				break
 			}
-			events = append(events, result.Envelope)
+			result.events = append(result.events, delivery.Envelope)
+			if delivery.Envelope.Type == protocol.TypeActionCallRequested {
+				reduced <- struct{}{}
+			}
 		}
-		drained <- events
+		// Unblocks a feeder waiting on a round the stream will never deliver, so
+		// an overrun is reported as the transport error it is rather than as a
+		// timeout with no cause.
+		close(reduced)
+		drained <- result
 	}()
 	// The catalog goroutine runs until the frames are exhausted rather than for
-	// a fixed count, so the two are guaranteed to be in flight together: a
-	// bounded loop can finish before the first frame is reduced and certify
-	// nothing.
+	// a fixed count, so the two are guaranteed to be in flight together.
 	feeding := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -1328,18 +1356,31 @@ func TestServingACatalogRacesNoToolCall(t *testing.T) {
 	for i := 0; i < rounds; i++ {
 		id := fmt.Sprintf("toolu_%02d", i)
 		peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"` + id + `","name":"mcp__files__read_file","input":{"path":"/tmp/x"}}],"stop_reason":null,"usage":{"input_tokens":1}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a` + id + `"}`)
+		select {
+		case _, ok := <-reduced:
+			if !ok {
+				close(feeding)
+				wg.Wait()
+				t.Fatalf("the event stream ended during round %d: %v", i, (<-drained).err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d was never reduced", i)
+		}
 		peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"` + id + `","type":"tool_result","content":"ok","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u` + id + `"}`)
 	}
 	close(feeding)
 	wg.Wait()
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
-	var events []protocol.Envelope
+	var result drainResult
 	select {
-	case events = <-drained:
+	case result = <-drained:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the event stream never closed")
 	}
-	if last := terminalOf(events); last.Type != protocol.TypeRunCompleted {
+	if result.err != nil {
+		t.Fatalf("the event stream failed: %v", result.err)
+	}
+	if last := terminalOf(result.events); last.Type != protocol.TypeRunCompleted {
 		t.Fatalf("terminal = %s", last.Type)
 	}
 	if err := session.Close(context.Background()); err != nil {

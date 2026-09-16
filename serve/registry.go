@@ -116,7 +116,7 @@ func (r *Registry) RegisterToolSource(id string, source protocol.ToolSourceAttac
 	if id == "" {
 		return errors.New("serve: tool source id is required")
 	}
-	if err := validateToolSource(id, source.Kind, source.Command); err != nil {
+	if err := validateToolSource(id, source.Kind, source.Command, source.Environment); err != nil {
 		return err
 	}
 	if _, exists := r.toolSources[id]; exists {
@@ -157,7 +157,7 @@ func (r *Registry) RegisterToolSource(id string, source protocol.ToolSourceAttac
 // permanently dead config, reported here rather than discovered by an operator
 // wondering why their source is unusable. That is well-formedness, the same
 // class as the empty id, not a judgement about which transports are allowed.
-func validateToolSource(id, kind, command string) error {
+func validateToolSource(id, kind, command string, environment []string) error {
 	if kind == "" {
 		return fmt.Errorf("serve: tool source %q: kind is required", id)
 	}
@@ -166,6 +166,20 @@ func validateToolSource(id, kind, command string) error {
 	}
 	if kind == protocol.ToolSourceProcess && command == "" {
 		return fmt.Errorf("serve: tool source %q: a process source needs a command", id)
+	}
+	// One variable, one entry. The schema's uniqueItems compares strings, so
+	// `TOKEN` and `TOKEN=x` pass it while naming the same variable twice — and
+	// the child would receive both, with two values and no defined winner. It is
+	// the same defect the route's merge avoids on the caller's side, closed here
+	// on the operator's, and it is well-formedness like the two rules above:
+	// an entry in this shape can never do a defined thing.
+	names := make(map[string]bool, len(environment))
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if names[name] {
+			return fmt.Errorf("serve: tool source %q: environment names %q twice", id, name)
+		}
+		names[name] = true
 	}
 	return nil
 }
@@ -263,7 +277,7 @@ func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, 
 		// RegisterToolSource's own check, called earlier rather than restated:
 		// that call below runs it again on the assembled value, and one function
 		// answers both registration paths.
-		if err := validateToolSource(id, entry.Kind, entry.Command); err != nil {
+		if err := validateToolSource(id, entry.Kind, entry.Command, entry.Environment); err != nil {
 			return nil, err
 		}
 		environment, err := resolveToolSourceEnvironment(entry.Environment, environ)

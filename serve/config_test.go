@@ -373,6 +373,13 @@ func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) 
 		// judgement about which of the protocol's transports are allowed, which
 		// stays the adapter's to make.
 		{"a kind outside the protocol", protocol.ToolSourceAttachment{Kind: "bogus"}, `kind "bogus" is not a tool source kind`},
+		// One variable, one entry. uniqueItems compares strings, so these two
+		// pass the schema while naming one variable — and the child would receive
+		// both, with two values and no defined winner. The route's merge closes
+		// the same hole on the caller's side.
+		{"one variable named twice", protocol.ToolSourceAttachment{
+			Kind: protocol.ToolSourceRemote, Environment: []string{"TOKEN", "TOKEN=literal"},
+		}, `environment names "TOKEN" twice`},
 		{"a process source with no command", protocol.ToolSourceAttachment{Kind: protocol.ToolSourceProcess}, "a process source needs a command"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
