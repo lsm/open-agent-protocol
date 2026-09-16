@@ -503,11 +503,12 @@ func (a *streamAdapter) active(t *testing.T) *streamSession {
 }
 
 type streamSession struct {
-	id     protocol.SessionID
-	mu     sync.Mutex
-	stream chan base.Result
-	run    protocol.RunID
-	closed bool
+	id          protocol.SessionID
+	mu          sync.Mutex
+	stream      chan base.Result
+	run         protocol.RunID
+	closed      bool
+	resumeFails bool
 }
 
 var _ base.Session = (*streamSession)(nil)
@@ -536,8 +537,16 @@ func (s *streamSession) Cancel(_ context.Context, runID protocol.RunID) (protoco
 	return protocol.RunCancelResponse{SessionID: s.id, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 
+// Resume hands back a stream that fails before delivering anything, which is
+// the case where the pump has no delivered position of its own.
 func (s *streamSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
-	return base.Recovery{}, nil, base.ErrRunNotFound
+	if !s.resumeFails {
+		return base.Recovery{}, nil, base.ErrRunNotFound
+	}
+	out := make(chan base.Result, 1)
+	out <- base.Result{Error: errors.New("the resumed stream died")}
+	close(out)
+	return base.Recovery{}, out, nil
 }
 
 func (s *streamSession) Close(context.Context) error {
@@ -557,6 +566,20 @@ func (s *streamSession) emit(t *testing.T, sequence uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	envelope.SessionID, envelope.RunID, envelope.Sequence = s.id, s.run, &sequence
+	s.stream <- base.Result{Envelope: envelope}
+}
+
+// emitBroken publishes an envelope whose payload cannot be re-encoded.
+func (s *streamSession) emitBroken(t *testing.T, sequence uint64) {
+	t.Helper()
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, "broken", protocol.RunStatusUpdatedPayload{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	envelope.SessionID, envelope.RunID, envelope.Sequence = s.id, s.run, &sequence
+	envelope.Payload = json.RawMessage("{not json")
 	s.stream <- base.Result{Envelope: envelope}
 }
 
@@ -637,6 +660,194 @@ func TestAFailedRunStreamEndsTheSubscriptionOutLoud(t *testing.T) {
 	// the frame limit's floor has to hold.
 	if strings.Contains(failure.Message, "native transport died") {
 		t.Fatalf("the adapter diagnostic reached the wire: %s", failure.Message)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEveryEndingFitsTheFrameLimitFloor is the invariant behind the minimal
+// forms: a subscription's last line is the one line that must always be
+// deliverable, because the op was already acknowledged and nothing else will
+// tell the host it has stopped. The full forms carry identifiers a host
+// supplied or an adapter minted and can exceed any limit; the fallbacks carry
+// the cursor and nothing else, and must fit the smallest limit New accepts.
+//
+// The values are the largest each field can hold, so the check is the floor
+// and not a sample.
+func TestEveryEndingFitsTheFrameLimitFloor(t *testing.T) {
+	const wide = int64(1) << 62
+	const far = uint64(1) << 63
+	for _, ending := range []struct {
+		name string
+		line any
+	}{
+		{signalOverflow, overflowLine{Event: signalOverflow, ID: wide, LastSequence: far}},
+		{signalReplayGap, gapLine{Event: signalReplayGap, ID: wide, RequestedAfter: far, OldestAvailable: far, LatestAvailable: far}},
+		{signalSessionClosed, sessionClosedLine{Event: signalSessionClosed, ID: wide}},
+		{signalFrameLimit, frameLimitLine{Event: signalFrameLimit, ID: wide, Sequence: far}},
+		{signalStreamFailed, streamFailedLine{Event: signalStreamFailed, ID: wide, Sequence: far}},
+	} {
+		t.Run(ending.name, func(t *testing.T) {
+			encoded, err := json.Marshal(ending.line)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(encoded) > minFrameLimit {
+				t.Fatalf("the minimal %s is %d bytes, over the %d-byte floor: %s", ending.name, len(encoded), minFrameLimit, encoded)
+			}
+		})
+	}
+}
+
+// TestAnEndingTooLargeToFrameStillArrives drives the fallback through the
+// real frontend rather than trusting the encoding check above. The session id
+// is long enough that the full replay-gap line cannot be framed, and short
+// enough that the request naming it can — the exact window where an ending
+// was previously logged and dropped, leaving the host waiting on a
+// subscription that never started.
+func TestAnEndingTooLargeToFrameStillArrives(t *testing.T) {
+	sessionID := strings.Repeat("s", 150)
+	hub := newTestHub(t, 2, 64)
+	entry := openSessionEntry(t, hub, sessionID)
+	runToCompletion(t, hub, entry)
+
+	f := startFrontend(t, hub, Options{FrameLimit: minFrameLimit})
+	f.send(fmt.Sprintf(`{"id":1,"op":"events","session_id":%q,"after":1}`, sessionID))
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("an expired cursor is a successful op that reports a gap, got %+v", response.Error)
+	}
+	gap := f.expectSignal(1, signalReplayGap)
+	if gap.SessionID != "" {
+		t.Fatalf("the fallback kept the session id that made the full form unframable: %+v", gap)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAFailedResumeReportsTheRequestedCursor pins where a subscription that
+// never delivered anything tells the host to resume from. Zero would send a
+// host that asked from sequence 6 back to the beginning, redelivering
+// everything it had already consumed — or into a replay gap.
+func TestAFailedResumeReportsTheRequestedCursor(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &streamAdapter{}
+	if err := registry.Register("stream", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	entry, _, err := hub.Open(context.Background(), "stream", base.OpenRequest{
+		SessionID: "resuming", Participant: protocol.Participant{ID: serve.DefaultParticipant},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "resuming", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := adapter.active(t)
+	session.mu.Lock()
+	session.resumeFails = true
+	session.mu.Unlock()
+
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":1,"op":"events","session_id":"resuming","after":6}`)
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	line := f.line()
+	var failure struct {
+		Event    string `json:"event"`
+		Sequence uint64 `json:"sequence"`
+	}
+	if err := json.Unmarshal([]byte(line), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Event != signalStreamFailed {
+		t.Fatalf("line %q is %q, want %q", line, failure.Event, signalStreamFailed)
+	}
+	if failure.Sequence != 6 {
+		t.Fatalf("the ending resumes after %d, want the requested cursor 6", failure.Sequence)
+	}
+	session.mu.Lock()
+	session.stream = nil
+	session.mu.Unlock()
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud covers the other way a
+// pump can die with nothing to show for it. An envelope this frontend cannot
+// encode stops the subscription exactly as a failed stream does, and leaves
+// the host exactly as unable to tell.
+func TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &streamAdapter{}
+	if err := registry.Register("stream", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	entry, _, err := hub.Open(context.Background(), "stream", base.OpenRequest{
+		SessionID: "unencodable", Participant: protocol.Participant{ID: serve.DefaultParticipant},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":1,"op":"events","session_id":"unencodable"}`)
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "unencodable", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter.active(t).emitBroken(t, 1)
+
+	line := f.line()
+	var failure struct {
+		Event string `json:"event"`
+		ID    int64  `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(line), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Event != signalStreamFailed || failure.ID != 1 {
+		t.Fatalf("line %q is not a correlated stream-failed ending", line)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOpenRefusalsAreBounded holds the open op to the bound its mirrored
+// route applies. A tool source id is caller-supplied and has no schema length
+// of its own, so a refusal that echoes one verbatim is as long as the caller
+// wants — where the HTTP route sends 300 runes, and where under a small frame
+// limit the typed refusal would degrade to response_too_large and lose the
+// same-code parity the op claims.
+func TestOpenRefusalsAreBounded(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	huge := strings.Repeat("x", 4000)
+	request := requestEnvelope(t, "req-huge", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
+		SessionID:   "bounded",
+		ToolSources: []protocol.ToolSourceAttachment{{ID: huge, Kind: protocol.ToolSourceProcess, Command: "/bin/sh"}},
+	}, "", "")
+	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"memory","request":%s}`, request))
+	response := f.expectResponse(1)
+	if response.OK {
+		t.Fatal("an open naming a wire-supplied command succeeded")
+	}
+	if runes := len([]rune(response.Error.Message)); runes > 301 {
+		t.Fatalf("refusal message is %d runes; the mirrored route bounds it at 300", runes)
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)

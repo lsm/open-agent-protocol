@@ -34,14 +34,16 @@ const (
 	opTools        = "tools"
 )
 
-// responseLine is one daemon → host response, correlated by the request id.
-// Result is the HTTP route's success body verbatim — an OAP response envelope
-// for the envelope exchanges, the plain JSON document for the listings — and
-// the JSON null for the routes HTTP answers without a body (close).
 // The named line kinds a subscription emits. An envelope line carries one
 // event; the rest are the subscription's own endings, each correlated with
 // the events request's id so overlapping subscriptions on one session stay
-// attributable. They mirror the SSE stream's named events one for one.
+// attributable.
+//
+// The first three mirror the SSE stream's named events. The last two are this
+// framing's own, and exist because this framing has no end for a host to
+// observe: SSE closes the response body, while the pipe here stays open and
+// carries every other subscription, so an ending SSE can leave implicit has
+// to be said out loud.
 const (
 	signalEnvelope      = "envelope"
 	signalOverflow      = "oap-overflow"
@@ -63,13 +65,18 @@ type envelopeLine struct {
 
 // overflowLine ends a subscription whose consumer fell behind the hub's
 // bounded fan-out. The last sequence it did carry is where a cursor resumes.
+// Every member but the cursor is omissible, for the reason frameLimitLine
+// gives: the identifiers a host supplied or an adapter minted can push an
+// ending past the very limit that has to carry it, and an ending that cannot
+// be sent leaves the host waiting on a subscription that has already stopped.
+// The minimal form is what the frame-limit floor guarantees fits.
 type overflowLine struct {
 	Event        string `json:"event"`
 	ID           int64  `json:"id"`
-	SessionID    string `json:"session_id"`
-	RunID        string `json:"run_id"`
+	SessionID    string `json:"session_id,omitempty"`
+	RunID        string `json:"run_id,omitempty"`
 	LastSequence uint64 `json:"last_sequence"`
-	Message      string `json:"message"`
+	Message      string `json:"message,omitempty"`
 }
 
 // gapLine reports a replay cursor the journal no longer retains. It is not a
@@ -79,19 +86,19 @@ type overflowLine struct {
 type gapLine struct {
 	Event           string `json:"event"`
 	ID              int64  `json:"id"`
-	SessionID       string `json:"session_id"`
+	SessionID       string `json:"session_id,omitempty"`
 	RequestedAfter  uint64 `json:"requested_after"`
 	OldestAvailable uint64 `json:"oldest_available"`
 	LatestAvailable uint64 `json:"latest_available"`
-	Message         string `json:"message"`
+	Message         string `json:"message,omitempty"`
 }
 
 // sessionClosedLine ends a subscription whose session closed under it.
 type sessionClosedLine struct {
 	Event     string `json:"event"`
 	ID        int64  `json:"id"`
-	SessionID string `json:"session_id"`
-	Message   string `json:"message"`
+	SessionID string `json:"session_id,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 // streamFailedLine ends a subscription whose run stream failed.
@@ -109,10 +116,10 @@ type sessionClosedLine struct {
 type streamFailedLine struct {
 	Event     string `json:"event"`
 	ID        int64  `json:"id"`
-	SessionID string `json:"session_id"`
+	SessionID string `json:"session_id,omitempty"`
 	RunID     string `json:"run_id,omitempty"`
 	Sequence  uint64 `json:"sequence"`
-	Message   string `json:"message"`
+	Message   string `json:"message,omitempty"`
 }
 
 // frameLimitLine ends a subscription this framing cannot carry past. Every
@@ -129,6 +136,10 @@ type frameLimitLine struct {
 	Message   string `json:"message,omitempty"`
 }
 
+// responseLine is one daemon → host response, correlated by the request id.
+// Result is the HTTP route's success body verbatim — an OAP response envelope
+// for the envelope exchanges, the plain JSON document for the listings — and
+// the JSON null for the routes HTTP answers without a body (close).
 type responseLine struct {
 	ID     int64           `json:"id"`
 	OK     bool            `json:"ok"`
@@ -411,11 +422,16 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 			// a constraint that would answer the wrong question.
 			return nil, &wireError{Code: "probe_failed", Message: adapterMessage(refusal)}
 		}
-		return nil, &wireError{Code: code, Message: message, Details: details}
+		return nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
 	}
 	attachments, unresolvable := serve.ResolveAttachments(s.hub, payload.ToolSources)
 	if unresolvable != nil {
-		return nil, &wireError{Code: "unsupported_feature", Message: unresolvable.Error(), Details: map[string]any{
+		// The refusal names the source the caller asked for, and an id is
+		// caller-supplied with no schema bound of its own. The mirrored route
+		// bounds every message it writes; unbounded here, one id would make a
+		// typed refusal exceed the frame limit and degrade to
+		// response_too_large, which is the same-code parity this op claims.
+		return nil, &wireError{Code: "unsupported_feature", Message: trimMessage(unresolvable.Error()), Details: map[string]any{
 			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": unresolvable.Source,
 		}}
 	}
@@ -443,7 +459,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		// for an attachment tells the caller which source to drop rather than
 		// only that the open failed.
 		if code, message, details, ok := serve.ControlRefusal(err); ok {
-			return nil, &wireError{Code: code, Message: message, Details: details}
+			return nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
 		}
 		code := "open_failed"
 		switch {
@@ -933,6 +949,11 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 		return
 	}
 	var options []serve.SubscribeOption
+	// Where this subscription starts, which is also where it must report
+	// failing if the adapter's resumed stream errors before delivering
+	// anything. Left at zero, the ending would tell a host resuming from N to
+	// resume from the beginning, redelivering everything it had consumed.
+	var resumeFrom uint64
 	if len(request.After) > 0 && string(request.After) != "null" {
 		// The wire cursor carries only a sequence: the daemon resolves it
 		// onto the session's current run, exactly as the SSE route resolves
@@ -942,6 +963,7 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 			fail(&wireError{Code: "invalid_cursor", Message: fmt.Sprintf("cursor %s is not an unsigned sequence", strconv.Quote(trimMessage(string(request.After))))})
 			return
 		}
+		resumeFrom = after
 		options = append(options, serve.After("", after))
 	}
 	// Attaching before subscribing, rather than after, so the acknowledgement
@@ -963,13 +985,19 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 		if !s.respond(ctx, lines, request, json.RawMessage("null"), nil) {
 			return
 		}
-		if sendErr := s.send(ctx, lines, gapLine{
-			Event: signalReplayGap, ID: id, SessionID: string(entry.ID()),
-			RequestedAfter: gap.RequestedAfter, OldestAvailable: gap.OldestAvailable, LatestAvailable: gap.LatestAvailable,
-			Message: "requested replay cursor is no longer retained; resume with a cursor at or after oldest_available - 1",
-		}); sendErr != nil {
-			s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
-		}
+		// The op already answered ok, so this line is the whole subscription:
+		// losing it to the frame limit would leave the host waiting on one
+		// that never started.
+		s.endSubscription(ctx, lines, id,
+			gapLine{
+				Event: signalReplayGap, ID: id, SessionID: string(entry.ID()),
+				RequestedAfter: gap.RequestedAfter, OldestAvailable: gap.OldestAvailable, LatestAvailable: gap.LatestAvailable,
+				Message: "requested replay cursor is no longer retained; resume with a cursor at or after oldest_available - 1",
+			},
+			gapLine{
+				Event: signalReplayGap, ID: id,
+				RequestedAfter: gap.RequestedAfter, OldestAvailable: gap.OldestAvailable, LatestAvailable: gap.LatestAvailable,
+			})
 		return
 	}
 	if err != nil {
@@ -1003,7 +1031,7 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 	}
 	go func() {
 		defer run.detach()
-		s.pump(pumps, entry, subscription, id, lines)
+		s.pump(pumps, entry, subscription, id, resumeFrom, lines)
 	}()
 }
 
@@ -1028,20 +1056,29 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 // An envelope whose line exceeds the frame limit ends the subscription rather
 // than being skipped: skipping it would leave a sequence hole a later cursor
 // would double-count.
-func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *serve.Subscription, id int64, lines chan<- outLine) {
+func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *serve.Subscription, id int64, resumeFrom uint64, lines chan<- outLine) {
 	defer subscription.Close()
 	// What the host actually received, which is where a fresh cursor resumes
 	// if this subscription ends badly. It is the delivered position and not
 	// the hub's, because a line that never reached the writer is not an event
 	// the host can be asked to resume after.
+	//
+	// It starts at the cursor the request named, not at zero: a resumed
+	// stream that fails before its first envelope has delivered nothing, and
+	// the position the host is still safely at is the one it asked from.
 	var deliveredRun protocol.RunID
-	var deliveredSequence uint64
+	deliveredSequence := resumeFrom
 	for {
 		envelope, err := subscription.Next()
 		if err == nil {
 			data, marshalErr := json.Marshal(envelope)
 			if marshalErr != nil {
+				// An envelope this frontend cannot encode ends the
+				// subscription as surely as a failed stream, and leaves the
+				// host exactly as unable to tell: the pipe stays open and
+				// nothing else will name the ending.
 				s.logger.Printf("servestdio: subscription %d: encode envelope: %v", id, marshalErr)
+				s.failSubscription(ctx, lines, entry, id, deliveredRun, deliveredSequence)
 				return
 			}
 			if sendErr := s.send(ctx, lines, envelopeLine{
@@ -1055,7 +1092,17 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 					// what stopped it.
 					return
 				}
-				s.endAtFrameLimit(ctx, entry, envelope, id, lines)
+				sequence := deliveredSequence
+				if envelope.Sequence != nil {
+					sequence = *envelope.Sequence
+				}
+				s.endSubscription(ctx, lines, id,
+					frameLimitLine{
+						Event: signalFrameLimit, ID: id, SessionID: string(entry.ID()),
+						RunID: string(envelope.RunID), Sequence: sequence,
+						Message: "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it",
+					},
+					frameLimitLine{Event: signalFrameLimit, ID: id, Sequence: sequence})
 				return
 			}
 			deliveredRun = envelope.RunID
@@ -1066,24 +1113,24 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 		}
 		var overflow *serve.OverflowError
 		if errors.As(err, &overflow) {
-			if sendErr := s.send(ctx, lines, overflowLine{
-				Event: signalOverflow, ID: id, SessionID: string(entry.ID()),
-				RunID:        string(overflow.RunID),
-				LastSequence: overflow.LastSequence,
-				Message:      "event stream consumer fell behind; resume with a cursor after this sequence",
-			}); sendErr != nil {
-				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
-			}
+			s.endSubscription(ctx, lines, id,
+				overflowLine{
+					Event: signalOverflow, ID: id, SessionID: string(entry.ID()),
+					RunID:        string(overflow.RunID),
+					LastSequence: overflow.LastSequence,
+					Message:      "event stream consumer fell behind; resume with a cursor after this sequence",
+				},
+				overflowLine{Event: signalOverflow, ID: id, LastSequence: overflow.LastSequence})
 			return
 		}
 		if errors.Is(err, io.EOF) {
 			if entry.IsClosed() {
-				if sendErr := s.send(ctx, lines, sessionClosedLine{
-					Event: signalSessionClosed, ID: id, SessionID: string(entry.ID()),
-					Message: "the session is closed",
-				}); sendErr != nil {
-					s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
-				}
+				s.endSubscription(ctx, lines, id,
+					sessionClosedLine{
+						Event: signalSessionClosed, ID: id, SessionID: string(entry.ID()),
+						Message: "the session is closed",
+					},
+					sessionClosedLine{Event: signalSessionClosed, ID: id})
 			}
 			// A clean end on a live session is the run's terminal envelope,
 			// already delivered above: the host has its marker.
@@ -1096,49 +1143,49 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 		}
 		// The run's event stream failed. Nothing else will name this ending.
 		s.logger.Printf("servestdio: subscription %d: %v", id, err)
-		if sendErr := s.send(ctx, lines, streamFailedLine{
-			Event: signalStreamFailed, ID: id, SessionID: string(entry.ID()),
-			RunID: string(deliveredRun), Sequence: deliveredSequence,
-			Message: "the run's event stream failed; resume with a cursor after this sequence",
-		}); sendErr != nil {
-			s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
-			if minimalErr := s.send(ctx, lines, streamFailedLine{
-				Event: signalStreamFailed, ID: id, Sequence: deliveredSequence,
-				Message: "the run's event stream failed",
-			}); minimalErr != nil {
-				s.logger.Printf("servestdio: subscription %d: %v", id, minimalErr)
-			}
-		}
+		s.failSubscription(ctx, lines, entry, id, deliveredRun, deliveredSequence)
 		return
 	}
 }
 
-// endAtFrameLimit terminates a subscription this framing cannot carry past,
-// naming the position a cursor resumes after.
+// failSubscription ends a subscription that died of something the host
+// cannot see, naming the last position it actually received — the delivered
+// position, and never the hub's, because a line that did not reach the writer
+// is not an event a host can be asked to resume after.
+func (s *Server) failSubscription(ctx context.Context, lines chan<- outLine, entry *serve.Session, id int64, run protocol.RunID, sequence uint64) {
+	s.endSubscription(ctx, lines, id,
+		streamFailedLine{
+			Event: signalStreamFailed, ID: id, SessionID: string(entry.ID()),
+			RunID: string(run), Sequence: sequence,
+			Message: "the run's event stream failed; resume with a cursor after this sequence",
+		},
+		streamFailedLine{Event: signalStreamFailed, ID: id, Sequence: sequence})
+}
+
+// endSubscription delivers a subscription's last line, falling back to a
+// minimal form when the full one cannot be framed.
 //
-// The full signal carries adapter-minted identifiers, which can themselves
-// push it past the very limit that ended the subscription. The minimal form
-// is what the frame-limit floor guarantees fits, so it is what a failed full
-// form falls back to: the sequence is the one fact a host needs to resume,
-// and losing the terminal signal entirely would leave the host waiting on a
-// subscription that has already stopped.
-func (s *Server) endAtFrameLimit(ctx context.Context, entry *serve.Session, envelope protocol.Envelope, id int64, lines chan<- outLine) {
-	sequence := uint64(0)
-	if envelope.Sequence != nil {
-		sequence = *envelope.Sequence
-	}
-	if err := s.send(ctx, lines, frameLimitLine{
-		Event: signalFrameLimit, ID: id, SessionID: string(entry.ID()),
-		RunID: string(envelope.RunID), Sequence: sequence,
-		Message: "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it",
-	}); err == nil {
-		return
-	} else if !errors.Is(err, ErrLineTooLarge) {
-		s.logger.Printf("servestdio: subscription %d: %v", id, err)
+// An ending that cannot be sent is the failure every one of these signals
+// exists to prevent: the events op was already acknowledged, the pipe stays
+// open, and the host waits forever on a subscription that has already
+// stopped. The full form carries identifiers a host supplied or an adapter
+// minted, and either can be long enough to push the line past the very limit
+// that has to carry it — a session id near the request line's own bound is
+// enough — so the fallback drops everything except the cursor, which is the
+// one fact a host needs to resume.
+func (s *Server) endSubscription(ctx context.Context, lines chan<- outLine, id int64, full, minimal any) {
+	err := s.send(ctx, lines, full)
+	if err == nil {
 		return
 	}
-	if err := s.send(ctx, lines, frameLimitLine{Event: signalFrameLimit, ID: id, Sequence: sequence}); err != nil {
-		s.logger.Printf("servestdio: subscription %d: %v", id, err)
+	s.logger.Printf("servestdio: subscription %d: %v", id, err)
+	if !errors.Is(err, ErrLineTooLarge) {
+		// The output is gone, not too small. A smaller line would not reach
+		// the host either.
+		return
+	}
+	if minimalErr := s.send(ctx, lines, minimal); minimalErr != nil {
+		s.logger.Printf("servestdio: subscription %d: %v", id, minimalErr)
 	}
 }
 
