@@ -902,3 +902,38 @@ func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 		}
 	}
 }
+
+// The refusal ladder ranks a control refusal above ordinary submission
+// validation, so the gate runs first: a request that is malformed *and*
+// carries a control the endpoint cannot honour is answered with the control.
+// A caller told only "invalid submission" would fix its messages, resubmit,
+// and be refused again for a control it was never told about. The reference
+// adapter has to answer the way every harness adapter here does, or the
+// conformant behaviour it demonstrates is not the one the plan describes.
+func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
+	unsatisfiable := json.RawMessage(`{"mode":"named","name":"absent_tool"}`)
+	for name, request := range map[string]protocol.MessageSubmitRequest{
+		"no messages":      {SessionID: "session-1", Delivery: protocol.DeliveryAuto, ToolChoice: unsatisfiable},
+		"no session":       {Delivery: protocol.DeliveryAuto, ToolChoice: unsatisfiable, Messages: message},
+		"unsupported mode": {SessionID: "session-1", Delivery: protocol.DeliveryQueue, ToolChoice: unsatisfiable, Messages: message},
+	} {
+		session := newTestSession(t, 64)
+		_, _, err := session.Submit(context.Background(), request)
+		var refusal *adapter.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureToolSelection || refusal.Reason != adapter.ControlUnsatisfiable {
+			t.Fatalf("%s: got %v, want the control named ahead of the ordinary refusal", name, err)
+		}
+		if state, err := session.State(context.Background()); err != nil || state.ActiveRunID != "" || state.Status != protocol.SessionIdle {
+			t.Fatalf("%s: a refused submission allocated identity: %+v err=%v", name, state, err)
+		}
+	}
+
+	// With no control at fault the ordinary refusal still answers.
+	session := newTestSession(t, 64)
+	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary),
+	}); !errors.Is(err, adapter.ErrInvalidSubmission) {
+		t.Fatalf("got %v, want the ordinary refusal when no control is at fault", err)
+	}
+}

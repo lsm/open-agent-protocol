@@ -195,17 +195,22 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
+	// Every control is judged before any identity is allocated: a refused
+	// submission reserves no submission id, no run id, and writes nothing.
+	// The gate also runs ahead of ordinary submission validation, because the
+	// ladder ranks a control refusal above it: a caller told only that its
+	// submission was invalid would fix the messages, resubmit, and be refused
+	// for the control anyway. Every adapter here runs the gate in this
+	// position, so one request gets one answer whichever endpoint serves it.
+	controls, err := s.admitControls(request)
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
 	if request.SessionID == "" || len(request.Messages) == 0 {
 		return protocol.MessageSubmitResponse{}, nil, ErrInvalidSubmission
 	}
 	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", ErrInvalidSubmission, request.Delivery)
-	}
-	// Every control is judged before any identity is allocated: a refused
-	// submission reserves no submission id, no run id, and writes nothing.
-	controls, err := s.admitControls(request)
-	if err != nil {
-		return protocol.MessageSubmitResponse{}, nil, err
 	}
 
 	s.mu.Lock()
