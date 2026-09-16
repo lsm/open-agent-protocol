@@ -364,6 +364,9 @@ func ControlRefusal(err error) (code, message string, details map[string]any, ok
 		if unsupported.Field != "" {
 			details["field"] = unsupported.Field
 		}
+		if unsupported.Source != "" {
+			details["source"] = unsupported.Source
+		}
 		return "unsupported_feature", unsupported.Error(), details, true
 	}
 	var degraded *base.DegradedControlError

@@ -189,14 +189,62 @@ func (c *Client) Capabilities(ctx context.Context, adapter string) (Capabilities
 // Open opens one adapter session and returns a Session bound to it. A empty
 // sessionID lets the adapter mint one; the returned Session reports whatever
 // id the daemon confirmed.
-func (c *Client) Open(ctx context.Context, adapter string, sessionID protocol.SessionID) (*Session, error) {
+// Options are the open's elective members, sent only when given so an
+// unmodified call is byte-identical to one made before they existed.
+//
+// AttachToolSources names the sources the session resolves for its lifetime.
+// Over the daemon's client-facing route a process source is named by id only:
+// the daemon fills the command, the arguments, and the environment from its
+// own registry, and refuses a wire-supplied command or literal environment.
+type OpenOption func(*protocol.SessionOpenRequest)
+
+// AttachToolSources attaches tool sources for the session's lifetime.
+func AttachToolSources(sources ...protocol.ToolSourceAttachment) OpenOption {
+	return func(request *protocol.SessionOpenRequest) {
+		request.ToolSources = append(request.ToolSources, sources...)
+	}
+}
+
+// OpenAllowDegraded opts into the degraded application of the named
+// capability keys for this open.
+func OpenAllowDegraded(keys ...string) OpenOption {
+	return func(request *protocol.SessionOpenRequest) {
+		request.AllowDegradedFeatures = append(request.AllowDegradedFeatures, keys...)
+	}
+}
+
+func (c *Client) Open(ctx context.Context, adapter string, sessionID protocol.SessionID, options ...OpenOption) (*Session, error) {
 	payload := protocol.SessionOpenRequest{SessionID: sessionID}
+	for _, option := range options {
+		option(&payload)
+	}
 	request, err := c.envelope(protocol.TypeSessionOpenRequest, payload)
 	if err != nil {
 		return nil, err
 	}
 	if sessionID != "" {
 		request.SessionID = sessionID
+	}
+	if len(payload.ToolSources) > 0 {
+		// An open that attaches sources exercises an optional feature, and this
+		// validator requires such an envelope to cite the active descriptor.
+		// That rule is deliberately stricter than the wire contract, which says
+		// a request "may" pin and evaluates an unpinned one against current
+		// capabilities — the daemon accepts both, as it must. This client pins
+		// anyway, because an exchange it produces should be a trace this project
+		// validates: an unpinned attaching open is rejected as
+		// stale_capability_revision, which is how every attaching open this
+		// client issued used to fail.
+		//
+		// Liberal in what the daemon accepts, conservative in what the clients
+		// send. The revision is read here rather than taken from the caller
+		// because pinning to one you have not read asserts a precondition you
+		// never checked. The probe costs one request, on attaching opens only.
+		capabilities, err := c.Capabilities(ctx, adapter)
+		if err != nil {
+			return nil, err
+		}
+		request.CapabilityRevision = capabilities.Revision
 	}
 	envelope, err := c.exchange(ctx, http.MethodPost, "/adapters/"+url.PathEscape(adapter)+"/sessions", &request, protocol.TypeSessionOpenResponse)
 	if err != nil {

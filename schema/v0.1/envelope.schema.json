@@ -93,7 +93,7 @@
     "runFailed": { "allOf": [{ "$ref": "#/$defs/runEvent" }], "properties": { "type": { "const": "run.failed" }, "payload": { "$ref": "run.schema.json#/$defs/failed" } } },
     "runCancelled": { "allOf": [{ "$ref": "#/$defs/runEvent" }], "properties": { "type": { "const": "run.cancelled" }, "payload": { "$ref": "run.schema.json#/$defs/cancelled" } } },
     "toolsListRequest": { "properties": { "type": { "const": "action.tools.list.request" }, "payload": { "$ref": "action.schema.json#/$defs/toolsListRequest" } } },
-    "toolsListResponse": { "allOf": [{ "$ref": "#/$defs/response" }], "properties": { "type": { "const": "action.tools.list.response" }, "payload": { "$ref": "action.schema.json#/$defs/toolsListResponse" } } },
+    "toolsListResponse": { "allOf": [{ "$ref": "#/$defs/response" }], "required": ["capability_revision"], "properties": { "type": { "const": "action.tools.list.response" }, "payload": { "$ref": "action.schema.json#/$defs/toolsListResponse" } } },
     "actionCallRequested": { "allOf": [{ "$ref": "#/$defs/runEvent" }], "required": ["tool_call_id"], "properties": { "type": { "const": "action.call.requested" }, "payload": { "$ref": "action.schema.json#/$defs/callRequested" } } },
     "actionCallStarted": { "allOf": [{ "$ref": "#/$defs/runEvent" }], "required": ["tool_call_id"], "properties": { "type": { "const": "action.call.started" }, "payload": { "$ref": "action.schema.json#/$defs/callStarted" } } },
     "actionCallProgress": { "allOf": [{ "$ref": "#/$defs/runEvent" }], "required": ["tool_call_id"], "properties": { "type": { "const": "action.call.progress" }, "payload": { "$ref": "action.schema.json#/$defs/callProgress" } } },

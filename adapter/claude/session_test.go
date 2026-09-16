@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
+	"github.com/lsm/open-agent-protocol/adapter/claude/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/claude/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -1186,5 +1188,322 @@ func TestUnknownResultSubtypeFailsRunNotTransport(t *testing.T) {
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestToollessInitFrameServesAnEmptyCatalogArray pins the wire shape of a
+// catalog with nothing in it. `tools` is a required array, and appending
+// nothing onto a nil slice yields nil, which marshals as `null` and fails the
+// schema — at the one place with no validator in front of it. The projection
+// allocates an empty slice for a frame that lists no tools; the copy served to
+// a caller has to carry that non-nilness out, and only an assertion over the
+// encoded bytes can tell the two apart.
+//
+// The pin at this CLI version always lists its built-ins, so a toolless frame
+// is not something the corpus can reach today. That is a fact about one
+// harness release, not a guarantee the wire makes: the frame's `tools` is an
+// array, an empty one is well-formed, and a session run with every tool
+// disallowed is the obvious way to get one.
+func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		frame native.InitFrame
+	}{
+		{"no tools at all", native.InitFrame{}},
+		{"an empty tool list", native.InitFrame{Tools: []string{}}},
+		{"only unusable names", native.InitFrame{Tools: []string{"", ""}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
+			frame := testCase.frame
+			session.projectCatalogLocked(&frame)
+			request := protocol.ToolsListRequest{SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList}}
+			catalog, err := session.Tools(context.Background(), request)
+			if err != nil {
+				t.Fatalf("tools: %v", err)
+			}
+			if len(catalog.Tools.Tools) != 0 {
+				t.Fatalf("a toolless frame projected %d tools", len(catalog.Tools.Tools))
+			}
+			encoded, err := json.Marshal(catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), `"tools":null`) {
+				t.Fatalf("the served catalog encodes tools as null: %s", encoded)
+			}
+			// The schema is the arbiter, not the string above: run the served
+			// catalog through the real validator the way every other adapter
+			// catalog test does.
+			implementation, err := New(Config{Executable: "/bin/claude", WorkingDirectory: "/tmp"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor, err := implementation.Probe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			adaptertest.AssertToolCatalog(t, descriptor, protocol.SessionOpenRequest{}, request, catalog)
+		})
+	}
+}
+
+// catalogFrame decodes one system/init frame from the wire shape, because the
+// frame's MCP server list is an anonymous struct a test cannot name.
+// mcpInitFrame is the wire form of catalogFrame: a turn that publishes both a
+// tool list and an MCP server list, so the session has a catalog to project and
+// a catalog to serve.
+const mcpInitFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Bash","mcp__files__read_file"],"mcp_servers":[{"name":"files","status":"connected"}],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
+
+// TestServingACatalogRacesNoToolCall interleaves the two goroutines that reach
+// the session's catalog from opposite sides: a caller asking for the catalog,
+// and the dispatch loop starting a tool call that has to attribute itself from
+// it.
+//
+// It exists because nothing else in this package puts them in flight together,
+// so `go test -race` certified a genuine race as clean — twice, once for the
+// catalog slice and once for the served map that turned the same defect fatal
+// (`concurrent map read and map write` takes the daemon down rather than
+// returning a torn value). A rule the suite cannot catch is a rule nothing
+// defends, so this test is the defence rather than the fix.
+//
+// It asserts nothing beyond "the run settled": the detector is the assertion.
+func TestServingACatalogRacesNoToolCall(t *testing.T) {
+	_, session, peer := openWire(t)
+	outcome := submit(session)
+	uuid := turnUUIDOf(t, peer.writtenUser())
+	// The MCP-bearing frame is what gives both sides something to publish: a
+	// projection with an MCP attribution, and a serve that supersedes it.
+	peer.send(mcpInitFrame)
+	peer.send(streamEcho(uuid))
+	admitted := awaitSubmit(t, outcome)
+
+	lister, ok := session.(base.ToolLister)
+	if !ok {
+		t.Fatal("the session serves no catalog")
+	}
+	const rounds = 64
+	// The stream is drained while the frames are fed, and each reduced call is
+	// announced, because the feeder waits for it. That handshake is what keeps
+	// the test inside the transport's own bounds: rpc.Client.enqueue is
+	// non-blocking and retires the transport with ErrObservationQueue the moment
+	// its inbound queue is full — fail-closed by design, since an adapter that
+	// buffered without limit would hide a consumer falling behind. Feeding as
+	// fast as an io.Pipe accepts, while the reducer is slowed by contention on
+	// the very mutex this test contends, overran that queue: the transport
+	// retired mid-test, the next peer write hit a closed pipe, and the subscriber
+	// got a partial stream with no terminal. Both were the same overrun, and how
+	// soon it happened was a property of the machine — which is why yielding made
+	// it rarer here and CI hit it in ten milliseconds.
+	//
+	// With the handshake at most one call is in flight, so the queue cannot fill
+	// however contended the machine is. This is not the bounded loop that
+	// certified nothing: that one bounded the *catalog* calls, which could then
+	// all finish before the first frame was reduced. Here only the frames are
+	// paced, and the pacing makes the overlap certain rather than likely —
+	// every round the reducer is inside startTool while the catalog goroutine
+	// runs.
+	type drainResult struct {
+		events []protocol.Envelope
+		err    error
+	}
+	reduced := make(chan struct{}, 1)
+	drained := make(chan drainResult, 1)
+	go func() {
+		var result drainResult
+		for delivery := range admitted.stream {
+			if delivery.Error != nil {
+				result.err = delivery.Error
+				break
+			}
+			result.events = append(result.events, delivery.Envelope)
+			if delivery.Envelope.Type == protocol.TypeActionCallRequested {
+				reduced <- struct{}{}
+			}
+		}
+		// Unblocks a feeder waiting on a round the stream will never deliver, so
+		// an overrun is reported as the transport error it is rather than as a
+		// timeout with no cause.
+		close(reduced)
+		drained <- result
+	}()
+	// The catalog goroutine runs until the frames are exhausted rather than for
+	// a fixed count, so the two are guaranteed to be in flight together.
+	feeding := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-feeding:
+				return
+			default:
+			}
+			// Yield each round: the point is to overlap the two goroutines, not
+			// to starve the writer pump the peer feeds frames through.
+			runtime.Gosched()
+			// A scoped request: the one that records what this session served,
+			// and so the one that writes the state the reducer reads.
+			if _, err := lister.Tools(context.Background(), protocol.ToolsListRequest{
+				SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList},
+			}); err != nil {
+				t.Errorf("tools: %v", err)
+				return
+			}
+		}
+	}()
+	for i := 0; i < rounds; i++ {
+		id := fmt.Sprintf("toolu_%02d", i)
+		peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"` + id + `","name":"mcp__files__read_file","input":{"path":"/tmp/x"}}],"stop_reason":null,"usage":{"input_tokens":1}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a` + id + `"}`)
+		select {
+		case _, ok := <-reduced:
+			if !ok {
+				close(feeding)
+				wg.Wait()
+				t.Fatalf("the event stream ended during round %d: %v", i, (<-drained).err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d was never reduced", i)
+		}
+		peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"` + id + `","type":"tool_result","content":"ok","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u` + id + `"}`)
+	}
+	close(feeding)
+	wg.Wait()
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	var result drainResult
+	select {
+	case result = <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event stream never closed")
+	}
+	if result.err != nil {
+		t.Fatalf("the event stream failed: %v", result.err)
+	}
+	if last := terminalOf(result.events); last.Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal = %s", last.Type)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func catalogFrame(t *testing.T) *native.InitFrame {
+	t.Helper()
+	var frame native.InitFrame
+	if err := json.Unmarshal([]byte(`{"tools":["Bash","mcp__files__read_file"],"mcp_servers":[{"name":"files","status":"connected"}]}`), &frame); err != nil {
+		t.Fatal(err)
+	}
+	return &frame
+}
+
+// TestUnscopedCatalogPublishesNoSessionMCPServers is the Claude half of the
+// rule the reference adapter took first: a request naming no session asks for
+// the endpoint's own catalog, and this endpoint's is its built-in tools and
+// nothing else. Everything else it knows was learned from one session's
+// system/init frame — which tools that turn offered, which MCP servers that
+// operator configured — and answering an unscoped request with it would
+// present one caller's servers as endpoint-wide. Because such a response
+// carries no session, the validator's lifetime rule never runs over it, so
+// nothing downstream would catch the substitution either.
+func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
+	session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
+	session.projectCatalogLocked(catalogFrame(t))
+	request := protocol.ToolsListRequest{AllowDegradedFeatures: []string{protocol.FeatureToolsList}}
+	catalog, err := session.Tools(context.Background(), request)
+	if err != nil {
+		t.Fatalf("tools: %v", err)
+	}
+	if catalog.Tools.SessionID != "" {
+		t.Fatalf("an unscoped request was answered under session %q", catalog.Tools.SessionID)
+	}
+	for _, source := range catalog.Tools.Sources {
+		if strings.HasPrefix(source.ID, mcpSourcePrefix) {
+			t.Fatalf("the endpoint catalog publishes a session's MCP server: %+v", catalog.Tools.Sources)
+		}
+	}
+	if len(catalog.Tools.Sources) != 1 || catalog.Tools.Sources[0].ID != nativeToolSource {
+		t.Fatalf("endpoint catalog sources %+v", catalog.Tools.Sources)
+	}
+	if len(catalog.Tools.Tools) != 0 {
+		t.Fatalf("the endpoint catalog publishes %d of a session's tools", len(catalog.Tools.Tools))
+	}
+	// The same session asked in its own scope still answers with everything
+	// the turn taught it: the unscoped answer narrowed the question, not the
+	// session.
+	scoped, err := session.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList}})
+	if err != nil {
+		t.Fatalf("scoped tools: %v", err)
+	}
+	attributed := false
+	for _, tool := range scoped.Tools.Tools {
+		if tool.Name == "mcp__files__read_file" && tool.Source == mcpSourcePrefix+"files" {
+			attributed = true
+		}
+	}
+	if !attributed {
+		t.Fatalf("the session catalog lost its MCP attribution: %+v", scoped.Tools.Tools)
+	}
+}
+
+// TestCallCarriesTheCatalogSource is the other half of the same attribution,
+// and the half bounded by what the endpoint has published. This adapter
+// advertises action.tools.list, so a consumer should be able to relate an
+// observed call to the catalog entry without parsing the tool name again —
+// which is what `source` exists for. The value is read out of the projected
+// catalog rather than derived a second time from the name, so the call and the
+// catalog cannot disagree.
+//
+// It is then filtered to the sources the descriptor declares, because `source`
+// is a cross-reference and an event stream carries only the descriptor and the
+// events. A session's catalog reaches that stream only if somebody asks, and
+// this one is degraded and served on request by design, so a call naming
+// `mcp:<server>` in a stream that never listed tools names an id nothing in it
+// declares — which this unit's own validator reports as unmatched_tool_source.
+// The per-server attribution is not lost; it stays in the catalog, which is
+// where a consumer that wants it asks.
+func TestCallCarriesTheCatalogSource(t *testing.T) {
+	session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
+	session.projectCatalogLocked(catalogFrame(t))
+	for _, testCase := range []struct{ tool, source string }{
+		// The descriptor declares the native source, so a natively attributed
+		// call resolves in any trace.
+		{"Bash", nativeToolSource},
+		// It declares no MCP server — they are this session's, learned from its
+		// own system/init frame — so a call names none, although the catalog
+		// below still attributes the tool exactly.
+		{"mcp__files__read_file", ""},
+		// A tool no published catalog lists is one the endpoint has said
+		// nothing about; inventing an attribution for it would be the guess
+		// the member exists to replace.
+		{"NotInTheCatalog", ""},
+	} {
+		t.Run(testCase.tool, func(t *testing.T) {
+			if got := session.attributionFor(testCase.tool); got != testCase.source {
+				t.Fatalf("catalog source for %q = %q, want %q", testCase.tool, got, testCase.source)
+			}
+		})
+	}
+
+	// Before the first turn there is no catalog at all, so there is nothing to
+	// attribute against and the adapter says so rather than guessing native.
+	fresh := &Session{state: protocol.SessionState{SessionID: "session"}}
+	if got := fresh.attributionFor("Bash"); got != "" {
+		t.Fatalf("a session with no catalog attributed a call to %q", got)
+	}
+
+	// The catalog keeps the attribution the call cannot carry, so the two say
+	// the same thing about the same tool at different resolutions: the call
+	// names what any reader can resolve, the catalog names the server exactly.
+	catalog, err := session.Tools(context.Background(), protocol.ToolsListRequest{
+		SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range catalog.Tools.Tools {
+		if tool.Name == "mcp__files__read_file" && tool.Source != mcpSourcePrefix+"files" {
+			t.Fatalf("the catalog lost the attribution the call gave up: %+v", tool)
+		}
 	}
 }

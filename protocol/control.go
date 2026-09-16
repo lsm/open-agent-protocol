@@ -52,12 +52,83 @@ const (
 // endpoint-specific limits a caller and a validator must be able to check —
 // ConstraintFixedResult for run.structured_output, the exact object every
 // run.completed under an accepted output_schema will carry.
+// Limits is the machine-readable bound disclosure: the constraints that make a
+// refusal of an otherwise defect-free request conforming. An endpoint
+// advertising a key and refusing everything it is given would honour nothing,
+// so refusing a request that violates none of the declared limits is a
+// diagnostic (undisclosed_attach_limit for action.tool_sources.attach).
 type FeatureSupport struct {
 	Level       SupportLevel               `json:"level"`
 	Reason      string                     `json:"reason,omitempty"`
 	Mode        string                     `json:"mode,omitempty"`
 	Modes       []string                   `json:"modes,omitempty"`
 	Constraints map[string]json.RawMessage `json:"constraints,omitempty"`
+	Limits      map[string]json.RawMessage `json:"limits,omitempty"`
+}
+
+// LimitMaxSources and LimitTransports are the limits
+// `action.tool_sources.attach` discloses: how many sources one open may
+// attach, and which `kind` values the endpoint accepts. A refusal of an array
+// that violates neither is undisclosed_attach_limit.
+const (
+	LimitMaxSources = "max_sources"
+	LimitTransports = "transports"
+)
+
+// MaxSources reports the disclosed attachment ceiling, and false when the
+// endpoint declared no usable one.
+//
+// A ceiling must be positive. Zero is not "attach nothing" but a disclosure
+// that defeats itself: an empty `tool_sources` array elects the capability at
+// all, so a ceiling of zero would put every request that exercises attachment
+// outside the limit and make refusing all of them conforming — an endpoint
+// advertising the key and honouring nothing, which is the one outcome the
+// limit mechanism exists to prevent. A non-positive value therefore discloses
+// no ceiling, and the endpoint is held to accepting every well-formed array.
+func (f FeatureSupport) MaxSources() (int, bool) {
+	raw, ok := f.Limits[LimitMaxSources]
+	if !ok {
+		return 0, false
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err != nil || value < 1 {
+		return 0, false
+	}
+	return value, true
+}
+
+// Transports reports the disclosed set of accepted source kinds, and false
+// when the endpoint declared no usable one.
+//
+// Only the kinds an attachment can actually take are usable, for the reason
+// MaxSources refuses a zero ceiling: an attachment's `kind` is one of the five,
+// so a transport list naming anything else puts every possible attachment
+// outside the disclosed limit and makes refusing all of them conforming — an
+// endpoint advertising the key and honouring nothing, which is what the limit
+// mechanism exists to prevent. The schema refuses such a list outright; this
+// holds the same line for a descriptor that never passed through it, and an
+// unrecognized entry is dropped rather than obeyed. A list left with nothing
+// usable discloses no transports at all, and the endpoint is then held to
+// accepting every well-formed array.
+func (f FeatureSupport) Transports() ([]string, bool) {
+	raw, ok := f.Limits[LimitTransports]
+	if !ok {
+		return nil, false
+	}
+	var value []string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false
+	}
+	kinds := make([]string, 0, len(value))
+	for _, kind := range value {
+		if IsToolSourceKind(kind) {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) == 0 {
+		return nil, false
+	}
+	return kinds, true
 }
 
 // Capability keys for the per-submit run controls. A control the endpoint has
@@ -70,6 +141,54 @@ const (
 	FeatureToolSelection    = "run.tool_selection"
 	FeatureStructuredOutput = "run.structured_output"
 )
+
+// Capability keys for the tool-sources unit.
+//
+// FeatureToolsList governs the catalog exchange. It is deliberately not
+// aliased to the `action.tools` family key: that key means lifecycle
+// observation, and several adapters advertise it while exposing no portable
+// catalog at all, so aliasing would let a served catalog pass a gate the
+// endpoint never claimed.
+//
+// FeatureToolSourcesAttach governs attaching tool sources at session open. Its
+// Mode discloses ModeSessionOpen, and ModeRemote additionally says the
+// endpoint accepts a `remote` source.
+const (
+	FeatureToolsList         = "action.tools.list"
+	FeatureToolSourcesAttach = "action.tool_sources.attach"
+)
+
+// Application modes action.tool_sources.attach discloses, in
+// FeatureSupport.Modes rather than Mode.
+//
+// The plural is what the key needs and what the existing contract already
+// says: Mode is "the single application mode a key has one of", and this key
+// has more than one — every attachment-capable endpoint attaches at session
+// open, and one that also accepts a `remote` source must say so without
+// erasing the first. A scalar could carry only one of the two, which made
+// remote support unrepresentable and let a descriptor claiming `remote` drop
+// `session_open` unnoticed. run.tool_selection already discloses its enforced
+// set this way; this follows that rule rather than inventing a third shape.
+//
+// ModeSessionOpen is therefore required wherever the key is advertised: an
+// attach capability disclosing no session-open mode cannot admit an
+// attachment at session open, and an open it admits anyway is diagnosed on
+// the capability rung.
+const (
+	ModeSessionOpen = "session_open"
+	ModeRemote      = "remote"
+)
+
+// DisclosesMode reports whether the endpoint listed one application mode among
+// the set it enforces.
+func (f FeatureSupport) DisclosesMode(mode string) bool {
+	for _, disclosed := range f.Modes {
+		if disclosed == mode {
+			return true
+		}
+	}
+	return false
+}
 
 // Application modes FeatureSupport.Mode discloses for run.model_selection.
 // ModeRestart is named by the vocabulary but is not offered in this phase.
@@ -95,6 +214,7 @@ type CapabilityLayer struct {
 	RequestedDeliveryModes []RequestedDeliveryMode   `json:"requested_delivery_modes,omitempty"`
 	EffectiveDeliveryModes []EffectiveDeliveryMode   `json:"effective_delivery_modes,omitempty"`
 	Tools                  []ToolDefinition          `json:"tools,omitempty"`
+	Sources                []ToolSourceDescriptor    `json:"sources,omitempty"`
 }
 
 type CapabilityDescriptor struct {
@@ -105,7 +225,65 @@ type CapabilityDescriptor struct {
 	Features         map[string]FeatureSupport  `json:"features,omitempty"`
 	Layers           map[string]CapabilityLayer `json:"layers,omitempty"`
 	Tools            []ToolDefinition           `json:"tools,omitempty"`
+	Sources          []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Degradation      []Degradation              `json:"degradation,omitempty"`
+}
+
+// EffectiveSupport reads one capability key's disclosure from a descriptor:
+// the top-level `features` first, then each layer's, since a valid descriptor
+// may publish a key under a layer alone — layers are the disjoint sections
+// (`model`, `action`, `agent_control`, `control_plane`) a descriptor may split
+// itself into, not an override mechanism. Layers are consulted in sorted name
+// order and the first disclosure wins, so the answer never depends on Go's map
+// iteration order.
+//
+// Every gate resolves a key through this one function — the validator's state
+// machine, its descriptor-time checks, and the daemon's own pre-checks — so a
+// descriptor that publishes a key under a layer is read the same way
+// everywhere. A second normalization beside it is how a route starts refusing
+// what a validator accepts.
+func (d CapabilityDescriptor) EffectiveSupport(key string) (FeatureSupport, bool) {
+	if support, ok := d.Features[key]; ok {
+		return support, true
+	}
+	names := make([]string, 0, len(d.Layers))
+	for name := range d.Layers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if support, ok := d.Layers[name].Features[key]; ok {
+			return support, true
+		}
+	}
+	return FeatureSupport{}, false
+}
+
+// EffectiveSources normalizes a descriptor's declared tool sources: its
+// top-level `sources` followed by every layer's, layers in sorted name order,
+// since a valid descriptor may declare them under a layer alone exactly as it
+// may publish its catalog there.
+//
+// It exists for the reason EffectiveSupport does, and it was added for the same
+// failure: the validator normalized across layers while a helper read the top
+// level alone, so the test kit reported a generated trace invalid for an
+// adapter publishing the layered shape the protocol explicitly supports. A
+// second normalization beside the first is how one surface starts refusing what
+// another accepts.
+//
+// Duplicates are not resolved here. One id resolving to two descriptors is a
+// defect the validator diagnoses, and collapsing it silently would hide it.
+func (d CapabilityDescriptor) EffectiveSources() []ToolSourceDescriptor {
+	sources := append([]ToolSourceDescriptor(nil), d.Sources...)
+	names := make([]string, 0, len(d.Layers))
+	for name := range d.Layers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		sources = append(sources, d.Layers[name].Sources...)
+	}
+	return sources
 }
 
 type Binding struct {
@@ -208,10 +386,52 @@ const (
 	SessionError           SessionStatus = "error"
 )
 
+// ToolSourceAttachment is the open-time shape of one tool source: the
+// descriptor's published members plus, for a `process` source, the
+// attachment-only Command, Args, and Environment. Environment takes the
+// registry's allowlist form — a bare `NAME` forwards the endpoint's own value,
+// `NAME=value` passes literally — so a wire caller cannot read an ambient
+// credential the operator never exposed.
+//
+// It is a shape of its own rather than the catalog's ToolSourceDescriptor
+// because Environment can hold a literal credential: with one schema for both,
+// an implementation that reflected the open-time value straight into its
+// catalog would leak the secret and still validate.
+type ToolSourceAttachment struct {
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	DisplayName string   `json:"display_name,omitempty"`
+	Protocol    string   `json:"protocol,omitempty"`
+	Endpoint    string   `json:"endpoint,omitempty"`
+	Command     string   `json:"command,omitempty"`
+	Args        []string `json:"args,omitempty"`
+	Environment []string `json:"environment,omitempty"`
+}
+
+// Descriptor is the sanitized projection an attachment publishes: exactly the
+// members a catalog or a session snapshot may carry, and none of the
+// attachment-only ones.
+func (a ToolSourceAttachment) Descriptor() ToolSourceDescriptor {
+	return ToolSourceDescriptor{ID: a.ID, Kind: a.Kind, DisplayName: a.DisplayName, Protocol: a.Protocol, Endpoint: a.Endpoint}
+}
+
 type SessionOpenRequest struct {
-	SessionID SessionID                  `json:"session_id,omitempty"`
-	Metadata  map[string]json.RawMessage `json:"metadata,omitempty"`
-	Recovery  *RecoveryMetadata          `json:"recovery,omitempty"`
+	SessionID             SessionID                  `json:"session_id,omitempty"`
+	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+	ToolSources           []ToolSourceAttachment     `json:"tool_sources,omitempty"`
+	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
+	Recovery              *RecoveryMetadata          `json:"recovery,omitempty"`
+}
+
+// AllowsDegraded reports whether the open opted into the degraded application
+// of one capability key.
+func (r SessionOpenRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
 }
 
 // SessionOpenResponse is the session state an open confirms. The schema
@@ -239,6 +459,7 @@ type SessionState struct {
 	TranscriptCursor string                     `json:"transcript_cursor,omitempty"`
 	UpdatedAtMS      int64                      `json:"updated_at_ms,omitempty"`
 	Metadata         map[string]json.RawMessage `json:"metadata,omitempty"`
+	Sources          []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Recovery         *RecoveryMetadata          `json:"recovery,omitempty"`
 }
 

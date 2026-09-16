@@ -2346,64 +2346,2125 @@
         "decisions/0005-run-controls.md"
       ]
     },
-    {"id":"controls-refusal-omits-feature","path":"semantic-invalid/controls-refusal-omits-feature.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-refusal-names-wrong-feature","path":"semantic-invalid/controls-refusal-names-wrong-feature.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-tool-choice-empty-filters","path":"semantic-invalid/controls-tool-choice-empty-filters.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-tool-choice-empty-allowlist-required","path":"semantic-invalid/controls-tool-choice-empty-allowlist-required.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-tool-choice-empty-allowlist-call","path":"semantic-invalid/controls-tool-choice-empty-allowlist-call.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unapplied_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-model-mode-missing","path":"semantic-invalid/controls-model-mode-missing.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_selection_modes"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-model-mode-unknown","path":"semantic-invalid/controls-model-mode-unknown.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_selection_modes"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-tool-choice-unenforced-modes","path":"semantic-invalid/controls-tool-choice-unenforced-modes.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_selection_modes"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-tool-choice-extra-mode","path":"valid/controls-tool-choice-extra-mode.json","kind":"positive","valid":true,"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-    {"id":"controls-fixed-result-not-an-object","path":"schema-invalid/controls-fixed-result-not-an-object.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
-{"id":"models-list-then-select","path":"valid/models-list-then-select.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-list-refused-advertised","path":"semantic-invalid/models-list-refused-advertised.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unhonoured_capability"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"],"covers":[{"capability":"models.list","aspect":"honour"}]},
-{"id":"models-list-degraded-optin","path":"valid/models-list-degraded-optin.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-list-degraded-without-optin","path":"semantic-invalid/models-list-degraded-without-optin.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["degraded_without_optin"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-list-degraded-refused","path":"valid/models-list-degraded-refused.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-unadvertised-rejected","path":"valid/models-unadvertised-rejected.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-unadvertised-wrong-reason","path":"semantic-invalid/models-unadvertised-wrong-reason.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unavailable_capability"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-unadvertised","path":"semantic-invalid/models-unadvertised.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unavailable_capability"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"],"covers":[{"capability":"models.list","aspect":"gate"}]},
-{"id":"models-current-model-mutation-in-flight","path":"valid/models-current-model-mutation-in-flight.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-current-model-ahead-of-trace","path":"valid/models-current-model-ahead-of-trace.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-listed-selection-false-miss","path":"semantic-invalid/models-listed-selection-false-miss.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","run-controls","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"],"covers":[{"capability":"run.model_selection","aspect":"honour"}]},
-{"id":"models-unlisted-selection-refused","path":"valid/models-unlisted-selection-refused.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-unlisted-selection-wrong-refusal","path":"semantic-invalid/models-unlisted-selection-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-unlisted-selection-missing-detail","path":"semantic-invalid/models-unlisted-selection-missing-detail.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-select-unlisted","path":"semantic-invalid/models-select-unlisted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-unadvertised-selection-unlisted","path":"valid/models-unadvertised-selection-unlisted.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-refused-before-catalog","path":"valid/models-refused-before-catalog.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-refused-before-catalog-missing-detail","path":"semantic-invalid/models-refused-before-catalog-missing-detail.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-two-defaults","path":"semantic-invalid/models-two-defaults.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["ambiguous_default_model"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-duplicate-id","path":"semantic-invalid/models-duplicate-id.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_model_id"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-empty-id","path":"schema-invalid/models-empty-id.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-response-missing-revision","path":"schema-invalid/models-response-missing-revision.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-empty-catalog","path":"valid/models-empty-catalog.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-current-not-listed","path":"semantic-invalid/models-current-not-listed.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-current-mismatch","path":"semantic-invalid/models-current-mismatch.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-request-scope-mismatch","path":"semantic-invalid/models-request-scope-mismatch.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-response-scope-mismatch","path":"semantic-invalid/models-response-scope-mismatch.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-catalog-mutates-within-revision","path":"semantic-invalid/models-catalog-mutates-within-revision.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unannounced_catalog_change"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-catalog-metadata-mutates-within-revision","path":"semantic-invalid/models-catalog-metadata-mutates-within-revision.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unannounced_catalog_change"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-select-removed-after-refresh","path":"semantic-invalid/models-select-removed-after-refresh.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-select-in-gap-unlisted","path":"semantic-invalid/models-select-in-gap-unlisted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-refresh-replaces-catalog","path":"valid/models-refresh-replaces-catalog.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-held-position-moved-no-model","path":"semantic-invalid/models-held-position-moved-no-model.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-held-position-window-satisfied","path":"valid/models-held-position-window-satisfied.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-catalog-mutates-across-refetch","path":"semantic-invalid/models-catalog-mutates-across-refetch.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unannounced_catalog_change"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-advertisement-mutates-within-revision","path":"semantic-invalid/models-advertisement-mutates-within-revision.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unannounced_catalog_change"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-open-response-guards-the-default","path":"semantic-invalid/models-open-response-guards-the-default.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unapplied_control"],"units":["core","run-controls","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-position-in-another-session","path":"semantic-invalid/models-position-in-another-session.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-held-position-in-another-session","path":"semantic-invalid/models-held-position-in-another-session.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-position-in-another-session-no-current","path":"semantic-invalid/models-position-in-another-session-no-current.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-held-position-in-another-session-no-current","path":"semantic-invalid/models-held-position-in-another-session-no-current.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-position-without-current-model","path":"valid/models-position-without-current-model.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-stale-catalog-does-not-displace","path":"semantic-invalid/models-stale-catalog-does-not-displace.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["stale_capability_revision","stale_capability_revision"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-stale-catalog-raises-no-change","path":"semantic-invalid/models-stale-catalog-raises-no-change.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["stale_capability_revision","stale_capability_revision"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-announced-advertisement-change","path":"valid/models-announced-advertisement-change.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-catalog-in-the-announce-window","path":"semantic-invalid/models-catalog-in-the-announce-window.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unavailable_capability","unavailable_capability","model_not_in_catalog"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-held-position-no-model-at-a-mark","path":"valid/models-held-position-no-model-at-a-mark.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-catalog-constraints-reordered","path":"valid/models-catalog-constraints-reordered.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]},
-{"id":"models-catalog-constraints-mutate-within-revision","path":"semantic-invalid/models-catalog-constraints-mutate-within-revision.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unannounced_catalog_change"],"units":["core","models"],"provenance":["drafts/staged-units-graduation.md","decisions/0006-models-catalog.md"]}
+    {
+      "id": "controls-refusal-omits-feature",
+      "path": "semantic-invalid/controls-refusal-omits-feature.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-refusal-names-wrong-feature",
+      "path": "semantic-invalid/controls-refusal-names-wrong-feature.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-empty-filters",
+      "path": "semantic-invalid/controls-tool-choice-empty-filters.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-empty-allowlist-required",
+      "path": "semantic-invalid/controls-tool-choice-empty-allowlist-required.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-empty-allowlist-call",
+      "path": "semantic-invalid/controls-tool-choice-empty-allowlist-call.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-model-mode-missing",
+      "path": "semantic-invalid/controls-model-mode-missing.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_selection_modes"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-model-mode-unknown",
+      "path": "semantic-invalid/controls-model-mode-unknown.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_selection_modes"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-unenforced-modes",
+      "path": "semantic-invalid/controls-tool-choice-unenforced-modes.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_selection_modes"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-extra-mode",
+      "path": "valid/controls-tool-choice-extra-mode.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-fixed-result-not-an-object",
+      "path": "schema-invalid/controls-fixed-result-not-an-object.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "tools-catalog-with-sources",
+      "path": "valid/tools-catalog-with-sources.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md",
+        "examples/tool-source.json"
+      ]
+    },
+    {
+      "id": "tools-catalog-list-only",
+      "path": "valid/tools-catalog-list-only.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-ungated-refused",
+      "path": "valid/tools-list-ungated-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-degraded-optin",
+      "path": "valid/tools-list-degraded-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-degraded-refused",
+      "path": "valid/tools-list-degraded-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-unadvertised-served",
+      "path": "semantic-invalid/tools-list-unadvertised-served.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tools.list",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "tools-list-refused-advertised",
+      "path": "semantic-invalid/tools-list-refused-advertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unhonoured_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tools.list",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "tools-list-degraded-without-optin",
+      "path": "semantic-invalid/tools-list-degraded-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-ungated-wrong-refusal",
+      "path": "semantic-invalid/tools-list-ungated-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-ungated-wrong-feature",
+      "path": "semantic-invalid/tools-list-ungated-wrong-feature.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-ungated-wrong-reason",
+      "path": "semantic-invalid/tools-list-ungated-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-response-unscoped",
+      "path": "semantic-invalid/tools-list-response-unscoped.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-envelope-scoped",
+      "path": "valid/tools-list-envelope-scoped.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-envelope-scoped-answer-unscoped",
+      "path": "semantic-invalid/tools-list-envelope-scoped-answer-unscoped.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-unscoped-answer-scoped",
+      "path": "semantic-invalid/tools-list-unscoped-answer-scoped.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-duplicate-name",
+      "path": "semantic-invalid/tools-duplicate-name.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_name"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-duplicate-source-id",
+      "path": "semantic-invalid/tools-duplicate-source-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-unmatched-source",
+      "path": "semantic-invalid/tools-unmatched-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-unattributed-tool",
+      "path": "semantic-invalid/tools-unattributed-tool.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "descriptor-duplicate-tool-name",
+      "path": "semantic-invalid/descriptor-duplicate-tool-name.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_name"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "descriptor-duplicate-source-id",
+      "path": "semantic-invalid/descriptor-duplicate-source-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-descriptor-dangling-source",
+      "path": "semantic-invalid/tools-descriptor-dangling-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-process-source",
+      "path": "valid/open-attach-process-source.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-fills-unstated-members",
+      "path": "valid/open-attach-fills-unstated-members.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-contradicts-stated-member",
+      "path": "semantic-invalid/open-attach-contradicts-stated-member.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-layered-capability",
+      "path": "valid/open-attach-layered-capability.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-unadvertised-rejected",
+      "path": "valid/open-attach-unadvertised-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-unadvertised",
+      "path": "semantic-invalid/open-attach-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tool_sources.attach",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "open-unadvertised-wrong-reason",
+      "path": "semantic-invalid/open-unadvertised-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-remote-unadvertised-rejected",
+      "path": "valid/open-attach-remote-unadvertised-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-remote-unadvertised",
+      "path": "semantic-invalid/open-attach-remote-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-remote-wrong-refusal",
+      "path": "semantic-invalid/open-attach-remote-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-remote-unadvertised-attach",
+      "path": "valid/tool-source-remote-unadvertised-attach.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-collision-refused",
+      "path": "valid/tool-source-collision-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-collision-wrong-refusal",
+      "path": "semantic-invalid/tool-source-collision-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-collision-unadvertised-attach",
+      "path": "valid/tool-source-collision-unadvertised-attach.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-colliding-source-admitted",
+      "path": "semantic-invalid/open-attach-colliding-source-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-attach-refused-over-limit",
+      "path": "valid/tool-source-attach-refused-over-limit.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-over-limit-untyped-refusal",
+      "path": "semantic-invalid/tool-source-over-limit-untyped-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0005-run-controls.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-over-limit-unnamed-source",
+      "path": "semantic-invalid/tool-source-over-limit-unnamed-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0005-run-controls.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-attach-refused-within-limits",
+      "path": "semantic-invalid/tool-source-attach-refused-within-limits.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_limit"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tool_sources.attach",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "open-attach-without-session-open-mode-refused",
+      "path": "semantic-invalid/open-attach-without-session-open-mode-refused.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_modes"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "attach-advertised-without-modes",
+      "path": "semantic-invalid/attach-advertised-without-modes.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_modes"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-without-session-open-mode",
+      "path": "semantic-invalid/open-attach-without-session-open-mode.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_modes",
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-response-missing-revision",
+      "path": "schema-invalid/tools-list-response-missing-revision.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-attach-limit-zero",
+      "path": "schema-invalid/tool-source-attach-limit-zero.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-attach-unknown-transport",
+      "path": "schema-invalid/tool-source-attach-unknown-transport.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-degraded-attach-optin",
+      "path": "valid/open-degraded-attach-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-degraded-attach-refused",
+      "path": "valid/open-degraded-attach-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-degraded-attach-without-optin",
+      "path": "semantic-invalid/open-degraded-attach-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-sources-duplicate-attachment",
+      "path": "semantic-invalid/open-sources-duplicate-attachment.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-sources-state-omits-attachment",
+      "path": "semantic-invalid/open-sources-state-omits-attachment.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-sources-state-disagrees-with-catalog",
+      "path": "semantic-invalid/open-sources-state-disagrees-with-catalog.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-catalog-omits-attachment",
+      "path": "semantic-invalid/tools-catalog-omits-attachment.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-catalog-redirects-source",
+      "path": "semantic-invalid/tools-catalog-redirects-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "descriptor-leaks-attachment-fields",
+      "path": "semantic-invalid/descriptor-leaks-attachment-fields.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "attachment_field_in_catalog",
+        "attachment_field_in_catalog"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "mode": "tolerant"
+    },
+    {
+      "id": "tools-catalog-leaks-attachment-env",
+      "path": "semantic-invalid/tools-catalog-leaks-attachment-env.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "attachment_field_in_catalog"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ],
+      "mode": "tolerant"
+    },
+    {
+      "id": "tools-refresh-collides-with-attachment",
+      "path": "semantic-invalid/tools-refresh-collides-with-attachment.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-call-source-attributed",
+      "path": "valid/tools-call-source-attributed.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-session-catalog-supersedes-descriptor",
+      "path": "valid/tools-session-catalog-supersedes-descriptor.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-call-source-mismatch",
+      "path": "semantic-invalid/tools-call-source-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "descriptor-call-source-mismatch",
+      "path": "semantic-invalid/descriptor-call-source-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "call-omits-published-source",
+      "path": "semantic-invalid/call-omits-published-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unattributed_call"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-call-source-reassigned",
+      "path": "semantic-invalid/tools-call-source-reassigned.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "models-list-then-select",
+      "path": "valid/models-list-then-select.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-list-refused-advertised",
+      "path": "semantic-invalid/models-list-refused-advertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unhonoured_capability"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ],
+      "covers": [
+        {
+          "capability": "models.list",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "models-list-degraded-optin",
+      "path": "valid/models-list-degraded-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-list-degraded-without-optin",
+      "path": "semantic-invalid/models-list-degraded-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-list-degraded-refused",
+      "path": "valid/models-list-degraded-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-unadvertised-rejected",
+      "path": "valid/models-unadvertised-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-unadvertised-wrong-reason",
+      "path": "semantic-invalid/models-unadvertised-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-unadvertised",
+      "path": "semantic-invalid/models-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ],
+      "covers": [
+        {
+          "capability": "models.list",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "models-current-model-mutation-in-flight",
+      "path": "valid/models-current-model-mutation-in-flight.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-current-model-ahead-of-trace",
+      "path": "valid/models-current-model-ahead-of-trace.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-listed-selection-false-miss",
+      "path": "semantic-invalid/models-listed-selection-false-miss.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "run-controls",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.model_selection",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "models-unlisted-selection-refused",
+      "path": "valid/models-unlisted-selection-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-unlisted-selection-wrong-refusal",
+      "path": "semantic-invalid/models-unlisted-selection-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-unlisted-selection-missing-detail",
+      "path": "semantic-invalid/models-unlisted-selection-missing-detail.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-select-unlisted",
+      "path": "semantic-invalid/models-select-unlisted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-unadvertised-selection-unlisted",
+      "path": "valid/models-unadvertised-selection-unlisted.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-refused-before-catalog",
+      "path": "valid/models-refused-before-catalog.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-refused-before-catalog-missing-detail",
+      "path": "semantic-invalid/models-refused-before-catalog-missing-detail.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-two-defaults",
+      "path": "semantic-invalid/models-two-defaults.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "ambiguous_default_model"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-duplicate-id",
+      "path": "semantic-invalid/models-duplicate-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_model_id"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-empty-id",
+      "path": "schema-invalid/models-empty-id.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-response-missing-revision",
+      "path": "schema-invalid/models-response-missing-revision.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-empty-catalog",
+      "path": "valid/models-empty-catalog.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-current-not-listed",
+      "path": "semantic-invalid/models-current-not-listed.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-current-mismatch",
+      "path": "semantic-invalid/models-current-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-request-scope-mismatch",
+      "path": "semantic-invalid/models-request-scope-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-response-scope-mismatch",
+      "path": "semantic-invalid/models-response-scope-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-catalog-mutates-within-revision",
+      "path": "semantic-invalid/models-catalog-mutates-within-revision.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unannounced_catalog_change"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-catalog-metadata-mutates-within-revision",
+      "path": "semantic-invalid/models-catalog-metadata-mutates-within-revision.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unannounced_catalog_change"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-select-removed-after-refresh",
+      "path": "semantic-invalid/models-select-removed-after-refresh.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-select-in-gap-unlisted",
+      "path": "semantic-invalid/models-select-in-gap-unlisted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-refresh-replaces-catalog",
+      "path": "valid/models-refresh-replaces-catalog.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-held-position-moved-no-model",
+      "path": "semantic-invalid/models-held-position-moved-no-model.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-held-position-window-satisfied",
+      "path": "valid/models-held-position-window-satisfied.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-catalog-mutates-across-refetch",
+      "path": "semantic-invalid/models-catalog-mutates-across-refetch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unannounced_catalog_change"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-advertisement-mutates-within-revision",
+      "path": "semantic-invalid/models-advertisement-mutates-within-revision.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unannounced_catalog_change"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-open-response-guards-the-default",
+      "path": "semantic-invalid/models-open-response-guards-the-default.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-position-in-another-session",
+      "path": "semantic-invalid/models-position-in-another-session.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-held-position-in-another-session",
+      "path": "semantic-invalid/models-held-position-in-another-session.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-position-in-another-session-no-current",
+      "path": "semantic-invalid/models-position-in-another-session-no-current.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-held-position-in-another-session-no-current",
+      "path": "semantic-invalid/models-held-position-in-another-session-no-current.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-position-without-current-model",
+      "path": "valid/models-position-without-current-model.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-stale-catalog-does-not-displace",
+      "path": "semantic-invalid/models-stale-catalog-does-not-displace.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision",
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-stale-catalog-raises-no-change",
+      "path": "semantic-invalid/models-stale-catalog-raises-no-change.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision",
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-announced-advertisement-change",
+      "path": "valid/models-announced-advertisement-change.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-catalog-in-the-announce-window",
+      "path": "semantic-invalid/models-catalog-in-the-announce-window.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability",
+        "unavailable_capability",
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-held-position-no-model-at-a-mark",
+      "path": "valid/models-held-position-no-model-at-a-mark.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-catalog-constraints-reordered",
+      "path": "valid/models-catalog-constraints-reordered.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-catalog-constraints-mutate-within-revision",
+      "path": "semantic-invalid/models-catalog-constraints-mutate-within-revision.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unannounced_catalog_change"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    }
   ]
 }

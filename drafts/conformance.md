@@ -28,6 +28,7 @@ Conformance units are additive:
 - `+permissions`
 - `+user-input`
 - `+run-controls`
+- `+tool-sources`
 - `+models`
 - `+queue`
 - `+steer`
@@ -269,6 +270,150 @@ Execution, per advertised control, is that an implementation:
 
 Session-level defaults, a configuration document, and any control not named
 above are outside this unit.
+
+### `+tool-sources`
+
+An implementation conforms to `+tool-sources` if it serves a catalog whose
+tools are attributed to sources, and, where it advertises attachment, accepts
+tool sources at session open. The two halves are separate keys and an
+endpoint may claim the unit with either: what the unit requires is that a
+capability it advertises is honoured, and that one it does not is refused in
+a way the caller can act on.
+
+For the catalog (`action.tools.list`), an implementation:
+
+- gates `action.tools.list.request` and `action.tools.list.response` on that
+  key alone. `action.tools` is not an alias: that key means lifecycle
+  observation, and an endpoint that observes tool calls without publishing a
+  portable catalog advertises the one and not the other;
+- refuses a catalog request it has not advertised with
+  `unsupported_feature`, `details.feature: "action.tools.list"`, and
+  `details.reason: "unadvertised"`, and one it advertises `degraded` whose
+  key the request's `allow_degraded_features` omits with
+  `capability_degraded` and `details.feature`;
+- serves a catalog in which a source `id` is unique, a tool `name` is unique
+  whatever its source, and every tool names a `source`, which is a source the
+  same response declares. `source` is optional in the schema, because a
+  descriptor published by an endpoint outside this unit carries tools with no
+  attribution — but an `action.tools.list.response` is this unit's own
+  envelope and attribution is the whole of what its key adds, so a served
+  catalog that omits it is the flat list the unit replaces. A harness that
+  namespaces its MCP tools exposes the namespaced string as `name`; `source`
+  carries the attribution, so a consumer never has to parse one out of the
+  other;
+- answers a request that names a session with that session's effective
+  catalog, repeating the session on the response's envelope and in its
+  payload. A request names its session in either place — the payload member is
+  optional here, because an unscoped list asks for the endpoint's own catalog —
+  and an unscoped answer to a request scoped either way is not an
+  endpoint-level catalog. The rule binds in both directions: an answer to a
+  request naming no session may not name one either, because an attachment
+  belongs to one session, and a caller that asked what the endpoint publishes to
+  everyone would be handed that session's sources as the answer. A response
+  carrying no scope is read as what the endpoint publishes to everyone;
+- serves every catalog with the `capability_revision` it was served under, so
+  a caller can bind the listing to a descriptor snapshot and discard it when
+  `capabilities.updated` reports another. The field is schema-required on
+  `action.tools.list.response` for the reason it is on `models.response`: the
+  whole content of the envelope belongs to one snapshot. It matters more here
+  than there, because a session's catalog is a function of the descriptor
+  *and* of the sources that session attached under it, and an endpoint that
+  republishes its tools per turn changes what it lists without anyone asking;
+- attributes a call it emits with `source` to the source the catalog *in force*
+  records for that tool. Exactly one catalog is in force for a session: the
+  catalog it has been served under the active capability revision, and
+  otherwise the descriptor's, which is the published attribution until a
+  session-scoped list supersedes it. A served catalog supersedes wholly, not
+  tool by tool — an endpoint that lists without a tool the descriptor once
+  mapped has republished its listing without it, and the superseded entry is
+  not consulted again for anything. A catalog served under a revision that has
+  since moved is not in force either, and leaves no gap when it stops being so:
+  `capabilities.updated` discards it, and what takes over is the new
+  descriptor's own attribution, which is current rather than stale. A call that
+  omits `source` for a tool the catalog in force attributes is
+  `unattributed_call`: the member is optional on the wire, but an endpoint
+  advertising this key has the answer and is publishing it everywhere except
+  where a consumer needs it. A tool that catalog does not list is one the
+  endpoint has published no attribution for, and a call for it may name none,
+  or name any source the session resolves;
+- names on a call exactly the source the catalog in force attributes the tool
+  to, and none where no catalog in force does. `source` is a cross-reference,
+  and a cross-reference a reader cannot follow is not one, so the rule binds in
+  both directions: naming a source no envelope in the trace declares is
+  `unmatched_tool_source`, and omitting one the catalog in force records is
+  `unattributed_call`. An endpoint whose sources are known before any session
+  declares them in its descriptor and may name them from the start; one that
+  learns a source from a session may name it once it has served the catalog
+  that publishes it, and before that emits the call with no `source` while the
+  catalog keeps the attribution exactly. Publishing and attributing are one
+  decision — an endpoint may attribute to what it has published, to all of it,
+  and to nothing else.
+
+For attachment at open (`action.tool_sources.attach`), an implementation:
+
+- accepts `session.open.request.tool_sources` and attaches them for the
+  session's lifetime, or refuses the open with `unsupported_feature`,
+  `details.feature: "action.tool_sources.attach"`, and
+  `details.reason: "unadvertised"`;
+- honours a `capability_revision` on such an open as the exact precondition the
+  core profile makes it — a nonempty one that is not current is refused
+  `stale_capabilities` with `expected_revision` and `current_revision` — and
+  admits one that carries none, evaluating it against current capabilities and
+  answering with the revision used for admission. Pinning is the caller's
+  choice; requiring it would refuse a request the profile permits. An open
+  attaching nothing is not revision-gated at all;
+- discloses `modes: ["session_open"]` wherever the key is advertised at all,
+  and additionally `"remote"` in that set where it accepts a `remote` source;
+  the plural is what lets the second be said without erasing the first. The set
+  is judged where it is published: a key advertised affirmatively whose modes
+  omit `session_open` — an empty set, or `remote` alone — is
+  `undisclosed_attach_modes` on the `capabilities.response` itself, because
+  `session_open` is the only application this unit defines and a key no open
+  can elect promises nothing. Names outside the vocabulary are tolerated beside
+  it, since the vocabulary is additive. This is `undisclosed_selection_modes`'
+  rule for this key, and it is what makes the plural a set rather than a
+  costume: disclosing `remote` is an addition, never a substitution. An
+  open attaching a `remote` source to an endpoint whose set omits it is
+  refused `unsatisfiable` with `details.source`; an open attaching anything to
+  an endpoint whose set omits `session_open` is refused on the capability
+  rung, because a key that discloses no session-open mode offers nothing an
+  open can elect;
+- refuses an attachment whose `id` collides with another attachment or with a
+  source the descriptor already declares, with `details.source` naming it,
+  rather than shadowing or renaming one silently;
+- refuses an attachment whose `environment` names one variable twice, with
+  `details.source` naming the attachment. `uniqueItems` does not cover it —
+  `TOKEN=first` and `TOKEN=second` are two strings naming one variable — and a
+  source launched with both carries a credential whose value nothing decides;
+- discloses in `limits` the constraints it actually has — `max_sources`, the
+  `transports` it accepts — because refusing an array that violates none of
+  them and carries no defect any rule above names would make the advertised
+  key promise nothing. `max_sources` is a positive ceiling and each transport
+  names a source kind: a limit no request can satisfy would make refusing every
+  request conforming, so the schema refuses both shapes. An array outside a
+  disclosed limit may be admitted or refused, but a refusal is
+  `unsupported_feature` with `details.reason: "unsatisfiable"` and
+  `details.source` naming the entry to drop — "over the limit" is actionable
+  only when the caller is told which entry put it there;
+- refuses an attachment with no `id` before anything is done with it, because
+  everything an endpoint does with an attachment is done by its id: it is the
+  collision key above, the name a harness routes the source by, and the id the
+  session publishes the source under. An empty one reaches a client as a
+  descriptor whose required `id` is empty, which is the endpoint emitting a
+  document this schema rejects;
+- publishes the attached sources back through the open response, later
+  session snapshots, and every session-scoped catalog, as
+  `ToolSourceDescriptor` values, one descriptor per `id` in each of them. The
+  open response must agree with every member the attachment stated and may
+  fill one it left blank — an attachment names a source, it does not claim to
+  describe it completely — and what that response publishes is what every
+  later snapshot and catalog repeats.
+  `command`, `args`, and `environment` are attachment-only and never appear in
+  a published source — in any of those, or in the capability descriptor's own
+  `sources`, top level or under a layer.
+
+Runtime attach and detach, a catalog served without a session, and
+control-layer-provided tools are outside this unit; the last is `+control-tools`.
 
 ### `+models`
 

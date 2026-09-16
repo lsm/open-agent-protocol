@@ -76,6 +76,8 @@ var ccLedgerFixtures = map[string]bool{
 	// hygiene
 	"keep-alive-ignored": true, "unknown-frame-ignored": true,
 	"no-implied-replay": true, "resume-fork": true,
+	// catalog
+	"tools-catalog-sources": true,
 }
 
 type ccCorpusSources struct {
@@ -148,6 +150,10 @@ type ccControl struct {
 	Decision string `json:"decision,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Expect   string `json:"expect,omitempty"`
+	// Catalog is the assert-catalog op's expected projection. A catalog is
+	// not an event, so the case declares it here rather than in the
+	// expected-oap trace.
+	Catalog *protocol.ToolsListResponse `json:"catalog,omitempty"`
 }
 type ccCorpusMapping struct {
 	Index          int    `json:"index"`
@@ -443,6 +449,52 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 				if message.Subtype != native.ControlInterrupt {
 					t.Fatalf("frame %d: cancel wrote %q, want interrupt", i+1, message.Subtype)
 				}
+			case "assert-catalog":
+				// The catalog is not an event, so it cannot ride the
+				// expected-oap trace: the case declares it inline and the
+				// projection is compared against it and then run through the
+				// real validator, which is what proves it resolves.
+				lister, ok := session.(base.ToolLister)
+				if !ok {
+					t.Fatalf("frame %d: the session serves no catalog", i+1)
+				}
+				// A degraded catalog is not served without consent: the
+				// refusal names the key to opt into, and only then is the
+				// catalog projected.
+				var degraded *base.DegradedControlError
+				if _, err := lister.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "session"}); !errors.As(err, &degraded) || degraded.Feature != protocol.FeatureToolsList {
+					t.Fatalf("frame %d: a catalog was served without the degraded opt-in (err = %v)", i+1, err)
+				}
+				request := protocol.ToolsListRequest{SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList}}
+				catalog, err := lister.Tools(context.Background(), request)
+				if err != nil {
+					t.Fatalf("frame %d: tools: %v", i+1, err)
+				}
+				if control.Catalog == nil {
+					t.Fatalf("frame %d: assert-catalog declares no expected catalog", i+1)
+				}
+				got, err := json.Marshal(catalog.Tools)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := json.Marshal(*control.Catalog)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("frame %d: projected catalog\n got: %s\nwant: %s", i+1, got, want)
+				}
+				adaptertest.AssertToolCatalog(t, execution.descriptor, protocol.SessionOpenRequest{}, request, catalog)
+				execution.catalogs = append(execution.catalogs, catalog.Tools)
+				// From here the session has published this catalog, so a later
+				// run's calls are judged against it rather than the descriptor.
+				// An endpoint-level answer belongs to no session and publishes
+				// nothing to this one, so it does not become the catalog in
+				// force.
+				if catalog.Tools.SessionID != "" {
+					served := catalog
+					execution.served, execution.servedRequest = &served, request
+				}
 			case "assert-state":
 				state, err := session.State(context.Background())
 				if err != nil {
@@ -510,7 +562,14 @@ type ccExecution struct {
 	resumeUnavailable int
 	assertStates      []string
 	modelIDs          []string
-	closed            bool
+	catalogs          []protocol.ToolsListResponse
+	// served is the last catalog this session actually served, and nil until
+	// it has served one. A run after a serve is certified against it, because
+	// that catalog is the one in force for every call the run emits; a run
+	// before any serve is certified against the descriptor alone.
+	servedRequest protocol.ToolsListRequest
+	served        *base.ToolCatalog
+	closed        bool
 }
 
 func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitResponse, stream base.EventStream, err error) {
@@ -525,9 +584,12 @@ func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	}
 	events := adaptertest.Drain(t, stream, 5*time.Second)
 	if len(events) > 0 {
-		if e.cancelAccepted {
+		switch {
+		case e.cancelAccepted:
 			assertCancelledTrace(t, admission, events)
-		} else {
+		case e.served != nil:
+			adaptertest.AssertProtocolValidWithCatalog(t, admission, testDescriptor(t), e.servedRequest, *e.served, events)
+		default:
 			assertValidTrace(t, admission, events)
 		}
 		e.runs = append(e.runs, events)
@@ -627,6 +689,10 @@ func ccLoadFrames(t *testing.T, filename string) ([]ccFrame, []ccDecodedFrame) {
 					// The cancel control makes the adapter issue interrupt, so
 					// the next reply answers an interrupt, not initialize.
 					lastRequestSubtype = native.ControlInterrupt
+				case "assert-catalog":
+					if control.Catalog == nil {
+						t.Fatalf("frame %d assert-catalog declares no catalog", i+1)
+					}
 				case "resume", "close":
 				default:
 					t.Fatalf("frame %d invalid oap control op %q", i+1, control.Op)
@@ -979,6 +1045,26 @@ func ccAnyRun(execution ccExecution, probe func(typ protocol.EnvelopeType, a, b 
 	return false
 }
 
+// ccCallSources reports the `source` each action.call.requested for one tool
+// carried, in run order, so a test can read the attribution rule as a sequence
+// rather than as a single envelope.
+func ccCallSources(runs [][]protocol.Envelope, tool string) []string {
+	var sources []string
+	for _, events := range runs {
+		for _, envelope := range events {
+			if envelope.Type != protocol.TypeActionCallRequested {
+				continue
+			}
+			var payload protocol.ActionCallPayload
+			if err := envelope.DecodePayload(&payload); err != nil || payload.Name != tool {
+				continue
+			}
+			sources = append(sources, payload.Source)
+		}
+	}
+	return sources
+}
+
 // assertClaudeLedgerEvidence requires each ledger label to have executable
 // evidence in the fixture transcript and the behavioral execution record.
 func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame, decoded []ccDecodedFrame, execution *ccExecution) {
@@ -990,6 +1076,57 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			feature, advertised := execution.descriptor.Capabilities.Features["protocol.initialize"]
 			ok = execution.initializeShape && execution.initializeReply && execution.userWrites > 0 &&
 				advertised && feature.Level == protocol.SupportEmulated
+		case "tools-catalog-sources":
+			// Two catalogs: the pre-turn one, before any system/init frame has
+			// arrived, and the one projected from the frame's two lists. The
+			// first must be served rather than refused — the descriptor
+			// advertises the key — and the second joins the lists: every
+			// listed tool becomes an entry, every listed server a declared
+			// source, and a namespaced tool reaches the longest server name
+			// the same frame listed.
+			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)
+			ok = len(inits) == 2 && len(execution.catalogs) == 2
+			if ok {
+				before := execution.catalogs[0]
+				ok = len(before.Tools) == 0 && len(before.Sources) == 1 && before.Sources[0].ID == nativeToolSource
+			}
+			if ok {
+				catalog := execution.catalogs[1]
+				declared, attributed := map[string]bool{}, map[string]string{}
+				for _, source := range catalog.Sources {
+					declared[source.ID] = true
+				}
+				for _, tool := range catalog.Tools {
+					attributed[tool.Name] = tool.Source
+				}
+				ok = len(catalog.Sources) == 3 && declared[nativeToolSource] &&
+					declared[mcpSourcePrefix+"files"] && declared[mcpSourcePrefix+"files__nested"] &&
+					attributed["mcp__files__read_file"] == mcpSourcePrefix+"files" &&
+					// The overlapping pair: the longest match, never the first
+					// a map happened to yield.
+					attributed["mcp__files__nested__read"] == mcpSourcePrefix+"files__nested" &&
+					// A namespaced name whose server the frame never listed.
+					attributed["mcp__absent__ghost"] == nativeToolSource &&
+					attributed["Bash"] == nativeToolSource
+				for _, tool := range catalog.Tools {
+					if !declared[tool.Source] || tool.ExecutionOwner != harnessOwner {
+						ok = false
+					}
+				}
+			}
+			if ok {
+				// The attribution rule in both directions, which is the whole of
+				// it: the same MCP tool is called once before this session served
+				// its catalog and once after. Before, nothing had published where
+				// that tool comes from, so the call names nothing — naming
+				// `mcp:files` there would reference an id no envelope in the stream
+				// declares. After, the session published exactly that attribution,
+				// so the call names it — omitting it there would leave a consumer
+				// holding a catalog it cannot join to the call. Each run's trace is
+				// certified against the catalog in force when it happened.
+				sources := ccCallSources(execution.runs, "mcp__files__read_file")
+				ok = len(sources) == 2 && sources[0] == "" && sources[1] == mcpSourcePrefix+"files"
+			}
 		case "per-turn-init":
 			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)
 			submits := 0

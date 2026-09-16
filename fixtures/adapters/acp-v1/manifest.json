@@ -74,6 +74,13 @@
         "replay-degradation"
       ],
       "path": "cases/replay-degradation"
+    },
+    {
+      "id": "open-with-tool-sources",
+      "ledger_fixtures": [
+        "session-new-tool-sources"
+      ],
+      "path": "cases/open-with-tool-sources"
     }
   ],
   "commit": "272bf799f35a258c6a4107a0410ed361e83683d3",

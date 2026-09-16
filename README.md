@@ -82,6 +82,91 @@ claims the unit by refusing all four correctly.
 alone and `current_model_id` — the model the next control-free submission
 would use — does not move. The reference adapter executes all four.
 
+### Tool sources (`+tool-sources`)
+
+A tool catalog says where each of its tools comes from. `action.tools.list.response`
+carries `sources` — `{ id, kind, display_name?, protocol?, endpoint? }` — and
+each `ToolDefinition` carries the `source` id it belongs to, so a consumer
+attributes a call to an MCP server without parsing a namespaced name, and
+`action.call.*` carries exactly what the catalog in force attributes the tool
+to — the session's own catalog where it has served one, the descriptor's
+otherwise — and nothing where neither does, because a cross-reference a reader
+cannot follow is not one. An endpoint whose sources are known before any
+session declares them in its descriptor and may name them from the start; one
+that learns a source from a session names it once it has served the catalog
+that publishes it, and before that the catalog keeps the attribution exactly. A source `id` is unique across a
+session's catalog and a tool `name` is unique whatever its source. The catalog
+is gated on `action.tools.list` and nothing else: `action.tools` means
+lifecycle observation, and several adapters observe tool calls while publishing
+no portable catalog at all.
+
+A session may attach sources for its lifetime:
+`session.open.request.tool_sources` carries `ToolSourceAttachment` values —
+the descriptor's members plus, for a `process` source, `command`, `args`, and
+`environment`. The attachment shape is deliberately not the catalog shape,
+because an attachment's environment can hold a credential: a published source
+carries none of those three members, and an endpoint that reflected one back
+into its catalog is a schema rejection rather than a convention. The endpoint
+discloses what it accepts in `action.tool_sources.attach` — `modes` (always
+`session_open`, plus `remote` where offered) and `limits` (`max_sources`, the
+`transports` it takes) — so a refusal is checkable in both directions. The
+modes are a set, following `run.tool_selection`, so disclosing `remote` never
+erases the session-open one.
+
+**The daemon does not take a command from the wire.** "Loopback, single-user"
+describes the transport, not the origin of a request on it: a page in the
+user's browser can reach `127.0.0.1` with a valid envelope. On
+`POST /adapters/{name}/sessions` a `process` attachment therefore names an
+operator-configured source by `id` only — from the registry document's
+`tool_sources` map — and the daemon fills the rest from its own entry: the
+`command`, `args`, and `environment` it runs the source with, and the `kind`,
+`display_name`, `protocol`, and `endpoint` it publishes for it. A wire-supplied
+command, argument list, or literal `NAME=value` environment value is refused
+before the open is forwarded, and so is a `kind`, `display_name`, `protocol`, or
+`endpoint` differing from the operator's — a caller that could label the
+operator's own MCP server in the catalog a user reads would be spoofing it, one
+that could set its `kind` would choose how it is reached, and overwriting either
+silently would leave the request and its response disagreeing about one source.
+The bare-`NAME` allowlist form is the only `environment` a wire caller may
+write, and it is additive only for names the operator did not configure: a
+caller naming one the registry entry already carries is dropped, so the
+operator's value is the one the source runs with and one variable never reaches
+a child twice. A registry entry naming one variable twice is refused at
+registration for the same reason. An attaching open may pin the descriptor it elected against, and the pin is
+honoured as the profile states it: a `capability_revision` that is not the
+endpoint's current one is refused `stale_capabilities` with `expected_revision`
+and `current_revision`, while an open that carries none is evaluated against
+current capabilities and answered with the revision it was admitted under. Both
+clients pin — one extra request, on attaching opens only — because the validator
+is stricter than the wire here and requires any optional-feature envelope to
+cite the active descriptor. An open that attaches nothing is not probed and
+keeps its own revision. A configured `id` resolves to the operator's source whatever the caller
+claims about it, so an open that names an id alone gets a fuller descriptor back
+than it sent, and never a different one.
+Beside that, every route refuses a request bearing an `Origin` header, and the
+routes that read a request body also require `Content-Type: application/json`.
+The origin refusal wraps the whole mux rather than living in the routes that
+parse an envelope, so it covers the ones that read no body — `close` — and the
+ones not yet written.
+
+Every served catalog carries the `capability_revision` it was served under, and
+`capability_revision` is schema-required on `action.tools.list.response` as it
+is on `models.response`: the catalog belongs to one descriptor snapshot, so a
+caller caches it against that revision and discards it when
+`capabilities.updated` reports another. It matters more here than on the models
+route, because a session's catalog is a function of the descriptor *and* of the
+sources that session attached under it. The hub checks what an adapter hands
+back before it reaches a codec — the payload's scope must be the scope the
+request named, in both directions, and the revision must be present — because a
+codec labels the envelope with the session it addressed, so an unchecked payload
+scope would survive into a response the clients reject. A mis-scoped catalog is
+refused rather than relabelled; a nil tool list is repaired, because an absent
+list and an empty one say the same thing and only one is legal on the wire.
+
+[Decision 0008](decisions/0008-tool-sources.md) graduates the unit: Claude Code
+serves the catalog at `degraded` from its per-turn `system/init` frame, and ACP
+attaches at `native` onto `session/new`'s `mcpServers`. Control-layer-provided
+tools are the separate `+control-tools` unit and are not graduated by it.
 ### Models catalog (`+models`)
 
 A session publishes the models it can run, and is bound by the listing in both
@@ -125,6 +210,31 @@ only. The registry document maps names to in-repo adapter configurations
 forwards the value the daemon itself carries (unset names are omitted) and
 `NAME=value` passes through literally — ambient credentials are never
 inherited by a child process unless their variable was listed.
+
+The document's `tool_sources` map is the same allowlist idea for the MCP
+sources a client may attach at session open: each entry names a `kind`, the
+descriptor members the catalog publishes, and the `command`, `args`, and
+`environment` the daemon supplies on the client's behalf. Its `environment`
+takes the same form with one rule of its own: a bare `NAME` the daemon does not
+carry fails at startup, naming the source and the variable, rather than being
+omitted the way an adapter's is. An adapter's list forwards whatever of a
+harness's variables the daemon happens to have; a tool source's names the
+credentials of one executable the daemon itself launches, and dropping one
+starts that MCP server without its token to fail later as though the server
+were broken. Write `NAME=` if a name is meant to be optional. (The example
+config lists `MCP_TOKEN` for its filesystem source, so export it or drop the
+entry before starting with that document.) A `process` entry must carry a
+`command`: it is the one kind the daemon supplies an executable for, so an
+entry without one could never resolve, and the failure is reported when the
+entry is registered — naming the source — rather than as a generic
+`open_failed` on the first open that attaches it. Other kinds need none,
+because nothing spawns them. A `kind` outside the protocol's five is refused
+too, because no adapter can accept it and no client can name it. Both rules
+belong to `Registry.RegisterToolSource`, which the config loader goes through,
+so an embedding host registering entries programmatically meets the same checks
+rather than weaker ones. A client attaches one by `id` and
+nothing else — see "Tool sources" above for why the wire form is refused on
+that route.
 
 The daemon binds `127.0.0.1` by default and has no authentication: v0 is a
 single-user local service, and pointing it at an external interface is
@@ -316,6 +426,7 @@ Decisions:
 - [0002 — admission before started](decisions/0002-admission-before-start.md)
 - [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (proposed)
 - [0005 — run controls](decisions/0005-run-controls.md) (proposed)
+- [0008 — tool sources](decisions/0008-tool-sources.md) (proposed)
 - [0006 — models catalog](decisions/0006-models-catalog.md) (proposed)
 
 Provider compatibility is tested independently from harness conformance. Inspect

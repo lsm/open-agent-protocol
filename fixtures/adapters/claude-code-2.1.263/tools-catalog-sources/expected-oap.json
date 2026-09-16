@@ -1,0 +1,229 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "running",
+      "model_id": "claude-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "name": "mcp__files__read_file",
+      "arguments_json": {
+        "path": "/tmp/x"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-7",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "name": "mcp__files__read_file"
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "in_reply_to": "event-6",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-8",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "name": "mcp__files__read_file",
+      "result": "file contents"
+    },
+    "sequence": 4,
+    "timestamp_ms": 6,
+    "in_reply_to": "event-7",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-9",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "final_response": {
+        "id": "message-2",
+        "role": "assistant",
+        "content": "done"
+      },
+      "stop_reason": "end_turn",
+      "usage": {},
+      "duration_ms": 130
+    },
+    "sequence": 5,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-13",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "status": "running",
+      "model_id": "claude-sonnet-4-5",
+      "started_at_ms": 8
+    },
+    "sequence": 1,
+    "timestamp_ms": 9,
+    "session_id": "session",
+    "run_id": "run-12",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-15",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "tool_call_id": "tool-call-14",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "source": "mcp:files",
+      "name": "mcp__files__read_file",
+      "arguments_json": {
+        "path": "/tmp/y"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 10,
+    "session_id": "session",
+    "run_id": "run-12",
+    "tool_call_id": "tool-call-14",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-16",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "tool_call_id": "tool-call-14",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "source": "mcp:files",
+      "name": "mcp__files__read_file"
+    },
+    "sequence": 3,
+    "timestamp_ms": 11,
+    "in_reply_to": "event-15",
+    "session_id": "session",
+    "run_id": "run-12",
+    "tool_call_id": "tool-call-14",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-17",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "tool_call_id": "tool-call-14",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "source": "mcp:files",
+      "name": "mcp__files__read_file",
+      "result": "more contents"
+    },
+    "sequence": 4,
+    "timestamp_ms": 12,
+    "in_reply_to": "event-16",
+    "session_id": "session",
+    "run_id": "run-12",
+    "tool_call_id": "tool-call-14",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-18",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "final_response": {
+        "id": "message-11",
+        "role": "assistant",
+        "content": "done"
+      },
+      "stop_reason": "end_turn",
+      "usage": {},
+      "duration_ms": 130
+    },
+    "sequence": 5,
+    "timestamp_ms": 13,
+    "session_id": "session",
+    "run_id": "run-12",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  }
+]

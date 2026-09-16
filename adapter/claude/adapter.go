@@ -18,10 +18,34 @@ import (
 
 const (
 	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "claude-code-2.1.263-oap-v1"
+	CapabilityRevision     = "claude-code-2.1.263-oap-v3"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
+
+// endpointSources is what this endpoint declares about its tool sources
+// without a session: it executes its own built-in tools, and that is a
+// standing fact rather than something a turn teaches it. The MCP servers a
+// session's operator configured are learned from that session's system/init
+// frame and belong to the session, so they are published through its catalog
+// and never here.
+//
+// Declaring it is what lets a call attributed natively resolve in a trace that
+// never lists tools. The catalog is advertised degraded and served only on
+// request, so a consumer may observe a whole run without asking for one; the
+// attribution on those calls has to resolve against something, and the
+// descriptor is the only thing published before the first list.
+//
+// That cuts both ways, and this list is therefore the exact set a call may
+// name: catalogSourceLocked stamps `source` only where this slice declares it.
+// Publishing and attributing are one decision — an endpoint may attribute to
+// what it has published, and to nothing else — so excluding a source here is
+// also a decision not to name it on a call.
+func endpointSources() []protocol.ToolSourceDescriptor {
+	return []protocol.ToolSourceDescriptor{
+		{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"},
+	}
+}
 
 var ErrNativeProtocol = errors.New("claude adapter: invalid native protocol observation")
 
@@ -185,14 +209,27 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"run.reconciliation":             {Level: protocol.SupportDegraded, Reason: "system/init and session state frames corroborate"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool_use/tool_result projection; started synthesized; tool_progress observed-only"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the CLI executes tools internally"},
-		"action.permissions":             {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
-		"user_input":                     {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
+		// The catalog is the newest system/init frame's tools and MCP server
+		// list. It is degraded because the CLI publishes no init frame until
+		// it has been given input — so there is no catalog at all before the
+		// first turn — and republishes it on every turn afterwards, so a
+		// caller's snapshot can go stale between one turn and the next.
+		protocol.FeatureToolsList: {Level: protocol.SupportDegraded, Reason: "system/init republishes the tool and MCP server lists per turn; there is none before the first"},
+		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
+		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "claude-code.cli", Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "claude-code.cli", Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// An open attaching tool sources to an endpoint that never advertised
+	// attachment is refused before a process starts: this adapter reads no
+	// ToolSources, so admitting the open would return a session that silently
+	// discarded them.
+	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
 	client, err := a.config.Factory.Start(ctx)

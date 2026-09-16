@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -89,7 +90,55 @@ type OpenRequest struct {
 	SessionID   protocol.SessionID
 	Participant protocol.Participant
 	Metadata    map[string]any
+	// ToolSources are the sources attached for the session's lifetime. An
+	// adapter that cannot attach at open refuses the open with the typed
+	// unsupported_feature naming action.tool_sources.attach rather than
+	// opening a session that silently has none of them.
+	ToolSources []protocol.ToolSourceAttachment
+	// AllowDegradedFeatures is the caller's consent to a degraded application
+	// of the capabilities the open elects. An open electing a degraded key
+	// without naming it here is refused with capability_degraded.
+	AllowDegradedFeatures []string
 }
+
+// AllowsDegraded reports whether the open opted into the degraded application
+// of one capability key.
+func (r OpenRequest) AllowsDegraded(key string) bool {
+	return slices.Contains(r.AllowDegradedFeatures, key)
+}
+
+// ToolCatalog is one session's tool listing together with the capability
+// revision that governs it, for the reason Catalog pairs the two above: a
+// catalog is part of the capability snapshot, so it is meaningful only under
+// the revision it was produced within. A caller that stamped a revision it
+// read separately would label the listing with a descriptor it may not have
+// come from — and this unit's catalogs move under a live descriptor more than
+// the model ones do, because an endpoint republishing its tools per turn
+// changes what it lists without anyone asking.
+type ToolCatalog struct {
+	// Revision is the capability revision this listing belongs to. An empty
+	// one is a catalog nothing can bind, and is refused rather than served.
+	Revision string
+	// Tools is the served catalog.
+	Tools protocol.ToolsListResponse
+}
+
+// ToolLister is the optional catalog surface. An adapter that can publish a
+// portable catalog implements it and advertises action.tools.list; one that
+// cannot does not implement it, and the boundary answers the typed refusal
+// that names the capability rather than a generic failure.
+//
+// The argument is the wire payload struct so the adapter applies the
+// degraded opt-in rule to exactly what the caller sent.
+type ToolLister interface {
+	Tools(context.Context, protocol.ToolsListRequest) (ToolCatalog, error)
+}
+
+// ErrToolCatalogUnavailable is the sentinel for an endpoint that serves no
+// portable catalog. Codecs map it to unsupported_feature with
+// details.feature: "action.tools.list" and details.reason: "unadvertised",
+// which is the refusal the wire requires and the validator accepts.
+var ErrToolCatalogUnavailable = errors.New("adapter: no portable tool catalog is served")
 
 // InteractionResolution is a tagged union: exactly one of Permission or Input
 // must be present. RespondedBy must match the pending interaction's responder.
@@ -178,6 +227,74 @@ func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertise
 	return nil
 }
 
+// RefuseUnadvertisedToolSources reports the typed refusal owed when an open
+// attaches tool sources to an endpoint whose own disclosure does not admit
+// them, and nil when the open attaches none. disclosed is the endpoint's
+// `action.tool_sources.attach` support — the same value its Probe publishes —
+// and passing none says it discloses none.
+//
+// It exists for the same reason RefuseUnadvertisedControls does, and the
+// reason is sharper here: OpenRequest.ToolSources is a field an adapter
+// written before this unit never reads, so without an explicit gate such an
+// adapter returns a successful session having silently dropped the sources the
+// caller asked for. That is the one outcome the fail-closed contract exists to
+// prevent — a caller cannot tell an endpoint that attached its sources from
+// one that discarded them — and "the adapter ignores the field" is not a
+// refusal a caller can act on.
+//
+// It takes the disclosure rather than a list of key names because the key is
+// not usable on its name alone: an attach capability that discloses no
+// session_open mode offers nothing an open can elect, and the validator and
+// the daemon's open route both refuse such an open. An adapter admitting it
+// would make the in-process path weaker than the wire path — the asymmetry
+// this helper exists to prevent — so the one gate answers both.
+//
+// Call it before any native write and before a session identity exists, so a
+// refused open leaves nothing behind.
+func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.FeatureSupport) error {
+	if len(request.ToolSources) == 0 {
+		return nil
+	}
+	for _, support := range disclosed {
+		if support.Level == "" || support.Level == protocol.SupportUnavailable {
+			continue
+		}
+		if support.DisclosesMode(protocol.ModeSessionOpen) {
+			return nil
+		}
+	}
+	return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
+}
+
+// DuplicateEnvironmentName reports the first variable an allowlist names twice,
+// or "" when each appears once.
+//
+// It lives here because both places that admit an attachment need it and
+// neither can import the other: the daemon's registry judges the operator's own
+// entries, and an adapter judges the attachment it is handed, which over an
+// in-process embedding never passed through the daemon at all.
+//
+// The rule is the same at both: one variable, one entry. `uniqueItems` on the
+// wire compares strings, so `TOKEN` and `TOKEN=x` — or `TOKEN=first` and
+// `TOKEN=second` — satisfy it while naming one variable, and a child handed
+// both has a credential whose value is decided by nothing the protocol, the
+// adapter, or the harness's own schema states. An environment is the last place
+// to leave an outcome undefined, because what is in it is credentials.
+func DuplicateEnvironmentName(entries []string) string {
+	if len(entries) < 2 {
+		return ""
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		name, _, _ := strings.Cut(entry, "=")
+		if seen[name] {
+			return name
+		}
+		seen[name] = true
+	}
+	return ""
+}
+
 // UnsupportedControlError refuses a per-submit control before admission:
 // either the endpoint never advertised the capability (Reason
 // ControlUnadvertised) or it cannot honour this request's value of the control
@@ -187,9 +304,10 @@ type UnsupportedControlError struct {
 	Feature string
 	Reason  string
 	// Tool and Field name the offending member of an unsatisfiable control,
-	// so a refusal and a validator name the same entry.
-	Tool, Field string
-	Detail      string
+	// so a refusal and a validator name the same entry. Source names the
+	// offending tool source of an unsatisfiable attachment.
+	Tool, Field, Source string
+	Detail              string
 }
 
 // The two conditions unsupported_feature covers.

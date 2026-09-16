@@ -1,0 +1,108 @@
+[
+  {
+    "id": "caps-req",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "caps-resp",
+    "in_reply_to": "caps-req",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Tool-sources fixture endpoint"
+      },
+      "features": {
+        "action.tool_sources.attach": {
+          "level": "native",
+          "limits": {
+            "max_sources": 2,
+            "transports": [
+              "process",
+              "local"
+            ]
+          },
+          "modes": [
+            "session_open"
+          ]
+        },
+        "action.tools.list": {
+          "level": "native"
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.message.submit": {
+          "level": "native"
+        },
+        "session.open": {
+          "level": "native"
+        },
+        "session.state": {
+          "level": "native"
+        }
+      },
+      "sources": [
+        {
+          "display_name": "Harness tools",
+          "id": "native",
+          "kind": "native"
+        }
+      ],
+      "tools": [
+        {
+          "execution_owner": "agent",
+          "input_schema": {
+            "type": "object"
+          },
+          "name": "grep",
+          "source": "native"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "open-req",
+    "payload": {
+      "session_id": "s1",
+      "tool_sources": [
+        {
+          "endpoint": "https://tools.example",
+          "id": "remote-tools",
+          "kind": "remote",
+          "protocol": "mcp"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "open-err",
+    "in_reply_to": "open-req",
+    "payload": {
+      "error": {
+        "code": "internal_error",
+        "message": "fixture refusal"
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "error.response",
+    "version": "0.1"
+  }
+]

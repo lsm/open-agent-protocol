@@ -30,6 +30,7 @@ const (
 	opResolve      = "resolve"
 	opCancel       = "cancel"
 	opClose        = "close"
+	opTools        = "tools"
 )
 
 // responseLine is one daemon → host response, correlated by the request id.
@@ -109,6 +110,11 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.stateOp(ctx, request.SessionID)
+	case opTools:
+		if werr := request.only(paramSession, paramAllowDegraded); werr != nil {
+			return nil, werr
+		}
+		return s.toolsOp(ctx, request)
 	case opModels:
 		// The op takes the degraded opt-in as a field of its own, which is
 		// what the HTTP route's repeatable ?allow_degraded= parameter carries;
@@ -145,8 +151,9 @@ const (
 	paramSession = "session_id"
 	paramRequest = "request"
 	paramAfter   = "after"
-	// paramAllowDegraded is the models op's degraded opt-in, the stdio form of
-	// the HTTP route's repeatable ?allow_degraded= query parameter.
+	// paramAllowDegraded is the degraded opt-in the tools and models ops take,
+	// the stdio form of the HTTP routes' repeatable ?allow_degraded= query
+	// parameter.
 	paramAllowDegraded = "allow_degraded_features"
 )
 
@@ -507,6 +514,51 @@ func (s *Server) stateOp(ctx context.Context, sessionID string) (json.RawMessage
 	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
 	response.SessionID = state.SessionID
 	return envelopeResult(response)
+}
+
+// toolsOp mirrors GET /sessions/{id}/tools: the same catalog, the same typed
+// refusal when the endpoint serves none, with the degraded opt-in taken
+// directly rather than through a query parameter.
+func (s *Server) toolsOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	catalog, err := entry.Tools(ctx, protocol.ToolsListRequest{SessionID: entry.ID(), AllowDegradedFeatures: request.AllowDegradedFeatures})
+	if err != nil {
+		return nil, toolsError(err)
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, protocol.EnvelopeID(s.nextID("response")), catalog.Tools)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
+	// Labelled from the hub's own identity and stamped with the listing's own
+	// revision, as on the HTTP route: parity_test.go holds the two bodies
+	// byte-equal, so a difference here would be a difference a test reports.
+	response.SessionID = entry.ID()
+	response.CapabilityRevision = catalog.Revision
+	return envelopeResult(response)
+}
+
+// toolsError maps a catalog failure onto the same typed refusal the HTTP
+// route writes, so a catalog refused over stdio is refused identically over
+// HTTP.
+func toolsError(err error) *wireError {
+	if code, message, details, ok := serve.ControlRefusal(err); ok {
+		return &wireError{Code: code, Message: message, Details: details}
+	}
+	switch {
+	case errors.Is(err, base.ErrToolCatalogUnavailable):
+		return &wireError{Code: "unsupported_feature", Message: adapterMessage(err), Details: map[string]any{
+			"feature": protocol.FeatureToolsList, "reason": base.ControlUnadvertised,
+		}}
+	case errors.Is(err, base.ErrSessionClosed):
+		return &wireError{Code: "session_closed", Message: adapterMessage(err)}
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return &wireError{Code: "request_cancelled", Message: adapterMessage(err)}
+	}
+	return &wireError{Code: "tools_failed", Message: adapterMessage(err)}
 }
 
 // modelsOp serves one session's model catalog, mirroring the HTTP route: the

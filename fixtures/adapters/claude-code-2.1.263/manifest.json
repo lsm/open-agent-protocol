@@ -15,6 +15,7 @@
     {"id": "permission-gates", "path": "permission-gates", "ledger_fixtures": ["permission-gate", "permission-deny"]},
     {"id": "process-exit", "path": "process-exit", "ledger_fixtures": ["process-exit"]},
     {"id": "malformed-stdout", "path": "malformed-stdout", "ledger_fixtures": ["malformed-stdout-line"]},
-    {"id": "hygiene-recovery", "path": "hygiene-recovery", "ledger_fixtures": ["keep-alive-ignored", "unknown-frame-ignored", "no-implied-replay", "resume-fork"]}
+    {"id": "hygiene-recovery", "path": "hygiene-recovery", "ledger_fixtures": ["keep-alive-ignored", "unknown-frame-ignored", "no-implied-replay", "resume-fork"]},
+    {"id": "tools-catalog-sources", "path": "tools-catalog-sources", "ledger_fixtures": ["tools-catalog-sources"]}
   ]
 }

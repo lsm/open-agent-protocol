@@ -49,5 +49,16 @@
       "type": "opencode",
       "endpoint": "http://127.0.0.1:4096"
     }
+  },
+  "tool_sources": {
+    "filesystem": {
+      "kind": "process",
+      "protocol": "mcp",
+      "display_name": "Filesystem",
+      "endpoint": "stdio:filesystem-tools",
+      "command": "/absolute/path/to/mcp-filesystem",
+      "args": ["--root", "/absolute/project/path"],
+      "environment": ["MCP_TOKEN"]
+    }
   }
 }

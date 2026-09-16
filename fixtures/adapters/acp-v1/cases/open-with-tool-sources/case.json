@@ -1,0 +1,71 @@
+{
+  "advertised_capabilities": {
+    "action.tool_sources.attach": "native",
+    "protocol.initialize": "emulated",
+    "run.streaming": "native",
+    "session.open": "native"
+  },
+  "environment": [
+    "MCP_TOKEN=operator-secret"
+  ],
+  "expected_mcp_servers": [
+    {
+      "args": [
+        "--root",
+        "/workspace"
+      ],
+      "command": "/usr/local/bin/mcp-filesystem",
+      "env": [
+        {
+          "name": "MCP_TOKEN",
+          "value": "operator-secret"
+        },
+        {
+          "name": "MCP_MODE",
+          "value": "readonly"
+        }
+      ],
+      "name": "filesystem"
+    }
+  ],
+  "expected_oap": "expected-oap.json",
+  "id": "open-with-tool-sources",
+  "identity_map": {
+    "NAME=value in environment": "session/new mcpServers[].env literal pair",
+    "ToolSourceAttachment.command/args": "session/new mcpServers[].command/args",
+    "ToolSourceAttachment.id": "session/new mcpServers[].name",
+    "bare NAME in environment": "resolved against the adapter's own environment allowlist; dropped when the operator never exposed it",
+    "native-session": "session",
+    "prompt-request-3": "run-c"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "272bf799f35a258c6a4107a0410ed361e83683d3",
+    "release": "v1.7.0",
+    "repository": "https://github.com/agentclientprotocol/agent-client-protocol",
+    "schema_release": "1.21.0",
+    "schema_tree_sha256": "135854daf9d2b934c9498771d8084d3bf3174c6cf1db29b9d1a3ad1ec8a8dff3"
+  },
+  "tool_sources": [
+    {
+      "args": [
+        "--root",
+        "/workspace"
+      ],
+      "command": "/usr/local/bin/mcp-filesystem",
+      "display_name": "Filesystem",
+      "endpoint": "stdio:filesystem-tools",
+      "environment": [
+        "MCP_TOKEN",
+        "NEVER_EXPOSED",
+        "MCP_MODE=readonly"
+      ],
+      "id": "filesystem",
+      "kind": "process",
+      "protocol": "mcp"
+    }
+  ],
+  "version": 1
+}
