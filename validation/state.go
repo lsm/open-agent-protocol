@@ -61,6 +61,21 @@ type runState struct {
 	// reservation's per_run snapshot of that default must be taken where the
 	// run actually begins.
 	deferredControls bool
+	// recovered marks a run this trace never saw admitted: a reattach named
+	// it and everything it did before the cursor is outside the trace. What a
+	// recovered document can state about it is taken from the document; what
+	// no document can state — the tool calls it had open, the cancellation it
+	// had already accepted — is unknown rather than absent, and a rule that
+	// derives its expectation from this trace's history would derive an empty
+	// one and convict the endpoint for the disconnect.
+	recovered bool
+	// priorUnknown marks a run a recovery introduced without saying what it
+	// was blocked on. Everything that run did before the cursor is outside
+	// this trace, so an interaction id the trace has never carried for it is
+	// neither evidence that the interaction exists nor evidence that it does
+	// not, and a set derived from history here is empty because the validator
+	// saw nothing rather than because nothing happened.
+	priorUnknown bool
 }
 type interactionState struct {
 	kind                     string
@@ -70,6 +85,11 @@ type interactionState struct {
 	questions                []protocol.InputQuestion
 	toolCallID               protocol.ToolCallID
 	resolved                 bool
+	// opaque marks an interaction the trace never saw opened: a recovered
+	// entry named it as pending and nothing else about it. Its ownership,
+	// kind, questions, choices and tool binding are unknown rather than
+	// absent, so nothing is held to them.
+	opaque bool
 	// openedAt and resolvedAt are the run sequences the interaction joined
 	// and left the pending set at, so an active_runs entry that states the
 	// position it was captured at is judged there rather than at the position
@@ -411,7 +431,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 					s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "recovered state names a different active run", string(rec.run), string(p.ActiveRunID))
 				}
 				if s.runs[p.ActiveRunID] == nil {
-					s.introduceRecoveredRun(i, line, s.track(p.SessionID), &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning})
+					s.introduceRecoveredRun(i, line, s.track(p.SessionID), &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}, nil)
 				}
 			}
 		}
@@ -968,7 +988,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	}
 	if r.terminal {
 		if isTerminal(e.Type) {
-			if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted {
+			if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted && !r.recovered {
 				s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.cancelled requires accepted cancellation")
 			}
 			// A pre-start-settled run is still settled: its terminal is its
@@ -1078,7 +1098,12 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		s.interactionResolved(i, line, e, "input")
 	}
 	if isTerminal(e.Type) {
-		if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted {
+		// A cancel exchange is evidence, and a run this trace never saw
+		// admitted may have been cancelled before the cursor: the exchange
+		// that accepted it is behind the disconnect and no envelope for it
+		// will arrive. Requiring it here would convict the one endpoint that
+		// answered the reattach honestly.
+		if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted && !r.recovered {
 			s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.cancelled requires accepted cancellation")
 		}
 		if e.Type == protocol.TypeRunCompleted {
@@ -1184,13 +1209,34 @@ func (s *state) applyStateDocument(i, line int, e protocol.Envelope, p protocol.
 // every accounting and ordering check reads the session's order, so a run
 // missing from it leaves the session looking empty and a second started
 // admission beside it escapes both the overlap rule and execution order.
-func (s *state) introduceRecoveredRun(i, line int, st *sessionTrack, run *runState) {
+func (s *state) introduceRecoveredRun(i, line int, st *sessionTrack, run *runState, entry *protocol.ActiveRun) {
 	run.order = len(st.order)
 	run.admittedAt = i
 	run.lastIndex, run.lastLine = i, line
+	// The document is also the trace's first authoritative word on what the
+	// run is blocked on. An entry that names its pending interactions names
+	// ones the trace will never see opened — their requests are behind the
+	// cursor — so they are recorded as pending from before every position this
+	// trace can state, and recorded opaquely, because naming an interaction is
+	// not describing it. Where no entry introduced the run the document said
+	// nothing at all, and nothing is what the validator knows.
+	run.recovered = true
+	if entry == nil {
+		run.priorUnknown = true
+	}
+	for _, id := range entryPending(entry) {
+		run.interactions[id] = &interactionState{opaque: true}
+	}
 	s.runs[run.id] = run
 	st.order = append(st.order, run.id)
 	s.refreshQueueWindows(run.session)
+}
+
+func entryPending(entry *protocol.ActiveRun) []protocol.InteractionID {
+	if entry == nil {
+		return nil
+	}
+	return entry.PendingInteractions
 }
 
 // resumeSequence is where a run a recovery introduces picks its trace up: the
@@ -1231,7 +1277,7 @@ func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st 
 		// trace can see.
 		queued := entry.Status == protocol.RunQueued ||
 			(entry.Status == protocol.RunCancelling && cancellingHoldsItsPlace(entry))
-		s.introduceRecoveredRun(i, line, st, &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: resumeSequence(rec, entry.RunID, entry.AsOfSequence), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status})
+		s.introduceRecoveredRun(i, line, st, &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: resumeSequence(rec, entry.RunID, entry.AsOfSequence), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status}, &entry)
 	}
 	// active_runs is required only where active_run_id cannot carry the
 	// answer, so a reattach whose session holds one started run says so with
@@ -1241,7 +1287,7 @@ func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st 
 	// from — the shape the state-response path has always bootstrapped, and
 	// the one the listing never sees because there is no listing.
 	if p.ActiveRunID != "" && !listed[p.ActiveRunID] && s.runs[p.ActiveRunID] == nil {
-		s.introduceRecoveredRun(i, line, st, &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning})
+		s.introduceRecoveredRun(i, line, st, &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}, nil)
 	}
 }
 
@@ -1281,12 +1327,20 @@ func (s *state) tool(i, line int, e protocol.Envelope, next string) {
 		// emits exactly one terminal event for each *started* tool call.
 		valid = ok && (current == "started" || current == "progress")
 	}
-	if !valid {
+	if !valid && !(!ok && r.recovered) {
 		code := CodeIllegalToolTransition
 		if !ok && next != "requested" {
 			code = CodeUnmatchedTool
 		}
 		s.add(code, i, line, e, "/tool_call_id", "illegal tool-call lifecycle transition")
+	}
+	if !ok && r.recovered {
+		// No document names the tool calls a recovered run had open, so a
+		// call this trace never saw requested is one that opened before the
+		// cursor rather than one that never opened. Its lifecycle is picked up
+		// from here: what this trace does see of it is judged as any other
+		// call's, and only the part it cannot see stands down.
+		r.tools[p.ToolCallID] = toolTrack{status: next, owner: p.ExecutionOwner}
 	}
 	// execution_owner is required on every action-call payload and must not be
 	// reassigned mid-lifecycle.
@@ -1445,11 +1499,35 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 	id, requested, responded := interactionFields(e, kind)
 	x := s.lookupInteraction(e.RunID, id)
 	if x == nil {
-		s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution event has no pending interaction")
-		return
+		r := s.runs[e.RunID]
+		if r == nil || !r.priorUnknown {
+			s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution event has no pending interaction")
+			return
+		}
+		// The run entered this trace through a recovery that said nothing
+		// about what it was blocked on, so an interaction it resolves may have
+		// been opened before the cursor and no envelope for it will ever
+		// arrive. Unmatched here is what the validator does not know, not what
+		// the endpoint got wrong. The resolution is still recorded, so a later
+		// snapshot that keeps the interaction pending is judged against it.
+		x = &interactionState{opaque: true}
+		r.interactions[id] = x
 	}
 	if x.resolved {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction was resolved more than once")
+	}
+	if x.opaque {
+		// The request is behind the recovery cursor: a recovered entry named
+		// this interaction as pending and said nothing else about it. Its
+		// ownership, kind, questions, choices and tool binding are unknown,
+		// not absent, and a resolution cannot answer to fields nobody stated.
+		// That it is resolved once, and that it leaves the pending set where
+		// it does, are facts of this trace and stay judged.
+		x.resolved = true
+		if e.Sequence != nil && x.resolvedAt == 0 {
+			x.resolvedAt = *e.Sequence
+		}
+		return
 	}
 	if responded != x.respondedBy || requested != x.requestedBy {
 		s.addExpected(CodeWrongInteractionResponder, i, line, e, "/payload/responded_by", "resolution ownership differs from request", string(x.respondedBy), string(responded), string(id))

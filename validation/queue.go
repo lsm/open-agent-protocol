@@ -733,7 +733,7 @@ func (s *state) reconcileDeferred(i, line int, e protocol.Envelope, r *runState)
 // at the position the entry states it was captured at.
 func (s *state) judgePendingInteractions(claim *deferredStateClaim, r *runState) {
 	want := pendingAt(r, claim.sequence)
-	if sameIDSet(want, claim.listed) {
+	if sameIDSet(want, knownTo(r, claim.listed)) {
 		return
 	}
 	s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/active_runs", "active_runs entry does not report the run's unresolved interactions at the position it states", describeIDs(want), describeIDs(claim.listed), string(claim.run))

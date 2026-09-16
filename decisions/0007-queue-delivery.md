@@ -209,6 +209,37 @@ one. The one run this does not apply to is the placeholder made for a run event
 with no admission at all: admission order is exactly what that run does not
 have, and the trace has already been convicted for it.
 
+What the document cannot state is the other half of the same rule. A recovered
+run did everything it has done so far behind the cursor, so for any state that
+predates it the honest position is that the validator knows nothing — not that
+there is nothing. The difference is between an empty expected set and no
+expectation at all, and every rule in this trace that derives what to expect
+from history will derive the empty one and convict the endpoint for answering
+the reattach truthfully.
+
+Where the document speaks, it is believed: an entry naming the interactions its
+run is blocked on names ones whose requests are behind the cursor, so they are
+recorded as pending from before every position this trace can state, and
+recorded opaquely — naming an interaction is not describing it, so its
+ownership, kind, questions, choices and tool binding are unknown and nothing is
+held to them. What this trace does see of them is judged as ever: they are
+resolved once, and they leave the pending set where the trace says they do.
+
+Where no document speaks, nothing is concluded. A recovery that introduces its
+run through the pointer alone says nothing about what that run is blocked on,
+so an interaction id this trace has never carried for it is neither evidence
+that the interaction exists nor evidence that it does not. Two more things no
+document can ever state: the tool calls a recovered run had open, so a call
+whose request is behind the cursor is one that opened before it rather than one
+that never opened, and its lifecycle is picked up from what this trace does
+see; and the cancel exchange that accepted its cancellation, so a `run.cancelled`
+for a reattached run does not owe an acceptance this trace could not have
+carried. Everything else a `runState` holds is either stated by the document —
+the run's identity, its session, whether it had begun, where its trace resumes,
+its status, its place in admission order — or is genuinely about this trace and
+so starts empty because it is empty: its terminal, its own sequence cursor, the
+position it started at within this trace.
+
 The model such a document states is the session's opening one. An open response
 is a snapshot taken before anything can have moved the default, and a capture
 marked at genesis is judged against the opening value alone — so without it the
@@ -474,7 +505,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 152 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 159 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the

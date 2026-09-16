@@ -589,6 +589,26 @@ func (s *state) checkEntryStatus(i, line int, e protocol.Envelope, pointer strin
 	s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs reports a run as queued at a position it had already started at", "a started status", string(entry.Status), string(r.id))
 }
 
+// knownTo drops from a listed pending set the ids the run's own history cannot
+// speak to. Only a run a recovery introduced without saying what it was
+// blocked on has such a history: everything before the cursor is outside this
+// trace, so an id it has never carried is not evidence of an interaction and
+// its absence is not evidence of none. Judging either way would convict a
+// snapshot for describing a moment that predates everything the validator can
+// see. Every id the trace does carry is judged exactly as it always was.
+func knownTo(r *runState, listed map[protocol.InteractionID]bool) map[protocol.InteractionID]bool {
+	if !r.priorUnknown {
+		return listed
+	}
+	known := map[protocol.InteractionID]bool{}
+	for id := range listed {
+		if r.interactions[id] != nil {
+			known[id] = true
+		}
+	}
+	return known
+}
+
 func describeQueuePosition(position *int) string {
 	if position == nil {
 		return "absent"
@@ -646,7 +666,7 @@ func (s *state) checkEntryPending(i, line int, e protocol.Envelope, pointer stri
 		// here at all, an entry for a run blocked on an interaction must
 		// carry the id: the single-run recovery path reads it from exactly
 		// this field.
-		if s.queueOffered() && !sameIDSet(unresolved, listed) {
+		if s.queueOffered() && !sameIDSet(unresolved, knownTo(r, listed)) {
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/pending_interactions", "entry does not report the unresolved interactions its run is blocked on", describeIDs(unresolved), describeIDs(listed), string(r.id))
 		}
 		return
@@ -657,7 +677,7 @@ func (s *state) checkEntryPending(i, line int, e protocol.Envelope, pointer stri
 		return
 	}
 	want := pendingAt(r, seq)
-	if !sameIDSet(want, listed) {
+	if !sameIDSet(want, knownTo(r, listed)) {
 		s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/pending_interactions", "active_runs entry does not report the run's unresolved interactions at the position it states", describeIDs(want), describeIDs(listed), string(r.id))
 	}
 }
