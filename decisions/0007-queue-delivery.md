@@ -177,7 +177,14 @@ A terminal status there contradicts the membership it is part of:
 a snapshot that knows a run settled drops it and names it in `as_of.settled`
 rather than listing it as completed. A run the trace has seen start is not
 `queued` at any position from its start onwards, though a capture stated before
-that position may still call it queued and is judged there. Its queue position
+that position may still call it queued and is judged there. A reservation
+cancelled before promotion is listed too, and listed as what it is: the status
+goes `queued` to `cancelling` without passing through `running` — Decision 0001
+has a run settle failed or cancelled before `run.started` but never completed —
+and it keeps the place it still holds until its terminal. Cancelling is the one
+nonterminal status that says nothing about whether the run began, so unlike
+queued it cannot classify an entry by itself; the trace decides, at the
+position the entry states. Its queue position
 is judged there too, and so is `active_run_id`: an entry's status, its position
 and the field that names the started run are one description of one moment, and
 reading the position off the trace's current idea of which run has started
@@ -273,11 +280,18 @@ from nowhere, anchoring nothing, is still a run from nowhere.
 
 What is not reconciled is the rest of that entry. Its status, position and
 pending set describe a moment before its run's admission reached the trace, and
-the per-entry rules have nothing to judge them against there; nor are
-`active_run_id` and `status` judged against a listing carrying such an entry,
-because which run is started is exactly what the listing cannot yet say. That
-is the price of allowing the lead, and it is paid only by the snapshot that
-takes it. Accepting it at the state response and never
+the per-entry rules have nothing to judge them against there. The price of the
+lead is paid by the entry taking it, not by the listing around it: what the
+entries the trace does carry already establish is still established. A listing
+that says a run is executing has named that run, whatever the pending entry
+turns out to be, and a session with an executing run in it is not idle. Only
+the two questions a pending entry could genuinely answer differently stand
+down — whether the session holds nothing but reservations, since the pending
+run may be the started one, and the session status that follows from it.
+
+One thing the entry's own status settles without its admission: a reservation
+is listed queued, so an entry that is not says the run is executing however it
+was admitted. The one-started-run rule reaches it on that alone. Accepting it at the state response and never
 returning to it is what lets a snapshot assert an admission that did not
 happen.
 
@@ -332,7 +346,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 108 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 112 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the

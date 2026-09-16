@@ -202,6 +202,16 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		r := s.runs[entry.RunID]
 		if r == nil || r.session != p.SessionID {
 			if anchors := pendingAnchors(s, entry, p.SessionID); len(anchors) > 0 {
+				if entry.Status != protocol.RunQueued && !terminalStatus(entry.Status) {
+					// Its admission is unknown, but its status is not: a
+					// reservation's entry is queued, so this one says the run
+					// is executing whatever the response turns out to say. The
+					// one-started-run rule reaches it even though the
+					// classification does not.
+					if listedStarted != "" {
+						s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(listedStarted), string(entry.Status), string(entry.RunID))
+					}
+				}
 				// A snapshot may lead an admission it made: the endpoint knows
 				// the run, the response that will tell the trace about it is
 				// still in flight, and the entry says which submission it came
@@ -261,7 +271,17 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		// judge one snapshot against two different moments at once. What the
 		// entry cannot do is invent a queue: a run admitted started was never
 		// in one.
-		reservation, settled := r.admittedQueued && entry.Status == protocol.RunQueued, terminalStatus(entry.Status)
+		// A reservation cancelled before promotion goes queued -> cancelling
+		// without passing through running: that transition is legal on its
+		// own (legalRunStatusTransition), and decision 0001 has a run settle
+		// failed or cancelled before run.started but never completed. So an
+		// accurate snapshot reports it cancelling and still in the queue, at
+		// the place it still holds. Cancelling says nothing about whether the
+		// run began, so unlike queued it cannot classify on its own: the
+		// trace decides, at the position the entry states.
+		cancelling := entry.Status == protocol.RunCancelling &&
+			(!r.started || (entry.AsOfSequence != nil && *entry.AsOfSequence < r.startSequence))
+		reservation, settled := r.admittedQueued && (entry.Status == protocol.RunQueued || cancelling), terminalStatus(entry.Status)
 		switch {
 		case settled:
 			// checkEntryStatus says what is wrong with a terminal entry. It
@@ -313,24 +333,30 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 	// reservations remain — both read off the entries this snapshot carries,
 	// at the positions those entries state, so the two fields cannot disagree
 	// about the same run.
-	if unresolved {
-		// One entry names a run the trace has not reached, so what the listing
-		// says about started and queued runs is incomplete. Judging
-		// active_run_id or the session status against it would convict a
-		// snapshot for the one thing it was allowed to lead the trace on.
-		return
-	}
+	// An entry leading its own admission costs this listing only what that
+	// entry alone decides. What the entries the trace does carry already
+	// establish is established: a listing saying a run is executing has named
+	// that run, whatever a pending entry turns out to be, and a session with
+	// an executing run in it is not idle. Standing all of it down let a
+	// snapshot list a started run, name none, call itself idle, and be
+	// answered forever by a deferred claim that only checks the other entry's
+	// identity.
 	started := listedStarted
 	switch {
 	case started != "" && p.ActiveRunID != started:
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must name the started run of the session", string(started), string(p.ActiveRunID), string(started))
-	case started == "" && len(p.ActiveRuns) > 0 && p.ActiveRunID != "":
+	case started == "" && !unresolved && len(p.ActiveRuns) > 0 && p.ActiveRunID != "":
 		// Only reservations remain, and a reservation is not a started run:
 		// the field names one or it names none. A client reading it as the
-		// run to follow would follow a run that has published nothing.
+		// run to follow would follow a run that has published nothing. This
+		// one does stand down under a lead: the pending entry may be the
+		// started run, and naming it would then be right.
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must be absent where the session holds only reservations", "absent", string(p.ActiveRunID))
 	}
-	s.checkListedStatus(i, line, e, p, started, startedEntry, listedReservation)
+	// The reservations-only status rule stands down for the same reason, and
+	// the started-run one does not: an executing run the listing names is an
+	// executing run whatever else the listing is waiting to learn.
+	s.checkListedStatus(i, line, e, p, started, startedEntry, listedReservation && !unresolved)
 }
 
 // checkListedStatus holds the session status to the same listing the other two
