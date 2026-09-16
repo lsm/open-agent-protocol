@@ -22,6 +22,11 @@ const (
 	CapabilityRevision  = "opencode-v1.18.29-oap-v1"
 	defaultJournalCap   = 256
 	defaultHistoryLimit = 100
+	// Settlement polls session.active until the agent loop's drain releases
+	// the session. The backoff keeps a long provider turn from issuing one
+	// request per few milliseconds for its whole duration.
+	defaultSettlePollMin = 10 * time.Millisecond
+	defaultSettlePollMax = 500 * time.Millisecond
 )
 
 var (
@@ -38,11 +43,18 @@ type Subscription interface {
 }
 
 // Client is the reduced server surface the adapter depends on.
+//
+// The pinned server's POST /api/session/:id/wait route is declared in the
+// OpenAPI document but not implemented: its handler resolves the session and
+// then always fails with ServiceUnavailableError, which the server returns as
+// HTTP 503 (upstream asserts this in its own httpapi-session test). So the
+// wait route is deliberately absent from this interface and quiescence is
+// corroborated with Active, whose set the run coordinator holds for the whole
+// agent-loop drain rather than per step.
 type Client interface {
 	CreateSession(ctx context.Context, request httpapi.CreateSessionRequest) (native.SessionInfo, error)
 	Prompt(ctx context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error)
 	Interrupt(ctx context.Context, session native.SessionID) error
-	WaitIdle(ctx context.Context, session native.SessionID) error
 	Active(ctx context.Context) (map[native.SessionID]bool, error)
 	History(ctx context.Context, session native.SessionID, after int64, limit int) (native.HistoryPage, error)
 	Subscribe(ctx context.Context, session native.SessionID, after int64) (Subscription, error)
@@ -73,6 +85,12 @@ type Config struct {
 	FrameLimit      int
 	QueueCapacity   int
 	HistoryLimit    int
+	// SettlePollMin and SettlePollMax bound the backoff between the
+	// session.active polls that corroborate settlement. The first poll is
+	// immediate, so a run whose loop has already drained settles without
+	// sleeping at all.
+	SettlePollMin time.Duration
+	SettlePollMax time.Duration
 }
 
 type Adapter struct {
@@ -96,6 +114,15 @@ func New(config Config) (*Adapter, error) {
 	}
 	if config.HistoryLimit <= 0 {
 		config.HistoryLimit = defaultHistoryLimit
+	}
+	if config.SettlePollMin <= 0 {
+		config.SettlePollMin = defaultSettlePollMin
+	}
+	if config.SettlePollMax < config.SettlePollMin {
+		config.SettlePollMax = defaultSettlePollMax
+	}
+	if config.SettlePollMax < config.SettlePollMin {
+		config.SettlePollMax = config.SettlePollMin
 	}
 	if config.Factory == nil {
 		options := httpapi.Options{Username: config.Username, Password: config.Password, HTTP: config.HTTP, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity}
@@ -125,7 +152,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.message.delivery.steer": {Level: protocol.SupportUnavailable, Reason: "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request"},
 		"run.streaming":                  {Level: protocol.SupportDegraded, Reason: "durable stream carries full-value text.ended boundaries, not live deltas"},
 		"run.status":                     {Level: protocol.SupportNative, Reason: "session.active and durable step events"},
-		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt is intent with idle no-op; settlement derived from durable evidence and wait"},
+		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt is intent with idle no-op; settlement derived from durable evidence and the active set"},
 		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal"},
 		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "adapter-owned projection over active and durable sequence"},
 		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; the native durable cursor is exposed as the transcript cursor"},
@@ -189,6 +216,8 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		ids:          a.ids,
 		capacity:     a.config.JournalCapacity,
 		historyLimit: a.config.HistoryLimit,
+		pollMin:      a.config.SettlePollMin,
+		pollMax:      a.config.SettlePollMax,
 		nativeID:     info.ID,
 		participant:  req.Participant.ID,
 		state:        protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now},

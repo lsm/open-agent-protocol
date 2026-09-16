@@ -103,6 +103,33 @@ func TestPromptRejectsForeignAdmissionReceipt(t *testing.T) {
 	}
 }
 
+// The pinned server does not implement the wait route: its handler resolves
+// the session and then always fails with ServiceUnavailableError, so a live
+// session answers 503 and a missing one 404. Nothing may read that as idle.
+// This is why settlement corroborates with the active set instead, and the
+// test exists so a future reader does not mistake the route's declared
+// success contract below for observed behaviour.
+func TestWaitIdleSurfacesPinnedUnavailable(t *testing.T) {
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"_tag":"ServiceUnavailableError","message":"Session wait is not available yet","service":"session.wait"}`))
+	}), Options{})
+	err := client.WaitIdle(context.Background(), "ses_a")
+	if err == nil {
+		t.Fatal("wait must not report idle when the route is unavailable")
+	}
+	var apiErr *native.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err=%v, want a native APIError", err)
+	}
+	if apiErr.Status != http.StatusServiceUnavailable || apiErr.Tag != "ServiceUnavailableError" {
+		t.Fatalf("status=%d tag=%q", apiErr.Status, apiErr.Tag)
+	}
+}
+
+// The route's declared contract is 204; the handler above is what the pinned
+// server actually returns. Both are pinned so the gap stays visible.
 func TestInterruptAndWaitAcceptNoContent(t *testing.T) {
 	paths := map[string]bool{}
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -222,7 +222,17 @@ func (c *Client) Interrupt(ctx context.Context, session native.SessionID) error 
 	return c.do(ctx, http.MethodPost, path, nil, struct{}{}, nil)
 }
 
-// WaitIdle blocks until the session agent loop is idle.
+// WaitIdle posts the pinned server's wait route, which the OpenAPI document
+// describes as waiting for a session agent loop to become idle.
+//
+// The route is NOT implemented at this pin: the core session service resolves
+// the session and then always raises OperationUnavailableError, which the
+// server returns as HTTP 503 ServiceUnavailableError with the message
+// "Session wait is not available yet" (a missing session still answers 404).
+// Upstream pins that behaviour in its own httpapi-session test, and the stub
+// is unchanged on its development branch. The method is kept because the
+// route is part of the pinned surface, but the adapter must not build
+// settlement on it; Active carries the quiescence signal instead.
 func (c *Client) WaitIdle(ctx context.Context, session native.SessionID) error {
 	path := "/api/session/" + url.PathEscape(string(session)) + "/wait"
 	return c.do(ctx, http.MethodPost, path, nil, struct{}{}, nil)

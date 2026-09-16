@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"sync"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/adapter/opencode/internal/native"
@@ -30,6 +31,8 @@ type session struct {
 	ids          base.IDGenerator
 	capacity     int
 	historyLimit int
+	pollMin      time.Duration
+	pollMax      time.Duration
 	nativeID     native.SessionID
 	participant  protocol.ParticipantID
 	state        protocol.SessionState
@@ -484,8 +487,68 @@ func (s *session) failActive(run *runState, code, message string) {
 	s.failRun(run, code, message)
 }
 
+// awaitQuiescenceLocked blocks until the native agent loop stops reporting
+// this session as active, supplying the run-terminal evidence the durable
+// inventory lacks.
+//
+// The server's run coordinator keeps a session in the active set for one
+// whole drain, and a drain is one agent loop covering every step of a turn,
+// so the set does not flap between steps the way a per-step signal would.
+// Work recorded mid-turn installs a successor entry that keeps the key
+// present, so a steer accepted during the turn also holds the run open.
+//
+// It reports whether settlement should continue. A step that opens while we
+// poll re-arms settlement on its own terminal event, so the caller stops
+// instead of fencing a turn that has visibly resumed.
+func (s *session) awaitQuiescenceLocked(run *runState) (bool, error) {
+	delay := s.pollMin
+	for {
+		active, err := s.client.Active(s.settleContext())
+		if err != nil {
+			return false, err
+		}
+		if !active[s.nativeID] {
+			return true, nil
+		}
+		// Reduce whatever the subscription delivered while we polled: a step
+		// that opened in that window must suppress this settlement. The
+		// settling flag makes the nested confirm call a no-op, so the decision
+		// stays with this frame.
+		s.drainEnqueuedLocked()
+		s.mu.Lock()
+		terminal, open := run.terminal, run.openSteps
+		s.mu.Unlock()
+		if terminal || open > 0 {
+			return false, nil
+		}
+		if err := s.sleepSettle(delay); err != nil {
+			return false, err
+		}
+		delay *= 2
+		if delay > s.pollMax {
+			delay = s.pollMax
+		}
+	}
+}
+
+// sleepSettle waits out one poll interval, returning early when the session is
+// torn down so settlement never outlives its client.
+func (s *session) sleepSettle(delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	ctx := s.settleContext()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.stop:
+		return context.Canceled
+	case <-timer.C:
+		return nil
+	}
+}
+
 // confirmSettlementLocked derives the run terminal. The pinned durable
-// inventory has no run-terminal event, so settlement is wait-idle
+// inventory has no run-terminal event, so settlement is quiescence
 // corroboration plus a history fence at the watermark sequence.
 func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 	s.mu.Lock()
@@ -500,7 +563,8 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 		run.settling = false
 		s.mu.Unlock()
 	}()
-	if err := s.client.WaitIdle(s.settleContext(), s.nativeID); err != nil {
+	proceed, err := s.awaitQuiescenceLocked(run)
+	if err != nil {
 		s.mu.Lock()
 		closed := s.closed
 		if !closed {
@@ -509,8 +573,11 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 		s.mu.Unlock()
 		if !closed {
 			<-run.admitted
-			s.failRun(run, "opencode_wait_failed", err.Error())
+			s.failRun(run, "opencode_quiescence_failed", err.Error())
 		}
+		return
+	}
+	if !proceed {
 		return
 	}
 	// Drain everything the subscription already delivered before consulting
