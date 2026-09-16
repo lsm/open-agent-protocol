@@ -360,8 +360,17 @@ into `serve.AttachmentGate`, which both frontends call, so there is still one
 verdict rather than one route. A copy per frontend would have been the second
 normalization this unit already refuses everywhere else — one reading in a
 route and another in the validator is how a frontend starts refusing what a
-trace validates — and `parity_test.go` compares op surfaces, not the admission
-each one performs, so a divergence there is one no test would see.
+trace validates.
+
+The parity tests carry part of that weight and not all of it.
+`TestOpenOpMatchesHTTP` compares the admission itself over equal hubs: a
+wire-supplied `command` refused under the same code on both pipes, and a
+configured source named by id admitted on both with the operator's own
+descriptor returned. What they do not reach is the capability ladder — a stale
+revision, a degraded key without consent, a probe that fails — because each
+needs a descriptor whose disclosure varies, and the reference adapter's is
+fixed. Those rungs are guaranteed by there being one gate rather than by a test
+watching two.
 
 A probe that fails is reported rather than skipped. Skipping it looked like the
 conservative choice — the adapter's own gate still runs, and nothing in the
