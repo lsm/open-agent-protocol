@@ -321,6 +321,102 @@ and closes every session inside a bounded window — active runs that refuse
 Close are cancelled first — so child agent processes are settled rather than
 orphaned.
 
+### Subprocess embedding (`oap serve --stdio`)
+
+A host that would rather spawn a child process than manage a port gets the
+same surface over newline-delimited JSON on the process's own pipes:
+
+```sh
+oap serve --stdio [--config examples/oap-serve.json]
+```
+
+Spawning the process is the authorization, so there is no port, no TLS and no
+`Host` allowlist. The registry's `environment` allowlist still governs adapter
+credentials exactly as it does over HTTP, and a wire-supplied `command`,
+`args` or literal `NAME=value` in a `tool_sources` attachment is refused here
+too — a stdio peer is a separate process on the far side of a pipe, not an
+in-process embedding of `serve.Hub`, so it gets the wire rule. `--stdio` and
+`--addr` name two transports and are mutually exclusive.
+
+**Stdout carries protocol lines and nothing else.** The banner, the adapter
+list and every diagnostic go to stderr, so a host may parse stdout strictly.
+
+Host → daemon lines are one JSON object each: `{"id":N,"op":"...", ...}`,
+where `id` is any number the host chooses and correlates the answer. Unknown
+fields, repeated or case-aliased keys, a missing or non-numeric `id`, a line
+over the frame limit, or trailing data after the object are framing defects
+the daemon fails closed on.
+
+| op | params | answers with |
+| --- | --- | --- |
+| `adapters` | — | the registry listing |
+| `capabilities` | `adapter` | `capabilities.response` |
+| `open` | `adapter`, `request` | `session.open.response` |
+| `sessions` | — | the session listing |
+| `state` | `session_id` | `session.state.response` |
+| `models` | `session_id`, `allow_degraded_features` | `models.response` |
+| `tools` | `session_id`, `allow_degraded_features` | `action.tools.list.response` |
+| `submit` | `session_id`, `request` | `session.message.submit.response` |
+| `resolve` | `session_id`, `request` | the matching resolve response |
+| `cancel` | `session_id`, `request` | `run.cancel.response` |
+| `close` | `session_id` | `null` |
+| `events` | `session_id`, `after` | `null`, then the stream (below) |
+
+`request` carries a verbatim schema/v0.1 request envelope — the same document
+the corresponding HTTP route takes as its body, validated against the same
+bundled schema. An op that takes a parameter it does not define is refused
+`invalid_request`: the shape is checked on presence, so a supplied-but-null
+parameter still counts as supplied.
+
+Daemon → host lines are either responses, `{"id":N,"ok":true,"result":...}`
+or `{"id":N,"ok":false,"error":{"code":...,"message":...}}`, carrying the
+codes the HTTP routes answer with, or subscription lines, which carry
+`"event"` instead of `"ok"`. Exactly one writer goroutine emits them, so every
+line is atomic and no response is ever broken by interleaving. Three refusals
+are this framing's own and have no HTTP counterpart: the line-shape pair
+`invalid_request` and `unknown_op`, and `response_too_large` for a result the
+frame limit cannot carry.
+
+`events` acknowledges with `null` — the acknowledgement the SSE route gives by
+starting a bodyless response — and the subscription's envelopes follow as
+their own lines, tagged with the `events` request's `id` so overlapping
+subscriptions on one session stay attributable. The acknowledgement is always
+written before the first envelope.
+
+| line | means |
+| --- | --- |
+| `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
+| `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
+| `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available`/`latest_available` bound what is |
+| `"event":"oap-session-closed"` | the session closed under the subscription |
+| `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it |
+
+A healthy stream ends at the run's terminal envelope — `run.completed`,
+`run.failed` or `run.cancelled` — with no further line, exactly as the SSE
+response simply ends after it.
+
+Ops are pipelined and each runs on its own worker, so responses to overlapping
+requests may arrive in any order and the `id`, not the position, is what
+correlates them. A host that needs one op to precede another waits for its
+response, exactly as it would over HTTP: a `submit` sent before its `open` is
+answered is refused `unknown_session` rather than silently queued.
+`drafts/compound-open.md` proposes removing that constraint for the common
+case.
+
+`examples/oap-stdio-session.ndjson` is the host's half of a full session —
+listings, open, subscription, an interactive run with both gates answered,
+cursor replay, close. It is a script rather than something to `cat` into the
+process, for the reason just given: each line follows the previous answer, and
+the two `resolve` lines follow the gates they answer.
+`TestStdioExampleSessionRuns` drives it against the built binary, so it cannot
+drift from the surface it documents.
+
+Shutdown is stdin EOF or SIGINT/SIGTERM: the daemon stops admitting, settles
+the work it already admitted inside a bounded window, closes every session so
+child agent processes are not orphaned, and exits zero. A malformed line is
+the one non-zero exit — the host's framing defect, reported as a single
+bounded diagnostic on stderr.
+
 ### Embedding the registry (`serve`)
 
 The `serve` package is the transport-neutral core the daemon is built on: a

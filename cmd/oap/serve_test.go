@@ -20,7 +20,7 @@ import (
 
 func TestUsageMentionsServe(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), nil, &stdout, &stderr); err == nil {
+	if err := run(context.Background(), nil, nil, &stdout, &stderr); err == nil {
 		t.Fatal("no command succeeded")
 	}
 	if !strings.Contains(stderr.String(), "serve") {
@@ -36,7 +36,7 @@ func TestServeFlagErrors(t *testing.T) {
 	}
 	for _, args := range cases {
 		var stdout, stderr bytes.Buffer
-		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
+		if err := run(context.Background(), args, nil, &stdout, &stderr); err == nil {
 			t.Fatalf("serve %v succeeded", args)
 		}
 	}
@@ -90,7 +90,7 @@ func startServe(t *testing.T, args []string) (string, func(), <-chan error) {
 	t.Cleanup(cancel)
 	stdout := &syncBuffer{}
 	done := make(chan error, 1)
-	go func() { done <- runServe(ctx, args, stdout, io.Discard) }()
+	go func() { done <- runServe(ctx, args, nil, stdout, io.Discard) }()
 
 	address := ""
 	deadline := time.Now().Add(5 * time.Second)
