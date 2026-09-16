@@ -314,6 +314,14 @@ after it reports a started run holding no position — and both are accurate.
 What an entry cannot do is invent a queue: a run admitted started was never in
 one.
 
+The converse — a reservation reported as executing — is allowed to lead the
+trace, because the promotion happens inside the endpoint and its `run.started`
+can drain after the snapshot. Leading is waiting for the answer rather than
+being excused from it, so the claim is held until the run starts. The position
+the entry states is not evidence against it, since being ahead of the start is
+the whole of what it is allowed to be ahead about; what answers it is a start
+arriving at all, and what refutes it is a run that settles without one.
+
 A listing is one moment, and in one moment a session has one started run —
 the whole of Decision 0001 this unit kept. It also runs them in admission
 order, so a reservation admitted first cannot be queued behind a run admitted
@@ -445,7 +453,11 @@ start it waits for settles that in turn: two answers in a chain, each from the
 event that carries it.
 
 Where several entries lead, they are settled as a set, because their queue
-places are one arrangement rather than several claims. An entry that turns out
+places are one arrangement rather than several claims — and an arrangement has
+an order as well as numbers in it. Two leads listed one way and admitted the
+other take each other's places, so every number checks out and the listing was
+never in admission order; the order the responses give is compared with the
+order they were listed in once they have all landed. An entry that turns out
 to be a reservation takes a place the others cannot have, and one that turns
 out to be executing takes none, so every admission that lands narrows what is
 left for the entries still outstanding — and the last of them to land
@@ -526,7 +538,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 165 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 168 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the

@@ -387,9 +387,26 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		// to that answer when the start arrives.
 		cancelling, pending := cancellingReservation(entry, r)
 		if pending && r.admittedQueued {
-			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimReservation, session: r.session, run: r.id, sequence: *entry.AsOfSequence, held: cancelling, index: i, line: line, envelope: e})
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimReservation, session: r.session, run: r.id, sequence: *entry.AsOfSequence, stated: true, held: cancelling, index: i, line: line, envelope: e})
 		}
 		reservation, settled := r.admittedQueued && (entry.Status == protocol.RunQueued || cancelling), terminalStatus(entry.Status)
+		if r.admittedQueued && !r.started && !reservation && !settled && !pending {
+			// The entry says a run admitted into the queue has begun. A
+			// promotion happens inside the endpoint and its run.started can
+			// drain after the snapshot, which is why the claim is allowed to
+			// lead the trace — but leading is waiting for the answer, not
+			// being excused from it. The run's start settles it, and a run
+			// that settles without ever starting settles it the other way.
+			// Cancelling entries make the same claim through their queue
+			// place and are already held to it, so they are not held twice.
+			//
+			// The claim is that the run begins, not that it had begun at the
+			// position the entry states. A promotion inside the endpoint is
+			// exactly what the entry is allowed to be ahead of the trace
+			// about, so the position it names is not evidence against it —
+			// only a run that settles without ever starting is.
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimReservation, session: r.session, run: r.id, index: i, line: line, envelope: e})
+		}
 		switch {
 		case settled:
 			// checkEntryStatus says what is wrong with a terminal entry. It
