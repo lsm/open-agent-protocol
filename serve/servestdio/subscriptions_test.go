@@ -357,14 +357,38 @@ func TestSubscriptionsAreNotChargedAgainstTheInFlightBound(t *testing.T) {
 	if response := f.expectResponse(1); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	f.send(`{"id":2,"op":"state","session_id":"interest"}`)
-	response := f.expectResponse(2)
+	// The events worker releases its ops slot after serveRequest returns,
+	// while the acknowledgement is queued inside it, so at MaxConcurrentOps:1
+	// an op sent the instant the ack arrives can still meet the slot the
+	// events request itself was holding. That is a busy refusal about the
+	// request, not about the subscription, and busy means exactly "send this
+	// request again".
+	//
+	// Retrying is not a way around the claim: if a pump did charge the bound,
+	// the slot would never free and every attempt would be refused.
+	response := f.opUntilAdmitted(2, `{"id":2,"op":"state","session_id":"interest"}`)
 	if !response.OK {
 		t.Fatalf("an op behind a live subscription was refused %q: %s", response.Error.Code, response.Error.Message)
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// opUntilAdmitted sends one op, resending while the frontend answers busy.
+// Ops are correlated by id, not by position, so the same id is resent.
+func (f *frontend) opUntilAdmitted(id int64, line string) responseLine {
+	f.t.Helper()
+	for attempt := 0; attempt < 20; attempt++ {
+		f.send(line)
+		response := f.expectResponse(id)
+		if response.OK || response.Error == nil || response.Error.Code != "busy" {
+			return response
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	f.t.Fatalf("op %d was refused busy on every attempt; the bound is not freeing", id)
+	return responseLine{}
 }
 
 // TestALiveSubscriptionDoesNotStallShutdown is the liveness claim. A pump
@@ -1134,5 +1158,47 @@ func TestAnOpenTheHostNamedIsKeptAndSaidSo(t *testing.T) {
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestAdvanceCursorHoldsItsHighWaterMark pins the rule the delivered position
+// follows, which is not "the last sequence seen".
+//
+// Within a run it is a high-water mark, because the hub says replay may
+// redeliver positions at or behind the cursor and guards its own position the
+// same way. A cursor dragged backwards by a redelivery would make a
+// stream-failed ending send the host over events it had already consumed.
+//
+// Across runs it is not a maximum: a new run restarts at sequence 1, so the
+// largest number seen stops meaning anything once the run changes.
+func TestAdvanceCursorHoldsItsHighWaterMark(t *testing.T) {
+	at := func(run string, sequence uint64) protocol.Envelope {
+		value := sequence
+		return protocol.Envelope{RunID: protocol.RunID(run), Sequence: &value}
+	}
+	unsequenced := func(run string) protocol.Envelope {
+		return protocol.Envelope{RunID: protocol.RunID(run)}
+	}
+	for _, testCase := range []struct {
+		name         string
+		run          string
+		sequence     uint64
+		envelope     protocol.Envelope
+		wantRun      string
+		wantSequence uint64
+	}{
+		{"advances within a run", "run-1", 4, at("run-1", 5), "run-1", 5},
+		{"a redelivery behind the cursor does not drag it back", "run-1", 9, at("run-1", 3), "run-1", 9},
+		{"a redelivery at the cursor holds", "run-1", 9, at("run-1", 9), "run-1", 9},
+		{"a new run takes its own lower sequence", "run-1", 12, at("run-2", 1), "run-2", 1},
+		{"an unsequenced envelope does not advance", "run-1", 7, unsequenced("run-1"), "run-1", 7},
+		{"the first envelope sets both", "", 0, at("run-1", 1), "run-1", 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			run, sequence := advanceCursor(protocol.RunID(testCase.run), testCase.sequence, testCase.envelope)
+			if string(run) != testCase.wantRun || sequence != testCase.wantSequence {
+				t.Fatalf("cursor (%s, %d), want (%s, %d)", run, sequence, testCase.wantRun, testCase.wantSequence)
+			}
+		})
 	}
 }

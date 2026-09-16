@@ -1181,10 +1181,7 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 					frameLimitLine{Event: signalFrameLimit, ID: id, Sequence: sequence})
 				return
 			}
-			deliveredRun = envelope.RunID
-			if envelope.Sequence != nil {
-				deliveredSequence = *envelope.Sequence
-			}
+			deliveredRun, deliveredSequence = advanceCursor(deliveredRun, deliveredSequence, envelope)
 			continue
 		}
 		var overflow *serve.OverflowError
@@ -1230,6 +1227,35 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 		s.failSubscription(ctx, lines, entry, id, deliveredRun, deliveredSequence)
 		return
 	}
+}
+
+// advanceCursor moves the pump's delivered position to an envelope, and is
+// the reason that position is not simply the last sequence seen.
+//
+// Within one run it is a high-water mark, because replay may redeliver
+// positions at or behind the cursor — the hub says so and guards its own
+// position the same way, in observedSequence. Overwriting instead would let a
+// redelivered envelope drag the cursor backwards, and an ending that reported
+// it would send the host back over events it had already consumed.
+//
+// Across runs it is not a maximum at all: a new run starts its own sequence
+// space at 1, so the largest number seen is meaningless once the run changes.
+// The cursor follows the newer run, because that is the run a fresh events op
+// resolves into — which is also the limit issue #52 is about, and the reason
+// the cursor carries its run in the ending even though the request cannot
+// name one.
+func advanceCursor(run protocol.RunID, sequence uint64, envelope protocol.Envelope) (protocol.RunID, uint64) {
+	next := uint64(0)
+	if envelope.Sequence != nil {
+		next = *envelope.Sequence
+	}
+	if envelope.RunID != run {
+		return envelope.RunID, next
+	}
+	if next > sequence {
+		return run, next
+	}
+	return run, sequence
 }
 
 // failSubscription ends a subscription that died of something the host
