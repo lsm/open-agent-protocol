@@ -192,6 +192,32 @@ func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requ
 		if !errors.Is(err, ErrLineTooLarge) {
 			return false
 		}
+		// A refusal that will not fit sheds what it carries before it sheds
+		// what it says. The details of a typed refusal are the largest thing
+		// on the line and the least load-bearing — a refusal naming a tool
+		// source repeats a caller-supplied id in them, and an id long enough
+		// to overflow the line is one the caller already knows — while the
+		// code is the whole actionable answer and the thing the mirrored
+		// route promises. Sending response_too_large in its place would
+		// discard a typed refusal that had a perfectly good short form, and
+		// would break the same-code parity for a request the frame limit
+		// accepted.
+		//
+		// So the ladder is full, then reduced, then the size refusal, each
+		// strictly smaller than the last and the final rung guaranteed by the
+		// frame-limit floor. Nothing is trimmed pre-emptively: a refusal that
+		// fits goes out whole, with the details its HTTP counterpart carries.
+		if werr != nil {
+			reduced := responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: &wireError{
+				Code: werr.Code, Message: trimMessage(werr.Message),
+			}}
+			if reducedErr := s.send(ctx, lines, reduced); reducedErr == nil {
+				return false
+			} else if !errors.Is(reducedErr, ErrLineTooLarge) {
+				s.logger.Printf("servestdio: response %d: %v", *request.ID, reducedErr)
+				return false
+			}
+		}
 		fallback := responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: &wireError{
 			Code: "response_too_large", Message: "the encoded response exceeds the frame limit",
 		}}
@@ -969,9 +995,17 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 	// Attaching before subscribing, rather than after, so the acknowledgement
 	// never promises a subscription teardown would not let start — and so no
 	// subscription is opened on the hub for a pump that cannot run.
-	pumps, attached := run.attach()
-	if !attached {
+	pumps, outcome, why := run.attach()
+	switch outcome {
+	case closedToWork:
 		fail(&wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
+		return
+	case refused:
+		// The same refusal an op over the in-flight bound gets, and for the
+		// same reason: the frontend answers rather than waits, and the
+		// request was never served, so sending it again is safe. It succeeds
+		// once a subscription ends.
+		fail(&wireError{Code: "busy", Message: why + "; send this request again"})
 		return
 	}
 	// The subscription takes the pump's context and not this worker's. It is

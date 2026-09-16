@@ -123,6 +123,12 @@ type Options struct {
 	// budgeted separately and are not configurable, because that budget is
 	// a memory bound rather than a tuning knob.
 	MaxConcurrentOps int
+	// MaxSubscriptions bounds the subscription pumps alive at once; zero
+	// means maxSubscriptions. It is separate from MaxConcurrentOps because
+	// the two bound different things — adapter work against interest in a
+	// stream — and collapsing them would let a host's subscriptions refuse
+	// its ordinary requests.
+	MaxSubscriptions int
 	// ShutdownTimeout bounds the final output drain once serving ends — the
 	// writer may be parked inside out.Write on a pipe the host stopped
 	// reading, and shutdown never depends on the host's pipe; zero means
@@ -142,6 +148,7 @@ type Server struct {
 	frameLimit  int
 	writeQueue  int
 	maxOps      int
+	maxAttach   int
 	shutdown    time.Duration
 	logger      *log.Logger
 	nextIDValue atomic.Uint64
@@ -153,6 +160,19 @@ type Server struct {
 // keeps a host from turning a pipelined stream into goroutines faster than
 // its adapters retire them.
 const maxConcurrentOps = 16
+
+// maxSubscriptions is the default ceiling on subscription pumps alive at
+// once. It sits well above the ops ceiling because a pump is cheap next to an
+// op — a goroutine and a hub subscriber queue, and no adapter work — and a
+// host legitimately holds one per session while this frontend serves many.
+//
+// It exists because everything else in this frontend is bounded and interest
+// was not: attach charges no ops slot by design, and the slot the events op
+// itself held is released the moment it acknowledges, so a host looping on
+// events against an idle session accumulated pumps without limit. Each one
+// also takes a share of every envelope the hub fans out, so the cost is not
+// only the goroutine.
+const maxSubscriptions = 64
 
 // admissionBytes budgets the request bytes those ops may hold at once. A
 // count alone is not a memory bound: at the default frame limit one
@@ -197,8 +217,9 @@ func (t *refusalTally) undelivered() int64 { return t.owed.Load() - t.delivered.
 // serve the next — the state a session ends in is not a state the next
 // session inherits.
 type runState struct {
-	maxOps   int
-	maxBytes int
+	maxOps    int
+	maxBytes  int
+	maxAttach int
 
 	// mu guards the admission gate. work counts the op workers teardown
 	// waits for; shuttingDown closes admission so no worker joins after
@@ -210,6 +231,7 @@ type runState struct {
 	shuttingDown bool
 	ops          int
 	bytes        int
+	attached     int
 
 	// pumps is the context every attached subscription runs under, and
 	// stopPumps ends them all. Closing admission cancels it.
@@ -229,15 +251,18 @@ type runState struct {
 	stopPumps context.CancelFunc
 }
 
-func newRunState(ctx context.Context, maxOps, maxBytes int) *runState {
+func newRunState(ctx context.Context, maxOps, maxBytes, maxAttach int) *runState {
 	if maxOps <= 0 {
 		maxOps = maxConcurrentOps
 	}
 	if maxBytes <= 0 {
 		maxBytes = admissionBytes
 	}
+	if maxAttach <= 0 {
+		maxAttach = maxSubscriptions
+	}
 	pumps, stopPumps := context.WithCancel(ctx)
-	return &runState{maxOps: maxOps, maxBytes: maxBytes, pumps: pumps, stopPumps: stopPumps}
+	return &runState{maxOps: maxOps, maxBytes: maxBytes, maxAttach: maxAttach, pumps: pumps, stopPumps: stopPumps}
 }
 
 // admission is what the loop learns when it offers a request to the bounds.
@@ -294,8 +319,14 @@ func (r *runState) offer(size int) (admission, string) {
 // the in-flight bound, and reports whether it joined. A subscription pump is
 // not a request being served: it lasts as long as its subscriber wants
 // events, so counting it against the ops ceiling would let a host's
-// sixteenth subscription start refusing its seventeenth request — the bound
-// exists to cap concurrent adapter work, not concurrent interest.
+// sixteenth subscription start refusing its seventeenth request — the ops
+// bound exists to cap concurrent adapter work, not concurrent interest.
+//
+// Interest has a bound of its own instead, because it is not free: a pump
+// holds a goroutine and a hub subscriber queue, and takes a share of every
+// envelope the hub fans out. Without one, a host looping on events against an
+// idle session accumulated pumps without limit — the ops slot its request
+// held is released the moment the subscription is acknowledged.
 //
 // The teardown must still wait for it, because an orphaned pump holds the
 // caller's output and can write into it after Run has returned, which is the
@@ -303,19 +334,28 @@ func (r *runState) offer(size int) (admission, string) {
 // WaitGroup, and closed admission refuses it for the same reason it refuses
 // a worker: a positive Add after Wait has seen the counter reach zero is
 // what the contract forbids.
-func (r *runState) attach() (context.Context, bool) {
+func (r *runState) attach() (context.Context, admission, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.shuttingDown {
-		return nil, false
+		return nil, closedToWork, ""
 	}
+	if r.attached >= r.maxAttach {
+		return nil, refused, fmt.Sprintf("the frontend is already serving %d subscriptions", r.maxAttach)
+	}
+	r.attached++
 	r.work.Add(1)
-	return r.pumps, true
+	return r.pumps, admitted, ""
 }
 
 // detach releases long-lived work registered by attach. It charges no bytes
-// and frees no slot, because attach took neither.
-func (r *runState) detach() { r.work.Done() }
+// and frees no ops slot, because attach took neither.
+func (r *runState) detach() {
+	r.mu.Lock()
+	r.attached--
+	r.mu.Unlock()
+	r.work.Done()
+}
 
 func (r *runState) release(size int) {
 	r.mu.Lock()
@@ -371,7 +411,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, maxOps: maxOps, shutdown: shutdown, logger: logger}, nil
+	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, maxOps: maxOps, maxAttach: options.MaxSubscriptions, shutdown: shutdown, logger: logger}, nil
 }
 
 // Hub returns the hub the frontend serves.
@@ -493,7 +533,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	frames := make(chan frameResult, 1)
 	go readFrames(in, s.frameLimit, frames, readerDone)
 
-	run := newRunState(ctx, s.maxOps, 0)
+	run := newRunState(ctx, s.maxOps, 0, s.maxAttach)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- s.serveLoop(ctx, run, frames, lines, writerFailed, refusals) }()
 
