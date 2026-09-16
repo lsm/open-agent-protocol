@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -504,6 +505,64 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 // type-independent bookkeeping: the pre-start rule is a known-type rule, since
 // only a known terminal may settle a run early and an unknown type cannot say
 // whether it is one.
+func TestTolerantStateChecksScopeOfUnknownEnvelopes(t *testing.T) {
+	// Every unknown scoped envelope is held to scope agreement between its
+	// generic payload members and its envelope, whatever it is called and
+	// whether or not it carries a sequence.
+	unknown := func(typ string, envelope, payload map[string]any) func(started map[string]any, seq int64) []map[string]any {
+		return func(started map[string]any, seq int64) []map[string]any {
+			e := map[string]any{"protocol": started["protocol"], "version": started["version"], "profile": started["profile"], "type": typ, "id": "ext-" + typ, "payload": payload}
+			for k, v := range envelope {
+				e[k] = v
+			}
+			return []map[string]any{e}
+		}
+	}
+	cases := map[string]struct {
+		typ      string
+		envelope map[string]any // merged over the common members; "started" values resolved below
+		payload  map[string]any
+		mismatch bool
+	}{
+		"session notification agreeing":        {"com.example.session.note", map[string]any{"session_id": "s1"}, map[string]any{"session_id": "s1", "note": "x"}, false},
+		"session notification disagreeing":     {"com.example.session.note", map[string]any{"session_id": "s1"}, map[string]any{"session_id": "s2", "note": "x"}, true},
+		"unsequenced run envelope agreeing":    {"com.example.run.note", map[string]any{"session_id": "s1", "run_id": "r1"}, map[string]any{"run_id": "r1"}, false},
+		"unsequenced run envelope disagreeing": {"com.example.run.note", map[string]any{"session_id": "s1", "run_id": "r1"}, map[string]any{"run_id": "rB"}, true},
+		"request disagreeing":                  {"com.example.run.pause.request", map[string]any{"session_id": "s1", "run_id": "r1"}, map[string]any{"session_id": "s1", "run_id": "rB"}, true},
+		"payload without scope members":        {"com.example.session.note", map[string]any{"session_id": "s1"}, map[string]any{"note": "x"}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), unknown(tc.typ, tc.envelope, tc.payload))
+			_, tolerant := validateBoth(t, trace, "scope-"+tc.typ)
+			if got := hasCode(tolerant, CodeScopeMismatch); got != tc.mismatch {
+				t.Fatalf("scope_mismatch=%v, want %v: %v", got, tc.mismatch, tolerant.Diagnostics)
+			}
+			// The unmatched request diagnostic is expected for the request
+			// case; nothing else may leak from an agreeing envelope.
+			if !tc.mismatch && !strings.HasSuffix(tc.typ, ".request") && !tolerant.Valid() {
+				t.Fatalf("agreeing unknown envelope rejected: %v", tolerant.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestTolerantStateOpaqueAdmissionAtClose(t *testing.T) {
+	// A trace that ends while a foreign-admitted run is open owes a terminal
+	// (type-independent) but not run.started (a lifecycle rule the validator
+	// cannot judge under that admission).
+	trace := loadTrace(t, "core-completed.json")
+	firstOfType(t, trace, "session.message.submit.response")["payload"].(map[string]any)["admission"] = "merged"
+	trace = trace[:2]
+	_, tolerant := validateBoth(t, trace, "merged-open")
+	if !hasCode(tolerant, CodeMissingRunTerminal) {
+		t.Fatalf("open foreign-admitted run not reported as missing its terminal: %v", tolerant.Diagnostics)
+	}
+	if hasCode(tolerant, CodeMissingRunStarted) {
+		t.Fatalf("close-time start check applied under a foreign admission: %v", tolerant.Diagnostics)
+	}
+}
+
 func TestTolerantStateSkipsPreStartRuleForUnknownEvents(t *testing.T) {
 	trace := loadTrace(t, "core-completed.json")
 	var out []map[string]any

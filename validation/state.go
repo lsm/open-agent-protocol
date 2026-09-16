@@ -111,12 +111,13 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	if isRequest(e.Type) {
 		session, run := requestScope(e)
 		if s.tolerant && !isKnownType(e.Type) {
-			// An unknown request has no payload decoder to read scope from,
-			// but its envelope scope is the wire's own and is retained so the
-			// generic correlation checks still bind its response: a request
-			// on run A answered on run B is a scope_mismatch whatever the
+			// An unknown request has no typed payload decoder, but its
+			// generic payload scope and its envelope scope are still the
+			// wire's own: they must agree, and the result is retained so the
+			// generic correlation checks bind its response — a request on
+			// run A answered on run B is a scope_mismatch whatever the
 			// operation is called.
-			session, run = e.SessionID, e.RunID
+			session, run = unknownScope(e)
 		}
 		// A request that declares scope in both its envelope and payload must
 		// agree; otherwise its stored correlation scope is self-contradictory.
@@ -343,14 +344,23 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	default:
 		if isRunEvent(e.Type) {
 			s.runEvent(i, line, e)
-		} else if s.tolerant && !isKnownType(e.Type) && e.RunID != "" && e.Sequence != nil {
-			// Tolerant mode classifies an unknown type by its wire scope: an
-			// envelope carrying both run_id and sequence is a run-scoped event
-			// and enters the type-independent bookkeeping (scope agreement,
-			// an accepted admission, sequence contiguity, terminality). One
-			// carrying session_id alone is session-scoped and advances no
-			// cursor; one carrying neither touches no bookkeeping at all.
-			s.runEvent(i, line, e)
+		} else if s.tolerant && !isKnownType(e.Type) {
+			// Tolerant mode classifies an unknown type by its wire scope.
+			// Whatever the type is called, the generic session_id and run_id
+			// its payload declares must agree with its envelope (a request or
+			// response was already held to that above). An envelope carrying
+			// both run_id and sequence is a run-scoped event and enters the
+			// type-independent bookkeeping (an accepted admission, sequence
+			// contiguity, terminality); one carrying session_id alone is
+			// session-scoped and advances no cursor; one carrying neither
+			// touches no bookkeeping at all.
+			if !isRequest(e.Type) && !isResponse(e.Type) {
+				session, run := unknownScope(e)
+				s.checkScope(i, line, e, session, run)
+			}
+			if e.RunID != "" && e.Sequence != nil {
+				s.runEvent(i, line, e)
+			}
 		}
 	}
 }
@@ -359,6 +369,26 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 // payload table is the authority: every known type has a decode target.
 func isKnownType(t protocol.EnvelopeType) bool {
 	return payloadTarget(t) != nil
+}
+
+// unknownScope is the scope of an envelope whose type this revision does not
+// define (tolerant mode). The generic payload members session_id and run_id
+// are read when present, so a payload declaring a scope other than the
+// envelope's is still a scope_mismatch; the envelope's own scope stands in
+// for an absent member, since an unknown type's payload owes none.
+func unknownScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
+	var p struct {
+		SessionID protocol.SessionID `json:"session_id"`
+		RunID     protocol.RunID     `json:"run_id"`
+	}
+	_ = e.DecodePayload(&p)
+	if p.SessionID == "" {
+		p.SessionID = e.SessionID
+	}
+	if p.RunID == "" {
+		p.RunID = e.RunID
+	}
+	return p.SessionID, p.RunID
 }
 func collectFeatures(dst map[string]protocol.SupportLevel, src map[string]protocol.FeatureSupport) {
 	for name, support := range src {
@@ -406,8 +436,9 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	session, run := responseScope(e)
 	if s.tolerant && !isKnownType(e.Type) {
 		// An unknown response, like an unknown request, is scoped by its
-		// envelope: the correlation check binds it to the request it answers.
-		session, run = e.SessionID, e.RunID
+		// generic payload members and its envelope; the correlation check
+		// binds it to the request it answers.
+		session, run = unknownScope(e)
 	}
 	if req.session != "" && session != "" && session != req.session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "response session does not match the request scope", string(req.session), string(session), string(e.InReplyTo))
@@ -1059,7 +1090,9 @@ func (s *state) close(index int) {
 		}
 	}
 	for _, r := range s.runs {
-		if r.admitted && !r.started && !r.terminal {
+		// Whether run.started was owed at all is unknown under a foreign
+		// admission (see runState.opaqueAdmission); a terminal always is.
+		if r.admitted && !r.started && !r.terminal && !r.opaqueAdmission {
 			e := protocol.Envelope{ID: protocol.EnvelopeID(r.id), Type: protocol.TypeRunStarted, RunID: r.id, SessionID: r.session}
 			s.add(CodeMissingRunStarted, r.lastIndex, r.lastLine, e, "", "admitted run never emitted run.started")
 		}
