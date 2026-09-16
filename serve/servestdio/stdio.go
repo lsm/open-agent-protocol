@@ -316,6 +316,22 @@ var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame lim
 // another session over the same stream after ErrShutdownStalled may see it
 // arrive there; `oap serve` exits the process instead, which is why the
 // condition does not arise for it.
+// ErrRequestsDropped reports that requests the host sent before ending the
+// session were read and never served. It happens when the serving loop is
+// still holding work at the teardown: admission closes under it, and the
+// frames it had taken — the one it holds and any the reader had handed on —
+// are let go rather than served behind a session the host has ended.
+//
+// This is a real loss and not a tidy one. The serial dispatch this frontend
+// replaced served every frame it had read before it noticed the end, so a
+// host that pipelined three requests and closed stdin was answered three
+// times; here it may be answered once. What the caller is owed is to be
+// told, which is what this error is for, rather than a nil return that
+// reads as "all served". Whether the daemon should instead refuse such a
+// request with a typed response, so a host learns which one went
+// unanswered, is a protocol question this frontend does not settle.
+var ErrRequestsDropped = errors.New("servestdio: requests read before the host's end were dropped unserved")
+
 var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")
 
 // Run serves requests from in until the host closes it (clean end), the
@@ -647,7 +663,11 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 			}
 			size := len(result.frame)
 			if !run.admit(ctx, writerFailed, size) {
-				return nil
+				// Admission closed under us: the teardown is past waiting
+				// and this frame, decoded and never served, is being let
+				// go. Say so rather than returning as though the input had
+				// simply ended.
+				return ErrRequestsDropped
 			}
 			go func(request requestLine, size int) {
 				defer run.release(size)

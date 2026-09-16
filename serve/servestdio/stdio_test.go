@@ -1279,13 +1279,16 @@ func (a *slowProbe) Open(context.Context, base.OpenRequest) (base.Session, error
 	return nil, errors.New("slowProbe opens no session")
 }
 
-// TestSlowWorkersBehindTheBoundSettleCleanly pins that missing the grace
-// window is not the same as abandoning something. A loop parked at the
-// in-flight bound cannot return while the bound holds, so the window
-// expires — but closing admission releases it, and if the work then settles
-// and its responses drain, nothing was left behind. Reporting a stall there
-// would tell a caller its output is unusable when every answer arrived.
-func TestSlowWorkersBehindTheBoundSettleCleanly(t *testing.T) {
+// TestSlowWorkersBehindTheBoundReportTheDrop pins two things that are easy
+// to confuse. Missing the grace window is not the same as abandoning work
+// in flight: a loop parked at the in-flight bound cannot return while the
+// bound holds, so the window expires by construction, and if the admitted
+// work then settles and drains, nothing was stalled. But the frames the
+// loop was still holding are dropped when admission closes under it, and
+// that is a loss the caller has to be told about — the serial dispatch this
+// replaced would have served them. So Run reports the drop and does not
+// report a stall.
+func TestSlowWorkersBehindTheBoundReportTheDrop(t *testing.T) {
 	registry := serve.NewRegistry()
 	if err := registry.Register("slow", &slowProbe{delay: 250 * time.Millisecond}); err != nil {
 		t.Fatal(err)
@@ -1323,8 +1326,11 @@ func TestSlowWorkersBehindTheBoundSettleCleanly(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run returned %v, want a clean end: slow is not stalled", err)
+		if !errors.Is(err, ErrRequestsDropped) {
+			t.Fatalf("Run returned %v, want the dropped requests reported", err)
+		}
+		if errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v: the admitted work settled and drained, so nothing stalled", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return")
@@ -1332,11 +1338,8 @@ func TestSlowWorkersBehindTheBoundSettleCleanly(t *testing.T) {
 	if err := stdoutWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// The admitted op's response reached the host. The two the loop had not
-	// admitted when the host disconnected are not served — that is the
-	// existing rule for work admission refuses, not something this test
-	// asserts about — and the point here is only that a session which
-	// settled and drained is not reported as stalled.
+	// The admitted op's response reached the host; the ones the loop was
+	// still holding did not, which is exactly what the returned error says.
 	if lines := <-drained; lines < 1 {
 		t.Fatalf("%d responses reached the host, want the admitted op answered", lines)
 	}
