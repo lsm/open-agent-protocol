@@ -343,7 +343,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.addExpected(CodeUnappliedControl, i, line, e, "/payload/current_model_id", "a per_run model selection moved the session default", st.expectedDefault, p.CurrentModelID)
 		}
 		st.currentModel, st.currentKnown = p.CurrentModelID, true
-		s.checkPublishedSources(i, line, e, "/payload/sources")
+		s.checkPublishedSources(i, line, e)
 		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
 	case protocol.TypeSessionMessageSubmitRequest:
 		var p protocol.MessageSubmitRequest

@@ -207,6 +207,17 @@ rejection rather than a convention, and the validator adds
 `attachment_field_in_catalog` for a published source carrying one anyway — the
 tolerant bundle and a hand-rolled serializer are caught too.
 
+That rule reads the payload's raw JSON, because decoding is what hides the
+defect: an attachment-only member unmarshals into no field of
+`ToolSourceDescriptor` and is gone before any semantic check could see it. And
+it runs over every place a source is published, not just the three response
+kinds that carry one obviously. A capability descriptor publishes sources too,
+and may publish them under a layer alone as it may its catalog, so the
+descriptor's top-level array and each layer's are both checked, each under its
+own pointer. Exempting the descriptor would have left the hole exactly where a
+source is first published — and a source that leaks there leaks to every
+session, not one.
+
 `session.state` and `SessionOpenResponse` gain `sources`, in the descriptor
 shape. In Go that is two structs and not one: the schema aliases the two
 payload shapes but `protocol.SessionOpenResponse` is separate from
@@ -340,6 +351,28 @@ may differ between lists — a harness refreshes its own catalog — but the
 open-time entries never drop out and never change, because attachment is not
 revocable in this unit and runtime attach and detach stay deferred.
 
+A snapshot is held to one descriptor per id as a catalog is, and it is held to
+it separately from the union above. Comparing id by id answers only what the
+union names: two entries under one id would be compared once, the second never
+looked at, so a snapshot could list an attached source twice with different
+members and pass while its source resolution was ambiguous. The duplicate is
+`duplicate_tool_source`, the same code the same defect takes in a catalog,
+because it is the same defect.
+
+An unscoped list is a different question from a session's, and the answer must
+say which one it answered. A request naming no session asks for the endpoint's
+own catalog, so the reference adapter answers it with the descriptor's declared
+sources alone: an attachment belongs to one session and is not part of what the
+endpoint publishes to everyone. Answering with this session's attachments would
+present a source one caller attached as endpoint-wide, and because such a
+response carries no session the lifetime rule above — which ties an attached
+source to the session that attached it — would never run over it. Refusing the
+unscoped list on an attached session was the other option and is worse: the
+caller asked a question the endpoint can answer, and the endpoint catalog is
+exactly what its own descriptor already publishes. Scoping the answer to the
+session silently would be worse still, substituting a different question's
+answer for the one asked.
+
 A capability refresh does not release them either. The descriptor's declared
 sources are invalidated with the revision, as the tool catalog already is, but
 a session's attachments are session-lifetime facts the next catalog must still
@@ -409,15 +442,17 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 51 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 53 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
 descriptor, the attachment gate and its typed refusals, the remote mode ordered
 behind the capability rung, the attachment limits in both directions, the union
-a session snapshot publishes, the lifetime catalog an attachment binds, the
-attachment-only member a published source may never carry, a call's attribution
-and its reassignment mid-lifecycle, a refresh that collides with an attachment,
+a session snapshot publishes and the one id per source it is held to, the
+lifetime catalog an attachment binds, the attachment-only member a published
+source may never carry — in a list and in a descriptor, top level and under a
+layer — a call's attribution and its reassignment mid-lifecycle, a refresh that
+collides with an attachment,
 an attach capability disclosing no session-open mode in both directions, one
 published under a layer alone, and the two schema-invalid disclosures no
 request can satisfy — `max_sources: 0` and a transport outside the source-kind

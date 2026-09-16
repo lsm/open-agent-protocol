@@ -174,3 +174,77 @@ func TestCatalogRefusesAnotherSessionsScope(t *testing.T) {
 		t.Fatal("a foreign session scope was answered")
 	}
 }
+
+// TestUnscopedCatalogPublishesNoAttachment pins what an unscoped list means on
+// an attached session. A request naming no session asks for the endpoint's own
+// catalog, so it gets the declared sources alone: an attachment belongs to one
+// session and is not part of what the endpoint publishes to everyone. The
+// answer also carries no session id, which is what makes the leak invisible if
+// it happens — the validator's lifetime rule ties an attached source to the
+// session that attached it, and an unscoped response never reaches it, so a
+// source presented as endpoint-wide here would be checked by nothing.
+func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
+	attachment := protocol.ToolSourceAttachment{
+		ID: "workspace-files", Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
+		DisplayName: "Workspace Files", Endpoint: "stdio:workspace-files",
+		Command: "/usr/local/bin/mcp-filesystem", Environment: []string{"MCP_TOKEN"},
+	}
+	lister := openWithSources(t, attachment).(adapter.ToolLister)
+	catalog, err := lister.Tools(context.Background(), protocol.ToolsListRequest{})
+	if err != nil {
+		t.Fatalf("tools: %v", err)
+	}
+	if catalog.SessionID != "" {
+		t.Fatalf("an unscoped request was answered under session %q", catalog.SessionID)
+	}
+	for _, source := range catalog.Sources {
+		if source.ID == attachment.ID {
+			t.Fatalf("the endpoint catalog publishes a source one session attached: %+v", catalog.Sources)
+		}
+	}
+	// It is the endpoint's own catalog, not an empty one: what the descriptor
+	// declares is exactly what an unscoped list answers with.
+	implementation := adapter.NewMemory(adapter.Config{})
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := map[string]protocol.ToolSourceDescriptor{}
+	for _, source := range descriptor.Capabilities.Sources {
+		declared[source.ID] = source
+	}
+	if len(catalog.Sources) != len(declared) {
+		t.Fatalf("the endpoint catalog lists %d sources, the descriptor declares %d", len(catalog.Sources), len(declared))
+	}
+	for _, source := range catalog.Sources {
+		if declared[source.ID] != source {
+			t.Fatalf("source %q differs from the descriptor's: %+v", source.ID, source)
+		}
+	}
+	// Every tool still resolves, which is the property an endpoint catalog
+	// owes whatever its scope: dropping the attachments must not orphan one.
+	for _, tool := range catalog.Tools {
+		if tool.Source == "" {
+			continue
+		}
+		if _, ok := declared[tool.Source]; !ok {
+			t.Fatalf("tool %q names source %q, which the endpoint catalog does not declare", tool.Name, tool.Source)
+		}
+	}
+
+	// The same session, asked in its own scope, still answers with the
+	// attachment: the unscoped answer narrowed the question, not the session.
+	scoped, err := lister.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "tool-sources"})
+	if err != nil {
+		t.Fatalf("scoped tools: %v", err)
+	}
+	attached := false
+	for _, source := range scoped.Sources {
+		if source.ID == attachment.ID {
+			attached = true
+		}
+	}
+	if !attached {
+		t.Fatalf("the session catalog dropped the attachment: %+v", scoped.Sources)
+	}
+}

@@ -3225,6 +3225,22 @@
       ]
     },
     {
+      "id": "open-sources-duplicate-attachment",
+      "path": "semantic-invalid/open-sources-duplicate-attachment.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "open-sources-state-omits-attachment",
       "path": "semantic-invalid/open-sources-state-omits-attachment.json",
       "kind": "semantic-invalid",
@@ -3291,6 +3307,24 @@
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
       ]
+    },
+    {
+      "id": "descriptor-leaks-attachment-fields",
+      "path": "semantic-invalid/descriptor-leaks-attachment-fields.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "attachment_field_in_catalog",
+        "attachment_field_in_catalog"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "mode": "tolerant"
     },
     {
       "id": "tools-catalog-leaks-attachment-env",

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -107,6 +108,7 @@ func descriptorTools(p protocol.CapabilitiesResponse) []protocol.ToolDefinition 
 // or dangling on its own cannot resolve a tool to one source or one owner, and
 // a call that agrees with a dangling entry is not excused by that agreement.
 func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
+	s.checkPublishedSources(i, line, e)
 	sources := descriptorSources(p)
 	declared, duplicate := toolSourceMap(sources)
 	s.declaredSources = declared
@@ -211,7 +213,7 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 		// cannot tie the catalog to the attachment it reflects.
 		s.addExpected(CodeScopeMismatch, i, line, e, "/session_id", "a session-scoped catalog must name its session on the envelope", string(pending.session), string(e.SessionID), string(e.InReplyTo))
 	}
-	s.checkPublishedSources(i, line, e, "/payload/sources")
+	s.checkPublishedSources(i, line, e)
 	declared, duplicate := toolSourceMap(p.Sources)
 	if duplicate != "" {
 		s.addExpected(CodeDuplicateToolSource, i, line, e, "/payload/sources", "a catalog declares two tool sources with one id", "one source per id", duplicate)
@@ -273,20 +275,55 @@ func describeSource(source protocol.ToolSourceDescriptor) string {
 // in the schema phase; the rule exists for the tolerant bundle and for a
 // hand-rolled serializer, where an implementation reflecting the open-time
 // value straight into its catalog would leak a credential and still validate.
-func (s *state) checkPublishedSources(i, line int, e protocol.Envelope, pointer string) {
+//
+// It reads the payload's raw JSON rather than a decoded descriptor, because
+// decoding is exactly what hides the defect: an attachment-only member
+// unmarshals into no field of ToolSourceDescriptor and is gone before any
+// semantic check could see it.
+//
+// Every carrier of a published source runs it, and each runs it over every
+// place that carrier may publish one. A capability descriptor may declare its
+// sources under a layer alone, as it may its catalog, so a layer's array is
+// checked with the top-level array and under its own pointer. Holding the
+// descriptor to a weaker rule than the list, open, and state responses would
+// leave the hole exactly where a source is first published.
+func (s *state) checkPublishedSources(i, line int, e protocol.Envelope) {
 	var raw struct {
 		Sources []map[string]json.RawMessage `json:"sources"`
+		Layers  map[string]struct {
+			Sources []map[string]json.RawMessage `json:"sources"`
+		} `json:"layers"`
 	}
 	if e.DecodePayload(&raw) != nil {
 		return
 	}
-	for index, source := range raw.Sources {
+	s.checkRawSources(i, line, e, "/payload/sources", raw.Sources)
+	layers := make([]string, 0, len(raw.Layers))
+	for name := range raw.Layers {
+		layers = append(layers, name)
+	}
+	sort.Strings(layers)
+	for _, name := range layers {
+		s.checkRawSources(i, line, e, "/payload/layers/"+escapePointerToken(name)+"/sources", raw.Layers[name].Sources)
+	}
+}
+
+// checkRawSources judges one published `sources` array, whatever carries it.
+func (s *state) checkRawSources(i, line int, e protocol.Envelope, pointer string, sources []map[string]json.RawMessage) {
+	for index, source := range sources {
 		for _, member := range attachmentOnlyMembers {
 			if _, ok := source[member]; ok {
 				s.addExpected(CodeAttachmentFieldInCatalog, i, line, e, fmt.Sprintf("%s/%d/%s", pointer, index, member), "a published tool source carries an attachment-only member", "no command, args, or environment", member)
 			}
 		}
 	}
+}
+
+// escapePointerToken encodes one JSON Pointer reference token (RFC 6901): a
+// layer name is an arbitrary object key, so a diagnostic pointing at it must
+// escape the two characters a pointer reserves.
+func escapePointerToken(token string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(token, "~", "~0"), "/", "~1")
 }
 
 // sessionOpenRequest retains what an open carrying tool_sources owes its
@@ -401,7 +438,7 @@ func attachmentWithinLimits(support protocol.FeatureSupport, attachments []proto
 // attached sources, which are session-lifetime facts every later catalog and
 // snapshot is held to.
 func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol.SessionOpenResponse) {
-	s.checkPublishedSources(i, line, e, "/payload/sources")
+	s.checkPublishedSources(i, line, e)
 	pending := s.pendingOpens[e.InReplyTo]
 	if pending == nil {
 		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
@@ -447,7 +484,14 @@ func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session pr
 	for _, id := range track.attachedOrder {
 		expected[id] = track.attached[id]
 	}
-	reported, _ := toolSourceMap(published)
+	reported, duplicate := toolSourceMap(published)
+	if duplicate != "" {
+		// One id resolves to one source. Two entries under one id leave the
+		// union ambiguous whatever else agrees: the loops below would compare
+		// the first and never see the second, so a snapshot could list an
+		// attached source twice with different members and pass.
+		s.addExpected(CodeDuplicateToolSource, i, line, e, "/payload/sources", "a session snapshot declares two tool sources with one id", "one source per id", duplicate)
+	}
 	ids := make([]string, 0, len(expected))
 	for id := range expected {
 		ids = append(ids, id)

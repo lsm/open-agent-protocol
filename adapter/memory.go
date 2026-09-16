@@ -593,11 +593,27 @@ func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error
 	return s.state, nil
 }
 
-// Tools serves the session's effective catalog: the scripted tool, attributed
-// to the native source it comes from, and every source the session resolves —
-// the descriptor's declared ones plus the open's attachments. The response
-// repeats the request's session id so a consumer, and the validator, can tie
-// the catalog to the attachment it reflects.
+// Tools serves a catalog scoped the way the request asked for it, and the
+// response repeats that scope so a consumer, and the validator, can tell which
+// of the two it was given.
+//
+// A request naming this session asks for the session's effective catalog: the
+// scripted tool attributed to the native source it comes from, and every
+// source the session resolves — the descriptor's declared ones plus the open's
+// attachments.
+//
+// A request naming no session asks for the endpoint's own catalog, and gets
+// the declared sources alone. An attachment belongs to one session, so it is
+// not part of what the endpoint publishes to everyone, and the unscoped answer
+// is the shape a caller who has never opened a session would receive. Answering
+// it with this session's attachments would present a source one caller attached
+// as endpoint-wide, and because the response carries no session the validator's
+// lifetime rule — which ties an attached source to the session that attached it
+// — would never run over it. Refusing the unscoped list instead was the other
+// option and is worse: the caller asked a question this endpoint can answer,
+// and the endpoint catalog is exactly what its own descriptor already
+// publishes. Silently scoping the answer to this session would be worse still,
+// substituting a different question's answer for the one asked.
 func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListRequest) (protocol.ToolsListResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.ToolsListResponse{}, err
@@ -610,9 +626,13 @@ func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListReq
 	if request.SessionID != "" && request.SessionID != s.state.SessionID {
 		return protocol.ToolsListResponse{}, ErrRunNotFound
 	}
+	sources := declaredSources()
+	if request.SessionID != "" {
+		sources = sessionSources(s.attached)
+	}
 	return protocol.ToolsListResponse{
 		SessionID: request.SessionID,
-		Sources:   sessionSources(s.attached),
+		Sources:   sources,
 		Tools:     scriptedCatalog(),
 	}, nil
 }

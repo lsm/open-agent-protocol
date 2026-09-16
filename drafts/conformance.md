@@ -301,7 +301,9 @@ For the catalog (`action.tools.list`), an implementation:
   payload. A request names its session in either place — the payload member is
   optional here, because an unscoped list asks for the endpoint's own catalog —
   and an unscoped answer to a request scoped either way is not an
-  endpoint-level catalog;
+  endpoint-level catalog. An answer to a request naming no session carries no
+  session's attachments: an attachment belongs to one session, and a response
+  carrying no scope is read as what the endpoint publishes to everyone;
 - attributes a call it emits with `source` to the source its own catalog
   records for that tool.
 
@@ -330,8 +332,10 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   conforming, so the schema refuses it;
 - publishes the attached sources back through the open response, later
   session snapshots, and every session-scoped catalog, as
-  `ToolSourceDescriptor` values. `command`, `args`, and `environment` are
-  attachment-only and never appear in a published source.
+  `ToolSourceDescriptor` values, one descriptor per `id` in each of them.
+  `command`, `args`, and `environment` are attachment-only and never appear in
+  a published source — in any of those, or in the capability descriptor's own
+  `sources`, top level or under a layer.
 
 Runtime attach and detach, a catalog served without a session, and
 control-layer-provided tools are outside this unit; the last is `+control-tools`.
