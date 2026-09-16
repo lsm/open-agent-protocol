@@ -158,6 +158,19 @@ against the trace as it stands. So the snapshot states what it knew:
 admitted, the runs it has already removed with the sequence of each one's
 terminal, and the last model-affecting event it reflects.
 
+`active_runs` is a list of the session's nonterminal runs, and each entry is
+held to that. A terminal status there contradicts the membership it is part of:
+a snapshot that knows a run settled drops it and names it in `as_of.settled`
+rather than listing it as completed. A run the trace has seen start is not
+`queued` at any position from its start onwards, though a capture stated before
+that position may still call it queued and is judged there. The converse — a
+reservation listed as running — is deliberately not diagnosed: a promotion
+happens inside the endpoint and its `run.started` may drain after the snapshot,
+which is the race the capture positions exist to allow. And `active_run_id`
+names the started run or names none: where only reservations remain it is
+absent, because a client reading it as the run to follow would follow a run
+that has published nothing.
+
 A stated position the trace has not reached is held and reconciled when it
 arrives. A position that never exists is not: a snapshot may describe a
 position the trace has not yet seen, but not one the run never reaches, and a

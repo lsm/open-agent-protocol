@@ -1066,3 +1066,61 @@ func runScriptedTool(t *testing.T, session adapter.Session, admission protocol.M
 	}
 	return append(trace, drainAvailable(stream)...)
 }
+
+// A session waiting for input and the run it is waiting on must say the same
+// thing. The entry is the surface a recovering caller reads the interaction id
+// from, and one that reported the run as running beside a session status of
+// waiting_for_input would describe a session that is not the one parked.
+func TestActiveRunEntryFollowsTheRunStatus(t *testing.T) {
+	session := newTestSession(t, 64)
+	run, stream := submit(t, session)
+	events := drainAvailable(stream)
+	requested := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	gate := envelopeOfType(t, drainAvailable(stream), protocol.TypeUserInputRequested)
+	var input protocol.UserInputRequestedPayload
+	if err := gate.DecodePayload(&input); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != protocol.SessionWaitingForInput {
+		t.Fatalf("session status = %s", state.Status)
+	}
+	if len(state.ActiveRuns) != 1 {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	entry := state.ActiveRuns[0]
+	if entry.RunID != run || entry.Status != protocol.RunWaitingForInput {
+		t.Fatalf("entry = %+v, want %s waiting_for_input", entry, run)
+	}
+	if len(entry.PendingInteractions) != 1 || entry.PendingInteractions[0] != input.InteractionID {
+		t.Fatalf("pending interactions = %+v, want %s", entry.PendingInteractions, input.InteractionID)
+	}
+}
+
+func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.EnvelopeType) protocol.Envelope {
+	t.Helper()
+	for _, envelope := range envelopes {
+		if envelope.Type == typ {
+			return envelope
+		}
+	}
+	t.Fatalf("no %s in %d envelopes", typ, len(envelopes))
+	return protocol.Envelope{}
+}

@@ -368,7 +368,13 @@ func (s *memorySession) refreshStateLocked() {
 	s.state.ActiveRuns = entries
 	switch {
 	case s.active != nil && !s.active.terminal:
+		// The session's status follows its started run's, so a refresh
+		// triggered by any later emission cannot quietly move a session
+		// waiting for input back to running.
 		s.state.Status = protocol.SessionRunning
+		if s.active.status == protocol.RunWaitingForInput {
+			s.state.Status = protocol.SessionWaitingForInput
+		}
 		s.state.ActiveRunID = s.active.id
 	case s.reserved != nil && !s.reserved.terminal:
 		// Only reservations remain, so no run is started and active_run_id
@@ -465,17 +471,17 @@ func (s *memorySession) requestInput(run *memoryRun) error {
 		PendingUserInputID: run.inputID,
 		UpdatedAtMS:        s.clock.Now().UnixMilli(),
 	}
-	if err := s.emit(run, protocol.TypeRunStatusUpdated, status, false); err != nil {
-		return err
-	}
+	// The run's status moves before the event that reports it, not after: the
+	// emission refreshes the published state, and a refresh taken while the
+	// run still called itself running would leave a snapshot describing a
+	// session waiting for input whose only run is listed as running.
 	s.mu.Lock()
 	if !run.terminal {
 		run.status = protocol.RunWaitingForInput
-		s.state.Status = protocol.SessionWaitingForInput
 		s.state.UpdatedAtMS = status.UpdatedAtMS
 	}
 	s.mu.Unlock()
-	return nil
+	return s.emit(run, protocol.TypeRunStatusUpdated, status, false)
 }
 
 // admittedControls is the control set one run was admitted with. It is read

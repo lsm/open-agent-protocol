@@ -169,6 +169,7 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		case entry.QueuePosition != nil:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *entry.QueuePosition), string(entry.RunID))
 		}
+		s.checkEntryStatus(i, line, e, pointer, entry, r)
 		s.checkEntryAnchor(i, line, e, pointer, p.SessionID, entry, r)
 		s.checkEntryPending(i, line, e, pointer, entry, r)
 	}
@@ -185,9 +186,44 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			started = r.id
 		}
 	}
-	if started != "" && p.ActiveRunID != started {
+	switch {
+	case started != "" && p.ActiveRunID != started:
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must name the started run of the session", string(started), string(p.ActiveRunID), string(started))
+	case started == "" && len(required) > 0 && p.ActiveRunID != "":
+		// Only reservations remain, and a reservation is not a started run:
+		// the field names one or it names none. A client reading it as the
+		// run to follow would follow a run that has published nothing.
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must be absent where the session holds only reservations", "absent", string(p.ActiveRunID))
 	}
+}
+
+// checkEntryStatus holds an entry's status to what active_runs is a list of.
+//
+// A terminal status is always wrong there: the field lists the session's
+// nonterminal runs, and a snapshot that knows a run settled drops it and names
+// it in as_of.settled rather than listing it as completed. A run the trace has
+// seen start is no longer queued at any position from its start onwards; a
+// capture before that position may still call it queued, and is judged there.
+//
+// The converse — a reservation listed as running — is deliberately not
+// diagnosed. A promotion happens inside the endpoint and its run.started may
+// drain after the snapshot, so an accurate entry can lead the trace, which is
+// the race the capture positions exist to allow.
+func (s *state) checkEntryStatus(i, line int, e protocol.Envelope, pointer string, entry protocol.ActiveRun, r *runState) {
+	switch entry.Status {
+	case protocol.RunCompleted, protocol.RunFailed, protocol.RunCancelled:
+		s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs lists a run with a terminal status; a settled run is dropped and named in as_of.settled", "a nonterminal status", string(entry.Status), string(r.id))
+		return
+	}
+	if entry.Status != protocol.RunQueued || !r.started {
+		return
+	}
+	if entry.AsOfSequence != nil && *entry.AsOfSequence < r.startSequence {
+		// The entry states a position before the run began, where queued is
+		// what it was.
+		return
+	}
+	s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs reports a run as queued at a position it had already started at", "a started status", string(entry.Status), string(r.id))
 }
 
 func describeQueuePosition(position *int) string {
