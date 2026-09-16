@@ -312,6 +312,45 @@ validator says the same thing from its own side — the catalog's gate rejects a
 `models.response` that cites no revision — so a client that hid the revision
 would be hiding the one field that makes the answer usable.
 
+### The open response is the state document, so the daemon sends it whole
+
+`current_model_id` on `session.open.response` is the model a control-free
+submission would use — the first snapshot a control layer sees, and what the
+validator judges a catalog's own `current_model_id` against before any state
+response has been served. This unit added the member to the wire type and the
+rules that read it, and thirteen fixtures exercise them.
+
+Nothing on the daemon path filled it. The HTTP open handler built the response
+by naming members, and it named two: the id and the status. So an adapter that
+knows the session's model at open — OpenCode sets it in the initial state — had
+it discarded on the way out, and the member read as covered while covering
+nothing. `Metadata` and `Recovery` were dropped by the same statement, three of
+the five members the type had.
+
+The member-by-member copy existed because the Go `SessionOpenResponse` was a
+hand-written subset of the session state. The schema does not agree with that:
+`openResponse` is a `$ref` to `state`, one document. Neither does the
+TypeScript client, where `SessionOpenResponse = SessionState` already, beside
+the same two aliases Go already had for `session.state.response` and
+`session.state.updated`. The Go type was the outlier, and the subset is what
+forced the hand-copy in the first place.
+
+So the type is now the alias the schema and the other client already describe,
+and the handler puts the state on the wire whole. Copying the missing three
+members would have fixed the symptom and left the next member added to drift
+the same way; there is now no enumeration to fall out of step with. Both
+`session.state.response` routes already passed the state whole, so open was the
+only route that enumerated, and stdio has no open op at all — `Hub.Open` has
+exactly one caller. `ActiveRunID`, `TranscriptCursor`, and `UpdatedAtMS` now
+travel on an open response too, each `omitempty`, so they appear only when the
+adapter actually reports them.
+
+The reference adapter cannot demonstrate this, which is worth saying plainly:
+it holds no session default, so its open state names no model and the fix is
+invisible through it. The test uses an adapter that reports a full state and
+compares the response against it whole rather than member by member — the
+enumeration is the mistake, and the test should not repeat it.
+
 ### An empty catalog is an empty list, never a null
 
 `models` is a required array, and Go marshals a nil slice as `null`, so an
