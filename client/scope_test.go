@@ -136,14 +136,29 @@ func TestClientRejectsMisroutedGetResponses(t *testing.T) {
 	}
 }
 
-// TestClientAcceptsAnUnscopedCatalogPayload is the boundary of the rule above.
-// `session_id` is optional on a catalog because an endpoint-level catalog
-// belongs to no session, so a payload naming none carries no scope to disagree
-// with and must not be rejected — unlike session.state.response, whose schema
-// requires the payload scope and whose absence is therefore a defect.
-func TestClientAcceptsAnUnscopedCatalogPayload(t *testing.T) {
+// TestClientRejectsAnUnscopedAnswerToItsScopedCatalogRequest is the other
+// corner of the scoping rule, and the one that reads backwards until the
+// question is named. `session_id` is optional on a catalog *payload*, because
+// an endpoint-level catalog belongs to no session — but it is the answer to an
+// unscoped request, and Session.Tools never sends one: it always names this
+// session. Accepting an unscoped answer would hand back a catalog missing
+// exactly the sources this session attached at open, reported as its effective
+// catalog. What an answer may omit is decided by the question asked, not by
+// the payload's own schema.
+func TestClientRejectsAnUnscopedAnswerToItsScopedCatalogRequest(t *testing.T) {
 	session := scopedSessionStub(t, catalogResponse(t, "s-1", "", nil))
+	_, err := session.Tools(context.Background())
+	if err == nil {
+		t.Fatal("an unscoped catalog was accepted as this session's effective catalog")
+	}
+	if !strings.Contains(err.Error(), `payload names session "", envelope "s-1"`) {
+		t.Fatalf("error %q does not report the missing payload scope", err)
+	}
+
+	// The same request answered in scope is accepted, so the rule is about the
+	// scope the answer carries and not about the catalog being served at all.
+	session = scopedSessionStub(t, catalogResponse(t, "s-1", "s-1", nil))
 	if _, err := session.Tools(context.Background()); err != nil {
-		t.Fatalf("an unscoped catalog payload was rejected: %v", err)
+		t.Fatalf("a correctly scoped catalog was rejected: %v", err)
 	}
 }

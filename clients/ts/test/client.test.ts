@@ -574,12 +574,8 @@ test('a catalog payload naming another session is refused', async () => {
   await assert.rejects(session.tools(), /payload names session "s-other", envelope "s-1"/);
 });
 
-test('a catalog payload naming no session is accepted', async () => {
-  // `session_id` is optional on a catalog because an endpoint-level catalog
-  // belongs to no session, so a payload naming none carries no scope to
-  // disagree with. This is the boundary of the rule above, and it is the same
-  // boundary the Go client draws.
-  const transport = new FakeTransport([
+function catalogTransport(payload: Record<string, unknown>): FakeTransport {
+  return new FakeTransport([
     {
       match: '/tools',
       body: JSON.stringify(
@@ -588,12 +584,25 @@ test('a catalog payload naming no session is accepted', async () => {
           id: 'resp-2',
           inReplyTo: 'oap-request-2',
           sessionId: 's-1',
-          payload: { tools: [] },
+          payload,
         }),
       ),
     },
   ]);
-  const session = openedSession(transport);
+}
+
+test('a catalog payload naming no session is rejected', async () => {
+  // `session_id` is optional on a catalog payload — an endpoint-level catalog
+  // belongs to no session — but it is the answer to an unscoped request, and
+  // this call never sends one: it asks for this session's effective catalog.
+  // An unscoped answer would be missing exactly the sources this session
+  // attached at open. This is the same boundary the Go client draws.
+  const session = openedSession(catalogTransport({ tools: [] }));
+  await assert.rejects(session.tools(), /payload names session "", envelope "s-1"/);
+});
+
+test('a catalog payload naming this session is accepted', async () => {
+  const session = openedSession(catalogTransport({ session_id: 's-1', tools: [] }));
   const catalog = await session.tools();
   assert.deepEqual(catalog.tools, []);
 });

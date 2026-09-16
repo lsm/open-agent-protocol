@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,9 +211,9 @@ func TestRegistryRegister(t *testing.T) {
 
 // TestLoadRegistryToolSources pins the operator-configured attachment surface:
 // the entry a client may name by id, with the environment allowlist resolved
-// at load — a bare NAME takes the daemon's own value, a name the operator
-// never exported is dropped, and NAME=value passes through literally. Resolving
-// here rather than at open means a misconfigured source fails at hub start.
+// at load — a bare NAME takes the daemon's own value and NAME=value passes
+// through literally. Resolving here rather than at open means a misconfigured
+// source fails at hub start.
 func TestLoadRegistryToolSources(t *testing.T) {
 	path := writeConfig(t, `{
 		"adapters": {"memory": {"type": "memory"}},
@@ -221,7 +222,7 @@ func TestLoadRegistryToolSources(t *testing.T) {
 				"kind": "process", "protocol": "mcp", "display_name": "Filesystem",
 				"endpoint": "stdio:filesystem-tools",
 				"command": "/usr/local/bin/mcp-filesystem", "args": ["--root", "/workspace"],
-				"environment": ["MCP_TOKEN", "NEVER_EXPORTED", "MCP_MODE=readonly"]
+				"environment": ["MCP_TOKEN", "MCP_MODE=readonly"]
 			}
 		}
 	}`)
@@ -244,6 +245,55 @@ func TestLoadRegistryToolSources(t *testing.T) {
 	}
 	if _, ok := registry.ToolSource("never-configured"); ok {
 		t.Fatal("an unconfigured tool source resolved")
+	}
+}
+
+// TestLoadRegistryToolSourceNeedsEveryNameItLists is the one place a tool
+// source's allowlist is stricter than an adapter's. An adapter's list is a
+// broad "forward these if the daemon has them", written once for a harness; a
+// tool source's names the credentials one executable needs, and the daemon
+// launches that executable itself. Dropping an unexported name would start the
+// MCP server without its token, and it would fail as though the server were
+// broken when the fault is one name in the operator's own config. The failure
+// names the id and the variable, before anything depends on either.
+func TestLoadRegistryToolSourceNeedsEveryNameItLists(t *testing.T) {
+	config := `{
+		"adapters": {"memory": {"type": "memory"}},
+		"tool_sources": {
+			"filesystem": {"kind": "process", "command": "/usr/local/bin/mcp-filesystem", "environment": [%s]}
+		}
+	}`
+	path := writeConfig(t, fmt.Sprintf(config, `"MCP_TOKEN", "NEVER_EXPORTED"`))
+	_, err := LoadRegistry(path, staticEnviron(map[string]string{"MCP_TOKEN": "operator-secret"}))
+	if err == nil {
+		t.Fatal("a tool source naming an unexported variable started the hub")
+	}
+	for _, want := range []string{"filesystem", "NEVER_EXPORTED"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("load error %q does not name %q", err, want)
+		}
+	}
+
+	// The literal form is the escape hatch for a name that is meant to be
+	// optional: it says what the value is rather than hoping for one.
+	path = writeConfig(t, fmt.Sprintf(config, `"NEVER_EXPORTED="`))
+	registry, err := LoadRegistry(path, staticEnviron(nil))
+	if err != nil {
+		t.Fatalf("an explicit empty value was refused: %v", err)
+	}
+	source, ok := registry.ToolSource("filesystem")
+	if !ok {
+		t.Fatal("configured tool source missing")
+	}
+	if strings.Join(source.Environment, ",") != "NEVER_EXPORTED=" {
+		t.Fatalf("resolved environment: %v", source.Environment)
+	}
+
+	// An adapter's own allowlist keeps the omitting rule, so the divergence is
+	// exactly where it was argued for and nowhere else.
+	path = writeConfig(t, `{"adapters": {"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "environment": ["NEVER_EXPORTED"]}}}`)
+	if _, err := LoadRegistry(path, staticEnviron(nil)); err != nil {
+		t.Fatalf("an adapter naming an unexported variable failed to load: %v", err)
 	}
 }
 

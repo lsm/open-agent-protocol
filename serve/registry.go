@@ -36,9 +36,20 @@ type configFile struct {
 }
 
 // toolSourceEntry is one operator-configured tool source. Environment takes
-// the adapter registry's allowlist form: a bare NAME forwards the daemon's own
-// value, NAME=value passes literally. Resolution happens at load, so a bare
-// name the operator did not export fails at hub start rather than at open.
+// the adapter registry's allowlist form — a bare NAME forwards the daemon's own
+// value, NAME=value passes literally — with one rule of its own: a bare name
+// the daemon does not carry fails at hub start rather than being dropped.
+//
+// The adapter allowlist omits an unset name, and that is right for it: it is a
+// broad "forward these if the daemon has them" list, written once for a
+// harness. A tool source's list is not that. It names the credentials one
+// executable needs, the daemon itself launches that executable with them, and
+// the same reasoning that makes the daemon refuse a wire-supplied literal
+// makes silently dropping one the wrong answer: the MCP server starts without
+// its token and fails as though the server were broken, when the fault is one
+// unexported name in the operator's own config. Failing at start says which id
+// and which name, once, before anything depends on it. An operator who wants a
+// name to be optional writes the literal form with an empty value.
 type toolSourceEntry struct {
 	Kind        string   `json:"kind"`
 	DisplayName string   `json:"display_name"`
@@ -198,7 +209,7 @@ func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, 
 		if entry.Kind == "" {
 			return nil, fmt.Errorf("serve: tool source %q: kind is required", id)
 		}
-		environment, err := resolveEnvironment(entry.Environment, environ)
+		environment, err := resolveToolSourceEnvironment(entry.Environment, environ)
 		if err != nil {
 			return nil, fmt.Errorf("serve: tool source %q: %w", id, err)
 		}
@@ -302,6 +313,23 @@ func wrapBuild(name string, err error) error {
 // literally. The result is never nil, so adapters that treat a nil environment
 // as "inherit ambient" stay on an explicit allowlist and no ambient credential
 // can reach a child process unless its variable was listed here.
+// resolveToolSourceEnvironment resolves a tool source's allowlist under the
+// stricter rule its doc comment states: a bare NAME the daemon does not carry
+// is an error naming it, not an omission. Everything else is the adapter rule,
+// so the two lists differ in exactly one place and only where they should.
+func resolveToolSourceEnvironment(entries []string, environ func(string) (string, bool)) ([]string, error) {
+	for _, entry := range entries {
+		name, _, literal := strings.Cut(entry, "=")
+		if literal || name == "" {
+			continue
+		}
+		if _, ok := environ(name); !ok {
+			return nil, fmt.Errorf("environment variable %q is not set; export it or write %s=<value>", name, name)
+		}
+	}
+	return resolveEnvironment(entries, environ)
+}
+
 func resolveEnvironment(entries []string, environ func(string) (string, bool)) ([]string, error) {
 	resolved := make([]string, 0, len(entries))
 	for _, entry := range entries {

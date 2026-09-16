@@ -594,11 +594,18 @@ rediscovered from the code.
   `tool-source-attach-refused-within-limits` (honour). Neither honour aspect
   is deferred.
 - The daemon gains an origin boundary that every existing client already
-  satisfies: both in-repo clients send `Content-Type: application/json` on
-  every POST and no `Origin` header.
-- The registry document gains a `tool_sources` map, resolved at load like the
-  adapter `environment` allowlists, so a bare `NAME` the operator never
-  exported fails at hub start rather than at open.
+  satisfies: neither in-repo client sends an `Origin` header, and both send
+  `Content-Type: application/json` on the POSTs that carry a body. The two
+  that do not — `close` on each client — carry no body and no content type,
+  which is why the media-type rule is scoped to the routes that read one.
+- The registry document gains a `tool_sources` map whose `environment` is
+  resolved at load and is stricter than the adapter allowlist beside it: a bare
+  `NAME` the daemon does not carry fails at hub start, naming the source and
+  the variable, rather than being omitted. An operator whose config lists a
+  name they have not exported — including the example document, which lists
+  `MCP_TOKEN` — sees that failure instead of an MCP server started without its
+  credential. The unit is new, so no daemon that boots today stops booting;
+  `NAME=` is the form for a name meant to be optional.
 - The Go client's GET-style session methods now bind their response to the
   session that asked. Those routes send no request envelope, so the
   request-based scope check never ran and a misrouted answer was returned as

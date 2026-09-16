@@ -207,9 +207,15 @@ export class OapSession {
       );
     }
     const catalog = payload<ToolsListResponse>(response);
-    if (catalog.session_id !== undefined && catalog.session_id !== response.session_id) {
+    // The payload must name this session too. `session_id` is optional on a
+    // catalog payload — an endpoint-level catalog belongs to no session — but
+    // it is the answer to an unscoped request, and this call never sends one:
+    // it asks for this session's effective catalog. An unscoped answer would
+    // be missing exactly the sources this session attached at open, handed
+    // back as its effective catalog.
+    if (catalog.session_id !== response.session_id) {
       throw new Error(
-        `client: ${this.path('/tools')} payload names session "${catalog.session_id}", envelope "${response.session_id}"`,
+        `client: ${this.path('/tools')} payload names session "${catalog.session_id ?? ''}", envelope "${response.session_id}"`,
       );
     }
     return catalog;

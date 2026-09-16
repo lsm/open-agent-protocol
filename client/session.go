@@ -88,9 +88,11 @@ func (s *Session) Tools(ctx context.Context, options ...ToolsOption) (protocol.T
 	}
 	// A catalog naming another session is not this session's catalog, and
 	// after the tool-sources unit it carries that session's attached sources.
-	// The payload scope is optional here: an endpoint-level catalog belongs to
-	// no session, so only a present one is held to the envelope.
-	if err := s.bindResponse(s.path("/tools"), response, catalog.SessionID, false); err != nil {
+	// The payload scope is required, because this call always asks a scoped
+	// question: the request it just sent named this session, and an
+	// endpoint-level catalog is the answer to a different one — one that would
+	// be missing exactly the attached sources this session opened with.
+	if err := s.bindResponse(s.path("/tools"), response, catalog.SessionID, true); err != nil {
 		return protocol.ToolsListResponse{}, err
 	}
 	return catalog, nil
@@ -183,9 +185,15 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 // The payload is judged separately from the envelope carrying it. Both are
 // individually schema-valid documents; it is the protocol that binds them to
 // one scope, and per-envelope validation cannot see the pairing. payloadScope
-// is the session the payload names, and required says whether the payload's
-// own schema obliges it to name one — a catalog may legitimately carry none,
-// because an endpoint-level catalog belongs to no session.
+// is the session the payload names, and required says whether this particular
+// call obliges it to name one.
+//
+// Every call this client makes does. An unscoped catalog is a legitimate
+// payload — an endpoint-level catalog belongs to no session — but it is the
+// answer to an unscoped request, and this client never sends one: each Session
+// method names its own session. The parameter stays because required is a
+// property of the question asked, not of the payload's schema, and a later
+// caller that does ask an endpoint-level question would pass false.
 func (s *Session) bindResponse(path string, response protocol.Envelope, payloadScope protocol.SessionID, required bool) error {
 	if response.SessionID != s.id {
 		return fmt.Errorf("client: %s response is scoped to session %q, want %q", path, response.SessionID, s.id)

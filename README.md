@@ -151,10 +151,17 @@ The document's `tool_sources` map is the same allowlist idea for the MCP
 sources a client may attach at session open: each entry names a `kind`, the
 descriptor members the catalog publishes, and the `command`, `args`, and
 `environment` the daemon supplies on the client's behalf. Its `environment`
-takes the same form and is resolved at load, so a bare `NAME` the operator
-never exported fails at startup rather than at open. A client attaches one by
-`id` and nothing else — see "Tool sources" above for why the wire form is
-refused on that route.
+takes the same form with one rule of its own: a bare `NAME` the daemon does not
+carry fails at startup, naming the source and the variable, rather than being
+omitted the way an adapter's is. An adapter's list forwards whatever of a
+harness's variables the daemon happens to have; a tool source's names the
+credentials of one executable the daemon itself launches, and dropping one
+starts that MCP server without its token to fail later as though the server
+were broken. Write `NAME=` if a name is meant to be optional. (The example
+config lists `MCP_TOKEN` for its filesystem source, so export it or drop the
+entry before starting with that document.) A client attaches one by `id` and
+nothing else — see "Tool sources" above for why the wire form is refused on
+that route.
 
 The daemon binds `127.0.0.1` by default and has no authentication: v0 is a
 single-user local service, and pointing it at an external interface is
