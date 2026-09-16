@@ -163,6 +163,15 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if req.Participant.ID == "" {
 		return nil, base.ErrInvalidParticipant
 	}
+	// Attachment is admitted before the child is started: the decision depends
+	// only on the request and this adapter's own configuration, so an open
+	// that cannot be honoured should not pay a process spawn and an initialize
+	// round trip, nor leave the side effects of one behind. Same placement,
+	// and the same reason, as the shared unadvertised-attachment gate.
+	attached, err := a.attachToolSources(req)
+	if err != nil {
+		return nil, err
+	}
 	client, initialized, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err
@@ -175,11 +184,6 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	// slice would marshal as null and a conforming agent rejects the request
 	// with -32602 Invalid params, so always send the empty array.
 	mcpServers := append([]native.MCPServer{}, a.config.MCPServers...)
-	attached, err := a.attachToolSources(req)
-	if err != nil {
-		_ = client.Close()
-		return nil, err
-	}
 	mcpServers = append(mcpServers, attached...)
 	var opened native.SessionNewResult
 	if err := client.Call(ctx, native.MethodSessionNew, native.SessionNewParams{Cwd: a.config.WorkingDirectory, MCPServers: mcpServers}, &opened); err != nil {
@@ -227,8 +231,24 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 			allowlist[name] = value
 		}
 	}
+	// One id resolves to one source, so a collision — with another attachment
+	// or with a server the operator already configured — is refused rather
+	// than appended. ACP names its MCP servers by that id, so two identically
+	// named entries would make both the catalog's attribution and the native
+	// routing ambiguous, and the schema does not enforce uniqueness.
+	seen := make(map[string]bool, len(a.config.MCPServers)+len(attachments))
+	for _, configured := range a.config.MCPServers {
+		seen[configured.Name] = true
+	}
 	servers := make([]native.MCPServer, 0, len(attachments))
 	for _, attachment := range attachments {
+		if seen[attachment.ID] {
+			return nil, &base.UnsupportedControlError{
+				Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnsatisfiable,
+				Source: attachment.ID, Detail: "the id already names a configured or attached MCP server",
+			}
+		}
+		seen[attachment.ID] = true
 		if attachment.Kind != protocol.ToolSourceProcess {
 			return nil, &base.UnsupportedControlError{
 				Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnsatisfiable,
