@@ -363,13 +363,16 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 			admission.DeliveryResolution = "session_busy"
 		}
 	}
-	// The response exists, so the run stops being provisional: a state read
-	// may name it from here, and everything this adapter emits for it is
-	// emitted after this point.
-	s.mu.Lock()
-	run.answered = true
-	s.refreshStateLocked()
-	s.mu.Unlock()
+	// The response is decided here but it is not published here. The caller
+	// creates the submit response envelope after this call returns, and until
+	// that envelope exists the trace carries no admission for this run to have
+	// been anchored to — a snapshot naming it would name a run from nowhere.
+	// A state read taken inside this call must therefore leave the run out,
+	// and may, because nothing published inside this call reaches the trace
+	// first either: the stream is the caller's to drain and it does not hold
+	// it yet. So the projection is armed here and flips as the response is
+	// handed back, which is the earliest moment the run is publishable.
+	defer s.answerRun(run)
 	if busy {
 		// Nothing is emitted for a reservation: its run identity is reserved
 		// at admission and its first run-scoped event is either its promotion
@@ -380,6 +383,19 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	return admission, stream, nil
+}
+
+// answerRun publishes a run into the session's projection. It is deferred from
+// the admission that decided it, so the run is projected as Submit returns
+// rather than while it is still running: the two are the same fact — this
+// session has an answer for the run, so the trace is about to carry it and a
+// state read may name it — and separating them is the window where a snapshot
+// describes a run nothing has admitted.
+func (s *memorySession) answerRun(run *memoryRun) {
+	s.mu.Lock()
+	run.answered = true
+	s.refreshStateLocked()
+	s.mu.Unlock()
 }
 
 // refreshStateLocked recomputes the session's published state from the runs it

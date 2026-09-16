@@ -100,6 +100,23 @@ set grandfathers that set — an endpoint cannot shrink it except by cancelling
 work, which a descriptor change must never do — and every admission after the
 refresh is judged against the new bound.
 
+A refresh is how they move at all. `capability_revision` identifies exactly one
+descriptor, and every envelope citing it is bound to that snapshot, so a
+capabilities response repeating the active revision is claiming to be that same
+descriptor: the bounds it states must be the ones already disclosed, and so
+must the level it advertises the queue at. A bound that rises underneath a
+revision excuses an overflow the disclosed numbers forbid, one that falls
+convicts an admission the caller was invited to make, and a level that moves
+turns this unit's rules on or off — each of them judging later traffic against
+a descriptor nobody holding that revision was ever shown. The diagnosis is that
+the revision did not move where the descriptor did
+(`stale_capability_revision`), raised on the field that changed, because the
+fix is to introduce a new revision for it. An announced change is exempt and
+must be: after `capabilities.updated` the revision has already advanced, and
+the mandatory refresh that follows is the new descriptor rather than a
+contradiction of the old. It is the rule `models.list` is held to under one
+revision, applied to the fields this unit owns.
+
 ### The refusal is validated as well as the admission
 
 The ladder gains a fourth rung, the transient failures, beneath capability,
@@ -322,6 +339,22 @@ place in the queue turns out to be, its place in admission order is last, and a
 run the trace does carry, listed behind it, is out of order on the listing's own
 terms.
 
+Standing a rule down is waiting for the answer, not forgiving the question.
+The admission response is that answer, and it settles the entry as well as the
+identity: the two are one claim, because what the response says — which run
+this submission became, and on what terms — is exactly what the entry's own
+rules were missing. A run admitted started was never in a queue, so the queued
+status such an entry reported was never true of it at any position and the
+place it gave itself was in a queue it never entered. A run admitted queued is
+a reservation, so the place it claims is the one the listing left for it. A
+cancelling entry asks round 14's question with a run to ask it of, and the
+start it waits for settles that in turn: two answers in a chain, each from the
+event that carries it. Where the lead is the listing's only one, the two fields
+read off the listing follow from that same answer and are judged with it;
+where several entries lead, each is still judged as an entry, but which of them
+`active_run_id` owed is not a question any one admission settles, and the queue
+place becomes the range those entries leave each other rather than a number.
+
 The identity claim itself is always reconciled. Accepting it at the state
 response and never returning to it is what lets a snapshot assert an admission
 that did not happen.
@@ -377,7 +410,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 122 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 131 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -400,6 +433,18 @@ descriptor — and advertises the key `emulated` with
 `max_active_runs_per_session: 2` and `max_queued_runs_per_session: 1`, reserves
 one run beside the started one, lists both in `active_runs`, promotes on the
 terminal, and settles a cancelled reservation pre-start.
+
+Both adapters project a run only once its admission is publishable, which is
+the boundary this listing makes load-bearing. A run exists inside an adapter
+from the moment a submission creates it, and an adapter may emit its opening
+events before `Submit` returns — but the caller creates the submit response
+envelope afterwards, and until that envelope exists the trace carries no
+admission the entry could have been anchored to. Nothing published inside the
+call reaches the trace ahead of it either, since the caller does not hold the
+stream yet, so the honest projection during the call is the one without the
+run, and the flip belongs at the return rather than anywhere inside. What
+remains after that is the caller's own ordering of the two responses it writes,
+which no adapter can serialize for it.
 
 ## Consequences
 

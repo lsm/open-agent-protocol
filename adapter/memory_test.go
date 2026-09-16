@@ -1233,6 +1233,97 @@ func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 	}
 }
 
+// gatedIDs is fixedIDs with one identifier held open, so a test can stop the
+// adapter at a named point inside a call and look at what the session shows
+// from outside while it is there.
+type gatedIDs struct {
+	mu      sync.Mutex
+	n       int
+	counts  map[string]int
+	trip    func(kind string, nth int) bool
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newGatedIDs(trip func(kind string, nth int) bool) *gatedIDs {
+	return &gatedIDs{counts: map[string]int{}, trip: trip, reached: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (g *gatedIDs) NewID(kind string) string {
+	g.mu.Lock()
+	g.n++
+	g.counts[kind]++
+	id, hold := fmt.Sprintf("%s-%02d", kind, g.n), g.trip(kind, g.counts[kind])
+	g.mu.Unlock()
+	if hold {
+		close(g.reached)
+		<-g.release
+	}
+	return id
+}
+
+func (g *gatedIDs) open() { g.once.Do(func() { close(g.release) }) }
+
+// TestStateOmitsARunUntilItsAdmissionIsHandedBack pins the boundary a
+// projection may cross. A run exists inside the adapter from the moment Submit
+// creates it, and Submit emits its opening events before it returns — but the
+// caller creates the submit response envelope afterwards, and until that
+// envelope exists the trace carries no admission this run could have been
+// anchored to. Nothing Submit publishes reaches the trace ahead of it either,
+// because the caller does not hold the stream yet. So a state read taken while
+// the call is still running must describe a session without the run, and one
+// taken after it must describe the run: the projection flips as the response
+// is handed back and not before.
+func TestStateOmitsARunUntilItsAdmissionIsHandedBack(t *testing.T) {
+	// The second message identifier is the opening delta's, which the adapter
+	// allocates after it has emitted run.started for the run — the deepest
+	// point inside Submit at which a state read could see anything at all.
+	ids := newGatedIDs(func(kind string, nth int) bool { return kind == "message" && nth == 2 })
+	defer ids.open()
+	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: ids, JournalCapacity: 64})
+	session, err := memory.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		admission protocol.MessageSubmitResponse
+		err       error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		admission, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
+		done <- answer{admission, err}
+	}()
+	select {
+	case <-ids.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("submit never reached the opening delta")
+	}
+	held, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held.ActiveRuns) != 0 || held.ActiveRunID != "" || held.Status != protocol.SessionIdle {
+		t.Fatalf("state named a run whose admission has not been handed back: %+v", held)
+	}
+	ids.open()
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	after, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ActiveRunID != got.admission.RunID || len(after.ActiveRuns) != 1 {
+		t.Fatalf("state does not name the admitted run: %+v", after)
+	}
+	if after.ActiveRuns[0].RunID != got.admission.RunID {
+		t.Fatalf("state lists another run: %+v", after.ActiveRuns[0])
+	}
+}
+
 func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.EnvelopeType) protocol.Envelope {
 	t.Helper()
 	for _, envelope := range envelopes {

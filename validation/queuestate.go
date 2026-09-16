@@ -192,9 +192,11 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 	unresolved := false
 	lastOrder := -1
 	queuePosition := 0
-	// led marks that the listing has already passed an entry leading its own
-	// admission. Everything after it is judged knowing that.
-	led := false
+	// leads counts the entries leading their own admission that the listing
+	// has already passed. Everything after them is judged knowing that, and
+	// each of them is carried forward to be judged when its admission lands.
+	leads := 0
+	var ledEntries []*entryClaim
 	// markExecuting records an entry whose status says its run is executing.
 	// Both paths into it read that off the status: the known entry's
 	// classification, and, for an entry still leading its own admission, the
@@ -255,28 +257,44 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 				// so every rule that reads the status alone still reaches it,
 				// and only the statuses that settle nothing without the run's
 				// own history stand the classification down.
+				// Standing a rule down is waiting for the answer, not
+				// forgiving the question: what the admission decides is
+				// carried forward on the same claim and judged when it
+				// decides it.
+				claim := &entryClaim{entry: entry, state: p, pointer: pointer, queueAhead: queuePosition, leadsAhead: leads}
 				switch {
 				case terminalStatus(entry.Status):
 					// active_runs is the nonterminal set whatever admitted the
 					// run, so this entry is already wrong and no response
 					// could right it. It is classified too — a settled run is
 					// neither a reservation nor a started one — so the fields
-					// read off the listing are not left waiting on it either.
+					// read off the listing are not left waiting on it either,
+					// and there is nothing left for the admission to settle.
 					s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs lists a run with a terminal status; a settled run is dropped and named in as_of.settled", "a nonterminal status", string(entry.Status), string(entry.RunID))
+					claim = nil
 				case entry.Status == protocol.RunQueued || entry.Status == protocol.RunCancelling:
 					// The two the trace has to supply. Queued is what a
 					// reservation says and the admission decides whether this
 					// run is one; cancelling says nothing about whether the
 					// run began, and without the run there is no start to
 					// settle it against.
-					unresolved = true
+					unresolved, claim.classify = true, true
 				default:
 					// Everything else says the run is executing, and a
 					// reservation's entry does not say that however it was
-					// admitted.
+					// admitted — which also settles its queue place, since a
+					// run the listing describes as executing is in no queue
+					// whatever admitted it.
 					markExecuting(pointer, entry)
+					if entry.QueuePosition != nil {
+						s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *entry.QueuePosition), string(entry.RunID))
+					}
 				}
-				led = true
+				if claim != nil {
+					ledEntries = append(ledEntries, claim)
+					s.deferred[len(s.deferred)-1].entry = claim
+				}
+				leads++
 				continue
 			}
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs names a run the trace does not carry for this session", "a run admitted on "+string(p.SessionID), string(entry.RunID))
@@ -304,7 +322,7 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			// active_run_id is judged against.
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/as_of_sequence", "active_runs lists a run at a position it had already settled at", fmt.Sprintf("a position before %d", r.next-1), fmt.Sprintf("%d", *entry.AsOfSequence), string(entry.RunID))
 		}
-		if r.order <= lastOrder || led {
+		if r.order <= lastOrder || leads > 0 {
 			// A lead is an entry whose submit request the trace carries
 			// unanswered, so the response that admits its run comes after
 			// every admission the trace already has: whatever its place in
@@ -370,6 +388,21 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		s.checkEntryStatus(i, line, e, pointer, entry, r)
 		s.checkEntryAnchor(i, line, e, pointer, p.SessionID, entry, r)
 		s.checkEntryPending(i, line, e, pointer, entry, r)
+	}
+	for _, led := range ledEntries {
+		// Which run the listing described as executing is a fact about the
+		// whole listing, not about what had been read when this entry was
+		// reached: an entry's queue place counts what precedes it, but the
+		// run active_run_id owed is named wherever it appears.
+		led.executing = listedStarted
+	}
+	if len(ledEntries) == 1 {
+		// The listing's own two fields are one question, and one lead is the
+		// only shape where its answer follows from that lead alone. Where
+		// several entries lead, each is still judged as an entry; which of
+		// them active_run_id owed is not a question any one of their
+		// admissions answers.
+		ledEntries[0].sole = true
 	}
 	for _, r := range required {
 		if !listed[r.id] {

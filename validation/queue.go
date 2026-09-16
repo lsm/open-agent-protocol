@@ -504,6 +504,67 @@ func (s *state) checkQueueLimits(i, line int, e protocol.Envelope, p protocol.Ca
 	}
 }
 
+// checkQueueAdvertisement holds a capabilities.response that repeats the
+// active revision to repeating what that revision said about the queue.
+//
+// It is the catalog rule applied to this unit's own descriptor fields, and for
+// the same reason: a revision identifies one descriptor, every envelope
+// citing it is bound to that snapshot, and a bound that moves underneath it
+// leaves admissions judged against a capacity no consumer holding the
+// revision was ever told. The bounds are the sharp case — max_active or
+// max_queued rising under one revision would excuse an overflow that the
+// disclosed numbers forbid, and falling would convict an admission the caller
+// was invited to make — but the advertised level belongs to the descriptor
+// just as much: a queue that goes unavailable under one revision turns off
+// every rule in this unit with nothing announcing it.
+//
+// The diagnosis is that the revision did not move where the descriptor did,
+// which is what stale_capability_revision already says of a capabilities
+// update that reuses its predecessor's revision. It is raised on the field
+// that changed, because the fix is to introduce a new revision for it.
+func (s *state) checkQueueAdvertisement(i, line int, e protocol.Envelope, outgoing descriptorSnapshot) {
+	if !outgoing.repeats(s.currentCapability) {
+		return
+	}
+	if current := s.features[protocol.FeatureDeliveryQueue]; current != outgoing.queue {
+		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/payload/features/"+protocol.FeatureDeliveryQueue, protocol.FeatureDeliveryQueue+" changed under one capability revision without a capabilities.updated", describeSupport(outgoing.queue), describeSupport(current))
+	}
+	for _, bound := range []struct {
+		name  string
+		field func(*protocol.CapabilityLimits) *int
+	}{
+		{"max_active_runs_per_session", func(l *protocol.CapabilityLimits) *int { return l.MaxActiveRunsPerSession }},
+		{"max_queued_runs_per_session", func(l *protocol.CapabilityLimits) *int { return l.MaxQueuedRunsPerSession }},
+	} {
+		before, after := boundOf(outgoing.limits, bound.field), boundOf(s.limits, bound.field)
+		if sameBound(before, after) {
+			continue
+		}
+		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/payload/limits/"+bound.name, bound.name+" changed under one capability revision without a capabilities.updated", describeBound(before), describeBound(after))
+	}
+}
+
+func boundOf(limits *protocol.CapabilityLimits, field func(*protocol.CapabilityLimits) *int) *int {
+	if limits == nil {
+		return nil
+	}
+	return field(limits)
+}
+
+func sameBound(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func describeBound(value *int) string {
+	if value == nil {
+		return "absent"
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
 func describeLimit(limits *protocol.CapabilityLimits, active bool) string {
 	if limits == nil {
 		return "absent"
@@ -541,7 +602,31 @@ type deferredStateClaim struct {
 	model       string
 	index, line int
 	envelope    protocol.Envelope
-	done        bool
+	// entry is the active_runs entry this admission claim was made for, where
+	// the snapshot led the admission. The identity the claim settles is what
+	// unlocks the entry's own rules, so they are one claim answered by one
+	// event rather than two deferrals of the same fact.
+	entry *entryClaim
+	done  bool
+}
+
+// entryClaim is one active_runs entry that named a run before the trace
+// carried it, kept with the little of its listing the deferred rules need: the
+// run the listing already described as executing, the queue places established
+// ahead of it, and how many other entries were leading beside it.
+type entryClaim struct {
+	entry      protocol.ActiveRun
+	state      protocol.SessionState
+	pointer    string
+	executing  protocol.RunID
+	queueAhead int
+	leadsAhead int
+	// classify marks an entry whose status could not say what it was without
+	// the admission. The rest were classified where they were listed.
+	classify bool
+	// sole marks the only leading entry in its listing, which is the shape
+	// where the listing's own fields follow from this one admission.
+	sole bool
 }
 
 const (
@@ -692,6 +777,107 @@ func describeIDs(set map[protocol.InteractionID]bool) string {
 	}
 	sort.Strings(ids)
 	return strings.Join(ids, ",")
+}
+
+// admitLedEntries settles every entry that led this admission. The identity
+// the claim rests on and the entry's own rules are answered by the same event:
+// the response says which run the submission became, and with the run in hand
+// the questions the listing stood down on have something to be judged against.
+// Leaving them for the trace's end would make standing down mean forgiving,
+// which is not what the lead was allowed for.
+func (s *state) admitLedEntries(run *runState) {
+	for _, claim := range s.deferred {
+		if claim.done || claim.kind != claimAdmitted || claim.entry == nil || claim.request != run.submitRequest {
+			continue
+		}
+		claim.done = true
+		if claim.run != run.id || run.session != claim.session {
+			// The anchor resolved to another run, or to another session.
+			// That is the identity claim's own verdict, and an entry that was
+			// not for this run describes nothing more.
+			s.judgeAdmissionClaim(claim)
+			continue
+		}
+		s.judgeLedEntry(claim, run)
+	}
+}
+
+// judgeLedEntry applies to a led entry the rules its listing could not.
+func (s *state) judgeLedEntry(claim *deferredStateClaim, r *runState) {
+	c := claim.entry
+	i, line, e := claim.index, claim.line, claim.envelope
+	// The capture position and pending set wait on the run either way: the
+	// entry states a position, and only the run says whether it reaches it.
+	s.checkEntryPending(i, line, e, c.pointer, c.entry, r)
+	if !c.classify {
+		return
+	}
+	reservation := false
+	switch {
+	case !r.admittedQueued:
+		// The response started the run, so it was never in a queue and no
+		// capture position puts it in one: a snapshot may lead an admission
+		// it made, but not invent the queue that admission did not use.
+		if c.entry.Status == protocol.RunQueued {
+			s.addExpected(CodeSessionStateMismatch, i, line, e, c.pointer+"/status", "active_runs reports a run as queued that its admission started", "a started status", string(c.entry.Status), string(r.id))
+		}
+	case c.entry.Status == protocol.RunQueued:
+		reservation = true
+	default:
+		// Cancelling, asked now that there is a run to ask it of. A run
+		// cannot have started before its own admission, so this reduces to
+		// what the entry says about its own queue place, and the start it
+		// waits for settles that exactly as it would for a run the trace
+		// already carried.
+		var pending bool
+		reservation, pending = cancellingReservation(c.entry, r)
+		if pending {
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimReservation, session: r.session, run: r.id, sequence: *c.entry.AsOfSequence, held: reservation, index: i, line: line, envelope: e})
+		}
+	}
+	switch {
+	case reservation:
+		// Its place is the one the listing left for it. Another lead ahead of
+		// it makes that a range rather than a number, because whether that
+		// entry takes a place is settled by its own admission and not by this
+		// one.
+		low, high := c.queueAhead+1, c.queueAhead+c.leadsAhead+1
+		if position := c.entry.QueuePosition; position == nil || *position < low || *position > high {
+			s.addExpected(CodeSessionStateMismatch, i, line, e, c.pointer+"/queue_position", "a reservation's queue position must be its 1-based place in the queue", describeQueueRange(low, high), describeQueuePosition(c.entry.QueuePosition), string(r.id))
+		}
+	case c.entry.QueuePosition != nil:
+		s.addExpected(CodeSessionStateMismatch, i, line, e, c.pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *c.entry.QueuePosition), string(r.id))
+	}
+	if !c.sole {
+		return
+	}
+	if !reservation {
+		switch {
+		case c.executing != "":
+			s.addExpected(CodeSessionStateMismatch, i, line, e, c.pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(c.executing), string(c.entry.Status), string(r.id))
+		case c.state.ActiveRunID != r.id:
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must name the started run of the session", string(r.id), string(c.state.ActiveRunID), string(r.id))
+		}
+	} else if c.executing == "" && c.state.ActiveRunID != "" {
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must be absent where the session holds only reservations", "absent", string(c.state.ActiveRunID))
+	}
+	if c.executing != "" {
+		// The listing already named an executing run, so its status was
+		// judged against that where the listing was read.
+		return
+	}
+	if reservation {
+		s.checkListedStatus(i, line, e, c.state, "", c.entry, true)
+		return
+	}
+	s.checkListedStatus(i, line, e, c.state, r.id, c.entry, false)
+}
+
+func describeQueueRange(low, high int) string {
+	if low == high {
+		return fmt.Sprintf("%d", low)
+	}
+	return fmt.Sprintf("%d to %d", low, high)
 }
 
 // judgeAdmissionClaim settles one claim that a submit request had already been

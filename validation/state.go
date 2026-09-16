@@ -288,6 +288,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			revision: s.currentCapability,
 			stale:    s.capabilitiesStale,
 			models:   s.features[protocol.FeatureModelsList],
+			queue:    s.features[protocol.FeatureDeliveryQueue],
+			limits:   s.limits,
 		}
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = false
@@ -302,6 +304,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.checkSelectionModes(i, line, e, p)
 		s.checkQueueLimits(i, line, e, p)
 		s.checkCatalogAdvertisement(i, line, e, outgoing)
+		s.checkQueueAdvertisement(i, line, e, outgoing)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)
@@ -899,6 +902,10 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		}
 	}
 	s.refreshQueueWindows(p.SessionID)
+	// A snapshot may name a run whose admission is still in flight. This is
+	// that admission: the entries that led it are judged here, where what
+	// they were waiting on is finally known.
+	s.admitLedEntries(run)
 }
 
 // applyModelControl moves the session's expected default for one admitted
