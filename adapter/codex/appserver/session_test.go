@@ -52,6 +52,9 @@ type fakeClient struct {
 	closeOnce     sync.Once
 	err           error
 	turnStartErr  error
+	// turnStart records the parameters of the last turn/start, so a test can
+	// assert what the adapter actually sent rather than only what it echoed.
+	turnStart native.TurnStartParams
 }
 
 func newFakeClient() *fakeClient {
@@ -72,6 +75,11 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 	case native.MethodTurnStart:
 		if client.turnStartErr != nil {
 			return client.turnStartErr
+		}
+		if sent, ok := params.(native.TurnStartParams); ok {
+			client.mu.Lock()
+			client.turnStart = sent
+			client.mu.Unlock()
 		}
 		response := result.(*native.TurnStartResponse)
 		response.Turn.ID = client.turnID
@@ -931,5 +939,104 @@ func TestDescriptorClaimsTestedInteractions(t *testing.T) {
 	}
 	if descriptor.MaxActiveRunsPerSession != 1 || descriptor.Journal.Replay != protocol.SupportDegraded {
 		t.Fatalf("descriptor: %+v", descriptor)
+	}
+}
+
+// turn/start carries the model per turn, so an admitted model_id binds exactly
+// its own run: the response and run.started report it, and current_model_id —
+// the model the next control-free submission would use — stays the configured
+// thread model (decision 0005).
+func TestSubmitAppliesModelPerTurn(t *testing.T) {
+	client, session, descriptor := openFake(t)
+	request := protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		ModelID:  protocol.ControlValue("glm-per-turn"),
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	}
+	admission, stream, err := session.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatalf("admitted model refused: %v", err)
+	}
+	client.mu.Lock()
+	sent := client.turnStart
+	client.mu.Unlock()
+	if sent.Model != "glm-per-turn" {
+		t.Fatalf("turn/start model = %q, want the requested model", sent.Model)
+	}
+	if admission.ModelID != "glm-per-turn" {
+		t.Fatalf("admission model = %q, want the requested model", admission.ModelID)
+	}
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CurrentModelID != "glm-test" {
+		t.Fatalf("per_run selection moved the session default to %q", state.CurrentModelID)
+	}
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	events := drainClosed(t, stream)
+	var started protocol.RunStartedPayload
+	if err := events[0].DecodePayload(&started); err != nil {
+		t.Fatal(err)
+	}
+	if started.ModelID != "glm-per-turn" {
+		t.Fatalf("run.started model = %q, want the admitted model", started.ModelID)
+	}
+	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
+	if state, err := session.State(context.Background()); err != nil || state.CurrentModelID != "glm-test" {
+		t.Fatalf("the session default moved at the terminal: %+v err=%v", state, err)
+	}
+}
+
+// A control this pin cannot apply is refused before admission under the key
+// the descriptor advertises unavailable, so a caller learns what to stop
+// sending instead of running with a control it believes was applied.
+func TestSubmitRefusesUnadvertisedControls(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		request protocol.MessageSubmitRequest
+		feature string
+	}{
+		"instructions":  {request: protocol.MessageSubmitRequest{Instructions: protocol.ControlValue("be terse")}, feature: protocol.FeatureInstructions},
+		"tool choice":   {request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"none"}`)}, feature: protocol.FeatureToolSelection},
+		"output schema": {request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object"}`)}, feature: protocol.FeatureStructuredOutput},
+	} {
+		client, session, _ := openFake(t)
+		request := testCase.request
+		request.SessionID, request.Delivery = "session-1", protocol.DeliveryAuto
+		request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
+		_, _, err := session.Submit(context.Background(), request)
+		var refusal *adapter.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Feature != testCase.feature || refusal.Reason != adapter.ControlUnadvertised {
+			t.Fatalf("%s: got %v, want an unadvertised refusal naming %s", name, err, testCase.feature)
+		}
+		client.mu.Lock()
+		calls := append([]string(nil), client.calls...)
+		client.mu.Unlock()
+		for _, method := range calls {
+			if method == native.MethodTurnStart {
+				t.Fatalf("%s: a refused control reached the native codec", name)
+			}
+		}
+		state, err := session.State(context.Background())
+		if err != nil || state.ActiveRunID != "" || state.Status != protocol.SessionIdle {
+			t.Fatalf("%s: a refused control allocated identity: %+v err=%v", name, state, err)
+		}
+	}
+}
+
+// A present-but-empty model_id is a control the endpoint must refuse, not an
+// absent one: no catalog can list it, and turn/start would read it as the
+// configured default.
+func TestSubmitRefusesEmptyModelID(t *testing.T) {
+	_, session, _ := openFake(t)
+	_, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		ModelID:  protocol.ControlValue(""),
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	})
+	var missing *adapter.ModelNotFoundError
+	if !errors.As(err, &missing) || missing.ModelID != "" {
+		t.Fatalf("got %v, want model_not_found naming the empty id", err)
 	}
 }

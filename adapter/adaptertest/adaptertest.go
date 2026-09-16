@@ -91,6 +91,24 @@ func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageS
 	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, false)
 }
 
+// AssertProtocolValidWithSubmit certifies a run against the submission that
+// actually admitted it, rather than the neutral one the other assertions
+// synthesize. A per-submit run control is judged on the correlated response,
+// so a trace whose submit request does not carry the controls the caller sent
+// exercises none of those rules: this is what an adapter test uses when the
+// point is that a control was applied, refused, or gated.
+func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
+	t.Helper()
+	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
+	trace, err := protocolTraceWith(&request, admission, descriptor, events, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().ValidateBytes(trace, "adaptertest"); !result.Valid() {
+		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
+	}
+}
+
 // AssertProtocolValidWithCancellation additionally splices the harness-side
 // cancel exchange for a cancellation the caller actually issued and the
 // adapter accepted, so a legitimately cancelled run validates while an
@@ -216,6 +234,14 @@ func ProtocolTraceWithCancellation(admission protocol.MessageSubmitResponse, des
 }
 
 func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
+	return protocolTraceWith(nil, admission, descriptor, events, cancelled)
+}
+
+// protocolTraceWith assembles the canonical trace. When submitted is nil the
+// submission is synthesized as a neutral one carrying no controls; when it is
+// given, the caller's own request is what the admission answers, so the
+// validator judges the controls it actually carried.
+func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
 	var trace []protocol.Envelope
 	if descriptor.CapabilityRevision != "" {
 		request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
@@ -230,11 +256,15 @@ func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.
 		response.CapabilityRevision = descriptor.CapabilityRevision
 		trace = append(trace, request, response)
 	}
-	submit, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", protocol.MessageSubmitRequest{
+	request := protocol.MessageSubmitRequest{
 		SessionID: admission.SessionID,
 		Delivery:  admission.RequestedDelivery,
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("adaptertest")}},
-	})
+	}
+	if submitted != nil {
+		request = *submitted
+	}
+	submit, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "submit-request", request)
 	if err != nil {
 		return nil, err
 	}
@@ -246,9 +276,9 @@ func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.
 	response.SessionID = admission.SessionID
 	response.InReplyTo = submit.ID
 	if descriptor.CapabilityRevision != "" {
-		// A non-auto delivery makes the submit request itself an
-		// optional-feature envelope: it must cite the active descriptor
-		// revision, and the response must repeat it.
+		// A non-auto delivery or a per-submit run control makes the submit
+		// request itself an optional-feature envelope: it must cite the
+		// active descriptor revision, and the response must repeat it.
 		submit.CapabilityRevision = descriptor.CapabilityRevision
 		response.CapabilityRevision = descriptor.CapabilityRevision
 	}

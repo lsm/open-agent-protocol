@@ -38,6 +38,7 @@ var codexReducerFixtures = map[string]bool{
 	"user-input":            true,
 	"duplicate-terminal":    true,
 	"process-exit":          true,
+	"model-per-turn":        true,
 }
 
 type corpusManifest struct {
@@ -61,6 +62,9 @@ type corpusCase struct {
 	ExpectedOAP string `json:"expected_oap"`
 	Mapping     string `json:"mapping"`
 	Omissions   string `json:"omissions"`
+	// ModelID is the per-submit model control the case drives, so a case can
+	// state the control it exercises instead of the runner naming it.
+	ModelID string `json:"model_id,omitempty"`
 }
 
 type corpusFrame struct {
@@ -158,7 +162,32 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	assertClassifications(t, frames, mappings, omissions)
 
 	client, session, descriptor := openFake(t)
-	admission, stream := submitFake(t, session)
+	request := protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	}
+	if definition.ModelID != "" {
+		request.ModelID = protocol.ControlValue(definition.ModelID)
+	}
+	admission, stream, err := session.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition.ModelID != "" {
+		// The model is a per-turn native parameter: it reaches turn/start and
+		// binds this run alone, leaving the thread's configured model as the
+		// session default.
+		client.mu.Lock()
+		sent := client.turnStart
+		client.mu.Unlock()
+		if sent.Model != definition.ModelID || admission.ModelID != definition.ModelID {
+			t.Fatalf("turn/start model %q and admission model %q, want %q", sent.Model, admission.ModelID, definition.ModelID)
+		}
+		state, err := session.State(context.Background())
+		if err != nil || state.CurrentModelID != "glm-test" {
+			t.Fatalf("per_run selection moved the session default: %+v err=%v", state, err)
+		}
+	}
 	var prefix []protocol.Envelope
 	if entry.ID == "process-exit" {
 		client.send(t, "turn/started", map[string]any{"threadId": client.threadID, "turn": map[string]any{"id": client.turnID, "status": "inProgress"}})
@@ -193,7 +222,9 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	if entry.ID == "interrupted-turn" {
 		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
 	} else {
-		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+		// The submission the case actually made is what the admission
+		// answers, so a case driving a control is judged against it.
+		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
 	}
 	expected := loadJSON[[]protocol.Envelope](t, paths.expectedOAP)
 	if len(expected) == 0 {
