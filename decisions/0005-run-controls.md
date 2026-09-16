@@ -100,16 +100,32 @@ Pointer. The ladder runs from the most permanent failure to the most transient,
 which is the order in which a caller can act — what it must stop sending
 outranks what it must send differently, which outranks what it may retry.
 
-Ordinary submission validation sits below the whole ladder, so a request that
-is malformed *and* carries a control the endpoint cannot apply is answered
-with the control. The reason is the same one that orders the rungs: a caller
-told only that its submission was invalid fixes the messages, resubmits, and
-is refused again for a control it was never told about. Every endpoint
-therefore runs the control gate before it validates anything else, and before
-it allocates any identity or writes anything native. Among the collected
-failures, the answer is chosen by the ladder rather than by the order the
-endpoint happened to test them in — an endpoint returning its first defect
-would name a different control than the validator names for the same request.
+An endpoint's own submission validation sits below the whole ladder, so a
+request that is malformed *and* carries a control the endpoint cannot apply is
+answered with the control. The reason is the same one that orders the rungs: a
+caller told only that its submission was invalid fixes the messages,
+resubmits, and is refused again for a control it was never told about. Every
+endpoint therefore runs the control gate before its own validation of the
+submission, and before it allocates any identity or writes anything native.
+Among the collected failures, the answer is chosen by the ladder rather than
+by the order the endpoint happened to test them in — an endpoint returning its
+first defect would name a different control than the validator names for the
+same request.
+
+Wire and schema validity are the floor beneath the whole ladder, not a rung of
+it. An envelope that is not a well-formed OAP message carries no controls to
+judge: the bytes in the `tool_choice` position are not a policy and the bytes
+in the `model_id` position are not a selection until the message is one the
+protocol can read at all. A daemon frontend therefore answers `malformed_json`
+or `schema_invalid` and never reaches the endpoint, which is why the validator
+runs its semantic phase — where every rule in this decision lives — only on a
+trace whose decode and schema phases were clean. The two agree by
+construction: a submission the wire rejects is one about which no refusal
+could be judged conforming, so an endpoint that answered it with a typed
+control refusal would be claiming to have read something it never received.
+The cost is a caller that is wrong in both ways needing two round trips, which
+is the honest answer rather than a worse one — the first says the message
+could not be read, and until it can be, what it asked for is unknown.
 
 ### The gate is judged on the correlated response
 

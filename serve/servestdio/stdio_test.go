@@ -1131,3 +1131,44 @@ func TestSubmitRollbackWaitsForSettlement(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 }
+
+// Wire and schema validity are the floor beneath the refusal ladder, not a
+// rung of it: an envelope the protocol cannot read carries no controls to
+// judge, because the bytes in the control positions are not a policy or a
+// selection until the message is one at all. So the frontend validates before
+// it decodes, and a submit that is schema-invalid is answered schema_invalid
+// whatever sits in those positions — the endpoint is never reached, and could
+// not honestly answer about a control it never received. The ordering is
+// deliberate, mirrors the HTTP route one for one, and is the same one the
+// validator keeps: its semantic phase, where every control rule lives, runs
+// only on a trace whose decode and schema phases were clean (decision 0005).
+func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", noControlsAdapter{base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	openSession(t, hub, "floor")
+	f := startFrontend(t, hub, Options{})
+
+	// Schema-invalid (delivery is required) and carrying a control this
+	// endpoint advertises nowhere.
+	f.send(`{"id":1,"op":"submit","session_id":"floor","request":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"submit-floor","session_id":"floor","payload":{"session_id":"floor","messages":[{"role":"user","content":"x"}],"instructions":"be terse"}}}`)
+	requireCode(t, f.expectResponse(1), "schema_invalid")
+
+	// Repair the envelope and the same control is refused under its own key,
+	// so the first answer was about the message and not about the control.
+	f.send(`{"id":2,"op":"submit","session_id":"floor","request":` + string(requestEnvelope(t, "submit-floor-2", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "floor", Delivery: protocol.DeliveryAuto,
+		Instructions: protocol.ControlValue("be terse"),
+		Messages:     []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+	}, "floor", "")) + `}`)
+	response := f.expectResponse(2)
+	requireCode(t, response, "unsupported_feature")
+	if response.Error.Details["feature"] != protocol.FeatureInstructions {
+		t.Fatalf("control refusal details = %+v", response.Error.Details)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}

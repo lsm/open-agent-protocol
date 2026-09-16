@@ -1440,7 +1440,14 @@ native mutation frame appearing only after the started run's terminal.
 - `serve/servehttp` and the stdio frontend: `writeSubmitError` maps the new
   errors to `unsupported_feature`, `capability_degraded`, and
   `model_not_found` with `details`; the current `invalid_submission` mapping
-  stays for malformed input.
+  stays for malformed input. The mapping is of errors an endpoint returned,
+  and both frontends keep validating the envelope before they decode it: wire
+  and schema validity are the floor beneath the refusal ladder, not a rung of
+  it, so a submit that is schema-invalid is answered `schema_invalid` whatever
+  it carries in the control positions. An envelope the protocol cannot read
+  carries no controls to judge, which is why the validator's semantic phase —
+  where the rules above live — runs only on a trace whose decode and schema
+  phases were clean.
 - `client` and `clients/ts`: no new operations; `ServerError` exposes
   `details`; e2e tests drive a `model_id` submit against the memory adapter
   and assert the echoed model on `run.started`.
