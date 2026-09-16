@@ -1324,6 +1324,135 @@ func TestStateOmitsARunUntilItsAdmissionIsHandedBack(t *testing.T) {
 	}
 }
 
+// A state read is answered synchronously while lifecycle reaches a consumer
+// through a buffered stream, so a snapshot taken at a settlement can be handed
+// out — and be on the wire — before the terminal it reflects. Dropping the run
+// and saying nothing made that snapshot read as erasing a live run. The
+// capture anchor is what the endpoint actually knows: this run is gone, and
+// here is the sequence of the event that ended it. The reservation is the
+// clean case to pin, because its terminal is the only envelope its domain
+// ever carries, so a stream holding it undelivered is exactly the window.
+func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
+	session := newTestSession(t, 64)
+	first, firstStream := submitAdmission(t, session)
+	events := drainAvailable(firstStream)
+	gate := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
+
+	queuedRequest := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}}}
+	reservation, reservedStream, err := session.Submit(context.Background(), queuedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.Admission != protocol.AdmissionQueued || reservation.Status != protocol.RunQueued {
+		t.Fatalf("reservation = %+v", reservation)
+	}
+	if _, err := session.Cancel(context.Background(), reservation.RunID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing has read the reservation's stream, so its terminal is admitted
+	// history the trace has not been told about. This is the read the race
+	// produces.
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range snapshot.ActiveRuns {
+		if entry.RunID == reservation.RunID {
+			t.Fatalf("a settled reservation is still listed: %+v", entry)
+		}
+	}
+	if snapshot.AsOf == nil || len(snapshot.AsOf.Settled) != 1 {
+		t.Fatalf("snapshot dropped the reservation without saying so: %+v", snapshot.AsOf)
+	}
+	if snapshot.AsOf.Settled[0].RunID != reservation.RunID || snapshot.AsOf.Settled[0].Sequence != 1 {
+		t.Fatalf("settlement anchor = %+v, want %s at its terminal sequence 1", snapshot.AsOf.Settled[0], reservation.RunID)
+	}
+
+	settled := drainAvailable(reservedStream)
+	if len(settled) != 1 || settled[0].Type != protocol.TypeRunCancelled || settled[0].Sequence == nil || *settled[0].Sequence != 1 {
+		t.Fatalf("reservation domain = %+v, want one run.cancelled at sequence 1", settled)
+	}
+
+	// Finish the started run, so the trace the snapshot is spliced into is a
+	// complete one.
+	rest := resolveScriptedGates(t, session, first.RunID, firstStream, events)
+
+	exchange, err := adaptertest.StateExchange(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The order the race produces: the snapshot reaches the wire, then the
+	// terminal it already reflects, then the started run's remainder.
+	trace := adaptertest.SpliceAfter(t, events, gate.ID, exchange)
+	trace = append(trace, settled[0])
+	trace = append(trace, rest...)
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}, Admission: first},
+		{Request: queuedRequest, Admission: reservation, Cancelled: true},
+	}, testDescriptor(t), trace)
+}
+
+// The same anchor for the started run: once a run settles, every snapshot the
+// session hands out names it and the sequence its terminal carries.
+func TestStateAnchorsASettledStartedRun(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	events := drainAvailable(stream)
+	events = append(events, resolveScriptedGates(t, session, admission.RunID, stream, events)...)
+	terminal := envelopeOfType(t, events, protocol.TypeRunCompleted)
+
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.ActiveRuns) != 0 || snapshot.ActiveRunID != "" || snapshot.Status != protocol.SessionIdle {
+		t.Fatalf("state after the terminal = %+v", snapshot)
+	}
+	if snapshot.AsOf == nil || len(snapshot.AsOf.Settled) != 1 {
+		t.Fatalf("snapshot dropped the run without saying so: %+v", snapshot.AsOf)
+	}
+	if snapshot.AsOf.Settled[0].RunID != admission.RunID || terminal.Sequence == nil || snapshot.AsOf.Settled[0].Sequence != *terminal.Sequence {
+		t.Fatalf("settlement anchor = %+v, want %s at sequence %v", snapshot.AsOf.Settled[0], admission.RunID, terminal.Sequence)
+	}
+}
+
+// resolveScriptedGates answers the permission and input gates of one run and
+// returns everything it published after the events already drained.
+func resolveScriptedGates(t *testing.T, session adapter.Session, run protocol.RunID, stream adapter.EventStream, drained []protocol.Envelope) []protocol.Envelope {
+	t.Helper()
+	requested := envelopeOfType(t, drained, protocol.TypeActionPermissionRequested)
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	rest := drainAvailable(stream)
+	gate := envelopeOfType(t, rest, protocol.TypeUserInputRequested)
+	var input protocol.UserInputRequestedPayload
+	if err := gate.DecodePayload(&input); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: input.RespondedBy,
+		Input: &protocol.UserInputResolveRequest{
+			InteractionID: input.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: input.RequestedBy, RespondedBy: input.RespondedBy,
+			Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	return append(rest, drainAvailable(stream)...)
+}
+
 func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.EnvelopeType) protocol.Envelope {
 	t.Helper()
 	for _, envelope := range envelopes {

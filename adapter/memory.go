@@ -356,6 +356,15 @@ type memorySession struct {
 	reserved *memoryRun
 	runs     map[protocol.RunID]*memoryRun
 	journal  []protocol.Envelope
+	// settled is every run this session has removed from its projection,
+	// with the sequence its terminal carries. A state read is answered
+	// synchronously while lifecycle reaches a consumer through a buffered
+	// stream, so a snapshot taken at a settlement can be on the wire before
+	// the terminal it reflects. Naming the run and its terminal here says
+	// what the endpoint actually knows — this run is gone, and here is the
+	// event that ended it — instead of leaving the run to vanish from a
+	// listing the trace still reads as holding it.
+	settled []protocol.SettledRun
 }
 
 type scriptStage uint8
@@ -574,6 +583,12 @@ func (s *memorySession) refreshStateLocked() {
 		entries = append(entries, s.entryLocked(run, position))
 	}
 	s.state.ActiveRuns = entries
+	// The capture anchor is what keeps the listing above honest about what is
+	// missing from it. Which run is started is read from the trace; which runs
+	// are gone has to be stated, because the trace may not have been told yet.
+	if len(s.settled) > 0 {
+		s.state.AsOf = &protocol.SessionCapture{Settled: s.settled}
+	}
 	switch {
 	case started != nil:
 		// The session's status follows its started run's, so a refresh
@@ -879,6 +894,11 @@ func (s *memorySession) cloneStateLocked() protocol.SessionState {
 		if entry.AdmittedSubmitRequests != nil {
 			state.ActiveRuns[i].AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), entry.AdmittedSubmitRequests...)
 		}
+	}
+	if s.state.AsOf != nil {
+		capture := *s.state.AsOf
+		capture.Settled = append([]protocol.SettledRun(nil), s.state.AsOf.Settled...)
+		state.AsOf = &capture
 	}
 	return state
 }
@@ -1246,9 +1266,20 @@ func (s *memorySession) Close(ctx context.Context) error {
 
 // emit publishes one envelope and then, when that envelope settled the started
 // run, promotes the reservation waiting behind it. The promotion is after the
-// publish rather than inside it, so one run domain at a time is delivered in
-// admission order: the earlier run's terminal is on the wire before the
-// promoted run's run.started.
+// publish rather than inside it, so the terminal is sent before the promoted
+// run's run.started is.
+//
+// Sent, not delivered. Each run is a stream of its own, and the adapter
+// boundary is one ordered channel per stream: two channels have no order
+// between them, and nothing at this boundary reports what a consumer has
+// published. A consumer draining the two streams independently — which is
+// what serve does, one readRun goroutine each — can therefore put the
+// promoted run's start on the wire ahead of the terminal it was sequenced
+// behind, and no barrier here closes that. Waiting for the settled run's
+// channels to empty only narrows it: empty means received, not published, and
+// it would make the adapter's own liveness depend on a consumer it cannot
+// see. Ordering across run domains belongs to the layer that holds both
+// streams; decision 0007 records it as the serving layer's.
 func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool) error {
 	promoted, err := s.publish(run, typ, payload, terminal)
 	if err != nil {
@@ -1329,6 +1360,7 @@ func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, paylo
 			promoted, s.reserved = s.reserved, nil
 			s.active = promoted
 		}
+		s.settled = append(s.settled, protocol.SettledRun{RunID: run.id, Sequence: sequence})
 	}
 	s.refreshStateLocked()
 	subscribers := append([]chan Result(nil), run.subscribers...)

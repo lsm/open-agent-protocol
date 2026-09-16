@@ -562,6 +562,27 @@ exists for — a session opening on model A, captured just before the first
 promotion whose `run.started` reaches the trace first — would be the one case
 it could not express.
 
+### A settled run is named, not merely dropped
+
+A state read is answered synchronously; lifecycle reaches a consumer through a
+buffered stream. So a snapshot taken at a settlement can be on the wire before
+the terminal it reflects, and a run dropped silently reads as erased from a
+session the trace still holds it in. What the endpoint knows is not "this run
+is gone" but "this run is gone, and its terminal is at sequence N", and
+`as_of.settled` is the field for saying so. Naming it is right in both
+directions: where the terminal has not arrived the claim is held and discharged
+by it, and where it has, the claim is checked against the sequence it carried.
+This is the same move as holding a run out of the projection until its
+admission is handed back — do not publish a fact before it is one — taken at
+the other end of the lifecycle, and it needs no barrier, because the anchor is
+true from the moment the terminal's sequence is allocated whether or not any
+consumer has read it.
+
+The reference adapter states this anchor; OpenCode does not need to, because it
+delivers to its subscribers under the same mutex that rebuilds the projection
+and rebuilds it after the publication it describes, so no read falls between
+the two.
+
 ## Evidence
 
 Fixtures (`fixtures/manifest.json`, unit `queue`): 174 traces covering both
@@ -728,7 +749,8 @@ order their responses and is not this unit's to change.
 
 ## What this unit does not admit
 
-- T2's delivery slice through `serve`: ordered delivery across run domains,
+- Ordered delivery across run domains, and so T2's delivery slice through
+  `serve`:
   `?follow=session`, the `oap-run-boundary` and `oap-stream-end` signals, and
   the resume cursor's interleave member. A queued admission and the state that
   describes it round-trip through the hub, both codecs, and both clients; a
@@ -736,6 +758,25 @@ order their responses and is not this unit's to change.
   envelopes, so a caller that queues alongside a live subscription reads the
   reservation's settlement from `active_runs`. Those changes land with the
   units that need them, and this decision is amended when they do.
+
+  The ordering is the part with teeth, so it is stated plainly rather than
+  left as a gap in a list. An adapter sequences a promotion behind the
+  terminal that caused it, and that ordering is real inside the adapter; it
+  is not a delivery order. The adapter boundary is one ordered channel per
+  run, two channels have no order between them, and nothing there reports
+  what a consumer has published. `serve` drains each run in its own `readRun`
+  goroutine, so the promoted run's `run.started` can reach a subscription
+  ahead of the prior run's terminal — measured at 28 inversions in 300
+  promotions through the real hub. That is an execution-order violation the
+  validator rejects, and no adapter can prevent it: the strongest barrier the
+  boundary can express, waiting until the settled run's channels are empty,
+  still inverted 4 times in 300 once the consumer did any work between taking
+  an envelope off the channel and publishing it, because empty means received,
+  not published. Ordering across run domains is the hub's to provide, since
+  the hub is the only layer holding both streams, and a hub-side guarantee
+  changes delivery for every adapter. Until it lands, a consumer that needs
+  admission order across runs reads it from `session.state`, whose
+  `active_runs` is ordered and whose `as_of` says what the snapshot let go.
 - More than one reservation at a time on any adapter in this repository. The
   wire bounds are per endpoint and the validator enforces whatever is
   disclosed; the reference adapter and OpenCode both disclose one, because that
