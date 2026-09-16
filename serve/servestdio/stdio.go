@@ -349,9 +349,10 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	lines := make(chan []byte, s.writeQueue)
 	stop := make(chan struct{})
+	abandon := make(chan struct{})
 	writerFailed := make(chan struct{}, 1)
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- writeLines(out, lines, stop, writerFailed) }()
+	go func() { writerDone <- writeLines(out, lines, stop, abandon, writerFailed) }()
 
 	// The reader reports its terminal outcome on a buffered side channel as
 	// well as in the frame stream, because the serving loop may be inside a
@@ -437,13 +438,19 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		// must not outlive Run waiting to carry what they produce: an
 		// orphaned writer holds the caller's output and could emit a stale
 		// response into it long after this returns, or across a later
-		// invocation that reuses it. Cancelling first makes those sends
-		// fail instead of queueing behind us; stopping the writer then
-		// drains what is already queued and ends it. A writer parked inside
-		// out.Write on a pipe the host stopped reading stays parked, which
-		// is the stall this window exists to abandon.
+		// invocation that reuses it.
+		//
+		// Cancelling is not enough on its own to stop them. A send whose
+		// context is already done selects between a ready cancellation and
+		// a ready channel, and a select chooses uniformly among ready
+		// cases, so the line can still be queued. Abandoning the writer is
+		// what settles it: unlike stop, which drains what is queued before
+		// ending, abandon ends the writer where it stands, so a line that
+		// wins that race is never carried. A writer parked inside out.Write
+		// on a pipe the host stopped reading stays parked, which is the
+		// stall this window exists to abandon in the first place.
 		cancel()
-		close(stop)
+		close(abandon)
 	}
 	// A loop abandoned mid-op never reported the input's own end, so the
 	// reader's account of it stands in: the same host input returns the same
@@ -582,18 +589,32 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 
 // writeLines is the single ordered writer: it appends the LF terminator to
 // every marshaled line and writes it whole, so lines never interleave. It
-// ends when stopped, draining the lines already queued; a write failure (the
-// host closed stdout) is remembered while the drain continues, so producers
+// ends one of two ways. Stopped, it drains the lines already queued, which
+// is what settles the work a clean teardown waited for; abandoned, it ends
+// where it stands and carries nothing more, which is what keeps a teardown
+// that gave up on its workers from letting their late responses reach an
+// output the caller has already taken back. A write failure (the host
+// closed stdout) is remembered while a drain continues, so producers
 // blocked on the channel still hand off instead of deadlocking, and is
 // signalled on failed exactly once so serving stops admitting work behind a
 // dead output. The channel is never closed: an abandoned producer parks on
 // its send and is reclaimed by process exit rather than panicking on a
 // closed channel.
-func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, failed chan<- struct{}) error {
+func writeLines(out io.Writer, lines <-chan []byte, stop, abandon <-chan struct{}, failed chan<- struct{}) error {
 	var failure error
 	write := func(line []byte) {
 		if failure != nil {
 			return
+		}
+		// Checked per line, not once per loop: a select chooses uniformly
+		// among ready cases, so a line queued as the teardown abandons this
+		// writer can still be taken. Refusing it here is what makes
+		// abandonment mean "carries nothing more" rather than "usually
+		// carries nothing more".
+		select {
+		case <-abandon:
+			return
+		default:
 		}
 		if _, err := out.Write(append(line, '\n')); err != nil {
 			failure = err
@@ -604,6 +625,8 @@ func writeLines(out io.Writer, lines <-chan []byte, stop <-chan struct{}, failed
 		select {
 		case line := <-lines:
 			write(line)
+		case <-abandon:
+			return failure
 		case <-stop:
 			for {
 				select {

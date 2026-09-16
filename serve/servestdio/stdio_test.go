@@ -600,9 +600,10 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
+	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, failed) }()
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`)
 	lines <- []byte(`{"id":2,"ok":true}`)
 	close(stop)
@@ -626,9 +627,10 @@ func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	lines := make(chan []byte, 4)
 	stop := make(chan struct{})
+	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(failWriter{}, lines, stop, failed) }()
+	go func() { done <- writeLines(failWriter{}, lines, stop, abandon, failed) }()
 	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
 	lines <- []byte(`{"id":2,"ok":true}`) // dropped, but still consumed
 	close(stop)
@@ -654,9 +656,10 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	var buf bytes.Buffer
 	lines := make(chan []byte)
 	stop := make(chan struct{})
+	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, failed) }()
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed) }()
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatalf("writeLines returned %v", err)
@@ -1065,6 +1068,35 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// TestWriterAbandonedCarriesNothingMore pins the difference between the two
+// ways the writer can end. Stopped, it drains what is queued, which settles
+// the work a clean teardown waited for. Abandoned, it carries nothing more
+// — including a line already queued, because a teardown that gave up on its
+// workers has handed the caller's output back and a late response written
+// into it is corruption rather than lateness.
+func TestWriterAbandonedCarriesNothingMore(t *testing.T) {
+	var buf bytes.Buffer
+	lines := make(chan []byte, 4)
+	stop := make(chan struct{})
+	abandon := make(chan struct{})
+	failed := make(chan struct{}, 1)
+	lines <- []byte(`{"id":1,"ok":true}`) // queued, not yet taken
+	close(abandon)
+	done := make(chan error, 1)
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("writeLines returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("an abandoned writer did not end")
+	}
+	if buf.String() != "" {
+		t.Fatalf("an abandoned writer wrote %q", buf.String())
+	}
 }
 
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
