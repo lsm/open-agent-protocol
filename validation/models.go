@@ -1,7 +1,7 @@
 package validation
 
 import (
-	"reflect"
+	"encoding/json"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -285,7 +285,7 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	if served.revision == "" || served.revision != s.currentCapability || s.capabilitiesStale {
 		return
 	}
-	if binding && st.catalog != nil && st.catalog.known && st.catalog.binding && st.catalog.revision == served.revision && !reflect.DeepEqual(st.catalog.models, served.models) {
+	if binding && st.catalog != nil && st.catalog.known && st.catalog.binding && st.catalog.revision == served.revision && !sameCatalog(st.catalog.models, served.models) {
 		// The wire makes a catalog change a capability invalidation, so
 		// availability may not change without capabilities.updated. At
 		// degraded the descriptor's reason discloses out-of-band refresh and
@@ -294,6 +294,33 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	}
 	st.catalog = served
 	s.reconcileUnjudgedModels(st, served)
+}
+
+// sameCatalog compares two catalogs by value rather than by bytes.
+//
+// A descriptor's features carry their constraints as raw JSON, which a
+// structural comparison reads as opaque byte slices: two encodings of one
+// constraint object — members in another order, whitespace an encoder chose
+// differently — would be reported as a catalog change when nothing changed,
+// and ordinary map serialization produces exactly that. The comparison runs
+// through the run-controls unit's sameJSON, which canonicalizes member order
+// and number spelling, rather than a second implementation of the same idea.
+//
+// The whole catalog is compared as one document rather than field by field, so
+// every raw member a descriptor carries today is compared by value, and so is
+// any it gains later without this having to be revisited.
+func sameCatalog(a, b map[string]protocol.ModelDescriptor) bool {
+	left, leftErr := json.Marshal(a)
+	right, rightErr := json.Marshal(b)
+	if leftErr != nil || rightErr != nil {
+		// Unreachable: these descriptors were decoded from an envelope the
+		// schema phase already accepted, so they re-encode. Reporting no
+		// change is the quiet answer if it ever happened — manufacturing a
+		// catalog change out of an encoding failure is the very class of
+		// spurious diagnostic this comparison exists to avoid.
+		return true
+	}
+	return sameJSON(left, right)
 }
 
 // checkCatalogCurrentModel judges the current model a catalog reports against

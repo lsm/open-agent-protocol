@@ -168,6 +168,19 @@ compared, because that is what every rule in this unit keys on; a reworded
 `reason` is prose, and diagnosing prose would make the rule noisy without
 making it stronger.
 
+The catalog comparison behind that rule is by value, not by bytes. A
+descriptor's `features` carry their constraints as raw JSON, so a structural
+comparison would read two encodings of one constraint object — members in
+another order, whitespace an encoder chose differently — as a change when
+nothing changed, and ordinary map serialization produces exactly that. It runs
+through the run-controls unit's `sameJSON`, which already canonicalizes member
+order and number spelling for `fixed_result`, rather than a second
+implementation of the same idea; and it compares the catalog as one document
+rather than field by field, so every raw member a descriptor carries is covered
+by construction and so is any it gains later
+(`models-catalog-constraints-reordered`, and
+`models-catalog-constraints-mutate-within-revision` for a change that is real).
+
 A selection made under a revision whose catalog the trace has not served is not
 skipped but retained, and the first catalog under that revision settles it,
 admissions and refusals alike. Without that an endpoint could accept an
