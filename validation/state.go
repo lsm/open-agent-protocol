@@ -1416,7 +1416,25 @@ func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, k
 	id, requested, responded := interactionFields(e, kind)
 	x := s.lookupInteraction(e.RunID, id)
 	if x == nil {
+		if r := s.runs[e.RunID]; r != nil && r.priorUnknown {
+			// Same as the resolution event: a run introduced by a recovery
+			// that said nothing about what it was blocked on may be asked to
+			// resolve an interaction opened before the cursor, and unmatched
+			// here is what the validator does not know.
+			r.interactions[id] = &interactionState{opaque: true}
+			return
+		}
 		s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution has no pending interaction")
+		return
+	}
+	if x.opaque {
+		// Answering a recovered interaction is what reattaching to a blocked
+		// run is for: the client reads pending_interactions and resolves what
+		// it finds there. The request that opened it is behind the cursor, so
+		// its kind, ownership, cancellation policy, offered choices and
+		// questions were never stated to this trace — they are unknown, not
+		// empty, and a request cannot be held to fields nobody stated. The
+		// event side stands the same checks down for the same reason.
 		return
 	}
 	if x.kind != kind {

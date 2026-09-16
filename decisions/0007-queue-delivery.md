@@ -221,9 +221,15 @@ Where the document speaks, it is believed: an entry naming the interactions its
 run is blocked on names ones whose requests are behind the cursor, so they are
 recorded as pending from before every position this trace can state, and
 recorded opaquely — naming an interaction is not describing it, so its
-ownership, kind, questions, choices and tool binding are unknown and nothing is
-held to them. What this trace does see of them is judged as ever: they are
-resolved once, and they leave the pending set where the trace says they do.
+ownership, kind, questions, choices, cancellation policy and tool binding are
+unknown and nothing is held to them. Unknown in every direction: not only when
+the events this trace carries are judged, but when the client's own resolve or
+cancel request is. Answering a recovered interaction is the point of
+reattaching to a blocked run — a client reads `pending_interactions` and
+resolves what it finds there — and holding that request to fields nobody
+stated convicts the one client doing what the recovery path exists for. What
+this trace does see of such an interaction is judged as ever: it is resolved
+once, and it leaves the pending set where the trace says it does.
 
 Where no document speaks, nothing is concluded. A recovery that introduces its
 run through the pointer alone says nothing about what that run is blocked on,
@@ -505,7 +511,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 159 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 162 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
