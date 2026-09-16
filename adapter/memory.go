@@ -400,8 +400,14 @@ func (s *memorySession) refreshStateLocked() {
 		// The session's status follows its started run's, so a refresh
 		// triggered by any later emission cannot quietly move a session
 		// waiting for input back to running.
+		//
+		// It follows the same evidence the entry beside it publishes: the run
+		// status, or an unresolved gate the entry names. The permission gate
+		// blocks the run without a status update of its own — only the input
+		// gate reports one — so reading the status alone described a session
+		// running beside a run it had just said was blocked.
 		s.state.Status = protocol.SessionRunning
-		if started.status == protocol.RunWaitingForInput {
+		if started.status == protocol.RunWaitingForInput || started.pendingInteraction != "" {
 			s.state.Status = protocol.SessionWaitingForInput
 		}
 		s.state.ActiveRunID = started.id

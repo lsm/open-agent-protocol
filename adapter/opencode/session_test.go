@@ -1109,6 +1109,58 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	}
 }
 
+// A state read taken mid-run has to survive the validator like any other
+// snapshot. Nothing else in the kit reads State, so the projection this adapter
+// hands out never entered the trace its own rules judge: a session listing a
+// started run beside a reservation is exactly the shape the queue unit's state
+// rules are about, and it was going unchecked here.
+func TestStateDuringARunValidates(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	started := adaptertest.Next(t, firstStream, 2*time.Second)
+	if started.Type != protocol.TypeRunStarted {
+		t.Fatalf("first envelope = %s", started.Type)
+	}
+	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The session as it stands: one started run and one reservation behind it.
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != protocol.SessionRunning || snapshot.ActiveRunID != first.RunID || len(snapshot.ActiveRuns) != 2 {
+		t.Fatalf("snapshot = %s / %q / %+v", snapshot.Status, snapshot.ActiveRunID, snapshot.ActiveRuns)
+	}
+
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	firstEvents := append([]protocol.Envelope{started}, adaptertest.Drain(t, firstStream, 2*time.Second)...)
+	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
+	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+
+	exchange, err := adaptertest.StateExchange(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...)
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+		{Request: queueRequest("later"), Admission: queued},
+	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange))
+}
+
 // A snapshot handed to a caller owns its own backing array. active_runs is a
 // slice of entries carrying pointers, so a by-value copy of the session state
 // shares both with the session: a caller editing what it was given would reach

@@ -346,10 +346,52 @@ func isControlExchange(typ protocol.EnvelopeType) bool {
 		protocol.TypeRunCancelRequest, protocol.TypeRunCancelResponse,
 		protocol.TypeActionPermissionResolveRequest, protocol.TypeActionPermissionResolveResponse,
 		protocol.TypeUserInputResolveRequest, protocol.TypeUserInputResolveResponse,
-		protocol.TypeUserInputCancelRequest, protocol.TypeUserInputCancelResponse:
+		protocol.TypeUserInputCancelRequest, protocol.TypeUserInputCancelResponse,
+		protocol.TypeSessionStateRequest, protocol.TypeSessionStateResponse:
 		return true
 	}
 	return false
+}
+
+// StateExchange is a session.state request and response carrying one snapshot
+// an adapter handed out, ready to be spliced into the event stream at the point
+// it was taken.
+//
+// Nothing else in this kit reads State, and that is a real hole rather than an
+// omission of convenience: an adapter's projection can contradict the very run
+// the same trace carries and still pass every assertion here, because the
+// snapshot never enters the trace the validator sees. Splicing one in is what
+// holds an adapter's own state to the rules a fixture is held to.
+func StateExchange(state protocol.SessionState) ([]protocol.Envelope, error) {
+	request, err := protocol.NewEnvelope(protocol.TypeSessionStateRequest, "state-request", protocol.SessionStateRequest{SessionID: state.SessionID})
+	if err != nil {
+		return nil, err
+	}
+	request.SessionID = state.SessionID
+	response, err := protocol.NewEnvelope(protocol.TypeSessionStateResponse, "state-response", state)
+	if err != nil {
+		return nil, err
+	}
+	response.SessionID = state.SessionID
+	response.InReplyTo = request.ID
+	return []protocol.Envelope{request, response}, nil
+}
+
+// SpliceAfter puts a state exchange into an event stream directly after the
+// envelope it was taken at, which is where the capture window rules judge it:
+// the request opens the window, and anything the endpoint published in between
+// is a race the snapshot is allowed to have missed or led.
+func SpliceAfter(t testing.TB, events []protocol.Envelope, after protocol.EnvelopeID, exchange []protocol.Envelope) []protocol.Envelope {
+	t.Helper()
+	for index, envelope := range events {
+		if envelope.ID != after {
+			continue
+		}
+		head := append([]protocol.Envelope(nil), events[:index+1]...)
+		return append(append(head, exchange...), events[index+1:]...)
+	}
+	t.Fatalf("no envelope %s to splice a state read after", after)
+	return nil
 }
 
 // AssertInitialState verifies that opening a session preserves the requested ID

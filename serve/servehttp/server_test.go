@@ -593,7 +593,9 @@ func TestSessionsListingAcrossLifecycle(t *testing.T) {
 
 	stream := connectSSE(t, server, "/sessions/listing/events", "")
 	_, admission := submitRun(t, server, "listing", "submit-listing")
-	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "running" || entry.ActiveRunID != string(admission.RunID) {
+	// The scripted run stops at its permission gate, so the listing reports a
+	// session waiting on it rather than one executing.
+	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "waiting_for_input" || entry.ActiveRunID != string(admission.RunID) {
 		t.Fatalf("running listing: %+v", entry)
 	}
 

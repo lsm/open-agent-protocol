@@ -499,7 +499,10 @@ func TestResumeGapReturnsAuthoritativeState(t *testing.T) {
 	if recovery.RequestedAfter != 0 || recovery.ReplayedFrom != 0 || recovery.ReplayedThrough != 0 {
 		t.Fatalf("gap claimed replay bounds: %+v", recovery)
 	}
-	if recovery.ReplayGap == nil || recovery.State.ActiveRunID != runID || recovery.State.Status != protocol.SessionRunning {
+	// The script stops at the permission gate, so the authoritative state the
+	// gap hands back is a session waiting on it — which is what the entry
+	// beside it says too.
+	if recovery.ReplayGap == nil || recovery.State.ActiveRunID != runID || recovery.State.Status != protocol.SessionWaitingForInput {
 		t.Fatalf("bad recovery: %+v", recovery)
 	}
 	if events := drainAvailable(replay); len(events) != 0 {
@@ -1112,6 +1115,69 @@ func TestActiveRunEntryFollowsTheRunStatus(t *testing.T) {
 	if len(entry.PendingInteractions) != 1 || entry.PendingInteractions[0] != input.InteractionID {
 		t.Fatalf("pending interactions = %+v, want %s", entry.PendingInteractions, input.InteractionID)
 	}
+}
+
+// A state read taken while a gate is open has to survive the validator like
+// any other snapshot. Nothing else in the kit reads State, so a projection
+// contradicting the very run the same trace carries passed every assertion
+// here: the permission gate blocks the run without moving its status, and the
+// session reported itself running beside an entry naming what it was blocked
+// on — the shape queue-state-running-beside-a-pending-interaction rejects.
+func TestStateDuringAGateValidates(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	run := admission.RunID
+	events := drainAvailable(stream)
+	requested := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
+
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != protocol.SessionWaitingForInput {
+		t.Fatalf("session status during the permission gate = %s, want waiting_for_input", snapshot.Status)
+	}
+	if len(snapshot.ActiveRuns) != 1 || len(snapshot.ActiveRuns[0].PendingInteractions) != 1 {
+		t.Fatalf("active_runs during the permission gate = %+v", snapshot.ActiveRuns)
+	}
+
+	// Resolve the gate and let the run finish, so the trace the snapshot is
+	// spliced into is a complete one.
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, drainAvailable(stream)...)
+	gate := envelopeOfType(t, events, protocol.TypeUserInputRequested)
+	var input protocol.UserInputRequestedPayload
+	if err := gate.DecodePayload(&input); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: input.RespondedBy,
+		Input: &protocol.UserInputResolveRequest{
+			InteractionID: input.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: input.RequestedBy, RespondedBy: input.RespondedBy,
+			Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, drainAvailable(stream)...)
+
+	exchange, err := adaptertest.StateExchange(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), adaptertest.SpliceAfter(t, events, requested.ID, exchange))
 }
 
 // A snapshot handed to a caller owns its own backing array. active_runs is a
