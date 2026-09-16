@@ -638,8 +638,14 @@ rediscovered from the code.
   embedder can produce one.
 - **Both native revisions are bumped** (`claude-code-2.1.263-oap-v2`,
   `acp-v1.7.0-schema-v1.21.0-oap-v2`) and the reference adapter's with them
-  (`reference-memory-v3`), because a revision identifies exactly one
-  descriptor and each of the three changed.
+  (`reference-memory-v5`, superseding the `v3` Decision 0006 introduced),
+  because a revision identifies exactly one descriptor and each of the three
+  changed. `v4` is skipped rather than reused: the units graduating in parallel
+  each bump this constant, and two branches that both took the next number
+  would publish two different descriptors under one revision — the confusion
+  the revision exists to prevent. The number belongs to the unit merging
+  beside this one, so this takes the one after it whether or not that lands
+  first.
 - **`examples/tool-source.json` needed no change**: it was already a
   session-scoped request and response pair on the flat envelope, each tool
   carrying its source id and its `execution_owner`. Before this unit its

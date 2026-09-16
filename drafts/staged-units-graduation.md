@@ -1560,7 +1560,17 @@ unit does not wait for all four, and does not claim all four.
 
 ## T5a. Models catalog
 
-Unit name: `models`. Planned decision: 0006.
+Unit name: `models`. Decision:
+[0006](../decisions/0006-models-catalog.md), accepted. Executable: the wire
+additions, the validator rules, the reference adapter's fixed catalog, the
+fixtures below, and OpenCode's graduation are in the tree. One planned item
+did not land as written and the decision records why: OpenCode advertises
+`models.list` at `degraded` rather than `native`, because its ledger names
+`model.list`/`provider.list` as routes but pins no response shape for
+either, so the adapter serves the models the session is observed to run
+(the session record's model and each durable `step.started.model`) and
+discloses exactly that. The lower-rung holding described below waits for
+T2, which is where the state-rung expectation it holds against arrives.
 
 ### Scope
 

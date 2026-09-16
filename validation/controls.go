@@ -160,13 +160,24 @@ type pendingSubmit struct {
 	satisfiable map[string]bool
 	controls    admittedControls
 	index, line int
+	// session and revision are what the retained model rules are keyed by: a
+	// catalog is one session's, and a selection is judged against the catalog
+	// served under the revision the submission was made under.
+	session  protocol.SessionID
+	revision string
+	// modelUnjudged marks a selection the trace cannot yet judge, because no
+	// catalog under the active revision has been served; modelListed marks one
+	// the active catalog does list, so a refusal reporting it missing
+	// contradicts the endpoint's own catalog.
+	modelUnjudged bool
+	modelListed   bool
 }
 
 // submitControls judges every control a submission carries and retains what
 // the correlated response owes. Nothing is diagnosed on the request itself:
 // the endpoint is required to refuse, and a conforming refusal must validate.
 func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.MessageSubmitRequest) {
-	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line}
+	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability}
 	defer func() {
 		if s.pendingControls == nil {
 			s.pendingControls = map[protocol.EnvelopeID]*pendingSubmit{}
@@ -228,7 +239,7 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 		if control.key == protocol.FeatureToolSelection {
 			s.duplicateToolNames(i, line, e)
 		}
-		defect, satisfiable := s.unsatisfiable(control.key, p, &pending.controls)
+		defect, satisfiable := s.unsatisfiable(control.key, p, pending)
 		if defect != nil {
 			expectations = append(expectations, defect)
 			continue
@@ -311,7 +322,8 @@ func (s *state) featureDetail(key string) protocol.FeatureSupport {
 // every constraint the endpoint disclosed: a control it can neither refuse nor
 // vouch for — a tool_choice mode the endpoint never said it enforces — is
 // neither, so the endpoint may refuse it and is not held to admitting it.
-func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, controls *admittedControls) (*controlExpectation, bool) {
+func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, pending *pendingSubmit) (*controlExpectation, bool) {
+	controls := &pending.controls
 	unsatisfiableAs := func(pointer, detailName, detailValue, message string) *controlExpectation {
 		if detailValue == "" {
 			// A defect with no offending value to name — a policy that is
@@ -343,11 +355,29 @@ func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, contr
 			}, false
 		}
 		// Whether a non-empty id is one the endpoint serves is decidable only
-		// against a catalog, which arrives with the models unit. The shape of
-		// its refusal is decidable now: the wire assigns every catalog miss
-		// to model_not_found, so unsupported_feature is wrong for a model id
-		// whatever the id was — either the endpoint serves it and owed an
-		// admission, or it does not and owed model_not_found naming it.
+		// against a catalog. Where one has been served under the active
+		// revision at native or emulated, the miss is decided here; where none
+		// has, the selection is retained and the first catalog under that
+		// revision settles it.
+		//
+		// Either way unsupported_feature is wrong for a model id: the wire
+		// assigns every catalog miss to model_not_found, so either the
+		// endpoint serves the id and owed an admission, or it does not and
+		// owed model_not_found naming it.
+		catalog := s.track(p.SessionID).catalog
+		switch {
+		case catalog.binds(s.currentCapability) && !catalog.ids[controls.model]:
+			return &controlExpectation{
+				rung: rungUnsatisfiable, key: key, pointer: "/payload/model_id",
+				code: errorModelNotFound, detailName: "model_id", detailValue: controls.model,
+				diagnostic: CodeModelNotInCatalog,
+				message:    "submission selects a model the catalog served under this revision does not list",
+			}, false
+		case catalog.binds(s.currentCapability):
+			pending.modelListed = true
+		default:
+			pending.modelUnjudged = true
+		}
 		return nil, true
 	case protocol.FeatureInstructions:
 		// instructions has no unsatisfiability condition at all: an endpoint
@@ -492,6 +522,16 @@ func (s *state) settleSubmitAdmission(i, line int, e protocol.Envelope, p protoc
 		// admitted would pile consequences onto one fault.
 		return admittedControls{}
 	}
+	if pending.modelUnjudged {
+		// No catalog under this revision has been served, so whether the
+		// endpoint may serve this model is undecided. The first catalog under
+		// the revision settles it, and an endpoint cannot use the gap to
+		// admit a model it does not serve.
+		s.retainModelSelection(pending.session, unjudgedModel{
+			model: pending.controls.model, revision: pending.revision, admitted: true,
+			index: i, line: line, envelope: e, submission: e.InReplyTo,
+		})
+	}
 	// The admitted model is authoritative for the run, so the response must
 	// repeat what the request asked for rather than quietly substituting one.
 	if pending.controls.modelPresent && p.ModelID != pending.controls.model {
@@ -516,10 +556,21 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 		return text, ok && isText
 	}
 	if expectation := pending.expectation; expectation != nil {
-		if !refusalConforms(payload.Error, expectation) {
+		if !conformingRefusal(payload.Error, expectation) {
 			s.addExpected(expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 		}
 		return
+	}
+	// A selection the trace cannot judge yet — no catalog under the active
+	// revision — is retained and settled by the first catalog that arrives,
+	// because deferring the judgement must not weaken it.
+	if pending.modelUnjudged {
+		s.retainModelSelection(pending.session, unjudgedModel{
+			model: pending.controls.model, revision: pending.revision,
+			index: i, line: line, envelope: e, submission: e.InReplyTo,
+		})
+	} else if pending.modelListed {
+		s.diagnoseFalseMiss(i, line, e, pending.controls.model)
 	}
 	// The other direction: a control the validator finds advertised and
 	// within every disclosed constraint, refused as unsupported. The endpoint
@@ -535,13 +586,11 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 	s.addExpected(CodeUnsatisfiableControl, i, line, e, "/payload/error", "refusal names a control the endpoint advertises and this request satisfies", "admission or a defect the refusal names", describeRefusal(payload.Error), string(e.InReplyTo))
 }
 
-// refusalConforms reports whether one error.response says what the retained
-// expectation requires it to say. The code alone never suffices: an
-// unsupported_feature answers about one capability, so a refusal that omits
-// details.feature or names another key tells the caller no more than that
-// something was unsupported, and the reason and the offending member are what
-// say whether to stop sending the capability or to send a different value.
-func refusalConforms(err protocol.ProtocolError, expectation *controlExpectation) bool {
+// conformingRefusal reports whether one error.response says what the retained
+// expectation requires: the code, the capability it answers about, the reason
+// that distinguishes the two conditions unsupported_feature covers, and the
+// detail that names the offending member.
+func conformingRefusal(err protocol.ProtocolError, expectation *controlExpectation) bool {
 	detail := func(name string) (string, bool) {
 		value, ok := err.Details[name]
 		text, isText := value.(string)
@@ -551,6 +600,12 @@ func refusalConforms(err protocol.ProtocolError, expectation *controlExpectation
 		return false
 	}
 	if expectation.code == errorUnsupportedFeature {
+		// unsupported_feature answers about one capability, so the key is the
+		// refusal's subject: omitted, or naming another key, it tells the
+		// caller no more than that something was unsupported. The
+		// unsatisfiability rung carries the offending member in details.tool
+		// or details.field, so without this the feature on those refusals
+		// would go unjudged.
 		feature, ok := detail("feature")
 		if !ok || feature != expectation.key {
 			return false

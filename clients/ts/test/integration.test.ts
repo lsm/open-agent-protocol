@@ -85,7 +85,7 @@ test(
     const adapters = await client.adapters();
     assert.ok(adapters.some((adapter) => adapter.name === 'memory'));
     const caps = await client.capabilities('memory');
-    assert.equal(caps.revision, 'reference-memory-v3');
+    assert.equal(caps.revision, 'reference-memory-v5');
     assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
 
     // An unknown adapter is a coded refusal.
@@ -122,6 +122,19 @@ test(
     // in the descriptor shape: no command, no args, no environment.
     const opened = await session.state();
     assert.ok(opened.sources?.some((source) => source.id === 'ts-integration-mcp'));
+
+    // The model catalog the endpoint publishes is the one its model gate
+    // enforces, so the id selected below is one this listing offered.
+    const models = await session.models();
+    assert.equal(models.models.session_id, session.id);
+    // The listing comes back with the revision that governs it, so a caller
+    // can cache it against that descriptor and discard it when it moves.
+    assert.equal(models.revision, caps.revision);
+    assert.deepEqual(
+      models.models.models.map((descriptor) => descriptor.id),
+      ['reference-model-a', 'reference-model-b'],
+    );
+    assert.equal(models.models.models.filter((descriptor) => descriptor.default).length, 1);
 
     const events = session.events();
     await events.ready;

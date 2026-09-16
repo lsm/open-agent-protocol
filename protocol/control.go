@@ -281,6 +281,73 @@ type CapabilitiesUpdated struct {
 	Reason           string `json:"reason,omitempty"`
 }
 
+// FeatureModelsList is the capability key for the session-scoped model
+// catalog. The catalog is part of the capability snapshot: a catalog change is
+// a capabilities.updated invalidation on endpoints that advertise
+// capabilities.updates, and a static endpoint may serve one catalog for its
+// lifetime.
+const FeatureModelsList = "models.list"
+
+// ModelsRequest asks one session for its effective model catalog.
+//
+// AllowDegradedFeatures is the same opt-in carrier MessageSubmitRequest has,
+// because the consent is per request and the catalog query is a request of its
+// own: an endpoint exposing models.list as `degraded` would otherwise have to
+// refuse every query with capability_degraded or serve degraded behaviour
+// without consent, and the run-controls discipline forbids both.
+type ModelsRequest struct {
+	SessionID             SessionID `json:"session_id"`
+	AllowDegradedFeatures []string  `json:"allow_degraded_features,omitempty"`
+}
+
+// AllowsDegraded reports whether the query opted into the degraded application
+// of one capability key.
+func (r ModelsRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+// ModelDescriptor is one model a session can run.
+//
+// ID is the value model_id accepts and is unique within a response.
+// Non-emptiness is a schema constraint rather than a validator rule: an empty
+// model_id is refused unconditionally, so a catalog that listed one would offer
+// a picker a value the endpoint is required to reject.
+type ModelDescriptor struct {
+	ID            string                    `json:"id"`
+	DisplayName   string                    `json:"display_name,omitempty"`
+	ProviderID    string                    `json:"provider_id,omitempty"`
+	ContextWindow int64                     `json:"context_window,omitempty"`
+	Features      map[string]FeatureSupport `json:"features,omitempty"`
+	Default       bool                      `json:"default,omitempty"`
+}
+
+// ModelEventPosition names one run-scoped event by its run and sequence. It is
+// compound rather than a bare sequence because sequences restart per run: a
+// session with two model-mutating runs can hold several events at one sequence
+// value, and a number alone could not say which one a catalog meant.
+type ModelEventPosition struct {
+	RunID    RunID  `json:"run_id"`
+	Sequence uint64 `json:"sequence"`
+}
+
+// ModelsResponse is the effective catalog for one session.
+//
+// AsOfModelEvent names the last model-affecting event the catalog reflects,
+// and is absent when it reflects none. It carries the response's own position
+// so a catalog captured ahead of the trace is judged at that point rather than
+// reported as a mismatch against the value the trace has observed.
+type ModelsResponse struct {
+	SessionID      SessionID           `json:"session_id"`
+	CurrentModelID string              `json:"current_model_id,omitempty"`
+	Models         []ModelDescriptor   `json:"models"`
+	AsOfModelEvent *ModelEventPosition `json:"as_of_model_event,omitempty"`
+}
+
 type SessionStatus string
 
 const (
@@ -340,19 +407,18 @@ func (r SessionOpenRequest) AllowsDegraded(key string) bool {
 	return false
 }
 
-// SessionOpenResponse is a separate struct from SessionState even though the
-// schema aliases the two payload shapes, so every member the open must report
-// is added to both. Sources is the union of the open's attachments and the
-// descriptor's declared sources, in the descriptor shape: the sanitized
-// projection is the point, so command, args, and environment cannot reach a
-// client through state any more than through a catalog.
-type SessionOpenResponse struct {
-	SessionID SessionID                  `json:"session_id"`
-	Status    SessionStatus              `json:"status"`
-	Metadata  map[string]json.RawMessage `json:"metadata,omitempty"`
-	Sources   []ToolSourceDescriptor     `json:"sources,omitempty"`
-	Recovery  *RecoveryMetadata          `json:"recovery,omitempty"`
-}
+// SessionOpenResponse is the session state an open confirms. The schema
+// defines session.open.response as the state document itself
+// (session.schema.json: openResponse is a $ref to state), so it is one type
+// here, as it already is in the TypeScript client and as the two sibling
+// state responses already are below. It was a hand-written subset of those
+// members, which meant a daemon had to copy them across one by one and could
+// silently drop any it forgot.
+//
+// CurrentModelID is therefore the model a control-free submission would use:
+// the first snapshot a control layer sees, and the one a catalog's
+// current_model_id is judged against.
+type SessionOpenResponse = SessionState
 
 type SessionStateRequest struct {
 	SessionID SessionID `json:"session_id"`

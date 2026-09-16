@@ -385,7 +385,7 @@ func TestClientAttachesSourcesAndReadsTheCatalog(t *testing.T) {
 	// The degraded opt-in rides the query and is accepted by an endpoint that
 	// does not need it, so a caller consenting in advance is never refused
 	// for consenting.
-	if _, err := session.Tools(ctx, AllowDegraded(protocol.FeatureToolsList)); err != nil {
+	if _, err := session.Tools(ctx, AllowDegradedTools(protocol.FeatureToolsList)); err != nil {
 		t.Fatalf("catalog with an opt-in: %v", err)
 	}
 }

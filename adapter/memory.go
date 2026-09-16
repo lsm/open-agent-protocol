@@ -98,13 +98,20 @@ var attachSupport = protocol.FeatureSupport{
 // CapabilityRevision is the advertised reference-adapter revision. Every
 // emitted envelope repeats it so a consumer can bind an event to the
 // descriptor snapshot it was produced under.
-// v2 publishes the scripted tool in the catalog; v1 published none, and a
-// revision identifies exactly one descriptor, so a consumer holding the v1
-// snapshot must see this one as new rather than validate against an empty
-// catalog. v3 declares the tool sources, attributes the scripted tool to one
-// of them, and advertises the catalog and attachment capabilities with their
-// disclosed limits — a different descriptor again, so a different revision.
-const CapabilityRevision = "reference-memory-v3"
+// v2 published the scripted tool in the catalog; v1 published none. v3
+// advertises models.list and serves the fixed model catalog. v5 declares the
+// tool sources, attributes the scripted tool to one of them, and advertises
+// the catalog and attachment capabilities with their disclosed limits. A
+// revision identifies exactly one descriptor, so a consumer holding an older
+// snapshot must see this one as new rather than validate against a descriptor
+// that says less than the endpoint does.
+//
+// v4 is skipped rather than reused: the units that graduate in parallel each
+// bump this constant, and two branches that both took the next number would
+// publish two different descriptors under one revision — the exact confusion
+// the revision exists to prevent. v4 belongs to the unit merging beside this
+// one, so this takes v5 whether or not that one lands first.
+const CapabilityRevision = "reference-memory-v5"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -177,7 +184,12 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		// modes say which policies a refusal may cite, and fixed_result names
 		// the exact object every structured completion carries.
 		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Mode: protocol.ModePerRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
-		protocol.FeatureInstructions:   {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
+		// The catalog the model gate is judged against is served rather than
+		// left implicit, so a caller can read the two ids the adapter accepts
+		// instead of discovering them one model_not_found at a time. It is
+		// fixed for the revision, which is what native means here.
+		protocol.FeatureModelsList:   {Level: protocol.SupportNative, Reason: "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},
+		protocol.FeatureInstructions: {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
 		protocol.FeatureToolSelection: {
 			Level:  protocol.SupportEmulated,
 			Modes:  []string{protocol.ToolChoiceAuto, protocol.ToolChoiceNone, protocol.ToolChoiceRequired, protocol.ToolChoiceNamed},
@@ -499,6 +511,48 @@ type admittedControls struct {
 	choice       *protocol.ToolChoice
 	outputSchema json.RawMessage
 	callsTool    bool
+}
+
+// modelCatalog is the reference adapter's fixed model catalog: the same two
+// ids admitControls admits, published so the gate and the catalog cannot
+// disagree. The first is the default, and there is exactly one.
+func modelCatalog() []protocol.ModelDescriptor {
+	return []protocol.ModelDescriptor{
+		{ID: ModelPrimary, DisplayName: "Reference Model A", ProviderID: "reference", ContextWindow: 8192, Default: true},
+		{ID: ModelSecondary, DisplayName: "Reference Model B", ProviderID: "reference", ContextWindow: 8192},
+	}
+}
+
+// Models serves the session's effective catalog. It is deterministic and
+// revision-stable: the same list for the life of the descriptor, so a consumer
+// can cache it against the capability revision.
+//
+// The catalog reports no current model because the reference adapter holds no
+// session default: a per_run selection binds its own run and leaves the
+// default alone, and a session that has never been told which model to use has
+// none to report. The default descriptor says which one it would pick.
+func (s *memorySession) Models(ctx context.Context, request protocol.ModelsRequest) (Catalog, error) {
+	if err := ctx.Err(); err != nil {
+		return Catalog{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return Catalog{}, ErrSessionClosed
+	}
+	if request.SessionID != "" && request.SessionID != s.state.SessionID {
+		return Catalog{}, fmt.Errorf("%w: catalog query names session %q", ErrInvalidSubmission, request.SessionID)
+	}
+	// The revision is read here, with the listing, rather than left for a
+	// caller to pair with a descriptor it probed separately.
+	return Catalog{
+		Revision: CapabilityRevision,
+		Models: protocol.ModelsResponse{
+			SessionID:      s.state.SessionID,
+			CurrentModelID: s.state.CurrentModelID,
+			Models:         modelCatalog(),
+		},
+	}, nil
 }
 
 // catalog names the effective tool catalog this session's policies are judged
@@ -1038,3 +1092,8 @@ func (g *sequenceIDs) NewID(kind string) string {
 // The reference adapter serves a portable catalog, so it implements the
 // optional catalog surface rather than leaving the boundary to refuse.
 var _ ToolLister = (*memorySession)(nil)
+
+// The reference adapter implements every optional session capability the
+// executable units define, so a unit's wire shape is executable rather than
+// prose before any native adapter proves it.
+var _ ModelLister = (*memorySession)(nil)

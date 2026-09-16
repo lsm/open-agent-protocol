@@ -82,9 +82,18 @@ type sessionTrack struct {
 	// fixes the order they are judged in.
 	attached      map[string]protocol.ToolSourceDescriptor
 	attachedOrder []string
-	// catalog is the last catalog this session was served, with the revision
+	// toolCatalog is the last tool catalog this session was served, with the revision
 	// it was served under, so no sourced call is judged against stale names.
-	catalog *sessionCatalog
+	toolCatalog *sessionCatalog
+	// The models unit's per-session bookkeeping: the catalog this session was
+	// served and the revision it was served under, the values the session's
+	// model took (so a catalog captured mid-flight is judged against the set
+	// rather than one instant), the selections no catalog could judge yet, and
+	// the catalogs whose declared position the trace has not reached.
+	catalog        *modelCatalog
+	modelMarks     []modelMark
+	unjudgedModels []unjudgedModel
+	heldCatalogs   []heldCatalog
 }
 
 // toolTrack retains a tool call's lifecycle status and the execution owner that
@@ -139,7 +148,10 @@ type state struct {
 	// declaredSources is the active descriptor's declared tool sources,
 	// normalized across its layers.
 	declaredSources map[string]protocol.ToolSourceDescriptor
-	recoveries      map[protocol.SessionID]*recoveryExpectation
+	// pendingModels retains what each catalog query owes its correlated
+	// response, keyed by the query's envelope id.
+	pendingModels map[protocol.EnvelopeID]*pendingModelsQuery
+	recoveries    map[protocol.SessionID]*recoveryExpectation
 	// tolerant lets an envelope of unknown type take part in the
 	// type-independent bookkeeping its wire scope implies, instead of being
 	// skipped. Without it a tolerated unknown run event at sequence N would be
@@ -152,7 +164,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -239,6 +251,17 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	case protocol.TypeCapabilitiesResponse:
 		var p protocol.CapabilitiesResponse
 		_ = e.DecodePayload(&p)
+		// What this descriptor said about the catalog before it was replaced,
+		// so a response repeating the active revision can be held to repeating
+		// the descriptor too. The staleness travels with it: after an
+		// announced update the revision has already moved while the features
+		// still describe the descriptor being replaced, and comparing those
+		// two would hold an announcement against the announcement.
+		outgoing := descriptorSnapshot{
+			revision: s.currentCapability,
+			stale:    s.capabilitiesStale,
+			models:   s.features[protocol.FeatureModelsList],
+		}
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = false
 		s.features = map[string]protocol.SupportLevel{}
@@ -247,6 +270,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.catalog, s.catalogKnown = collectCatalog(p), true
 		s.checkSelectionModes(i, line, e, p)
 		s.checkDescriptorSources(i, line, e, p)
+		s.checkCatalogAdvertisement(i, line, e, outgoing)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)
@@ -266,6 +290,18 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.catalog, s.catalogKnown = nil, false
 		s.declaredSources = map[string]protocol.ToolSourceDescriptor{}
 		s.descriptorAttribution = nil
+	case protocol.TypeModelsRequest:
+		var p protocol.ModelsRequest
+		_ = e.DecodePayload(&p)
+		// The envelope/payload agreement was judged with every request's, and
+		// the response's scope against this one is judged where responses
+		// correlate; what is left is what the query owes.
+		s.modelsRequest(i, line, e, p)
+	case protocol.TypeModelsResponse:
+		var p protocol.ModelsResponse
+		_ = e.DecodePayload(&p)
+		s.checkScope(i, line, e, p.SessionID, "")
+		s.modelsResponse(i, line, e, p)
 	case protocol.TypeSessionOpenResponse:
 		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)
@@ -288,12 +324,23 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		// Reopening a known session must not clear a tracked nonterminal run:
 		// that would let a later admission overlap it unseen.
-		st := s.sessions[p.SessionID]
-		if st == nil {
-			st = &sessionTrack{}
-			s.sessions[p.SessionID] = st
-		}
+		st := s.track(p.SessionID)
 		st.status = p.Status
+		// The open response is a session-state document, so the model it
+		// reports is the first value the session is known to hold: what a
+		// catalog served before any snapshot is judged against, and the
+		// default a per_run selection must leave alone. Without the second a
+		// run control admitted before the first snapshot would be guarded
+		// against a value nobody had reported, which guards nothing.
+		//
+		// A response that names no model is left alone rather than recorded as
+		// "known to be none": the member is optional, so its absence is
+		// silence, and treating silence as a value would guard every later
+		// snapshot against the empty string.
+		if p.CurrentModelID != "" {
+			st.currentModel, st.currentKnown = p.CurrentModelID, true
+		}
+		s.observeModel(p.SessionID, p.CurrentModelID, "", 0)
 		s.sessionOpenResponse(i, line, e, p)
 	case protocol.TypeSessionOpenRequest:
 		s.sessionOpenRequest(i, line, e)
@@ -350,6 +397,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.addExpected(CodeUnappliedControl, i, line, e, "/payload/current_model_id", "a per_run model selection moved the session default", st.expectedDefault, p.CurrentModelID)
 		}
 		st.currentModel, st.currentKnown = p.CurrentModelID, true
+		s.observeModel(p.SessionID, p.CurrentModelID, "", 0)
 		s.checkPublishedSources(i, line, e)
 		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources, false)
 	case protocol.TypeSessionMessageSubmitRequest:
@@ -418,9 +466,12 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.feature(i, line, e, "user_input")
 	case protocol.TypeErrorResponse:
 		// A refusal is the required behaviour for a control the endpoint
-		// cannot honour, so the refusal itself is what the gate judges.
+		// cannot honour, so the refusal itself is what the gate judges. A
+		// catalog query the endpoint cannot serve is refused on the same
+		// terms.
 		s.settleControlRefusal(i, line, e)
 		s.settleToolSourceRefusal(i, line, e)
+		s.settleModelsRefusal(i, line, e)
 	case protocol.TypeRunCancelResponse:
 		var p protocol.RunCancelResponse
 		_ = e.DecodePayload(&p)
@@ -649,6 +700,10 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		var p protocol.SessionStateRequest
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
+	case protocol.TypeModelsRequest:
+		var p protocol.ModelsRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
 	case protocol.TypeSessionOpenRequest:
 		var p protocol.SessionOpenRequest
 		_ = e.DecodePayload(&p)
@@ -702,6 +757,10 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		return p.SessionID, p.RunID
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeModelsResponse:
+		var p protocol.ModelsResponse
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
 	case protocol.TypeSessionOpenResponse:
@@ -824,6 +883,15 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	}
 	r.lastIndex = i
 	r.lastLine = line
+	// A catalog held against a position in this run may become settleable
+	// here: this event moves the run's cursor, and may itself record the model
+	// the catalog named, or simply reveal whose run it is. It is settled after
+	// the event is fully interpreted, so a model this event records is in
+	// evidence; for every event rather than only the ones that record a model,
+	// because an event that moves no model still settles the claim that rested
+	// on it; and across every session, because the session holding the claim
+	// need not be the one this run belongs to.
+	defer s.reconcileEveryHeldCatalog()
 	if rec := s.recoveries[r.session]; rec != nil && !rec.gap && !rec.firstReplaySeen && e.RunID == rec.run {
 		rec.firstReplaySeen = true
 		if rec.cursorSet && (e.Sequence == nil || *e.Sequence != rec.cursor+1) {
@@ -866,6 +934,12 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		} else {
 			r.started = true
 			r.status = protocol.RunRunning
+		}
+		if r.controls.modelPresent && r.controls.mode == protocol.ModeSessionMutation && e.Sequence != nil {
+			// A session mutation runs immediately before the run it was
+			// requested for starts, so the start is the model-affecting event
+			// a catalog's as_of_model_event can name.
+			s.observeModel(r.session, r.controls.model, r.id, *e.Sequence)
 		}
 		// The admitted model is authoritative for the run: a started event naming
 		// a different model would misattribute the same execution.

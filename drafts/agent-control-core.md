@@ -436,7 +436,7 @@ Common optional core features:
 
 - `endpoint.status`
 - `capabilities.updates`
-- `models.list`
+- `models.list` (executable; [Decision 0006](../decisions/0006-models-catalog.md))
 - `session.list`
 - `transcript.load`
 - `transcript.delta`

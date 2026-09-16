@@ -51,10 +51,15 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 // ToolsOption configures one catalog request.
 type ToolsOption func(*protocol.ToolsListRequest)
 
-// AllowDegraded opts into the degraded application of the named capability
-// keys for this catalog request. It is sent only when given, so an unmodified
-// call is byte-identical to one made before the option existed.
-func AllowDegraded(keys ...string) ToolsOption {
+// AllowDegradedTools opts into the degraded application of the named
+// capability keys for this catalog request. It is sent only when given, so an
+// unmodified call is byte-identical to one made before the option existed.
+//
+// The models unit's AllowDegraded below does the same for a model query, and
+// the two cannot share a name: one builds a request payload and the other a
+// query string, so Go has no way to write them as one function. This one is
+// suffixed because that one landed first.
+func AllowDegradedTools(keys ...string) ToolsOption {
 	return func(request *protocol.ToolsListRequest) {
 		request.AllowDegradedFeatures = append(request.AllowDegradedFeatures, keys...)
 	}
@@ -205,6 +210,86 @@ func (s *Session) bindResponse(path string, response protocol.Envelope, payloadS
 		return fmt.Errorf("client: %s payload names session %q, envelope %q", path, payloadScope, response.SessionID)
 	}
 	return nil
+}
+
+// ModelsOption configures one catalog query.
+type ModelsOption func(*url.Values)
+
+// AllowDegraded opts into the degraded application of the named capability
+// keys for this query alone. An endpoint advertising models.list as degraded
+// refuses a query without it, so the option is what makes a degraded catalog
+// readable at all. A call without it is byte-identical to one made before this
+// option existed.
+func AllowDegraded(keys ...string) ModelsOption {
+	return func(query *url.Values) {
+		for _, key := range keys {
+			query.Add("allow_degraded", key)
+		}
+	}
+}
+
+// Catalog is one session's model listing together with the capability
+// revision that governs it, mirroring Capabilities.
+//
+// The revision is not decoration. The catalog is part of the capability
+// snapshot, so it is valid for exactly that revision: a caller caches it
+// against the revision and discards it when the descriptor moves. Returning
+// the payload alone would leave a caller unable to tell which `models.list`
+// promise it just read, and a later probe may already report a different
+// revision than the one the listing came under.
+type Catalog struct {
+	// Revision names the descriptor snapshot this listing belongs to.
+	Revision string
+	// Models is the served catalog.
+	Models protocol.ModelsResponse
+}
+
+// Models reads the session's effective model catalog: the models a submission
+// may select, and the one the session would use without a selection.
+func (s *Session) Models(ctx context.Context, options ...ModelsOption) (Catalog, error) {
+	var listing Catalog
+	response, err := s.client.exchange(ctx, http.MethodGet, s.modelsPath(options...), nil, protocol.TypeModelsResponse)
+	if err != nil {
+		return listing, err
+	}
+	// The GET carries no request envelope, so the exchange's request-based
+	// scope check never runs: verify the response names this session before
+	// reading it as this session's catalog.
+	if response.SessionID != s.id {
+		return listing, fmt.Errorf("client: %s response is scoped to session %q, want %q", s.path("/models"), response.SessionID, s.id)
+	}
+	// The revision is checked with the scope, and for the same reason: the
+	// envelope's own labels are read before the catalog inside it. A listing
+	// nothing can bind to a descriptor cannot be cached or invalidated, so it
+	// is refused rather than handed back with an empty revision the caller has
+	// to notice on its own. The schema requires the field and the daemon
+	// refuses to serve a catalog without it, so this rejects a peer that
+	// honours neither.
+	if response.CapabilityRevision == "" {
+		return listing, fmt.Errorf("client: %s response carries no capability revision", s.path("/models"))
+	}
+	if err := response.DecodePayload(&listing.Models); err != nil {
+		return listing, err
+	}
+	if listing.Models.SessionID != response.SessionID {
+		return listing, fmt.Errorf("client: %s payload names session %q, envelope %q", s.path("/models"), listing.Models.SessionID, response.SessionID)
+	}
+	listing.Revision = response.CapabilityRevision
+	return listing, nil
+}
+
+// modelsPath builds the catalog route, carrying the degraded opt-in only when
+// one was asked for, so an unmodified call is byte-identical to one made
+// before the option existed.
+func (s *Session) modelsPath(options ...ModelsOption) string {
+	query := url.Values{}
+	for _, option := range options {
+		option(&query)
+	}
+	if len(query) == 0 {
+		return s.path("/models")
+	}
+	return s.path("/models") + "?" + query.Encode()
 }
 
 // Close closes the session. An active run refuses the close; cancel it first.

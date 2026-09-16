@@ -357,20 +357,61 @@ control-layer-provided tools are outside this unit; the last is `+control-tools`
 
 ### `+models`
 
-An implementation conforms to `+models` if it:
+An implementation conforms to `+models` if it serves a session-scoped catalog
+and is bound by it in both directions: every id it lists is selectable, and
+every id it omits is not. Executable since
+[Decision 0006](../decisions/0006-models-catalog.md).
+
+An implementation:
 
 - advertises `models.list` with an effective support level other than
-  `unavailable`;
-- supports `models.request` and `models.response`;
-- accepts `model_id` in `session.message.submit.request` when model selection
-  is advertised;
-- reports the effective model in `session.message.submit.response`,
-  `run.started`, or session state when known;
-- reports degraded or unavailable model selection explicitly when an adapter can
-  only infer or approximate model control.
+  `unavailable`, and serves `models.request`/`models.response` under it. A
+  catalog served without the key is `unavailable_capability`
+  (`models-unadvertised`); a query refused under the key is
+  `unhonoured_capability` (`models-list-refused-advertised`). The conforming
+  refusal of a query it does not advertise is `unsupported_feature` with
+  `details.feature: "models.list"` and `details.reason: "unadvertised"`
+  (`models-unadvertised-rejected`, `models-unadvertised-wrong-reason`);
+- carries the degraded opt-in per query. A `degraded` catalog served without
+  `allow_degraded_features` naming the key is `degraded_without_optin`
+  (`models-list-degraded-without-optin`); refusing that query with
+  `capability_degraded` and `details.feature` is conforming
+  (`models-list-degraded-refused`, `models-list-degraded-optin`);
+- serves a catalog that is internally consistent: unique ids
+  (`duplicate_model_id`), at most one `default` (`ambiguous_default_model`),
+  and a `current_model_id` that is one of its own ids
+  (`models-current-not-listed`) and a model the session held while the query
+  was in flight (`models-current-mismatch`). A catalog captured ahead of the
+  trace names its own position in `as_of_model_event` and is judged there
+  (`models-current-model-ahead-of-trace`,
+  `models-current-model-mutation-in-flight`);
+- keeps the catalog stable within a capability revision, because the catalog
+  is part of the capability snapshot: a change with no `capabilities.updated`
+  is `unannounced_catalog_change` (`models-catalog-mutates-within-revision`,
+  `models-catalog-metadata-mutates-within-revision`). A `degraded` catalog
+  discloses out-of-band refresh and is exempt;
+- admits a `model_id` the catalog lists and refuses one it omits with
+  `model_not_found` and `details.model_id` (`models-list-then-select`,
+  `models-unlisted-selection-refused`). Admitting an unlisted id
+  (`models-select-unlisted`), answering `model_not_found` for a listed one
+  (`models-listed-selection-false-miss`), or refusing an unlisted one under
+  another code or without the detail
+  (`models-unlisted-selection-wrong-refusal`,
+  `models-unlisted-selection-missing-detail`) are each
+  `model_not_in_catalog`. A listed selection refused under a code that makes
+  no claim about the model — a busy session, another control's gate, an
+  ordinary failure — is not a catalog defect and is not judged here: a valid
+  selection obliges no admission, only an answer that does not deny the id
+  exists. A selection made before the first catalog under the
+  active revision is settled by it on the same terms
+  (`models-refused-before-catalog`, `models-select-in-gap-unlisted`).
 
-Model cache refresh, provider auth state, and model alias resolution are outside
-this feature unless a richer profile defines them.
+Where `run.model_selection` is not advertised, that unit's capability refusal
+wins and this rule stands down (`models-unadvertised-selection-unlisted`): a
+catalog can be served by an endpoint that applies no per-submit selection.
+
+Model resolution, aliases, pricing, cache refresh, and provider auth state are
+outside this unit unless a richer profile defines them.
 
 ### `+queue`, `+steer`, And `+btw`
 

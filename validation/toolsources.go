@@ -299,7 +299,7 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 	for _, tool := range p.Tools {
 		catalog.tools[tool.Name] = tool.Source
 	}
-	track.catalog = catalog
+	track.toolCatalog = catalog
 }
 
 // describesSource reports whether a published descriptor is a description of
@@ -637,7 +637,7 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 	if pending := s.pendingLists[e.InReplyTo]; pending != nil {
 		switch {
 		case pending.expectation != nil:
-			if !refusalConforms(payload.Error, pending.expectation) {
+			if !conformingRefusal(payload.Error, pending.expectation) {
 				s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
 		case pending.honour:
@@ -647,14 +647,14 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 	if pending := s.pendingOpens[e.InReplyTo]; pending != nil {
 		switch {
 		case pending.expectation != nil:
-			if !refusalConforms(payload.Error, pending.expectation) {
+			if !conformingRefusal(payload.Error, pending.expectation) {
 				s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
 		case pending.limitRefusal != nil:
 			// Refusing is permitted here and admitting is too, but a refusal
 			// still has to say which source to drop: "over the limit" is only
 			// actionable when the caller is told which entry put it there.
-			if !refusalConforms(payload.Error, pending.limitRefusal) {
+			if !conformingRefusal(payload.Error, pending.limitRefusal) {
 				s.addExpected(pending.limitRefusal.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.limitRefusal.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
 		case pending.withinLimits:
@@ -688,14 +688,14 @@ func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
 		return
 	}
 	track := s.sessions[p.SessionID]
-	if track != nil && track.catalog != nil && track.catalog.revision == s.currentCapability {
-		if listed, ok := track.catalog.tools[p.Name]; ok {
+	if track != nil && track.toolCatalog != nil && track.toolCatalog.revision == s.currentCapability {
+		if listed, ok := track.toolCatalog.tools[p.Name]; ok {
 			if listed != p.Source {
 				s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "a call attributes a tool to a source other than the one the session catalog records", listed, p.Source, p.Name)
 			}
 			return
 		}
-		if track.catalog.sources[p.Source] {
+		if track.toolCatalog.sources[p.Source] {
 			return
 		}
 	}
