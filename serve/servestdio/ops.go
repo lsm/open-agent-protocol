@@ -25,6 +25,7 @@ const (
 	opCapabilities = "capabilities"
 	opSessions     = "sessions"
 	opState        = "state"
+	opModels       = "models"
 	opSubmit       = "submit"
 	opResolve      = "resolve"
 	opCancel       = "cancel"
@@ -108,6 +109,14 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.stateOp(ctx, request.SessionID)
+	case opModels:
+		// The op takes the degraded opt-in as a field of its own, which is
+		// what the HTTP route's repeatable ?allow_degraded= parameter carries;
+		// both land on the payload's allow_degraded_features unchanged.
+		if werr := request.only(paramSession, paramAllowDegraded); werr != nil {
+			return nil, werr
+		}
+		return s.modelsOp(ctx, request)
 	case opSubmit, opResolve, opCancel:
 		if werr := request.only(paramSession, paramRequest); werr != nil {
 			return nil, werr
@@ -136,6 +145,9 @@ const (
 	paramSession = "session_id"
 	paramRequest = "request"
 	paramAfter   = "after"
+	// paramAllowDegraded is the models op's degraded opt-in, the stdio form of
+	// the HTTP route's repeatable ?allow_degraded= query parameter.
+	paramAllowDegraded = "allow_degraded_features"
 )
 
 // only refuses a well-formed line that carries params its op does not define.
@@ -149,7 +161,7 @@ func (request requestLine) only(fields ...string) *wireError {
 		allowed[field] = true
 	}
 	var extra []string
-	for _, param := range []string{paramAdapter, paramSession, paramAfter, paramRequest} {
+	for _, param := range []string{paramAdapter, paramSession, paramAfter, paramRequest, paramAllowDegraded} {
 		if !allowed[param] && request.present[param] {
 			extra = append(extra, param)
 		}
@@ -495,6 +507,46 @@ func (s *Server) stateOp(ctx context.Context, sessionID string) (json.RawMessage
 	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
 	response.SessionID = state.SessionID
 	return envelopeResult(response)
+}
+
+// modelsOp serves one session's model catalog, mirroring the HTTP route: the
+// op carries no request envelope, so the response cites a daemon-minted
+// correlation id a host may pair with its own request envelope.
+func (s *Server) modelsOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	catalog, err := entry.Models(ctx, protocol.ModelsRequest{SessionID: entry.ID(), AllowDegradedFeatures: request.AllowDegradedFeatures})
+	if err != nil {
+		return nil, modelsError(err)
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeModelsResponse, protocol.EnvelopeID(s.nextID("response")), catalog)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
+	response.SessionID = catalog.SessionID
+	return envelopeResult(response)
+}
+
+// modelsError reports a refused catalog query under the same shared mapping
+// the HTTP codec uses, so a query refused over stdio is refused identically
+// over HTTP.
+func modelsError(err error) *wireError {
+	if code, message, details, ok := serve.ControlRefusal(err); ok {
+		return &wireError{Code: code, Message: trimMessage(message), Details: details}
+	}
+	code := "internal"
+	switch {
+	case errors.Is(err, serve.ErrScopeMismatch):
+		code = "scope_mismatch"
+	case errors.Is(err, base.ErrSessionClosed):
+		code = "session_closed"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		code = "request_cancelled"
+	}
+	return &wireError{Code: code, Message: adapterMessage(err)}
 }
 
 func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage, *wireError) {

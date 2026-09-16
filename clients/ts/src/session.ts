@@ -13,6 +13,7 @@ import {
   type Envelope,
   type MessageSubmitRequest,
   type MessageSubmitResponse,
+  type ModelsResponse,
   type PermissionResolveRequest,
   type PermissionResolveResponse,
   type RunCancelRequest,
@@ -38,6 +39,9 @@ export type UserInputResolveInput = Omit<UserInputResolveRequest, 'session_id' |
   session_id?: string;
   responded_by?: string;
 };
+
+/** models() input: the per-query degraded opt-in, absent by default. */
+export type ModelsOptions = { allowDegradedFeatures?: string[] };
 
 /** open() input; see OapClient.open. */
 export type OpenOptions = { sessionId?: string; participant?: string };
@@ -177,6 +181,39 @@ export class OapSession {
       );
     }
     return state;
+  }
+
+  /**
+   * Reads the session's effective model catalog: the models a submission may
+   * select, and the one the session would use without a selection.
+   *
+   * `allowDegradedFeatures` opts into the degraded application of the named
+   * capability keys for this query alone. An endpoint advertising
+   * `models.list` as degraded refuses a query without it, so the option is
+   * what makes a degraded catalog readable at all; a call without it is
+   * identical to one made before the option existed.
+   */
+  async models(options: ModelsOptions = {}): Promise<ModelsResponse> {
+    const query = (options.allowDegradedFeatures ?? [])
+      .map((key) => `allow_degraded=${encodeURIComponent(key)}`)
+      .join('&');
+    const path = this.path('/models') + (query ? `?${query}` : '');
+    const response = await this.client.exchange('GET', path, null, EnvelopeType.ModelsResponse);
+    // The GET carries no request envelope, so the exchange's request-based
+    // scope check never runs: verify the response names this session before
+    // reading it as this session's catalog.
+    if (response.session_id !== this.sessionId) {
+      throw new Error(
+        `client: ${this.path('/models')} response is scoped to session "${response.session_id ?? ''}", want "${this.sessionId}"`,
+      );
+    }
+    const catalog = payload<ModelsResponse>(response);
+    if (catalog.session_id !== response.session_id) {
+      throw new Error(
+        `client: ${this.path('/models')} payload names session "${catalog.session_id}", envelope "${response.session_id}"`,
+      );
+    }
+    return catalog;
   }
 
   /** Closes the session. An active run refuses the close; cancel it first. */

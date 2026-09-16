@@ -27,6 +27,19 @@ type Session interface {
 	Close(context.Context) error
 }
 
+// ModelLister is the optional session capability for the session-scoped model
+// catalog (unit `models`). It is discovered by type assertion rather than
+// added to Session, so every existing implementation compiles unchanged and a
+// session whose adapter does not implement it is refused under the ordinary
+// gate instead of answering an empty catalog.
+//
+// The request carries the caller's own allow_degraded_features, so an adapter
+// serving a degraded catalog applies the opt-in rule itself: the consent is
+// per request, and only the adapter knows what its catalog costs.
+type ModelLister interface {
+	Models(context.Context, protocol.ModelsRequest) (protocol.ModelsResponse, error)
+}
+
 // EventStream carries either an envelope or an error in one ordered channel.
 // A closed channel is normal end-of-stream; there is no separately racing Err method.
 type EventStream <-chan Result

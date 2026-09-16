@@ -132,6 +132,30 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	return state, err
 }
 
+// Models reads the session's effective model catalog. The request is
+// forwarded unchanged — the caller's own allow_degraded_features included, so
+// the adapter applies the opt-in rule the wire states — and a session whose
+// adapter does not serve a catalog is refused rather than answered with an
+// empty one: an endpoint that lists nothing and an endpoint that cannot list
+// are different answers to the same question.
+func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (protocol.ModelsResponse, error) {
+	if request.SessionID != "" && request.SessionID != s.id {
+		return protocol.ModelsResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	request.SessionID = s.id
+	lister, ok := s.session.(base.ModelLister)
+	if !ok {
+		return protocol.ModelsResponse{}, &base.UnsupportedControlError{
+			Feature: protocol.FeatureModelsList, Reason: base.ControlUnadvertised,
+		}
+	}
+	catalog, err := lister.Models(ctx, request)
+	if errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
+	}
+	return catalog, err
+}
+
 // Submit admits one message submission and returns the adapter's admission.
 // The run's events are drained into the hub for delivery to every live
 // subscription; a consumer that wants the run's first envelope subscribes

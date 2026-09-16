@@ -118,6 +118,59 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	return state, nil
 }
 
+// ModelsOption configures one catalog query.
+type ModelsOption func(*url.Values)
+
+// AllowDegraded opts into the degraded application of the named capability
+// keys for this query alone. An endpoint advertising models.list as degraded
+// refuses a query without it, so the option is what makes a degraded catalog
+// readable at all. A call without it is byte-identical to one made before this
+// option existed.
+func AllowDegraded(keys ...string) ModelsOption {
+	return func(query *url.Values) {
+		for _, key := range keys {
+			query.Add("allow_degraded", key)
+		}
+	}
+}
+
+// Models reads the session's effective model catalog: the models a submission
+// may select, and the one the session would use without a selection.
+func (s *Session) Models(ctx context.Context, options ...ModelsOption) (protocol.ModelsResponse, error) {
+	var catalog protocol.ModelsResponse
+	response, err := s.client.exchange(ctx, http.MethodGet, s.modelsPath(options...), nil, protocol.TypeModelsResponse)
+	if err != nil {
+		return catalog, err
+	}
+	// The GET carries no request envelope, so the exchange's request-based
+	// scope check never runs: verify the response names this session before
+	// reading it as this session's catalog.
+	if response.SessionID != s.id {
+		return catalog, fmt.Errorf("client: %s response is scoped to session %q, want %q", s.path("/models"), response.SessionID, s.id)
+	}
+	if err := response.DecodePayload(&catalog); err != nil {
+		return catalog, err
+	}
+	if catalog.SessionID != response.SessionID {
+		return catalog, fmt.Errorf("client: %s payload names session %q, envelope %q", s.path("/models"), catalog.SessionID, response.SessionID)
+	}
+	return catalog, nil
+}
+
+// modelsPath builds the catalog route, carrying the degraded opt-in only when
+// one was asked for, so an unmodified call is byte-identical to one made
+// before the option existed.
+func (s *Session) modelsPath(options ...ModelsOption) string {
+	query := url.Values{}
+	for _, option := range options {
+		option(&query)
+	}
+	if len(query) == 0 {
+		return s.path("/models")
+	}
+	return s.path("/models") + "?" + query.Encode()
+}
+
 // Close closes the session. An active run refuses the close; cancel it first.
 func (s *Session) Close(ctx context.Context) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.client.url(s.path("/close")), nil)
