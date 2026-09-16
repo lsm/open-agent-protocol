@@ -181,6 +181,19 @@ func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (b
 		// correct.
 		return base.Catalog{}, fmt.Errorf("serve: adapter served a model catalog scoped to session %q, want %q", catalog.Models.SessionID, s.id)
 	}
+	if catalog.Models.Models == nil {
+		// An adapter that builds its listing by appending hands back an absent
+		// list where it meant an empty one, and Go marshals that as null. The
+		// schema requires an array, so the envelope a codec mints from it
+		// would be invalid — and this is the one fault of the three that is
+		// repaired rather than refused. A missing revision and a foreign scope
+		// have no correct substitute: inventing either would publish something
+		// the adapter never said. An absent list and an empty one say the same
+		// thing, that this session lists no models, and only one of the two
+		// spellings is legal on the wire, so normalising states the adapter's
+		// own answer rather than replacing it.
+		catalog.Models.Models = []protocol.ModelDescriptor{}
+	}
 	return catalog, nil
 }
 

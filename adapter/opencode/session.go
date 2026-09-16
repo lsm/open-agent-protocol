@@ -836,7 +836,15 @@ func (s *session) Models(ctx context.Context, request protocol.ModelsRequest) (b
 	if request.SessionID != "" && request.SessionID != s.state.SessionID {
 		return base.Catalog{}, base.ErrRunNotFound
 	}
-	catalog := protocol.ModelsResponse{SessionID: s.state.SessionID, CurrentModelID: s.state.CurrentModelID}
+	// The list is empty, never absent. A session that has seen no model
+	// evidence lists no models, and that is a catalog: appending into a nil
+	// slice would marshal the same state as null, which the schema rejects
+	// where it requires an array.
+	catalog := protocol.ModelsResponse{
+		SessionID:      s.state.SessionID,
+		CurrentModelID: s.state.CurrentModelID,
+		Models:         []protocol.ModelDescriptor{},
+	}
 	for _, model := range s.models {
 		descriptor := protocol.ModelDescriptor{ID: model, Default: model == s.state.CurrentModelID}
 		if provider, _, found := strings.Cut(model, "/"); found {

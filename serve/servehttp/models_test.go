@@ -2,6 +2,7 @@ package servehttp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -223,13 +224,55 @@ func TestModelsRouteRefusesAMisscopedCatalog(t *testing.T) {
 	}
 }
 
+// An endpoint that lists no models answers with an empty list, never a null.
+// An adapter that builds its listing by appending leaves the slice nil when it
+// appends nothing, and Go marshals that as null where the schema requires an
+// array — so the daemon would publish an invalid envelope for a state that is
+// perfectly legal. The hub normalises it: unlike a missing revision or a
+// foreign scope, the two spellings say the same thing and only one is on the
+// wire, so this repairs the encoding without inventing an answer.
+func TestModelsRouteServesAnEmptyCatalogAsAnEmptyList(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("empty", &movingLister{revision: base.CapabilityRevision, empty: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	openSession(t, server, "empty", "empty")
+
+	response, err := server.Client().Get(server.URL + "/sessions/empty/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("an empty catalog was refused with %d", response.StatusCode)
+	}
+	data, _ := io.ReadAll(response.Body)
+	envelope, err := protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read the payload as raw members: decoding into ModelsResponse would
+	// erase the difference between the two encodings, which is the whole of
+	// what this test is about.
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.Payload, &members); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(members["models"]); got != "[]" {
+		t.Fatalf("an empty catalog went on the wire as %s, want []", got)
+	}
+}
+
 // movingLister probes as the reference adapter but serves its catalog under a
 // revision — and optionally a session — of its own, standing in for an adapter
 // whose descriptor moved between the two reads, or one that scopes its listing
-// wrongly. An empty revision stands in for one that labels nothing at all.
+// wrongly. An empty revision stands in for one that labels nothing at all, and
+// empty for an adapter whose append-built listing gained no entries.
 type movingLister struct {
 	revision string
 	session  *protocol.SessionID
+	empty    bool
 }
 
 func (a *movingLister) Probe(ctx context.Context) (base.Descriptor, error) {
@@ -241,13 +284,14 @@ func (a *movingLister) Open(ctx context.Context, request base.OpenRequest) (base
 	if err != nil {
 		return nil, err
 	}
-	return &movingSession{Session: session, revision: a.revision, session: a.session}, nil
+	return &movingSession{Session: session, revision: a.revision, session: a.session, empty: a.empty}, nil
 }
 
 type movingSession struct {
 	base.Session
 	revision string
 	session  *protocol.SessionID
+	empty    bool
 }
 
 func (s *movingSession) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
@@ -258,6 +302,11 @@ func (s *movingSession) Models(ctx context.Context, request protocol.ModelsReque
 	catalog.Revision = s.revision
 	if s.session != nil {
 		catalog.Models.SessionID = *s.session
+	}
+	if s.empty {
+		// Nil, not an empty slice: exactly what an adapter that only ever
+		// appends hands back when it has nothing to append.
+		catalog.Models.Models = nil
 	}
 	return catalog, nil
 }

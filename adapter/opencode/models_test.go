@@ -2,7 +2,9 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +71,18 @@ func TestCatalogGrowsWithDurableStepEvidence(t *testing.T) {
 	}
 	if len(empty.Models.Models) != 0 || empty.Models.CurrentModelID != "" {
 		t.Fatalf("a session with no model evidence served %+v", empty.Models)
+	}
+	// Empty, not absent. A nil slice reads the same to len but marshals as
+	// null, and the schema requires an array wherever this catalog is
+	// encoded, so the distinction is load-bearing at the wire and is asserted
+	// here rather than only where the wire happens to be built.
+	if empty.Models.Models == nil {
+		t.Fatal("an empty catalog is nil, and marshals as null")
+	}
+	if encoded, err := json.Marshal(empty.Models); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(encoded), `"models":[]`) {
+		t.Fatalf("an empty catalog encodes as %s", encoded)
 	}
 
 	response, stream := submitTest(t, session)
