@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-agent-protocol.local/ext/com.example.storage/1.0.0/types.schema.json",
+  "$defs": {
+    "ping": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.idescape.ping"
+        },
+        "payload": {
+          "$ref": "storage.schema.json"
+        }
+      }
+    }
+  }
+}

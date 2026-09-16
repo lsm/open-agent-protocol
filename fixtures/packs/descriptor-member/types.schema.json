@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "com.example.descriptor 1.0.0 envelope branches",
+  "$defs": {
+    "regionsList": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.descriptor.regions.list"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "regionsListResult": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "in_reply_to"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.descriptor.regions.list.result"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "regions"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            },
+            "regions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

@@ -931,23 +931,34 @@ func checkDocumentReferences(p *Pack, base string, document any, allowed map[str
 		return []PackRefusal{{Pack: p.ID(), Message: fmt.Sprintf("parse base %q: %v", base, err)}}
 	}
 	var refusals []PackRefusal
-	for _, ref := range collectRefs(document, 0) {
-		target, err := url.Parse(ref)
-		if err != nil {
-			refusals = append(refusals, PackRefusal{Code: LoadPackExternalRef, Pack: p.ID(), Message: fmt.Sprintf("reference %q is not a resolvable URI", ref)})
+	for _, ref := range collectRefs(document, baseURL, 0) {
+		if ref.err != nil {
+			refusals = append(refusals, PackRefusal{Code: LoadPackExternalRef, Pack: p.ID(), Message: fmt.Sprintf("reference %q is not a resolvable URI", ref.raw)})
 			continue
 		}
-		resolved := baseURL.ResolveReference(target)
-		resolved.Fragment = ""
-		resolved.RawFragment = ""
-		absolute := resolved.String()
-		if allowed[absolute] || isCoreResource(absolute) {
+		if ref.identifier {
+			// A schema's $id is the URI it binds itself to: the compiler
+			// registers the resource there and resolves every reference
+			// beneath it against it. One outside the pack's own space would
+			// register beneath the core or another pack — shadowing or
+			// hijacking a resource the pack never declared — so a pack
+			// schema may bind itself only within its own base.
+			if !strings.HasPrefix(ref.absolute, p.Base) {
+				refusals = append(refusals, PackRefusal{
+					Code:    LoadPackExternalRef,
+					Pack:    p.ID(),
+					Message: fmt.Sprintf("schema identifier %q resolves to %q, outside the pack's own resources; a pack schema is identified by the loader and may not bind itself elsewhere", ref.raw, ref.absolute),
+				})
+			}
+			continue
+		}
+		if allowed[ref.absolute] || isCoreResource(ref.absolute) {
 			continue
 		}
 		refusals = append(refusals, PackRefusal{
 			Code:    LoadPackExternalRef,
 			Pack:    p.ID(),
-			Message: fmt.Sprintf("reference %q resolves to %q, outside the pack's own resources, the core bundle, and its declared dependencies", ref, absolute),
+			Message: fmt.Sprintf("reference %q resolves to %q, outside the pack's own resources, the core bundle, and its declared dependencies", ref.raw, ref.absolute),
 		})
 	}
 	return refusals
@@ -961,32 +972,66 @@ func isCoreResource(absolute string) bool {
 	return name != "" && !strings.Contains(name, "/")
 }
 
-func collectRefs(node any, depth int) []string {
+// documentRef is one URI a schema document refers to or binds itself to,
+// resolved the way the compiler resolves it.
+type documentRef struct {
+	raw        string
+	absolute   string
+	identifier bool // an $id: the URI the schema binds itself to
+	err        error
+}
+
+// collectRefs walks a document the way the compiler resolves it: an $id
+// rebases every reference beneath it, so the walk carries the base along and
+// resolves each $ref against the base in force where it appears. The $id
+// itself is returned too, so the caller can judge where the schema binds.
+func collectRefs(node any, base *url.URL, depth int) []documentRef {
 	if depth > 64 {
 		return nil
 	}
 	switch n := node.(type) {
 	case map[string]any:
-		var out []string
+		var out []documentRef
+		if id, ok := n["$id"].(string); ok {
+			ref := resolveRef(base, id, true)
+			out = append(out, ref)
+			if ref.err == nil {
+				base, _ = url.Parse(ref.absolute)
+			}
+		}
 		for key, value := range n {
-			if key == "$ref" || key == "$dynamicRef" {
+			switch key {
+			case "$id":
+				continue
+			case "$ref", "$dynamicRef":
 				if ref, ok := value.(string); ok {
-					out = append(out, ref)
+					out = append(out, resolveRef(base, ref, false))
 					continue
 				}
 			}
-			out = append(out, collectRefs(value, depth+1)...)
+			out = append(out, collectRefs(value, base, depth+1)...)
 		}
 		return out
 	case []any:
-		var out []string
+		var out []documentRef
 		for _, item := range n {
-			out = append(out, collectRefs(item, depth+1)...)
+			out = append(out, collectRefs(item, base, depth+1)...)
 		}
 		return out
 	default:
 		return nil
 	}
+}
+
+func resolveRef(base *url.URL, raw string, identifier bool) documentRef {
+	target, err := url.Parse(raw)
+	if err != nil {
+		return documentRef{raw: raw, identifier: identifier, err: err}
+	}
+	resolved := base.ResolveReference(target)
+	resolved.Fragment = ""
+	resolved.RawFragment = ""
+	return documentRef{raw: raw, absolute: resolved.String(), identifier: identifier}
 }
 
 // checkBranches requires every contributed branch to pin `type` to a const

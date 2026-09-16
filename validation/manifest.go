@@ -277,6 +277,17 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 						Message: fmt.Sprintf("fixture %q claims %q, and no pack of that id and version is loaded", e.ID, unit),
 					}}}
 				}
+				if opts.Owner != nil && unit != opts.Owner.Unit() {
+					// A pack's corpus proves its own term only. A fixture
+					// claiming a sibling pack's term would let the pack leave
+					// its own term unclaimed — and with it every capability
+					// key uncovered, since completeness is judged over claimed
+					// units — while still loading.
+					return FixtureManifest{}, &PackLoadError{Refusals: []PackRefusal{{
+						Pack:    opts.Owner.ID(),
+						Message: fmt.Sprintf("fixture %q claims %q; a pack's corpus proves its own term %q only", e.ID, unit, opts.Owner.Unit()),
+					}}}
+				}
 				continue
 			}
 			if opts.Owner != nil {

@@ -39,6 +39,7 @@ func TestPackLoadRefusals(t *testing.T) {
 		{[]string{"bad-member-target-unknown"}, []string{LoadPackMemberTargetUnknown}},
 		{[]string{"bad-schema-path-escape"}, []string{LoadPackSchemaPathEscape}},
 		{[]string{"bad-external-ref"}, []string{LoadPackExternalRef}},
+		{[]string{"bad-schema-id-escape"}, []string{LoadPackExternalRef}},
 		{[]string{"bad-dependency-missing"}, []string{LoadPackDependencyMissing}},
 		{[]string{"bad-fixture-claims-core"}, []string{LoadPackFixtureClaimsCore}},
 		{[]string{"bad-ext-claim-without-pack"}, []string{LoadExtClaimWithoutPack}},
@@ -205,5 +206,66 @@ func TestCoreProjectionKeepsCoreRules(t *testing.T) {
 	strict := MustNew()
 	if result := strict.ValidateBytes([]byte(valid), "member"); !result.HasCode(CodeSchemaInvalid) {
 		t.Fatal("the closed core payload accepted an undeclared member without the pack")
+	}
+}
+
+// An $id rebases the references beneath it, and the compiler registers the
+// resource there; the allowlist walk follows both, so a nested identifier
+// under another pack is refused along with the reference it rebased.
+func TestDocumentReferencesFollowSchemaIDs(t *testing.T) {
+	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/"}
+	p.Descriptor.ID = "com.example.a"
+	doc := map[string]any{"$defs": map[string]any{"x": map[string]any{
+		"$id":        packBaseURI + "com.example.b/1.0.0/x.json",
+		"properties": map[string]any{"y": map[string]any{"$ref": "y.json"}},
+	}}}
+	allowed := map[string]bool{p.Base + "types.schema.json": true, p.Base + "y.json": true}
+	refusals := checkDocumentReferences(p, p.Base+"types.schema.json", doc, allowed)
+	if len(refusals) != 2 {
+		t.Fatalf("refusals = %v, want the identifier and the rebased reference", refusals)
+	}
+	if !strings.Contains(refusals[0].Message, "schema identifier") || !strings.Contains(refusals[1].Message, packBaseURI+"com.example.b/1.0.0/y.json") {
+		t.Fatalf("refusals = %v", refusals)
+	}
+	// Under the pack's own base an $id is a local alias and constrains nothing.
+	doc = map[string]any{"$id": "alias.json", "properties": map[string]any{"y": map[string]any{"$ref": "y.json"}}}
+	if refusals := checkDocumentReferences(p, p.Base+"types.schema.json", doc, allowed); len(refusals) != 0 {
+		t.Fatalf("in-pack identifier refused: %v", refusals)
+	}
+}
+
+// A pack's corpus proves its own term only: with a sibling loaded, a fixture
+// claiming the sibling's term is refused rather than counted.
+func TestPackFixtureClaimsItsOwnTermOnly(t *testing.T) {
+	_, err := LoadPacks(packDir(t, "storage", "bad-fixture-claims-sibling"))
+	refusal, ok := err.(*PackLoadError)
+	if !ok || !strings.Contains(refusal.Error(), "proves its own term") {
+		t.Fatalf("sibling claim was not refused: %v", err)
+	}
+}
+
+// A packed member on capabilities.response is gated on a key that very
+// response advertises, so it must be judged after the descriptor is installed.
+func TestPackedMemberOnCapabilitiesResponseIsJudgedAfterInstall(t *testing.T) {
+	packs, err := LoadPacks(packDir(t, "descriptor-member"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",`
+	trace := func(features string) string {
+		return "[" + strings.Join([]string{
+			head + `"type":"capabilities.request","id":"capq","payload":{}}`,
+			head + `"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{` + features + `},"com.example.descriptor.region":"eu-west"}}`,
+		}, ",") + "]"
+	}
+	if result := v.ValidateBytes([]byte(trace(`"com.example.descriptor.regions":{"level":"native"}`)), "advertised"); !result.Valid() {
+		t.Fatalf("member gated on a key the same response advertises was refused: %v", result.Diagnostics)
+	}
+	if result := v.ValidateBytes([]byte(trace(``)), "unadvertised"); !result.HasCode(CodeUnavailableCapability) {
+		t.Fatalf("member on an unadvertised key passed: %v", result.Diagnostics)
 	}
 }

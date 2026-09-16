@@ -1,0 +1,57 @@
+[
+  {
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "id": "capq",
+    "type": "capabilities.request",
+    "payload": {}
+  },
+  {
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "v1",
+    "type": "capabilities.response",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "com.example.descriptor.regions": {
+          "level": "native"
+        }
+      },
+      "com.example.descriptor.region": "eu-west"
+    }
+  },
+  {
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "id": "list1",
+    "capability_revision": "v1",
+    "session_id": "s1",
+    "type": "com.example.descriptor.regions.list",
+    "payload": {
+      "session_id": "s1"
+    }
+  },
+  {
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "id": "err1",
+    "in_reply_to": "list1",
+    "session_id": "s1",
+    "type": "error.response",
+    "payload": {
+      "error": {
+        "code": "internal_error",
+        "message": "the endpoint refused the request"
+      }
+    }
+  }
+]

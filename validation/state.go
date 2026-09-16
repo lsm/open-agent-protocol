@@ -149,7 +149,6 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// payload again would only pile cascading diagnostics onto it.
 		return
 	}
-	s.packEnvelope(i, line, e)
 	switch e.Type {
 	case protocol.TypeProtocolInitializeRequest:
 		var p protocol.InitializeRequest
@@ -378,6 +377,11 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			}
 		}
 	}
+	// The pack rules run after the core case so a packed member on a core
+	// response is judged against the descriptor that response installs: the
+	// initial capabilities.response advertises the very key its own packed
+	// member is gated on, and no revision is current before it.
+	s.packEnvelope(i, line, e)
 }
 
 // isKnownType reports whether the type is one this revision defines. The
