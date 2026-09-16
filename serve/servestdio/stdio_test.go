@@ -371,7 +371,7 @@ func (b blockedWriter) Write([]byte) (int, error) {
 // the abandoned writer reported as ErrShutdownStalled.
 func TestCancellationReturnsDespiteStoppedOutput(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
-	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -886,7 +886,7 @@ func TestDisconnectIsObservedWhileAdmissionIsFull(t *testing.T) {
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) }) // release the abandoned probes after the assertion
 	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
-	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -927,7 +927,7 @@ func TestMalformedLineSurvivesASaturatedBound(t *testing.T) {
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) }) // release the abandoned probes after the assertion
 	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
-	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,19 +963,63 @@ func TestMalformedLineSurvivesASaturatedBound(t *testing.T) {
 	}
 }
 
+// TestAdmissionBudgetsRequestBytes pins the half a count cannot express: a
+// ceiling on ops is not a memory bound, because one admitted request can
+// carry megabytes at the default frame limit, so a modest-looking ceiling
+// still multiplies into gigabytes. Admission holds the product down, and a
+// release is what lets the next one in.
+func TestAdmissionBudgetsRequestBytes(t *testing.T) {
+	run := newRunState(64, 1024)
+	ctx := context.Background()
+	failed := make(chan struct{})
+	if !run.admit(ctx, failed, 900) {
+		t.Fatal("the first admission was refused")
+	}
+	waited := make(chan bool, 1)
+	go func() { waited <- run.admit(ctx, failed, 900) }()
+	select {
+	case <-waited:
+		t.Fatal("admitted past the byte budget with the count ceiling nowhere near")
+	case <-time.After(100 * time.Millisecond):
+	}
+	run.release(900)
+	select {
+	case admitted := <-waited:
+		if !admitted {
+			t.Fatal("admission refused after room appeared")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the release did not wake the waiting admission")
+	}
+	run.release(900)
+}
+
+// TestAdmissionAdmitsOneOversizeRequest pins the other edge: a request
+// larger than the whole budget must still be served rather than deadlocked
+// against a bound it can never fit, so an idle registry admits anything.
+func TestAdmissionAdmitsOneOversizeRequest(t *testing.T) {
+	run := newRunState(64, 1024)
+	if !run.admit(context.Background(), make(chan struct{}), 4096) {
+		t.Fatal("an idle registry refused a request larger than its budget")
+	}
+	run.release(4096)
+}
+
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
 // show: once an invocation has closed admission, it refuses, so a serving
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a
 // WaitGroup whose Wait has already returned — the misuse the race detector
 // would report as a panic rather than a failed assertion.
 func TestAdmissionClosesAtTeardown(t *testing.T) {
-	run := newRunState(1)
-	if !run.admit() {
+	run := newRunState(1, 0)
+	ctx := context.Background()
+	failed := make(chan struct{})
+	if !run.admit(ctx, failed, 1) {
 		t.Fatal("admission refused before the session began")
 	}
-	run.work.Done()
+	run.release(1)
 	run.closeAdmission()
-	if run.admit() {
+	if run.admit(ctx, failed, 1) {
 		t.Fatal("admission stayed open after teardown")
 	}
 }
@@ -1010,7 +1054,7 @@ func TestServerServesAgainAfterTeardown(t *testing.T) {
 // replaced did.
 func TestInFlightOpsAreBounded(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
-	server, err := New(hub, Options{WriteQueue: 2, ShutdownTimeout: 100 * time.Millisecond})
+	server, err := New(hub, Options{MaxConcurrentOps: 2, ShutdownTimeout: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

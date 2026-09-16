@@ -106,11 +106,14 @@ type Options struct {
 	// DefaultFrameLimit.
 	FrameLimit int
 	// WriteQueue bounds the lines buffered for the writer goroutine before
-	// producers block, and with them the ops in flight: one op holds one
-	// slot, so the serving loop stops reading rather than admitting work
-	// whose responses the queue could not hold anyway. Zero means
-	// defaultWriteQueue.
+	// producers block; zero means defaultWriteQueue.
 	WriteQueue int
+	// MaxConcurrentOps bounds the ops in flight, which is what stops the
+	// serving loop reading a stream faster than its adapters retire it;
+	// zero means maxConcurrentOps. The request bytes those ops hold are
+	// budgeted separately and are not configurable, because that budget is
+	// a memory bound rather than a tuning knob.
+	MaxConcurrentOps int
 	// ShutdownTimeout bounds the final output drain once serving ends — the
 	// writer may be parked inside out.Write on a pipe the host stopped
 	// reading, and shutdown never depends on the host's pipe; zero means
@@ -129,70 +132,109 @@ type Server struct {
 	schema      *jsonschema.Schema
 	frameLimit  int
 	writeQueue  int
+	maxOps      int
 	shutdown    time.Duration
 	logger      *log.Logger
 	nextIDValue atomic.Uint64
 }
 
+// maxConcurrentOps is the default ceiling on ops in flight. The serial
+// dispatch this replaced ran one; anything above that is already more
+// concurrency than a single-user local daemon had, and the ceiling is what
+// keeps a host from turning a pipelined stream into goroutines faster than
+// its adapters retire them.
+const maxConcurrentOps = 16
+
+// admissionBytes budgets the request bytes those ops may hold at once. A
+// count alone is not a memory bound: at the default frame limit one
+// admitted request can carry megabytes, so a ceiling that looks modest
+// still multiplies into gigabytes. The budget bounds the product instead,
+// and one op is always admitted however large it is, so a maximal request
+// is served rather than deadlocked against a budget it cannot fit.
+const admissionBytes = maxEnvelopeBytes
+
 // runState is one Run's worker registry: the ops that invocation admitted
-// and the bound on how many of them run at once. It belongs to the
+// and the bounds on how many of them run at once. It belongs to the
 // invocation and never to the Server, so a Server that served one host can
 // serve the next — the state a session ends in is not a state the next
 // session inherits.
 type runState struct {
-	// slots bounds the ops in flight. A worker holds one from admission
-	// until it is done, so the serving loop blocks on a full queue exactly
-	// as the serial dispatch it replaced did: the backpressure a host felt
-	// from a busy daemon is unchanged, and a host that pipelines faster
-	// than the adapters or stdout can answer cannot make the daemon hold
-	// its whole stream in memory.
-	slots chan struct{}
+	maxOps   int
+	maxBytes int
 
 	// mu guards the admission gate. work counts the op workers teardown
 	// waits for; shuttingDown closes admission so no worker joins after
-	// that wait began.
+	// that wait began. released is closed and replaced on every release, so
+	// a waiting loop wakes when room appears.
 	mu           sync.Mutex
 	work         sync.WaitGroup
 	shuttingDown bool
+	ops          int
+	bytes        int
+	released     chan struct{}
 }
 
-func newRunState(bound int) *runState {
-	return &runState{slots: make(chan struct{}, bound)}
+func newRunState(maxOps, maxBytes int) *runState {
+	if maxOps <= 0 {
+		maxOps = maxConcurrentOps
+	}
+	if maxBytes <= 0 {
+		maxBytes = admissionBytes
+	}
+	return &runState{maxOps: maxOps, maxBytes: maxBytes, released: make(chan struct{})}
 }
 
-// acquire takes one in-flight slot, ending the wait when the session does.
-// A loop parked here has stopped taking frames, but not stopped the session
-// from ending: the reader runs a frame ahead, so it still reaches the stdin
-// EOF behind the frame the loop has not taken and still reports it. The
-// wait itself ends when a worker finishes, when the output fails, or with
-// the context; a disconnect observed while it is parked is bounded by the
-// teardown's own windows instead, which is what they are for.
-func (r *runState) acquire(ctx context.Context, writerFailed <-chan struct{}) bool {
-	select {
-	case r.slots <- struct{}{}:
-		return true
-	case <-ctx.Done():
-		return false
-	case <-writerFailed:
-		return false
+// admit registers one op worker of the given request size with the teardown
+// wait, waiting for room and refusing once shutdown has begun. It refuses
+// then because a late Add would race a Wait that may already have seen the
+// counter reach zero, and the worker it counted would never be waited for;
+// a refused op is simply not served, its host already past the end of the
+// session.
+//
+// The wait for room is what makes the serving loop stop reading at the
+// bound, which is the backpressure the serial dispatch gave for free. A
+// loop parked here has stopped taking frames but has not stopped the
+// session from ending: the reader runs a frame ahead, so it still reaches
+// the end behind the frame the loop has not taken. The wait itself ends
+// when a worker finishes, when the output fails, or with the context.
+func (r *runState) admit(ctx context.Context, writerFailed <-chan struct{}, size int) bool {
+	for {
+		r.mu.Lock()
+		if r.shuttingDown {
+			r.mu.Unlock()
+			return false
+		}
+		// An idle registry admits anything, so a request larger than the
+		// whole budget still runs; otherwise both bounds must hold.
+		if r.ops == 0 || (r.ops < r.maxOps && r.bytes+size <= r.maxBytes) {
+			r.ops++
+			r.bytes += size
+			r.work.Add(1)
+			r.mu.Unlock()
+			return true
+		}
+		room := r.released
+		r.mu.Unlock()
+		select {
+		case <-room:
+		case <-ctx.Done():
+			return false
+		case <-writerFailed:
+			return false
+		}
 	}
 }
 
-func (r *runState) release() { <-r.slots }
-
-// admit registers one op worker with the teardown wait, refusing once
-// shutdown has begun: a late Add would race a Wait that may already have
-// seen the counter reach zero, and the worker it counted would never be
-// waited for. A refused op is simply not served — its host is already past
-// the end of the session.
-func (r *runState) admit() bool {
+// release returns one op's room to the registry and wakes whoever is
+// waiting for it.
+func (r *runState) release(size int) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.shuttingDown {
-		return false
-	}
-	r.work.Add(1)
-	return true
+	r.ops--
+	r.bytes -= size
+	close(r.released)
+	r.released = make(chan struct{})
+	r.mu.Unlock()
+	r.work.Done()
 }
 
 // closeAdmission ends admission for this invocation, before its teardown
@@ -200,6 +242,8 @@ func (r *runState) admit() bool {
 func (r *runState) closeAdmission() {
 	r.mu.Lock()
 	r.shuttingDown = true
+	close(r.released)
+	r.released = make(chan struct{})
 	r.mu.Unlock()
 }
 
@@ -223,6 +267,10 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if writeQueue <= 0 {
 		writeQueue = defaultWriteQueue
 	}
+	maxOps := options.MaxConcurrentOps
+	if maxOps <= 0 {
+		maxOps = maxConcurrentOps
+	}
 	shutdown := options.ShutdownTimeout
 	if shutdown <= 0 {
 		shutdown = DefaultShutdownTimeout
@@ -231,7 +279,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, shutdown: shutdown, logger: logger}, nil
+	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, maxOps: maxOps, shutdown: shutdown, logger: logger}, nil
 }
 
 // Hub returns the hub the frontend serves.
@@ -320,7 +368,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	frames := make(chan frameResult, 1)
 	go readFrames(in, s.frameLimit, frames, readerDone)
 
-	run := newRunState(s.writeQueue)
+	run := newRunState(s.maxOps, 0)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- s.serveLoop(ctx, run, frames, lines, writerFailed) }()
 
@@ -509,18 +557,14 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 			if err != nil {
 				return &MalformedLineError{Line: number, Detail: err.Error()}
 			}
-			if !run.acquire(ctx, writerFailed) {
+			size := len(result.frame)
+			if !run.admit(ctx, writerFailed, size) {
 				return nil
 			}
-			if !run.admit() {
-				run.release()
-				continue
-			}
-			go func(request requestLine) {
-				defer run.release()
-				defer run.work.Done()
+			go func(request requestLine, size int) {
+				defer run.release(size)
 				s.serveRequest(ctx, request, lines)
-			}(request)
+			}(request, size)
 		}
 	}
 }
