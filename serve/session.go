@@ -92,12 +92,19 @@ type Session struct {
 	subs         map[*subscriber]struct{}
 	nextSerial   uint64
 	serials      map[protocol.RunID]uint64
+	// finished records the runs whose stream has been drained to its end.
+	// The serials stand for admission order, and overflow recovery reads
+	// them as execution order too — which they are, until a later-admitted
+	// run settles before an earlier one. A reservation cancelled before
+	// promotion does exactly that, so the two orders have to be told apart.
+	finished map[protocol.RunID]bool
 }
 
 func newSession(id protocol.SessionID, adapterName string, session base.Session) *Session {
 	return &Session{
 		id: id, adapterName: adapterName, session: session,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
+		finished: make(map[protocol.RunID]bool),
 	}
 }
 
@@ -284,19 +291,34 @@ func (sub *subscriber) untrack(run protocol.RunID) {
 // tails. The drain before the terminal records the queued envelopes'
 // positions, so the cursor resumes a queued run exactly where delivery
 // stopped; a run never delivered replays from its start.
-func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64, current protocol.RunID, currentSerial uint64) protocol.RunID {
+//
+// "Newer" is admission order, which is execution order until a later-admitted
+// run settles before an earlier one — a reservation cancelled before promotion
+// is exactly that, and its terminal carries the higher serial while the run it
+// was queued behind is still delivering. Such a run is spent: drained to its
+// end and never the run the hub is on, so a cursor there has nothing left to
+// give and resuming at it would strand the tail the drop actually lost. A
+// spent run never outranks one that is not, and among runs alike in that the
+// newest serial still wins. The current run is never spent even once its own
+// reader has exited: its end may still be deferred, and the detach discards
+// that too.
+func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64, current protocol.RunID, currentSerial uint64, finished map[protocol.RunID]bool) protocol.RunID {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
+	spent := func(run protocol.RunID) bool { return run != current && finished[run] }
 	newest, newestSerial := dropped, droppedSerial
+	live := !spent(dropped)
 	consider := func(run protocol.RunID, serial uint64) {
-		if serial > newestSerial {
+		switch {
+		case live && spent(run):
+		case !live && !spent(run):
+			newest, newestSerial, live = run, serial, true
+		case serial > newestSerial:
 			newest, newestSerial = run, serial
 		}
 	}
-	if sub.ackSerial > newestSerial {
-		if ack := sub.ack.Load(); ack != nil {
-			newest, newestSerial = *ack, sub.ackSerial
-		}
+	if ack := sub.ack.Load(); ack != nil {
+		consider(*ack, sub.ackSerial)
 	}
 	if sub.ackSerial == 0 {
 		consider(sub.attached, sub.attachedSerial)
@@ -662,6 +684,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	var exposed []*subscriber
 	s.mu.Lock()
 	s.readers--
+	s.finished[runID] = true
 	current := s.runID
 	// A stale drainer's error must not vanish because a newer run keeps
 	// the hub busy: the subscribers still exposed to the failed run are
@@ -754,7 +777,7 @@ func (s *Session) publish(envelope protocol.Envelope) {
 			// acknowledged position is newer — a cursor on an older run
 			// cannot recover the newer run's remaining events.
 			delete(s.subs, sub)
-			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID])})
+			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID], s.finished)})
 		}
 	}
 	s.mu.Unlock()

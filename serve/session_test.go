@@ -97,6 +97,97 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	}
 }
 
+// TestOverflowRecoversFromTheLiveRunNotASettledReservation pins what the
+// admission serials are for. They are admission order, and overflow recovery
+// reads them as execution order too — true until a later-admitted run settles
+// before an earlier one, which is exactly what a reservation cancelled before
+// promotion does. Its terminal carries the higher serial, so a consumer that
+// acknowledged it and then fell behind on the still-live earlier run was handed
+// a cursor on a run that had already ended: the lost envelopes were
+// unreachable from it.
+func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+
+	// The started run, still delivering.
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.publish(runEnvelope(t, "run-a", 1))
+
+	// A reservation admitted behind it, cancelled before promotion: it takes
+	// the higher serial, publishes one terminal and never becomes current.
+	entry.mu.Lock()
+	entry.reservations++
+	entry.mu.Unlock()
+	streamB := make(chan base.Result, 4)
+	entry.adoptRun("run-b", streamB, true)
+	cancelled := runEnvelope(t, "run-b", 1)
+	cancelled.Type = protocol.TypeRunCancelled
+	streamB <- base.Result{Envelope: cancelled}
+	close(streamB)
+
+	// The consumer reads both and acknowledges, so its position is the
+	// reservation's — the newest serial the session has handed out.
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for _, want := range []protocol.RunID{"run-a", "run-b"} {
+		envelope, err := subscription.Next()
+		if err != nil {
+			t.Fatalf("reading %s: %v", want, err)
+		}
+		if envelope.RunID != want {
+			t.Fatalf("envelope run = %s, want %s", envelope.RunID, want)
+		}
+	}
+	waitForFinished(t, entry, "run-b")
+
+	// Now it falls behind on the still-live earlier run.
+	entry.publish(runEnvelope(t, "run-a", 2))
+	entry.publish(runEnvelope(t, "run-a", 3))
+	entry.publish(runEnvelope(t, "run-a", 4))
+
+	drained := 0
+	var overflow *OverflowError
+	for {
+		envelope, err := subscription.Next()
+		if errors.As(err, &overflow) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("terminal %v (%T), want an OverflowError", err, err)
+		}
+		if drained++; drained > 8 {
+			t.Fatal("the subscriber never overflowed")
+		}
+		_ = envelope
+	}
+	if overflow.RunID != "run-a" {
+		t.Fatalf("overflow cursor %+v, want the still-live run the drop lost", overflow)
+	}
+	close(streamA)
+}
+
+// waitForFinished waits until the hub has recorded a run's stream as drained.
+func waitForFinished(t *testing.T, entry *Session, run protocol.RunID) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		done := entry.finished[run]
+		entry.mu.Unlock()
+		if done {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("run %s never finished draining", run)
+		default:
+		}
+	}
+}
+
 // TestDeferredEndDoesNotClobberOverflowTerminal pins first-writer-wins on a
 // subscriber's terminal state: a slow consumer sitting in a deferred cohort
 // that a queue-full publish already signalled must keep its recovery cursor
