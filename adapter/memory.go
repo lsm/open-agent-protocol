@@ -50,7 +50,11 @@ func scriptedCatalog() []protocol.ToolDefinition {
 // CapabilityRevision is the advertised reference-adapter revision. Every
 // emitted envelope repeats it so a consumer can bind an event to the
 // descriptor snapshot it was produced under.
-const CapabilityRevision = "reference-memory-v1"
+// v2 publishes the scripted tool in the catalog; v1 published none, and a
+// revision identifies exactly one descriptor, so a consumer holding the v1
+// snapshot must see this one as new rather than validate against an empty
+// catalog.
+const CapabilityRevision = "reference-memory-v2"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 

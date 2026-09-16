@@ -32,7 +32,7 @@ test('dial accepts a bare address and lists adapters', async () => {
         adapters: [
           {
             name: 'memory',
-            capability_revision: 'reference-memory-v1',
+            capability_revision: 'reference-memory-v2',
             capabilities: { endpoint: { id: 'reference.memory' } },
           },
           { name: 'broken', error: 'probe failed' },
@@ -44,7 +44,7 @@ test('dial accepts a bare address and lists adapters', async () => {
   const adapters = await client.adapters();
   assert.equal(adapters.length, 2);
   assert.equal(adapters[0].name, 'memory');
-  assert.equal(adapters[0].capability_revision, 'reference-memory-v1');
+  assert.equal(adapters[0].capability_revision, 'reference-memory-v2');
   assert.equal(adapters[1].error, 'probe failed');
   assert.equal(transport.calls[0].url, `${BASE}/adapters`);
 });
@@ -58,7 +58,7 @@ test('capabilities returns the revision and descriptor', async () => {
           type: EnvelopeType.CapabilitiesResponse,
           id: 'resp-1',
           inReplyTo: 'oap-request-1',
-          capabilityRevision: 'reference-memory-v1',
+          capabilityRevision: 'reference-memory-v2',
           payload: { endpoint: { id: 'reference.memory', name: 'Memory' }, protocol_versions: ['0.1'] },
         }),
       ),
@@ -66,7 +66,7 @@ test('capabilities returns the revision and descriptor', async () => {
   ]);
   const client = dial(BASE, { fetch: transport.fetch });
   const caps = await client.capabilities('memory');
-  assert.equal(caps.revision, 'reference-memory-v1');
+  assert.equal(caps.revision, 'reference-memory-v2');
   assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
   assert.deepEqual(caps.descriptor.protocol_versions, ['0.1']);
 });
