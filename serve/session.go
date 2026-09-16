@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,6 +138,70 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 		s.markClosed()
 	}
 	return state, err
+}
+
+// Models reads the session's effective model catalog. The request is
+// forwarded unchanged — the caller's own allow_degraded_features included, so
+// the adapter applies the opt-in rule the wire states — and a session whose
+// adapter does not serve a catalog is refused rather than answered with an
+// empty one: an endpoint that lists nothing and an endpoint that cannot list
+// are different answers to the same question.
+func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
+	if request.SessionID != "" && request.SessionID != s.id {
+		return base.Catalog{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	request.SessionID = s.id
+	lister, ok := s.session.(base.ModelLister)
+	if !ok {
+		return base.Catalog{}, &base.UnsupportedControlError{
+			Feature: protocol.FeatureModelsList, Reason: base.ControlUnadvertised,
+		}
+	}
+	catalog, err := lister.Models(ctx, request)
+	if errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
+	}
+	if err != nil {
+		return base.Catalog{}, err
+	}
+	// What an adapter hands back is checked against what the hub knows before
+	// any of it reaches the wire. The hub asked one session for its catalog,
+	// so it owes its caller that session's catalog under the revision that
+	// governs it, or nothing at all.
+	if catalog.Revision == "" {
+		// A listing nothing can bind to a descriptor is worse than none: a
+		// consumer would cache it under no revision and never know when to
+		// discard it, and the validator's own gate rejects the envelope. The
+		// adapter is at fault, so the hub refuses rather than inventing a
+		// revision from a descriptor it read at another moment.
+		return base.Catalog{}, errors.New("serve: adapter served a model catalog with no capability revision")
+	}
+	if catalog.Models.SessionID != s.id {
+		// The same rule for the listing's scope. Publishing the adapter's
+		// value would emit a models.response scoped to another session, or to
+		// none — schema-invalid, and rejected by the very clients this unit
+		// taught to check a catalog's scope, so the daemon would be producing
+		// envelopes its own clients refuse. Rewriting it would be worse than
+		// refusing: the adapter computed this listing for the session it
+		// named, so relabelling it would show one session's models under
+		// another's id and launder the fault into something that looks
+		// correct.
+		return base.Catalog{}, fmt.Errorf("serve: adapter served a model catalog scoped to session %q, want %q", catalog.Models.SessionID, s.id)
+	}
+	if catalog.Models.Models == nil {
+		// An adapter that builds its listing by appending hands back an absent
+		// list where it meant an empty one, and Go marshals that as null. The
+		// schema requires an array, so the envelope a codec mints from it
+		// would be invalid — and this is the one fault of the three that is
+		// repaired rather than refused. A missing revision and a foreign scope
+		// have no correct substitute: inventing either would publish something
+		// the adapter never said. An absent list and an empty one say the same
+		// thing, that this session lists no models, and only one of the two
+		// spellings is legal on the wire, so normalising states the adapter's
+		// own answer rather than replacing it.
+		catalog.Models.Models = []protocol.ModelDescriptor{}
+	}
+	return catalog, nil
 }
 
 // Submit admits one message submission and returns the adapter's admission.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -658,6 +659,77 @@ func TestOpenSessionAssignsIdentifier(t *testing.T) {
 	if payload.SessionID == "" {
 		t.Fatal("adapter-assigned session id is empty")
 	}
+}
+
+// The open response is the session state document — the schema defines it as
+// exactly that — and the daemon puts the state on the wire whole. Assembling
+// it member by member carried the id and the status and silently dropped the
+// rest, so an adapter that knows the session's model at open had it discarded:
+// the field existed on the wire type and in the validator's rules with nothing
+// on the daemon path to fill it, which reads as covered while covering nothing.
+func TestOpenResponseCarriesTheWholeState(t *testing.T) {
+	reported := protocol.SessionState{
+		Status:           protocol.SessionIdle,
+		CurrentModelID:   "provider/model-a",
+		TranscriptCursor: "cursor-0",
+		UpdatedAtMS:      1700000000000,
+		Metadata:         map[string]json.RawMessage{"native_session": json.RawMessage(`"abc"`)},
+		Recovery: &protocol.RecoveryMetadata{
+			Recovered: true, PreviousSessionID: "before", ResumeCursor: "cursor-0", Reason: "resumed",
+		},
+	}
+	registry := serve.NewRegistry()
+	if err := registry.Register("stateful", &statefulAdapter{state: reported}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	response := openSession(t, server, "stateful", "stateful")
+	requireEnvelopeSchema(t, response)
+
+	var payload protocol.SessionOpenResponse
+	if err := response.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	want := reported
+	want.SessionID = "stateful"
+	// Compared whole rather than member by member, so a member added to the
+	// state document later is covered without anyone remembering to extend
+	// this assertion. Enumerating members is the mistake being fixed; the
+	// test should not repeat it.
+	if !reflect.DeepEqual(payload, want) {
+		t.Fatalf("open response\n got %+v\nwant %+v", payload, want)
+	}
+}
+
+// statefulAdapter probes as the reference adapter but reports a session state
+// of its own, standing in for an adapter that knows more about a session at
+// open than its id and status — OpenCode, whose initial state names the model
+// the session runs.
+type statefulAdapter struct {
+	state protocol.SessionState
+}
+
+func (a *statefulAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	return base.NewMemory(base.Config{}).Probe(ctx)
+}
+
+func (a *statefulAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	session, err := base.NewMemory(base.Config{}).Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	state := a.state
+	state.SessionID = request.SessionID
+	return &statefulSession{Session: session, state: state}, nil
+}
+
+type statefulSession struct {
+	base.Session
+	state protocol.SessionState
+}
+
+func (s *statefulSession) State(ctx context.Context) (protocol.SessionState, error) {
+	return s.state, nil
 }
 
 func TestSubmitRejections(t *testing.T) {

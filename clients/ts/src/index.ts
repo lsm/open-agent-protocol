@@ -30,7 +30,15 @@ export {
   type StreamReader,
 } from './client.js';
 
-export { OapSession, finalText, type SubmitInput, type PermissionResolveInput, type UserInputResolveInput } from './session.js';
+export {
+  OapSession,
+  finalText,
+  type Catalog,
+  type ModelsOptions,
+  type SubmitInput,
+  type PermissionResolveInput,
+  type UserInputResolveInput,
+} from './session.js';
 
 export { EventStream, type EventsOptions } from './events.js';
 

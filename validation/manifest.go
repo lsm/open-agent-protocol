@@ -136,6 +136,10 @@ var unitCapabilities = map[string][]string{
 	// advertising endpoint owes no caller — a run_active naming a bound the
 	// window shows was never reached.
 	"queue": {protocol.FeatureDeliveryQueue},
+	// The session-scoped model catalog. One key, and the two aspects every key
+	// owes: a catalog served without the key advertised, and a catalog query
+	// refused on an endpoint that advertises it.
+	"models": {protocol.FeatureModelsList},
 }
 
 // honourDeferred names the unit whose corpus carries a key's honour fixture
@@ -149,8 +153,12 @@ var unitCapabilities = map[string][]string{
 // the wire assigns every catalog miss to model_not_found, so a refusal of an
 // advertised model_id under unsupported_feature is wrong whatever the id was —
 // either it was servable and owed an admission, or it was not and owed
-// model_not_found. The models unit still adds the catalog-dependent rule; the
-// key is not left unfalsifiable until then.
+// model_not_found. The catalog-dependent half the models unit still owed has
+// since landed with that unit — a model_not_found refusal of an id the
+// endpoint's own catalog lists is model_not_in_catalog
+// (`models-listed-selection-false-miss`, claimed by both units) — so the
+// deferral is discharged with the map still empty, which is what it should
+// mean: no key is left unfalsifiable in its own unit.
 var honourDeferred = map[string]string{}
 
 type FixtureOutcome struct {
@@ -175,6 +183,7 @@ func diagnosticCodes() map[string]bool {
 		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
 		CodeQueueOrderViolation, CodeQueueLimitExceeded,
 		CodePrematureSessionMutation, CodeUndisclosedQueueLimit,
+		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {

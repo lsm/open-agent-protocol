@@ -70,6 +70,10 @@ type opencodeCorpusCase struct {
 	ReplayAfter       *uint64            `json:"replay_after,omitempty"`
 	Cancel            bool               `json:"cancel,omitempty"`
 	AdmissionRejected bool               `json:"admission_rejected,omitempty"`
+	// Catalog names the file holding the models.response payload the adapter
+	// serves after this case's frames. It is optional: only a case whose
+	// native evidence names a model has a catalog to assert.
+	Catalog string `json:"catalog,omitempty"`
 }
 type opencodeProvenance struct {
 	Repository    string `json:"repository"`
@@ -282,6 +286,9 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	if definition.ReplayAfter != nil {
 		assertOpenCodeReplay(t, session, admission.RunID, *definition.ReplayAfter, events)
 	}
+	if definition.Catalog != "" {
+		assertOpenCodeCatalog(t, session, filepath.Join(dir, definition.Catalog))
+	}
 	expectedPath := filepath.Join(dir, definition.ExpectedOAP)
 	stored, err := os.ReadFile(expectedPath)
 	if err != nil {
@@ -407,6 +414,38 @@ func assertOpenCodeClassifications(t *testing.T, frames []opencodeCorpusFrame, d
 	}
 }
 
+// assertOpenCodeCatalog compares the catalog the adapter serves after the
+// case's frames with the stored expectation. The catalog is projected from the
+// same durable step events the reducer consumed, decoded through the
+// production SSE decoder, so it is native evidence rather than a value the
+// test supplies.
+func assertOpenCodeCatalog(t *testing.T, session base.Session, filename string) {
+	t.Helper()
+	lister, ok := session.(base.ModelLister)
+	if !ok {
+		t.Fatal("the OpenCode session serves no catalog")
+	}
+	// models.list is advertised degraded, so the query carries the opt-in the
+	// wire requires; without it the adapter refuses, which its unit tests pin.
+	catalog, err := lister.Models(context.Background(), protocol.ModelsRequest{
+		SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureModelsList},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected protocol.ModelsResponse
+	opencodeDecodeStrict(t, stored, &expected, filename)
+	want, _ := json.Marshal(expected)
+	got, _ := json.Marshal(catalog.Models)
+	if !bytes.Equal(want, got) {
+		t.Fatalf("catalog mismatch\nwant: %s\n got: %s", want, got)
+	}
+}
+
 func assertOpenCodeReplay(t *testing.T, session base.Session, runID protocol.RunID, after uint64, events []protocol.Envelope) {
 	t.Helper()
 	recovery, replay, err := session.Resume(context.Background(), base.ResumeRequest{RunID: runID, AfterSequence: after})
@@ -424,7 +463,11 @@ func assertOpenCodeCorpusInventory(t *testing.T, root string, manifest opencodeC
 	listed := map[string]bool{"manifest.json": true}
 	for _, entry := range manifest.Cases {
 		definition := opencodeLoadJSON[opencodeCorpusCase](t, filepath.Join(root, entry.Path, "case.json"))
-		for _, name := range []string{"case.json", definition.Native, definition.ExpectedOAP, definition.Mapping, definition.Omissions} {
+		names := []string{"case.json", definition.Native, definition.ExpectedOAP, definition.Mapping, definition.Omissions}
+		if definition.Catalog != "" {
+			names = append(names, definition.Catalog)
+		}
+		for _, name := range names {
 			if !opencodeSafeRelative(name) || filepath.Base(name) != name {
 				t.Fatalf("invalid corpus filename %q", name)
 			}

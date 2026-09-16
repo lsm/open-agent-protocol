@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,11 +49,14 @@ type session struct {
 	// started run, matching the max_queued_runs_per_session it discloses. It
 	// promotes when the server's prompted event names it and the started run
 	// has settled, so one run domain executes at a time in admission order.
-	reserved     *runState
-	runs         map[protocol.RunID]*runState
-	pending      map[native.MessageID]*runState
-	tools        map[string]*toolState
-	reduced      map[int64]bool
+	reserved *runState
+	runs     map[protocol.RunID]*runState
+	pending  map[native.MessageID]*runState
+	tools    map[string]*toolState
+	reduced  map[int64]bool
+	// models is the effective catalog this session has evidence for, in the
+	// order the evidence arrived.
+	models       []string
 	journal      []protocol.Envelope
 	lastSeq      int64
 	stop         chan struct{}
@@ -518,6 +522,11 @@ func (s *session) handleEventLocked(event native.Event) {
 			s.failActive(run, "opencode_invalid_step_event", err.Error())
 			return
 		}
+		// The step names the model the server actually ran, which is the only
+		// durable evidence at this pin of what this session can run. It is
+		// recorded for the catalog and changes no run event: the run's model
+		// attribution stays the session model the admission reported.
+		s.observeModel(normalizeModelRef(&data.Model))
 		if run != nil {
 			s.mu.Lock()
 			if !run.terminal {
@@ -997,6 +1006,75 @@ func (s *session) cloneStateLocked() protocol.SessionState {
 		}
 	}
 	return state
+}
+
+// observeModel records one effective model this session has evidence for. The
+// order is the order the evidence arrived — the session's own model first,
+// then each distinct model a durable step named — and a repeat is dropped, so
+// an accepted model_id would denote exactly one descriptor.
+func (s *session) observeModel(model string) {
+	if model == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, seen := range s.models {
+		if seen == model {
+			return
+		}
+	}
+	s.models = append(s.models, model)
+}
+
+// Models serves this session's effective model catalog.
+//
+// The pinned server has catalog routes of its own — model.list and
+// provider.list — but the ledger pins only their existence, not their response
+// shape, and an adapter may not decode a shape no pin covers. What is pinned
+// is what this session has actually run: the model the session record carried
+// at creation and the model each durable step named. That is the catalog
+// served here, and the reason it is advertised `degraded`: it is the models
+// this session is known to run, not the server's own list, and it grows as
+// steps are observed. A caller must consent to that through
+// allow_degraded_features, exactly as the run-controls discipline requires,
+// or the query is refused.
+func (s *session) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
+	if err := ctx.Err(); err != nil {
+		return base.Catalog{}, err
+	}
+	if !request.AllowsDegraded(protocol.FeatureModelsList) {
+		return base.Catalog{}, &base.DegradedControlError{Feature: protocol.FeatureModelsList}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.unusable {
+		return base.Catalog{}, base.ErrSessionClosed
+	}
+	if request.SessionID != "" && request.SessionID != s.state.SessionID {
+		return base.Catalog{}, base.ErrRunNotFound
+	}
+	// The list is empty, never absent. A session that has seen no model
+	// evidence lists no models, and that is a catalog: appending into a nil
+	// slice would marshal the same state as null, which the schema rejects
+	// where it requires an array.
+	catalog := protocol.ModelsResponse{
+		SessionID:      s.state.SessionID,
+		CurrentModelID: s.state.CurrentModelID,
+		Models:         []protocol.ModelDescriptor{},
+	}
+	for _, model := range s.models {
+		descriptor := protocol.ModelDescriptor{ID: model, Default: model == s.state.CurrentModelID}
+		if provider, _, found := strings.Cut(model, "/"); found {
+			// The identity is provider/id when the native reference carried
+			// both, so the provider is recoverable without a second route.
+			descriptor.ProviderID = provider
+		}
+		catalog.Models = append(catalog.Models, descriptor)
+	}
+	// The revision is read with the listing rather than paired with a
+	// descriptor probed separately: this adapter's is fixed, but the contract
+	// is the one an adapter whose descriptor moves can also keep.
+	return base.Catalog{Revision: CapabilityRevision, Models: catalog}, nil
 }
 
 func (s *session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {

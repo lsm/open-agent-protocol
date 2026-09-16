@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /sessions", s.handleSessions)
 	mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	mux.HandleFunc("GET /sessions/{id}/state", s.handleState)
+	mux.HandleFunc("GET /sessions/{id}/models", s.handleModels)
 	mux.HandleFunc("POST /sessions/{id}/submit", s.handleSubmit)
 	mux.HandleFunc("POST /sessions/{id}/resolve", s.handleResolve)
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
@@ -236,9 +237,12 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	// re-reading state here could fail after registration (an expired
 	// request context, a flaky adapter probe) and report a successful open
 	// as 502 while the session stays live in the hub.
-	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), protocol.SessionOpenResponse{
-		SessionID: state.SessionID, Status: state.Status,
-	})
+	//
+	// The state goes on the wire whole. Naming members here copied two of
+	// them and dropped the rest, so an adapter that reported the session's
+	// model at open — the first snapshot a control layer sees — had it
+	// discarded on the way out.
+	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), state)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
 		return
@@ -440,6 +444,65 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	response.InReplyTo = s.nextID("request")
 	response.SessionID = state.SessionID
 	writeEnvelope(w, http.StatusOK, response)
+}
+
+// handleModels serves one session's model catalog, mirroring the capabilities
+// route: the GET carries no request envelope, so the response cites a
+// daemon-minted correlation id a host may pair with its own request.
+//
+// The degraded opt-in travels as a repeatable ?allow_degraded=<key> query
+// parameter. A GET carries no body, and a header would hide a wire-visible
+// field from logs and curl, so the parameter is what the daemon maps onto the
+// payload's allow_degraded_features before minting the query.
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	entry, ok := s.lookupSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	request := protocol.ModelsRequest{SessionID: entry.ID(), AllowDegradedFeatures: r.URL.Query()["allow_degraded"]}
+	catalog, err := entry.Models(r.Context(), request)
+	if err != nil {
+		s.writeModelsError(w, err, protocol.Envelope{SessionID: entry.ID()})
+		return
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeModelsResponse, s.nextID("response"), catalog.Models)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), protocol.Envelope{SessionID: entry.ID()})
+		return
+	}
+	response.InReplyTo = s.nextID("request")
+	// The hub verified the listing is this session's before returning it, so
+	// the envelope is labelled from the hub's own identity rather than from
+	// adapter data: the scope on the wire is the one the daemon addressed.
+	response.SessionID = entry.ID()
+	// The revision comes back with the listing rather than from a descriptor
+	// read at another moment: on an endpoint whose capabilities can update, a
+	// separately probed revision can already be the wrong one by the time the
+	// catalog is produced, and the label is the whole of what makes the
+	// listing cacheable.
+	response.CapabilityRevision = catalog.Revision
+	writeEnvelope(w, http.StatusOK, response)
+}
+
+// writeModelsError reports a refused catalog query. A refusal the caller can
+// act on — the key unadvertised, or degraded without the opt-in — goes through
+// the hub's shared control mapping, so a query refused over HTTP is refused
+// identically over stdio.
+func (s *Server) writeModelsError(w http.ResponseWriter, err error, envelope protocol.Envelope) {
+	if code, message, details, ok := serve.ControlRefusal(err); ok {
+		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
+		return
+	}
+	status, code := http.StatusInternalServerError, "internal"
+	switch {
+	case errors.Is(err, serve.ErrScopeMismatch):
+		status, code = http.StatusBadRequest, "scope_mismatch"
+	case errors.Is(err, base.ErrSessionClosed):
+		status, code = http.StatusConflict, "session_closed"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		status, code = http.StatusBadRequest, "request_cancelled"
+	}
+	s.writeError(w, status, code, adapterMessage(err), envelope)
 }
 
 func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {

@@ -110,6 +110,29 @@ rather than diagnosed.
 [Decision 0007](decisions/0007-queue-delivery.md) graduates the unit; OpenCode
 advertises it `native` on `SessionInput.Admitted`, and the reference adapter
 emulates one reservation.
+### Models catalog (`+models`)
+
+A session publishes the models it can run, and is bound by the listing in both
+directions: an id the catalog omits is refused `model_not_found` naming it, and
+an id it lists is never reported missing. A catalog that accepts an unlisted
+model, answers `model_not_found` for a listed one, or refuses an unlisted one
+under a code the caller cannot act on is diagnosed the same way —
+`model_not_in_catalog` — because each leaves a picker built on the listing
+unable to trust it. A listed selection may still be refused for reasons that
+are not about the model at all — a busy session, another control — and those
+refusals are left alone.
+
+The catalog belongs to the capability revision it was served under: a refresh
+discards it, and within one revision it may not move without a
+`capabilities.updated`. `GET /sessions/{id}/models` serves it over HTTP, the
+`models` op over stdio, `Session.Models` and `session.models()` from the two
+clients; the degraded opt-in travels with the query on every one of them.
+[Decision 0006](decisions/0006-models-catalog.md) graduates the unit. OpenCode
+advertises `models.list` `degraded` and serves the models a session is observed
+to run — its server's own catalog routes have no pinned response shape at the
+adapter's pin — which makes it the first native adapter to exercise the
+degraded opt-in end to end. The reference adapter serves the fixed catalog its
+model gate already enforces.
 
 ### Local daemon (`oap serve`)
 
@@ -156,6 +179,7 @@ daemon-minted correlation id a client can pair with its own request envelope):
 | `POST /sessions/{id}/resolve` | `action.permission.resolve.request` or `user.input.resolve.request` → response |
 | `POST /sessions/{id}/cancel` | `run.cancel.request` → `run.cancel.response` |
 | `GET /sessions/{id}/state` | `session.state.response` |
+| `GET /sessions/{id}/models` | `models.response` (repeatable `?allow_degraded=<key>`) |
 | `POST /sessions/{id}/close` | Close (v0.1 defines no close envelope; returns 204) |
 | `GET /adapters`, `GET /sessions` | daemon-management listings, plain JSON |
 
@@ -321,6 +345,7 @@ Decisions:
 - [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (proposed)
 - [0005 — run controls](decisions/0005-run-controls.md) (proposed)
 - [0007 — queue delivery](decisions/0007-queue-delivery.md) (proposed)
+- [0006 — models catalog](decisions/0006-models-catalog.md) (proposed)
 
 Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:
