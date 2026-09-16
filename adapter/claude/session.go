@@ -57,6 +57,11 @@ type Session struct {
 	catalog        []protocol.ToolDefinition
 	catalogSources []protocol.ToolSourceDescriptor
 	catalogKnown   bool
+	// servedTools is the tool-to-source mapping of the last catalog this
+	// session actually served, and nil until it has served one. It is what the
+	// adapter has published to this session, as against what it merely knows,
+	// and it is the adapter-side twin of the validator's attributionInForce.
+	servedTools map[string]string
 
 	pending      *runState
 	active       *runState
@@ -535,6 +540,15 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 	// `degraded` discloses, and it is why the listing has to say which
 	// descriptor governed it — a caller holding one can tell a refresh from a
 	// re-listing only by the pair.
+	// What this session has served is now published, and a call may name it.
+	// Only a session-scoped answer counts: an unscoped request asks for the
+	// endpoint's own catalog, which is answered above and belongs to no session.
+	s.servedTools = make(map[string]string, len(tools))
+	for _, tool := range tools {
+		if tool.Source != "" {
+			s.servedTools[tool.Name] = tool.Source
+		}
+	}
 	return base.ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{SessionID: request.SessionID, Sources: sources, Tools: tools}}, nil
 }
 
@@ -817,34 +831,46 @@ func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
 // second derivation is a second chance to disagree with the catalog, and the
 // catalog is what a consumer resolves the id against.
 //
-// It is then filtered to what the endpoint has actually published, which is
-// the rule this adapter got wrong. `source` is a cross-reference, and a
-// cross-reference a reader cannot follow is not one. An event stream carries
-// the descriptor and the events; a session's catalog reaches it only if
-// somebody asks, and this catalog is advertised degraded and served on request
-// by design, so a consumer may observe a whole run without one. A call
-// attributed to `mcp:<server>` in such a stream names an id nothing in it
-// declares — which this unit's own validator reports as
-// `unmatched_tool_source`, the adapter failing a rule it exists to prove.
+// It is then bounded by what this endpoint has actually published, which is
+// the rule the adapter has to get right in both directions. `source` is a
+// cross-reference, and what it may reference is the catalog in force: the
+// session's own where one has been served, and otherwise the descriptor's.
+// This is the adapter-side twin of the validator's attributionInForce, and the
+// two must agree, because the validator judges what this emits.
 //
-// So a call names a source only where the descriptor declares it. That is the
-// endpoint's native source, and only it: the MCP servers are learned from this
-// session's system/init frame, they belong to the session, and there is no
-// publication in the event stream that could carry them before the calls —
-// session.state.updated is the protocol's channel for a state change, and it
-// requires a run sequence, while this frame also arrives outside any run. The
-// attribution is not lost; it stays in the session's catalog, which is where a
-// consumer that wants it asks, and where the per-server mapping is exact.
+//   - A catalog this session served is published, so a call names exactly what
+//     that catalog recorded — until a later serve supersedes it. Declining
+//     there would be the inverse fault: the catalog in force attributes the
+//     tool, so a call omitting the source is `unattributed_call`.
+//   - With no catalog served, only the descriptor has published anything, and
+//     it declares the native source alone. The MCP servers are learned from
+//     this session's system/init frame and belong to the session; an event
+//     stream carries the descriptor and the events, and this catalog is
+//     advertised degraded and served on request by design, so a consumer may
+//     observe a whole run without one. A call naming `mcp:<server>` there
+//     names an id nothing in the stream declares — `unmatched_tool_source`.
+//
+// So neither direction is a preference: each is the only answer that does not
+// make the adapter fail a rule its own corpus exists to prove. What the
+// endpoint knows and what it has published are different things, and only the
+// second may be referenced.
 //
 // The reverse case is ACP's, and the two are one rule with different facts:
 // ACP's servers are the *adapter's* configuration, known before any session,
-// so its descriptor declares them and a call may name them.
+// so its descriptor declares them and a call may name them from the start.
 //
 // An empty answer is an honest one, as it already was before the first
 // `system/init` frame and for a tool no catalog lists. Inventing
-// `claude-code-native` for any of the three would be the guess the member
-// exists to replace.
+// `claude-code-native` for any of those would be the guess the member exists
+// to replace.
 func (s *Session) catalogSourceLocked(name string) string {
+	// A served catalog is the one in force, wholly: a tool it omits is one this
+	// session has published no attribution for, whatever a later projection
+	// knows, and naming one anyway would contradict the catalog a consumer
+	// holds.
+	if s.servedTools != nil {
+		return s.servedTools[name]
+	}
 	if !s.catalogKnown {
 		return ""
 	}

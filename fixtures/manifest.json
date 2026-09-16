@@ -3196,16 +3196,35 @@
     },
     {
       "id": "open-attach-without-session-open-mode-refused",
-      "path": "valid/open-attach-without-session-open-mode-refused.json",
-      "kind": "positive",
-      "valid": true,
-      "phase": "",
-      "codes": [],
+      "path": "semantic-invalid/open-attach-without-session-open-mode-refused.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_modes"
+      ],
       "units": [
         "tool-sources"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "attach-advertised-without-modes",
+      "path": "semantic-invalid/attach-advertised-without-modes.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_modes"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
         "decisions/0008-tool-sources.md"
       ]
     },
@@ -3216,6 +3235,7 @@
       "valid": false,
       "phase": "semantic",
       "codes": [
+        "undisclosed_attach_modes",
         "unavailable_capability"
       ],
       "units": [

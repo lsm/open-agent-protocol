@@ -101,7 +101,7 @@ func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageS
 func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
-	trace, err := protocolTraceWith(&request, admission, descriptor, events, false)
+	trace, err := protocolTraceWith(&request, admission, descriptor, nil, events, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +117,30 @@ func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitR
 func AssertProtocolValidWithCancellation(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, true)
+}
+
+// AssertProtocolValidWithCatalog certifies a run against the catalog the
+// session had already served when the run happened, by splicing that exchange
+// into the trace ahead of the submission.
+//
+// A call's `source` is a cross-reference, and what it may reference is the
+// catalog in force: the session's own where one has been served under the
+// active revision, and otherwise the descriptor's. A trace that drops the
+// serve therefore judges the run against the wrong catalog — it would report a
+// correctly attributed call as naming a source nothing declares, and would
+// excuse an omitted attribution the served catalog obliged. Use this wherever
+// the endpoint served a session catalog before the run; the plain assertion
+// covers the other ordering, where only the descriptor has published anything.
+func AssertProtocolValidWithCatalog(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, request protocol.ToolsListRequest, catalog adapter.ToolCatalog, events []protocol.Envelope) {
+	t.Helper()
+	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
+	trace, err := protocolTraceWith(nil, admission, descriptor, &servedCatalog{request: request, catalog: catalog}, events, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().ValidateBytes(trace, "adaptertest"); !result.Valid() {
+		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
+	}
 }
 
 func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, revision string, events []protocol.Envelope, cancelled bool) {
@@ -235,14 +259,24 @@ func ProtocolTraceWithCancellation(admission protocol.MessageSubmitResponse, des
 }
 
 func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
-	return protocolTraceWith(nil, admission, descriptor, events, cancelled)
+	return protocolTraceWith(nil, admission, descriptor, nil, events, cancelled)
 }
 
 // protocolTraceWith assembles the canonical trace. When submitted is nil the
 // submission is synthesized as a neutral one carrying no controls; when it is
 // given, the caller's own request is what the admission answers, so the
 // validator judges the controls it actually carried.
-func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
+// servedCatalog is one catalog exchange that actually happened: the request as
+// the caller sent it, and the catalog the endpoint answered with. The request
+// is kept rather than synthesized because it carries the caller's own degraded
+// opt-in, and a catalog requested without consent is its own diagnostic — a
+// trace that dropped it would fail for a defect the endpoint never had.
+type servedCatalog struct {
+	request protocol.ToolsListRequest
+	catalog adapter.ToolCatalog
+}
+
+func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, served *servedCatalog, events []protocol.Envelope, cancelled bool) ([]byte, error) {
 	var trace []protocol.Envelope
 	if descriptor.CapabilityRevision != "" {
 		request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
@@ -256,6 +290,22 @@ func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission proto
 		response.InReplyTo = request.ID
 		response.CapabilityRevision = descriptor.CapabilityRevision
 		trace = append(trace, request, response)
+	}
+	if served != nil {
+		// The serve sits between the descriptor and the submission, which is
+		// where it happened: the catalog it published is the one in force for
+		// every call the run below emits.
+		listRequest, err := protocol.NewEnvelope(protocol.TypeActionToolsListRequest, "tools-request", served.request)
+		if err != nil {
+			return nil, err
+		}
+		listRequest.SessionID, listRequest.CapabilityRevision = admission.SessionID, served.catalog.Revision
+		listResponse, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, "tools-response", served.catalog.Tools)
+		if err != nil {
+			return nil, err
+		}
+		listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = admission.SessionID, listRequest.ID, served.catalog.Revision
+		trace = append(trace, listRequest, listResponse)
 	}
 	request := protocol.MessageSubmitRequest{
 		SessionID: admission.SessionID,

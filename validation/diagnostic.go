@@ -102,6 +102,11 @@ const (
 	// catches a tolerant or hand-rolled serializer reflecting the open-time
 	// value straight back to clients.
 	//
+	// CodeUndisclosedAttachModes: action.tool_sources.attach is advertised
+	// affirmatively while disclosing no session_open mode, so the key names an
+	// application no open can elect. Diagnosed on the descriptor that
+	// publishes it, as undisclosed_selection_modes is.
+	//
 	// CodeUndisclosedAttachLimit: an attachment carrying no defect any rule
 	// names, and violating no limit the endpoint disclosed, was refused. The
 	// refusal is itself the evidence that a constraint exists which the caller
@@ -120,6 +125,7 @@ const (
 	CodeDuplicateToolSource      = "duplicate_tool_source"
 	CodeCatalogMismatch          = "catalog_mismatch"
 	CodeAttachmentFieldInCatalog = "attachment_field_in_catalog"
+	CodeUndisclosedAttachModes   = "undisclosed_attach_modes"
 	CodeUndisclosedAttachLimit   = "undisclosed_attach_limit"
 	CodeUnattributedCall         = "unattributed_call"
 	// The models unit. A catalog is a promise that its ids are selectable and

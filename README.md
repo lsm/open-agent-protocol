@@ -88,12 +88,13 @@ A tool catalog says where each of its tools comes from. `action.tools.list.respo
 carries `sources` — `{ id, kind, display_name?, protocol?, endpoint? }` — and
 each `ToolDefinition` carries the `source` id it belongs to, so a consumer
 attributes a call to an MCP server without parsing a namespaced name, and
-`action.call.*` may carry the same id — but only one the trace carrying the
-call also publishes, because a cross-reference a reader cannot follow is not
-one. An endpoint whose sources are known before any session declares them in
-its descriptor and may name them anywhere; one that learns a source from a
-session emits the call with no `source` and keeps the exact attribution in the
-catalog, which is what a consumer asks for. A source `id` is unique across a
+`action.call.*` carries exactly what the catalog in force attributes the tool
+to — the session's own catalog where it has served one, the descriptor's
+otherwise — and nothing where neither does, because a cross-reference a reader
+cannot follow is not one. An endpoint whose sources are known before any
+session declares them in its descriptor and may name them from the start; one
+that learns a source from a session names it once it has served the catalog
+that publishes it, and before that the catalog keeps the attribution exactly. A source `id` is unique across a
 session's catalog and a tool `name` is unique whatever its source. The catalog
 is gated on `action.tools.list` and nothing else: `action.tools` means
 lifecycle observation, and several adapters observe tool calls while publishing

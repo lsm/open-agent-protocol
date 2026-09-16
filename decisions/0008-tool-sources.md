@@ -537,7 +537,7 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 62 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 63 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -554,7 +554,9 @@ a call's attribution against a session catalog and against the descriptor's own,
 a call that names none where the catalog in force attributes the tool, a served
 catalog superseding a descriptor entry so that neither check consults it again,
 its reassignment mid-lifecycle, a refresh that collides with an attachment,
-an attach capability disclosing no session-open mode in both directions, one
+an attach capability disclosing no session-open mode in both directions and
+judged on the descriptor that publishes it — with `remote` alone and with no
+modes at all, the second needing no open to be diagnosed — one
 published under a layer alone, and the two schema-invalid disclosures no
 request can satisfy — `max_sources: 0` and a transport outside the source-kind
 vocabulary — and a served catalog carrying no `capability_revision`, the mirror
@@ -576,11 +578,14 @@ Native evidence: Claude Code graduates the catalog at `degraded` on the
 per-turn `system/init` frame, now pinned in
 [the ledger](../research/claude-code-agent-sdk-2.1.263-mapping.md) and executed
 by the corpus case `tools-catalog-sources` through the production reducer. That
-case also calls an MCP tool in a stream that never lists tools, which is the
-shape the attribution rule turns on: the emitted call carries no `source`, the
-catalog asserted afterwards attributes the same tool to `mcp:files` exactly,
-and the trace validates. Against the reducer before the fix it fails with
-`unmatched_tool_source`, which is what no case covered. ACP
+case calls the same MCP tool twice, on either side of the serve, which is the
+whole of the attribution rule: before the serve nothing had published where the
+tool comes from and the call names nothing; after it the session had published
+exactly that, and the call names `mcp:files`. Each run is certified against the
+catalog in force when it happened, which `adaptertest.AssertProtocolValidWithCatalog`
+splices into the trace. Against the reducer before the first fix the earlier
+call fails `unmatched_tool_source`; against the reducer before the second, the
+later call fails `unattributed_call`. ACP
 graduates attachment at `native` with `modes: ["session_open"]` and
 `limits.transports: ["process"]` on `session/new`'s `mcpServers`, executed by
 the corpus case `open-with-tool-sources`. Its admission is decided before the
@@ -654,9 +659,10 @@ rediscovered from the code.
   `claude-code-native`: without it a natively attributed call would resolve
   against nothing in such a trace.
 
-  **A call therefore names a source only where the descriptor declares it, and
-  the MCP servers are not declared.** This corrects a decision recorded here as
-  deliberate and wrong. The exclusion of the MCP servers was right — Claude
+  **A call therefore names exactly what the catalog in force attributes the
+  tool to: the session's own where it has served one, and otherwise the
+  descriptor's — which declares the native source and no MCP server.** This
+  corrects a decision recorded here as deliberate and wrong. The exclusion of the MCP servers was right — Claude
   learns them from a session's own `system/init` frame, so they are not known
   before a session exists and publishing them endpoint-wide would present one
   caller's configuration as everyone's — but it was paired with an attribution
@@ -684,6 +690,27 @@ rediscovered from the code.
   known before any session, so its descriptor declares them and a call there
   may name them. One rule, two adapters, opposite outcomes because the facts
   differ in when they are known.
+
+  **The rule binds in both directions, and the first attempt at it bound only
+  one.** Filtering on the descriptor alone declined to attribute even after the
+  session had served the catalog that publishes the attribution — and a served
+  catalog *is* published, so the catalog in force then attributes the tool and
+  a call omitting the source is `unattributed_call`. Two reviewers found that
+  independently, one from the adapter and one from the validator, and the
+  second observed the sharper form: no reducer path could produce a valid trace
+  for a served catalog followed by that session's MCP calls. The session
+  therefore records the mapping of the catalog it actually served and attributes
+  from that until a later serve supersedes it, which is the validator's
+  `attributionInForce` mirrored on the adapter's side. The two must agree,
+  because one judges what the other emits.
+
+  The alternative — recording a GET-served catalog as in force only when it is
+  correlated — was declined. It answers an adapter-side mismatch on the
+  validator's side: it would leave the adapter still unable to attribute in the
+  session-catalog case, and it would make what counts as published depend on
+  which transport carried the request, when the daemon's GET and a correlated
+  exchange publish the same catalog to the same session. The endpoint knows what
+  it served; that is the fact to record.
 - **Claude answers an unscoped catalog request with its endpoint-level
   catalog.** Everything else it knows was learned from one session's
   `system/init` frame, so answering with it would present one caller's MCP
@@ -736,6 +763,26 @@ rediscovered from the code.
   which leaves no gap, because what takes over is the *new* descriptor's
   attribution, rebuilt from the next `capabilities.response`. The fallback is
   never to older information.
+- **An attach capability's modes are judged where they are published.** A key
+  advertised affirmatively whose modes omit `session_open` names an application
+  no open can elect, and every rule that keys on the mode used to run only on an
+  open — so a descriptor nobody happened to attach against passed, and the
+  advertisement cost nothing. `undisclosed_attach_modes` diagnoses it on the
+  `capabilities.response`, which is `undisclosed_selection_modes`' placement and
+  its reason: the defect is the descriptor's, so it is reported once where it is
+  published rather than on every admission it governs.
+
+  This is also what makes the plural `modes` carry its weight. The set is the
+  right shape — the modes an endpoint supports simultaneously, unlike
+  `run.model_selection`'s scalar `mode`, which names *when* a selection applies
+  — but a set whose contents are never judged at publication is the weakest form
+  of that choice. Judging it here is what makes disclosing `remote` an addition
+  rather than a substitution.
+
+  The refusal fixture that paired an affirmative level with `modes: ["remote"]`
+  moves from positive to `semantic-invalid` with this code, and it proves the
+  refusal more sharply there than it did as a positive: the descriptor is now
+  the only defect the trace carries, so a wrong refusal would add a second.
 - **ACP declares the MCP servers it was configured with, because it reserves
   their names.** Admission refuses an attachment whose id collides with one, and
   ACP routes by that id, so the collision is real — but while the descriptor

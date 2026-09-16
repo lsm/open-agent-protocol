@@ -693,6 +693,38 @@ func (s *state) attributionInForce(track *sessionTrack) (map[string]string, *ses
 	return s.descriptorAttribution, nil
 }
 
+// checkAttachModes judges the attach capability's own disclosure, where it is
+// published rather than on the first open that trips over it.
+//
+// This is checkSelectionModes' rule for this unit's key, and it is there for
+// the same reason: a key advertised with no mode a caller can elect promises
+// nothing. `session_open` is the only application this unit defines, so an
+// endpoint advertising `action.tool_sources.attach` affirmatively while
+// disclosing no modes — or only `remote`, which says how a source may be
+// reached and not when it may be attached — has published a capability no open
+// can use. The admission path already refuses such an open on the capability
+// rung; without this the descriptor itself passes whenever nobody happens to
+// attach, which makes the advertisement free.
+//
+// It is what makes the plural `modes` carry its weight. A set is the right
+// shape — the modes an endpoint supports simultaneously, unlike
+// `run.model_selection`'s scalar `mode`, which names when a selection applies —
+// but a set whose contents are never judged where they are published is the
+// weakest form of that choice. Judging it here is what makes disclosing
+// `remote` an addition rather than a substitution: the set must still contain
+// the one mode that makes the key electable.
+//
+// Unknown names alongside `session_open` are tolerated, as they are for tool
+// choice: the vocabulary is additive, and a descriptor naming a mode a later
+// unit defines still discloses the one it names here.
+func (s *state) checkAttachModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
+	support, ok := p.EffectiveSupport(protocol.FeatureToolSourcesAttach)
+	if !ok || !affirmative(support.Level) || support.DisclosesMode(protocol.ModeSessionOpen) {
+		return
+	}
+	s.addExpected(CodeUndisclosedAttachModes, i, line, e, "/payload/features/action.tool_sources.attach/modes", "action.tool_sources.attach is advertised without disclosing the session_open mode an open elects", protocol.ModeSessionOpen, describeModes(support.Modes))
+}
+
 // checkCallAttributed judges a call that names no source at all.
 //
 // The member stays optional on the wire, and the rule is scoped to where the

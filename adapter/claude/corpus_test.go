@@ -486,6 +486,15 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 				}
 				adaptertest.AssertToolCatalog(t, execution.descriptor, nil, request, catalog)
 				execution.catalogs = append(execution.catalogs, catalog.Tools)
+				// From here the session has published this catalog, so a later
+				// run's calls are judged against it rather than the descriptor.
+				// An endpoint-level answer belongs to no session and publishes
+				// nothing to this one, so it does not become the catalog in
+				// force.
+				if catalog.Tools.SessionID != "" {
+					served := catalog
+					execution.served, execution.servedRequest = &served, request
+				}
 			case "assert-state":
 				state, err := session.State(context.Background())
 				if err != nil {
@@ -554,7 +563,13 @@ type ccExecution struct {
 	assertStates      []string
 	modelIDs          []string
 	catalogs          []protocol.ToolsListResponse
-	closed            bool
+	// served is the last catalog this session actually served, and nil until
+	// it has served one. A run after a serve is certified against it, because
+	// that catalog is the one in force for every call the run emits; a run
+	// before any serve is certified against the descriptor alone.
+	servedRequest protocol.ToolsListRequest
+	served        *base.ToolCatalog
+	closed        bool
 }
 
 func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitResponse, stream base.EventStream, err error) {
@@ -569,9 +584,12 @@ func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	}
 	events := adaptertest.Drain(t, stream, 5*time.Second)
 	if len(events) > 0 {
-		if e.cancelAccepted {
+		switch {
+		case e.cancelAccepted:
 			assertCancelledTrace(t, admission, events)
-		} else {
+		case e.served != nil:
+			adaptertest.AssertProtocolValidWithCatalog(t, admission, testDescriptor(t), e.servedRequest, *e.served, events)
+		default:
 			assertValidTrace(t, admission, events)
 		}
 		e.runs = append(e.runs, events)
@@ -1027,6 +1045,26 @@ func ccAnyRun(execution ccExecution, probe func(typ protocol.EnvelopeType, a, b 
 	return false
 }
 
+// ccCallSources reports the `source` each action.call.requested for one tool
+// carried, in run order, so a test can read the attribution rule as a sequence
+// rather than as a single envelope.
+func ccCallSources(runs [][]protocol.Envelope, tool string) []string {
+	var sources []string
+	for _, events := range runs {
+		for _, envelope := range events {
+			if envelope.Type != protocol.TypeActionCallRequested {
+				continue
+			}
+			var payload protocol.ActionCallPayload
+			if err := envelope.DecodePayload(&payload); err != nil || payload.Name != tool {
+				continue
+			}
+			sources = append(sources, payload.Source)
+		}
+	}
+	return sources
+}
+
 // assertClaudeLedgerEvidence requires each ledger label to have executable
 // evidence in the fixture transcript and the behavioral execution record.
 func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame, decoded []ccDecodedFrame, execution *ccExecution) {
@@ -1047,7 +1085,7 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			// source, and a namespaced tool reaches the longest server name
 			// the same frame listed.
 			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)
-			ok = len(inits) == 1 && len(execution.catalogs) == 2
+			ok = len(inits) == 2 && len(execution.catalogs) == 2
 			if ok {
 				before := execution.catalogs[0]
 				ok = len(before.Tools) == 0 && len(before.Sources) == 1 && before.Sources[0].ID == nativeToolSource
@@ -1075,6 +1113,19 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 						ok = false
 					}
 				}
+			}
+			if ok {
+				// The attribution rule in both directions, which is the whole of
+				// it: the same MCP tool is called once before this session served
+				// its catalog and once after. Before, nothing had published where
+				// that tool comes from, so the call names nothing — naming
+				// `mcp:files` there would reference an id no envelope in the stream
+				// declares. After, the session published exactly that attribution,
+				// so the call names it — omitting it there would leave a consumer
+				// holding a catalog it cannot join to the call. Each run's trace is
+				// certified against the catalog in force when it happened.
+				sources := ccCallSources(execution.runs, "mcp__files__read_file")
+				ok = len(sources) == 2 && sources[0] == "" && sources[1] == mcpSourcePrefix+"files"
 			}
 		case "per-turn-init":
 			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)

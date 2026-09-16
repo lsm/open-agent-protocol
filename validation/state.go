@@ -269,6 +269,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		collectFeatures(s.features, s.featureSupports, p)
 		s.catalog, s.catalogKnown = collectCatalog(p), true
 		s.checkSelectionModes(i, line, e, p)
+		s.checkAttachModes(i, line, e, p)
 		s.checkDescriptorSources(i, line, e, p)
 		s.checkCatalogAdvertisement(i, line, e, outgoing)
 	case protocol.TypeCapabilitiesUpdated:

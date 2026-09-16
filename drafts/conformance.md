@@ -334,16 +334,18 @@ For the catalog (`action.tools.list`), an implementation:
   where a consumer needs it. A tool that catalog does not list is one the
   endpoint has published no attribution for, and a call for it may name none,
   or name any source the session resolves;
-- names on a call only a source the trace that carries the call also publishes.
-  `source` is a cross-reference, and a cross-reference a reader cannot follow
-  is not one: a call naming a source no envelope in the trace declares is
-  `unmatched_tool_source`. An endpoint whose sources are known before any
-  session declares them in its descriptor and may name them anywhere; one that
-  learns a source from a session may name it only where the session has
-  published it, and otherwise emits the call with no `source` and keeps the
-  attribution in the catalog, which is exact and is what a consumer asks for.
-  Publishing and attributing are one decision — an endpoint may attribute to
-  what it has published, and to nothing else.
+- names on a call exactly the source the catalog in force attributes the tool
+  to, and none where no catalog in force does. `source` is a cross-reference,
+  and a cross-reference a reader cannot follow is not one, so the rule binds in
+  both directions: naming a source no envelope in the trace declares is
+  `unmatched_tool_source`, and omitting one the catalog in force records is
+  `unattributed_call`. An endpoint whose sources are known before any session
+  declares them in its descriptor and may name them from the start; one that
+  learns a source from a session may name it once it has served the catalog
+  that publishes it, and before that emits the call with no `source` while the
+  catalog keeps the attribution exactly. Publishing and attributing are one
+  decision — an endpoint may attribute to what it has published, to all of it,
+  and to nothing else.
 
 For attachment at open (`action.tool_sources.attach`), an implementation:
 
@@ -353,7 +355,15 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   `details.reason: "unadvertised"`;
 - discloses `modes: ["session_open"]` wherever the key is advertised at all,
   and additionally `"remote"` in that set where it accepts a `remote` source;
-  the plural is what lets the second be said without erasing the first. An
+  the plural is what lets the second be said without erasing the first. The set
+  is judged where it is published: a key advertised affirmatively whose modes
+  omit `session_open` — an empty set, or `remote` alone — is
+  `undisclosed_attach_modes` on the `capabilities.response` itself, because
+  `session_open` is the only application this unit defines and a key no open
+  can elect promises nothing. Names outside the vocabulary are tolerated beside
+  it, since the vocabulary is additive. This is `undisclosed_selection_modes`'
+  rule for this key, and it is what makes the plural a set rather than a
+  costume: disclosing `remote` is an addition, never a substitution. An
   open attaching a `remote` source to an endpoint whose set omits it is
   refused `unsatisfiable` with `details.source`; an open attaching anything to
   an endpoint whose set omits `session_open` is refused on the capability

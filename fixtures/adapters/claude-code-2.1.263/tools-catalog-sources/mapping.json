@@ -89,6 +89,62 @@
   },
   {
     "index": 12,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 13,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "state refresh (the same tool and MCP server lists)"
+  },
+  {
+    "index": 14,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 15,
+    "type": "observe:assistant",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.requested + synthesized started (MCP tool, source from the served catalog)"
+  },
+  {
+    "index": 16,
+    "type": "observe:user",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.completed"
+  },
+  {
+    "index": 17,
+    "type": "observe:result/success",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run terminal"
+  },
+  {
+    "index": 18,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
+    "index": 19,
     "type": "oap_control:close",
     "direction": "harness-control",
     "classification": "mapped",

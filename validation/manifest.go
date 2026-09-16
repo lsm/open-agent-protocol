@@ -185,7 +185,7 @@ func diagnosticCodes() map[string]bool {
 		CodeUnappliedControl, CodeUnsatisfiableControl, CodeDegradedWithoutOptin,
 		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
 		CodeUnmatchedToolSource, CodeDuplicateToolSource, CodeCatalogMismatch,
-		CodeAttachmentFieldInCatalog, CodeUndisclosedAttachLimit, CodeUnattributedCall,
+		CodeAttachmentFieldInCatalog, CodeUndisclosedAttachLimit, CodeUndisclosedAttachModes, CodeUnattributedCall,
 		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
 	}
 	result := make(map[string]bool, len(codes))
