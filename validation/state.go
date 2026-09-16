@@ -1020,10 +1020,18 @@ func (s *state) feature(i, line int, e protocol.Envelope, name string) {
 	}
 	for _, key := range []string{name, "session.message." + name, "agent_control." + name, "action." + name} {
 		if level, ok := s.features[key]; ok {
-			if level != protocol.SupportUnavailable {
+			switch level {
+			case protocol.SupportNative, protocol.SupportEmulated, protocol.SupportDegraded:
 				return
+			case protocol.SupportUnavailable:
+				s.add(CodeUnavailableCapability, i, line, e, "/type", "event uses capability declared unavailable")
+			default:
+				// agent-control-profile.md: an unknown support level is
+				// treated as unavailable. Tolerant mode keeps the value
+				// opaque on the descriptor, but only a known affirmative
+				// level satisfies the gate.
+				s.addExpected(CodeUnavailableCapability, i, line, e, "/type", "event uses capability whose support level is not one this revision recognises; an unknown level is unavailable", "native, emulated, or degraded", string(level))
 			}
-			s.add(CodeUnavailableCapability, i, line, e, "/type", "event uses capability declared unavailable")
 			return
 		}
 	}

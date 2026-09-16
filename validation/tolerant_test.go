@@ -432,6 +432,21 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 			t.Fatalf("declared status was not the one judged from: %v", tolerant.Diagnostics)
 		}
 	})
+	t.Run("an unknown support level does not satisfy a capability gate", func(t *testing.T) {
+		// agent-control-profile.md: unknown or absent support levels are
+		// treated as unavailable. The descriptor keeps the opaque value, but
+		// a tools event gated on it is refused.
+		trace := loadTrace(t, "tools-permission-completed.json")
+		features := firstOfType(t, trace, "capabilities.response")["payload"].(map[string]any)["features"].(map[string]any)
+		features["tools"].(map[string]any)["level"] = "partial"
+		strict, tolerant := validateBoth(t, trace, "tools-partial")
+		if strict.Valid() {
+			t.Fatal("strict accepted an unknown support level")
+		}
+		if !hasCode(tolerant, CodeUnavailableCapability) {
+			t.Fatalf("unknown support level satisfied the tools gate: %v", tolerant.Diagnostics)
+		}
+	})
 	t.Run("a missing status is a shape defect, not an extension", func(t *testing.T) {
 		// The schema leaves status optional on submit.response; the state rule
 		// requires it for a started admission. An absent member is not a
