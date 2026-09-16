@@ -340,6 +340,65 @@ func TestClientOpenGeneratesSessionID(t *testing.T) {
 	}
 }
 
+// TestClientAttachesSourcesAndReadsTheCatalog drives the tool-sources unit
+// end to end over the real daemon wire: an open that attaches a source, the
+// state and the catalog that publish it back, and every listed tool resolving
+// to a declared source.
+func TestClientAttachesSourcesAndReadsTheCatalog(t *testing.T) {
+	server := newDaemon(t, memoryRegistry(0))
+	c := dial(t, server, WithEnvelopeValidation())
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	session, err := c.Open(ctx, "memory", "catalog", AttachToolSources(protocol.ToolSourceAttachment{
+		ID: "client-mcp", Kind: protocol.ToolSourceLocal, Protocol: protocol.ToolSourceMCP, Endpoint: "stdio:client-mcp",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !namesSource(state.Sources, "client-mcp") {
+		t.Fatalf("session state omits the attached source: %+v", state.Sources)
+	}
+
+	catalog, err := session.Tools(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog.SessionID != session.ID() {
+		t.Fatalf("catalog names session %q, want %q", catalog.SessionID, session.ID())
+	}
+	if !namesSource(catalog.Sources, "client-mcp") {
+		t.Fatalf("the catalog omits the attached source: %+v", catalog.Sources)
+	}
+	if len(catalog.Tools) == 0 {
+		t.Fatal("the catalog lists no tools")
+	}
+	for _, tool := range catalog.Tools {
+		if !namesSource(catalog.Sources, tool.Source) {
+			t.Fatalf("tool %q names source %q, which the catalog does not declare", tool.Name, tool.Source)
+		}
+	}
+
+	// The degraded opt-in rides the query and is accepted by an endpoint that
+	// does not need it, so a caller consenting in advance is never refused
+	// for consenting.
+	if _, err := session.Tools(ctx, AllowDegraded(protocol.FeatureToolsList)); err != nil {
+		t.Fatalf("catalog with an opt-in: %v", err)
+	}
+}
+
+func namesSource(sources []protocol.ToolSourceDescriptor, id string) bool {
+	for _, source := range sources {
+		if source.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // TestClientLifecycleGolden drives the full scripted lifecycle end to end:
 // open, subscribe, submit, permission gate, input gate, terminal settlement,
 // state, close — with dev-mode envelope validation on.

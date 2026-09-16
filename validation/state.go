@@ -76,6 +76,15 @@ type sessionTrack struct {
 	currentKnown    bool
 	expectedDefault string
 	guardDefault    bool
+	// attached is the sanitized projection of the sources the open attached,
+	// kept for the session's lifetime: attachment is not revocable in this
+	// unit, so every later catalog and snapshot is held to them. attachedOrder
+	// fixes the order they are judged in.
+	attached      map[string]protocol.ToolSourceDescriptor
+	attachedOrder []string
+	// catalog is the last catalog this session was served, with the revision
+	// it was served under, so no sourced call is judged against stale names.
+	catalog *sessionCatalog
 }
 
 // toolTrack retains a tool call's lifecycle status and the execution owner that
@@ -102,9 +111,22 @@ type state struct {
 	featureSupports map[string]protocol.FeatureSupport
 	catalog         []string
 	catalogKnown    bool
+	// catalogAmbiguous records that the active descriptor's own effective
+	// catalog was already diagnosed as ambiguous, so the policy-time check
+	// does not blame every submission for the descriptor's one defect.
+	catalogAmbiguous bool
 	// pendingControls retains what each control-carrying submit request owes
 	// its correlated response, keyed by the request's envelope id.
 	pendingControls map[protocol.EnvelopeID]*pendingSubmit
+	// pendingLists and pendingOpens retain what a catalog request and an
+	// attaching open owe their correlated responses, for the same reason
+	// pendingControls does: the wire makes a typed refusal the required
+	// behaviour, so the gate is settled on the response.
+	pendingLists map[protocol.EnvelopeID]*pendingList
+	pendingOpens map[protocol.EnvelopeID]*pendingOpen
+	// declaredSources is the active descriptor's declared tool sources,
+	// normalized across its layers.
+	declaredSources map[string]protocol.ToolSourceDescriptor
 	recoveries      map[protocol.SessionID]*recoveryExpectation
 	// tolerant lets an envelope of unknown type take part in the
 	// type-independent bookkeeping its wire scope implies, instead of being
@@ -118,7 +140,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -215,6 +237,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		s.catalog, s.catalogKnown = collectCatalog(p), true
 		s.checkSelectionModes(i, line, e, p)
+		s.checkDescriptorSources(i, line, e, p)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)
@@ -229,7 +252,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// The descriptor and the catalog served under the old revision are
 		// invalidated; a session's expected default model is not, or an
 		// unrelated refresh would excuse a per_run selection that moved it.
+		// The open-time attachments are not invalidated either: they are
+		// session-lifetime facts the next catalog must still carry.
 		s.catalog, s.catalogKnown = nil, false
+		s.declaredSources = map[string]protocol.ToolSourceDescriptor{}
 	case protocol.TypeSessionOpenResponse:
 		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)
@@ -258,6 +284,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.sessions[p.SessionID] = st
 		}
 		st.status = p.Status
+		s.sessionOpenResponse(i, line, e, p)
+	case protocol.TypeSessionOpenRequest:
+		s.sessionOpenRequest(i, line, e)
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
@@ -311,6 +340,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.addExpected(CodeUnappliedControl, i, line, e, "/payload/current_model_id", "a per_run model selection moved the session default", st.expectedDefault, p.CurrentModelID)
 		}
 		st.currentModel, st.currentKnown = p.CurrentModelID, true
+		s.checkPublishedSources(i, line, e, "/payload/sources")
+		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
 	case protocol.TypeSessionMessageSubmitRequest:
 		var p protocol.MessageSubmitRequest
 		_ = e.DecodePayload(&p)
@@ -337,9 +368,16 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "cannot cancel a completed or failed run")
 		}
 	case protocol.TypeActionToolsListRequest:
-		s.feature(i, line, e, "tools")
+		// The catalog is gated on action.tools.list, never on the action.tools
+		// family key: that key means lifecycle observation, and several
+		// adapters advertise it while stating outright that they expose no
+		// portable catalog, so aliasing it would let a served catalog pass a
+		// gate the endpoint never claimed. The gate is settled on the
+		// correlated response, because refusing a catalog an endpoint does not
+		// serve is the conduct the wire requires.
+		s.toolsListRequest(i, line, e)
 	case protocol.TypeActionToolsListResponse:
-		s.feature(i, line, e, "tools")
+		s.toolsListResponse(i, line, e)
 	case protocol.TypeActionPermissionResolveRequest:
 		var p protocol.PermissionResolveRequest
 		_ = e.DecodePayload(&p)
@@ -372,6 +410,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// A refusal is the required behaviour for a control the endpoint
 		// cannot honour, so the refusal itself is what the gate judges.
 		s.settleControlRefusal(i, line, e)
+		s.settleToolSourceRefusal(i, line, e)
 	case protocol.TypeRunCancelResponse:
 		var p protocol.RunCancelResponse
 		_ = e.DecodePayload(&p)
@@ -600,6 +639,15 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		var p protocol.UserInputCancelRequest
 		_ = e.DecodePayload(&p)
 		return p.SessionID, p.RunID
+	case protocol.TypeActionToolsListRequest:
+		// A list request that names a session asks for that session's
+		// effective catalog, so the correlation checks bind its response to
+		// the same scope: an unscoped response to a scoped request is a
+		// scope_mismatch, not an endpoint-level catalog, and an adapter
+		// cannot evade the lifetime-catalog check by dropping the scope.
+		var p protocol.ToolsListRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
 	}
 	return "", ""
 }
@@ -632,6 +680,10 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		var p protocol.UserInputResolveResponse
 		_ = e.DecodePayload(&p)
 		return p.SessionID, p.RunID
+	case protocol.TypeActionToolsListResponse:
+		var p protocol.ToolsListResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
 	}
 	return "", ""
 }
@@ -829,21 +881,27 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "requested")
 		s.checkCallAgainstChoice(i, line, e, r)
+		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallStarted:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "started")
+		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallProgress:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "progress")
+		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallCompleted:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "completed")
+		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallFailed:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "failed")
+		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallCancelled:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "cancelled")
+		s.checkCallSource(i, line, e)
 	case protocol.TypeActionPermissionRequested:
 		s.feature(i, line, e, "permissions")
 		s.interactionRequested(i, line, e, "permission")

@@ -30,6 +30,12 @@ const (
 	// scriptedToolOwner runs the scripted tool, and is what every emitted
 	// action.call payload names as its execution_owner.
 	scriptedToolOwner = "reference-adapter"
+	// scriptedSource is the native source the scripted tool comes from, and
+	// syntheticMCPSource a declared MCP process source with no tools of its
+	// own, so a catalog entry's `source` resolves to a descriptor rather than
+	// to a name a consumer has to parse.
+	scriptedSource     = "reference-native"
+	syntheticMCPSource = "reference-mcp"
 )
 
 // scriptedCatalog is the reference adapter's effective tool catalog: the one
@@ -44,8 +50,37 @@ func scriptedCatalog() []protocol.ToolDefinition {
 		Description:    "The deterministic scripted tool the reference adapter calls.",
 		InputSchema:    json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string"}}}`),
 		ExecutionOwner: scriptedToolOwner,
+		Source:         scriptedSource,
+		Features: map[string]protocol.FeatureSupport{
+			"action.tools.execute": {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
+			"action.permissions":   {Level: protocol.SupportEmulated, Reason: "the scripted call is gated"},
+		},
 	}}
 }
+
+// declaredSources are the tool sources the reference descriptor publishes: the
+// native one its scripted tool comes from, and a synthetic MCP process source
+// that declares no tools of its own. The second exists so a consumer can see a
+// non-native source resolved by id without the reference adapter pretending to
+// run an MCP client.
+func declaredSources() []protocol.ToolSourceDescriptor {
+	return []protocol.ToolSourceDescriptor{
+		{ID: scriptedSource, Kind: protocol.ToolSourceNative, DisplayName: "Reference Adapter Script"},
+		{
+			ID: syntheticMCPSource, Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
+			DisplayName: "Reference Synthetic MCP Source", Endpoint: "stdio:reference-tool-source",
+		},
+	}
+}
+
+// attachTransports and maxAttachedSources are the attachment limits the
+// descriptor discloses. Disclosing them is what makes a refusal checkable: an
+// endpoint that advertised attachment and refused every array while declaring
+// no limit would honour nothing, so refusing an array within every declared
+// limit is a conformance failure.
+var attachTransports = []string{protocol.ToolSourceProcess, protocol.ToolSourceLocal}
+
+const maxAttachedSources = 2
 
 // CapabilityRevision is the advertised reference-adapter revision. Every
 // emitted envelope repeats it so a consumer can bind an event to the
@@ -53,8 +88,10 @@ func scriptedCatalog() []protocol.ToolDefinition {
 // v2 publishes the scripted tool in the catalog; v1 published none, and a
 // revision identifies exactly one descriptor, so a consumer holding the v1
 // snapshot must see this one as new rather than validate against an empty
-// catalog.
-const CapabilityRevision = "reference-memory-v2"
+// catalog. v3 declares the tool sources, attributes the scripted tool to one
+// of them, and advertises the catalog and attachment capabilities with their
+// disclosed limits — a different descriptor again, so a different revision.
+const CapabilityRevision = "reference-memory-v3"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -113,8 +150,21 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"run.replay":                    {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
 		"action.tools":                  {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
 		"action.tools.execute":          {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
-		"action.permissions":            {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
-		"user_input":                    {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
+		// The catalog and attachment, executed deterministically. Both
+		// disclosures are machine-readable: the mode says attachment happens
+		// at session open and nowhere else, and the limits say exactly which
+		// arrays are honoured, so a refusal is checkable in both directions.
+		protocol.FeatureToolsList: {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
+		protocol.FeatureToolSourcesAttach: {
+			Level: protocol.SupportEmulated, Mode: protocol.ModeSessionOpen,
+			Limits: map[string]json.RawMessage{
+				protocol.LimitMaxSources: json.RawMessage(strconv.Itoa(maxAttachedSources)),
+				protocol.LimitTransports: mustJSON(attachTransports),
+			},
+			Reason: "sources are described and published back; the reference adapter runs no client for them",
+		},
+		"action.permissions": {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
+		"user_input":         {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		// The run controls, executed deterministically. Each disclosure is
 		// machine-readable so a refusal is checkable in both directions: the
 		// mode says the session default never moves, the enforced tool_choice
@@ -142,7 +192,8 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 			Features:         features,
 			// The catalog a tool_choice is judged against is the descriptor's,
 			// so it is published rather than kept private to the session.
-			Tools: scriptedCatalog(),
+			Tools:   scriptedCatalog(),
+			Sources: declaredSources(),
 		},
 		CapabilityRevision:         CapabilityRevision,
 		Journal:                    JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: m.capacity},
@@ -163,6 +214,12 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	if request.Participant.ID == "" {
 		return nil, fmt.Errorf("%w: open requires a non-empty participant id", ErrInvalidParticipant)
 	}
+	// Attachment is judged before any identity is allocated, so a refused open
+	// leaves no session behind. The array is accepted whole or not at all.
+	attached, err := admitToolSources(request)
+	if err != nil {
+		return nil, err
+	}
 	id := request.SessionID
 	if id == "" {
 		id = protocol.SessionID(m.ids.NewID("session"))
@@ -171,9 +228,68 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	return &memorySession{
 		clock: m.clock, ids: m.ids, capacity: m.capacity,
 		participant: request.Participant.ID,
-		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now},
+		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached)},
+		attached:    attached,
 		runs:        make(map[protocol.RunID]*memoryRun),
 	}, nil
+}
+
+// admitToolSources judges one open's attachment array against what Probe
+// advertises. Every refusal names the offending source, so a caller and the
+// validator agree on which entry to change; a refusal that violated no
+// disclosed limit would be the endpoint honouring nothing it advertised.
+func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, error) {
+	if len(request.ToolSources) == 0 {
+		return nil, nil
+	}
+	refuse := func(source, detail string) error {
+		return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnsatisfiable, Source: source, Detail: detail}
+	}
+	if len(request.ToolSources) > maxAttachedSources {
+		return nil, refuse(request.ToolSources[maxAttachedSources].ID, fmt.Sprintf("at most %d sources may be attached", maxAttachedSources))
+	}
+	declared := map[string]bool{}
+	for _, source := range declaredSources() {
+		declared[source.ID] = true
+	}
+	seen := map[string]bool{}
+	for _, attachment := range request.ToolSources {
+		switch {
+		case attachment.ID == "" || attachment.Kind == "":
+			return nil, refuse(attachment.ID, "an attachment needs an id and a kind")
+		case seen[attachment.ID] || declared[attachment.ID]:
+			// One id resolves to one descriptor, so a collision with another
+			// attachment or with a declared source is refused rather than
+			// shadowed: a call carrying that source would otherwise route to
+			// whichever entry happened to win.
+			return nil, refuse(attachment.ID, "the id already resolves to a declared or attached source")
+		case !slices.Contains(attachTransports, attachment.Kind):
+			return nil, refuse(attachment.ID, "kind "+attachment.Kind+" is outside the disclosed transports")
+		}
+		seen[attachment.ID] = true
+	}
+	return append([]protocol.ToolSourceAttachment(nil), request.ToolSources...), nil
+}
+
+// sessionSources is the union the session publishes: the descriptor's declared
+// sources and the open's attachments, in the descriptor shape. The projection
+// is the point — command, args, and environment never reach a client.
+func sessionSources(attached []protocol.ToolSourceAttachment) []protocol.ToolSourceDescriptor {
+	sources := declaredSources()
+	for _, attachment := range attached {
+		sources = append(sources, attachment.Descriptor())
+	}
+	return sources
+}
+
+// mustJSON encodes a disclosed limit. The values are package constants, so a
+// failure here is a programming error rather than an input defect.
+func mustJSON(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic("adapter: encode disclosed limit: " + err.Error())
+	}
+	return encoded
 }
 
 type memorySession struct {
@@ -185,6 +301,7 @@ type memorySession struct {
 	capacity    int
 	participant protocol.ParticipantID
 	state       protocol.SessionState
+	attached    []protocol.ToolSourceAttachment
 	closed      bool
 	active      *memoryRun
 	runs        map[protocol.RunID]*memoryRun
@@ -323,7 +440,7 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	if !run.controls.callsTool {
 		return s.requestInput(run)
 	}
-	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner}
+	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner, Source: scriptedSource}
 	if err := s.emit(run, protocol.TypeActionCallRequested, call, false); err != nil {
 		return err
 	}
@@ -464,6 +581,30 @@ func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error
 	return s.state, nil
 }
 
+// Tools serves the session's effective catalog: the scripted tool, attributed
+// to the native source it comes from, and every source the session resolves —
+// the descriptor's declared ones plus the open's attachments. The response
+// repeats the request's session id so a consumer, and the validator, can tie
+// the catalog to the attachment it reflects.
+func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListRequest) (protocol.ToolsListResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.ToolsListResponse{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return protocol.ToolsListResponse{}, ErrSessionClosed
+	}
+	if request.SessionID != "" && request.SessionID != s.state.SessionID {
+		return protocol.ToolsListResponse{}, ErrRunNotFound
+	}
+	return protocol.ToolsListResponse{
+		SessionID: request.SessionID,
+		Sources:   sessionSources(s.attached),
+		Tools:     scriptedCatalog(),
+	}, nil
+}
+
 // goldenInputQuestions is the deterministic prompt the reference adapter
 // offers. The same questions validate a resolution, so the advertised and
 // accepted shapes cannot drift.
@@ -565,14 +706,14 @@ func (s *memorySession) resolvePermission(run *memoryRun, request protocol.Permi
 		return err
 	}
 	if !request.Granted {
-		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
+		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner, Source: scriptedSource}
 		if err := s.emit(run, protocol.TypeActionCallCancelled, call, false); err != nil {
 			return err
 		}
 		failure := protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "permission_denied", Message: "scripted tool permission denied"}}
 		return s.emit(run, protocol.TypeRunFailed, failure, true)
 	}
-	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner}
+	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner, Source: scriptedSource}
 	if err := s.emit(run, protocol.TypeActionCallStarted, call, false); err != nil {
 		return err
 	}
@@ -648,7 +789,7 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 		reason := protocol.ProtocolError{Code: "run_cancelled", Message: "run cancellation closed the permission request"}
 		resolved := protocol.PermissionResolvedPayload{InteractionID: run.permissionID, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Outcome: protocol.InteractionCancelled, Reason: &reason}
 		_ = s.emit(run, protocol.TypeActionPermissionResolved, resolved, false)
-		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
+		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner, Source: scriptedSource}
 		_ = s.emit(run, protocol.TypeActionCallCancelled, call, false)
 	} else if run.stage == stageInput {
 		resolved := protocol.UserInputResolvedPayload{InteractionID: run.inputID, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}
@@ -861,3 +1002,7 @@ type sequenceIDs struct{ value atomic.Uint64 }
 func (g *sequenceIDs) NewID(kind string) string {
 	return kind + "-" + strconv.FormatUint(g.value.Add(1), 10)
 }
+
+// The reference adapter serves a portable catalog, so it implements the
+// optional catalog surface rather than leaving the boundary to refuse.
+var _ ToolLister = (*memorySession)(nil)

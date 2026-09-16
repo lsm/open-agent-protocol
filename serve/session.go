@@ -173,6 +173,27 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	return admission, nil
 }
 
+// Tools serves this session's effective tool catalog. The request is
+// forwarded unchanged — the hub adds no protocol semantics, so the degraded
+// opt-in the caller sent is applied by the adapter to exactly what the wire
+// said — and its SessionID, when present, must name this session. An adapter
+// that serves no portable catalog answers ErrToolCatalogUnavailable, which
+// every binding maps to the typed refusal naming action.tools.list.
+func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (protocol.ToolsListResponse, error) {
+	if request.SessionID != "" && request.SessionID != s.id {
+		return protocol.ToolsListResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	lister, ok := s.session.(base.ToolLister)
+	if !ok {
+		return protocol.ToolsListResponse{}, base.ErrToolCatalogUnavailable
+	}
+	response, err := lister.Tools(ctx, request)
+	if errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
+	}
+	return response, err
+}
+
 // Resolve resolves one pending interactive gate. The resolution's inner
 // request must name this session; the adapter's own rejection (wrong
 // responder, unknown or already-resolved interaction) surfaces verbatim.

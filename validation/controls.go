@@ -516,26 +516,7 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 		return text, ok && isText
 	}
 	if expectation := pending.expectation; expectation != nil {
-		conforming := payload.Error.Code == expectation.code
-		if conforming && expectation.code == errorUnsupportedFeature {
-			// unsupported_feature answers about one capability, so the key is
-			// the refusal's subject: omitted, or naming another key, it tells
-			// the caller no more than that something was unsupported. The
-			// unsatisfiability rung carries the offending member in
-			// details.tool or details.field, so without this the feature on
-			// those refusals would go unjudged.
-			feature, ok := detail("feature")
-			conforming = ok && feature == expectation.key
-		}
-		if conforming && expectation.reason != "" {
-			reason, ok := detail("reason")
-			conforming = ok && reason == expectation.reason
-		}
-		if conforming && expectation.detailName != "" {
-			value, ok := detail(expectation.detailName)
-			conforming = ok && value == expectation.detailValue
-		}
-		if !conforming {
+		if !refusalConforms(payload.Error, expectation) {
 			s.addExpected(expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 		}
 		return
@@ -552,6 +533,42 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 		return
 	}
 	s.addExpected(CodeUnsatisfiableControl, i, line, e, "/payload/error", "refusal names a control the endpoint advertises and this request satisfies", "admission or a defect the refusal names", describeRefusal(payload.Error), string(e.InReplyTo))
+}
+
+// refusalConforms reports whether one error.response says what the retained
+// expectation requires it to say. The code alone never suffices: an
+// unsupported_feature answers about one capability, so a refusal that omits
+// details.feature or names another key tells the caller no more than that
+// something was unsupported, and the reason and the offending member are what
+// say whether to stop sending the capability or to send a different value.
+func refusalConforms(err protocol.ProtocolError, expectation *controlExpectation) bool {
+	detail := func(name string) (string, bool) {
+		value, ok := err.Details[name]
+		text, isText := value.(string)
+		return text, ok && isText
+	}
+	if err.Code != expectation.code {
+		return false
+	}
+	if expectation.code == errorUnsupportedFeature {
+		feature, ok := detail("feature")
+		if !ok || feature != expectation.key {
+			return false
+		}
+	}
+	if expectation.reason != "" {
+		reason, ok := detail("reason")
+		if !ok || reason != expectation.reason {
+			return false
+		}
+	}
+	if expectation.detailName != "" {
+		value, ok := detail(expectation.detailName)
+		if !ok || value != expectation.detailValue {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *controlExpectation) describe() string {
@@ -573,7 +590,7 @@ func describeRefusal(err protocol.ProtocolError) string {
 	if reason, ok := err.Details["reason"].(string); ok {
 		description += "/" + reason
 	}
-	for _, name := range []string{"feature", "model_id", "tool", "field"} {
+	for _, name := range []string{"feature", "model_id", "tool", "field", "source"} {
 		if value, ok := err.Details[name].(string); ok {
 			description += " " + name + "=" + value
 		}
@@ -586,6 +603,15 @@ func describeRefusal(err protocol.ProtocolError) string {
 // entry ambiguous. It is judged where the policy is judged, since that is
 // where the catalog is read.
 func (s *state) duplicateToolNames(i, line int, e protocol.Envelope) {
+	if s.catalogAmbiguous {
+		// The tool-sources unit judges every accepted descriptor's effective
+		// catalog where it is published, which is where the ambiguity is. One
+		// fault gets one diagnosis: repeating it on every submission the
+		// descriptor governs would blame each policy for the descriptor's
+		// defect. This check still owns a catalog the descriptor did not
+		// publish.
+		return
+	}
 	catalog, known := s.toolCatalog()
 	if !known {
 		return

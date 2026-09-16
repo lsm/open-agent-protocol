@@ -58,7 +58,39 @@ type OpenRequest struct {
 	SessionID   protocol.SessionID
 	Participant protocol.Participant
 	Metadata    map[string]any
+	// ToolSources are the sources attached for the session's lifetime. An
+	// adapter that cannot attach at open refuses the open with the typed
+	// unsupported_feature naming action.tool_sources.attach rather than
+	// opening a session that silently has none of them.
+	ToolSources []protocol.ToolSourceAttachment
+	// AllowDegradedFeatures is the caller's consent to a degraded application
+	// of the capabilities the open elects. An open electing a degraded key
+	// without naming it here is refused with capability_degraded.
+	AllowDegradedFeatures []string
 }
+
+// AllowsDegraded reports whether the open opted into the degraded application
+// of one capability key.
+func (r OpenRequest) AllowsDegraded(key string) bool {
+	return slices.Contains(r.AllowDegradedFeatures, key)
+}
+
+// ToolLister is the optional catalog surface. An adapter that can publish a
+// portable catalog implements it and advertises action.tools.list; one that
+// cannot does not implement it, and the boundary answers the typed refusal
+// that names the capability rather than a generic failure.
+//
+// The argument is the wire payload struct so the adapter applies the
+// degraded opt-in rule to exactly what the caller sent.
+type ToolLister interface {
+	Tools(context.Context, protocol.ToolsListRequest) (protocol.ToolsListResponse, error)
+}
+
+// ErrToolCatalogUnavailable is the sentinel for an endpoint that serves no
+// portable catalog. Codecs map it to unsupported_feature with
+// details.feature: "action.tools.list" and details.reason: "unadvertised",
+// which is the refusal the wire requires and the validator accepts.
+var ErrToolCatalogUnavailable = errors.New("adapter: no portable tool catalog is served")
 
 // InteractionResolution is a tagged union: exactly one of Permission or Input
 // must be present. RespondedBy must match the pending interaction's responder.
@@ -156,9 +188,10 @@ type UnsupportedControlError struct {
 	Feature string
 	Reason  string
 	// Tool and Field name the offending member of an unsatisfiable control,
-	// so a refusal and a validator name the same entry.
-	Tool, Field string
-	Detail      string
+	// so a refusal and a validator name the same entry. Source names the
+	// offending tool source of an unsatisfiable attachment.
+	Tool, Field, Source string
+	Detail              string
 }
 
 // The two conditions unsupported_feature covers.

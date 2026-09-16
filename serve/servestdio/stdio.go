@@ -400,6 +400,9 @@ type requestLine struct {
 	SessionID string          `json:"session_id,omitempty"`
 	After     json.RawMessage `json:"after,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
+	// AllowDegradedFeatures is the tools op's consent carrier, the direct
+	// form of the HTTP route's repeatable ?allow_degraded query parameter.
+	AllowDegradedFeatures []string `json:"allow_degraded_features,omitempty"`
 
 	// present records which keys the raw object actually carried, set by
 	// decodeRequest: the per-op shape check refuses on presence, not value,
@@ -448,6 +451,7 @@ func decodeRequest(frame []byte) (requestLine, error) {
 // never reads; scanKeys therefore accepts only these spellings, byte-exact.
 var canonicalKeys = map[string]bool{
 	"id": true, "op": true, "adapter": true, "session_id": true, "after": true, "request": true,
+	"allow_degraded_features": true,
 }
 
 // scanKeys walks the raw request object's keys, reporting each key's

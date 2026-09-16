@@ -84,18 +84,79 @@ type RunCancelledPayload struct {
 	DurationMS int64     `json:"duration_ms,omitempty"`
 }
 
+// ToolDefinition is one catalog entry. Source names the ToolSourceDescriptor
+// the tool comes from — a source id, never an inline copy of the descriptor —
+// so a consumer can attribute a tool to an MCP server without parsing its
+// name, and a harness that namespaces MCP tools (Claude's
+// `mcp__<server>__<tool>`) exposes the namespaced string as Name while Source
+// carries the attribution. Features is the per-tool effective support map, so
+// one entry can report that this tool is executable but has no progress.
 type ToolDefinition struct {
 	Name           string                     `json:"name"`
 	Description    string                     `json:"description,omitempty"`
 	InputSchema    json.RawMessage            `json:"input_schema"`
 	ExecutionOwner ParticipantID              `json:"execution_owner"`
+	Source         string                     `json:"source,omitempty"`
+	Features       map[string]FeatureSupport  `json:"features,omitempty"`
 	Annotations    map[string]json.RawMessage `json:"annotations,omitempty"`
 }
 
-type ToolsListRequest struct{}
+// The tool-source kinds. A source says where its tools are executed from;
+// an MCP source is a process or remote kind whose Protocol is ToolSourceMCP.
+const (
+	ToolSourceNative  = "native"
+	ToolSourceLocal   = "local"
+	ToolSourceProcess = "process"
+	ToolSourceRemote  = "remote"
+	ToolSourceHosted  = "hosted"
+)
 
+// ToolSourceMCP is the `protocol` value an MCP source declares.
+const ToolSourceMCP = "mcp"
+
+// ToolSourceDescriptor is the published shape of one tool source: what
+// `action.tools.list.response`, `session.state`, and the capability descriptor
+// report back to clients. It deliberately carries no `command`, `args`, or
+// `environment` — those belong to ToolSourceAttachment, the open-time shape —
+// because an attachment's environment can hold a literal credential and one
+// schema serving both would make a leak into a published catalog valid.
+type ToolSourceDescriptor struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	DisplayName string `json:"display_name,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	Endpoint    string `json:"endpoint,omitempty"`
+}
+
+// ToolsListRequest asks for a catalog. SessionID scopes the request to one
+// session's effective catalog; an empty one asks for the endpoint-level
+// catalog a static adapter serves. AllowDegradedFeatures is the consent
+// carrier every other capability-electing request has, because
+// `action.tools.list` can be advertised `degraded` like any key and a list is
+// a request of its own.
+type ToolsListRequest struct {
+	SessionID             SessionID `json:"session_id,omitempty"`
+	AllowDegradedFeatures []string  `json:"allow_degraded_features,omitempty"`
+}
+
+// AllowsDegraded reports whether the list request opted into the degraded
+// application of one capability key.
+func (r ToolsListRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+// ToolsListResponse is one catalog. It repeats the request's SessionID when
+// the catalog is a session's effective catalog, so a trace can tie a catalog
+// to the attachment it reflects.
 type ToolsListResponse struct {
-	Tools []ToolDefinition `json:"tools"`
+	SessionID SessionID              `json:"session_id,omitempty"`
+	Sources   []ToolSourceDescriptor `json:"sources,omitempty"`
+	Tools     []ToolDefinition       `json:"tools"`
 }
 
 type ActionCallPayload struct {
@@ -106,6 +167,7 @@ type ActionCallPayload struct {
 	RequestedBy    ParticipantID   `json:"requested_by,omitempty"`
 	RespondedBy    ParticipantID   `json:"responded_by,omitempty"`
 	ExecutionOwner ParticipantID   `json:"execution_owner"`
+	Source         string          `json:"source,omitempty"`
 	Name           string          `json:"name,omitempty"`
 	ArgumentsJSON  json.RawMessage `json:"arguments_json,omitempty"`
 	Progress       json.RawMessage `json:"progress,omitempty"`

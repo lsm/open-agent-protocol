@@ -20,6 +20,7 @@ import {
   type RunCompletedPayload,
   type SessionOpenRequest,
   type SessionState,
+  type ToolsListResponse,
   type UserInputResolveRequest,
   type UserInputResolveResponse,
 } from './protocol.js';
@@ -177,6 +178,41 @@ export class OapSession {
       );
     }
     return state;
+  }
+
+  /**
+   * Reads this session's effective tool catalog: its tools, each attributed
+   * to a source id, and every source the session resolves. The degraded
+   * opt-in is sent only when given, so an unmodified call is byte-identical
+   * to one made before the option existed.
+   *
+   * An endpoint that serves no portable catalog answers the typed
+   * `unsupported_feature` refusal naming `action.tools.list`, which surfaces
+   * as a ServerError whose details say which capability to stop requesting.
+   */
+  async tools(options: { allowDegradedFeatures?: string[] } = {}): Promise<ToolsListResponse> {
+    let path = this.path('/tools');
+    if (options.allowDegradedFeatures?.length) {
+      const query = new URLSearchParams();
+      for (const key of options.allowDegradedFeatures) query.append('allow_degraded', key);
+      path += `?${query.toString()}`;
+    }
+    const response = await this.client.exchange('GET', path, null, EnvelopeType.ActionToolsListResponse);
+    // The GET carries no request envelope, so the exchange's request-based
+    // scope check never runs: a catalog that names another session is not
+    // this session's catalog.
+    if (response.session_id !== this.sessionId) {
+      throw new Error(
+        `client: ${this.path('/tools')} response is scoped to session "${response.session_id ?? ''}", want "${this.sessionId}"`,
+      );
+    }
+    const catalog = payload<ToolsListResponse>(response);
+    if (catalog.session_id !== undefined && catalog.session_id !== response.session_id) {
+      throw new Error(
+        `client: ${this.path('/tools')} payload names session "${catalog.session_id}", envelope "${response.session_id}"`,
+      );
+    }
+    return catalog;
   }
 
   /** Closes the session. An active run refuses the close; cancel it first. */

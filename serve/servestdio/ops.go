@@ -29,6 +29,7 @@ const (
 	opResolve      = "resolve"
 	opCancel       = "cancel"
 	opClose        = "close"
+	opTools        = "tools"
 )
 
 // responseLine is one daemon → host response, correlated by the request id.
@@ -108,6 +109,11 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.stateOp(ctx, request.SessionID)
+	case opTools:
+		if werr := request.only(paramSession, paramAllowDegraded); werr != nil {
+			return nil, werr
+		}
+		return s.toolsOp(ctx, request)
 	case opSubmit, opResolve, opCancel:
 		if werr := request.only(paramSession, paramRequest); werr != nil {
 			return nil, werr
@@ -132,10 +138,11 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 
 // Param names of requestLine, shared by the per-op shape checks.
 const (
-	paramAdapter = "adapter"
-	paramSession = "session_id"
-	paramRequest = "request"
-	paramAfter   = "after"
+	paramAdapter       = "adapter"
+	paramSession       = "session_id"
+	paramRequest       = "request"
+	paramAfter         = "after"
+	paramAllowDegraded = "allow_degraded_features"
 )
 
 // only refuses a well-formed line that carries params its op does not define.
@@ -149,7 +156,7 @@ func (request requestLine) only(fields ...string) *wireError {
 		allowed[field] = true
 	}
 	var extra []string
-	for _, param := range []string{paramAdapter, paramSession, paramAfter, paramRequest} {
+	for _, param := range []string{paramAdapter, paramSession, paramAfter, paramRequest, paramAllowDegraded} {
 		if !allowed[param] && request.present[param] {
 			extra = append(extra, param)
 		}
@@ -495,6 +502,47 @@ func (s *Server) stateOp(ctx context.Context, sessionID string) (json.RawMessage
 	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
 	response.SessionID = state.SessionID
 	return envelopeResult(response)
+}
+
+// toolsOp mirrors GET /sessions/{id}/tools: the same catalog, the same typed
+// refusal when the endpoint serves none, with the degraded opt-in taken
+// directly rather than through a query parameter.
+func (s *Server) toolsOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	catalog, err := entry.Tools(ctx, protocol.ToolsListRequest{SessionID: entry.ID(), AllowDegradedFeatures: request.AllowDegradedFeatures})
+	if err != nil {
+		return nil, toolsError(err)
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, protocol.EnvelopeID(s.nextID("response")), catalog)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
+	response.SessionID = entry.ID()
+	return envelopeResult(response)
+}
+
+// toolsError maps a catalog failure onto the same typed refusal the HTTP
+// route writes, so a catalog refused over stdio is refused identically over
+// HTTP.
+func toolsError(err error) *wireError {
+	if code, message, details, ok := serve.ControlRefusal(err); ok {
+		return &wireError{Code: code, Message: message, Details: details}
+	}
+	switch {
+	case errors.Is(err, base.ErrToolCatalogUnavailable):
+		return &wireError{Code: "unsupported_feature", Message: adapterMessage(err), Details: map[string]any{
+			"feature": protocol.FeatureToolsList, "reason": base.ControlUnadvertised,
+		}}
+	case errors.Is(err, base.ErrSessionClosed):
+		return &wireError{Code: "session_closed", Message: adapterMessage(err)}
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return &wireError{Code: "request_cancelled", Message: adapterMessage(err)}
+	}
+	return &wireError{Code: "tools_failed", Message: adapterMessage(err)}
 }
 
 func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage, *wireError) {

@@ -131,6 +131,14 @@ var unitCapabilities = map[string][]string{
 		protocol.FeatureToolSelection,
 		protocol.FeatureStructuredOutput,
 	},
+	// Tool sources: the catalog that carries them (T3a) and attachment at
+	// session open (T3b). Control-layer-provided tools are the separate
+	// `control-tools` unit and register action.tools.provide when they
+	// graduate; nothing here claims them.
+	"tool-sources": {
+		protocol.FeatureToolsList,
+		protocol.FeatureToolSourcesAttach,
+	},
 }
 
 // honourDeferred names the unit whose corpus carries a key's honour fixture
@@ -168,6 +176,8 @@ func diagnosticCodes() map[string]bool {
 		CodeSessionStateMismatch,
 		CodeUnappliedControl, CodeUnsatisfiableControl, CodeDegradedWithoutOptin,
 		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
+		CodeUnmatchedToolSource, CodeDuplicateToolSource, CodeCatalogMismatch,
+		CodeAttachmentFieldInCatalog, CodeUndisclosedAttachLimit,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {

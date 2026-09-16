@@ -78,6 +78,38 @@ const (
 	CodeDegradedWithoutOptin      = "degraded_without_optin"
 	CodeDuplicateToolName         = "duplicate_tool_name"
 	CodeUndisclosedSelectionModes = "undisclosed_selection_modes"
+
+	// The tool-sources unit. Each names one way a catalog can stop resolving
+	// a tool to one source, one owner, and one endpoint.
+	//
+	// CodeUnmatchedToolSource: a tool or a call names a source nothing
+	// declares, or one that disagrees with the source the session's catalog
+	// records for that tool. Either way the attribution resolves nowhere, or
+	// somewhere else.
+	//
+	// CodeDuplicateToolSource: two descriptors share an id, so a tool's
+	// `source` and a call's `source` no longer resolve to one endpoint.
+	//
+	// CodeCatalogMismatch: a session-scoped catalog does not reflect the
+	// attachment it is required to. Attachment is for the session's lifetime,
+	// so an attached source never drops out of a later list and never changes
+	// the members it was attached with.
+	//
+	// CodeAttachmentFieldInCatalog: a published source carries `command`,
+	// `args`, or `environment` — the attachment-only members, one of which can
+	// hold a literal credential. The descriptor shape excludes them, so this
+	// catches a tolerant or hand-rolled serializer reflecting the open-time
+	// value straight back to clients.
+	//
+	// CodeUndisclosedAttachLimit: an attachment carrying no defect any rule
+	// names, and violating no limit the endpoint disclosed, was refused. The
+	// refusal is itself the evidence that a constraint exists which the caller
+	// was never told about.
+	CodeUnmatchedToolSource      = "unmatched_tool_source"
+	CodeDuplicateToolSource      = "duplicate_tool_source"
+	CodeCatalogMismatch          = "catalog_mismatch"
+	CodeAttachmentFieldInCatalog = "attachment_field_in_catalog"
+	CodeUndisclosedAttachLimit   = "undisclosed_attach_limit"
 )
 
 type Diagnostic struct {

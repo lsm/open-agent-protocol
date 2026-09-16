@@ -1,0 +1,529 @@
+package validation
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+
+	"github.com/lsm/open-agent-protocol/protocol"
+)
+
+// The tool-sources unit (T3a catalog with sources, T3b attachment at session
+// open). A source is described, not managed: the harness runs the client, OAP
+// says what the source is, attaches it at open, and observes its calls.
+//
+// Every gate here is judged on the correlated response, never on the request,
+// exactly as the run-controls gate is and for the same reason: an endpoint
+// that advertises neither key may still be asked for a catalog, and answering
+// with a typed refusal is the correct behaviour — diagnosing the request would
+// fail the conduct the wire mandates.
+
+// attachmentOnlyMembers are the members ToolSourceAttachment carries and
+// ToolSourceDescriptor does not. One of them can hold a literal credential, so
+// a published source carrying any of them is a leak whatever serializer
+// produced it.
+var attachmentOnlyMembers = []string{"command", "args", "environment"}
+
+// pendingList is what one action.tools.list.request left for its correlated
+// response to settle.
+type pendingList struct {
+	index, line int
+	session     protocol.SessionID
+	scoped      bool
+	expectation *controlExpectation
+	// honour marks a request the endpoint advertises the catalog for and that
+	// carries no defect any rule names. Refusing it is unhonoured_capability:
+	// an endpoint that advertises a catalog and refuses every request for one
+	// honours nothing.
+	honour bool
+}
+
+// pendingOpen is what one session.open.request carrying tool_sources left for
+// its correlated response to settle.
+type pendingOpen struct {
+	index, line int
+	attachments []protocol.ToolSourceAttachment
+	expectation *controlExpectation
+	// withinLimits marks an attachment array that violates no limit the
+	// endpoint disclosed, so refusing it is undisclosed_attach_limit.
+	withinLimits bool
+}
+
+// sessionCatalog is the last catalog one session was served under the active
+// capability revision: the source a call's attribution is checked against.
+type sessionCatalog struct {
+	revision string
+	sources  map[string]bool
+	tools    map[string]string
+}
+
+// toolSourceMap indexes descriptors by id, reporting the first duplicate.
+func toolSourceMap(sources []protocol.ToolSourceDescriptor) (map[string]protocol.ToolSourceDescriptor, string) {
+	indexed := make(map[string]protocol.ToolSourceDescriptor, len(sources))
+	duplicate := ""
+	for _, source := range sources {
+		if _, seen := indexed[source.ID]; seen && duplicate == "" {
+			duplicate = source.ID
+			continue
+		}
+		indexed[source.ID] = source
+	}
+	return indexed, duplicate
+}
+
+// descriptorSources normalizes a capability descriptor's declared sources: its
+// top-level `sources` and every layer's, since a valid descriptor may declare
+// them under a layer alone, exactly as its catalog may be published there.
+func descriptorSources(p protocol.CapabilitiesResponse) []protocol.ToolSourceDescriptor {
+	sources := append([]protocol.ToolSourceDescriptor(nil), p.Sources...)
+	layers := make([]string, 0, len(p.Layers))
+	for name := range p.Layers {
+		layers = append(layers, name)
+	}
+	sort.Strings(layers)
+	for _, name := range layers {
+		sources = append(sources, p.Layers[name].Sources...)
+	}
+	return sources
+}
+
+// descriptorTools normalizes a descriptor's effective catalog entries, the way
+// collectCatalog normalizes their names.
+func descriptorTools(p protocol.CapabilitiesResponse) []protocol.ToolDefinition {
+	tools := append([]protocol.ToolDefinition(nil), p.Tools...)
+	layers := make([]string, 0, len(p.Layers))
+	for name := range p.Layers {
+		layers = append(layers, name)
+	}
+	sort.Strings(layers)
+	for _, name := range layers {
+		tools = append(tools, p.Layers[name].Tools...)
+	}
+	return tools
+}
+
+// checkDescriptorSources judges a capability descriptor's own catalog before
+// any list, open, or call is judged against it: a descriptor that is ambiguous
+// or dangling on its own cannot resolve a tool to one source or one owner, and
+// a call that agrees with a dangling entry is not excused by that agreement.
+func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
+	sources := descriptorSources(p)
+	declared, duplicate := toolSourceMap(sources)
+	s.declaredSources = declared
+	if duplicate != "" {
+		s.addExpected(CodeDuplicateToolSource, i, line, e, "/payload/sources", "the descriptor declares two tool sources with one id", "one source per id", duplicate)
+	}
+	tools := descriptorTools(p)
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	s.catalogAmbiguous = false
+	if name := duplicateToolName(names); name != "" {
+		s.catalogAmbiguous = true
+		s.addExpected(CodeDuplicateToolName, i, line, e, "/payload/tools", "the descriptor's effective catalog lists two tools with one name", "one tool per name", name)
+	}
+	for _, tool := range tools {
+		if tool.Source == "" {
+			continue
+		}
+		if _, ok := declared[tool.Source]; !ok {
+			s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/tools", "a descriptor tool names a source the descriptor does not declare", "a declared source", tool.Source, tool.Name)
+		}
+	}
+	// A refresh must keep every attached source resolvable: a new descriptor
+	// that declares an id one of the open sessions attached makes that id
+	// ambiguous, and a post-refresh list is not mandatory, so it would
+	// otherwise go unnoticed until a call resolved to the wrong endpoint.
+	for _, id := range s.sessionIDsInOrder() {
+		track := s.sessions[id]
+		for _, attached := range track.attachedOrder {
+			if _, ok := declared[attached]; ok {
+				s.addExpected(CodeDuplicateToolSource, i, line, e, "/payload/sources", "a refreshed descriptor declares a source an open session already attached", "one source per id", attached, string(id))
+			}
+		}
+	}
+}
+
+// sessionIDsInOrder gives the tracked sessions a stable order, so a descriptor
+// naming two sessions' attachments diagnoses them in one order every run.
+func (s *state) sessionIDsInOrder() []protocol.SessionID {
+	ids := make([]protocol.SessionID, 0, len(s.sessions))
+	for id := range s.sessions {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(a, b int) bool { return ids[a] < ids[b] })
+	return ids
+}
+
+// toolsListRequest retains what one catalog request owes its response. The
+// missing-descriptor and stale-revision branches are diagnosed on the request,
+// as they are for every optional envelope, and nothing is retained for a key
+// whose level could not be read at all.
+func (s *state) toolsListRequest(i, line int, e protocol.Envelope) {
+	var p protocol.ToolsListRequest
+	_ = e.DecodePayload(&p)
+	s.checkScope(i, line, e, p.SessionID, "")
+	session := p.SessionID
+	if session == "" {
+		session = e.SessionID
+	}
+	pending := &pendingList{index: i, line: line, session: session, scoped: session != ""}
+	defer func() { s.pendingLists[e.ID] = pending }()
+	level, judged := s.controlDescriptor(i, line, e, protocol.FeatureToolsList)
+	if !judged {
+		return
+	}
+	switch {
+	case !affirmative(level):
+		pending.expectation = &controlExpectation{
+			rung: rungCapability, key: protocol.FeatureToolsList, pointer: "/payload",
+			code: errorUnsupportedFeature, reason: reasonUnadvertised,
+			detailName: "feature", detailValue: protocol.FeatureToolsList,
+			diagnostic: CodeUnavailableCapability,
+			message:    "a catalog was requested from an endpoint that has not affirmatively advertised one",
+		}
+	case level == protocol.SupportDegraded && !p.AllowsDegraded(protocol.FeatureToolsList):
+		pending.expectation = &controlExpectation{
+			rung: rungDegradation, key: protocol.FeatureToolsList, pointer: "/payload",
+			code: errorCapabilityDegraded, detailName: "feature", detailValue: protocol.FeatureToolsList,
+			diagnostic: CodeDegradedWithoutOptin,
+			message:    "a degraded catalog was requested without the caller's opt-in",
+		}
+	default:
+		pending.honour = true
+	}
+}
+
+// toolsListResponse judges one served catalog: the gate it was owed, the scope
+// it must answer in, and the catalog's own resolvability.
+func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
+	var p protocol.ToolsListResponse
+	_ = e.DecodePayload(&p)
+	s.checkScope(i, line, e, p.SessionID, "")
+	pending := s.pendingLists[e.InReplyTo]
+	if pending != nil && pending.expectation != nil {
+		s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload", pending.expectation.message, "a typed refusal naming "+pending.expectation.key, "a served catalog", string(e.InReplyTo))
+	}
+	if pending != nil && pending.scoped && p.SessionID == pending.session && e.SessionID != pending.session {
+		// A session-scoped catalog must name its session on the envelope as
+		// well as in the payload, or a consumer routing by envelope scope
+		// cannot tie the catalog to the attachment it reflects.
+		s.addExpected(CodeScopeMismatch, i, line, e, "/session_id", "a session-scoped catalog must name its session on the envelope", string(pending.session), string(e.SessionID), string(e.InReplyTo))
+	}
+	s.checkPublishedSources(i, line, e, "/payload/sources")
+	declared, duplicate := toolSourceMap(p.Sources)
+	if duplicate != "" {
+		s.addExpected(CodeDuplicateToolSource, i, line, e, "/payload/sources", "a catalog declares two tool sources with one id", "one source per id", duplicate)
+	}
+	names := make([]string, 0, len(p.Tools))
+	for _, tool := range p.Tools {
+		names = append(names, tool.Name)
+	}
+	if name := duplicateToolName(names); name != "" {
+		s.addExpected(CodeDuplicateToolName, i, line, e, "/payload/tools", "a catalog lists two tools with one name", "one tool per name", name)
+	}
+	for _, tool := range p.Tools {
+		if tool.Source == "" {
+			continue
+		}
+		if _, ok := declared[tool.Source]; !ok {
+			s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/tools", "a listed tool names a source the same response does not declare", "a declared source", tool.Source, tool.Name)
+		}
+	}
+	if p.SessionID == "" {
+		return
+	}
+	track := s.sessions[p.SessionID]
+	if track == nil {
+		track = &sessionTrack{}
+		s.sessions[p.SessionID] = track
+	}
+	// Attachment is for the session's lifetime, so an attached source is
+	// listed with the members it was attached with in every later catalog.
+	// Native entries may differ between lists — a harness refreshes its own
+	// catalog — but the open-time entries never drop out and never change.
+	for _, id := range track.attachedOrder {
+		attached := track.attached[id]
+		listed, ok := declared[id]
+		switch {
+		case !ok:
+			s.addExpected(CodeCatalogMismatch, i, line, e, "/payload/sources", "a session catalog omits a source the open attached", id, "absent", string(p.SessionID))
+		case listed != attached:
+			s.addExpected(CodeCatalogMismatch, i, line, e, "/payload/sources", "a session catalog describes an attached source differently", describeSource(attached), describeSource(listed), string(p.SessionID))
+		}
+	}
+	catalog := &sessionCatalog{revision: s.currentCapability, sources: map[string]bool{}, tools: map[string]string{}}
+	for id := range declared {
+		catalog.sources[id] = true
+	}
+	for _, tool := range p.Tools {
+		catalog.tools[tool.Name] = tool.Source
+	}
+	track.catalog = catalog
+}
+
+// describeSource renders one descriptor for a diagnostic's expected/actual.
+func describeSource(source protocol.ToolSourceDescriptor) string {
+	return fmt.Sprintf("%s kind=%s protocol=%s endpoint=%s display_name=%s", source.ID, source.Kind, source.Protocol, source.Endpoint, source.DisplayName)
+}
+
+// checkPublishedSources refuses an attachment-only member on a published
+// source. The descriptor shape excludes them, so a strict bundle rejects this
+// in the schema phase; the rule exists for the tolerant bundle and for a
+// hand-rolled serializer, where an implementation reflecting the open-time
+// value straight into its catalog would leak a credential and still validate.
+func (s *state) checkPublishedSources(i, line int, e protocol.Envelope, pointer string) {
+	var raw struct {
+		Sources []map[string]json.RawMessage `json:"sources"`
+	}
+	if e.DecodePayload(&raw) != nil {
+		return
+	}
+	for index, source := range raw.Sources {
+		for _, member := range attachmentOnlyMembers {
+			if _, ok := source[member]; ok {
+				s.addExpected(CodeAttachmentFieldInCatalog, i, line, e, fmt.Sprintf("%s/%d/%s", pointer, index, member), "a published tool source carries an attachment-only member", "no command, args, or environment", member)
+			}
+		}
+	}
+}
+
+// sessionOpenRequest retains what an open carrying tool_sources owes its
+// response: the capability it elects, the consent it needed, and every defect
+// the validator can already see in the array.
+func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
+	var p protocol.SessionOpenRequest
+	_ = e.DecodePayload(&p)
+	if len(p.ToolSources) == 0 {
+		return
+	}
+	pending := &pendingOpen{index: i, line: line, attachments: p.ToolSources}
+	defer func() { s.pendingOpens[e.ID] = pending }()
+	level, judged := s.controlDescriptor(i, line, e, protocol.FeatureToolSourcesAttach)
+	if !judged {
+		return
+	}
+	if !affirmative(level) {
+		// The capability rung owns the response: a caller told the capability
+		// is missing has no use for a detail about one of its modes, and a
+		// single error.response cannot carry both `unadvertised` and
+		// `unsatisfiable`. Every rung-3 expectation below is discharged.
+		pending.expectation = &controlExpectation{
+			rung: rungCapability, key: protocol.FeatureToolSourcesAttach, pointer: "/payload/tool_sources",
+			code: errorUnsupportedFeature, reason: reasonUnadvertised,
+			detailName: "feature", detailValue: protocol.FeatureToolSourcesAttach,
+			diagnostic: CodeUnavailableCapability,
+			message:    "an open attaches tool sources to an endpoint that has not affirmatively advertised attachment",
+		}
+		return
+	}
+	if level == protocol.SupportDegraded && !p.AllowsDegraded(protocol.FeatureToolSourcesAttach) {
+		pending.expectation = &controlExpectation{
+			rung: rungDegradation, key: protocol.FeatureToolSourcesAttach, pointer: "/payload/tool_sources",
+			code: errorCapabilityDegraded, detailName: "feature", detailValue: protocol.FeatureToolSourcesAttach,
+			diagnostic: CodeDegradedWithoutOptin,
+			message:    "an open attaches tool sources under a degraded capability without the caller's opt-in",
+		}
+		return
+	}
+	support := s.featureDetail(protocol.FeatureToolSourcesAttach)
+	var defects []*controlExpectation
+	seen := map[string]bool{}
+	for index, attachment := range p.ToolSources {
+		_, declared := s.declaredSources[attachment.ID]
+		if seen[attachment.ID] || declared {
+			defects = append(defects, &controlExpectation{
+				rung: rungUnsatisfiable, key: protocol.FeatureToolSourcesAttach,
+				pointer: fmt.Sprintf("/payload/tool_sources/%d/id", index),
+				code:    errorUnsupportedFeature, reason: reasonUnsatisfiable,
+				detailName: "source", detailValue: attachment.ID,
+				diagnostic: CodeDuplicateToolSource,
+				message:    "an open attaches a source under an id the session's catalog already resolves",
+			})
+		}
+		seen[attachment.ID] = true
+		if attachment.Kind == protocol.ToolSourceRemote && support.Mode != protocol.ModeRemote {
+			// A remote source reaches an endpoint the operator never
+			// configured, so it is gated on its own disclosed mode rather
+			// than on attachment alone.
+			defects = append(defects, &controlExpectation{
+				rung: rungUnsatisfiable, key: protocol.FeatureToolSourcesAttach,
+				pointer: fmt.Sprintf("/payload/tool_sources/%d/kind", index),
+				code:    errorUnsupportedFeature, reason: reasonUnsatisfiable,
+				detailName: "source", detailValue: attachment.ID,
+				diagnostic: CodeUnavailableCapability,
+				message:    "an open attaches a remote source to an endpoint whose attach capability does not disclose the remote mode",
+			})
+		}
+	}
+	sort.SliceStable(defects, func(a, b int) bool { return defects[a].less(defects[b]) })
+	if len(defects) > 0 {
+		pending.expectation = defects[0]
+		return
+	}
+	pending.withinLimits = attachmentWithinLimits(support, p.ToolSources)
+}
+
+// attachmentWithinLimits reports whether an array violates none of the limits
+// the endpoint disclosed. Refusing such an array is the evidence that a
+// constraint exists which the caller was never told about, so the endpoint
+// that discloses nothing is held to accepting every well-formed array.
+func attachmentWithinLimits(support protocol.FeatureSupport, attachments []protocol.ToolSourceAttachment) bool {
+	if max, ok := support.MaxSources(); ok && len(attachments) > max {
+		return false
+	}
+	transports, ok := support.Transports()
+	if !ok {
+		return true
+	}
+	for _, attachment := range attachments {
+		listed := false
+		for _, transport := range transports {
+			if transport == attachment.Kind {
+				listed = true
+			}
+		}
+		if !listed {
+			return false
+		}
+	}
+	return true
+}
+
+// sessionOpenResponse settles the attachment gate and records the session's
+// attached sources, which are session-lifetime facts every later catalog and
+// snapshot is held to.
+func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol.SessionOpenResponse) {
+	s.checkPublishedSources(i, line, e, "/payload/sources")
+	pending := s.pendingOpens[e.InReplyTo]
+	if pending == nil {
+		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
+		return
+	}
+	if pending.expectation != nil {
+		s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload", pending.expectation.message, "a typed refusal naming "+pending.expectation.key, "an admitted open", string(e.InReplyTo))
+		// The admission itself is the defect; recording an attachment the
+		// endpoint should have refused would pile consequences onto one fault.
+		return
+	}
+	track := s.sessions[p.SessionID]
+	if track == nil {
+		track = &sessionTrack{}
+		s.sessions[p.SessionID] = track
+	}
+	if track.attached == nil {
+		track.attached = map[string]protocol.ToolSourceDescriptor{}
+	}
+	for _, attachment := range pending.attachments {
+		if _, ok := track.attached[attachment.ID]; !ok {
+			track.attachedOrder = append(track.attachedOrder, attachment.ID)
+		}
+		track.attached[attachment.ID] = attachment.Descriptor()
+	}
+	s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
+}
+
+// checkPublishedUnion holds a session snapshot's sources to the union of the
+// open's attachments and the descriptor's declared sources, compared by id and
+// by each descriptor's published members. The check runs only for a session
+// whose open attached sources: without an attachment a snapshot can hide
+// nothing the descriptor does not already publish.
+func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session protocol.SessionID, published []protocol.ToolSourceDescriptor) {
+	track := s.sessions[session]
+	if track == nil || len(track.attachedOrder) == 0 {
+		return
+	}
+	expected := map[string]protocol.ToolSourceDescriptor{}
+	for id, source := range s.declaredSources {
+		expected[id] = source
+	}
+	for _, id := range track.attachedOrder {
+		expected[id] = track.attached[id]
+	}
+	reported, _ := toolSourceMap(published)
+	ids := make([]string, 0, len(expected))
+	for id := range expected {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		got, ok := reported[id]
+		switch {
+		case !ok:
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/sources", "session state omits an attached or declared tool source", id, "absent", string(session))
+		case got != expected[id]:
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/sources", "session state describes a tool source differently from the attachment it reflects", describeSource(expected[id]), describeSource(got), string(session))
+		}
+	}
+	for _, source := range published {
+		if _, ok := expected[source.ID]; !ok {
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/sources", "session state reports a tool source that was never attached or declared", "an attached or declared source", source.ID, string(session))
+		}
+	}
+}
+
+// settleToolSourceRefusal judges a correlated error.response against what a
+// catalog request or an attaching open owed. A refusal under a code, feature,
+// reason, or detail that does not tell the caller what to change is the same
+// defect as no refusal at all; and a request the endpoint advertises and the
+// validator finds defect-free, refused anyway, is the endpoint honouring
+// nothing it advertised.
+func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
+	var payload protocol.ErrorResponse
+	_ = e.DecodePayload(&payload)
+	if pending := s.pendingLists[e.InReplyTo]; pending != nil {
+		switch {
+		case pending.expectation != nil:
+			if !refusalConforms(payload.Error, pending.expectation) {
+				s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
+			}
+		case pending.honour:
+			s.addExpected(CodeUnhonouredCapability, i, line, e, "/payload/error", "a catalog request within every disclosed constraint was refused by an endpoint advertising the catalog", "a served catalog", describeRefusal(payload.Error), string(e.InReplyTo))
+		}
+	}
+	if pending := s.pendingOpens[e.InReplyTo]; pending != nil {
+		switch {
+		case pending.expectation != nil:
+			if !refusalConforms(payload.Error, pending.expectation) {
+				s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
+			}
+		case pending.withinLimits:
+			s.addExpected(CodeUndisclosedAttachLimit, i, line, e, "/payload/error", "an attachment carrying no defect and violating no disclosed limit was refused", "an admitted open or a disclosed limit", describeRefusal(payload.Error), string(e.InReplyTo))
+		}
+	}
+}
+
+// checkCallSource judges one call's attribution. A call carrying `source` must
+// name the source the session's catalog records for that tool, or a declared
+// source when the catalog does not list the tool at all; otherwise the call is
+// attributed to the wrong endpoint, which is exactly what `source` exists to
+// prevent a consumer from having to infer from a name.
+func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
+	var p protocol.ActionCallPayload
+	_ = e.DecodePayload(&p)
+	if p.Source == "" {
+		return
+	}
+	track := s.sessions[p.SessionID]
+	if track != nil && track.catalog != nil && track.catalog.revision == s.currentCapability {
+		if listed, ok := track.catalog.tools[p.Name]; ok {
+			if listed != p.Source {
+				s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "a call attributes a tool to a source other than the one the session catalog records", listed, p.Source, p.Name)
+			}
+			return
+		}
+		if track.catalog.sources[p.Source] {
+			return
+		}
+	}
+	if track != nil {
+		if _, ok := track.attached[p.Source]; ok {
+			return
+		}
+	}
+	if _, ok := s.declaredSources[p.Source]; ok {
+		return
+	}
+	s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "a call names a tool source nothing declares", "a declared source", p.Source, p.Name)
+}

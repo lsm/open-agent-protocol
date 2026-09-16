@@ -2,6 +2,7 @@
 package adaptertest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -328,6 +329,78 @@ func cancelExchangeCut(events []protocol.Envelope) int {
 		}
 	}
 	return len(events)
+}
+
+// AssertToolCatalog runs one served catalog through the real validator: the
+// descriptor that advertises the capability, the caller's own request, and the
+// correlated response. It is what proves a catalog resolves — one source per
+// id, one tool per name, every tool's source declared, and every attachment
+// the open made still listed — rather than asserting those rules a second time
+// in each adapter's tests.
+//
+// attached are the sources one session.open attached, spliced in as the open
+// exchange the catalog is judged against; pass none for an endpoint-level
+// catalog or a session that attached nothing.
+func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog protocol.ToolsListResponse) {
+	t.Helper()
+	trace, err := ToolCatalogTrace(descriptor, attached, request, catalog)
+	if err != nil {
+		t.Fatalf("assemble catalog trace: %v", err)
+	}
+	result := validation.MustNew().Validate(bytes.NewReader(trace), "adaptertest-catalog")
+	if !result.Valid() {
+		t.Fatalf("served catalog is not protocol-valid:\n%s\ntrace: %s", FormatDiagnostics(result), trace)
+	}
+}
+
+// ToolCatalogTrace assembles the canonical catalog trace: the capabilities
+// exchange, the open that attached the sources when there was one, and the
+// list exchange.
+func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog protocol.ToolsListResponse) ([]byte, error) {
+	revision := descriptor.CapabilityRevision
+	var trace []protocol.Envelope
+	capabilitiesRequest, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	capabilities, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+	capabilities.InReplyTo, capabilities.CapabilityRevision = capabilitiesRequest.ID, revision
+	trace = append(trace, capabilitiesRequest, capabilities)
+	session := request.SessionID
+	if session == "" {
+		session = catalog.SessionID
+	}
+	if len(attached) > 0 {
+		open, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "open-request", protocol.SessionOpenRequest{SessionID: session, ToolSources: attached})
+		if err != nil {
+			return nil, err
+		}
+		open.SessionID, open.CapabilityRevision = session, revision
+		sources := append([]protocol.ToolSourceDescriptor(nil), descriptor.Capabilities.Sources...)
+		for _, attachment := range attached {
+			sources = append(sources, attachment.Descriptor())
+		}
+		opened, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, "open-response", protocol.SessionOpenResponse{SessionID: session, Status: protocol.SessionIdle, Sources: sources})
+		if err != nil {
+			return nil, err
+		}
+		opened.SessionID, opened.InReplyTo, opened.CapabilityRevision = session, open.ID, revision
+		trace = append(trace, open, opened)
+	}
+	listRequest, err := protocol.NewEnvelope(protocol.TypeActionToolsListRequest, "tools-request", request)
+	if err != nil {
+		return nil, err
+	}
+	listRequest.SessionID, listRequest.CapabilityRevision = session, revision
+	listResponse, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, "tools-response", catalog)
+	if err != nil {
+		return nil, err
+	}
+	listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = catalog.SessionID, listRequest.ID, revision
+	return json.Marshal(append(trace, listRequest, listResponse))
 }
 
 func AssertTypes(t testing.TB, envelopes []protocol.Envelope, want ...protocol.EnvelopeType) {

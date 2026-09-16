@@ -48,6 +48,47 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	return admission, nil
 }
 
+// ToolsOption configures one catalog request.
+type ToolsOption func(*protocol.ToolsListRequest)
+
+// AllowDegraded opts into the degraded application of the named capability
+// keys for this catalog request. It is sent only when given, so an unmodified
+// call is byte-identical to one made before the option existed.
+func AllowDegraded(keys ...string) ToolsOption {
+	return func(request *protocol.ToolsListRequest) {
+		request.AllowDegradedFeatures = append(request.AllowDegradedFeatures, keys...)
+	}
+}
+
+// Tools reads this session's effective tool catalog: its tools, each
+// attributed to a source id, and every source the session resolves. An
+// endpoint that serves no portable catalog answers the typed
+// unsupported_feature refusal naming action.tools.list, which surfaces as a
+// *ServerError whose Details say which capability to stop requesting.
+func (s *Session) Tools(ctx context.Context, options ...ToolsOption) (protocol.ToolsListResponse, error) {
+	var catalog protocol.ToolsListResponse
+	request := protocol.ToolsListRequest{SessionID: s.id}
+	for _, option := range options {
+		option(&request)
+	}
+	path := s.path("/tools")
+	if len(request.AllowDegradedFeatures) > 0 {
+		query := url.Values{}
+		for _, key := range request.AllowDegradedFeatures {
+			query.Add("allow_degraded", key)
+		}
+		path += "?" + query.Encode()
+	}
+	response, err := s.client.exchange(ctx, http.MethodGet, path, nil, protocol.TypeActionToolsListResponse)
+	if err != nil {
+		return catalog, err
+	}
+	if err := response.DecodePayload(&catalog); err != nil {
+		return catalog, err
+	}
+	return catalog, nil
+}
+
 // ResolvePermission resolves one pending permission gate. InteractionID,
 // RunID, and RequestedBy must echo the action.permission.requested payload;
 // an empty SessionID or RespondedBy is filled from the session.

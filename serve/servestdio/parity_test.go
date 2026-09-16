@@ -130,6 +130,89 @@ func normalizedCreatedAt(t *testing.T, body string) string {
 	return createdAtField.ReplaceAllString(body, `"created_at":"<normalized>"`)
 }
 
+// TestToolsOpMatchesHTTP holds the catalog op to the HTTP route it mirrors:
+// over equal hubs the two answer the same catalog, and both refuse a session
+// nobody opened under the same code. The envelope ids differ because each
+// frontend mints its own, so the comparison is of the payload — which is what
+// the op's claim to be the route's body verbatim actually means.
+func TestToolsOpMatchesHTTP(t *testing.T) {
+	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
+	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
+		openSession(t, hub, "parity-tools")
+	}
+	server, err := servehttp.New(httpHub, servehttp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpFrontend := httptest.NewServer(server.Handler())
+	defer httpFrontend.Close()
+	f := startFrontend(t, stdioHub, Options{})
+
+	httpResponse, err := http.Get(httpFrontend.URL + "/sessions/parity-tools/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpResponse.Body.Close()
+	httpBody, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpResponse.StatusCode != http.StatusOK {
+		t.Fatalf("GET tools: %s: %s", httpResponse.Status, httpBody)
+	}
+	var overHTTP struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(httpBody, &overHTTP); err != nil {
+		t.Fatal(err)
+	}
+
+	f.send(`{"id":1,"op":"tools","session_id":"parity-tools"}`)
+	response := f.expectResponse(1)
+	requireOK(t, response)
+	var overStdio struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(response.Result, &overStdio); err != nil {
+		t.Fatal(err)
+	}
+	if overStdio.Type != overHTTP.Type {
+		t.Fatalf("stdio answered %s, HTTP answered %s", overStdio.Type, overHTTP.Type)
+	}
+	if !bytes.Equal(overStdio.Payload, overHTTP.Payload) {
+		t.Fatalf("catalog payloads differ\nstdio: %s\nhttp:  %s", overStdio.Payload, overHTTP.Payload)
+	}
+
+	// The unknown-session refusal is the same on both, so a caller that
+	// branches on the code cannot need a per-transport table.
+	unknown, err := http.Get(httpFrontend.URL + "/sessions/nobody/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unknown.Body.Close()
+	unknownBody, err := io.ReadAll(unknown.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var httpFailure struct {
+		Payload struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(unknownBody, &httpFailure); err != nil {
+		t.Fatal(err)
+	}
+	f.send(`{"id":2,"op":"tools","session_id":"nobody"}`)
+	requireCode(t, f.expectResponse(2), httpFailure.Payload.Error.Code)
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 // TestRequestBudgetMatchesHTTP carries one schema-valid run-cancel envelope
 // — padded to a chosen size — across both transports: the envelope, not the
 // line, is the budgeted unit (servehttp reads it as the body limit, the op

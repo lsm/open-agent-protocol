@@ -18,12 +18,35 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/makai"
 	"github.com/lsm/open-agent-protocol/adapter/opencode"
 	"github.com/lsm/open-agent-protocol/adapter/pi"
+	"github.com/lsm/open-agent-protocol/protocol"
 )
 
 // configFile is the oap serve registry document: named adapter entries, each
 // mapping onto one in-repo adapter configuration.
 type configFile struct {
 	Adapters map[string]adapterEntry `json:"adapters"`
+	// ToolSources are the process tool sources a wire caller may attach at
+	// session open, by id only. The daemon fills the command, the arguments,
+	// and the environment from here: "loopback, single-user" describes the
+	// transport, not the origin of a request on it, and a page in the user's
+	// browser can issue a cross-origin POST to 127.0.0.1 that the Host
+	// allowlist admits. An executable the operator never configured is not
+	// something the daemon should run under any boundary check.
+	ToolSources map[string]toolSourceEntry `json:"tool_sources"`
+}
+
+// toolSourceEntry is one operator-configured tool source. Environment takes
+// the adapter registry's allowlist form: a bare NAME forwards the daemon's own
+// value, NAME=value passes literally. Resolution happens at load, so a bare
+// name the operator did not export fails at hub start rather than at open.
+type toolSourceEntry struct {
+	Kind        string   `json:"kind"`
+	DisplayName string   `json:"display_name"`
+	Protocol    string   `json:"protocol"`
+	Endpoint    string   `json:"endpoint"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args"`
+	Environment []string `json:"environment"`
 }
 
 // adapterEntry carries the fields the registry can express for the in-repo
@@ -57,13 +80,47 @@ type adapterEntry struct {
 }
 
 // Registry maps adapter names to implementations. It is immutable once built.
+// It also holds the operator-configured tool sources a wire caller may attach
+// at session open by id.
 type Registry struct {
-	adapters map[string]base.Adapter
+	adapters    map[string]base.Adapter
+	toolSources map[string]protocol.ToolSourceAttachment
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{adapters: make(map[string]base.Adapter)}
+	return &Registry{adapters: make(map[string]base.Adapter), toolSources: make(map[string]protocol.ToolSourceAttachment)}
+}
+
+// RegisterToolSource adds one operator-configured tool source. Programmatic
+// entries use the same surface as config-file entries; an embedding host that
+// registers none accepts no wire-supplied process attachment at all.
+func (r *Registry) RegisterToolSource(id string, source protocol.ToolSourceAttachment) error {
+	if id == "" {
+		return errors.New("serve: tool source id is required")
+	}
+	if _, exists := r.toolSources[id]; exists {
+		return fmt.Errorf("serve: tool source %q is already registered", id)
+	}
+	source.ID = id
+	r.toolSources[id] = source
+	return nil
+}
+
+// ToolSource returns the operator-configured attachment registered under id.
+func (r *Registry) ToolSource(id string) (protocol.ToolSourceAttachment, bool) {
+	source, ok := r.toolSources[id]
+	return source, ok
+}
+
+// ToolSourceNames returns the configured tool source ids in stable order.
+func (r *Registry) ToolSourceNames() []string {
+	names := make([]string, 0, len(r.toolSources))
+	for name := range r.toolSources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // DefaultRegistry returns the built-in registry used when no config file is
@@ -133,6 +190,23 @@ func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, 
 			return nil, err
 		}
 		if err := registry.Register(name, implementation); err != nil {
+			return nil, err
+		}
+	}
+	for _, id := range sortedKeys(file.ToolSources) {
+		entry := file.ToolSources[id]
+		if entry.Kind == "" {
+			return nil, fmt.Errorf("serve: tool source %q: kind is required", id)
+		}
+		environment, err := resolveEnvironment(entry.Environment, environ)
+		if err != nil {
+			return nil, fmt.Errorf("serve: tool source %q: %w", id, err)
+		}
+		source := protocol.ToolSourceAttachment{
+			ID: id, Kind: entry.Kind, DisplayName: entry.DisplayName, Protocol: entry.Protocol,
+			Endpoint: entry.Endpoint, Command: entry.Command, Args: entry.Args, Environment: environment,
+		}
+		if err := registry.RegisterToolSource(id, source); err != nil {
 			return nil, err
 		}
 	}

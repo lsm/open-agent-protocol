@@ -85,7 +85,7 @@ test(
     const adapters = await client.adapters();
     assert.ok(adapters.some((adapter) => adapter.name === 'memory'));
     const caps = await client.capabilities('memory');
-    assert.equal(caps.revision, 'reference-memory-v2');
+    assert.equal(caps.revision, 'reference-memory-v3');
     assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
 
     // An unknown adapter is a coded refusal.
@@ -95,7 +95,34 @@ test(
     // cannot be missed. The submission carries a per-submit run control: the
     // admitted model is echoed on the admission and on run.started, and the
     // session default does not move, because the application is per_run.
-    const session = await client.open('memory', { sessionId: 'ts-integration-a' });
+    const session = await client.open('memory', {
+      sessionId: 'ts-integration-a',
+      // A process source is named by id only: the daemon fills the command
+      // and the environment from its own registry, so a wire caller cannot
+      // make it run an executable the operator never configured.
+      toolSources: [{ id: 'ts-integration-mcp', kind: 'local', protocol: 'mcp', endpoint: 'stdio:ts-integration' }],
+    });
+
+    // The session's effective catalog: the scripted tool attributed to a
+    // source id, beside every source the session resolves — the descriptor's
+    // declared ones and the one the open attached.
+    const catalog = await session.tools();
+    assert.equal(catalog.session_id, 'ts-integration-a');
+    const attached = catalog.sources?.find((source) => source.id === 'ts-integration-mcp');
+    assert.ok(attached, `attached source missing from ${JSON.stringify(catalog.sources)}`);
+    assert.equal(attached.kind, 'local');
+    const scripted = catalog.tools.find((tool) => tool.name === 'scripted_tool');
+    assert.ok(scripted, 'scripted_tool missing from the catalog');
+    assert.ok(
+      catalog.sources?.some((source) => source.id === scripted.source),
+      `tool source ${String(scripted.source)} resolves to no declared source`,
+    );
+
+    // The open's attachments are published back through session state too,
+    // in the descriptor shape: no command, no args, no environment.
+    const opened = await session.state();
+    assert.ok(opened.sources?.some((source) => source.id === 'ts-integration-mcp'));
+
     const events = session.events();
     await events.ready;
     const admission = await session.submit({

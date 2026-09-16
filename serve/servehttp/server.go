@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"slices"
@@ -85,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /sessions", s.handleSessions)
 	mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	mux.HandleFunc("GET /sessions/{id}/state", s.handleState)
+	mux.HandleFunc("GET /sessions/{id}/tools", s.handleTools)
 	mux.HandleFunc("POST /sessions/{id}/submit", s.handleSubmit)
 	mux.HandleFunc("POST /sessions/{id}/resolve", s.handleResolve)
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
@@ -206,7 +208,15 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "unknown_adapter", fmt.Sprintf("no adapter %q", name), envelope)
 		return
 	}
-	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}}
+	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures}
+	attachments, refusal := s.resolveAttachments(request.ToolSources)
+	if refusal != nil {
+		s.writeErrorDetails(w, http.StatusBadRequest, "unsupported_feature", refusal.Error(), map[string]any{
+			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": refusal.Source,
+		}, envelope)
+		return
+	}
+	open.ToolSources = attachments
 	if request.Metadata != nil {
 		open.Metadata = make(map[string]any, len(request.Metadata))
 		for key, raw := range request.Metadata {
@@ -235,7 +245,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	// request context, a flaky adapter probe) and report a successful open
 	// as 502 while the session stays live in the hub.
 	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), protocol.SessionOpenResponse{
-		SessionID: state.SessionID, Status: state.Status,
+		SessionID: state.SessionID, Status: state.Status, Sources: state.Sources,
 	})
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
@@ -286,7 +296,17 @@ func (s *Server) writeSubmitError(w http.ResponseWriter, err error, envelope pro
 		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
 		return
 	}
-	status, code := http.StatusInternalServerError, "internal"
+	s.writeControlError(w, err, http.StatusInternalServerError, "internal", envelope)
+}
+
+// writeControlError writes one failure that is not a typed control refusal,
+// under the fallback status and code the caller names.
+func (s *Server) writeControlError(w http.ResponseWriter, err error, fallbackStatus int, fallbackCode string, envelope protocol.Envelope) {
+	if code, message, details, ok := serve.ControlRefusal(err); ok {
+		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
+		return
+	}
+	status, code := fallbackStatus, fallbackCode
 	switch {
 	case errors.Is(err, serve.ErrScopeMismatch):
 		status, code = http.StatusBadRequest, "scope_mismatch"
@@ -440,6 +460,49 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, response)
 }
 
+// handleTools serves one session's effective tool catalog. The degraded
+// opt-in rides a repeatable `?allow_degraded=<key>` query parameter, mapped
+// onto the payload before the daemon mints the request, so a caller can
+// consent to a degraded catalog over a GET.
+func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
+	entry, ok := s.lookupSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	request := protocol.ToolsListRequest{SessionID: entry.ID(), AllowDegradedFeatures: r.URL.Query()["allow_degraded"]}
+	catalog, err := entry.Tools(r.Context(), request)
+	if err != nil {
+		s.writeToolsError(w, err, protocol.Envelope{SessionID: entry.ID()})
+		return
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, s.nextID("response"), catalog)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), protocol.Envelope{SessionID: entry.ID()})
+		return
+	}
+	response.InReplyTo = s.nextID("request")
+	response.SessionID = entry.ID()
+	writeEnvelope(w, http.StatusOK, response)
+}
+
+// writeToolsError maps a catalog failure onto the typed refusal the wire
+// requires. An endpoint that serves no portable catalog must say which
+// capability to stop requesting, not merely that something failed.
+func (s *Server) writeToolsError(w http.ResponseWriter, err error, request protocol.Envelope) {
+	switch {
+	case errors.Is(err, base.ErrToolCatalogUnavailable):
+		s.writeErrorDetails(w, http.StatusBadRequest, "unsupported_feature", adapterMessage(err), map[string]any{
+			"feature": protocol.FeatureToolsList, "reason": base.ControlUnadvertised,
+		}, request)
+	case errors.Is(err, base.ErrSessionClosed):
+		s.writeError(w, http.StatusConflict, "session_closed", adapterMessage(err), request)
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		s.writeError(w, http.StatusBadRequest, "request_cancelled", adapterMessage(err), request)
+	default:
+		s.writeControlError(w, err, http.StatusBadGateway, "tools_failed", request)
+	}
+}
+
 func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
 	entry, ok := s.lookupSession(w, r.PathValue("id"))
 	if !ok {
@@ -534,10 +597,94 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 // --- request gate and response helpers ---
 
+// attachmentRefusal names the one tool source an open may not attach over the
+// client-facing wire, and why.
+type attachmentRefusal struct {
+	Source string
+	Reason string
+}
+
+func (e *attachmentRefusal) Error() string {
+	return fmt.Sprintf("tool source %q: %s", e.Source, e.Reason)
+}
+
+// resolveAttachments applies the daemon's credential rule to one open's
+// attachment array.
+//
+// "Loopback, single-user" describes the transport, not the origin of a request
+// on it: the daemon admits any request whose Host names an allowlisted
+// hostname, so a page in the user's browser can reach it. With command and
+// args accepted from the wire, such a request would execute a process as the
+// daemon's user. A process attachment therefore names an
+// operator-configured source by id only, and the daemon fills the command, the
+// arguments, and the environment from its own registry entry; a
+// wire-supplied command, args, or literal NAME=value environment is refused
+// before the open is forwarded. The bare-NAME allowlist form is the only
+// environment a wire caller may write, because the literal form is not the
+// caller's own secret when the caller may be a webpage.
+//
+// This is a binding rule, not a protocol rule: command, args, and a literal
+// environment stay legal exactly where the sender is the daemon itself or an
+// in-process embedding of serve.Hub, which has no network boundary to cross.
+func (s *Server) resolveAttachments(attachments []protocol.ToolSourceAttachment) ([]protocol.ToolSourceAttachment, *attachmentRefusal) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	resolved := make([]protocol.ToolSourceAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		switch {
+		case attachment.Command != "" || len(attachment.Args) > 0:
+			return nil, &attachmentRefusal{Source: attachment.ID, Reason: "the daemon does not accept a command or arguments from the wire; name an operator-configured source by id"}
+		case hasLiteralEnvironment(attachment.Environment):
+			return nil, &attachmentRefusal{Source: attachment.ID, Reason: "the daemon accepts only the bare NAME allowlist form in environment"}
+		}
+		if attachment.Kind != protocol.ToolSourceProcess {
+			resolved = append(resolved, attachment)
+			continue
+		}
+		configured, ok := s.hub.Registry().ToolSource(attachment.ID)
+		if !ok {
+			return nil, &attachmentRefusal{Source: attachment.ID, Reason: "no tool source of that id is configured on this daemon"}
+		}
+		// The registry entry is authoritative for everything the operator
+		// configured; the caller's own descriptor members are not allowed to
+		// redirect an allowlisted executable's endpoint.
+		configured.Environment = append(append([]string(nil), configured.Environment...), attachment.Environment...)
+		resolved = append(resolved, configured)
+	}
+	return resolved, nil
+}
+
+// hasLiteralEnvironment reports whether any entry carries a literal value
+// rather than the bare allowlist name.
+func hasLiteralEnvironment(environment []string) bool {
+	for _, entry := range environment {
+		if strings.Contains(entry, "=") {
+			return true
+		}
+	}
+	return false
+}
+
 // readRequest parses one request envelope, validates it against the bundled
 // OAP envelope schema, and checks its type against the endpoint. Every
 // rejection is written as a correlated error.response.
+//
+// It also carries the origin boundary a loopback daemon should have: the Host
+// allowlist admits a simple cross-origin POST from a page in the user's
+// browser, so the daemon requires a JSON content type and refuses any request
+// bearing an Origin header, which turns that simple request into a preflight
+// the daemon never answers. The boundary is defence in depth beside the
+// registry allowlist above, not instead of it.
 func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...protocol.EnvelopeType) (protocol.Envelope, bool) {
+	if _, ok := r.Header["Origin"]; ok {
+		s.writeError(w, http.StatusForbidden, "cross_origin_request", "the daemon does not serve cross-origin requests", protocol.Envelope{})
+		return protocol.Envelope{}, false
+	}
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "the daemon requires Content-Type: application/json", protocol.Envelope{})
+		return protocol.Envelope{}, false
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError

@@ -52,12 +52,55 @@ const (
 // endpoint-specific limits a caller and a validator must be able to check —
 // ConstraintFixedResult for run.structured_output, the exact object every
 // run.completed under an accepted output_schema will carry.
+// Limits is the machine-readable bound disclosure: the constraints that make a
+// refusal of an otherwise defect-free request conforming. An endpoint
+// advertising a key and refusing everything it is given would honour nothing,
+// so refusing a request that violates none of the declared limits is a
+// diagnostic (undisclosed_attach_limit for action.tool_sources.attach).
 type FeatureSupport struct {
 	Level       SupportLevel               `json:"level"`
 	Reason      string                     `json:"reason,omitempty"`
 	Mode        string                     `json:"mode,omitempty"`
 	Modes       []string                   `json:"modes,omitempty"`
 	Constraints map[string]json.RawMessage `json:"constraints,omitempty"`
+	Limits      map[string]json.RawMessage `json:"limits,omitempty"`
+}
+
+// LimitMaxSources and LimitTransports are the limits
+// `action.tool_sources.attach` discloses: how many sources one open may
+// attach, and which `kind` values the endpoint accepts. A refusal of an array
+// that violates neither is undisclosed_attach_limit.
+const (
+	LimitMaxSources = "max_sources"
+	LimitTransports = "transports"
+)
+
+// MaxSources reports the disclosed attachment ceiling, and false when the
+// endpoint declared none.
+func (f FeatureSupport) MaxSources() (int, bool) {
+	raw, ok := f.Limits[LimitMaxSources]
+	if !ok {
+		return 0, false
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+// Transports reports the disclosed set of accepted source kinds, and false
+// when the endpoint declared none.
+func (f FeatureSupport) Transports() ([]string, bool) {
+	raw, ok := f.Limits[LimitTransports]
+	if !ok {
+		return nil, false
+	}
+	var value []string
+	if err := json.Unmarshal(raw, &value); err != nil || len(value) == 0 {
+		return nil, false
+	}
+	return value, true
 }
 
 // Capability keys for the per-submit run controls. A control the endpoint has
@@ -69,6 +112,29 @@ const (
 	FeatureInstructions     = "run.instructions"
 	FeatureToolSelection    = "run.tool_selection"
 	FeatureStructuredOutput = "run.structured_output"
+)
+
+// Capability keys for the tool-sources unit.
+//
+// FeatureToolsList governs the catalog exchange. It is deliberately not
+// aliased to the `action.tools` family key: that key means lifecycle
+// observation, and several adapters advertise it while exposing no portable
+// catalog at all, so aliasing would let a served catalog pass a gate the
+// endpoint never claimed.
+//
+// FeatureToolSourcesAttach governs attaching tool sources at session open. Its
+// Mode discloses ModeSessionOpen, and ModeRemote additionally says the
+// endpoint accepts a `remote` source.
+const (
+	FeatureToolsList         = "action.tools.list"
+	FeatureToolSourcesAttach = "action.tool_sources.attach"
+)
+
+// Application modes FeatureSupport.Mode discloses for
+// action.tool_sources.attach.
+const (
+	ModeSessionOpen = "session_open"
+	ModeRemote      = "remote"
 )
 
 // Application modes FeatureSupport.Mode discloses for run.model_selection.
@@ -95,6 +161,7 @@ type CapabilityLayer struct {
 	RequestedDeliveryModes []RequestedDeliveryMode   `json:"requested_delivery_modes,omitempty"`
 	EffectiveDeliveryModes []EffectiveDeliveryMode   `json:"effective_delivery_modes,omitempty"`
 	Tools                  []ToolDefinition          `json:"tools,omitempty"`
+	Sources                []ToolSourceDescriptor    `json:"sources,omitempty"`
 }
 
 type CapabilityDescriptor struct {
@@ -105,6 +172,7 @@ type CapabilityDescriptor struct {
 	Features         map[string]FeatureSupport  `json:"features,omitempty"`
 	Layers           map[string]CapabilityLayer `json:"layers,omitempty"`
 	Tools            []ToolDefinition           `json:"tools,omitempty"`
+	Sources          []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Degradation      []Degradation              `json:"degradation,omitempty"`
 }
 
@@ -141,16 +209,65 @@ const (
 	SessionError           SessionStatus = "error"
 )
 
-type SessionOpenRequest struct {
-	SessionID SessionID                  `json:"session_id,omitempty"`
-	Metadata  map[string]json.RawMessage `json:"metadata,omitempty"`
-	Recovery  *RecoveryMetadata          `json:"recovery,omitempty"`
+// ToolSourceAttachment is the open-time shape of one tool source: the
+// descriptor's published members plus, for a `process` source, the
+// attachment-only Command, Args, and Environment. Environment takes the
+// registry's allowlist form — a bare `NAME` forwards the endpoint's own value,
+// `NAME=value` passes literally — so a wire caller cannot read an ambient
+// credential the operator never exposed.
+//
+// It is a shape of its own rather than the catalog's ToolSourceDescriptor
+// because Environment can hold a literal credential: with one schema for both,
+// an implementation that reflected the open-time value straight into its
+// catalog would leak the secret and still validate.
+type ToolSourceAttachment struct {
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	DisplayName string   `json:"display_name,omitempty"`
+	Protocol    string   `json:"protocol,omitempty"`
+	Endpoint    string   `json:"endpoint,omitempty"`
+	Command     string   `json:"command,omitempty"`
+	Args        []string `json:"args,omitempty"`
+	Environment []string `json:"environment,omitempty"`
 }
 
+// Descriptor is the sanitized projection an attachment publishes: exactly the
+// members a catalog or a session snapshot may carry, and none of the
+// attachment-only ones.
+func (a ToolSourceAttachment) Descriptor() ToolSourceDescriptor {
+	return ToolSourceDescriptor{ID: a.ID, Kind: a.Kind, DisplayName: a.DisplayName, Protocol: a.Protocol, Endpoint: a.Endpoint}
+}
+
+type SessionOpenRequest struct {
+	SessionID             SessionID                  `json:"session_id,omitempty"`
+	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+	ToolSources           []ToolSourceAttachment     `json:"tool_sources,omitempty"`
+	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
+	Recovery              *RecoveryMetadata          `json:"recovery,omitempty"`
+}
+
+// AllowsDegraded reports whether the open opted into the degraded application
+// of one capability key.
+func (r SessionOpenRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+// SessionOpenResponse is a separate struct from SessionState even though the
+// schema aliases the two payload shapes, so every member the open must report
+// is added to both. Sources is the union of the open's attachments and the
+// descriptor's declared sources, in the descriptor shape: the sanitized
+// projection is the point, so command, args, and environment cannot reach a
+// client through state any more than through a catalog.
 type SessionOpenResponse struct {
 	SessionID SessionID                  `json:"session_id"`
 	Status    SessionStatus              `json:"status"`
 	Metadata  map[string]json.RawMessage `json:"metadata,omitempty"`
+	Sources   []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Recovery  *RecoveryMetadata          `json:"recovery,omitempty"`
 }
 
@@ -166,6 +283,7 @@ type SessionState struct {
 	TranscriptCursor string                     `json:"transcript_cursor,omitempty"`
 	UpdatedAtMS      int64                      `json:"updated_at_ms,omitempty"`
 	Metadata         map[string]json.RawMessage `json:"metadata,omitempty"`
+	Sources          []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Recovery         *RecoveryMetadata          `json:"recovery,omitempty"`
 }
 

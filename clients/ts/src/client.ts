@@ -23,6 +23,7 @@ import {
   type Envelope,
   type ErrorResponse,
   type SessionOpenRequest,
+  type ToolSourceAttachment,
 } from './protocol.js';
 
 /**
@@ -164,8 +165,24 @@ export class OapClient {
    * empty sessionId lets the adapter mint one; the returned session reports
    * whatever id the daemon confirmed.
    */
-  async open(adapter: string, options: { sessionId?: string; participant?: string } = {}): Promise<OapSession> {
+  async open(
+    adapter: string,
+    options: {
+      sessionId?: string;
+      participant?: string;
+      /** The tool sources the session resolves for its lifetime. Over the daemon a `process` source names an operator-configured id only. */
+      toolSources?: ToolSourceAttachment[];
+      /** Consent to the degraded application of the capabilities the open elects. */
+      allowDegradedFeatures?: string[];
+    } = {},
+  ): Promise<OapSession> {
+    // Every elective member is sent only when given, so an unmodified call is
+    // byte-identical to one made before they existed.
     const requestPayload: SessionOpenRequest = options.sessionId ? { session_id: options.sessionId } : {};
+    if (options.toolSources?.length) requestPayload.tool_sources = options.toolSources;
+    if (options.allowDegradedFeatures?.length) {
+      requestPayload.allow_degraded_features = options.allowDegradedFeatures;
+    }
     const request = this.envelope(EnvelopeType.SessionOpenRequest, requestPayload);
     if (options.sessionId) request.session_id = options.sessionId;
     const envelope = await this.exchange(
