@@ -58,6 +58,9 @@ type unjudgedModel struct {
 // nothing says nothing, so the ordinary window rule stands there, and without
 // this the held claim would never be settled under any rule.
 type heldCatalog struct {
+	// session is the catalog's own session, kept because the position's run
+	// may not be known yet: whether it belongs here is decided when it appears.
+	session  protocol.SessionID
 	model    string
 	position protocol.ModelEventPosition
 	window   int
@@ -259,17 +262,23 @@ func (s *state) checkCatalogCurrentModel(i, line int, e protocol.Envelope, p pro
 		return
 	}
 	if position := p.AsOfModelEvent; position != nil {
+		if known, owned := s.positionOwner(p.SessionID, *position); known && !owned {
+			s.foreignPosition(i, line, e, p.SessionID, *position)
+			return
+		}
 		if mark, ok := st.markAt(*position); ok {
 			if mark != p.CurrentModelID {
 				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/current_model_id", "catalog reports a model the session did not hold at the event it names", mark, p.CurrentModelID, string(position.RunID))
 			}
 			return
 		}
-		if !s.positionReached(*position) {
+		if !s.positionReached(p.SessionID, *position) {
 			// An endpoint reporting a position the trace has not reached is
 			// ahead of it, not wrong: the claim is reconciled when the event
 			// arrives, whether or not that event turns out to carry a model.
-			held := heldCatalog{model: p.CurrentModelID, position: *position, index: i, line: line, envelope: e}
+			// A run the trace has not seen at all is held on the same terms,
+			// and its ownership is judged when it appears.
+			held := heldCatalog{session: p.SessionID, model: p.CurrentModelID, position: *position, index: i, line: line, envelope: e}
 			if query := s.pendingModels[e.InReplyTo]; query != nil {
 				held.window = query.window
 			}
@@ -319,11 +328,55 @@ func (t *sessionTrack) modelWindow(query *pendingModelsQuery) []string {
 	return window
 }
 
-// positionReached reports whether the trace has already carried the run-scoped
-// event a catalog names.
-func (s *state) positionReached(position protocol.ModelEventPosition) bool {
+// positionOwner reports what the trace knows about the run a catalog's
+// position names: whether the run has been seen at all, and whether it belongs
+// to the session whose catalog named it.
+//
+// A position is a claim about one session's model, so it can only be made
+// about that session's own runs. The run map is the endpoint's, not the
+// session's, so the owner is compared here rather than assumed: without it a
+// catalog for one session could name a run in another and be judged — or, if
+// that run were still ahead, never judged at all, because the held claim is
+// revisited through the run's own session.
+func (s *state) positionOwner(session protocol.SessionID, position protocol.ModelEventPosition) (known, owned bool) {
 	r := s.runs[position.RunID]
-	return r != nil && r.next > position.Sequence
+	if r == nil {
+		return false, false
+	}
+	return true, r.session == session
+}
+
+// positionReached reports whether this session's trace has already carried the
+// run-scoped event a catalog names. A run belonging to another session is
+// never reached here, whatever its own cursor says.
+func (s *state) positionReached(session protocol.SessionID, position protocol.ModelEventPosition) bool {
+	r := s.runs[position.RunID]
+	return r != nil && r.session == session && r.next > position.Sequence
+}
+
+// foreignPosition diagnoses a catalog naming a model event in another
+// session's run. It is a scope defect, and the claim it carries is not this
+// session's to judge, so nothing further is read from it.
+func (s *state) foreignPosition(i, line int, e protocol.Envelope, session protocol.SessionID, position protocol.ModelEventPosition) {
+	owner := session
+	if r := s.runs[position.RunID]; r != nil {
+		owner = r.session
+	}
+	s.addExpected(CodeScopeMismatch, i, line, e, "/payload/as_of_model_event/run_id", "catalog names a model event in a run owned by another session", string(session), string(owner), string(position.RunID))
+}
+
+// reconcileEveryHeldCatalog settles held claims across every session, not only
+// the one whose run moved. A catalog names a run before the trace knows whose
+// it is, so the session that holds the claim and the session the run lands in
+// need not be the same: settling only the run's own session would leave a
+// claim on another session's catalog waiting for an event that will never
+// reach it.
+func (s *state) reconcileEveryHeldCatalog() {
+	for _, st := range s.sessions {
+		if len(st.heldCatalogs) > 0 {
+			s.reconcileHeldCatalogs(st)
+		}
+	}
 }
 
 // reconcileHeldCatalogs settles the catalogs that named a model event the
@@ -341,13 +394,20 @@ func (s *state) positionReached(position protocol.ModelEventPosition) bool {
 func (s *state) reconcileHeldCatalogs(st *sessionTrack) {
 	remaining := st.heldCatalogs[:0]
 	for _, held := range st.heldCatalogs {
+		if known, owned := s.positionOwner(held.session, held.position); known && !owned {
+			// The run the claim named has appeared and belongs to another
+			// session, which is decided here because it could not be decided
+			// when the catalog arrived.
+			s.foreignPosition(held.index, held.line, held.envelope, held.session, held.position)
+			continue
+		}
 		if mark, ok := st.markAt(held.position); ok {
 			if mark != held.model {
 				s.addExpected(CodeSessionStateMismatch, held.index, held.line, held.envelope, "/payload/current_model_id", "catalog reports a model the session did not hold at the event it names", mark, held.model, string(held.position.RunID))
 			}
 			continue
 		}
-		if !s.positionReached(held.position) {
+		if !s.positionReached(held.session, held.position) {
 			remaining = append(remaining, held)
 			continue
 		}

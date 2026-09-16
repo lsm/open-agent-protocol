@@ -788,15 +788,13 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	r.lastLine = line
 	// A catalog held against a position in this run may become settleable
 	// here: this event moves the run's cursor, and may itself record the model
-	// the catalog named. It is settled after the event is fully interpreted,
-	// so a model this event records is in evidence, and it is settled for
-	// every event rather than only for the ones that record a model, because
-	// an event that moves no model still settles the claim that rested on it.
-	defer func() {
-		if st := s.sessions[r.session]; st != nil && len(st.heldCatalogs) > 0 {
-			s.reconcileHeldCatalogs(st)
-		}
-	}()
+	// the catalog named, or simply reveal whose run it is. It is settled after
+	// the event is fully interpreted, so a model this event records is in
+	// evidence; for every event rather than only the ones that record a model,
+	// because an event that moves no model still settles the claim that rested
+	// on it; and across every session, because the session holding the claim
+	// need not be the one this run belongs to.
+	defer s.reconcileEveryHeldCatalog()
 	if rec := s.recoveries[r.session]; rec != nil && !rec.gap && !rec.firstReplaySeen && e.RunID == rec.run {
 		rec.firstReplaySeen = true
 		if rec.cursorSet && (e.Sequence == nil || *e.Sequence != rec.cursor+1) {
