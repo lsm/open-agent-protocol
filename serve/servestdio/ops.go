@@ -52,7 +52,7 @@ type wireError struct {
 }
 
 // serveRequest executes one op and writes its response.
-func (s *Server) serveRequest(ctx context.Context, request requestLine, lines chan<- []byte) {
+func (s *Server) serveRequest(ctx context.Context, request requestLine, lines chan<- outLine) {
 	result, werr := s.dispatch(ctx, request)
 	s.respond(ctx, lines, request, result, werr)
 }
@@ -61,7 +61,7 @@ func (s *Server) serveRequest(ctx context.Context, request requestLine, lines ch
 // encoding exceeds the frame limit is replaced by the bounded
 // response_too_large refusal, so an oversized result still gets a
 // correlated, framable answer.
-func (s *Server) respond(ctx context.Context, lines chan<- []byte, request requestLine, result json.RawMessage, werr *wireError) {
+func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requestLine, result json.RawMessage, werr *wireError) {
 	response := responseLine{ID: *request.ID, OK: werr == nil, Result: result}
 	if werr != nil {
 		response.Result = json.RawMessage("null")
