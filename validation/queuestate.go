@@ -209,6 +209,18 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs lists a run that had already settled before the read was requested", "a nonterminal run", string(entry.RunID), string(entry.RunID))
 			continue
 		}
+		if r.terminal && entry.AsOfSequence != nil && *entry.AsOfSequence >= r.next-1 {
+			// That race allowance is for a snapshot that could not have seen
+			// the terminal. An entry stating the position the run settled at,
+			// or one past it, has said it could: it claims to reflect the run
+			// as far as the envelope that ended it and lists it as
+			// outstanding anyway.
+			// The entry still describes the run the snapshot meant to list, so
+			// it goes on being one: what is wrong is the position it states,
+			// and setting the whole entry aside would change what
+			// active_run_id is judged against.
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/as_of_sequence", "active_runs lists a run at a position it had already settled at", fmt.Sprintf("a position before %d", r.next-1), fmt.Sprintf("%d", *entry.AsOfSequence), string(entry.RunID))
+		}
 		if r.order <= lastOrder {
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs is not in admission order", "admission order", string(entry.RunID))
 		}
@@ -531,9 +543,15 @@ func (s *state) checkCaptureModel(i, line int, e protocol.Envelope, p protocol.S
 		return
 	}
 	if p.AsOf == nil || p.AsOf.ModelRunSequence == nil {
-		model, known := s.startedMutationModel(st)
-		if known && p.CurrentModelID != model {
-			s.addExpected(CodePrematureSessionMutation, i, line, e, "/payload/current_model_id", "snapshot reports a model other than the started run's while that run is started", model, p.CurrentModelID)
+		// Without a marker the snapshot claims no knowledge the trace lacks,
+		// so it answers to the last model-affecting event the trace carries at
+		// or before the window — whether or not that run is still going. A
+		// session_mutation moves the session default, and the default outlives
+		// the run that moved it: terminality ends the run, not its effect.
+		if r := s.latestMutationBefore(st, nil, s.captureWindowStart(i, e)); r != nil {
+			if model, known := mutationModel(r); known && p.CurrentModelID != model {
+				s.addExpected(CodePrematureSessionMutation, i, line, e, "/payload/current_model_id", "snapshot reports a model other than the one the session's last model-affecting run installed", model, p.CurrentModelID, string(r.id))
+			}
 		}
 		return
 	}
@@ -623,19 +641,4 @@ func (s *state) latestMutationBefore(st *sessionTrack, anchor *runState, window 
 		}
 	}
 	return latest
-}
-
-// startedMutationModel is the model the session's started run installed, for a
-// run admitted under the session_mutation mode with a selection.
-func (s *state) startedMutationModel(st *sessionTrack) (string, bool) {
-	for _, id := range st.order {
-		r := s.runs[id]
-		if r == nil || r.terminal || !r.started {
-			continue
-		}
-		if model, ok := mutationModel(r); ok {
-			return model, true
-		}
-	}
-	return "", false
 }

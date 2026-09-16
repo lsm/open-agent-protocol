@@ -360,25 +360,35 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// A snapshot may not erase a run the trace has admitted and not terminated:
 		// that would allow an overlapping second admission on one session. Keep the
 		// tracked run when the snapshot contradicts it.
-		contradiction := false
+		contradiction, excused := false, false
 		if prev := st.active; prev != "" && !claimedSettled(p, prev) {
 			// A snapshot that claims it already removed the run states so in
 			// as_of.settled, and that claim is judged on its own terms — the
 			// terminal it names must be the next thing the run publishes. It
-			// is not a contradiction, so it is not diagnosed twice.
+			// is not a contradiction, so it is not diagnosed twice, and the
+			// pointer follows the snapshot because the snapshot said the run
+			// is over and answers for saying so.
 			//
-			// Neither is a run that began after the read was requested. A
+			// A run that began after the read was requested is different. A
 			// promotion happens inside the endpoint and its run.started can
 			// drain after the response, so a snapshot naming no started run
-			// where none had started is describing the moment it was taken.
+			// where none had started is describing the moment it was taken —
+			// but excusing that omission is not agreeing with it. The run did
+			// start, nothing reconciles the omission later, and letting the
+			// snapshot clear the pointer would leave every snapshot after it
+			// free to omit the run as well.
 			r := s.runs[prev]
-			if r != nil && !r.terminal && p.ActiveRunID != prev && r.startedAt <= s.captureWindowStart(i, e) {
-				contradiction = true
-				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
+			if r != nil && !r.terminal && p.ActiveRunID != prev {
+				if r.startedAt <= s.captureWindowStart(i, e) {
+					contradiction = true
+					s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
+				} else {
+					excused = true
+				}
 			}
 		}
 		st.status = p.Status
-		if !contradiction {
+		if !contradiction && !excused {
 			st.active = p.ActiveRunID
 		}
 		// A per_run application binds its own run and leaves the session

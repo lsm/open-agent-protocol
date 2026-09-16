@@ -169,7 +169,10 @@ terminal, and the last model-affecting event it reflects.
 held to that. A run that had settled before the read was even requested cannot
 be in it under any capture position, so listing it is a stale snapshot rather
 than a race; one that settles inside the window may still be listed, because
-the snapshot may have been captured before a terminal it could not have seen.
+the snapshot may have been captured before a terminal it could not have seen —
+unless the entry's own position says otherwise. An entry stating the sequence
+the run settled at, or one past it, has said it read the run as far as the
+envelope that ended it, and then listed it as outstanding anyway.
 A terminal status there contradicts the membership it is part of:
 a snapshot that knows a run settled drops it and names it in `as_of.settled`
 rather than listing it as completed. A run the trace has seen start is not
@@ -210,6 +213,15 @@ existed and lets whichever field it happens to trust decide what it does. A
 listing with no entries keeps whatever status it reports, because an empty
 listing is what a closed or errored session carries too and those say something
 the runs cannot.
+
+Excusing an omission is not agreeing with it. A snapshot requested before a
+promotion may name no started run, and that is the race; but the run did start,
+nothing reconciles the omission afterwards, and a snapshot allowed to drop the
+run must not also take it away from every snapshot that follows. The exemption
+covers the read that could not have seen the start, not the ones after it. A
+claimed settlement is different: there the snapshot asserts the run is over and
+answers for that assertion on its own terms, so the omission is agreed with
+rather than excused.
 
 Which run the validator holds a snapshot to is the same question, so a
 reservation is not it. The run a snapshot may not erase is the started one, and
@@ -267,9 +279,13 @@ snapshot of that default has to follow any earlier-admitted mutation. The mode
 is the one retained from admission, whatever a refresh says while the
 reservation waits.
 
-`premature_session_mutation` is the check that binds it: while a run admitted
-under `session_mutation` is started, a snapshot reports that run's admitted
-model, judged at the position the snapshot states. A position is a position in this session's history, and it names a promotion:
+`premature_session_mutation` is the check that binds it: a snapshot reports the
+model installed by the session's last model-affecting run, judged at the
+position the snapshot states. That run does not have to still be going — a
+`session_mutation` moves the session default, and the default outlives the run
+that moved it, so terminality ends the run and not its effect. A snapshot that
+stopped answering for a mutation once its run settled could undo it silently,
+and the next control-free submission would run against the model nobody chose. A position is a position in this session's history, and it names a promotion:
 an anchor on another session's run would let a snapshot borrow a model
 authority that says nothing about the session it describes, and an anchor on a
 sequence its run did not start at, or on a promotion that never arrives, would
@@ -296,7 +312,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 98 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 103 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
