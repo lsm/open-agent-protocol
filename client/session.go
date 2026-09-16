@@ -81,10 +81,17 @@ func (s *Session) Tools(ctx context.Context, options ...ToolsOption) (protocol.T
 	}
 	response, err := s.client.exchange(ctx, http.MethodGet, path, nil, protocol.TypeActionToolsListResponse)
 	if err != nil {
-		return catalog, err
+		return protocol.ToolsListResponse{}, err
 	}
 	if err := response.DecodePayload(&catalog); err != nil {
-		return catalog, err
+		return protocol.ToolsListResponse{}, err
+	}
+	// A catalog naming another session is not this session's catalog, and
+	// after the tool-sources unit it carries that session's attached sources.
+	// The payload scope is optional here: an endpoint-level catalog belongs to
+	// no session, so only a present one is held to the envelope.
+	if err := s.bindResponse(s.path("/tools"), response, catalog.SessionID, false); err != nil {
+		return protocol.ToolsListResponse{}, err
 	}
 	return catalog, nil
 }
@@ -149,14 +156,47 @@ func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.Ru
 // State reads the session's authoritative state.
 func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	var state protocol.SessionState
-	response, err := s.client.exchange(ctx, http.MethodGet, s.path("/state"), nil, protocol.TypeSessionStateResponse)
+	path := s.path("/state")
+	response, err := s.client.exchange(ctx, http.MethodGet, path, nil, protocol.TypeSessionStateResponse)
 	if err != nil {
-		return state, err
+		return protocol.SessionState{}, err
 	}
 	if err := response.DecodePayload(&state); err != nil {
-		return state, err
+		return protocol.SessionState{}, err
+	}
+	// session.state.response requires the payload scope, so an absent one is a
+	// malformed answer rather than a scopeless one.
+	if err := s.bindResponse(path, response, state.SessionID, true); err != nil {
+		return protocol.SessionState{}, err
 	}
 	return state, nil
+}
+
+// bindResponse binds one GET-style response to this session.
+//
+// A GET carries no request envelope, so exchange's request-based scope check
+// never runs and the binding has to be made here instead: a response naming
+// another session is a stale or misrouted envelope, not this session's answer,
+// and returning it would let another session's state — including the tool
+// sources it attached — be read as this one's.
+//
+// The payload is judged separately from the envelope carrying it. Both are
+// individually schema-valid documents; it is the protocol that binds them to
+// one scope, and per-envelope validation cannot see the pairing. payloadScope
+// is the session the payload names, and required says whether the payload's
+// own schema obliges it to name one — a catalog may legitimately carry none,
+// because an endpoint-level catalog belongs to no session.
+func (s *Session) bindResponse(path string, response protocol.Envelope, payloadScope protocol.SessionID, required bool) error {
+	if response.SessionID != s.id {
+		return fmt.Errorf("client: %s response is scoped to session %q, want %q", path, response.SessionID, s.id)
+	}
+	if payloadScope == "" && !required {
+		return nil
+	}
+	if payloadScope != response.SessionID {
+		return fmt.Errorf("client: %s payload names session %q, envelope %q", path, payloadScope, response.SessionID)
+	}
+	return nil
 }
 
 // Close closes the session. An active run refuses the close; cancel it first.

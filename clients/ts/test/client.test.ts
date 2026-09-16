@@ -525,3 +525,75 @@ test('an unknown adapter is a coded ServerError', async () => {
   const client = dial(BASE, { fetch: transport.fetch });
   await assert.rejects(client.open('nope'), (err: unknown) => serverCode(err) === 'unknown_adapter');
 });
+
+test('a catalog scoped to another session is refused', async () => {
+  // The GET carries no request envelope, so the exchange's request-based
+  // scope check never runs. After the tool-sources unit a misrouted catalog
+  // also carries that session's attached sources, so accepting one would hand
+  // a caller another session's tool sources as its own.
+  const transport = new FakeTransport([
+    {
+      match: '/tools',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.ActionToolsListResponse,
+          id: 'resp-2',
+          inReplyTo: 'oap-request-2',
+          sessionId: 's-other',
+          payload: {
+            session_id: 's-other',
+            sources: [{ id: 'secret', kind: 'process', endpoint: 'stdio:another-sessions-source' }],
+            tools: [],
+          },
+        }),
+      ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(session.tools(), /scoped to session "s-other", want "s-1"/);
+});
+
+test('a catalog payload naming another session is refused', async () => {
+  // The envelope and its payload are individually schema-valid documents; the
+  // protocol binds them to one scope, which per-envelope validation cannot see.
+  const transport = new FakeTransport([
+    {
+      match: '/tools',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.ActionToolsListResponse,
+          id: 'resp-2',
+          inReplyTo: 'oap-request-2',
+          sessionId: 's-1',
+          payload: { session_id: 's-other', tools: [] },
+        }),
+      ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(session.tools(), /payload names session "s-other", envelope "s-1"/);
+});
+
+test('a catalog payload naming no session is accepted', async () => {
+  // `session_id` is optional on a catalog because an endpoint-level catalog
+  // belongs to no session, so a payload naming none carries no scope to
+  // disagree with. This is the boundary of the rule above, and it is the same
+  // boundary the Go client draws.
+  const transport = new FakeTransport([
+    {
+      match: '/tools',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.ActionToolsListResponse,
+          id: 'resp-2',
+          inReplyTo: 'oap-request-2',
+          sessionId: 's-1',
+          payload: { tools: [] },
+        }),
+      ),
+    },
+  ]);
+  const session = openedSession(transport);
+  const catalog = await session.tools();
+  assert.deepEqual(catalog.tools, []);
+});

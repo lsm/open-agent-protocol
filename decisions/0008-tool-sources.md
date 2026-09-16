@@ -398,6 +398,17 @@ rediscovered from the code.
 - The registry document gains a `tool_sources` map, resolved at load like the
   adapter `environment` allowlists, so a bare `NAME` the operator never
   exported fails at hub start rather than at open.
+- The Go client's GET-style session methods now bind their response to the
+  session that asked. Those routes send no request envelope, so the
+  request-based scope check never ran and a misrouted answer was returned as
+  this session's — which this unit makes materially worse, because a catalog
+  and a session snapshot now carry the sources a session attached. The rule is
+  applied to `Session.State` as well as `Session.Tools`: both have the shape,
+  and a client-side guarantee that holds on one route and not its neighbour is
+  one a caller cannot reason about. `Session.State` therefore now rejects a
+  response it previously accepted. The TypeScript client already made both
+  checks; it gains the tests that pin them, so the two clients reject the same
+  set.
 
 ## What this unit does not admit
 
