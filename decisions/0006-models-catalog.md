@@ -153,6 +153,18 @@ appears rather than when the catalog does, since a catalog may legitimately
 name a run the trace has not reached — which is the whole reason positions are
 held.
 
+That scoping is the position's own rule and not the model claim's. A catalog
+may name a position and report no `current_model_id`; the position is still a
+claim about this session's runs, so it is judged, and held for its ownership
+alone when the run is still ahead
+(`models-position-in-another-session-no-current`,
+`models-held-position-in-another-session-no-current`). Hanging the check off
+the optional member would have let a catalog that reports no current model name
+any run on the endpoint. Where the position is this session's and the catalog
+claims no model at it there is nothing further to judge, which is a valid
+catalog and not a silence to diagnose
+(`models-position-without-current-model`).
+
 A nonempty `current_model_id` must also name one of the response's own ids. A
 picker shown a current model the catalog does not describe could not resolve
 it, and re-selecting the same id would be refused by the catalog rule, so the

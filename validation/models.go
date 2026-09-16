@@ -258,26 +258,28 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 // position is judged at that point instead, and one naming a position the
 // trace has not reached is held until it arrives.
 func (s *state) checkCatalogCurrentModel(i, line int, e protocol.Envelope, p protocol.ModelsResponse, st *sessionTrack) {
-	if p.CurrentModelID == "" {
-		return
-	}
+	// The position is judged before the model claim and independently of it. A
+	// position names a run-scoped event in this session whether or not the
+	// catalog goes on to say what the model was at it, so scoping it to the
+	// catalog's session is the position's own rule; hanging it off the
+	// optional current_model_id would let a catalog that reports no current
+	// model name any run on the endpoint.
 	if position := p.AsOfModelEvent; position != nil {
 		if known, owned := s.positionOwner(p.SessionID, *position); known && !owned {
+			// The position is not this session's, so nothing is read from it —
+			// including the model claim that rested on it. One fault, one
+			// diagnosis: naming the right run may well change the claim.
 			s.foreignPosition(i, line, e, p.SessionID, *position)
-			return
-		}
-		if mark, ok := st.markAt(*position); ok {
-			if mark != p.CurrentModelID {
-				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/current_model_id", "catalog reports a model the session did not hold at the event it names", mark, p.CurrentModelID, string(position.RunID))
-			}
 			return
 		}
 		if !s.positionReached(p.SessionID, *position) {
 			// An endpoint reporting a position the trace has not reached is
 			// ahead of it, not wrong: the claim is reconciled when the event
-			// arrives, whether or not that event turns out to carry a model.
-			// A run the trace has not seen at all is held on the same terms,
-			// and its ownership is judged when it appears.
+			// arrives, whether or not that event turns out to carry a model. A
+			// run the trace has not seen at all is held on the same terms, and
+			// its ownership is judged when it appears — which is why a catalog
+			// reporting no current model is held too, with nothing to settle
+			// but that.
 			held := heldCatalog{session: p.SessionID, model: p.CurrentModelID, position: *position, index: i, line: line, envelope: e}
 			if query := s.pendingModels[e.InReplyTo]; query != nil {
 				held.window = query.window
@@ -285,9 +287,28 @@ func (s *state) checkCatalogCurrentModel(i, line int, e protocol.Envelope, p pro
 			st.heldCatalogs = append(st.heldCatalogs, held)
 			return
 		}
+		if p.CurrentModelID == "" {
+			// The position is this session's and the trace has reached it, and
+			// the catalog claims no model at it. There is nothing left to
+			// judge.
+			return
+		}
+		// A mark exists only where the trace recorded one, which is at an
+		// event the run has already reached, so this is read after the
+		// position is known to be this session's and reached.
+		if mark, ok := st.markAt(*position); ok {
+			if mark != p.CurrentModelID {
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/current_model_id", "catalog reports a model the session did not hold at the event it names", mark, p.CurrentModelID, string(position.RunID))
+			}
+			return
+		}
 		// The named position is one the trace passed without it moving the
 		// session model, so the position says nothing and the window rule
 		// stands.
+	}
+	if p.CurrentModelID == "" {
+		// A catalog claiming no current model contradicts no session state.
+		return
 	}
 	window := st.modelWindow(s.pendingModels[e.InReplyTo])
 	if len(window) == 0 {
@@ -409,6 +430,12 @@ func (s *state) reconcileHeldCatalogs(st *sessionTrack) {
 		}
 		if !s.positionReached(held.session, held.position) {
 			remaining = append(remaining, held)
+			continue
+		}
+		if held.model == "" {
+			// The claim was held for its ownership alone — the catalog named a
+			// position without saying what the model was at it — and that is
+			// now settled.
 			continue
 		}
 		// The window is taken as it stands now rather than as it stood at the
