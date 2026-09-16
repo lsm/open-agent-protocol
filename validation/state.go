@@ -121,7 +121,11 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		// A request that declares scope in both its envelope and payload must
 		// agree; otherwise its stored correlation scope is self-contradictory.
-		s.checkScope(i, line, e, session, run)
+		// A sequenced unknown request is also a run event below, and runEvent
+		// is then its sole scope checker.
+		if !s.tolerantRunEvent(e) {
+			s.checkScope(i, line, e, session, run)
+		}
 		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run, interaction: envelopeInteraction(e)}
 	}
 	duplicateResponse := false
@@ -355,7 +359,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			// session-scoped and advances no cursor; one carrying neither
 			// touches no bookkeeping at all.
 			switch {
-			case e.RunID != "" && e.Sequence != nil:
+			case s.tolerantRunEvent(e):
 				// runEvent is the sole scope checker for a run event; a
 				// second generic check here would report one defect twice.
 				s.runEvent(i, line, e)
@@ -374,6 +378,13 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 // payload table is the authority: every known type has a decode target.
 func isKnownType(t protocol.EnvelopeType) bool {
 	return payloadTarget(t) != nil
+}
+
+// tolerantRunEvent reports whether an envelope of unknown type is classified
+// as a run-scoped event in tolerant mode: it carries both run_id and
+// sequence. runEvent then does its scope check and run bookkeeping.
+func (s *state) tolerantRunEvent(e protocol.Envelope) bool {
+	return s.tolerant && !isKnownType(e.Type) && e.RunID != "" && e.Sequence != nil
 }
 
 // unknownScope is the scope of an envelope whose type this revision does not
@@ -447,10 +458,14 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 		// not it correlated, as a known response's is in its own case.
 		session, run = unknownScope(e)
 	}
-	if req.session != "" && session != "" && session != req.session {
+	// A response that names no scope at all cannot be shown to answer within
+	// the request's scope, so an empty value is a mismatch too. A known
+	// response always names its scope (schema-required), so this only ever
+	// bites an unknown response whose envelope and payload are both silent.
+	if req.session != "" && session != req.session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "response session does not match the request scope", string(req.session), string(session), string(e.InReplyTo))
 	}
-	if req.run != "" && run != "" && run != req.run {
+	if req.run != "" && run != req.run {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/run_id", "response run does not match the request scope", string(req.run), string(run), string(e.InReplyTo))
 	}
 	// A resolution response must name the same interaction the request resolved;

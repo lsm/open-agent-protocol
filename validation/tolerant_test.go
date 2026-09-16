@@ -592,6 +592,36 @@ func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
 			t.Fatalf("scope_mismatch reported %d times, want 1: %v", n, tolerant.Diagnostics)
 		}
 	})
+	t.Run("a sequenced unknown request reports one scope_mismatch", func(t *testing.T) {
+		// The request block defers to runEvent for a sequenced request.
+		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
+			return []map[string]any{{
+				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
+				"type": "com.example.run.pause.request", "id": "req-seq",
+				"session_id": started["session_id"], "run_id": started["run_id"], "sequence": json.Number(itoa(seq)),
+				"payload": map[string]any{"session_id": started["session_id"], "run_id": "rB"},
+			}}
+		})
+		_, tolerant := validateBoth(t, trace, "req-seq-rB")
+		if n := count(tolerant, CodeScopeMismatch); n != 1 {
+			t.Fatalf("scope_mismatch reported %d times, want 1: %v", n, tolerant.Diagnostics)
+		}
+	})
+	t.Run("an unknown response naming no scope cannot answer a scoped request", func(t *testing.T) {
+		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
+			common := map[string]any{"protocol": started["protocol"], "version": started["version"], "profile": started["profile"]}
+			req := map[string]any{"type": "com.example.run.pause.request", "id": "req-pause", "session_id": started["session_id"], "run_id": started["run_id"], "payload": map[string]any{"session_id": started["session_id"], "run_id": started["run_id"]}}
+			resp := map[string]any{"type": "com.example.run.pause.response", "id": "resp-pause", "in_reply_to": "req-pause", "payload": map[string]any{"ok": true}}
+			for k, v := range common {
+				req[k], resp[k] = v, v
+			}
+			return []map[string]any{req, resp}
+		})
+		_, tolerant := validateBoth(t, trace, "pause-unscoped")
+		if n := count(tolerant, CodeScopeMismatch); n != 2 {
+			t.Fatalf("scope_mismatch reported %d times, want 2 (session and run): %v", n, tolerant.Diagnostics)
+		}
+	})
 	t.Run("an uncorrelated unknown response is still held to its own envelope", func(t *testing.T) {
 		// No request matches, so correlation reports unmatched_response and
 		// stops; the envelope/payload disagreement is a separate defect and
