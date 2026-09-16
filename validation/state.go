@@ -1180,7 +1180,9 @@ func resumeSequence(rec *recoveryExpectation, run protocol.RunID, asOf *uint64) 
 
 func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st *sessionTrack) {
 	rec := s.recoveries[p.SessionID]
+	listed := map[protocol.RunID]bool{}
 	for _, entry := range p.ActiveRuns {
+		listed[entry.RunID] = true
 		if s.runs[entry.RunID] != nil {
 			continue
 		}
@@ -1196,6 +1198,19 @@ func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st 
 		run.order = len(st.order)
 		s.runs[entry.RunID] = run
 		st.order = append(st.order, entry.RunID)
+	}
+	// active_runs is required only where active_run_id cannot carry the
+	// answer, so a reattach whose session holds one started run says so with
+	// the pointer alone, and that run is introduced by the document just as an
+	// entry would be. Without it the retained replay that may follow the open
+	// response directly has no admission behind it and no position to resume
+	// from — the shape the state-response path has always bootstrapped, and
+	// the one the listing never sees because there is no listing.
+	if p.ActiveRunID != "" && !listed[p.ActiveRunID] && s.runs[p.ActiveRunID] == nil {
+		run := &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), admittedAt: i, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
+		run.order = len(st.order)
+		s.runs[p.ActiveRunID] = run
+		st.order = append(st.order, p.ActiveRunID)
 	}
 	s.refreshQueueWindows(p.SessionID)
 }

@@ -295,8 +295,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 
 // answerRun publishes a run into the session's projection and releases every
 // consumer waiting on its admission. Both happen together because they are one
-// fact: Submit has an answer for this run, so the trace is about to carry it
-// and a state read may name it.
+// fact: Submit has an answer for this run. They do not make the trace carry it,
+// though — that waits on the frontend building the submit response envelope
+// after this call returns, which no adapter can observe. This is the latest
+// point the adapter can see, not the boundary; decision 0007 records where the
+// rest of that window belongs.
 func (s *session) answerRun(run *runState) {
 	s.mu.Lock()
 	run.answered = true

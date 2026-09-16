@@ -190,7 +190,11 @@ read from the entry's shape rather than from its status alone: `queued` is a
 reservation, `cancelling` says nothing about whether the run began and answers
 with the queue place it reports holding, exactly as it does where the trace has
 not reached the run's start, and anything else is a run that began before
-everything this trace can see.
+everything this trace can see. `active_runs` is required only where
+`active_run_id` cannot carry the answer, so a reattach holding one started run
+says so with the pointer alone; that run is introduced by the document exactly
+as an entry would be, or the retained replay that may follow the open response
+directly has no admission behind it and no position to resume from.
 
 `session.state` gains `active_runs`: every nonterminal run in admission order,
 each with its status, its 1-based `queue_position` when it is a reservation,
@@ -449,7 +453,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 147 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 149 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -473,17 +477,32 @@ descriptor — and advertises the key `emulated` with
 one run beside the started one, lists both in `active_runs`, promotes on the
 terminal, and settles a cancelled reservation pre-start.
 
-Both adapters project a run only once its admission is publishable, which is
-the boundary this listing makes load-bearing. A run exists inside an adapter
-from the moment a submission creates it, and an adapter may emit its opening
-events before `Submit` returns — but the caller creates the submit response
-envelope afterwards, and until that envelope exists the trace carries no
-admission the entry could have been anchored to. Nothing published inside the
-call reaches the trace ahead of it either, since the caller does not hold the
-stream yet, so the honest projection during the call is the one without the
-run, and the flip belongs at the return rather than anywhere inside. What
-remains after that is the caller's own ordering of the two responses it writes,
-which no adapter can serialize for it.
+Both adapters hold a run out of their projection until the admission is
+decided and then publish it as `Submit` hands the response back. A run exists
+inside an adapter from the moment a submission creates it, and an adapter may
+emit its opening events before `Submit` returns, so the honest projection
+during the call is the one without the run: nothing published inside the call
+reaches the trace ahead of the admission either, since the caller does not hold
+the stream yet.
+
+That is as narrow as an adapter can make the window, and it is not closed.
+Both frontends build the submit response envelope *after* `Submit` returns, so
+a state read taken between the two still describes a run the trace carries no
+admission for. No adapter can close this, and the reason is the one already
+recorded for the anchor itself: the fact that settles it — the admission
+envelope existing — is the frontend's to create, and its id is the frontend's
+to mint. An adapter that waited for it would be waiting on something it cannot
+observe.
+
+So the boundary belongs to the serving layer, which owns both envelopes and can
+either order their creation against each other or stamp the in-flight
+submission's id into the entries as the anchor this unit already defines for a
+snapshot that leads an admission. The queue unit did not open this window — a
+snapshot naming an unadmitted run through `active_run_id` alone had it before
+`active_runs` existed — but listing entries made it diagnosable, which is how
+it came to light. It is recorded here as a serving-layer limit rather than
+closed, because closing it correctly changes where the two codecs build and
+order their responses and is not this unit's to change.
 
 ## Consequences
 
