@@ -714,7 +714,19 @@ fixtures above in place; and `oap validate -pack` is documented beside
 
 ## T1. Run controls
 
-Unit name: `run-controls`. Planned decision: 0005.
+Unit name: `run-controls`. Decision:
+[0005](../decisions/0005-run-controls.md), accepted for the discipline and for
+`model_id` execution. `instructions`, `tool_choice`, and `output_schema` keep
+frozen shapes and reference-adapter execution; each graduates by an amendment
+to 0005 when a native adapter advertises its key against a pinned ledger. What
+shipped differs from the plan below in three recorded places: the
+`run.model_selection` honour deferral turned out to be unnecessary (a refusal
+of an advertised `model_id` under `unsupported_feature` is wrong whatever the
+id is, since the wire assigns every catalog miss to `model_not_found`), the
+gate fixtures for the other three keys were added because the
+corpus-completeness check requires one per key, and
+`controls-undisclosed-selection-modes` was added for the rule below that names
+no fixture.
 
 ### Scope
 

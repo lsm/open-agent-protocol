@@ -27,6 +27,7 @@ Conformance units are additive:
 - `+tools`
 - `+permissions`
 - `+user-input`
+- `+run-controls`
 - `+models`
 - `+queue`
 - `+steer`
@@ -36,6 +37,7 @@ Example claims:
 
 - `open-agent-protocol.agent-control-core`
 - `open-agent-protocol.agent-control-core+tools+permissions`
+- `open-agent-protocol.agent-control-core+run-controls`
 - `open-agent-protocol.agent-control-core+persistence+tools+permissions+user-input+models+steer`
 
 Conformance units are testable units of behavior, not transport names and not
@@ -205,6 +207,63 @@ An implementation conforms to `+persistence` if it:
 `transcript.delta` is optional unless the implementation claims live transcript
 sync. An implementation may support historical transcript loading without live
 persisted row deltas.
+
+### `+run-controls`
+
+An implementation conforms to `+run-controls` if it implements the fail-closed
+discipline for all four per-submit controls — `model_id`, `instructions`,
+`tool_choice`, and `output_schema` — and executes each control it advertises
+above `unavailable`. The two halves are separate, and an endpoint that
+advertises none of the four still claims the unit by refusing all four
+correctly: refusing an unadvertised control *is* the discipline.
+
+The discipline is that an implementation:
+
+- gates each control on its own capability key (`run.model_selection`,
+  `run.instructions`, `run.tool_selection`, `run.structured_output`) and
+  refuses a control it has not affirmatively advertised *before* admission,
+  with `unsupported_feature`, `details.feature` naming the key, and
+  `details.reason: "unadvertised"`. No submission or run identity is
+  allocated;
+- refuses a control it advertises `degraded` whose key the request's
+  `allow_degraded_features` omits, with `capability_degraded` and
+  `details.feature`;
+- refuses a control it cannot honour for this request's value with
+  `unsupported_feature`, `details.reason: "unsatisfiable"`, and the detail
+  that names the offending member (`details.tool`, `details.field`) — except
+  a `model_id` it cannot serve, which is `model_not_found` with
+  `details.model_id`, the empty id included;
+- reports exactly one refusal when a request fails more than one of these, in
+  the order above and, among peers, by the lower capability key and the lower
+  JSON Pointer;
+- never drops a control it accepted: presence is what the gate judges, so a
+  present-but-empty control is a control.
+
+Execution, per advertised control, is that an implementation:
+
+- applies an admitted `model_id` to the run it was requested for, repeats it
+  on the admission and on `run.started`, and never attributes the run to
+  another model. `run.model_selection`'s `mode` discloses how: `per_run`
+  leaves `current_model_id` — the model the next control-free submission
+  would use — untouched, and `session_mutation` moves it and reports the
+  native truth afterwards;
+- accepts `instructions` it advertises. Whether admitted instructions took
+  effect is not a wire observable, so the key means "this endpoint accepts
+  instructions" rather than a checked promise;
+- honours an admitted `tool_choice` over the session's catalog: `allowed` or
+  `disallowed` filters it, then `mode` applies to the filtered set. A tool the
+  policy excludes is never called, `required` and `named` are met before a
+  completed response, and `run.tool_selection`'s `modes` discloses the modes
+  the endpoint can actually enforce — a refusal is conforming only for a mode
+  outside that list;
+- binds an admitted `output_schema` to the run's final response:
+  `run.completed.result` is present and conforms, or the run fails with
+  `structured_output_failed`. A fixed-output endpoint declares its result as
+  `run.structured_output`'s `fixed_result` constraint and then carries exactly
+  that object.
+
+Session-level defaults, a configuration document, and any control not named
+above are outside this unit.
 
 ### `+models`
 
