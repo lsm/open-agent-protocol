@@ -82,6 +82,19 @@ var attachTransports = []string{protocol.ToolSourceProcess, protocol.ToolSourceL
 
 const maxAttachedSources = 2
 
+// attachSupport is this adapter's one disclosure for
+// action.tool_sources.attach. Probe publishes it and admitToolSources gates on
+// it, so the descriptor a caller reads and the admission its open meets are
+// the same value rather than two that can drift apart.
+var attachSupport = protocol.FeatureSupport{
+	Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen},
+	Limits: map[string]json.RawMessage{
+		protocol.LimitMaxSources: json.RawMessage(strconv.Itoa(maxAttachedSources)),
+		protocol.LimitTransports: mustJSON(attachTransports),
+	},
+	Reason: "sources are described and published back; the reference adapter runs no client for them",
+}
+
 // CapabilityRevision is the advertised reference-adapter revision. Every
 // emitted envelope repeats it so a consumer can bind an event to the
 // descriptor snapshot it was produced under.
@@ -154,17 +167,10 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		// disclosures are machine-readable: the mode says attachment happens
 		// at session open and nowhere else, and the limits say exactly which
 		// arrays are honoured, so a refusal is checkable in both directions.
-		protocol.FeatureToolsList: {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
-		protocol.FeatureToolSourcesAttach: {
-			Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen},
-			Limits: map[string]json.RawMessage{
-				protocol.LimitMaxSources: json.RawMessage(strconv.Itoa(maxAttachedSources)),
-				protocol.LimitTransports: mustJSON(attachTransports),
-			},
-			Reason: "sources are described and published back; the reference adapter runs no client for them",
-		},
-		"action.permissions": {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
-		"user_input":         {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
+		protocol.FeatureToolsList:         {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
+		protocol.FeatureToolSourcesAttach: attachSupport,
+		"action.permissions":              {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
+		"user_input":                      {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		// The run controls, executed deterministically. Each disclosure is
 		// machine-readable so a refusal is checkable in both directions: the
 		// mode says the session default never moves, the enforced tool_choice
@@ -242,7 +248,7 @@ func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, err
 	// The same gate every other adapter runs, with the key this one
 	// advertises: uniform so one grep finds every endpoint's admission, and a
 	// no-op here only because the advertisement is real.
-	if err := RefuseUnadvertisedToolSources(request, protocol.FeatureToolSourcesAttach); err != nil {
+	if err := RefuseUnadvertisedToolSources(request, attachSupport); err != nil {
 		return nil, err
 	}
 	if len(request.ToolSources) == 0 {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -451,5 +452,111 @@ func TestOpenAnswersTheCapabilityRungBeforeItsOwnConstraint(t *testing.T) {
 				t.Fatalf("a refused open left %d sessions behind", len(sessions))
 			}
 		})
+	}
+}
+
+// layeredAdapter republishes the reference descriptor with one capability
+// moved out of the top-level features and into a named layer. A descriptor may
+// publish a key that way — layers are the sections a descriptor may split
+// itself into — and the validator reads such a descriptor as advertising the
+// key, so the daemon must too.
+type layeredAdapter struct {
+	*base.Memory
+	key   string
+	layer string
+}
+
+func (a layeredAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	descriptor, err := a.Memory.Probe(ctx)
+	if err != nil {
+		return descriptor, err
+	}
+	support := descriptor.Capabilities.Features[a.key]
+	delete(descriptor.Capabilities.Features, a.key)
+	descriptor.Capabilities.Layers = map[string]protocol.CapabilityLayer{
+		a.layer: {Features: map[string]protocol.FeatureSupport{a.key: support}},
+	}
+	return descriptor, nil
+}
+
+// TestOpenReadsAttachmentSupportFromALayer pins the descriptor shape the gate
+// must resolve. A key published under a layer alone is advertised, and a
+// top-level-only lookup would refuse every attachment such an endpoint can
+// honour — the route refusing what the validator accepts, which is what a
+// second normalization beside the validator's buys.
+func TestOpenReadsAttachmentSupportFromALayer(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", layeredAdapter{base.NewMemory(base.Config{}), protocol.FeatureToolSourcesAttach, "action"}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	status, envelope := openSessionWith(t, server, "layered", protocol.SessionOpenRequest{
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceLocal}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("open status %d, want 200: %s", status, envelope.Payload)
+	}
+	var opened protocol.SessionOpenResponse
+	if err := envelope.DecodePayload(&opened); err != nil {
+		t.Fatal(err)
+	}
+	attached := false
+	for _, source := range opened.Sources {
+		if source.ID == "files" {
+			attached = true
+		}
+	}
+	if !attached {
+		t.Fatalf("the open published %+v, without the source it attached", opened.Sources)
+	}
+}
+
+// unprobableAdapter fails every probe, the way an adapter behind a dead
+// context or an unreachable endpoint does.
+type unprobableAdapter struct{ *base.Memory }
+
+func (unprobableAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{}, errors.New("the endpoint could not be described")
+}
+
+// TestOpenReportsAProbeItCouldNotRead keeps the precedence when the descriptor
+// is unavailable. Falling through to the daemon's own credential rule would
+// answer an open whose capability rung was never settled, telling a caller to
+// name an operator-configured source when the endpoint may attach nothing at
+// all — the precedence the pre-gate exists to establish, undone in the one
+// case where nothing is known. No rung has an answer, so none is invented.
+func TestOpenReportsAProbeItCouldNotRead(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", unprobableAdapter{base.NewMemory(base.Config{})}); err != nil {
+		t.Fatal(err)
+	}
+	hub, server := newServer(t, registry, Options{})
+	// An attachment the daemon's own rule would refuse as unsatisfiable, so
+	// the wrong answer is available and only the ordering withholds it.
+	status, envelope := openSessionWith(t, server, "unprobable", protocol.SessionOpenRequest{
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "never-configured", Kind: protocol.ToolSourceProcess, Command: "/bin/sh"}},
+	})
+	if status != http.StatusInternalServerError {
+		t.Fatalf("open status %d, want 500: %s", status, envelope.Payload)
+	}
+	var failure protocol.ErrorResponse
+	if err := envelope.DecodePayload(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "probe_failed" {
+		t.Fatalf("refusal code %q, want probe_failed", failure.Error.Code)
+	}
+	// Not a capability verdict: an unread descriptor refuses nothing by name.
+	if len(failure.Error.Details) != 0 {
+		t.Fatalf("an unread descriptor produced a typed refusal: %+v", failure.Error.Details)
+	}
+	if sessions := hub.Sessions(context.Background()); len(sessions) != 0 {
+		t.Fatalf("a failed open left %d sessions behind", len(sessions))
+	}
+
+	// An open attaching nothing never consults the descriptor, so it is not
+	// held hostage to a probe it does not need.
+	if status, envelope := openSessionWith(t, server, "plain", protocol.SessionOpenRequest{}); status != http.StatusOK {
+		t.Fatalf("a non-attaching open status %d: %s", status, envelope.Payload)
 	}
 }

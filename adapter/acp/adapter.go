@@ -122,6 +122,19 @@ func (c *processClient) Close() error {
 	return c.Process.Close(ctx)
 }
 
+// attachSupport is this adapter's one disclosure for
+// action.tool_sources.attach. session/new takes the MCP server array natively,
+// so attachment at open is what ACP already does; the transports it accepts
+// are disclosed because stdio descriptors are the pinned surface and HTTP/SSE
+// MCP is explicitly deferred at this pin. Probe publishes it and
+// attachToolSources gates on it, so the descriptor a caller reads and the
+// admission its open meets cannot drift apart.
+var attachSupport = protocol.FeatureSupport{
+	Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen},
+	Limits: map[string]json.RawMessage{protocol.LimitTransports: json.RawMessage(`["process"]`)},
+	Reason: "session/new carries the MCP server array; stdio descriptors only at this pin",
+}
+
 func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 	if err := ctx.Err(); err != nil {
 		return base.Descriptor{}, err
@@ -133,22 +146,14 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.message.submit":        {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the prompt request is written"},
 		"session.message.delivery.auto": {Level: protocol.SupportEmulated, Reason: "auto is normalized to start"},
 		"run.streaming":                 {Level: protocol.SupportNative}, "run.status": {Level: protocol.SupportEmulated},
-		"run.cancel":         {Level: protocol.SupportDegraded, Reason: "ACP cancellation is an unacknowledged session notification; prompt settlement is authoritative"},
-		"run.resume":         {Level: protocol.SupportDegraded, Reason: "canonical replay is bounded process memory only"},
-		"run.reconciliation": {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
-		"run.replay":         {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
-		"action.tools":       {Level: protocol.SupportDegraded, Reason: "observed ACP presentation tool calls only; no catalog"},
-		// session/new takes the MCP server array natively, so attachment at
-		// open is what ACP already does; the transports it accepts are
-		// disclosed because stdio descriptors are the pinned surface and
-		// HTTP/SSE MCP is explicitly deferred at this pin.
-		protocol.FeatureToolSourcesAttach: {
-			Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen},
-			Limits: map[string]json.RawMessage{protocol.LimitTransports: json.RawMessage(`["process"]`)},
-			Reason: "session/new carries the MCP server array; stdio descriptors only at this pin",
-		},
-		"action.tools.execute": {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle is normalized"},
-		"action.permissions":   {Level: protocol.SupportNative, Reason: "ACP permission choice semantics with synthesized portable identity"},
+		"run.cancel":                      {Level: protocol.SupportDegraded, Reason: "ACP cancellation is an unacknowledged session notification; prompt settlement is authoritative"},
+		"run.resume":                      {Level: protocol.SupportDegraded, Reason: "canonical replay is bounded process memory only"},
+		"run.reconciliation":              {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
+		"run.replay":                      {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
+		"action.tools":                    {Level: protocol.SupportDegraded, Reason: "observed ACP presentation tool calls only; no catalog"},
+		protocol.FeatureToolSourcesAttach: attachSupport,
+		"action.tools.execute":            {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle is normalized"},
+		"action.permissions":              {Level: protocol.SupportNative, Reason: "ACP permission choice semantics with synthesized portable identity"},
 	}
 	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "acp.v1", Name: "ACP v1 Adapter", Version: "1.7.0", Adapter: "acp-v1-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "run", CancellationImplementation: "native_session_notification"}, nil
 }
@@ -218,7 +223,7 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 	// The same gate every other adapter runs, with the key this one
 	// advertises: uniform so one grep finds every endpoint's admission, and a
 	// no-op here only because the advertisement is real.
-	if err := base.RefuseUnadvertisedToolSources(request, protocol.FeatureToolSourcesAttach); err != nil {
+	if err := base.RefuseUnadvertisedToolSources(request, attachSupport); err != nil {
 		return nil, err
 	}
 	attachments := request.ToolSources

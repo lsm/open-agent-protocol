@@ -216,7 +216,14 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	// hides the one it did. So the endpoint's own disclosure is consulted
 	// first, before any daemon-specific constraint is applied.
 	if refusal := s.attachmentGate(r.Context(), name, request); refusal != nil {
-		code, message, details, _ := serve.ControlRefusal(refusal)
+		code, message, details, typed := serve.ControlRefusal(refusal)
+		if !typed {
+			// The descriptor could not be read, so no rung has an answer and
+			// none is invented: the open fails rather than falling through to
+			// a constraint that would answer the wrong question.
+			s.writeError(w, http.StatusInternalServerError, "probe_failed", adapterMessage(refusal), envelope)
+			return
+		}
 		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
 		return
 	}
@@ -626,19 +633,29 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // The adapter's own gate reaches the same verdict, but only after the daemon
 // has already refused for its credential rule, which is the wrong actionable
 // answer: a caller told to name an operator-configured source would keep
-// trying against an endpoint that attaches nothing. The descriptor is read
-// rather than assumed, and a probe that fails leaves the pre-check out —
-// nothing here is a security boundary, resolveAttachments below still runs,
-// and the adapter's own gate still answers inside Open.
+// trying against an endpoint that attaches nothing.
+//
+// A probe that fails is reported, not skipped. Skipping it would let the
+// daemon's own constraint answer an open whose capability rung was never
+// settled — the precedence this gate exists to establish, undone in the one
+// case where the descriptor is unavailable — and "name a configured source" is
+// the wrong thing to tell a caller whose endpoint may attach nothing at all.
+// The open is not forwarded either way, so no wire-supplied command reaches an
+// adapter behind an unread descriptor.
 func (s *Server) attachmentGate(ctx context.Context, name string, request protocol.SessionOpenRequest) error {
 	if len(request.ToolSources) == 0 {
 		return nil
 	}
 	descriptor, err := s.hub.Probe(ctx, name)
 	if err != nil {
-		return nil
+		return err
 	}
-	support, advertised := descriptor.Capabilities.Features[protocol.FeatureToolSourcesAttach]
+	// The key is resolved across the descriptor's layers, because a valid
+	// descriptor may publish it under one alone. Reading only the top level
+	// would refuse every attachment such an endpoint can honour, and it is the
+	// second normalization — one here, one in the validator — that lets a route
+	// start refusing what a trace validates.
+	support, advertised := descriptor.Capabilities.EffectiveSupport(protocol.FeatureToolSourcesAttach)
 	affirmative := advertised && support.Level != "" && support.Level != protocol.SupportUnavailable
 	// A key advertised for no session-open mode is one an open cannot elect,
 	// which is the capability rung and not a constraint on any one source.

@@ -762,7 +762,7 @@ func canonical(value any) any {
 // with no enforceable modes promises nothing, since every policy could be
 // refused as unsatisfiable and pass.
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	if support, ok := effectiveSupport(p, protocol.FeatureToolSelection); ok && affirmative(support.Level) && !enforcesAKnownMode(support.Modes) {
+	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) && !enforcesAKnownMode(support.Modes) {
 		// A list of names this phase rules on nothing is the empty list in a
 		// costume: every policy the typed shape admits carries one of the four
 		// modes, so a descriptor listing none of them refuses every one of
@@ -784,27 +784,13 @@ func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol
 	// `restart` is a defined mode this phase gives no rules, so advertising it
 	// here leaves the same hole; it discloses something checkable when the
 	// unit that rules on it graduates.
-	support, ok := effectiveSupport(p, protocol.FeatureModelSelection)
+	support, ok := p.EffectiveSupport(protocol.FeatureModelSelection)
 	if !ok || !affirmative(support.Level) {
 		return
 	}
 	if support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
 		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.model_selection/mode", "run.model_selection is advertised without disclosing how a selection is applied", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
 	}
-}
-
-// effectiveSupport reads one key's disclosure from a descriptor, top level
-// first and then the layers, mirroring how the gate resolves a key.
-func effectiveSupport(p protocol.CapabilitiesResponse, key string) (protocol.FeatureSupport, bool) {
-	if support, ok := p.Features[key]; ok {
-		return support, true
-	}
-	for _, layer := range p.Layers {
-		if support, ok := layer.Features[key]; ok {
-			return support, true
-		}
-	}
-	return protocol.FeatureSupport{}, false
 }
 
 // collectCatalog normalizes a descriptor's effective tool catalog: its

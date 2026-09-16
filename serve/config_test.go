@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/adapter/acp"
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
@@ -300,7 +301,7 @@ func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
 			if err != nil {
 				t.Fatalf("probe: %v", err)
 			}
-			if support, advertised := descriptor.Capabilities.Features[protocol.FeatureToolSourcesAttach]; advertised && support.Level != protocol.SupportUnavailable {
+			if support, advertised := descriptor.Capabilities.EffectiveSupport(protocol.FeatureToolSourcesAttach); advertised && support.Level != protocol.SupportUnavailable {
 				t.Fatalf("%s advertises %s at %q; this test covers the adapters that do not", name, protocol.FeatureToolSourcesAttach, support.Level)
 			}
 			session, err := implementation.Open(context.Background(), request)
@@ -319,17 +320,68 @@ func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
 	}
 }
 
-// TestAdvertisingAdaptersAdmitToolSources is the other direction: the two
-// endpoints that do advertise the key must not be refused by the shared gate,
-// or the gate would make the advertisement unusable.
+// TestAdvertisingAdaptersAdmitToolSources is the other direction: an endpoint
+// that does advertise the key must not be refused by the shared gate, or the
+// gate would make the advertisement unusable. Each adapter is fed its own
+// published disclosure rather than a hand-written one, so an adapter whose
+// descriptor stopped admitting attachment at open would fail here rather than
+// in a corpus somewhere.
 func TestAdvertisingAdaptersAdmitToolSources(t *testing.T) {
-	attachment := protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/bin/true"}
-	if err := base.RefuseUnadvertisedToolSources(base.OpenRequest{ToolSources: []protocol.ToolSourceAttachment{attachment}}, protocol.FeatureToolSourcesAttach); err != nil {
-		t.Fatalf("an advertised attachment was refused: %v", err)
+	attaching := base.OpenRequest{ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/bin/true"}}}
+	// The executable never runs: Probe is static and the gate answers before
+	// any child is started.
+	acpAdapter, err := acp.New(acp.Config{Executable: "/bin/acp", WorkingDirectory: "/tmp"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// And an open carrying none is never refused, whatever the endpoint
+	for name, implementation := range map[string]base.Adapter{"memory": base.NewMemory(base.Config{}), "acp": acpAdapter} {
+		t.Run(name, func(t *testing.T) {
+			descriptor, err := implementation.Probe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			support, advertised := descriptor.Capabilities.EffectiveSupport(protocol.FeatureToolSourcesAttach)
+			if !advertised {
+				t.Fatalf("%s no longer advertises %s; this test covers the adapters that do", name, protocol.FeatureToolSourcesAttach)
+			}
+			if err := base.RefuseUnadvertisedToolSources(attaching, support); err != nil {
+				t.Fatalf("an advertised attachment was refused: %v", err)
+			}
+		})
+	}
+	// An open carrying no sources is never refused, whatever the endpoint
 	// advertises: an open that elects nothing owes nothing.
 	if err := base.RefuseUnadvertisedToolSources(base.OpenRequest{}); err != nil {
 		t.Fatalf("an open attaching nothing was refused: %v", err)
+	}
+}
+
+// TestSharedGateRefusesADisclosureAnOpenCannotElect closes the asymmetry that
+// would otherwise sit between the two paths: the daemon's open route and the
+// validator both hold an attach capability to disclosing a session-open mode,
+// and an adapter that admitted one without it would give an in-process
+// embedder a silently-attaching open where a wire caller is refused. The gate
+// is the one place both paths agree, so it judges the disclosure, not the key
+// name.
+func TestSharedGateRefusesADisclosureAnOpenCannotElect(t *testing.T) {
+	attaching := base.OpenRequest{ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/bin/true"}}}
+	for _, testCase := range []struct {
+		name      string
+		disclosed []protocol.FeatureSupport
+	}{
+		{"no disclosure at all", nil},
+		{"an unavailable level", []protocol.FeatureSupport{{Level: protocol.SupportUnavailable, Modes: []string{protocol.ModeSessionOpen}}}},
+		{"a level with no mode", []protocol.FeatureSupport{{Level: protocol.SupportNative}}},
+		{"a mode an open cannot elect", []protocol.FeatureSupport{{Level: protocol.SupportNative, Modes: []string{protocol.ModeRemote}}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var refusal *base.UnsupportedControlError
+			if err := base.RefuseUnadvertisedToolSources(attaching, testCase.disclosed...); !errors.As(err, &refusal) {
+				t.Fatalf("refusal is %v, want *adapter.UnsupportedControlError", err)
+			}
+			if refusal.Feature != protocol.FeatureToolSourcesAttach || refusal.Reason != base.ControlUnadvertised {
+				t.Fatalf("refusal names %s/%s", refusal.Feature, refusal.Reason)
+			}
+		})
 	}
 }

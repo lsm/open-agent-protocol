@@ -59,8 +59,20 @@ footing as `adapter.RefuseUnadvertisedControls`: every adapter runs it in
 `Open`, before any native write and before a process starts, and the seven that
 advertise no attachment refuse with `unsupported_feature`, `details.feature:
 "action.tool_sources.attach"`, and `details.reason: "unadvertised"`. The two
-that advertise it run the same call with the key, so one grep finds every
-endpoint's admission and no endpoint is admitting by omission.
+that advertise it run the same call with their disclosure, so one grep finds
+every endpoint's admission and no endpoint is admitting by omission.
+
+It takes the disclosure — the `FeatureSupport` the endpoint's own `Probe`
+publishes — rather than a list of key names, because the key is not usable on
+its name alone. An attach capability that discloses no `session_open` mode
+offers nothing an open can elect, and both the validator and the daemon's open
+route refuse such an open; an adapter admitting it would give an in-process
+embedder a silently attaching open where a wire caller is refused. That
+asymmetry is the exact failure this helper was introduced to prevent, so the
+one gate judges what the descriptor says and not what the key is called. The
+two advertising adapters keep their disclosure in a package-level value that
+`Probe` publishes and the gate reads, so the descriptor a caller sees and the
+admission its open meets cannot drift apart.
 
 ### A source is described, not managed
 
@@ -116,6 +128,15 @@ response repeats the session on its envelope and in its payload. An unscoped
 answer to a scoped request is `scope_mismatch` rather than an endpoint-level
 catalog, so an adapter cannot evade the lifetime-catalog check below by
 dropping the scope.
+
+A request scopes itself in either place. `session_id` is optional in this
+payload, unlike every other scoped request's, because an unscoped list asks for
+the endpoint's own catalog — so a request naming its session on the envelope
+alone has still named it, and the correlation scope falls back to the envelope
+when the payload is silent. Without that fallback the stored scope would be
+empty and a response repeating nothing would answer a scoped request unjudged:
+the one shape the rule above exists to reject, reachable by writing the request
+the other legal way round.
 
 The opt-in is there because `action.tools.list` can be advertised `degraded`
 like any key, and Claude's is. Without a field to consent on, such an endpoint
@@ -265,12 +286,34 @@ of its own. That is a reordering, not a second gate — the adapter's own
 `RefuseUnadvertisedToolSources` still answers inside `Open`, which is what an
 in-process embedding of `serve.Hub` sees, and the two cannot drift because the
 route composes the same error types and renders them through the same
-`serve.ControlRefusal` mapping it uses to relay the adapter's. A
-probe that fails leaves the pre-check out rather than inventing a verdict: the
-adapter's gate still runs, and nothing here is a security boundary. The open
-route is the only path into an open — `servestdio` has no open op, and the
-in-process embedding calls `Hub.Open` directly — so one placement covers the
-wire.
+`serve.ControlRefusal` mapping it uses to relay the adapter's. The open route is
+the only path into an open — `servestdio` has no open op, and the in-process
+embedding calls `Hub.Open` directly — so one placement covers the wire.
+
+A probe that fails is reported rather than skipped. Skipping it looked like the
+conservative choice — the adapter's own gate still runs, and nothing in the
+pre-check is a security boundary — but it undoes the ordering in the one case
+where the descriptor is unavailable: the daemon's own constraint would then
+answer an open whose capability rung was never settled, which is precisely the
+precedence the pre-check exists to establish. "Name an operator-configured
+source" is the wrong thing to tell a caller whose endpoint may attach nothing
+at all. So an attaching open whose probe fails is `probe_failed`, the same code
+the capabilities route already uses, and no rung is answered from an unread
+descriptor. An open attaching nothing never consults the descriptor and is not
+held hostage to it.
+
+The key itself is resolved across the descriptor's layers, not read out of its
+top-level `features`. A valid descriptor may publish a key under a layer alone —
+layers are the sections (`model`, `action`, `agent_control`, `control_plane`) a
+descriptor may split itself into, not an override mechanism — and the validator
+already normalized its catalog and its sources that way. A top-level-only
+lookup at the route would refuse every attachment such an endpoint can honour:
+the route refusing what the validator accepts. The resolution is therefore one
+function, `CapabilityDescriptor.EffectiveSupport`, which the validator's state
+machine, its descriptor-time checks, and this route all call — top level first,
+then layers in sorted name order, first wins. Sorting is not cosmetic: indexing
+the layers directly and letting the last write win made the answer depend on Go's
+map iteration order whenever two sections named one key.
 
 ### Attachment is for the session's lifetime
 
@@ -332,21 +375,24 @@ under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 47 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 50 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
-in, the three resolvability rules on both a list and a descriptor, the
-attachment gate and its typed refusals, the remote mode ordered behind the
-capability rung, the attachment limits in both directions, the union a session
-snapshot publishes, the lifetime catalog an attachment binds, the
-attachment-only member a published source may never carry, a call's
-attribution and its reassignment mid-lifecycle, a refresh that collides with
-an attachment, an attach capability disclosing no session-open mode in both
-directions, and a schema-invalid `max_sources: 0`. Three boundary tests carry
-what no trace can: every registered adapter refusing an attachment it never
-advertised before a process starts (`serve`), the open route relaying both
-typed refusals with the details that name what to change, and that same route
-settling the capability and degradation rungs ahead of its own credential rule
-(`serve/servehttp`).
+in — named in the payload, on the envelope, and by a request that names it on
+the envelope alone — the three resolvability rules on both a list and a
+descriptor, the attachment gate and its typed refusals, the remote mode ordered
+behind the capability rung, the attachment limits in both directions, the union
+a session snapshot publishes, the lifetime catalog an attachment binds, the
+attachment-only member a published source may never carry, a call's attribution
+and its reassignment mid-lifecycle, a refresh that collides with an attachment,
+an attach capability disclosing no session-open mode in both directions, one
+published under a layer alone, and a schema-invalid `max_sources: 0`. Five
+boundary tests carry what no trace can: every registered adapter refusing an
+attachment it never advertised before a process starts and every advertising one
+admitting its own published disclosure (`serve`), and the open route relaying
+both typed refusals with the details that name what to change, settling the
+capability and degradation rungs ahead of its own credential rule, reading the
+key out of a layer, and reporting a probe it could not read rather than falling
+through to a constraint (`serve/servehttp`).
 
 Native evidence: Claude Code graduates the catalog at `degraded` on the
 per-turn `system/init` frame, now pinned in

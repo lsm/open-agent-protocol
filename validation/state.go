@@ -237,10 +237,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.capabilitiesStale = false
 		s.features = map[string]protocol.SupportLevel{}
 		s.featureSupports = map[string]protocol.FeatureSupport{}
-		collectFeatures(s.features, s.featureSupports, p.Features)
-		for _, layer := range p.Layers {
-			collectFeatures(s.features, s.featureSupports, layer.Features)
-		}
+		collectFeatures(s.features, s.featureSupports, p)
 		s.catalog, s.catalogKnown = collectCatalog(p), true
 		s.checkSelectionModes(i, line, e, p)
 		s.checkDescriptorSources(i, line, e, p)
@@ -509,8 +506,28 @@ func unknownScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 	}
 	return p.SessionID, p.RunID
 }
-func collectFeatures(dst map[string]protocol.SupportLevel, detail map[string]protocol.FeatureSupport, src map[string]protocol.FeatureSupport) {
-	for name, support := range src {
+
+// collectFeatures indexes every key a descriptor discloses anywhere — its
+// top-level features and each layer's — resolving each one through
+// CapabilityDescriptor.EffectiveSupport so the state machine's gate and the
+// descriptor-time checks read a layered descriptor identically. Iterating the
+// layers directly and letting the last write win would make the answer depend
+// on Go's map iteration order whenever two sections named one key.
+func collectFeatures(dst map[string]protocol.SupportLevel, detail map[string]protocol.FeatureSupport, p protocol.CapabilitiesResponse) {
+	keys := make(map[string]bool, len(p.Features))
+	for name := range p.Features {
+		keys[name] = true
+	}
+	for _, layer := range p.Layers {
+		for name := range layer.Features {
+			keys[name] = true
+		}
+	}
+	for name := range keys {
+		support, ok := p.EffectiveSupport(name)
+		if !ok {
+			continue
+		}
 		dst[name] = support.Level
 		detail[name] = support
 	}
@@ -651,8 +668,18 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		// the same scope: an unscoped response to a scoped request is a
 		// scope_mismatch, not an endpoint-level catalog, and an adapter
 		// cannot evade the lifetime-catalog check by dropping the scope.
+		//
+		// The payload's session is optional here, unlike every request above,
+		// because an unscoped list asks for the endpoint's own catalog. So a
+		// request that names its session on the envelope alone still names it:
+		// without this fallback the correlation scope would be empty and a
+		// response repeating nothing would answer a scoped request unjudged,
+		// which is the one shape this check exists to reject.
 		var p protocol.ToolsListRequest
 		_ = e.DecodePayload(&p)
+		if p.SessionID == "" {
+			return e.SessionID, ""
+		}
 		return p.SessionID, ""
 	}
 	return "", ""

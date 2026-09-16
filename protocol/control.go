@@ -209,6 +209,36 @@ type CapabilityDescriptor struct {
 	Degradation      []Degradation              `json:"degradation,omitempty"`
 }
 
+// EffectiveSupport reads one capability key's disclosure from a descriptor:
+// the top-level `features` first, then each layer's, since a valid descriptor
+// may publish a key under a layer alone — layers are the disjoint sections
+// (`model`, `action`, `agent_control`, `control_plane`) a descriptor may split
+// itself into, not an override mechanism. Layers are consulted in sorted name
+// order and the first disclosure wins, so the answer never depends on Go's map
+// iteration order.
+//
+// Every gate resolves a key through this one function — the validator's state
+// machine, its descriptor-time checks, and the daemon's own pre-checks — so a
+// descriptor that publishes a key under a layer is read the same way
+// everywhere. A second normalization beside it is how a route starts refusing
+// what a validator accepts.
+func (d CapabilityDescriptor) EffectiveSupport(key string) (FeatureSupport, bool) {
+	if support, ok := d.Features[key]; ok {
+		return support, true
+	}
+	names := make([]string, 0, len(d.Layers))
+	for name := range d.Layers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if support, ok := d.Layers[name].Features[key]; ok {
+			return support, true
+		}
+	}
+	return FeatureSupport{}, false
+}
+
 type Binding struct {
 	Kind          string `json:"kind"`
 	Serialization string `json:"serialization,omitempty"`

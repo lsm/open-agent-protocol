@@ -298,8 +298,10 @@ For the catalog (`action.tools.list`), an implementation:
   consumer never has to parse one out of the other;
 - answers a request that names a session with that session's effective
   catalog, repeating the session on the response's envelope and in its
-  payload. An unscoped answer to a scoped request is not an endpoint-level
-  catalog;
+  payload. A request names its session in either place — the payload member is
+  optional here, because an unscoped list asks for the endpoint's own catalog —
+  and an unscoped answer to a request scoped either way is not an
+  endpoint-level catalog;
 - attributes a call it emits with `source` to the source its own catalog
   records for that tool.
 

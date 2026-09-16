@@ -2730,6 +2730,38 @@
       ]
     },
     {
+      "id": "tools-list-envelope-scoped",
+      "path": "valid/tools-list-envelope-scoped.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-list-envelope-scoped-answer-unscoped",
+      "path": "semantic-invalid/tools-list-envelope-scoped-answer-unscoped.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "tools-duplicate-name",
       "path": "semantic-invalid/tools-duplicate-name.json",
       "kind": "semantic-invalid",
@@ -2843,6 +2875,20 @@
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-layered-capability",
+      "path": "valid/open-attach-layered-capability.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
         "decisions/0008-tool-sources.md"
       ]
     },

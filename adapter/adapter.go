@@ -180,10 +180,10 @@ func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertise
 }
 
 // RefuseUnadvertisedToolSources reports the typed refusal owed when an open
-// attaches tool sources to an endpoint that has not advertised
-// `action.tool_sources.attach`, and nil when the open attaches none.
-// advertised names the capability keys the endpoint offers above
-// `unavailable`.
+// attaches tool sources to an endpoint whose own disclosure does not admit
+// them, and nil when the open attaches none. disclosed is the endpoint's
+// `action.tool_sources.attach` support — the same value its Probe publishes —
+// and passing none says it discloses none.
 //
 // It exists for the same reason RefuseUnadvertisedControls does, and the
 // reason is sharper here: OpenRequest.ToolSources is a field an adapter
@@ -194,16 +194,28 @@ func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertise
 // one that discarded them — and "the adapter ignores the field" is not a
 // refusal a caller can act on.
 //
+// It takes the disclosure rather than a list of key names because the key is
+// not usable on its name alone: an attach capability that discloses no
+// session_open mode offers nothing an open can elect, and the validator and
+// the daemon's open route both refuse such an open. An adapter admitting it
+// would make the in-process path weaker than the wire path — the asymmetry
+// this helper exists to prevent — so the one gate answers both.
+//
 // Call it before any native write and before a session identity exists, so a
 // refused open leaves nothing behind.
-func RefuseUnadvertisedToolSources(request OpenRequest, advertised ...string) error {
+func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.FeatureSupport) error {
 	if len(request.ToolSources) == 0 {
 		return nil
 	}
-	if !slices.Contains(advertised, protocol.FeatureToolSourcesAttach) {
-		return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
+	for _, support := range disclosed {
+		if support.Level == "" || support.Level == protocol.SupportUnavailable {
+			continue
+		}
+		if support.DisclosesMode(protocol.ModeSessionOpen) {
+			return nil
+		}
 	}
-	return nil
+	return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
 }
 
 // UnsupportedControlError refuses a per-submit control before admission:
