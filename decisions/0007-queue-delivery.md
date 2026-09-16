@@ -283,7 +283,11 @@ earlier describes a moment that had already passed and reports the model of
 that moment as the session default. Later means later in the trace, since which
 promotion moved the default last is a question about the order they reached it,
 and the capture window answers what counts — a mutation that began after the
-read was requested is not one the snapshot had to reflect. The marker has a
+read was requested is not one the snapshot had to reflect. The genesis marker is dated the
+same way: it names the moment before the session's first model-affecting event,
+so one already behind the capture window supersedes it exactly as a later
+promotion supersedes an earlier one. Otherwise it is a way back to the opening
+model from any point in the session. The marker has a
 genesis form, `{"run_id": null, "sequence": 0}`, naming the position before the
 session's first model-affecting event; without it the one case the marker
 exists for — a session opening on model A, captured just before the first
@@ -292,7 +296,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 97 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 98 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -365,6 +369,15 @@ terminal, and settles a cancelled reservation pre-start.
   neither settle the run nor close the session. Every path that marks a session
   unusable owes this, not only the transport: a foreign durable event, a failed
   settlement fence, an ambiguous admission or cancellation.
+- A session status follows the evidence its own entry publishes, which on an
+  endpoint that gates includes an unresolved interaction the entry names. Not
+  every gate announces a run status: the reference adapter reports one for its
+  input gate and not for its permission gate, so reading the run status alone
+  had it describe a session running beside a run it had just said was blocked.
+- The test kit reads `State` and splices the snapshot into the trace it
+  validates. Without that an adapter's projection never faced the rules it is
+  written against — every assertion in the kit is about the event stream, and a
+  state read that contradicted the run beside it passed all of them.
 - A snapshot handed to a caller owns its own backing array. `active_runs` made
   `SessionState` a value with a slice in it, whose entries carry pointers and
   slices of their own, so the by-value recovery snapshots shared all of it with

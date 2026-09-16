@@ -539,6 +539,15 @@ func (s *state) checkCaptureModel(i, line int, e protocol.Envelope, p protocol.S
 	}
 	position := *p.AsOf.ModelRunSequence
 	if position.Genesis() {
+		// Genesis names the position before the session's first
+		// model-affecting event, so any such event already behind the capture
+		// window supersedes it exactly as a later promotion supersedes an
+		// earlier one. Without this the marker is a way back to the opening
+		// model from any point in the session.
+		if later := s.latestMutationBefore(st, nil, s.captureWindowStart(i, e)); later != nil {
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/model_run_sequence", "capture position names the moment before any model-affecting event, and one had already happened", string(later.id), "genesis", string(later.id))
+			return
+		}
 		if st.openingKnown && p.CurrentModelID != st.openingModel {
 			s.addExpected(CodePrematureSessionMutation, i, line, e, "/payload/current_model_id", "snapshot marked before any model-affecting event reports a model other than the session's opening one", st.openingModel, p.CurrentModelID)
 		}
@@ -591,10 +600,11 @@ func (s *state) checkCaptureModel(i, line int, e protocol.Envelope, p protocol.S
 
 // latestMutationBefore is the session's last model-affecting promotion at or
 // before a capture window that is later than the one anchored, or nil when the
-// anchor is that event. A model-affecting promotion is a started run that
-// applied a session_mutation selection, and later means later in the trace:
-// which promotion moved the default last is a question about the order they
-// reached the trace, not about admission order.
+// anchor is already that event. A nil anchor is the genesis marker, which every
+// model-affecting event is later than. A model-affecting promotion is a started
+// run that applied a session_mutation selection, and later means later in the
+// trace: which promotion moved the default last is a question about the order
+// they reached it, not about admission order.
 func (s *state) latestMutationBefore(st *sessionTrack, anchor *runState, window int) *runState {
 	var latest *runState
 	for _, id := range st.order {
@@ -605,7 +615,10 @@ func (s *state) latestMutationBefore(st *sessionTrack, anchor *runState, window 
 		if _, known := mutationModel(r); !known {
 			continue
 		}
-		if r.startedAt > anchor.startedAt && (latest == nil || r.startedAt > latest.startedAt) {
+		if anchor != nil && r.startedAt <= anchor.startedAt {
+			continue
+		}
+		if latest == nil || r.startedAt > latest.startedAt {
 			latest = r
 		}
 	}
