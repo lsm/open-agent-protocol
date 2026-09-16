@@ -296,7 +296,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// well as in the frame stream, because the serving loop may be inside a
 	// synchronous op and never take that final frame: the host's end of the
 	// session must bound shutdown even then.
-	readerDone := make(chan error, 1)
+	readerDone := make(chan readEnd, 1)
 	// One frame of slack, so the reader is always a frame ahead of the loop:
 	// a loop that has stopped taking frames — parked at the in-flight bound —
 	// would otherwise leave the reader blocked on the handoff, unable to read
@@ -326,10 +326,11 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}
 	var err error
+	var ended readEnd
 	stuck := false
 	select {
 	case err = <-serveDone:
-	case <-readerDone:
+	case ended = <-readerDone:
 		if graceErr, finished := serveGrace(); finished {
 			err = graceErr
 		} else {
@@ -372,10 +373,43 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	case <-drainWindow.C:
 	}
+	// A loop abandoned mid-op never reported the input's own end, so the
+	// reader's account of it stands in: the same host input returns the same
+	// error from Run whether or not a worker was stuck, so a malformed line
+	// still fails the frontend closed with its line number and a transport
+	// read failure still surfaces as itself. Only a clean end leaves the
+	// stall as the whole story.
+	if stuck && err == nil {
+		err = ended.terminal()
+	}
 	if (stuck || !drained) && err == nil {
 		err = ErrShutdownStalled
 	}
 	return err
+}
+
+// readEnd is the reader's account of how the input ended: the line it was
+// reading and what stopped it. The line number counts the reader's own
+// lines, which is the same count the serving loop keeps, so a defect
+// reported from either side names the same line.
+type readEnd struct {
+	line int
+	err  error
+}
+
+// terminal reports the error Run owes its caller for this end, or nil when
+// the host simply closed the input.
+func (e readEnd) terminal() error {
+	switch {
+	case e.err == nil, errors.Is(e.err, io.EOF):
+		return nil
+	case errors.As(e.err, new(*frameDefect)):
+		return &MalformedLineError{Line: e.line, Detail: e.err.Error()}
+	default:
+		// A read failure is not the host's protocol fault: pass the input's
+		// own error through, exactly as the serving loop would have.
+		return e.err
+	}
 }
 
 // frameResult is one line read from the host: frame carries the line without
@@ -393,13 +427,16 @@ type frameResult struct {
 // discipline as the writer's channel. The terminal outcome is also reported
 // on done — buffered, so the report never blocks, and sent before the final
 // frame — because the consumer may be stuck inside an op and never take that
-// frame, and the host's end of the session must still bound shutdown.
-func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- error) {
+// frame, and the host's end of the session must still bound shutdown and
+// still be reported as what it was.
+func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- readEnd) {
 	reader := bufio.NewReader(in)
+	line := 0
 	for {
 		frame, err := readFrame(reader, limit)
+		line++
 		if err != nil {
-			done <- err
+			done <- readEnd{line: line, err: err}
 			frames <- frameResult{frame: frame, err: err}
 			return
 		}

@@ -915,6 +915,54 @@ func TestDisconnectIsObservedWhileAdmissionIsFull(t *testing.T) {
 	}
 }
 
+// TestMalformedLineSurvivesASaturatedBound pins the fail-closed contract
+// against the stuck path: a line this framing cannot carry yields
+// *MalformedLineError with its line number whether or not the serving loop
+// was parked behind the in-flight bound when it arrived. The same input
+// must return the same error from Run, or a host debugging its own framing
+// would be told only that shutdown stalled. The reader counts the lines it
+// read, which is the count the loop keeps, so the number names the same
+// line from either side.
+func TestMalformedLineSurvivesASaturatedBound(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) }) // release the abandoned probes after the assertion
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, io.Discard) }()
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"capabilities","adapter":"hang"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // let the loop park behind the bound
+	// A defect the reader itself raises, since the loop that would raise a
+	// decode failure is exactly what is parked: a carriage return is not
+	// valid framing, and the reader is the one that sees it.
+	if _, err := stdinWriter.Write([]byte("{\"id\":4,\"op\":\"adapters\"}\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		var malformed *MalformedLineError
+		if !errors.As(err, &malformed) {
+			t.Fatalf("Run returned %v, want the malformed line to survive the stall", err)
+		}
+		if malformed.Line != 4 {
+			t.Fatalf("malformed line %d, want 4", malformed.Line)
+		}
+		if malformed.Detail == "" {
+			t.Fatal("malformed error carries no detail")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return behind the saturated bound")
+	}
+}
+
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
 // show: once an invocation has closed admission, it refuses, so a serving
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a
