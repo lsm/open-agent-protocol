@@ -310,7 +310,9 @@ For the catalog (`action.tools.list`), an implementation:
   session's attachments: an attachment belongs to one session, and a response
   carrying no scope is read as what the endpoint publishes to everyone;
 - attributes a call it emits with `source` to the source its own catalog
-  records for that tool.
+  records for that tool — the session's served catalog where it has served one,
+  and otherwise the descriptor's, which is the published attribution until a
+  session-scoped list supersedes it.
 
 For attachment at open (`action.tool_sources.attach`), an implementation:
 

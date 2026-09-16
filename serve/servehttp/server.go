@@ -749,19 +749,30 @@ func (s *Server) resolveAttachments(attachments []protocol.ToolSourceAttachment)
 		case hasLiteralEnvironment(attachment.Environment):
 			return nil, &attachmentRefusal{Source: attachment.ID, Reason: "the daemon accepts only the bare NAME allowlist form in environment"}
 		}
-		if attachment.Kind != protocol.ToolSourceProcess {
+		// The id is looked up before anything is decided from the attachment,
+		// including its kind. Dispatching on the caller's kind first read the
+		// answer out of the question: a `local` attachment naming a configured id
+		// was forwarded verbatim, never checked against the operator's entry at
+		// all, and a `process` attachment naming a `local` entry took the
+		// operator's `local` descriptor back under a request that said
+		// `process`. A configured id is the operator's source, whatever kind the
+		// caller claims it is.
+		configured, ok := s.hub.Registry().ToolSource(attachment.ID)
+		if !ok {
+			if attachment.Kind == protocol.ToolSourceProcess {
+				return nil, &attachmentRefusal{Source: attachment.ID, Reason: "no tool source of that id is configured on this daemon"}
+			}
+			// Nothing to run and nothing configured to contradict: the adapter
+			// decides whether it can attach a source of that kind.
 			resolved = append(resolved, attachment)
 			continue
 		}
-		configured, ok := s.hub.Registry().ToolSource(attachment.ID)
-		if !ok {
-			return nil, &attachmentRefusal{Source: attachment.ID, Reason: "no tool source of that id is configured on this daemon"}
-		}
-		// The registry entry is authoritative for every published member, not
-		// only the three the daemon fills in. A caller that could set
+		// The registry entry is authoritative for every member it carries, not
+		// only the three the daemon runs the source with. A caller that could set
 		// display_name or endpoint on an operator-configured source would label
 		// the operator's own MCP server in the catalog a user reads, which is a
-		// spoof rather than a configuration.
+		// spoof rather than a configuration; one that could set `kind` would
+		// choose how that source is reached.
 		//
 		// A caller that states one anyway is refused rather than silently
 		// overwritten. Substituting would leave a request and its response
@@ -771,7 +782,14 @@ func (s *Server) resolveAttachments(attachments []protocol.ToolSourceAttachment)
 		// validator diagnoses it on a trace assembled from the exchange. Naming
 		// the id alone is the shape the route is for; repeating the operator's
 		// own values is permitted because it contradicts nothing.
+		//
+		// The list is every member protocol.ToolSourceAttachment carries, less
+		// the ones handled above: `id` is the lookup key and cannot disagree,
+		// `command` and `args` are refused outright from the wire, and
+		// `environment` is additive under the bare-NAME allowlist. Nothing else
+		// exists to omit.
 		for _, member := range []struct{ name, wire, operator string }{
+			{"kind", attachment.Kind, configured.Kind},
 			{"display_name", attachment.DisplayName, configured.DisplayName},
 			{"protocol", attachment.Protocol, configured.Protocol},
 			{"endpoint", attachment.Endpoint, configured.Endpoint},

@@ -130,6 +130,12 @@ type state struct {
 	// behaviour, so the gate is settled on the response.
 	pendingLists map[protocol.EnvelopeID]*pendingList
 	pendingOpens map[protocol.EnvelopeID]*pendingOpen
+	// descriptorAttribution is the active descriptor's own tool-to-source
+	// mapping. A descriptor that publishes a catalog publishes an attribution
+	// with it, and until a session-scoped list supersedes it that mapping is
+	// the one a call is judged against — the same reason the descriptor's own
+	// `sources` are held to every rule a served catalog's are.
+	descriptorAttribution map[string]string
 	// declaredSources is the active descriptor's declared tool sources,
 	// normalized across its layers.
 	declaredSources map[string]protocol.ToolSourceDescriptor
@@ -259,6 +265,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// session-lifetime facts the next catalog must still carry.
 		s.catalog, s.catalogKnown = nil, false
 		s.declaredSources = map[string]protocol.ToolSourceDescriptor{}
+		s.descriptorAttribution = nil
 	case protocol.TypeSessionOpenResponse:
 		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)

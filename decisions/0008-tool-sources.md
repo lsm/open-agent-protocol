@@ -158,9 +158,23 @@ checked:
   the catalog a `tool_choice` is judged against, applied here to every session
   catalog);
 - a tool's `source` names a source the same response declares, and a call's
-  `source` names the source the session's catalog records for that tool — or a
-  declared source when the catalog does not list the tool at all
+  `source` names the source the published catalog records for that tool — or a
+  declared source when no published catalog lists the tool at all
   (`unmatched_tool_source`).
+
+There are two published catalogs and they are consulted in order, because one
+supersedes the other. A session's own served catalog is the effective one where
+it has one under the active revision. Otherwise the descriptor's catalog
+answers: a descriptor that publishes a tool under a source has published that
+attribution, and until a session-scoped list replaces it nothing else says
+where that tool comes from. Consulting only the session's catalog left a call
+made before the first list free to attribute any tool to any declared source —
+the inference `source` exists to remove, reintroduced in the window before a
+catalog is served, which for an endpoint that serves none is every window. The
+reasoning is the one the descriptor's `sources` already take: the descriptor is
+a published mapping, not a draft of one. A descriptor whose own catalog is
+ambiguous attributes nothing rather than attributing arbitrarily; it carries
+`duplicate_tool_name` for that already.
 
 The catalog judges a call where its attribution is established, on
 `action.call.requested`, and every later event of that call is held to the
@@ -435,9 +449,29 @@ The registry entry is authoritative for the published members too, not only the
 three the daemon runs the source with. A caller that could set `display_name`
 or `endpoint` on an operator-configured source would label the operator's own
 MCP server in the catalog a user reads, which is a spoof rather than a
-configuration. So `display_name`, `protocol`, and `endpoint` come from the
+configuration; one that could set `kind` would choose how that source is
+reached. So `kind`, `display_name`, `protocol`, and `endpoint` come from the
 registry, and a caller that states one differing from the operator's is refused
 under the same typed shape rather than silently overwritten.
+
+That list is every member `ToolSourceAttachment` carries, less the four handled
+elsewhere, and it is stated that way because "the authoritative members are
+these" is the kind of claim that is falsified by a member nobody thought to
+name. `id` is the lookup key and cannot disagree with itself; `command` and
+`args` are refused outright from the wire; `environment` is additive under the
+bare-`NAME` allowlist. The four above are the remainder.
+
+`kind` was the member that got away, and it got away because it was doing a
+second job: the route dispatched on the caller's kind to decide whether to
+consult the registry at all, which read the answer out of the question. A
+`local` attachment naming a configured id was forwarded verbatim, never checked
+against the operator's entry; a `process` attachment naming a `local` entry took
+the operator's `local` descriptor back under a request that said `process`. The
+id is now looked up first, for every attachment, and the kind is judged like any
+other member: a configured id is the operator's source whatever the caller
+claims it is. An id the registry does not carry is refused when the attachment
+is a `process` one — the daemon will not run an executable it never configured —
+and otherwise passes to the adapter, which has nothing configured to contradict.
 
 Refusing is the part that took a correction. Overwriting seemed harmless —
 the operator's value is the right one either way — but it leaves the request
@@ -489,7 +523,7 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 58 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 59 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -502,8 +536,8 @@ response filling a member the attachment left blank and one contradicting a
 member it stated, the lifetime catalog an attachment binds, a served catalog
 that attributes no source at all, the attachment-only member a published source
 may never carry — in a list and in a descriptor, top level and under a layer —
-a call's attribution and its reassignment mid-lifecycle, a refresh that
-collides with an attachment,
+a call's attribution against a session catalog and against the descriptor's own,
+its reassignment mid-lifecycle, a refresh that collides with an attachment,
 an attach capability disclosing no session-open mode in both directions, one
 published under a layer alone, and the two schema-invalid disclosures no
 request can satisfy — `max_sources: 0` and a transport outside the source-kind
@@ -516,8 +550,9 @@ relaying both typed refusals with the details that name what to change,
 settling the capability and degradation rungs ahead of its own credential rule,
 reading the key out of a layer, reporting a probe it could not read rather than
 falling through to a constraint, refusing an `Origin` header on every route it
-registers, refusing a wire-supplied descriptor member for a configured source,
-and validating a whole open exchange — request beside response — as the trace a
+registers, refusing a wire-supplied descriptor member for a configured source —
+including the `kind` that selects how it is reached, in both directions — and
+validating a whole open exchange — request beside response — as the trace a
 conformance run would collect from the wire (`serve/servehttp`).
 
 Native evidence: Claude Code graduates the catalog at `degraded` on the

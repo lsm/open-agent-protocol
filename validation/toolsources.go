@@ -133,6 +133,19 @@ func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p proto
 		s.catalogAmbiguous = true
 		s.addExpected(CodeDuplicateToolName, i, line, e, "/payload/tools", "the descriptor's effective catalog lists two tools with one name", "one tool per name", name)
 	}
+	// The attribution the descriptor publishes is retained with its sources. A
+	// duplicate name makes the mapping meaningless, and the descriptor already
+	// carries its own diagnostic for that, so an ambiguous catalog attributes
+	// nothing rather than attributing arbitrarily.
+	s.descriptorAttribution = nil
+	if !s.catalogAmbiguous {
+		s.descriptorAttribution = make(map[string]string, len(tools))
+		for _, tool := range tools {
+			if tool.Source != "" {
+				s.descriptorAttribution[tool.Name] = tool.Source
+			}
+		}
+	}
 	for _, tool := range tools {
 		if tool.Source == "" {
 			continue
@@ -652,10 +665,17 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 
 // checkCallSource judges one requested call's attribution against the catalog.
 // A call carrying `source` must name the source the session's catalog records
-// for that tool, or a declared source when the catalog does not list the tool
-// at all; otherwise the call is attributed to the wrong endpoint, which is
-// exactly what `source` exists to prevent a consumer from having to infer from
-// a name.
+// for that tool, or a declared source when no catalog lists the tool at all;
+// otherwise the call is attributed to the wrong endpoint, which is exactly what
+// `source` exists to prevent a consumer from having to infer from a name.
+//
+// Three mappings are consulted in order, and the order is which one supersedes
+// which. The session's own catalog wins where it has one under the active
+// revision. Otherwise the descriptor's catalog answers, because a descriptor
+// that publishes a tool under a source has published that attribution and
+// nothing has replaced it. Only a tool neither mapping lists falls back to "any
+// source this session resolves", which is all that can be said about a tool no
+// published catalog names.
 //
 // It runs on `action.call.requested` alone. The later events of the same call
 // carry an optional `name`, so a catalog lookup there could be evaded by
@@ -678,6 +698,17 @@ func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
 		if track.catalog.sources[p.Source] {
 			return
 		}
+	}
+	// No session catalog has superseded the descriptor, so the descriptor's own
+	// attribution is the published one and the call is judged against it. Without
+	// this a call before the first list could attribute any tool to any declared
+	// source, which is the inference `source` exists to remove: the descriptor
+	// said where that tool comes from, and a call may not say otherwise.
+	if listed, ok := s.descriptorAttribution[p.Name]; ok {
+		if listed != p.Source {
+			s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "a call attributes a tool to a source other than the one the descriptor records", listed, p.Source, p.Name)
+		}
+		return
 	}
 	if track != nil {
 		if _, ok := track.attached[p.Source]; ok {

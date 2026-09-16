@@ -769,3 +769,112 @@ func TestOpenRefusesAWireSuppliedDescriptorMember(t *testing.T) {
 		t.Fatalf("an attachment echoing the operator's own members was refused: %s", envelope.Payload)
 	}
 }
+
+// registryWithLocalToolSource configures the same id as a `local` source, so a
+// wire caller claiming `process` for it is claiming a transport the operator
+// never configured.
+func registryWithLocalToolSource(t *testing.T) *serve.Registry {
+	t.Helper()
+	registry := memoryRegistry(64)
+	if err := registry.RegisterToolSource("workspace-files", protocol.ToolSourceAttachment{
+		Kind: protocol.ToolSourceLocal, DisplayName: "Workspace Files", Endpoint: "local:workspace-files",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+// TestOpenRefusesAWireSuppliedKind closes the member the authoritative list
+// omitted, and the hole was on both sides of it because `kind` used to decide
+// whether the operator's entry was consulted at all. A `local` attachment
+// naming a configured id was forwarded verbatim, never checked against that
+// entry; a `process` attachment naming a `local` entry took the operator's
+// `local` descriptor back under a request that said `process`, which is the
+// silent substitution the whole round before this one was about. The lookup now
+// happens first: a configured id is the operator's source, whatever kind the
+// caller claims, and `kind` is the member where claiming otherwise matters most
+// because it selects how the source is reached.
+func TestOpenRefusesAWireSuppliedKind(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		registry func(*testing.T) *serve.Registry
+		kind     string
+	}{
+		{"a process claim over a local entry", registryWithLocalToolSource, protocol.ToolSourceProcess},
+		{"a local claim over a process entry", registryWithToolSource, protocol.ToolSourceLocal},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			hub, server := newServer(t, testCase.registry(t), Options{})
+			status, envelope := openSessionWith(t, server, "kind", protocol.SessionOpenRequest{
+				ToolSources: []protocol.ToolSourceAttachment{{ID: "workspace-files", Kind: testCase.kind}},
+			})
+			if status != http.StatusBadRequest {
+				t.Fatalf("open status %d, want 400: %s", status, envelope.Payload)
+			}
+			var failure protocol.ErrorResponse
+			if err := envelope.DecodePayload(&failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.Error.Code != "unsupported_feature" || failure.Error.Details["source"] != "workspace-files" {
+				t.Fatalf("refusal %q details %+v", failure.Error.Code, failure.Error.Details)
+			}
+			if !strings.Contains(failure.Error.Message, "kind") {
+				t.Fatalf("refusal %q does not name the member it refused", failure.Error.Message)
+			}
+			if sessions := hub.Sessions(context.Background()); len(sessions) != 0 {
+				t.Fatalf("a refused open left %d sessions behind", len(sessions))
+			}
+		})
+	}
+
+	// The operator's own kind is admitted and the exchange validates as a
+	// trace, which is what the substitution would have broken: a `local` entry
+	// attached as `local` publishes a `local` descriptor under a request that
+	// said `local`.
+	hub, server := newServer(t, registryWithLocalToolSource(t), Options{})
+	descriptor, err := hub.Probe(context.Background(), "memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-local", protocol.SessionOpenRequest{
+		SessionID:   "local",
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "workspace-files", Kind: protocol.ToolSourceLocal}},
+	}, "local", "", string(descriptor.CapabilityRevision))
+	status, response := postEnvelope(t, server, "/adapters/memory/sessions", request)
+	if status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, response.Payload)
+	}
+	capabilitiesRequest, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities.InReplyTo, capabilities.CapabilityRevision = capabilitiesRequest.ID, descriptor.CapabilityRevision
+	trace, err := json.Marshal([]protocol.Envelope{capabilitiesRequest, capabilities, request, response})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().Validate(bytes.NewReader(trace), "local-exchange"); !result.Valid() {
+		t.Fatalf("the open exchange is not a valid trace: %v\ntrace: %s", result.Diagnostics, trace)
+	}
+}
+
+// TestOpenRefusesAnUnconfiguredIDWhateverItsKind pins the other half of moving
+// the lookup first. A `local` attachment naming no configured id still reaches
+// the adapter, because the daemon has nothing to run for it and nothing
+// configured to contradict — that is the path every capability-rung test here
+// depends on, and it must not become a daemon refusal.
+func TestOpenRefusesAnUnconfiguredIDWhateverItsKind(t *testing.T) {
+	_, server := newServer(t, registryWithToolSource(t), Options{})
+	status, envelope := openSessionWith(t, server, "unconfigured-local", protocol.SessionOpenRequest{
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "never-configured", Kind: protocol.ToolSourceLocal}},
+	})
+	// The reference adapter admits a `local` source it has never heard of, so
+	// reaching it is the whole assertion: the daemon did not answer first.
+	if status != http.StatusOK {
+		t.Fatalf("an unconfigured local attachment was refused by the daemon: %s", envelope.Payload)
+	}
+}

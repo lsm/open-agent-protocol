@@ -113,16 +113,18 @@ user's browser can reach `127.0.0.1` with a valid envelope. On
 `POST /adapters/{name}/sessions` a `process` attachment therefore names an
 operator-configured source by `id` only — from the registry document's
 `tool_sources` map — and the daemon fills the rest from its own entry: the
-`command`, `args`, and `environment` it runs the source with, and the
+`command`, `args`, and `environment` it runs the source with, and the `kind`,
 `display_name`, `protocol`, and `endpoint` it publishes for it. A wire-supplied
 command, argument list, or literal `NAME=value` environment value is refused
-before the open is forwarded, and so is a `display_name`, `protocol`, or
+before the open is forwarded, and so is a `kind`, `display_name`, `protocol`, or
 `endpoint` differing from the operator's — a caller that could label the
-operator's own MCP server in the catalog a user reads would be spoofing it, and
-overwriting the value silently would leave the request and its response
-disagreeing about one source. The bare-`NAME` allowlist form is the only
-`environment` a wire caller may write. So an open that names an id alone gets a
-fuller descriptor back than it sent, and never a different one.
+operator's own MCP server in the catalog a user reads would be spoofing it, one
+that could set its `kind` would choose how it is reached, and overwriting either
+silently would leave the request and its response disagreeing about one source.
+The bare-`NAME` allowlist form is the only `environment` a wire caller may
+write. A configured `id` resolves to the operator's source whatever the caller
+claims about it, so an open that names an id alone gets a fuller descriptor back
+than it sent, and never a different one.
 Beside that, every route refuses a request bearing an `Origin` header, and the
 routes that read a request body also require `Content-Type: application/json`.
 The origin refusal wraps the whole mux rather than living in the routes that

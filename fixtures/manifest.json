@@ -3475,6 +3475,22 @@
       ]
     },
     {
+      "id": "descriptor-call-source-mismatch",
+      "path": "semantic-invalid/descriptor-call-source-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "tools-call-source-reassigned",
       "path": "semantic-invalid/tools-call-source-reassigned.json",
       "kind": "semantic-invalid",
