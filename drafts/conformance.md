@@ -19,7 +19,8 @@ Its implemented subset is exercised by the claim
 claim proves the flat envelope, one foreground run per session, `auto -> start`,
 correlated requests and reverse interactions, bounded adapter-journal recovery,
 and the three v0.1 terminal outcomes. It does not claim durable persistence,
-queue/steer/side runs, or orphan terminals.
+steer or side runs, or orphan terminals. Queued reservations beside the started
+run are the `+queue` unit's, not the core claim's.
 
 Conformance units are additive:
 
@@ -287,7 +288,46 @@ An implementation conforms to `+models` if it:
 Model cache refresh, provider auth state, and model alias resolution are outside
 this feature unless a richer profile defines them.
 
-### `+queue`, `+steer`, And `+btw`
+### `+queue`
+
+`+queue` is executable, and
+[Decision 0007](../decisions/0007-queue-delivery.md) froze it. An
+implementation conforms if it:
+
+- advertises `session.message.delivery.queue` above `unavailable`, and
+  discloses a positive `capabilities.response.limits.max_queued_runs_per_session`
+  with it — a queue nothing could ever reach promises nothing — and an
+  `max_active_runs_per_session`, where it states one at all, of at least the
+  queued bound plus the started run;
+- admits an explicit `delivery: "queue"` as a reservation
+  (`admission: "queued"`, `effective_delivery: "queue"`, `status: "queued"`,
+  nothing emitted for it yet) whatever the session holds, and never as a
+  started run;
+- resolves an `auto` submission on a busy session to the same shape and reports
+  `delivery_resolution: "session_busy"`;
+- promotes a reservation by emitting `run.started` only when every
+  earlier-admitted run of the session is terminal, and publishes nothing else
+  in a later-admitted run's domain while an earlier one is nonterminal — except
+  the pre-start terminal of a run that never started, which is published when
+  it happens;
+- refuses what it cannot admit with the wire's `run_active`: a busy session
+  where it advertises no busy outcome, and a submission that would put the
+  nonterminal set or the queued subset above a disclosed bound. It does not
+  report that code for a bound it was not at;
+- reports `session.state.active_runs` — every nonterminal run in admission
+  order, with `queue_position` on each reservation and `active_run_id` naming
+  the started run — wherever `active_run_id` cannot carry the answer, and
+  states the position each snapshot was captured at when it reports a run's
+  pending set, a removed run, or a session default that a promotion is moving;
+- applies a reservation's `model_id` at promotion rather than at admission,
+  under the mode retained from its admission.
+
+An endpoint that cannot queue advertises the capability `unavailable` and
+refuses an explicit `queue` with `unsupported_feature` naming the key; that
+refusal is the discipline, and claiming the unit is not required to make it
+conforming.
+
+### `+steer` And `+btw`
 
 Delivery mode units are independent. An implementation conforms to one of these
 units if it:

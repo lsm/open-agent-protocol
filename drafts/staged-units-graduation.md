@@ -1951,7 +1951,25 @@ conformance draft's `+models` unit text cites the fixtures.
 
 ## T2. Queue delivery
 
-Unit name: `queue`. Planned decision: 0007.
+Unit name: `queue`. Decision:
+[0007](../decisions/0007-queue-delivery.md), which graduates the admission
+overlap, the ordering rule, the disclosed bounds, the refusal in both
+directions, and the state that describes a session holding a reservation. What
+shipped differs from the plan below in four recorded places. The
+`session_busy` resolution is required only where the session was actually busy,
+which is this section's own semantics bullet rather than its validator bullet:
+the looser reading would invalidate decision 0002's canonical idle
+reservations, which the gate requires to keep their meaning. The reservation
+gate judges what a descriptor says rather than demanding one exist, for the
+same reason. `queue-advertised-zero-limit` is schema-invalid rather than
+semantic, because the bundle constrains the bound to at least 1 and the
+semantic phase runs only on a trace whose schema phase was clean.
+`queue-over-active-limit` discloses an active bound that exactly accommodates
+the queued subset, because a compatible active bound is at least the queued
+bound plus the started run and the two therefore cannot be reached apart. The
+delivery slice through `serve` — ordered delivery across run domains,
+`?follow=session`, the boundary and end signals, and the cursor's interleave
+member — is not in 0007 and lands with the units that need it.
 
 ### Scope
 
