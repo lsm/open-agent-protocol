@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v2"
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -39,7 +39,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-f",
-    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v2"
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -63,7 +63,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-f",
-    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v2"
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -100,7 +100,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-f",
-    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v2"
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -125,7 +125,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-f",
-    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v2"
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -149,7 +149,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-f",
-    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v2"
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -171,6 +171,6 @@
     "timestamp_ms": 10,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v2"
+    "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3"
   }
 ]

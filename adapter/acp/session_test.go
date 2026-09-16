@@ -1031,6 +1031,90 @@ func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
 	}
 }
 
+// TestConfiguredServersAreDeclaredBeforeTheyAreReserved closes the loop the
+// collision refusal left open. attachToolSources reserves every configured MCP
+// server's name, and ACP routes by that name, so the reservation is real — but
+// until the descriptor declared them a caller could not see it: a `process`
+// attachment within every disclosed limit, carrying no defect any rule names,
+// came back unsatisfiable against a source nothing had published. That is a
+// refusal no disclosure covers, which this unit's own validator reports as
+// undisclosed_attach_limit.
+//
+// Declared in the descriptor and in the session's sources both, because the two
+// are held to each other: a snapshot publishing only the attachments would
+// contradict the descriptor it was opened under.
+func TestConfiguredServersAreDeclaredBeforeTheyAreReserved(t *testing.T) {
+	configured := []native.MCPServer{{Name: "files", Command: "/opt/mcp-files"}}
+	a, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, rpc.InitializeResponse, error) {
+			return newFake(), rpc.InitializeResponse{ProtocolVersion: 1, AgentCapabilities: rpc.AgentCapabilities{}}, nil
+		}),
+		WorkingDirectory: "/workspace", Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32,
+		MCPServers: configured,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := a.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := descriptor.Capabilities.Sources
+	if len(declared) != 1 || declared[0].ID != "files" || declared[0].Kind != protocol.ToolSourceProcess {
+		t.Fatalf("descriptor declares %+v, want the configured server as a process source", declared)
+	}
+	// The projection carries no attachment-only member: the operator's command
+	// is not something a client may read back out of the descriptor.
+	if declared[0].Endpoint != "" {
+		t.Fatalf("descriptor invented an endpoint for a configured server: %+v", declared[0])
+	}
+
+	session, err := a.Open(context.Background(), base.OpenRequest{
+		SessionID: "session", Participant: protocol.Participant{ID: "user"},
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "docs", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-docs"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background())
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := map[string]bool{}
+	for _, source := range state.Sources {
+		published[source.ID] = true
+	}
+	if !published["files"] || !published["docs"] {
+		t.Fatalf("session publishes %+v, want the configured server beside the attachment", state.Sources)
+	}
+}
+
+// TestNewRefusesAnUnusableConfiguredServer holds a configured name to what a
+// published source id must be, because it is now one: present, and one per
+// source. These are the two defects an attachment is refused for, at the other
+// place a name enters this adapter.
+func TestNewRefusesAnUnusableConfiguredServer(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		configured []native.MCPServer
+		want       string
+	}{
+		{"no name", []native.MCPServer{{Command: "/opt/mcp-files"}}, "needs a name"},
+		{"one name twice", []native.MCPServer{{Name: "files", Command: "/opt/a"}, {Name: "files", Command: "/opt/b"}}, "configured twice"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := New(Config{
+				Factory: countingFactory(newFake(), new(int)), WorkingDirectory: "/workspace",
+				Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32, MCPServers: testCase.configured,
+			})
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("New error = %v, want one reporting %q", err, testCase.want)
+			}
+		})
+	}
+}
+
 // TestAttachRefusesASourceWithNoID is the id half of admission, and the one
 // that otherwise produces a schema-invalid session rather than a wrong one.
 // Everything this adapter does with an attachment is done by its id: it is the

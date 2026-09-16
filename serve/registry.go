@@ -144,12 +144,25 @@ func (r *Registry) RegisterToolSource(id string, source protocol.ToolSourceAttac
 // to the call that can still be corrected, and says which id and which field.
 //
 // The rule is stated forwards only. A non-process entry carrying no command is
-// complete, because nothing spawns it, and which kinds an operator may
-// configure stays the adapter's disclosed transports to answer at admission,
-// not this registry's.
+// complete, because nothing spawns it, and *which* of the protocol's kinds an
+// operator may configure stays the adapter's disclosed transports to answer at
+// admission, not this registry's.
+//
+// A kind outside the protocol is a different question, and the only one this
+// loader can answer. It is not a transport some adapter might accept: it is not
+// in the vocabulary at all, so the schema refuses it on the wire and no client
+// can ever name it. An entry carrying one is unreachable in both directions —
+// a request repeating it fails schema validation, and a request naming any
+// valid kind is refused for contradicting the configured one — so it is
+// permanently dead config, reported here rather than discovered by an operator
+// wondering why their source is unusable. That is well-formedness, the same
+// class as the empty id, not a judgement about which transports are allowed.
 func validateToolSource(id, kind, command string) error {
 	if kind == "" {
 		return fmt.Errorf("serve: tool source %q: kind is required", id)
+	}
+	if !protocol.IsToolSourceKind(kind) {
+		return fmt.Errorf("serve: tool source %q: kind %q is not a tool source kind", id, kind)
 	}
 	if kind == protocol.ToolSourceProcess && command == "" {
 		return fmt.Errorf("serve: tool source %q: a process source needs a command", id)

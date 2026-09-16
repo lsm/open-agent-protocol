@@ -22,8 +22,77 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "name": "mcp__files__read_file",
+      "arguments_json": {
+        "path": "/tmp/x"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-7",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "name": "mcp__files__read_file"
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "in_reply_to": "event-6",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-8",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "agent",
+      "execution_owner": "claude-code",
+      "name": "mcp__files__read_file",
+      "result": "file contents"
+    },
+    "sequence": 4,
+    "timestamp_ms": 6,
+    "in_reply_to": "event-7",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.263-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-5",
+    "id": "event-9",
     "payload": {
       "session_id": "session",
       "run_id": "run-3",
@@ -36,8 +105,8 @@
       "usage": {},
       "duration_ms": 130
     },
-    "sequence": 2,
-    "timestamp_ms": 4,
+    "sequence": 5,
+    "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-3",
     "capability_revision": "claude-code-2.1.263-oap-v3"

@@ -1307,18 +1307,33 @@ func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
 	}
 }
 
-// TestCallCarriesTheCatalogSource is the other half of the same attribution.
-// This adapter advertises action.tools.list, so a consumer should be able to
-// relate an observed call to the catalog entry without parsing the tool name
-// again — which is what `source` exists for. The value is read out of the
-// projected catalog rather than derived a second time from the name, so the
-// call and the catalog cannot disagree.
+// TestCallCarriesTheCatalogSource is the other half of the same attribution,
+// and the half bounded by what the endpoint has published. This adapter
+// advertises action.tools.list, so a consumer should be able to relate an
+// observed call to the catalog entry without parsing the tool name again —
+// which is what `source` exists for. The value is read out of the projected
+// catalog rather than derived a second time from the name, so the call and the
+// catalog cannot disagree.
+//
+// It is then filtered to the sources the descriptor declares, because `source`
+// is a cross-reference and an event stream carries only the descriptor and the
+// events. A session's catalog reaches that stream only if somebody asks, and
+// this one is degraded and served on request by design, so a call naming
+// `mcp:<server>` in a stream that never listed tools names an id nothing in it
+// declares — which this unit's own validator reports as unmatched_tool_source.
+// The per-server attribution is not lost; it stays in the catalog, which is
+// where a consumer that wants it asks.
 func TestCallCarriesTheCatalogSource(t *testing.T) {
 	session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
 	session.projectCatalogLocked(catalogFrame(t))
 	for _, testCase := range []struct{ tool, source string }{
-		{"mcp__files__read_file", mcpSourcePrefix + "files"},
+		// The descriptor declares the native source, so a natively attributed
+		// call resolves in any trace.
 		{"Bash", nativeToolSource},
+		// It declares no MCP server — they are this session's, learned from its
+		// own system/init frame — so a call names none, although the catalog
+		// below still attributes the tool exactly.
+		{"mcp__files__read_file", ""},
 		// A tool no published catalog lists is one the endpoint has said
 		// nothing about; inventing an attribution for it would be the guess
 		// the member exists to replace.
@@ -1336,5 +1351,20 @@ func TestCallCarriesTheCatalogSource(t *testing.T) {
 	fresh := &Session{state: protocol.SessionState{SessionID: "session"}}
 	if got := fresh.catalogSourceLocked("Bash"); got != "" {
 		t.Fatalf("a session with no catalog attributed a call to %q", got)
+	}
+
+	// The catalog keeps the attribution the call cannot carry, so the two say
+	// the same thing about the same tool at different resolutions: the call
+	// names what any reader can resolve, the catalog names the server exactly.
+	catalog, err := session.Tools(context.Background(), protocol.ToolsListRequest{
+		SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range catalog.Tools.Tools {
+		if tool.Name == "mcp__files__read_file" && tool.Source != mcpSourcePrefix+"files" {
+			t.Fatalf("the catalog lost the attribution the call gave up: %+v", tool)
+		}
 	}
 }

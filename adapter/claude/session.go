@@ -806,9 +806,9 @@ func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
 }
 
-// catalogSourceLocked reports the source this session's published catalog
-// records for one tool name, and "" when there is no catalog yet or it does
-// not list the tool.
+// catalogSourceLocked reports the source an emitted call may name for one tool
+// name, and "" when the endpoint has published no attribution a consumer of
+// this stream could resolve.
 //
 // This adapter advertises action.tools.list, so a consumer should be able to
 // relate an observed call to the catalog entry without re-parsing the tool
@@ -817,18 +817,47 @@ func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
 // second derivation is a second chance to disagree with the catalog, and the
 // catalog is what a consumer resolves the id against.
 //
-// An empty answer is an honest one. Before the first `system/init` frame this
-// session has no catalog, and a tool the catalog does not list is one the
-// endpoint has published no attribution for; inventing `claude-code-native`
-// for either would be the guess the member exists to replace.
+// It is then filtered to what the endpoint has actually published, which is
+// the rule this adapter got wrong. `source` is a cross-reference, and a
+// cross-reference a reader cannot follow is not one. An event stream carries
+// the descriptor and the events; a session's catalog reaches it only if
+// somebody asks, and this catalog is advertised degraded and served on request
+// by design, so a consumer may observe a whole run without one. A call
+// attributed to `mcp:<server>` in such a stream names an id nothing in it
+// declares — which this unit's own validator reports as
+// `unmatched_tool_source`, the adapter failing a rule it exists to prove.
+//
+// So a call names a source only where the descriptor declares it. That is the
+// endpoint's native source, and only it: the MCP servers are learned from this
+// session's system/init frame, they belong to the session, and there is no
+// publication in the event stream that could carry them before the calls —
+// session.state.updated is the protocol's channel for a state change, and it
+// requires a run sequence, while this frame also arrives outside any run. The
+// attribution is not lost; it stays in the session's catalog, which is where a
+// consumer that wants it asks, and where the per-server mapping is exact.
+//
+// The reverse case is ACP's, and the two are one rule with different facts:
+// ACP's servers are the *adapter's* configuration, known before any session,
+// so its descriptor declares them and a call may name them.
+//
+// An empty answer is an honest one, as it already was before the first
+// `system/init` frame and for a tool no catalog lists. Inventing
+// `claude-code-native` for any of the three would be the guess the member
+// exists to replace.
 func (s *Session) catalogSourceLocked(name string) string {
 	if !s.catalogKnown {
 		return ""
 	}
 	for _, tool := range s.catalog {
-		if tool.Name == name {
-			return tool.Source
+		if tool.Name != name {
+			continue
 		}
+		for _, declared := range endpointSources() {
+			if declared.ID == tool.Source {
+				return tool.Source
+			}
+		}
+		return ""
 	}
 	return ""
 }

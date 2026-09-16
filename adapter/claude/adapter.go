@@ -35,6 +35,12 @@ const (
 // request, so a consumer may observe a whole run without asking for one; the
 // attribution on those calls has to resolve against something, and the
 // descriptor is the only thing published before the first list.
+//
+// That cuts both ways, and this list is therefore the exact set a call may
+// name: catalogSourceLocked stamps `source` only where this slice declares it.
+// Publishing and attributing are one decision — an endpoint may attribute to
+// what it has published, and to nothing else — so excluding a source here is
+// also a decision not to name it on a call.
 func endpointSources() []protocol.ToolSourceDescriptor {
 	return []protocol.ToolSourceDescriptor{
 		{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"},

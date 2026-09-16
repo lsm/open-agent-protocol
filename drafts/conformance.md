@@ -333,7 +333,17 @@ For the catalog (`action.tools.list`), an implementation:
   advertising this key has the answer and is publishing it everywhere except
   where a consumer needs it. A tool that catalog does not list is one the
   endpoint has published no attribution for, and a call for it may name none,
-  or name any source the session resolves.
+  or name any source the session resolves;
+- names on a call only a source the trace that carries the call also publishes.
+  `source` is a cross-reference, and a cross-reference a reader cannot follow
+  is not one: a call naming a source no envelope in the trace declares is
+  `unmatched_tool_source`. An endpoint whose sources are known before any
+  session declares them in its descriptor and may name them anywhere; one that
+  learns a source from a session may name it only where the session has
+  published it, and otherwise emits the call with no `source` and keeps the
+  attribution in the catalog, which is exact and is what a consumer asks for.
+  Publishing and attributing are one decision — an endpoint may attribute to
+  what it has published, and to nothing else.
 
 For attachment at open (`action.tool_sources.attach`), an implementation:
 

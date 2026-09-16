@@ -325,10 +325,17 @@ func TestLoadRegistryProcessToolSourceNeedsCommand(t *testing.T) {
 		t.Fatalf("load error = %v", err)
 	}
 
-	// The rule is stated forwards only. A non-process entry carrying no command
-	// is a complete entry, because nothing spawns it; which kinds an operator
-	// may configure is the adapter's disclosed transports to answer at
-	// admission, not this loader's.
+	// A kind outside the protocol is refused on this path too, because both
+	// paths share one check.
+	path = writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"bogus-tools": {"kind": "bogus"}}}`)
+	if _, err := LoadRegistry(path, os.LookupEnv); err == nil || !strings.Contains(err.Error(), "is not a tool source kind") {
+		t.Fatalf("load error = %v", err)
+	}
+
+	// The command rule is stated forwards only. A non-process entry carrying no
+	// command is a complete entry, because nothing spawns it; which of the
+	// protocol's kinds an operator may configure is the adapter's disclosed
+	// transports to answer at admission, not this loader's.
 	path = writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"remote-tools": {"kind": "remote", "endpoint": "https://tools.example"}}}`)
 	registry, err := LoadRegistry(path, os.LookupEnv)
 	if err != nil {
@@ -359,6 +366,13 @@ func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) 
 		want   string
 	}{
 		{"no kind", protocol.ToolSourceAttachment{Command: "/usr/local/bin/mcp-filesystem"}, "kind is required"},
+		// A kind outside the protocol is dead config in both directions: the
+		// schema refuses it on the wire, so no client can name it, and a request
+		// naming any valid kind is refused for contradicting the configured one.
+		// That is well-formedness, the same class as the empty id — not a
+		// judgement about which of the protocol's transports are allowed, which
+		// stays the adapter's to make.
+		{"a kind outside the protocol", protocol.ToolSourceAttachment{Kind: "bogus"}, `kind "bogus" is not a tool source kind`},
 		{"a process source with no command", protocol.ToolSourceAttachment{Kind: protocol.ToolSourceProcess}, "a process source needs a command"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

@@ -20,7 +20,7 @@ import (
 const (
 	ACPVersion             = 1
 	SchemaVersion          = "1.21.0"
-	CapabilityRevision     = "acp-v1.7.0-schema-v1.21.0-oap-v2"
+	CapabilityRevision     = "acp-v1.7.0-schema-v1.21.0-oap-v3"
 	defaultJournalCapacity = 256
 )
 
@@ -75,6 +75,21 @@ func New(config Config) (*Adapter, error) {
 	}
 	if config.WorkingDirectory == "" || !filepath.IsAbs(config.WorkingDirectory) {
 		return nil, errors.New("acp adapter: absolute working directory is required")
+	}
+	// A configured server's name is now a published source id, so it is held to
+	// what a source id must be: present, and one per source. An empty one would
+	// put a descriptor with an empty required `id` on the wire, and a duplicate
+	// would make the descriptor's own catalog ambiguous — the same two defects
+	// an attachment is refused for, at the other place a name enters.
+	seen := make(map[string]bool, len(config.MCPServers))
+	for _, configured := range config.MCPServers {
+		if configured.Name == "" {
+			return nil, errors.New("acp adapter: a configured MCP server needs a name")
+		}
+		if seen[configured.Name] {
+			return nil, fmt.Errorf("acp adapter: MCP server %q is configured twice", configured.Name)
+		}
+		seen[configured.Name] = true
 	}
 	if config.Clock == nil {
 		config.Clock = systemClock{}
@@ -155,7 +170,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute":            {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle is normalized"},
 		"action.permissions":              {Level: protocol.SupportNative, Reason: "ACP permission choice semantics with synthesized portable identity"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "acp.v1", Name: "ACP v1 Adapter", Version: "1.7.0", Adapter: "acp-v1-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "run", CancellationImplementation: "native_session_notification"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "acp.v1", Name: "ACP v1 Adapter", Version: "1.7.0", Adapter: "acp-v1-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: a.configuredSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "run", CancellationImplementation: "native_session_notification"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -204,7 +219,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: attachedSources(req.ToolSources)}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
+	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: a.sessionSources(req.ToolSources)}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
 }
@@ -241,6 +256,12 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 	// than appended. ACP names its MCP servers by that id, so two identically
 	// named entries would make both the catalog's attribution and the native
 	// routing ambiguous, and the schema does not enforce uniqueness.
+	//
+	// The configured half of this set is declared in the descriptor and in the
+	// session's own sources, so the collision is one a caller can see before it
+	// sends: a refusal for a name nothing published would be a refusal no
+	// disclosure covers, which is the defect this unit's own validator reports
+	// as undisclosed_attach_limit.
 	seen := make(map[string]bool, len(a.config.MCPServers)+len(attachments))
 	for _, configured := range a.config.MCPServers {
 		seen[configured.Name] = true
@@ -294,6 +315,59 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 		servers = append(servers, server)
 	}
 	return servers, nil
+}
+
+// configuredSources publishes the MCP servers the operator configured this
+// adapter with, as descriptors.
+//
+// They are declared because they are reserved. attachToolSources refuses an
+// attachment whose id collides with one of them, and ACP names its servers by
+// that id, so the collision is real — but until the descriptor said so, the
+// reservation was invisible: a caller sending a `process` attachment within
+// every disclosed limit got an unsatisfiable refusal naming a source it had no
+// way to know was taken, which the validator reports as
+// `undisclosed_attach_limit` because no disclosure covered it. Declaring them
+// makes the collision checkable in both directions, which is the shape this
+// unit's refusals are held to everywhere else.
+//
+// This is the opposite call to Claude's, and the two are consistent rather than
+// in tension, because the facts are different. Claude's MCP servers are learned
+// from a session's own `system/init` frame: they are that session's, known only
+// once it exists, so publishing them endpoint-wide would present one caller's
+// configuration as everyone's. These are the *adapter's* configuration, fixed
+// before any session opens and applying to every one of them. That is precisely
+// what an endpoint-level descriptor is for. The test is where the fact comes
+// from and when it is known, not whether it happens to be an MCP server.
+//
+// The projection carries no command, args, or environment — the same rule
+// attachedSources keeps — and no endpoint, because ACP's configured server
+// carries none and an invented one would put a value on the wire the operator
+// never wrote.
+func (a *Adapter) configuredSources() []protocol.ToolSourceDescriptor {
+	if len(a.config.MCPServers) == 0 {
+		return nil
+	}
+	sources := make([]protocol.ToolSourceDescriptor, 0, len(a.config.MCPServers))
+	for _, configured := range a.config.MCPServers {
+		sources = append(sources, protocol.ToolSourceDescriptor{
+			ID: configured.Name, Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
+		})
+	}
+	return sources
+}
+
+// sessionSources is the union a session publishes: the adapter's configured
+// servers and the open's attachments, in that order. Both are sources the
+// session resolves, and the descriptor declares the first of them, so a
+// snapshot that carried only the second would contradict the descriptor it was
+// opened under — which is exactly what the unit's union rule diagnoses.
+func (a *Adapter) sessionSources(attachments []protocol.ToolSourceAttachment) []protocol.ToolSourceDescriptor {
+	configured := a.configuredSources()
+	attached := attachedSources(attachments)
+	if len(configured) == 0 {
+		return attached
+	}
+	return append(configured, attached...)
 }
 
 // attachedSources is the sanitized projection the session publishes: the

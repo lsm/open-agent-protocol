@@ -49,6 +49,22 @@
   },
   {
     "index": 7,
+    "type": "observe:assistant",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.requested + synthesized started (MCP tool, no source on the call)"
+  },
+  {
+    "index": 8,
+    "type": "observe:user",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.completed"
+  },
+  {
+    "index": 9,
     "type": "observe:result/success",
     "direction": "cli-to-host",
     "classification": "mapped",
@@ -56,7 +72,7 @@
     "oap": "run terminal"
   },
   {
-    "index": 8,
+    "index": 10,
     "type": "sync:wait-run",
     "direction": "harness-control",
     "classification": "mapped",
@@ -64,7 +80,7 @@
     "oap": "submission reap and stream drain"
   },
   {
-    "index": 9,
+    "index": 11,
     "type": "oap_control:assert-catalog",
     "direction": "harness-control",
     "classification": "mapped",
@@ -72,7 +88,7 @@
     "oap": "action.tools.list.response projected from system/init"
   },
   {
-    "index": 10,
+    "index": 12,
     "type": "oap_control:close",
     "direction": "harness-control",
     "classification": "mapped",

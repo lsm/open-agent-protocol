@@ -575,7 +575,12 @@ conformance run would collect from the wire (`serve/servehttp`).
 Native evidence: Claude Code graduates the catalog at `degraded` on the
 per-turn `system/init` frame, now pinned in
 [the ledger](../research/claude-code-agent-sdk-2.1.263-mapping.md) and executed
-by the corpus case `tools-catalog-sources` through the production reducer. ACP
+by the corpus case `tools-catalog-sources` through the production reducer. That
+case also calls an MCP tool in a stream that never lists tools, which is the
+shape the attribution rule turns on: the emitted call carries no `source`, the
+catalog asserted afterwards attributes the same tool to `mcp:files` exactly,
+and the trace validates. Against the reducer before the fix it fails with
+`unmatched_tool_source`, which is what no case covered. ACP
 graduates attachment at `native` with `modes: ["session_open"]` and
 `limits.transports: ["process"]` on `session/new`'s `mcpServers`, executed by
 the corpus case `open-with-tool-sources`. Its admission is decided before the
@@ -647,8 +652,38 @@ rediscovered from the code.
   Because the catalog is `degraded` and served only on request, a consumer may
   observe a whole run without asking for one, so the descriptor declares
   `claude-code-native`: without it a natively attributed call would resolve
-  against nothing in such a trace. The MCP servers a session's operator
-  configured stay out of the descriptor, because they are that session's.
+  against nothing in such a trace.
+
+  **A call therefore names a source only where the descriptor declares it, and
+  the MCP servers are not declared.** This corrects a decision recorded here as
+  deliberate and wrong. The exclusion of the MCP servers was right — Claude
+  learns them from a session's own `system/init` frame, so they are not known
+  before a session exists and publishing them endpoint-wide would present one
+  caller's configuration as everyone's — but it was paired with an attribution
+  that named them anyway, and the two cannot both stand. An event stream
+  carries the descriptor and the events; a session's catalog reaches it only if
+  somebody asks, and this catalog is served on request by design. So a call
+  naming `mcp:<server>` in such a stream names an id nothing in it declares,
+  which this unit's own validator reports as `unmatched_tool_source`: the
+  adapter was failing the rule its corpus exists to prove, and no corpus case
+  caught it because none called an MCP tool.
+
+  The alternatives were weighed and are unavailable rather than merely worse.
+  Journalling the catalog exchange puts hub behaviour inside an adapter
+  question. Publishing the servers per session needs a channel the stream
+  carries before the calls: `session.state.updated` is the protocol's channel
+  for a state change, it requires a run sequence, and Claude also learns this
+  frame outside any run — so there is nowhere to put it. What is left is to
+  attribute only what the endpoint has published, which the descriptor does
+  unconditionally.
+
+  Nothing is lost that a consumer cannot get. The per-server attribution stays
+  exact in the session's catalog, which is where a consumer that wants it asks,
+  and `source` keeps its meaning — a cross-reference a reader can follow. The
+  reverse case is ACP's, below: its servers are the *adapter's* configuration,
+  known before any session, so its descriptor declares them and a call there
+  may name them. One rule, two adapters, opposite outcomes because the facts
+  differ in when they are known.
 - **Claude answers an unscoped catalog request with its endpoint-level
   catalog.** Everything else it knows was learned from one session's
   `system/init` frame, so answering with it would present one caller's MCP
@@ -701,6 +736,25 @@ rediscovered from the code.
   which leaves no gap, because what takes over is the *new* descriptor's
   attribution, rebuilt from the next `capabilities.response`. The fallback is
   never to older information.
+- **ACP declares the MCP servers it was configured with, because it reserves
+  their names.** Admission refuses an attachment whose id collides with one, and
+  ACP routes by that id, so the collision is real — but while the descriptor
+  said nothing about them the reservation was invisible: a `process` attachment
+  within every disclosed limit, carrying no defect any rule names, came back
+  unsatisfiable against a source nothing had published. A refusal no disclosure
+  covers is precisely what this unit's own validator reports as
+  `undisclosed_attach_limit`, so the adapter was failing a rule it enforces.
+  They are declared in the descriptor and in each session's sources both,
+  because the union rule holds the two to each other.
+
+  This is the opposite call to Claude's above, and the distinction is the point
+  rather than an inconsistency: Claude's MCP servers are learned from a
+  session's `system/init` frame and belong to that session, while ACP's are the
+  *adapter's* configuration, fixed before any session opens and applied to every
+  one of them. An endpoint-level descriptor is exactly where a fact of that
+  second kind belongs. A configured name is also held to what a published source
+  id must be — present, and one per source — at construction, which are the two
+  defects an attachment is refused for, at the other place a name enters.
 - **An attachment with no `id` is refused before the child starts**, beside
   the kind and the command. Everything an adapter does with an attachment is
   done by its id: it is the collision key, the name ACP routes the MCP server
@@ -712,7 +766,8 @@ rediscovered from the code.
   admits attachments at all, so the two admitting ones now state one rule.
 - **Both native revisions are bumped** (`claude-code-2.1.263-oap-v3`, which
   also declares the endpoint's native source,
-  `acp-v1.7.0-schema-v1.21.0-oap-v2`) and the reference adapter's with them
+  `acp-v1.7.0-schema-v1.21.0-oap-v3`, which declares the configured ones) and
+  the reference adapter's with them
   (`reference-memory-v5`, superseding the `v3` Decision 0006 introduced),
   because a revision identifies exactly one descriptor and each of the three
   changed. `v4` is skipped rather than reused: the units graduating in parallel
@@ -780,6 +835,17 @@ rediscovered from the code.
   `Content-Type: application/json` on the POSTs that carry a body. The two
   that do not — `close` on each client — carry no body and no content type,
   which is why the media-type rule is scoped to the routes that read one.
+- The registry refuses an entry whose `kind` is not one of the protocol's five.
+  This is not the earlier proposal to narrow the registry to `process` entries,
+  which was declined and stays declined: that asked the loader to decide which
+  of the protocol's transports an operator may configure, which is the adapter's
+  disclosed `transports` to answer at admission. A kind outside the vocabulary
+  is a question only the loader can answer, because no adapter can ever accept
+  it and no client can ever name it — the schema refuses it on the wire, and a
+  request naming any valid kind is refused for contradicting the configured one,
+  so the entry is unreachable in both directions. That makes it well-formedness,
+  the same class as the empty attachment id, and the three registry rules read
+  as one position: judge what an entry *is*, never which transports are allowed.
 - The registry refuses a `process` entry with no `command`, on both
   registration paths, because they are one surface. The check lives in
   `RegisterToolSource`, which the config loader reaches through with the value

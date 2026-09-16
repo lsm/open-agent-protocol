@@ -88,7 +88,12 @@ A tool catalog says where each of its tools comes from. `action.tools.list.respo
 carries `sources` — `{ id, kind, display_name?, protocol?, endpoint? }` — and
 each `ToolDefinition` carries the `source` id it belongs to, so a consumer
 attributes a call to an MCP server without parsing a namespaced name, and
-`action.call.*` may carry the same id. A source `id` is unique across a
+`action.call.*` may carry the same id — but only one the trace carrying the
+call also publishes, because a cross-reference a reader cannot follow is not
+one. An endpoint whose sources are known before any session declares them in
+its descriptor and may name them anywhere; one that learns a source from a
+session emits the call with no `source` and keeps the exact attribution in the
+catalog, which is what a consumer asks for. A source `id` is unique across a
 session's catalog and a tool `name` is unique whatever its source. The catalog
 is gated on `action.tools.list` and nothing else: `action.tools` means
 lifecycle observation, and several adapters observe tool calls while publishing
@@ -210,9 +215,11 @@ entry before starting with that document.) A `process` entry must carry a
 entry without one could never resolve, and the failure is reported when the
 entry is registered — naming the source — rather than as a generic
 `open_failed` on the first open that attaches it. Other kinds need none,
-because nothing spawns them. The rule belongs to `Registry.RegisterToolSource`,
-which the config loader goes through, so an embedding host registering entries
-programmatically meets the same check rather than a weaker one. A client attaches one by `id` and
+because nothing spawns them. A `kind` outside the protocol's five is refused
+too, because no adapter can accept it and no client can name it. Both rules
+belong to `Registry.RegisterToolSource`, which the config loader goes through,
+so an embedding host registering entries programmatically meets the same checks
+rather than weaker ones. A client attaches one by `id` and
 nothing else — see "Tool sources" above for why the wire form is refused on
 that route.
 
