@@ -80,17 +80,23 @@ type fakeClient struct {
 	promptErr        error
 	foreignAdmission bool
 	interrupts       int
-	waits            int
-	historyErr       error
-	historyPage      native.HistoryPage
-	lastPromptID     native.MessageID
-	subscribeCtx     context.Context
-	prompts          []native.PromptRequest
-	closed           bool
-	// idleGate, when set, holds wait-idle until the corpus has delivered the
-	// whole native stream. Real wait-idle returns only once the run is
-	// quiescent, which implies every step event is already durable; returning
-	// immediately would let settlement race the not-yet-delivered later steps.
+	actives          int
+	activeErr        error
+	// activeFor reports the session as natively active for this many leading
+	// polls, modelling an agent loop whose drain is still running.
+	activeFor    int
+	historyErr   error
+	historyPage  native.HistoryPage
+	lastPromptID native.MessageID
+	subscribeCtx context.Context
+	prompts      []native.PromptRequest
+	closed       bool
+	// idleGate, when set, reports the session as natively active until it is
+	// closed, holding settlement until the corpus has delivered the whole
+	// native stream. The real active set holds a session for one whole agent
+	// loop drain, which implies every step event of the turn is already
+	// durable; reporting idle immediately would let settlement race the
+	// not-yet-delivered later steps.
 	idleGate <-chan struct{}
 	// model is the native session model CreateSession echoes to the adapter.
 	model *native.ModelRef
@@ -132,21 +138,32 @@ func (f *fakeClient) Interrupt(context.Context, native.SessionID) error {
 	f.interrupts++
 	return nil
 }
-func (f *fakeClient) WaitIdle(ctx context.Context, _ native.SessionID) error {
+func (f *fakeClient) Active(ctx context.Context) (map[native.SessionID]bool, error) {
 	f.mu.Lock()
-	f.waits++
-	gate := f.idleGate
+	f.actives++
+	gate, err := f.idleGate, f.activeErr
+	running := false
+	if f.activeFor > 0 {
+		f.activeFor--
+		running = true
+	}
 	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if gate != nil {
 		select {
 		case <-gate:
-		case <-ctx.Done():
-			return ctx.Err()
+		default:
+			running = true
 		}
 	}
-	return nil
-}
-func (f *fakeClient) Active(context.Context) (map[native.SessionID]bool, error) {
+	if running {
+		return map[native.SessionID]bool{f.session: true}, nil
+	}
 	return map[native.SessionID]bool{}, nil
 }
 func (f *fakeClient) History(_ context.Context, _ native.SessionID, after int64, _ int) (native.HistoryPage, error) {
@@ -206,7 +223,7 @@ func TestProbeReportsExplicitDeliveryUnavailable(t *testing.T) {
 func openTest(t *testing.T, client *fakeClient, capacity int) (base.Session, *fakeSubscription) {
 	t.Helper()
 	subscription := client.subscription
-	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity, SettlePollMin: time.Millisecond, SettlePollMax: 2 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,11 +329,13 @@ func TestCompletedRunDerivesTerminalFromQuiescence(t *testing.T) {
 	if completed.StopReason != "stop" || completed.Usage == nil || completed.Usage.InputTokens != 2 || completed.Usage.OutputTokens != 5 {
 		t.Fatalf("completed=%+v", completed)
 	}
+	// A loop that has already drained is observed idle on the first poll, so
+	// settlement corroborates exactly once and never sleeps.
 	client.mu.Lock()
-	waits := client.waits
+	actives := client.actives
 	client.mu.Unlock()
-	if waits != 1 {
-		t.Fatalf("wait calls=%d", waits)
+	if actives != 1 {
+		t.Fatalf("active polls=%d", actives)
 	}
 }
 
@@ -393,6 +412,63 @@ func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
 	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
 		t.Fatalf("events=%v", types(events))
+	}
+}
+
+// The agent loop's drain is still running when the step ends, so settlement
+// must poll the active set out rather than deriving a terminal from its first
+// look. The pinned server has no blocking idle call to lean on: its wait route
+// is declared but unimplemented and answers 503, so this poll is the whole
+// corroboration.
+func TestSettlementPollsActiveUntilLoopDrains(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	client.activeFor = 3
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "done"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
+		t.Fatalf("events=%v", types(events))
+	}
+	client.mu.Lock()
+	actives := client.actives
+	client.mu.Unlock()
+	if actives <= 3 {
+		t.Fatalf("active polls=%d, want the run to outlast the three active replies", actives)
+	}
+}
+
+// Settlement corroboration that cannot be read must fail the run rather than
+// invent a terminal. This is the shape the adapter used to take on every turn:
+// it settled through the unimplemented wait route, whose 503 failed each run
+// and left the session unusable.
+func TestSettlementFailsWhenQuiescenceUnreadable(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	client.activeErr = errors.New("HTTP 503 ServiceUnavailableError")
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+	last := events[len(events)-1]
+	if last.Type != protocol.TypeRunFailed {
+		t.Fatalf("terminal=%s, want %s", last.Type, protocol.TypeRunFailed)
+	}
+	var failed protocol.RunFailedPayload
+	if err := last.DecodePayload(&failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Error.Code != "opencode_quiescence_failed" {
+		t.Fatalf("code=%q", failed.Error.Code)
 	}
 }
 

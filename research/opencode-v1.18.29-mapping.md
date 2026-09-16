@@ -54,7 +54,13 @@ REST over HTTP with JSON, plus two SSE streams:
   `SessionNotFoundError`
 - `POST /api/session/:id/interrupt` — "Interrupt active execution owned by
   this OpenCode process. Idle interruption is a no-op."
-- `POST /api/session/:id/wait` — wait for the agent loop to become idle
+- `POST /api/session/:id/wait` — documented as "wait for a session agent
+  loop to become idle", but **not implemented at this pin**: the handler
+  resolves the session and then always raises `OperationUnavailableError`,
+  returned as 503 `ServiceUnavailableError` ("Session wait is not available
+  yet"); a missing session still answers 404. Upstream pins this in its own
+  `httpapi-session` test, and the stub is unchanged on its `dev` branch. The
+  adapter must not build settlement on this route.
 - `GET /api/session/:id/event?after=N` — SSE: "Replay durable events after
   an aggregate sequence, then continue with new durable events."
 - `GET /api/session/:id/history?after=N&limit=` — finite pages of public
@@ -173,13 +179,14 @@ The durable event set has **no explicit run-terminal event** — no
 - `step.failed` / `tool.failed` are child/step-scoped, not run terminals;
 - `text.ended` closes a message, not a run;
 - the practical boundary is quiescence: the last durable event of the
-  promoted execution, corroborated by `session.wait` (idle) and
-  `session.active` no longer listing the session.
+  promoted execution, corroborated by `session.active` no longer listing
+  the session. (`session.wait` reads as the natural signal but is a stub at
+  this pin — see the wire protocol note above.)
 
 This is a genuine OAP-relevant discovery: a boundary can have perfect
 durable sequencing and still lack an authoritative terminal marker. The
 adapter's arbiter must define the terminal rule (e.g. step.ended with no
-pending tools and no admitted-but-unpromoted steer, plus wait-idle
+pending tools and no admitted-but-unpromoted steer, plus active-set
 corroboration) and record it as an explicit synthesized-fidelity decision.
 Candidate OAP revision: consider whether "terminal marker required" stays a
 producer obligation or a documented adapter synthesis.
@@ -243,11 +250,17 @@ discoveries:
    without `promotedSeq` answers `admission=queued` truthfully; the corpus
    pins the trace (`queued-admission`) outside canonical validation pending
    the same admission-model extension.
-5. **Settlement fence:** derived settlement is wait-idle corroboration plus
+5. **Settlement fence:** derived settlement is active-set corroboration plus
    a bounded history read after the triggering sequence, deduplicated by
    durable seq against the subscription prefix — recording the assumption
    that the last durable event of a turn is persisted before the loop goes
-   idle.
+   idle. The corroboration polls `session.active` because the `wait` route is
+   a stub at this pin. The run coordinator holds a session in the active set
+   for one whole drain, and a drain is one agent loop covering every step of
+   a turn, so the set does not flap between steps; work recorded mid-turn
+   installs a successor entry that keeps the key present. The set is scoped
+   to sessions owned by that server process, which matches the adapter's
+   single-process boundary.
 6. **Deltas are not on the durable stream** (`text.delta` and friends are
    live-only), so first-tranche streaming is full-value boundaries —
    `run.streaming` stays degraded exactly as advertised.
@@ -287,7 +300,8 @@ this adapter:
 - session association: `native`
 - submission/admission: `native` (`Admitted`, typed conflict rejection)
 - run identity: `emulated` (no native run id; promotion-derived)
-- run status: `native` (`session.active`, `session.wait`)
+- run status: `native` (`session.active`; `session.wait` is unimplemented
+  at this pin)
 - sequencing: `native` durable aggregate sequence (adapter derives per-run)
 - text/reasoning/tool input streaming: `native`
 - tool lifecycle: `native`
