@@ -333,7 +333,11 @@ the terminal is derived from quiescence and lags the boundary. Held envelopes
 are withheld from the journal as well as from the stream, since a journalled
 envelope is replayable: a caller resuming the reserved run mid hold would
 otherwise read its start before the earlier run's terminal and be handed the
-same envelopes again at release.
+same envelopes again at release. The same holds for the state projection: a
+held run is listed at the status and position it has published, so a promoted
+reservation that finishes natively while the earlier run is still open is still
+described as the reservation the trace knows rather than as a settled run in a
+field defined as the session's nonterminal ones.
 
 **New mismatch (P1): no route withdraws one queued input.** The pinned
 server's cancellation surface is `POST /api/session/:id/interrupt`, which is

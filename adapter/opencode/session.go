@@ -320,9 +320,21 @@ func published(run *runState) bool { return run != nil && (!run.terminal || run.
 // activeRunEntry describes one nonterminal run at the cursor it has reached.
 // This adapter raises no interactions at this pin, so the pending set is
 // always empty and the stated position is always one the trace has reached.
+//
+// A held run is described by what it has published, which is nothing: the
+// trace still knows it only as the reservation it was admitted as. Its own
+// status may already be terminal — a promoted reservation can finish natively
+// while the earlier run is still settling — and active_runs is a list of the
+// session's nonterminal runs, so copying that status would put a settled run
+// in it and emit a state this adapter's own validator rejects. It is the same
+// principle as the queue slot and the journal: a snapshot is judged against
+// what the trace has been told.
 func activeRunEntry(run *runState, position int) protocol.ActiveRun {
-	sequence := run.next - 1
-	entry := protocol.ActiveRun{RunID: run.id, Status: run.status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
+	sequence, status := run.next-1, run.status
+	if run.holding {
+		sequence, status = run.publishedSeq, protocol.RunQueued
+	}
+	entry := protocol.ActiveRun{RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
 	if position > 0 {
 		entry.QueuePosition = &position
 	}
@@ -434,14 +446,10 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		// Flag only after the started event exists so Cancel can rely on
-		// prompted implying an emitted run.started. The status follows the
-		// start it reports: a run projected as queued after it has begun
-		// would describe a session that is not the one running.
+		// prompted implying an emitted run.started. The status it reports
+		// moved inside that emission, where the projection is rebuilt.
 		s.mu.Lock()
 		owner.prompted = true
-		if !owner.holding {
-			owner.status = protocol.RunRunning
-		}
 		s.mu.Unlock()
 		if reservation {
 			// Already terminal upstream? Then nothing is owed a wait.
@@ -1282,6 +1290,15 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 		event.ToolCallID = action.ToolCallID
 	}
 	s.state.UpdatedAtMS = now
+	if typ == protocol.TypeRunStarted && !run.holding {
+		// The status moves with the envelope that reports it, inside the same
+		// critical section that rebuilds the projection and delivers it: a
+		// State read between a published run.started and the next envelope
+		// would otherwise describe a run the trace has seen start as still
+		// queued. A held start has told the trace nothing yet, and moves the
+		// status where it is released.
+		run.status = protocol.RunRunning
+	}
 	if terminal {
 		run.terminal = true
 		switch typ {

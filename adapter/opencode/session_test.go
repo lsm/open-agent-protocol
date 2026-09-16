@@ -1109,6 +1109,163 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	}
 }
 
+// A run the trace has seen start is running, and the projection a State call
+// reads has to say so from that envelope onwards — not from whatever envelope
+// happens to rebuild it next. The status moves inside the publication of
+// run.started for exactly that reason.
+func TestActiveRunsFollowThePublishedStart(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	started := adaptertest.Next(t, firstStream, 2*time.Second)
+	if started.Type != protocol.TypeRunStarted {
+		t.Fatalf("first envelope = %s, want run.started", started.Type)
+	}
+
+	// Nothing else has been emitted yet: this is the window the projection
+	// used to spend describing a started run as queued.
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != protocol.SessionRunning || state.ActiveRunID != first.RunID {
+		t.Fatalf("session state after the start = %s / %q", state.Status, state.ActiveRunID)
+	}
+	if len(state.ActiveRuns) != 1 {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	entry := state.ActiveRuns[0]
+	if entry.Status != protocol.RunRunning {
+		t.Fatalf("entry status = %s, want running at a published start", entry.Status)
+	}
+	if entry.AsOfSequence == nil || *entry.AsOfSequence != 1 {
+		t.Fatalf("entry as_of_sequence = %s, want the start's own sequence", describeSequence(entry.AsOfSequence))
+	}
+	if entry.QueuePosition != nil {
+		t.Fatalf("a started run holds no queue position: %+v", entry)
+	}
+
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	rest := adaptertest.Drain(t, firstStream, 2*time.Second)
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+	}, descriptor, append([]protocol.Envelope{started}, rest...))
+}
+
+// A promoted reservation can finish natively while the earlier run is still
+// open. Its own status is terminal then, but nothing of it has reached the
+// trace, so active_runs — a list of the session's nonterminal runs — must
+// still describe it as the reservation the trace knows. Copying the internal
+// status would put a settled run there and make this adapter emit a state its
+// own validator rejects.
+func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+
+	// The first run is left mid-turn with its step open — the server moved on
+	// to the promoted input without closing it — so the reservation's whole
+	// turn runs and settles while the earlier run is still outstanding.
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+
+	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.emit(t, 4, native.TypePrompted, native.PromptedData{Timestamp: 4, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	client.emit(t, 5, native.TypeStepStarted, native.StepStartedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
+	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+
+	// Wait out the reservation's derived settlement: its terminal is held, so
+	// the only way to see it happen from here is that the reducer polled the
+	// native active set and then went quiet.
+	state := waitQuiet(t, session, client)
+	if len(state.ActiveRuns) != 2 || state.ActiveRuns[1].RunID != queued.RunID {
+		t.Fatalf("active_runs while the terminal is held = %+v", state.ActiveRuns)
+	}
+	entry := state.ActiveRuns[1]
+	switch entry.Status {
+	case protocol.RunCompleted, protocol.RunFailed, protocol.RunCancelled:
+		t.Fatalf("active_runs lists a run the trace has not been told settled: %+v", entry)
+	case protocol.RunQueued:
+	default:
+		t.Fatalf("held entry status = %s, want the reservation the trace knows", entry.Status)
+	}
+	if entry.AsOfSequence == nil || *entry.AsOfSequence != 0 {
+		t.Fatalf("held entry as_of_sequence = %s, want the position it has published", describeSequence(entry.AsOfSequence))
+	}
+	if entry.QueuePosition == nil || *entry.QueuePosition != 1 {
+		t.Fatalf("held entry keeps its queue position: %+v", entry)
+	}
+
+	// Settling the first run releases the held turn. That it completes rather
+	// than failing with the transport is what proves it had already settled
+	// while the snapshot above described it as outstanding.
+	client.subscription.fail(errors.New("stream gone"))
+	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
+	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	if fmt.Sprint(types(firstEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunFailed}) {
+		t.Fatalf("first run = %v", types(firstEvents))
+	}
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+	if fmt.Sprint(types(queuedEvents)) != fmt.Sprint(want) {
+		t.Fatalf("released run = %v", types(queuedEvents))
+	}
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+		{Request: queueRequest("later"), Admission: queued},
+	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
+}
+
+// describeSequence spells an optional capture position for a failure message.
+func describeSequence(value *uint64) string {
+	if value == nil {
+		return "absent"
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
+// waitQuiet returns the projection once the reducer has consulted the native
+// active set and then stopped emitting. The fake clock advances once per
+// envelope, so a session updated_at that stops moving is the reducer going
+// quiet — including for envelopes that are buffered rather than published,
+// which is the only sign a held terminal leaves.
+func waitQuiet(t *testing.T, session base.Session, client *fakeClient) protocol.SessionState {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	last, stable := int64(-1), 0
+	for time.Now().Before(deadline) {
+		state, err := session.State(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		client.mu.Lock()
+		polled := client.actives
+		client.mu.Unlock()
+		if polled > 0 && state.UpdatedAtMS == last {
+			if stable++; stable >= 5 {
+				return state
+			}
+		} else {
+			stable = 0
+		}
+		last = state.UpdatedAtMS
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("the reducer never went quiet")
+	return protocol.SessionState{}
+}
+
 // The pin has no route that withdraws a queued input, so the server executing
 // one this adapter cancelled is expected. Its turn has no OAP run to own it —
 // the reservation's run already settled — and falling back on the started run
