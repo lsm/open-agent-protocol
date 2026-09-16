@@ -272,8 +272,24 @@ failure mode — refuse, or retry — for a race the session never had. Only the
 session knows which descriptor it served a listing under, so the contract asks
 it. That also matches what every adapter here already does with the revision on
 the events it emits; a catalog was the one payload the daemon was labelling on
-the adapter's behalf. A listing that comes back with no revision is refused by
-the hub rather than labelled from elsewhere.
+the adapter's behalf.
+
+What comes back is checked before any of it reaches the wire, and the hub
+refuses rather than repairing. A listing with no revision is refused, for the
+reason above. A listing scoped to another session, or to none, is refused on
+the same terms: publishing the adapter's value emits a cross-session or
+schema-invalid `models.response` — one the clients this unit taught to check a
+catalog's scope would themselves reject, so the daemon would be producing
+envelopes its own clients refuse — and rewriting the scope would be worse than
+refusing, because the adapter computed that listing for the session it named.
+Relabelling it would show one session's models under another's id and launder
+an adapter fault into something that looks correct. Better no catalog than one
+whose contents and whose label disagree. With the check in the hub, both codecs
+then label the envelope from the hub's own identity rather than from adapter
+data, so the scope on the wire is the one the daemon addressed.
+
+The rule is the hub's, not the route's, which is why it lives in
+`serve.Session.Models` and both transports inherit it.
 
 The alternative is worse than it looks. A caller holding only the payload
 cannot tell which `models.list` promise it read, cannot cache the listing
@@ -363,6 +379,19 @@ identifies exactly one descriptor.
   `model_not_found` rather than `run_active`. The state rung it holds against
   arrives with the queue unit, along with the `queue-busy-*` fixtures the
   plan lists for it; there is nothing to hold against until then.
+- The same scope check on the routes this unit did not introduce. `models` was
+  the fourth place a codec copies an adapter-supplied scope into an envelope
+  without verifying it against the addressed session; `session.state`,
+  `session.message.submit`, and `run.cancel` do the same with `state.SessionID`,
+  `admission.SessionID`/`RunID`, and `ack.SessionID`/`RunID`, on both
+  transports. (`action.*.resolve` already labels from `entry.ID()`, and
+  `session.open` has nothing to check against — the adapter-confirmed id *is*
+  the hub's.) Those paths belong to units Decisions 0001 and 0002 settled, and
+  changing what the daemon does with an adapter's response there is a
+  behavioural change those decisions did not contemplate, so it is reported
+  rather than taken here. The rule this unit states — the hub verifies what an
+  adapter hands back before a codec can label an envelope with it — is the one
+  they should adopt.
 - Raising OpenCode's `models.list` above `degraded`, which needs a pinned
   response shape for `model.list` in the ledger and a corpus case decoding it
   through the production HTTP client.

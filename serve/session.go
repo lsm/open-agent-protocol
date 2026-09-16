@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,7 +154,14 @@ func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (b
 	if errors.Is(err, base.ErrSessionClosed) {
 		s.markClosed()
 	}
-	if err == nil && catalog.Revision == "" {
+	if err != nil {
+		return base.Catalog{}, err
+	}
+	// What an adapter hands back is checked against what the hub knows before
+	// any of it reaches the wire. The hub asked one session for its catalog,
+	// so it owes its caller that session's catalog under the revision that
+	// governs it, or nothing at all.
+	if catalog.Revision == "" {
 		// A listing nothing can bind to a descriptor is worse than none: a
 		// consumer would cache it under no revision and never know when to
 		// discard it, and the validator's own gate rejects the envelope. The
@@ -161,7 +169,19 @@ func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (b
 		// revision from a descriptor it read at another moment.
 		return base.Catalog{}, errors.New("serve: adapter served a model catalog with no capability revision")
 	}
-	return catalog, err
+	if catalog.Models.SessionID != s.id {
+		// The same rule for the listing's scope. Publishing the adapter's
+		// value would emit a models.response scoped to another session, or to
+		// none — schema-invalid, and rejected by the very clients this unit
+		// taught to check a catalog's scope, so the daemon would be producing
+		// envelopes its own clients refuse. Rewriting it would be worse than
+		// refusing: the adapter computed this listing for the session it
+		// named, so relabelling it would show one session's models under
+		// another's id and launder the fault into something that looks
+		// correct.
+		return base.Catalog{}, fmt.Errorf("serve: adapter served a model catalog scoped to session %q, want %q", catalog.Models.SessionID, s.id)
+	}
+	return catalog, nil
 }
 
 // Submit admits one message submission and returns the adapter's admission.

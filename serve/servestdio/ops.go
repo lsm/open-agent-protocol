@@ -526,7 +526,9 @@ func (s *Server) modelsOp(ctx context.Context, request requestLine) (json.RawMes
 		return nil, internalError(err)
 	}
 	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
-	response.SessionID = catalog.Models.SessionID
+	// Labelled from the hub's own identity, as on the HTTP route: the hub
+	// verified the listing is this session's before returning it.
+	response.SessionID = entry.ID()
 	// The revision comes back with the listing, as on the HTTP route: a
 	// descriptor read at another moment can already be the wrong one by the
 	// time the catalog is produced.

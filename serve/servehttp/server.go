@@ -466,7 +466,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.InReplyTo = s.nextID("request")
-	response.SessionID = catalog.Models.SessionID
+	// The hub verified the listing is this session's before returning it, so
+	// the envelope is labelled from the hub's own identity rather than from
+	// adapter data: the scope on the wire is the one the daemon addressed.
+	response.SessionID = entry.ID()
 	// The revision comes back with the listing rather than from a descriptor
 	// read at another moment: on an endpoint whose capabilities can update, a
 	// separately probed revision can already be the wrong one by the time the

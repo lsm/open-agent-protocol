@@ -186,11 +186,51 @@ func TestModelsRouteRefusesAnUnlabelledCatalog(t *testing.T) {
 	requireErrorResponse(t, response.StatusCode, http.StatusInternalServerError, envelope, "internal")
 }
 
+// A catalog scoped to another session, or to none, is refused rather than
+// published or relabelled. Publishing the adapter's value emits a
+// cross-session or schema-invalid models.response — one the daemon's own
+// clients reject — and rewriting it would show one session's models under
+// another's id, which is the fault laundered into something that looks
+// correct.
+func TestModelsRouteRefusesAMisscopedCatalog(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		session protocol.SessionID
+	}{
+		{"another session", "somewhere-else"},
+		{"no session at all", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			registry := serve.NewRegistry()
+			if err := registry.Register("misscoped", &movingLister{revision: base.CapabilityRevision, session: &row.session}); err != nil {
+				t.Fatal(err)
+			}
+			_, server := newServer(t, registry, Options{})
+			openSession(t, server, "misscoped", "misscoped")
+
+			response, err := server.Client().Get(server.URL + "/sessions/misscoped/models")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			data, _ := io.ReadAll(response.Body)
+			envelope, err := protocol.ParseEnvelope(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireErrorResponse(t, response.StatusCode, http.StatusInternalServerError, envelope, "internal")
+		})
+	}
+}
+
 // movingLister probes as the reference adapter but serves its catalog under a
-// revision of its own, standing in for an adapter whose descriptor moved
-// between the two reads. An empty revision stands in for one that labels
-// nothing at all.
-type movingLister struct{ revision string }
+// revision — and optionally a session — of its own, standing in for an adapter
+// whose descriptor moved between the two reads, or one that scopes its listing
+// wrongly. An empty revision stands in for one that labels nothing at all.
+type movingLister struct {
+	revision string
+	session  *protocol.SessionID
+}
 
 func (a *movingLister) Probe(ctx context.Context) (base.Descriptor, error) {
 	return base.NewMemory(base.Config{}).Probe(ctx)
@@ -201,12 +241,13 @@ func (a *movingLister) Open(ctx context.Context, request base.OpenRequest) (base
 	if err != nil {
 		return nil, err
 	}
-	return &movingSession{Session: session, revision: a.revision}, nil
+	return &movingSession{Session: session, revision: a.revision, session: a.session}, nil
 }
 
 type movingSession struct {
 	base.Session
 	revision string
+	session  *protocol.SessionID
 }
 
 func (s *movingSession) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
@@ -215,6 +256,9 @@ func (s *movingSession) Models(ctx context.Context, request protocol.ModelsReque
 		return base.Catalog{}, err
 	}
 	catalog.Revision = s.revision
+	if s.session != nil {
+		catalog.Models.SessionID = *s.session
+	}
 	return catalog, nil
 }
 
