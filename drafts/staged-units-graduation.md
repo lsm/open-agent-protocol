@@ -112,7 +112,11 @@ contributes no native evidence to any unit at its pin and advertises each
 
 ## T0. Extension packs
 
-Unit name: `extensions`. Planned decision: 0004.
+Unit name: `extensions`. Decision:
+[0004](../decisions/0004-extension-packs.md), which graduates this unit and
+records what it does not admit. The sections below stay as the design the
+decision froze; where an implementation detail had to be chosen that the text
+left open, the decision names the choice.
 
 ### Scope
 
@@ -327,7 +331,10 @@ every capability-rung refusal. A `response` must carry `in_reply_to`,
 which is what correlation is; it takes its gate from the request it
 answers and needs no `gates` entry of its own, and a `response` naming a
 `replies_to` that is not a declared `request` of the same pack is a load
-refusal (`pack_reply_target_unknown`). An `event` has no correlation and
+refusal (`pack_reply_target_unknown`), and so is a second `response`
+naming a request another already answers (`pack_reply_target_ambiguous`):
+a request has one response type, as every core request does. An `event`
+has no correlation and
 takes its own `gates` entry, judged on arrival. A declared type with no
 `role` is a load refusal (`pack_role_undeclared`), on the same rule as an
 ungated type: stated, not inferred. `payload_members` need none of this
@@ -391,6 +398,13 @@ known role has no gate point. Fixtures `ext-member-on-event-unadvertised`
 (`unavailable_capability` on a `run.completed` carrying a packed member
 while its key is unadvertised) and `ext-pack-member-target-unknown`
 (load refusal).
+The same refusal covers a gated member on `capabilities.updated`: that
+envelope introduces a revision and marks the descriptor stale until the
+next `capabilities.response`, so no descriptor of its own governs the
+gate; an ungated member there is schema only.
+Two `payload_members` entries naming the same payload type and member
+are a load refusal (`pack_member_duplicate`): one would be compiled and
+the other indexed, and neither declaration is what the pack meant.
 Fixtures `ext-member-validated` (a packed member with a body its
 subschema rejects: tolerated without the pack, diagnosed with it),
 `ext-member-undeclared-still-rejected` (positive; a different unknown
@@ -541,8 +555,10 @@ and `ext-pack-restates-core-member` (load refusal).
   `pack_id_collision`, `pack_branch_undeclared_type`,
   `pack_branch_unpinned`, `pack_ungated_type`,
   `pack_restates_core_member`, `pack_member_target_unknown`,
+  `pack_member_duplicate`,
   `pack_role_undeclared`, `pack_response_gated`,
-  `pack_reply_target_unknown`, `pack_refusal_undeclared`,
+  `pack_reply_target_unknown`, `pack_reply_target_ambiguous`,
+  `pack_refusal_undeclared`,
   `pack_schema_path_escape`, `pack_external_ref`,
   `pack_dependency_missing`,
   `pack_fixture_claims_core_unit`, and

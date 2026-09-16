@@ -1,0 +1,30 @@
+{
+  "id": "com.example.respgated",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.respgated.read",
+      "role": "request",
+      "schema": "types.schema.json#/$defs/read"
+    },
+    {
+      "type": "com.example.respgated.read.result",
+      "role": "response",
+      "replies_to": "com.example.respgated.read",
+      "schema": "types.schema.json#/$defs/result"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.respgated.read",
+      "ungated": true
+    },
+    {
+      "type": "com.example.respgated.read.result",
+      "ungated": true
+    }
+  ]
+}

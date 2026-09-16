@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "storage-objects-read-unadvertised",
+      "path": "objects-read-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "ext:com.example.storage/1.0.0"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0004-extension-packs.md"
+      ],
+      "covers": [
+        {
+          "capability": "com.example.storage.objects",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "storage-objects-read-dishonoured",
+      "path": "objects-read-dishonoured.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unhonoured_capability"
+      ],
+      "units": [
+        "ext:com.example.storage/1.0.0"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0004-extension-packs.md"
+      ],
+      "covers": [
+        {
+          "capability": "com.example.storage.objects",
+          "aspect": "honour"
+        }
+      ]
+    }
+  ]
+}

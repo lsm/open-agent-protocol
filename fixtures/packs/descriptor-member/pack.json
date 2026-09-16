@@ -1,0 +1,51 @@
+{
+  "id": "com.example.descriptor",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "capability_keys": [
+    "com.example.descriptor.regions"
+  ],
+  "error_codes": [
+    "com.example.descriptor.region_unknown"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.descriptor.regions.list",
+      "role": "request",
+      "schema": "types.schema.json#/$defs/regionsList",
+      "refusals": [
+        "com.example.descriptor.region_unknown"
+      ]
+    },
+    {
+      "type": "com.example.descriptor.regions.list.result",
+      "role": "response",
+      "replies_to": "com.example.descriptor.regions.list",
+      "schema": "types.schema.json#/$defs/regionsListResult"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.descriptor.regions.list",
+      "capability": "com.example.descriptor.regions"
+    },
+    {
+      "payload_type": "capabilities.response",
+      "member": "com.example.descriptor.region",
+      "capability": "com.example.descriptor.regions"
+    }
+  ],
+  "payload_members": [
+    {
+      "payload_type": "capabilities.response",
+      "member": "com.example.descriptor.region",
+      "schema": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  ],
+  "fixtures": "fixtures/manifest.json"
+}

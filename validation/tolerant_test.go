@@ -745,7 +745,26 @@ func TestTolerantAcceptsEveryPositiveFixture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result := tolerant.ValidateBytes(data, entry.Path); !result.Valid() {
+		validator := tolerant
+		if len(entry.Packs) > 0 {
+			// A fixture written in a pack's vocabulary is judged in that
+			// vocabulary in both modes: without the pack its types are
+			// unknown, which is the tolerated path a different fixture
+			// asserts, not this guard's subject.
+			dirs := make([]string, 0, len(entry.Packs))
+			for _, pack := range entry.Packs {
+				dirs = append(dirs, filepath.Join(root, pack))
+			}
+			packs, err := LoadPacks(dirs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			validator, err = NewWith(Options{Mode: ModeTolerant, Packs: packs})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if result := validator.ValidateBytes(data, entry.Path); !result.Valid() {
 			t.Errorf("tolerant rejected positive fixture %s: %v", entry.ID, result.Diagnostics)
 		}
 		checked++

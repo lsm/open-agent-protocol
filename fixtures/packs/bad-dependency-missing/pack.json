@@ -1,0 +1,26 @@
+{
+  "id": "com.example.dependent",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.dependent.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.dependent.ping",
+      "ungated": true
+    }
+  ],
+  "depends_on": [
+    {
+      "id": "com.example.absent",
+      "version": "1.0.0"
+    }
+  ]
+}

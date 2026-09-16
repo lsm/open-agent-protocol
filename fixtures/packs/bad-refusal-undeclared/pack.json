@@ -1,0 +1,26 @@
+{
+  "id": "com.example.norefusal",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.norefusal.read",
+      "role": "request",
+      "schema": "types.schema.json#/$defs/read",
+      "refusals": [
+        "com.example.norefusal.missing"
+      ]
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.norefusal.read",
+      "ungated": true
+    }
+  ],
+  "error_codes": [
+    "com.example.norefusal.declined"
+  ]
+}

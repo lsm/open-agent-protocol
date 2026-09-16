@@ -1,0 +1,82 @@
+{
+  "id": "com.example.storage",
+  "version": "1.0.0",
+  "schemas": [
+    "storage.schema.json"
+  ],
+  "capability_keys": [
+    "com.example.storage.objects"
+  ],
+  "error_codes": [
+    "com.example.storage.object_not_found"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.storage.objects.read",
+      "role": "request",
+      "schema": "storage.schema.json#/$defs/objectsRead",
+      "refusals": [
+        "com.example.storage.object_not_found"
+      ]
+    },
+    {
+      "type": "com.example.storage.objects.read.result",
+      "role": "response",
+      "replies_to": "com.example.storage.objects.read",
+      "schema": "storage.schema.json#/$defs/objectsReadResult"
+    },
+    {
+      "type": "com.example.storage.objects.changed",
+      "role": "event",
+      "schema": "storage.schema.json#/$defs/objectsChanged"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.storage.objects.read",
+      "capability": "com.example.storage.objects"
+    },
+    {
+      "type": "com.example.storage.objects.changed",
+      "capability": "com.example.storage.objects"
+    },
+    {
+      "payload_type": "session.message.submit.request",
+      "member": "com.example.storage.workspace",
+      "capability": "com.example.storage.objects"
+    },
+    {
+      "payload_type": "run.completed",
+      "member": "com.example.storage.bytes_written",
+      "capability": "com.example.storage.objects"
+    }
+  ],
+  "payload_members": [
+    {
+      "payload_type": "session.message.submit.request",
+      "member": "com.example.storage.workspace",
+      "schema": {
+        "type": "object",
+        "required": [
+          "bucket"
+        ],
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "payload_type": "run.completed",
+      "member": "com.example.storage.bytes_written",
+      "schema": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  ],
+  "fixtures": "fixtures/manifest.json"
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "regionChanged": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.updated.region.changed"
+        }
+      }
+    }
+  }
+}

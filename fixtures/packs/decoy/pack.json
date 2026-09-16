@@ -1,0 +1,20 @@
+{
+  "id": "com.example.decoy",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.decoy.run.started",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.decoy.run.started",
+      "ungated": true
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "com.example.norole",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.norole.ping",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.norole.ping",
+      "ungated": true
+    }
+  ]
+}

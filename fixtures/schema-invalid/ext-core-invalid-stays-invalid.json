@@ -1,0 +1,18 @@
+[
+  {
+    "capability_revision": "v1",
+    "id": "req1",
+    "payload": {
+      "com.example.storage.workspace": {
+        "bucket": "reports"
+      },
+      "delivery": "auto",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.request",
+    "version": "0.1"
+  }
+]

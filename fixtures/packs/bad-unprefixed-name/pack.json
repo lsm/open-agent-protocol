@@ -1,0 +1,23 @@
+{
+  "id": "com.example.unprefixed",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.unprefixed.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.unprefixed.ping",
+      "ungated": true
+    }
+  ],
+  "capability_keys": [
+    "storage.objects"
+  ]
+}

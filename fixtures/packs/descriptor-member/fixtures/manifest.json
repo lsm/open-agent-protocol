@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "descriptor-region-unadvertised",
+      "path": "region-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "ext:com.example.descriptor/1.0.0"
+      ],
+      "covers": [
+        {
+          "capability": "com.example.descriptor.regions",
+          "aspect": "gate"
+        }
+      ],
+      "provenance": []
+    },
+    {
+      "id": "descriptor-regions-list-dishonoured",
+      "path": "regions-list-dishonoured.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unhonoured_capability"
+      ],
+      "units": [
+        "ext:com.example.descriptor/1.0.0"
+      ],
+      "covers": [
+        {
+          "capability": "com.example.descriptor.regions",
+          "aspect": "honour"
+        }
+      ],
+      "provenance": []
+    }
+  ]
+}

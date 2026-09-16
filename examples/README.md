@@ -34,3 +34,11 @@ model-IO boundary rather than the core `content.delta` stream.
 - `agent-control-run-stream.json`: ordered agent-control stream for a simple
   model/tool/model
   run.
+
+An extension pack has no illustrative example here, because a pack is
+executable rather than illustrative: `../fixtures/packs/storage` is a worked
+pack — a descriptor, the branches it contributes, the members it adds to core
+payloads, and its own fixture corpus — and the traces that exercise it are
+normative fixtures listed in `../fixtures/manifest.json`. Load one with
+`oap validate -pack ../fixtures/packs/storage <trace.json>`; see
+[Decision 0004](../decisions/0004-extension-packs.md).
