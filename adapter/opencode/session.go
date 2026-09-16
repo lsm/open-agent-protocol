@@ -39,6 +39,11 @@ type session struct {
 	closed       bool
 	unusable     bool
 	active       *runState
+	// reserved is the one queued reservation this adapter admits beside a
+	// started run, matching the max_queued_runs_per_session it discloses. It
+	// promotes when the server's prompted event names it and the started run
+	// has settled, so one run domain executes at a time in admission order.
+	reserved     *runState
 	runs         map[protocol.RunID]*runState
 	pending      map[native.MessageID]*runState
 	tools        map[string]*toolState
@@ -53,11 +58,16 @@ type session struct {
 }
 
 type runState struct {
-	id              protocol.RunID
-	status          protocol.RunStatus
-	next            uint64
-	terminal        bool
-	prompted        bool
+	id       protocol.RunID
+	status   protocol.RunStatus
+	next     uint64
+	terminal bool
+	prompted bool
+	// promotionSeen records that the server's prompted event for this
+	// reservation has arrived while an earlier-admitted run was still
+	// nonterminal. The promotion is held until that run's terminal is on the
+	// wire, so a later-admitted run never interleaves its execution.
+	promotionSeen   bool
 	cancelRequested bool
 	settling        bool
 	messageID       protocol.MessageID
@@ -103,17 +113,23 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunNotFound
 	}
-	if s.active != nil && !s.active.terminal {
+	busy := s.active != nil && !s.active.terminal
+	if busy && s.reserved != nil && !s.reserved.terminal {
+		// The disclosed queue bound is one reservation; beyond it the wire's
+		// answer is run_active.
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunActive
 	}
 	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunQueued, next: 1, messageID: protocol.MessageID(s.ids.NewID("message")), admitted: make(chan struct{})}
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
-	s.active = run
+	if busy {
+		s.reserved = run
+	} else {
+		s.active = run
+	}
 	s.runs[run.id] = run
-	s.state.Status = protocol.SessionRunning
-	s.state.ActiveRunID = run.id
+	s.refreshStateLocked()
 	// The session model was fixed at creation; a per-submit override was
 	// rejected by submitInput, so retain the native model instead of clearing it.
 	model := s.state.CurrentModelID
@@ -131,12 +147,17 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		// The zero-value delivery is the accepted spelling of auto, so the
 		// response must report the canonical value rather than the empty string
 		// (the schema's delivery enum rejects "").
-		RequestedDelivery: protocol.DeliveryAuto,
+		RequestedDelivery: requestedDelivery(req.Delivery),
 		EffectiveDelivery: protocol.EffectiveDeliveryQueue,
 		Admission:         protocol.AdmissionQueued,
 		RunID:             run.id,
 		Status:            protocol.RunQueued,
 		ModelID:           model,
+	}
+	if busy {
+		// auto resolved to a queue because the session was busy, and the
+		// response says so rather than leaving the caller to infer it.
+		reservation.DeliveryResolution = "session_busy"
 	}
 	nativeMessage := native.MessageID(s.ids.NewID("opencode-message"))
 	if !nativeMessage.Valid() {
@@ -177,7 +198,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		return reservation, stream, nil
 	}
 	reservation.MessageIDs = []protocol.MessageID{protocol.MessageID(admitted.ID)}
-	if admitted.PromotedSeq != nil {
+	if admitted.PromotedSeq != nil && !busy {
 		reservation.Admission = protocol.AdmissionStarted
 		reservation.EffectiveDelivery = protocol.DeliveryStart
 		reservation.Status = protocol.RunRunning
@@ -213,13 +234,63 @@ func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native
 		// OpenCode has no auto mode; steer starts immediately when the
 		// session is idle, which is the truthful auto projection here.
 		return text, native.DeliverySteer, nil
+	case protocol.DeliveryQueue:
+		// The queue is a native server delivery and this adapter advertises
+		// it, so an explicit request is applied rather than refused.
+		return text, native.DeliveryQueue, nil
 	default:
-		// steer and queue are native server deliveries, and decision 0002
-		// made an auto request resolving to a queued reservation canonical;
-		// but explicit queue/steer delivery requests still exceed the
-		// v0.1 subset (deferred by decisions 0001/0002).
+		// steer stays outside this subset until its own unit graduates, and
+		// btw has no native surface at this pin.
 		return "", "", fmt.Errorf("%w: delivery %q is outside the v0.1 request subset", ErrUnsupported, req.Delivery)
 	}
+}
+
+// requestedDelivery is the canonical spelling of the delivery a submission
+// asked for; the zero value is the accepted spelling of auto, which the
+// schema's enum does not admit.
+func requestedDelivery(delivery protocol.RequestedDeliveryMode) protocol.RequestedDeliveryMode {
+	if delivery == "" {
+		return protocol.DeliveryAuto
+	}
+	return delivery
+}
+
+// refreshStateLocked recomputes the published session state from the runs the
+// session holds. active_runs lists every nonterminal run in admission order,
+// which is what a session carrying a reservation beside a started run needs:
+// active_run_id alone cannot describe two.
+func (s *session) refreshStateLocked() {
+	var entries []protocol.ActiveRun
+	if s.active != nil && !s.active.terminal {
+		entries = append(entries, activeRunEntry(s.active, 0))
+	}
+	if s.reserved != nil && !s.reserved.terminal {
+		entries = append(entries, activeRunEntry(s.reserved, 1))
+	}
+	s.state.ActiveRuns = entries
+	switch {
+	case s.active != nil && !s.active.terminal:
+		s.state.Status = protocol.SessionRunning
+		s.state.ActiveRunID = s.active.id
+	case s.reserved != nil && !s.reserved.terminal:
+		s.state.Status = protocol.SessionQueued
+		s.state.ActiveRunID = ""
+	default:
+		s.state.Status = protocol.SessionIdle
+		s.state.ActiveRunID = ""
+	}
+}
+
+// activeRunEntry describes one nonterminal run at the cursor it has reached.
+// This adapter raises no interactions at this pin, so the pending set is
+// always empty and the stated position is always one the trace has reached.
+func activeRunEntry(run *runState, position int) protocol.ActiveRun {
+	sequence := run.next - 1
+	entry := protocol.ActiveRun{RunID: run.id, Status: run.status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
+	if position > 0 {
+		entry.QueuePosition = &position
+	}
+	return entry
 }
 
 func (s *session) dispatch() {
@@ -292,6 +363,15 @@ func (s *session) handleEventLocked(event native.Event) {
 		}
 		s.mu.Lock()
 		pending := s.pending[data.MessageID]
+		if pending != nil && pending == s.reserved {
+			// The server promoted the reservation. Its run.started waits for
+			// the started run's terminal to reach the wire, so one run
+			// domain executes at a time in admission order.
+			pending.promotionSeen = true
+			s.mu.Unlock()
+			s.promoteReserved()
+			return
+		}
 		delete(s.pending, data.MessageID)
 		s.mu.Unlock()
 		if pending == nil || pending != run {
@@ -777,9 +857,27 @@ func (s *session) State(ctx context.Context) (protocol.SessionState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.unusable {
-		return s.state, base.ErrSessionClosed
+		return s.cloneStateLocked(), base.ErrSessionClosed
 	}
-	return s.state, nil
+	return s.cloneStateLocked(), nil
+}
+
+// cloneStateLocked detaches the published snapshot from the session's own
+// slices, so a consumer holding one cannot see it change underneath.
+func (s *session) cloneStateLocked() protocol.SessionState {
+	state := s.state
+	state.ActiveRuns = append([]protocol.ActiveRun(nil), s.state.ActiveRuns...)
+	for i := range state.ActiveRuns {
+		if sequence := state.ActiveRuns[i].AsOfSequence; sequence != nil {
+			value := *sequence
+			state.ActiveRuns[i].AsOfSequence = &value
+		}
+		if position := state.ActiveRuns[i].QueuePosition; position != nil {
+			value := *position
+			state.ActiveRuns[i].QueuePosition = &value
+		}
+	}
+	return state
 }
 
 func (s *session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {
@@ -826,9 +924,20 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: status}, nil
 	}
 	prompted := run.prompted
+	reservation := run == s.reserved
 	run.cancelRequested = true
 	run.status = protocol.RunCancelling
 	s.mu.Unlock()
+	if reservation {
+		// The pin offers no route that withdraws one queued input:
+		// session interrupt targets the running execution, so sending it
+		// here would cancel the wrong work. The reservation is therefore
+		// dropped adapter-side and settles pre-start, and a later promotion
+		// for it is ignored — the terminal has already absorbed the run.
+		<-run.admitted
+		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion"}, true)
+		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
+	}
 	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
 		s.mu.Lock()
 		s.unusable = true
@@ -967,19 +1076,28 @@ func (s *session) transportFailed() {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	s.mu.Lock()
-	run := s.active
+	run, reserved := s.active, s.reserved
 	closed := s.closed
 	if !closed {
 		s.unusable = true
 	}
 	err := s.subscription.Err()
 	s.mu.Unlock()
-	if !closed && run != nil {
+	if closed {
+		return
+	}
+	if err == nil {
+		err = io.EOF
+	}
+	if run != nil {
 		<-run.admitted
-		if err == nil {
-			err = io.EOF
-		}
 		s.failRun(run, "opencode_stream_failed", err.Error())
+	}
+	// A reservation is an admitted run and owes a terminal too; the stream
+	// that would have promoted it is gone.
+	if reserved != nil && !reserved.terminal {
+		<-reserved.admitted
+		_ = s.emit(reserved, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: reserved.id, Error: protocol.ProtocolError{Code: "queue_dropped", Message: "the reservation was dropped before promotion: " + err.Error()}}, true)
 	}
 }
 
@@ -995,9 +1113,41 @@ func normalizeModelRef(ref *native.ModelRef) string {
 	return ref.ID
 }
 
+// promoteReserved starts the reservation once the server has promoted it and
+// the started run's terminal is on the wire. Until both hold, the reservation
+// has published nothing, which is what the reserved identity means.
+func (s *session) promoteReserved() {
+	s.mu.Lock()
+	reserved := s.reserved
+	if reserved == nil || reserved.terminal || !reserved.promotionSeen || (s.active != nil && !s.active.terminal) {
+		s.mu.Unlock()
+		return
+	}
+	s.reserved = nil
+	s.active = reserved
+	delete(s.pending, reserved.nativeMessageID)
+	s.refreshStateLocked()
+	s.mu.Unlock()
+	<-reserved.admitted
+	if err := s.emit(reserved, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: reserved.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+		return
+	}
+	s.mu.Lock()
+	reserved.prompted = true
+	s.mu.Unlock()
+}
+
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {
 	_, err := s.emitEnvelope(run, typ, payload, terminal, "")
-	return err
+	if err != nil {
+		return err
+	}
+	if terminal {
+		// A terminal frees the started slot, so a reservation the server has
+		// already promoted starts now — after the terminal it follows.
+		s.promoteReserved()
+	}
+	return nil
 }
 
 func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID) (protocol.Envelope, error) {
@@ -1048,9 +1198,11 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 		if s.active == run {
 			s.active = nil
 		}
-		s.state.Status = protocol.SessionIdle
-		s.state.ActiveRunID = ""
+		if s.reserved == run {
+			s.reserved = nil
+		}
 	}
+	s.refreshStateLocked()
 	var retained []chan base.Result
 	for _, stream := range run.subscribers {
 		if len(stream) < cap(stream)-1 {

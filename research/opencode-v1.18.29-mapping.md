@@ -293,6 +293,43 @@ this adapter:
 - explicit `queue`/`steer` delivery *requests* remain outside the v0.1
   subset, exactly as before.
 
+### Resolution under the queue unit (2026-09-16)
+
+The queue unit graduates `session.message.delivery.queue`, and this adapter
+is where its native evidence lives: `SessionInput.Admitted` carries
+`delivery: "queue"` with an optional `promotedSeq`, and admission and
+promotion are separately observable on the durable stream
+(`session.next.prompt.admitted`, `session.next.prompted`). The adapter now
+advertises the key `native` and applies it. Changes at this pin:
+
+- an explicit `queue` request maps to `native.DeliveryQueue`; `steer` and
+  `btw` are still refused under their own keys;
+- a submission while the started run is nonterminal — explicit `queue` or an
+  `auto` the busy session resolves to one — is admitted as a reservation and
+  reports `delivery_resolution: "session_busy"` for the `auto` case;
+- the reservation's `run.started` is held until the started run's terminal is
+  on the wire, even when `session.next.prompted` for it arrives first, so one
+  run domain executes at a time in admission order;
+- the descriptor discloses `max_active_runs_per_session: 2` and
+  `max_queued_runs_per_session: 1`. The server queues more than one input
+  natively, but settlement here is derived from quiescence over a single
+  execution, so a second reservation exceeds what this pin's evidence
+  supports and is refused `run_active`;
+- the capability revision becomes `opencode-v1.18.29-oap-v2`, since a
+  revision identifies exactly one descriptor.
+
+**New mismatch (P1): no route withdraws one queued input.** The pinned
+server's cancellation surface is `POST /api/session/:id/interrupt`, which is
+documented as active-execution-scoped. Sending it to cancel a *reservation*
+would interrupt the started run instead — the wrong work. The adapter
+therefore drops the reservation locally and settles it `run.cancelled`
+pre-start without calling the server, and ignores a later promotion for a
+run its terminal has already absorbed. The consequence is that the server
+may still execute a withdrawn input while OAP reports the run cancelled.
+Closing it needs an upstream route that removes one admitted input by its
+`SessionMessage.ID`; until one is pinned, `run.cancel` stays `degraded` and
+this is recorded rather than compensated.
+
 
 ## Initial capabilities
 

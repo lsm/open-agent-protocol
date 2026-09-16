@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v1.18.29-oap-v1"
+    "capability_revision": "opencode-v1.18.29-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -33,7 +33,7 @@
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v1.18.29-oap-v1"
+    "capability_revision": "opencode-v1.18.29-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -50,6 +50,6 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v1.18.29-oap-v1"
+    "capability_revision": "opencode-v1.18.29-oap-v2"
   }
 ]

@@ -17,9 +17,14 @@ import (
 )
 
 const (
-	PinnedTag           = native.PinnedTag
-	PinnedCommit        = "16747470f976aca3d362ad730bcd3fe82ecc2c9a"
-	CapabilityRevision  = "opencode-v1.18.29-oap-v1"
+	PinnedTag    = native.PinnedTag
+	PinnedCommit = "16747470f976aca3d362ad730bcd3fe82ecc2c9a"
+	// A revision identifies exactly one descriptor, so a consumer holding the
+	// v1 snapshot must see this one as new rather than read the queued
+	// admissions it now carries against a descriptor that called the queue
+	// unavailable. v2 advertises session.message.delivery.queue with its
+	// bounds.
+	CapabilityRevision  = "opencode-v1.18.29-oap-v2"
 	defaultJournalCap   = 256
 	defaultHistoryLimit = 100
 	// Settlement polls session.active until the agent loop's drain releases
@@ -148,7 +153,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.state":                  {Level: protocol.SupportEmulated, Reason: "active set and adapter-owned projection"},
 		"session.message.submit":         {Level: protocol.SupportNative, Reason: "durable admission receipt with typed conflict rejection"},
 		"session.message.delivery.auto":  {Level: protocol.SupportEmulated, Reason: "no native auto; maps to steer which starts immediately when idle"},
-		"session.message.delivery.queue": {Level: protocol.SupportUnavailable, Reason: "an explicit queue request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request"},
+		"session.message.delivery.queue": {Level: protocol.SupportNative, Reason: "SessionInput.Admitted carries delivery=queue with promotedSeq; a reservation is admitted durably and promoted by session.next.prompted"},
 		"session.message.delivery.steer": {Level: protocol.SupportUnavailable, Reason: "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request"},
 		"run.streaming":                  {Level: protocol.SupportDegraded, Reason: "durable stream carries full-value text.ended boundaries, not live deltas"},
 		"run.status":                     {Level: protocol.SupportNative, Reason: "session.active and durable step events"},
@@ -162,10 +167,21 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 	}
 	endpoint := protocol.EndpointDescriptor{ID: "opencode.server", Name: "OpenCode Server Adapter", Version: PinnedTag, Adapter: "opencode-http-sse"}
 	return base.Descriptor{
-		Capabilities:               protocol.CapabilityDescriptor{Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features},
+		Capabilities: protocol.CapabilityDescriptor{
+			Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features,
+			// One started run beside one reservation. The server queues more
+			// than one natively, but this adapter derives settlement from
+			// quiescence over a single execution, so a second reservation is
+			// beyond what the pin's evidence supports. The bound is disclosed
+			// because a queue nothing could ever reach promises nothing.
+			Limits: &protocol.CapabilityLimits{
+				MaxActiveRunsPerSession: protocol.Limit(2),
+				MaxQueuedRunsPerSession: protocol.Limit(1),
+			},
+		},
 		CapabilityRevision:         CapabilityRevision,
 		Journal:                    base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity},
-		MaxActiveRunsPerSession:    1,
+		MaxActiveRunsPerSession:    2,
 		InteractiveGates:           false,
 		CancellationTarget:         "run",
 		CancellationImplementation: "session_interrupt_with_derived_settlement",

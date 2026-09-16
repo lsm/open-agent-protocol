@@ -202,9 +202,12 @@ func (f *fakeClient) emit(t *testing.T, seq int64, typ native.Type, payload any)
 	f.events <- native.Event{ID: native.EventID(fmt.Sprintf("evt_fake%04d", seq)), Type: typ, Durable: &native.DurablePosition{AggregateID: string(f.session), Seq: seq, Version: 1}, Data: data}
 }
 
-// Explicit queue/steer delivery is rejected by submitInput, so the descriptor
-// must not advertise it as available.
-func TestProbeReportsExplicitDeliveryUnavailable(t *testing.T) {
+// The queue graduated on SessionInput.Admitted{delivery:"queue", promotedSeq},
+// so it is advertised and applied; steer has no unit yet and is still refused
+// under its own key. The queue's disclosure comes with it: advertising the key
+// is a claim that some submission will be queued, and the bound is what makes
+// the claim checkable.
+func TestProbeAdvertisesQueueAndRefusesSteer(t *testing.T) {
 	a, err := New(Config{Endpoint: "http://127.0.0.1:1"})
 	if err != nil {
 		t.Fatal(err)
@@ -213,10 +216,16 @@ func TestProbeReportsExplicitDeliveryUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, feature := range []string{"session.message.delivery.queue", "session.message.delivery.steer"} {
-		if got := descriptor.Capabilities.Features[feature].Level; got != protocol.SupportUnavailable {
-			t.Fatalf("%s = %s, want unavailable", feature, got)
-		}
+	if got := descriptor.Capabilities.Features["session.message.delivery.queue"].Level; got != protocol.SupportNative {
+		t.Fatalf("queue = %s, want native", got)
+	}
+	if got := descriptor.Capabilities.Features["session.message.delivery.steer"].Level; got != protocol.SupportUnavailable {
+		t.Fatalf("steer = %s, want unavailable", got)
+	}
+	limits := descriptor.Capabilities.Limits
+	if limits == nil || limits.MaxQueuedRunsPerSession == nil || *limits.MaxQueuedRunsPerSession != 1 ||
+		limits.MaxActiveRunsPerSession == nil || *limits.MaxActiveRunsPerSession != 2 {
+		t.Fatalf("limits = %+v", limits)
 	}
 }
 
@@ -810,4 +819,137 @@ func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
 	if len(events) == 0 || events[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("events=%v", types(events))
 	}
+}
+
+// queueRequest is an explicit queue submission on the shared test session.
+func queueRequest(text string) protocol.MessageSubmitRequest {
+	return protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}}}
+}
+
+func autoRequest(text string) protocol.MessageSubmitRequest {
+	return protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}}}
+}
+
+func testAdapterDescriptor(t *testing.T) base.Descriptor {
+	t.Helper()
+	a, err := New(Config{Endpoint: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := a.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+// An explicit queue while the started run is live reserves the second run,
+// publishes nothing for it, and promotes it only after the first run's derived
+// settlement — so one run domain executes at a time, in admission order.
+func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+
+	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Admission != protocol.AdmissionQueued || queued.EffectiveDelivery != protocol.EffectiveDeliveryQueue || queued.Status != protocol.RunQueued {
+		t.Fatalf("reservation = %+v", queued)
+	}
+	if queued.RequestedDelivery != protocol.DeliveryQueue {
+		t.Fatalf("requested_delivery = %q", queued.RequestedDelivery)
+	}
+	// Both nonterminal runs are listed in admission order, the reservation
+	// with its 1-based position; active_run_id still names the started run.
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 2 || state.ActiveRuns[0].RunID != first.RunID || state.ActiveRuns[1].RunID != queued.RunID {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	if state.ActiveRuns[1].QueuePosition == nil || *state.ActiveRuns[1].QueuePosition != 1 || state.ActiveRuns[0].QueuePosition != nil {
+		t.Fatalf("queue positions = %+v", state.ActiveRuns)
+	}
+	if state.ActiveRunID != first.RunID {
+		t.Fatalf("active_run_id = %q", state.ActiveRunID)
+	}
+	// A third submission exceeds the disclosed queue bound of one.
+	if _, _, err := session.Submit(context.Background(), autoRequest("too much")); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("third submit = %v, want ErrRunActive", err)
+	}
+
+	// The server promotes the reservation while the first run is still live;
+	// the promotion waits for that run's terminal.
+	client.emit(t, 3, native.TypePrompted, native.PromptedData{Timestamp: 3, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	client.emit(t, 4, native.TypeTextEnded, native.TextEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+	client.emit(t, 5, native.TypeStepEnded, native.StepEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
+	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("first run = %v", types(firstEvents))
+	}
+	// The reservation starts only now, and its own turn settles normally.
+	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
+	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	if len(queuedEvents) == 0 || queuedEvents[0].Type != protocol.TypeRunStarted {
+		t.Fatalf("promoted run = %v", types(queuedEvents))
+	}
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+		{Request: queueRequest("later"), Admission: queued},
+	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
+}
+
+// A busy session turns an auto submission into a reservation and says so, and
+// cancelling that reservation settles it pre-start: its first and only
+// run-scoped event is the terminal, published while the started run is still
+// nonterminal so the freed slot is observable at the moment it is released.
+func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+
+	queued, queuedStream, err := session.Submit(context.Background(), autoRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Admission != protocol.AdmissionQueued || queued.DeliveryResolution != "session_busy" {
+		t.Fatalf("busy auto reservation = %+v", queued)
+	}
+	if _, err := session.Cancel(context.Background(), queued.RunID); err != nil {
+		t.Fatal(err)
+	}
+	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	if len(queuedEvents) != 1 || queuedEvents[0].Type != protocol.TypeRunCancelled {
+		t.Fatalf("cancelled reservation = %v", types(queuedEvents))
+	}
+	// The slot is free again while the first run is still running.
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 1 || state.ActiveRuns[0].RunID != first.RunID {
+		t.Fatalf("active_runs after release = %+v", state.ActiveRuns)
+	}
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
+	// The reservation's terminal is delivered where it happened: before the
+	// earlier run's own terminal.
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+		{Request: autoRequest("later"), Admission: queued, Cancelled: true},
+	}, descriptor, append(append([]protocol.Envelope(nil), queuedEvents...), firstEvents...))
 }
