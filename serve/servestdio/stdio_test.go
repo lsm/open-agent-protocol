@@ -657,6 +657,232 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	}
 }
 
+// --- the bounded shutdown lifecycle ---
+
+// probeAdapter stands in for a process adapter whose handshake is slow or
+// stuck: Probe waits for delay, or for hang when no delay is set, and
+// ignores the context exactly as a child that stopped answering does. The
+// capabilities op reaches it through the hub, so one request parks one
+// admitted worker for as long as the test needs.
+type probeAdapter struct {
+	delay time.Duration
+	hang  chan struct{}
+}
+
+func (a *probeAdapter) Probe(context.Context) (base.Descriptor, error) {
+	if a.delay > 0 {
+		time.Sleep(a.delay)
+	} else {
+		<-a.hang
+	}
+	return base.Descriptor{
+		Capabilities: protocol.CapabilityDescriptor{
+			Endpoint:         protocol.EndpointDescriptor{ID: "probe.test", Name: "Probing test adapter", Version: "0.1", Adapter: "process-memory-script"},
+			ProtocolVersions: []string{protocol.Version},
+			Profiles:         []string{protocol.Profile},
+		},
+		CapabilityRevision: "probe-test-v1",
+	}, nil
+}
+
+func (a *probeAdapter) Open(context.Context, base.OpenRequest) (base.Session, error) {
+	return nil, errors.New("probeAdapter opens no session")
+}
+
+func newProbeHub(t *testing.T, name string, adapter *probeAdapter) *serve.Hub {
+	t.Helper()
+	registry := serve.NewRegistry()
+	if err := registry.Register(name, adapter); err != nil {
+		t.Fatal(err)
+	}
+	return serve.New(registry, serve.Options{StreamQueue: 8})
+}
+
+// TestShutdownDoesNotWaitOnStalledOutput drives the host that closes stdin
+// while it has stopped reading stdout: the writer is parked inside
+// out.Write, so the final drain can never finish. Shutdown must abandon it
+// inside the bounded window — a daemon that waits on the host's pipe is a
+// daemon the host can pin open forever.
+func TestShutdownDoesNotWaitOnStalledOutput(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"adapters"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // the response parks the writer inside out.Write
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stalled writer")
+	}
+}
+
+// TestShutdownBoundedWhileWorkerStuck bounds the other stalled stage: an op
+// whose adapter never answers holds its worker past the host's disconnect,
+// and the wait for admitted workers must abandon it rather than outlive the
+// session. The caller's own session sweep and the process exit depend on
+// Run returning.
+func TestShutdownBoundedWhileWorkerStuck(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) }) // release the abandoned probe after the assertion
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, io.Discard) }()
+	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"capabilities","adapter":"hang"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // let the worker reach the hung probe
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stuck worker")
+	}
+}
+
+// TestShutdownWindowOpensAtDisconnect guards the window's anchor: it opens
+// at the host's end of the session, never at Run's start, so a daemon that
+// served longer than the window still grants a full one. The op here runs
+// longer than the window itself — a window started eagerly at Run would
+// already have expired and cut the answer off — and completes inside the
+// window the disconnect opens.
+func TestShutdownWindowOpensAtDisconnect(t *testing.T) {
+	hub := newProbeHub(t, "slow", &probeAdapter{delay: 300 * time.Millisecond})
+	server, err := New(hub, Options{ShutdownTimeout: 250 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+	f := &frontend{t: t, stdin: stdinWriter, reader: bufio.NewReader(stdoutReader), done: done}
+
+	f.send(`{"id":1,"op":"capabilities","adapter":"slow"}`)
+	time.Sleep(150 * time.Millisecond) // the disconnect lands while the probe is still in flight
+	if err := f.stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireOK(t, f.expectResponse(1))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want the op to finish inside the window its disconnect opened", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the op completed")
+	}
+}
+
+// TestTeardownSettlesAdmittedWork pins what the fail-closed paths promise:
+// work admitted before the host's end is waited for and flushed, not
+// cancelled along with it. The disconnect follows the burst immediately, so
+// every response here is one teardown had to wait for.
+func TestTeardownSettlesAdmittedWork(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+
+	collected := make(chan map[int64]bool, 1)
+	go func() {
+		reader := bufio.NewReader(stdoutReader)
+		seen := map[int64]bool{}
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				var response responseLine
+				if json.Unmarshal([]byte(strings.TrimSuffix(line, "\n")), &response) == nil {
+					seen[response.ID] = true
+				}
+			}
+			if err != nil {
+				collected <- seen
+				return
+			}
+		}
+	}()
+
+	const burst = 16
+	for id := 1; id <= burst; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"state","session_id":"none"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want a clean end", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after the disconnect")
+	}
+	if err := stdoutWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	seen := <-collected
+	for id := int64(1); id <= burst; id++ {
+		if !seen[id] {
+			t.Fatalf("response %d was dropped by the teardown; %d of %d arrived", id, len(seen), burst)
+		}
+	}
+}
+
+// TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
+// show: once Run has torn down, admission refuses, so a serving loop
+// abandoned mid-op that then dispatches one more frame cannot Add to a
+// WaitGroup whose Wait has already returned — the misuse the race detector
+// would report as a panic rather than a failed assertion.
+func TestAdmissionClosesAtTeardown(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !server.admit() {
+		t.Fatal("admission refused before the session began")
+	}
+	server.work.Done()
+	if err := server.Run(context.Background(), strings.NewReader(""), io.Discard); err != nil {
+		t.Fatalf("Run returned %v, want a clean end", err)
+	}
+	if server.admit() {
+		t.Fatal("admission stayed open after teardown")
+	}
+}
+
 // --- the operations surface ---
 
 // openSession opens one tracked session on the hub directly — the stand-in
@@ -766,11 +992,12 @@ func requireEqualLines(t *testing.T, want, got []string) {
 }
 
 // TestGoldenSessionTranscript drives one whole session across the op surface
-// and compares each response line byte for byte. With dispatch still serial
-// every request yields exactly one line in order; the run envelopes are read
-// through a hub-side subscription, so the transcript is fully deterministic:
-// the fake clock and id generator fix the envelope bytes, and sequential
-// requests fix the daemon-minted ids.
+// and compares each response line byte for byte. Dispatch is concurrent, so
+// the transcript is deterministic because the host drives it that way — each
+// response is read before the next request is sent, the way a host that
+// depends on ordering must — and the run envelopes are read through a
+// hub-side subscription: the fake clock and id generator fix the envelope
+// bytes, and one request in flight at a time fixes the daemon-minted ids.
 func TestGoldenSessionTranscript(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	f := startFrontend(t, hub, Options{})
