@@ -161,13 +161,12 @@ func newRunState(bound int) *runState {
 }
 
 // acquire takes one in-flight slot, ending the wait when the session does.
-// A loop parked here has stopped reading, so the host's disconnect is not
-// observed while it waits — the frames it would arrive on are exactly what
-// the loop is not taking. What ends the wait is a worker finishing, the
-// output failing, or the context: a host that closes stdin while refusing
-// to read stdout can still be answered only by cancellation, which is the
-// same bargain the serial dispatch made and what the caller's signal
-// handling is for.
+// A loop parked here has stopped taking frames, but not stopped the session
+// from ending: the reader runs a frame ahead, so it still reaches the stdin
+// EOF behind the frame the loop has not taken and still reports it. The
+// wait itself ends when a worker finishes, when the output fails, or with
+// the context; a disconnect observed while it is parked is bounded by the
+// teardown's own windows instead, which is what they are for.
 func (r *runState) acquire(ctx context.Context, writerFailed <-chan struct{}) bool {
 	select {
 	case r.slots <- struct{}{}:
@@ -298,7 +297,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// synchronous op and never take that final frame: the host's end of the
 	// session must bound shutdown even then.
 	readerDone := make(chan error, 1)
-	frames := make(chan frameResult)
+	// One frame of slack, so the reader is always a frame ahead of the loop:
+	// a loop that has stopped taking frames — parked at the in-flight bound —
+	// would otherwise leave the reader blocked on the handoff, unable to read
+	// the stdin EOF behind it, and the host's disconnect would never be
+	// observed at all. One frame is the whole of the read-ahead, so the
+	// memory this costs is bounded by the same argument the in-flight bound
+	// makes.
+	frames := make(chan frameResult, 1)
 	go readFrames(in, s.frameLimit, frames, readerDone)
 
 	run := newRunState(s.writeQueue)

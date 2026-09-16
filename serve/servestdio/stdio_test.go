@@ -875,6 +875,46 @@ func TestTeardownSettlesAdmittedWork(t *testing.T) {
 	}
 }
 
+// TestDisconnectIsObservedWhileAdmissionIsFull guards the bound against the
+// contract it could have broken: with every in-flight slot held by an
+// adapter that never answers, the serving loop is parked and takes no more
+// frames, so the reader must still reach the stdin EOF behind them. It runs
+// a frame ahead for exactly this, and without that the disconnect would
+// never be observed and closing stdin would leave the process hung until an
+// unrelated cancellation.
+func TestDisconnectIsObservedWhileAdmissionIsFull(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) }) // release the abandoned probes after the assertion
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	// No cancellation anywhere: the disconnect alone has to end this.
+	go func() { done <- server.Run(context.Background(), stdinReader, io.Discard) }()
+	// One request to hold the only slot, two more to park the loop behind
+	// the bound with a frame still unread.
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"capabilities","adapter":"hang"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // let the loop reach the bound
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the disconnect was never observed behind the saturated bound")
+	}
+}
+
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
 // show: once an invocation has closed admission, it refuses, so a serving
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a
