@@ -217,6 +217,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	case protocol.TypeCapabilitiesResponse:
 		var p protocol.CapabilitiesResponse
 		_ = e.DecodePayload(&p)
+		// What this descriptor said about the catalog before it was replaced,
+		// so a response repeating the active revision can be held to repeating
+		// the descriptor too.
+		previousRevision, previousModels := s.currentCapability, s.features[protocol.FeatureModelsList]
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = false
 		s.features = map[string]protocol.SupportLevel{}
@@ -227,6 +231,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		s.catalog, s.catalogKnown = collectCatalog(p), true
 		s.checkSelectionModes(i, line, e, p)
+		s.checkCatalogAdvertisement(i, line, e, previousRevision, previousModels)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)
@@ -281,8 +286,19 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		st := s.track(p.SessionID)
 		st.status = p.Status
 		// The open response is a session-state document, so the model it
-		// reports is the first value the session is known to hold — what a
-		// catalog served before any snapshot is judged against.
+		// reports is the first value the session is known to hold: what a
+		// catalog served before any snapshot is judged against, and the
+		// default a per_run selection must leave alone. Without the second a
+		// run control admitted before the first snapshot would be guarded
+		// against a value nobody had reported, which guards nothing.
+		//
+		// A response that names no model is left alone rather than recorded as
+		// "known to be none": the member is optional, so its absence is
+		// silence, and treating silence as a value would guard every later
+		// snapshot against the empty string.
+		if p.CurrentModelID != "" {
+			st.currentModel, st.currentKnown = p.CurrentModelID, true
+		}
 		s.observeModel(p.SessionID, p.CurrentModelID, "", 0)
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
