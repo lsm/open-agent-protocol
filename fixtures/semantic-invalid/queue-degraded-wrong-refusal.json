@@ -1,0 +1,6 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"capq","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"cap-v1","payload":{"endpoint":{"id":"agent"},"features":{"session.message.delivery.queue":{"level":"degraded"}},"limits":{"max_active_runs_per_session":2,"max_queued_runs_per_session":1}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"sub1","session_id":"s1","capability_revision":"cap-v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"queue"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"err1","in_reply_to":"sub1","session_id":"s1","capability_revision":"cap-v1","payload":{"error":{"code":"internal_error","message":"refused"}}}
+]

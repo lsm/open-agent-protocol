@@ -354,7 +354,11 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// that would allow an overlapping second admission on one session. Keep the
 		// tracked run when the snapshot contradicts it.
 		contradiction := false
-		if prev := st.active; prev != "" {
+		if prev := st.active; prev != "" && !claimedSettled(p, prev) {
+			// A snapshot that claims it already removed the run states so in
+			// as_of.settled, and that claim is judged on its own terms — the
+			// terminal it names must be the next thing the run publishes. It
+			// is not a contradiction, so it is not diagnosed twice.
 			if r := s.runs[prev]; r != nil && !r.terminal && p.ActiveRunID != prev {
 				contradiction = true
 				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))

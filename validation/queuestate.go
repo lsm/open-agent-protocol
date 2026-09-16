@@ -81,6 +81,20 @@ func (s *state) requiredActiveRuns(i int, e protocol.Envelope, p protocol.Sessio
 	return required
 }
 
+// claimedSettled reports whether a snapshot says it already removed one run,
+// naming the terminal it is about to publish for it.
+func claimedSettled(p protocol.SessionState, run protocol.RunID) bool {
+	if p.AsOf == nil {
+		return false
+	}
+	for _, entry := range p.AsOf.Settled {
+		if entry.RunID == run {
+			return true
+		}
+	}
+	return false
+}
+
 // captureWindowStart is the index the snapshot's window opens at: its own
 // request, or the snapshot itself when nothing solicited it.
 func (s *state) captureWindowStart(i int, e protocol.Envelope) int {
