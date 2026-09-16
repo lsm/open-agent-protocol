@@ -174,7 +174,10 @@ type state struct {
 	// deferred holds every state claim the trace has not yet reached — a
 	// capture position ahead of its run, a settled run whose terminal has not
 	// arrived — so an accurate snapshot is reconciled rather than diagnosed.
-	deferred   []*deferredStateClaim
+	deferred []*deferredStateClaim
+	// ledGroups is every listing whose leading entries are still being
+	// settled, kept so the trace's end can judge what never resolved.
+	ledGroups  []*ledGroup
 	recoveries map[protocol.SessionID]*recoveryExpectation
 	// pendingModels retains what each catalog query owes its correlated
 	// response, keyed by the query's envelope id.
@@ -358,10 +361,12 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		// Reopening a known session must not clear a tracked nonterminal run:
 		// that would let a later admission overlap it unseen.
-		// Reopening a known session must not clear a tracked nonterminal run:
-		// that would let a later admission overlap it unseen.
 		st := s.track(p.SessionID)
-		st.status = p.Status
+		if p.Recovery != nil && p.Recovery.Recovered {
+			s.bootstrapRecoveredRuns(i, line, p, st)
+		}
+		s.applyStateDocument(i, line, e, p, st)
+		s.checkSessionCapture(i, line, e, p, st)
 		// The open response is a session-state document, so the model it
 		// reports is the first value the session is known to hold: what a
 		// catalog served before any snapshot is judged against, and the
@@ -406,43 +411,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			st = &sessionTrack{}
 			s.sessions[p.SessionID] = st
 		}
-		if p.ActiveRunID != "" && p.Status == protocol.SessionIdle {
-			s.add(CodeSessionStateMismatch, i, line, e, "/payload/status", "idle session cannot have an active run")
-		}
-		// A snapshot may not erase a run the trace has admitted and not terminated:
-		// that would allow an overlapping second admission on one session. Keep the
-		// tracked run when the snapshot contradicts it.
-		contradiction, excused := false, false
-		if prev := st.active; prev != "" && !claimedSettled(p, prev) {
-			// A snapshot that claims it already removed the run states so in
-			// as_of.settled, and that claim is judged on its own terms — the
-			// terminal it names must be the next thing the run publishes. It
-			// is not a contradiction, so it is not diagnosed twice, and the
-			// pointer follows the snapshot because the snapshot said the run
-			// is over and answers for saying so.
-			//
-			// A run that began after the read was requested is different. A
-			// promotion happens inside the endpoint and its run.started can
-			// drain after the response, so a snapshot naming no started run
-			// where none had started is describing the moment it was taken —
-			// but excusing that omission is not agreeing with it. The run did
-			// start, nothing reconciles the omission later, and letting the
-			// snapshot clear the pointer would leave every snapshot after it
-			// free to omit the run as well.
-			r := s.runs[prev]
-			if r != nil && !r.terminal && p.ActiveRunID != prev {
-				if r.startedAt <= s.captureWindowStart(i, e) {
-					contradiction = true
-					s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
-				} else {
-					excused = true
-				}
-			}
-		}
-		st.status = p.Status
-		if !contradiction && !excused {
-			st.active = p.ActiveRunID
-		}
+		s.applyStateDocument(i, line, e, p, st)
 		// A per_run application binds its own run and leaves the session
 		// default untouched; a snapshot reporting anything else — the run's
 		// model or a third one — says the endpoint moved it.
@@ -1131,6 +1100,88 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		s.refreshQueueWindows(r.session)
 	}
 }
+
+// applyStateDocument is what every session-state document says about its
+// session, wherever it arrives. session.open.response carries the same
+// document — SessionOpenResponse is SessionState, and the schema defines the
+// open response as that document — and a client reattaching reads it as its
+// initial state, so a rule keyed to the response type rather than to the
+// document is a rule with a hole in it. The model bookkeeping stays with each
+// branch, because an open response that names no model is silent where a state
+// response is authoritative.
+func (s *state) applyStateDocument(i, line int, e protocol.Envelope, p protocol.SessionState, st *sessionTrack) {
+	if p.ActiveRunID != "" && p.Status == protocol.SessionIdle {
+		s.add(CodeSessionStateMismatch, i, line, e, "/payload/status", "idle session cannot have an active run")
+	}
+	// A snapshot may not erase a run the trace has admitted and not terminated:
+	// that would allow an overlapping second admission on one session. Keep the
+	// tracked run when the snapshot contradicts it.
+	contradiction, excused := false, false
+	if prev := st.active; prev != "" && !claimedSettled(p, prev) {
+		// A snapshot that claims it already removed the run states so in
+		// as_of.settled, and that claim is judged on its own terms — the
+		// terminal it names must be the next thing the run publishes. It
+		// is not a contradiction, so it is not diagnosed twice, and the
+		// pointer follows the snapshot because the snapshot said the run
+		// is over and answers for saying so.
+		//
+		// A run that began after the read was requested is different. A
+		// promotion happens inside the endpoint and its run.started can
+		// drain after the response, so a snapshot naming no started run
+		// where none had started is describing the moment it was taken —
+		// but excusing that omission is not agreeing with it. The run did
+		// start, nothing reconciles the omission later, and letting the
+		// snapshot clear the pointer would leave every snapshot after it
+		// free to omit the run as well.
+		r := s.runs[prev]
+		if r != nil && !r.terminal && p.ActiveRunID != prev {
+			if r.startedAt <= s.captureWindowStart(i, e) {
+				contradiction = true
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
+			} else {
+				excused = true
+			}
+		}
+	}
+	st.status = p.Status
+	if !contradiction && !excused {
+		st.active = p.ActiveRunID
+	}
+}
+
+// bootstrapRecoveredRuns registers the runs a recovered open response
+// introduces. A reattach joins a session already under way: the response is
+// the first thing the trace hears about its runs and is authoritative about
+// them by construction, since there is no earlier admission for it to
+// contradict. So the runs it lists are taken from it, and the document is then
+// held to everything that does not depend on where they came from — that it
+// lists each of them once, that none of them has already settled, that it
+// names the one it says is executing and only one, and that its own status
+// agrees with the rest of it. An open response that names runs without
+// declaring a recovery declares nothing that could have created them, and its
+// entries are runs from nowhere like any others.
+func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st *sessionTrack) {
+	for _, entry := range p.ActiveRuns {
+		if s.runs[entry.RunID] != nil {
+			continue
+		}
+		next := uint64(1)
+		if entry.AsOfSequence != nil {
+			next = *entry.AsOfSequence + 1
+		}
+		// The entry's own status is what the reattach knows: a queued one is
+		// a reservation that has not begun, and anything else is a run that
+		// has. Its start is before everything this trace can see, so a
+		// capture position stated here is behind it.
+		queued := entry.Status == protocol.RunQueued
+		run := &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: next, admittedAt: i, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status}
+		run.order = len(st.order)
+		s.runs[entry.RunID] = run
+		st.order = append(st.order, entry.RunID)
+	}
+	s.refreshQueueWindows(p.SessionID)
+}
+
 func (s *state) checkScope(i, line int, e protocol.Envelope, session protocol.SessionID, run protocol.RunID) {
 	if e.SessionID != "" && session != "" && e.SessionID != session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "envelope and payload session_id differ", string(e.SessionID), string(session))

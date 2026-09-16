@@ -261,7 +261,7 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 				// forgiving the question: what the admission decides is
 				// carried forward on the same claim and judged when it
 				// decides it.
-				claim := &entryClaim{entry: entry, state: p, pointer: pointer, queueAhead: queuePosition, leadsAhead: leads}
+				claim := &entryClaim{entry: entry, state: p, pointer: pointer, queueAhead: queuePosition, leadsAhead: leads, index: i, line: line, envelope: e}
 				switch {
 				case terminalStatus(entry.Status):
 					// active_runs is the nonterminal set whatever admitted the
@@ -286,6 +286,10 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 					// run the listing describes as executing is in no queue
 					// whatever admitted it.
 					markExecuting(pointer, entry)
+					// Its status settles it without the admission, so it is
+					// resolved from here and its siblings can count it as
+					// taking no queue place.
+					claim.resolved = true
 					if entry.QueuePosition != nil {
 						s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *entry.QueuePosition), string(entry.RunID))
 					}
@@ -389,20 +393,17 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		s.checkEntryAnchor(i, line, e, pointer, p.SessionID, entry, r)
 		s.checkEntryPending(i, line, e, pointer, entry, r)
 	}
-	for _, led := range ledEntries {
-		// Which run the listing described as executing is a fact about the
-		// whole listing, not about what had been read when this entry was
-		// reached: an entry's queue place counts what precedes it, but the
-		// run active_run_id owed is named wherever it appears.
-		led.executing = listedStarted
-	}
-	if len(ledEntries) == 1 {
-		// The listing's own two fields are one question, and one lead is the
-		// only shape where its answer follows from that lead alone. Where
-		// several entries lead, each is still judged as an entry; which of
-		// them active_run_id owed is not a question any one of their
-		// admissions answers.
-		ledEntries[0].sole = true
+	if len(ledEntries) > 0 {
+		// The leads of one listing are settled as a set. Which run the listing
+		// described as executing is a fact about the whole listing rather than
+		// about what had been read when an entry was reached: an entry's queue
+		// place counts what precedes it, but the run active_run_id owed is
+		// named wherever it appears.
+		group := &ledGroup{claims: ledEntries}
+		for _, led := range ledEntries {
+			led.executing, led.group = listedStarted, group
+		}
+		s.ledGroups = append(s.ledGroups, group)
 	}
 	for _, r := range required {
 		if !listed[r.id] {

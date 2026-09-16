@@ -621,12 +621,36 @@ type entryClaim struct {
 	executing  protocol.RunID
 	queueAhead int
 	leadsAhead int
+	// group is every entry that led in the same listing, in listing order.
+	// What one of them turns out to be narrows what the others can be, so
+	// they are settled as a set rather than one at a time.
+	group *ledGroup
 	// classify marks an entry whose status could not say what it was without
 	// the admission. The rest were classified where they were listed.
 	classify bool
-	// sole marks the only leading entry in its listing, which is the shape
-	// where the listing's own fields follow from this one admission.
-	sole bool
+	// resolved and reservation are this entry's outcome, once something has
+	// said what it is; judged records that its queue place has been reported
+	// on, so tightening the range for its siblings cannot report it twice.
+	resolved    bool
+	reservation bool
+	judged      bool
+	run         protocol.RunID
+	// index, line and envelope are the snapshot this entry came from, because
+	// every verdict about it points at that snapshot however late it lands.
+	index, line int
+	envelope    protocol.Envelope
+}
+
+// ledGroup is one listing's leading entries. Their queue places are a single
+// arrangement: each entry that turns out to be a reservation takes a place the
+// others cannot have, so an admission that lands narrows what is left for the
+// ones still outstanding, and the last one to land determines them all.
+type ledGroup struct {
+	claims []*entryClaim
+	// settled records that the listing's own fields have been judged, which
+	// happens once — when the last of the group resolves, or when the trace
+	// ends without it.
+	settled bool
 }
 
 const (
@@ -809,7 +833,9 @@ func (s *state) judgeLedEntry(claim *deferredStateClaim, r *runState) {
 	// The capture position and pending set wait on the run either way: the
 	// entry states a position, and only the run says whether it reaches it.
 	s.checkEntryPending(i, line, e, c.pointer, c.entry, r)
+	c.run = r.id
 	if !c.classify {
+		// Already classified where it was listed, and reported on there.
 		return
 	}
 	reservation := false
@@ -835,42 +861,120 @@ func (s *state) judgeLedEntry(claim *deferredStateClaim, r *runState) {
 			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimReservation, session: r.session, run: r.id, sequence: *c.entry.AsOfSequence, held: reservation, index: i, line: line, envelope: e})
 		}
 	}
-	switch {
-	case reservation:
-		// Its place is the one the listing left for it. Another lead ahead of
-		// it makes that a range rather than a number, because whether that
-		// entry takes a place is settled by its own admission and not by this
-		// one.
-		low, high := c.queueAhead+1, c.queueAhead+c.leadsAhead+1
-		if position := c.entry.QueuePosition; position == nil || *position < low || *position > high {
-			s.addExpected(CodeSessionStateMismatch, i, line, e, c.pointer+"/queue_position", "a reservation's queue position must be its 1-based place in the queue", describeQueueRange(low, high), describeQueuePosition(c.entry.QueuePosition), string(r.id))
-		}
-	case c.entry.QueuePosition != nil:
+	if !reservation && c.entry.QueuePosition != nil {
 		s.addExpected(CodeSessionStateMismatch, i, line, e, c.pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *c.entry.QueuePosition), string(r.id))
 	}
-	if !c.sole {
+	c.resolved, c.reservation = true, reservation
+	s.settleLedGroup(c.group, false)
+}
+
+// settleLedGroup reports everything the group now determines. An entry that
+// has turned out to be a reservation takes a place its siblings cannot have,
+// so each admission that lands tightens the arrangement left for the ones
+// still outstanding: a place is judged as soon as every entry ahead of it is
+// known, which for the last of them is a single number. The listing's own two
+// fields wait for the whole group, because which run active_run_id owed is a
+// question about all of them at once.
+//
+// final is the trace's end, where nothing more will resolve: the places still
+// outstanding are judged against what their unresolved siblings leave them,
+// which is the widest reading, and the listing's fields are judged if the
+// group resolved without the last event that would have settled them.
+func (s *state) settleLedGroup(group *ledGroup, final bool) {
+	if group == nil {
 		return
 	}
-	if !reservation {
-		switch {
-		case c.executing != "":
-			s.addExpected(CodeSessionStateMismatch, i, line, e, c.pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(c.executing), string(c.entry.Status), string(r.id))
-		case c.state.ActiveRunID != r.id:
-			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must name the started run of the session", string(r.id), string(c.state.ActiveRunID), string(r.id))
+	reservations := 0
+	for index, c := range group.claims {
+		if !c.resolved || c.judged {
+			if c.resolved && c.reservation {
+				reservations++
+			}
+			continue
 		}
-	} else if c.executing == "" && c.state.ActiveRunID != "" {
-		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must be absent where the session holds only reservations", "absent", string(c.state.ActiveRunID))
+		unknown := 0
+		for _, ahead := range group.claims[:index] {
+			if !ahead.resolved {
+				unknown++
+			}
+		}
+		if unknown > 0 && !final {
+			continue
+		}
+		c.judged = true
+		if c.reservation {
+			low := c.queueAhead + reservations + 1
+			if position := c.entry.QueuePosition; position == nil || *position < low || *position > low+unknown {
+				s.addExpected(CodeSessionStateMismatch, c.index, c.line, c.envelope, c.pointer+"/queue_position", "a reservation's queue position must be its 1-based place in the queue", describeQueueRange(low, low+unknown), describeQueuePosition(c.entry.QueuePosition), string(c.run))
+			}
+		}
+		if c.reservation {
+			reservations++
+		}
 	}
-	if c.executing != "" {
-		// The listing already named an executing run, so its status was
-		// judged against that where the listing was read.
+	if group.settled {
 		return
 	}
-	if reservation {
-		s.checkListedStatus(i, line, e, c.state, "", c.entry, true)
+	for _, c := range group.claims {
+		if !c.resolved && !final {
+			return
+		}
+	}
+	group.settled = true
+	s.judgeLedListing(group)
+}
+
+// judgeLedListing holds the listing's own two fields to what its leading
+// entries turned out to be. Every entry that is executing is one the session
+// may not have twice, the one that is executing is the one active_run_id owed,
+// and a listing whose leads are all reservations holds nothing else.
+func (s *state) judgeLedListing(group *ledGroup) {
+	executing := group.claims[0].executing
+	state := group.claims[0].state
+	var started *entryClaim
+	for _, c := range group.claims {
+		if !c.classify || !c.resolved || c.reservation {
+			// An entry whose status classified it where it was listed was
+			// judged against the listing there, by the same two rules. Only
+			// what the admission decided is decided here.
+			continue
+		}
+		if executing != "" {
+			s.addExpected(CodeSessionStateMismatch, c.index, c.line, c.envelope, c.pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(executing), string(c.entry.Status), string(c.run))
+			continue
+		}
+		executing, started = c.run, c
+	}
+	if executing != group.claims[0].executing && started != nil {
+		// A lead turned out to be the listing's executing run, so it is the
+		// one active_run_id owed and the one the session status describes.
+		if state.ActiveRunID != started.run {
+			s.addExpected(CodeSessionStateMismatch, started.index, started.line, started.envelope, "/payload/active_run_id", "active_run_id must name the started run of the session", string(started.run), string(state.ActiveRunID), string(started.run))
+		}
+		s.checkListedStatus(started.index, started.line, started.envelope, state, started.run, started.entry, false)
 		return
 	}
-	s.checkListedStatus(i, line, e, c.state, r.id, c.entry, false)
+	if group.claims[0].executing != "" {
+		// The listing already named an executing run where it was read, so
+		// active_run_id and the status were judged against it there.
+		return
+	}
+	// Nothing executes, so whatever the leads are, they are reservations or
+	// runs that never resolved. A listing holding only those names no run.
+	first := group.claims[0]
+	if state.ActiveRunID != "" {
+		s.addExpected(CodeSessionStateMismatch, first.index, first.line, first.envelope, "/payload/active_run_id", "active_run_id must be absent where the session holds only reservations", "absent", string(state.ActiveRunID))
+	}
+	s.checkListedStatus(first.index, first.line, first.envelope, state, "", first.entry, true)
+}
+
+// closeLedGroups settles what the trace ended without settling. A lead whose
+// admission never arrived is diagnosed as that claim; what its siblings were
+// left with is still theirs to answer for.
+func (s *state) closeLedGroups() {
+	for _, group := range s.ledGroups {
+		s.settleLedGroup(group, true)
+	}
 }
 
 func describeQueueRange(low, high int) string {
@@ -951,4 +1055,5 @@ func (s *state) closeQueue() {
 			s.judgeAdmissionClaim(claim)
 		}
 	}
+	s.closeLedGroups()
 }

@@ -161,6 +161,23 @@ stale-limit check stands down where another condition explains the code.
 
 ### A snapshot states the position it was captured at
 
+These rules are about the session-state document, not about the envelope that
+carries it. `session.open.response` is that same document — `SessionOpenResponse`
+is `SessionState`, and the schema defines the open response as a state
+document — and a reattaching client reads it as its initial state before any
+`session.state` exchange exists, so a rule keyed to the response type rather
+than to the document is a rule with a hole where reconnection lives. A recovered
+open response is also the one place a state document introduces runs rather
+than describing runs the trace carries: it joins a session already under way
+and is authoritative about its runs by construction, there being no earlier
+admission for it to contradict. So the runs it lists are taken from it, and the
+document is then held to everything that does not depend on where they came
+from — that it lists each of them once, that none of them has already settled,
+that it names the one it says is executing and only one, and that its own
+status agrees with the rest of it. An open response that names runs without
+declaring a recovery declares nothing that could have created them, and its
+entries are runs from nowhere like any others.
+
 `session.state` gains `active_runs`: every nonterminal run in admission order,
 each with its status, its 1-based `queue_position` when it is a reservation,
 the position it was captured at, and the unresolved interactions it is blocked
@@ -349,11 +366,19 @@ place it gave itself was in a queue it never entered. A run admitted queued is
 a reservation, so the place it claims is the one the listing left for it. A
 cancelling entry asks round 14's question with a run to ask it of, and the
 start it waits for settles that in turn: two answers in a chain, each from the
-event that carries it. Where the lead is the listing's only one, the two fields
-read off the listing follow from that same answer and are judged with it;
-where several entries lead, each is still judged as an entry, but which of them
-`active_run_id` owed is not a question any one admission settles, and the queue
-place becomes the range those entries leave each other rather than a number.
+event that carries it.
+
+Where several entries lead, they are settled as a set, because their queue
+places are one arrangement rather than several claims. An entry that turns out
+to be a reservation takes a place the others cannot have, and one that turns
+out to be executing takes none, so every admission that lands narrows what is
+left for the entries still outstanding — and the last of them to land
+determines all of the places exactly. A range is what an entry is judged
+against only while a sibling ahead of it is genuinely unknown, which at the
+trace's end means a sibling whose admission never arrived. The listing's own
+two fields wait for the whole set, because which run `active_run_id` owed is a
+question about all of them at once; where the lead is the listing's only one
+that reduces to the single answer it always was.
 
 The identity claim itself is always reconciled. Accepting it at the state
 response and never returning to it is what lets a snapshot assert an admission
@@ -410,7 +435,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 131 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 142 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
