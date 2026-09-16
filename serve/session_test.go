@@ -2042,6 +2042,94 @@ func TestCloseStopsAtContextDeadline(t *testing.T) {
 
 var _ base.Session = (*stubSession)(nil)
 
+// queuedStubSession is an endpoint that queues: it reports its live runs in
+// active_runs and leaves active_run_id empty while only reservations remain,
+// which is what the queue unit requires of a snapshot. Its Close refuses until
+// needed cancels have been issued.
+type queuedStubSession struct {
+	live      []protocol.ActiveRun
+	activeRun protocol.RunID
+	needed    int
+	cancelled []protocol.RunID
+}
+
+func (s *queuedStubSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, nil
+}
+func (s *queuedStubSession) State(context.Context) (protocol.SessionState, error) {
+	return protocol.SessionState{ActiveRunID: s.activeRun, ActiveRuns: s.live}, nil
+}
+func (s *queuedStubSession) Resolve(context.Context, base.InteractionResolution) error { return nil }
+func (s *queuedStubSession) Cancel(_ context.Context, run protocol.RunID) (protocol.RunCancelResponse, error) {
+	s.cancelled = append(s.cancelled, run)
+	return protocol.RunCancelResponse{Accepted: true}, nil
+}
+func (s *queuedStubSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, nil
+}
+func (s *queuedStubSession) Close(context.Context) error {
+	if len(s.cancelled) < s.needed {
+		return base.ErrRunActive
+	}
+	return nil
+}
+
+var _ base.Session = (*queuedStubSession)(nil)
+
+// TestCloseCancelsReservationsTheSnapshotNames proves shutdown settles work
+// active_run_id cannot name. A reservation is admitted work that owes a
+// terminal, so an adapter's Close refuses for it, but the queue unit leaves
+// active_run_id absent while only reservations remain — reading that field
+// alone, the sweep would retry until it gave up and leave the child process
+// and an accepted submission alive.
+func TestCloseCancelsReservationsTheSnapshotNames(t *testing.T) {
+	stub := &queuedStubSession{needed: 1, live: []protocol.ActiveRun{{RunID: "run-queued", Status: protocol.RunQueued, Relationship: protocol.RelationshipPrimary}}}
+	entry := newSession("stub", "stub", stub)
+	if err := entry.closeForShutdown(context.Background()); err != nil {
+		t.Fatalf("close did not settle a reservation-only session: %v", err)
+	}
+	if fmt.Sprint(stub.cancelled) != fmt.Sprint([]protocol.RunID{"run-queued"}) {
+		t.Fatalf("cancelled %v, want the reservation", stub.cancelled)
+	}
+	if !entry.IsClosed() {
+		t.Fatal("session did not record the close")
+	}
+}
+
+// Both slots are live work and each owes a terminal, so shutdown cancels the
+// started run and the reservation behind it, in the order the snapshot lists
+// them.
+func TestCloseCancelsEveryRunTheSnapshotLists(t *testing.T) {
+	stub := &queuedStubSession{
+		needed:    2,
+		activeRun: "run-started",
+		live: []protocol.ActiveRun{
+			{RunID: "run-started", Status: protocol.RunRunning, Relationship: protocol.RelationshipPrimary},
+			{RunID: "run-queued", Status: protocol.RunQueued, Relationship: protocol.RelationshipPrimary},
+		},
+	}
+	entry := newSession("stub", "stub", stub)
+	if err := entry.closeForShutdown(context.Background()); err != nil {
+		t.Fatalf("close did not settle: %v", err)
+	}
+	if fmt.Sprint(stub.cancelled) != fmt.Sprint([]protocol.RunID{"run-started", "run-queued"}) {
+		t.Fatalf("cancelled %v, want both runs in admission order", stub.cancelled)
+	}
+}
+
+// An endpoint that keeps no entries is unaffected: active_run_id is the whole
+// answer there, and it is still the one run shutdown cancels.
+func TestCloseFallsBackToTheNamedActiveRun(t *testing.T) {
+	stub := &queuedStubSession{needed: 1, activeRun: "run-started"}
+	entry := newSession("stub", "stub", stub)
+	if err := entry.closeForShutdown(context.Background()); err != nil {
+		t.Fatalf("close did not settle: %v", err)
+	}
+	if fmt.Sprint(stub.cancelled) != fmt.Sprint([]protocol.RunID{"run-started"}) {
+		t.Fatalf("cancelled %v, want the named active run", stub.cancelled)
+	}
+}
+
 // blockingSession refuses to close until its context is done, recording
 // whether it ever observed a live (not-yet-expired) context.
 type blockingSession struct {

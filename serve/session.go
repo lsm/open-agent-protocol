@@ -893,8 +893,8 @@ func (s *Session) markClosed() {
 	s.deliverDeferredError(errored, failed)
 }
 
-// closeForShutdown cancels any active run and then closes the adapter
-// session: active runs refuse Close by contract, so shutdown settles them
+// closeForShutdown cancels every live run and then closes the adapter
+// session: live runs refuse Close by contract, so shutdown settles them
 // through Cancel where the adapter supports it. Some adapters acknowledge a
 // cancel before the run settles, so the refused Close is retried briefly — a
 // shutdown that gave up here would leave the session's child process
@@ -906,8 +906,10 @@ func (s *Session) closeForShutdown(ctx context.Context) error {
 			break
 		}
 		state, stateErr := s.session.State(ctx)
-		if stateErr == nil && state.ActiveRunID != "" {
-			_, _ = s.session.Cancel(ctx, state.ActiveRunID)
+		if stateErr == nil {
+			for _, run := range liveRuns(state) {
+				_, _ = s.session.Cancel(ctx, run)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -919,4 +921,31 @@ func (s *Session) closeForShutdown(ctx context.Context) error {
 		s.markClosed()
 	}
 	return err
+}
+
+// liveRuns names every run shutdown has to settle before a session will close.
+//
+// active_run_id names the started run, and on an endpoint that queues it is
+// deliberately absent where only reservations remain — a client reading it as
+// the run to follow would follow one that has published nothing. A reservation
+// is still admitted work that owes a terminal, so a Close refuses for it, and
+// a shutdown reading active_run_id alone would retry until it gave up and
+// leave the child process and an accepted submission alive. active_runs is the
+// complete list of what is outstanding; active_run_id is the fallback for an
+// endpoint that keeps no entries. The hub adds no semantics here: it cancels
+// what the session says is live, in the order the session listed it.
+func liveRuns(state protocol.SessionState) []protocol.RunID {
+	runs := make([]protocol.RunID, 0, len(state.ActiveRuns)+1)
+	seen := map[protocol.RunID]bool{}
+	for _, entry := range state.ActiveRuns {
+		if entry.RunID == "" || seen[entry.RunID] {
+			continue
+		}
+		seen[entry.RunID] = true
+		runs = append(runs, entry.RunID)
+	}
+	if state.ActiveRunID != "" && !seen[state.ActiveRunID] {
+		runs = append(runs, state.ActiveRunID)
+	}
+	return runs
 }
