@@ -186,16 +186,17 @@ export class OapClient {
     const request = this.envelope(EnvelopeType.SessionOpenRequest, requestPayload);
     if (options.sessionId) request.session_id = options.sessionId;
     if (requestPayload.tool_sources?.length) {
-      // An open that attaches sources exercises an optional feature, and such
-      // an envelope must cite the descriptor it was built against — the core
-      // profile's rule, which the validator enforces on every optional-feature
-      // envelope and the daemon enforces on this route. Omitting it made every
-      // attaching open this client issued produce an exchange this project's
-      // own validator rejects.
+      // An open that attaches sources exercises an optional feature, and this
+      // project's validator requires such an envelope to cite the active
+      // descriptor. That rule is deliberately stricter than the wire contract,
+      // which says a request `may` pin and evaluates an unpinned one against
+      // current capabilities — the daemon accepts both, as it must. This client
+      // pins anyway, so that an exchange it produces is a trace this project
+      // validates: an unpinned attaching open is rejected as
+      // `stale_capability_revision`.
       //
-      // The revision is read here rather than taken from the caller because
-      // electing a capability means having seen it. The probe costs one
-      // request, and only on an attaching open.
+      // Liberal in what the daemon accepts, conservative in what the clients
+      // send. The probe costs one request, on attaching opens only.
       request.capability_revision = (await this.capabilities(adapter)).revision;
     }
     const envelope = await this.exchange(

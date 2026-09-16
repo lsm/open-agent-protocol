@@ -327,10 +327,13 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
-	// An attaching open is held to the revision the gate verified, so the
-	// response repeats a value the daemon checked rather than echoing whatever
-	// the caller sent. For any other open the caller's value is repeated as it
-	// always was: it elected no optional feature, so nothing was gated on it.
+	// The response carries the revision the open was admitted under, which is
+	// what the profile asks for in both directions: a pinned request has its
+	// revision repeated — the gate verified it is the current one, so the probed
+	// value and the caller's are the same string — and an unpinned one is given
+	// the revision used for admission, which is how a control layer detects that
+	// it was admitted under a newer snapshot than the one it last read. An open
+	// that attaches nothing is not probed and keeps the caller's own value.
 	response.CapabilityRevision = envelope.CapabilityRevision
 	if revision != "" {
 		response.CapabilityRevision = revision
@@ -772,22 +775,24 @@ func (s *Server) attachmentGate(ctx context.Context, name string, envelope proto
 	if err != nil {
 		return "", err
 	}
-	// An open that attaches sources exercises an optional feature, so it is an
-	// instance of the rule the core profile already states — an envelope
-	// exercising one must cite the active descriptor — and not a rule of this
-	// unit's own. The validator enforces it for every such envelope in
-	// controlDescriptor; the daemon did not, so the route admitted opens that
-	// cite nothing and then labelled the response with whatever the caller sent.
-	// Every attaching open both in-repo clients issued therefore produced an
-	// exchange this project's own validator rejects as stale_capability_revision,
-	// and a caller holding a descriptor from before a refresh could elect
-	// attachment against a disclosure that no longer exists.
+	// A revision the caller supplied is an exact precondition, and one it did
+	// not supply is not a defect. The core profile is conditional in both
+	// directions: a request "may set capability_revision", and "when supplied, it
+	// is an exact precondition"; a request that omits it "is evaluated against
+	// the current capabilities" and its successful response "should set the
+	// revision used for admission". An unpinned open is how a caller says it does
+	// not need deterministic admission, which is a thing a caller is allowed to
+	// say.
 	//
-	// Enforced here rather than in readRequest, because here is where the route
-	// knows the envelope exercises an optional feature and has the current
-	// revision in hand. An open that attaches nothing elects nothing, and the
-	// validator does not revision-gate it either.
-	if string(envelope.CapabilityRevision) != descriptor.CapabilityRevision {
+	// The check reads that way and only that way. A first attempt at it turned
+	// "if supplied, must be current" into "must supply" and refused every
+	// unpinned attaching open — a refusal the protocol does not authorize, for a
+	// request it explicitly permits.
+	//
+	// It is here rather than in readRequest because here is where the route has
+	// the current revision in hand, and here is the only route in this unit whose
+	// request can carry one worth checking.
+	if envelope.CapabilityRevision != "" && string(envelope.CapabilityRevision) != descriptor.CapabilityRevision {
 		return "", &staleRevisionError{expected: descriptor.CapabilityRevision, current: string(envelope.CapabilityRevision)}
 	}
 	// The key is resolved across the descriptor's layers, because a valid
@@ -815,9 +820,6 @@ func (s *Server) attachmentGate(ctx context.Context, name string, envelope proto
 type staleRevisionError struct{ expected, current string }
 
 func (e *staleRevisionError) Error() string {
-	if e.current == "" {
-		return "an open electing attachment must cite the active capability revision"
-	}
 	return "the open cites a capability revision that is no longer current"
 }
 

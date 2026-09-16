@@ -75,20 +75,20 @@ func openSessionWith(t *testing.T, server *httptest.Server, id string, request p
 	return postEnvelope(t, server, "/adapters/memory/sessions", requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-"+id, request, id, "", revision))
 }
 
-// TestAttachingOpenMustCiteTheActiveDescriptor holds the open route to a rule
-// the core profile already states: an envelope exercising an optional feature
-// must cite the active capability descriptor. An attaching open is an instance
-// of it and not a rule of this unit's own — the validator enforces it for every
-// such envelope in controlDescriptor — but the route did not, so it admitted
-// opens that cited nothing and then labelled the response with whatever the
-// caller sent. Every attaching open both in-repo clients issued therefore
-// produced an exchange this project's own validator rejects, and a caller
-// holding a descriptor from before a refresh could elect attachment against a
-// disclosure that no longer exists.
+// TestAttachingOpenPinsOnlyWhatItCites holds the open route to the profile's
+// rule in both of its directions, because the rule is conditional and the first
+// attempt at it read only half.
 //
-// An open that attaches nothing elects nothing and is not gated, which is where
-// the validator draws the same line.
-func TestAttachingOpenMustCiteTheActiveDescriptor(t *testing.T) {
+// A revision the caller supplied is an exact precondition: a stale one is
+// refused `stale_capabilities` with both revisions, since a caller told only
+// that its revision is wrong cannot tell whether to refresh or to stop. A
+// revision the caller did not supply is not a defect — the profile says a
+// request "may" set one, that an unpinned request is evaluated against current
+// capabilities, and that its successful response "should set the revision used
+// for admission" so a control layer can detect it was admitted under a newer
+// snapshot. An unpinned open is how a caller says it does not need
+// deterministic admission, which it is entitled to say.
+func TestAttachingOpenPinsOnlyWhatItCites(t *testing.T) {
 	_, server := newServer(t, registryWithToolSource(t), Options{})
 	current := adapterRevision(t, server, "memory")
 	if current == "" {
@@ -100,35 +100,24 @@ func TestAttachingOpenMustCiteTheActiveDescriptor(t *testing.T) {
 			ToolSources: []protocol.ToolSourceAttachment{{ID: "workspace-files", Kind: protocol.ToolSourceProcess}},
 		}, id, "", revision))
 	}
-	for _, testCase := range []struct{ name, id, revision string }{
-		{"no revision at all", "uncited", ""},
-		{"a revision that is not current", "stale", "reference-memory-v1"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			status, response := attaching(testCase.id, testCase.revision)
-			if status != http.StatusConflict {
-				t.Fatalf("open status %d, want 409: %s", status, response.Payload)
-			}
-			var failure protocol.ErrorResponse
-			if err := response.DecodePayload(&failure); err != nil {
-				t.Fatal(err)
-			}
-			if failure.Error.Code != "stale_capabilities" {
-				t.Fatalf("error code %q", failure.Error.Code)
-			}
-			// Both details, because a caller told only that its revision is
-			// stale cannot tell whether to refresh and retry or to stop.
-			details := failure.Error.Details
-			if details["expected_revision"] != current || details["current_revision"] != testCase.revision {
-				t.Fatalf("details %+v, want the endpoint's %q beside the caller's %q", details, current, testCase.revision)
-			}
-		})
+	// A stale pin is refused, and the refusal names both revisions.
+	status, response := attaching("stale", "reference-memory-v1")
+	if status != http.StatusConflict {
+		t.Fatalf("open status %d, want 409: %s", status, response.Payload)
+	}
+	var failure protocol.ErrorResponse
+	if err := response.DecodePayload(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "stale_capabilities" {
+		t.Fatalf("error code %q", failure.Error.Code)
+	}
+	if details := failure.Error.Details; details["expected_revision"] != current || details["current_revision"] != "reference-memory-v1" {
+		t.Fatalf("details %+v, want the endpoint's %q beside the caller's", details, current)
 	}
 
-	// The same open citing the descriptor it was built against is admitted, and
-	// the response repeats the revision the daemon itself verified rather than
-	// echoing the caller's.
-	status, response := attaching("cited", current)
+	// A current pin is admitted and repeated.
+	status, response = attaching("cited", current)
 	if status != http.StatusOK {
 		t.Fatalf("open status %d: %s", status, response.Payload)
 	}
@@ -136,11 +125,27 @@ func TestAttachingOpenMustCiteTheActiveDescriptor(t *testing.T) {
 		t.Fatalf("open response cites %q, want %q", response.CapabilityRevision, current)
 	}
 
-	// An open attaching nothing elects no optional feature, so it is admitted
-	// with no revision at all — the line the validator draws too.
+	// An unpinned attaching open is admitted — the profile permits it outright —
+	// and its response carries the revision it was admitted under, which is the
+	// whole point of allowing it: a caller that did not pin still learns which
+	// snapshot it got.
+	status, response = attaching("unpinned", "")
+	if status != http.StatusOK {
+		t.Fatalf("an unpinned attaching open was refused: %d %s", status, response.Payload)
+	}
+	if response.CapabilityRevision != current {
+		t.Fatalf("an unpinned open was admitted under %q, want the revision used for admission %q", response.CapabilityRevision, current)
+	}
+
+	// An open attaching nothing is not probed at all, so it keeps its own
+	// (absent) revision rather than being given one the daemon never checked
+	// against anything it elected.
 	status, response = postEnvelope(t, server, "/adapters/memory/sessions", requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-plain", protocol.SessionOpenRequest{SessionID: "plain"}, "plain", "", ""))
 	if status != http.StatusOK {
 		t.Fatalf("a plain open was refused: %d %s", status, response.Payload)
+	}
+	if response.CapabilityRevision != "" {
+		t.Fatalf("a plain open was stamped with %q", response.CapabilityRevision)
 	}
 }
 

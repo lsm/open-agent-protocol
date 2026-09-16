@@ -226,17 +226,20 @@ func (c *Client) Open(ctx context.Context, adapter string, sessionID protocol.Se
 		request.SessionID = sessionID
 	}
 	if len(payload.ToolSources) > 0 {
-		// An open that attaches sources exercises an optional feature, and such
-		// an envelope must cite the descriptor it was built against — the core
-		// profile's rule, which the validator enforces on every optional-feature
-		// envelope and the daemon now enforces on this route. Omitting it made
-		// every attaching open this client issued produce an exchange this
-		// project's own validator rejects.
+		// An open that attaches sources exercises an optional feature, and this
+		// validator requires such an envelope to cite the active descriptor.
+		// That rule is deliberately stricter than the wire contract, which says
+		// a request "may" pin and evaluates an unpinned one against current
+		// capabilities — the daemon accepts both, as it must. This client pins
+		// anyway, because an exchange it produces should be a trace this project
+		// validates: an unpinned attaching open is rejected as
+		// stale_capability_revision, which is how every attaching open this
+		// client issued used to fail.
 		//
-		// The revision is read here rather than taken from the caller because
-		// electing a capability means having seen it: a client that cited a
-		// revision it had not read would be asserting a precondition it never
-		// checked. The probe costs one request, and only on an attaching open.
+		// Liberal in what the daemon accepts, conservative in what the clients
+		// send. The revision is read here rather than taken from the caller
+		// because pinning to one you have not read asserts a precondition you
+		// never checked. The probe costs one request, on attaching opens only.
 		capabilities, err := c.Capabilities(ctx, adapter)
 		if err != nil {
 			return nil, err

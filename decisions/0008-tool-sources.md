@@ -829,26 +829,53 @@ rediscovered from the code.
   were broken. Here nothing is missing. The operator's own list is held to the
   same rule at registration — one variable, one entry — so the collision is
   closed from both sides rather than only the caller's.
-- **An attaching open cites the descriptor it elected against.** This is not a
-  rule this unit invents: the core profile already says an envelope exercising
-  an optional feature must cite the active descriptor, and the validator
-  enforces it for every such envelope in `controlDescriptor`. The open route did
-  not, so it admitted opens citing nothing and labelled the response with
-  whatever the caller sent — which meant every attaching open both in-repo
-  clients issued produced an exchange this project's own validator rejects as
-  `stale_capability_revision`, and a caller holding a pre-refresh descriptor
-  could elect attachment against a disclosure that no longer existed. The gate
-  now requires the probed revision, answers `stale_capabilities` with
-  `expected_revision` and `current_revision` when it is absent or stale, and the
-  response repeats the revision the daemon verified rather than the caller's.
+- **An attaching open pins only what it cites, and the daemon and the clients
+  answer to different standards on purpose.** The core profile's rule is
+  conditional: a request *may* set `capability_revision`; when supplied it is an
+  exact precondition; when omitted the endpoint evaluates the request against
+  current capabilities and its successful response *should* set the revision
+  used for admission. So the daemon refuses only a nonempty revision that is not
+  current, with `stale_capabilities` and both revisions — and stamps every
+  admitted attaching open with the revision it was admitted under, which is what
+  lets an unpinned caller detect the snapshot it got.
 
-  It is enforced at the gate rather than in `readRequest` because the gate is
-  where the route knows the envelope elects an optional feature and has the
-  current revision in hand. An open attaching nothing elects nothing and is not
-  gated, which is where the validator draws the same line. Both clients read the
-  descriptor before an attaching open and cite it: electing a capability means
-  having seen it, and a client citing a revision it had not read would assert a
-  precondition it never checked.
+  A first attempt at this read the rule as "must supply" and refused every
+  unpinned attaching open. That is a refusal the protocol does not authorize for
+  a request it explicitly permits, and the error was in reading a conditional as
+  an imperative — the same conditional CLAUDE.md states.
+
+  The clients pin anyway, and that is not the same question. This validator is
+  deliberately stricter than the wire contract: `controlDescriptor` requires
+  *any* envelope exercising an optional feature to cite the active descriptor,
+  so an unpinned attaching open is a trace this project rejects as
+  `stale_capability_revision` even though the daemon admits it. Liberal in what
+  the daemon accepts, conservative in what the clients send — reverting the
+  clients would put them back to emitting exchanges this repository's own
+  validator refuses, which is the defect that started this thread. The gap
+  between the draft's "may" and the validator's "must" is real and is not this
+  unit's to close.
+
+  The gate lives beside the probe rather than in `readRequest` because that is
+  where the current revision is already in hand. An open attaching nothing is
+  not probed and keeps its own revision: it elected nothing, so there is nothing
+  to have admitted it under.
+
+- **The revision a response carries is the one the daemon admitted under, which
+  for a dynamic endpoint is not provably the one the adapter admitted under.**
+  The gate probes, then `Hub.Open` calls the adapter; nothing holds the
+  descriptor still across the two, so an endpoint whose capabilities change
+  could admit under a newer snapshot than the response names.
+
+  Recorded rather than fixed, because the window cannot open for any adapter
+  here — every one of them returns a compile-time constant revision from
+  `Probe`, and none advertises `capabilities.updates` — and closing it properly
+  means threading an elected revision through `Hub.Open` into `OpenRequest` and
+  obliging every adapter to revalidate under its own synchronization. That is a
+  boundary change across every adapter for a window none of them has, which is
+  more than this unit should absorb speculatively. It becomes reachable the
+  moment an adapter gains a dynamic descriptor, and that is the point at which
+  to design the atomic form — with the protocol's own invalidation path,
+  `capabilities.updated`, as the thing a consumer already has for noticing.
 - **The test kit is held to certifying every shape the protocol allows.** Three
   faults of one pattern were found in `AssertToolCatalog`'s synthetic open, each
   a case of the helper building from a narrower shape than the validator

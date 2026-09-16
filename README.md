@@ -132,13 +132,15 @@ write, and it is additive only for names the operator did not configure: a
 caller naming one the registry entry already carries is dropped, so the
 operator's value is the one the source runs with and one variable never reaches
 a child twice. A registry entry naming one variable twice is refused at
-registration for the same reason. An attaching open must also cite the descriptor it elected against:
-`capability_revision` on the open envelope has to equal the endpoint's current
-one, or the route answers `stale_capabilities` with `expected_revision` and
-`current_revision`. That is the core profile's rule for any envelope exercising
-an optional feature rather than a rule of this route's own, and both clients
-read the descriptor and cite it — one extra request, on attaching opens only.
-An open that attaches nothing elects nothing and is not gated. A configured `id` resolves to the operator's source whatever the caller
+registration for the same reason. An attaching open may pin the descriptor it elected against, and the pin is
+honoured as the profile states it: a `capability_revision` that is not the
+endpoint's current one is refused `stale_capabilities` with `expected_revision`
+and `current_revision`, while an open that carries none is evaluated against
+current capabilities and answered with the revision it was admitted under. Both
+clients pin — one extra request, on attaching opens only — because the validator
+is stricter than the wire here and requires any optional-feature envelope to
+cite the active descriptor. An open that attaches nothing is not probed and
+keeps its own revision. A configured `id` resolves to the operator's source whatever the caller
 claims about it, so an open that names an id alone gets a fuller descriptor back
 than it sent, and never a different one.
 Beside that, every route refuses a request bearing an `Origin` header, and the
