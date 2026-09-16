@@ -156,7 +156,7 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 		t.Fatalf("case metadata: %+v", definition)
 	}
 	paths := casePaths(t, dir, definition)
-	frames := loadFrames(t, paths.native)
+	frames, decoded := loadFrames(t, paths.native)
 	mappings := loadJSON[[]corpusMapping](t, paths.mapping)
 	omissions := loadJSON[[]corpusOmission](t, paths.omissions)
 	assertClassifications(t, frames, mappings, omissions)
@@ -200,17 +200,17 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 			t.Fatal(err)
 		}
 		prefix = append(prefix, adaptertest.Next(t, stream, time.Second))
-		frames = frames[1:]
+		frames, decoded = frames[1:], decoded[1:]
 	}
-	for _, frame := range frames {
+	for index, frame := range frames {
 		switch {
 		case frame.Direction == "server_to_client" && frame.Kind == "notification":
-			client.notify(frame.Method, frame.Params)
+			client.notify(decoded[index].Method, decoded[index].Params)
 			for range frame.AwaitEvents {
 				prefix = append(prefix, adaptertest.Next(t, stream, time.Second))
 			}
 		case frame.Direction == "server_to_client" && frame.Kind == "request":
-			prefix = append(prefix, runCorpusRequest(t, client, session, admission, stream, frame)...)
+			prefix = append(prefix, runCorpusRequest(t, client, session, admission, stream, frame, decoded[index])...)
 		case frame.Direction == "process" && frame.Kind == "transport":
 			client.err = errors.New(frame.Error)
 			_ = client.Close()
@@ -246,12 +246,18 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	}
 }
 
-func runCorpusRequest(t *testing.T, client *fakeClient, session adapter.Session, admission protocol.MessageSubmitResponse, stream adapter.EventStream, frame corpusFrame) []protocol.Envelope {
+func runCorpusRequest(t *testing.T, client *fakeClient, session adapter.Session, admission protocol.MessageSubmitResponse, stream adapter.EventStream, frame corpusFrame, message rpc.Message) []protocol.Envelope {
 	t.Helper()
 	if frame.ID == 0 || frame.Method == "" {
 		t.Fatalf("invalid reverse request fixture: %+v", frame)
 	}
-	_, response := client.request(t, frame.ID, frame.Method, frame.Params)
+	// The reverse request is replayed from the codec-decoded message, not the
+	// wrapper, so the fixture reaches the adapter only by way of the codec.
+	id, ok := message.ID.IntegerValue()
+	if !ok {
+		t.Fatalf("decoded reverse request id %s is not an integer", message.ID)
+	}
+	_, response := client.request(t, id, message.Method, message.Params)
 	count := frame.AwaitEvents
 	if count <= 0 {
 		count = 1
@@ -391,7 +397,10 @@ func assertClassifications(t *testing.T, frames []corpusFrame, mappings []corpus
 	}
 }
 
-func loadFrames(t *testing.T, filename string) []corpusFrame {
+// loadFrames returns each fixture wrapper alongside the JSON-RPC message the
+// production codec yields for it, so the corpus exercises framing and message
+// parsing rather than only the reducer.
+func loadFrames(t *testing.T, filename string) ([]corpusFrame, []rpc.Message) {
 	t.Helper()
 	file, err := os.Open(filename)
 	if err != nil {
@@ -399,13 +408,16 @@ func loadFrames(t *testing.T, filename string) []corpusFrame {
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), rpc.DefaultFrameLimit)
 	var frames []corpusFrame
+	var decoded []rpc.Message
 	for scanner.Scan() {
 		var frame corpusFrame
 		if err := json.Unmarshal(scanner.Bytes(), &frame); err != nil {
 			t.Fatalf("decode %s frame %d: %v", filename, len(frames)+1, err)
 		}
 		frames = append(frames, frame)
+		decoded = append(decoded, decodeCorpusFrame(t, filename, len(frames), frame))
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
@@ -413,7 +425,49 @@ func loadFrames(t *testing.T, filename string) []corpusFrame {
 	if len(frames) == 0 {
 		t.Fatalf("%s contains no native frames", filename)
 	}
-	return frames
+	return frames, decoded
+}
+
+// decodeCorpusFrame rebuilds the JSON-RPC line the wrapper describes, writes it
+// with the production encoder, and reads it back with the production decoder.
+// The corpus therefore fails when framing or message parsing changes, instead
+// of leaving that to the internal/rpc tests alone. A frame that carries no
+// server-to-client line, such as the synthesized transport failure, decodes to
+// the zero message, which the replay switch never reads.
+func decodeCorpusFrame(t *testing.T, filename string, index int, frame corpusFrame) rpc.Message {
+	t.Helper()
+	var outbound rpc.Message
+	switch {
+	case frame.Direction == "server_to_client" && frame.Kind == "notification":
+		outbound = rpc.Notification(frame.Method, frame.Params)
+	case frame.Direction == "server_to_client" && frame.Kind == "request":
+		if frame.ID == 0 {
+			t.Fatalf("%s frame %d: reverse request without an id", filename, index)
+		}
+		outbound = rpc.Request(rpc.IntegerID(frame.ID), frame.Method, frame.Params)
+	default:
+		return rpc.Message{}
+	}
+	var wire bytes.Buffer
+	if err := rpc.NewEncoder(&wire).Encode(outbound); err != nil {
+		t.Fatalf("%s frame %d production encode: %v", filename, index, err)
+	}
+	message, err := rpc.NewDecoder(&wire, rpc.DefaultFrameLimit).Decode()
+	if err != nil {
+		t.Fatalf("%s frame %d production decode: %v", filename, index, err)
+	}
+	if message.Kind != outbound.Kind {
+		t.Fatalf("%s frame %d decoded as kind %d, want %d", filename, index, message.Kind, outbound.Kind)
+	}
+	if message.Method != frame.Method {
+		t.Fatalf("%s frame %d decoded method %q, want %q", filename, index, message.Method, frame.Method)
+	}
+	if outbound.Kind == rpc.MessageRequest {
+		if id, ok := message.ID.IntegerValue(); !ok || id != frame.ID {
+			t.Fatalf("%s frame %d decoded id %s, want %d", filename, index, message.ID, frame.ID)
+		}
+	}
+	return message
 }
 
 func loadJSON[T any](t *testing.T, filename string) T {
