@@ -3,8 +3,10 @@ package servestdio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -464,6 +466,179 @@ func runToCompletion(t *testing.T, hub *serve.Hub, entry *serve.Session) protoco
 func resolve(t *testing.T, entry *serve.Session, resolution base.InteractionResolution) {
 	t.Helper()
 	if err := entry.Resolve(context.Background(), resolution); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// streamAdapter hands the test direct control of one run's event stream, so
+// the ending a real adapter reaches by failing can be produced on demand.
+type streamAdapter struct {
+	mu      sync.Mutex
+	session *streamSession
+}
+
+func (a *streamAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{
+		Capabilities:       protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "reference.stream"}},
+		CapabilityRevision: "stream-v1",
+	}, nil
+}
+
+func (a *streamAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+	session := &streamSession{id: request.SessionID}
+	a.mu.Lock()
+	a.session = session
+	a.mu.Unlock()
+	return session, nil
+}
+
+func (a *streamAdapter) active(t *testing.T) *streamSession {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.session == nil {
+		t.Fatal("no session opened yet")
+	}
+	return a.session
+}
+
+type streamSession struct {
+	id     protocol.SessionID
+	mu     sync.Mutex
+	stream chan base.Result
+	run    protocol.RunID
+	closed bool
+}
+
+var _ base.Session = (*streamSession)(nil)
+
+func (s *streamSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+	}
+	if s.stream != nil {
+		return protocol.MessageSubmitResponse{}, nil, base.ErrRunActive
+	}
+	s.run = "stream-run-1"
+	s.stream = make(chan base.Result, 8)
+	return protocol.MessageSubmitResponse{SessionID: s.id, RunID: s.run, Accepted: true}, s.stream, nil
+}
+
+func (s *streamSession) State(context.Context) (protocol.SessionState, error) {
+	return protocol.SessionState{SessionID: s.id, Status: protocol.SessionIdle}, nil
+}
+
+func (s *streamSession) Resolve(context.Context, base.InteractionResolution) error { return nil }
+
+func (s *streamSession) Cancel(_ context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
+	return protocol.RunCancelResponse{SessionID: s.id, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
+}
+
+func (s *streamSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, base.ErrRunNotFound
+}
+
+func (s *streamSession) Close(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
+
+func (s *streamSession) emit(t *testing.T, sequence uint64) {
+	t.Helper()
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated,
+		protocol.EnvelopeID(fmt.Sprintf("stream-%d", sequence)), protocol.RunStatusUpdatedPayload{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	envelope.SessionID, envelope.RunID, envelope.Sequence = s.id, s.run, &sequence
+	s.stream <- base.Result{Envelope: envelope}
+}
+
+func (s *streamSession) fail(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stream <- base.Result{Error: err}
+	close(s.stream)
+	s.stream = nil
+}
+
+// TestAFailedRunStreamEndsTheSubscriptionOutLoud is the ending this framing
+// has to name and SSE does not. There, the response body stops and the client
+// sees a closed connection; here the pipe stays open and carries every other
+// subscription, so a host given no line cannot tell a dead subscription from
+// an idle one and waits on events that are never coming.
+//
+// The signal names the last position the host actually received, so a fresh
+// events op resumes from what it got rather than from what the hub sent.
+func TestAFailedRunStreamEndsTheSubscriptionOutLoud(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &streamAdapter{}
+	if err := registry.Register("stream", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	entry, _, err := hub.Open(context.Background(), "stream", base.OpenRequest{
+		SessionID: "failing", Participant: protocol.Participant{ID: serve.DefaultParticipant},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := startFrontend(t, hub, Options{})
+
+	f.send(`{"id":1,"op":"events","session_id":"failing"}`)
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "failing", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := adapter.active(t)
+	session.emit(t, 1)
+	delivered := f.expectSignal(1, signalEnvelope)
+	if delivered.Sequence == nil || *delivered.Sequence != 1 {
+		t.Fatalf("first envelope sequence %v, want 1", delivered.Sequence)
+	}
+	session.fail(errors.New("native transport died"))
+
+	line := f.line()
+	var failure struct {
+		Event     string `json:"event"`
+		ID        int64  `json:"id"`
+		SessionID string `json:"session_id"`
+		RunID     string `json:"run_id"`
+		Sequence  uint64 `json:"sequence"`
+		Message   string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(line), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Event != signalStreamFailed {
+		t.Fatalf("line %q is %q, want %q", line, failure.Event, signalStreamFailed)
+	}
+	if failure.ID != 1 || failure.SessionID != "failing" {
+		t.Fatalf("signal is not correlated to the events request: %s", line)
+	}
+	if failure.RunID != "stream-run-1" {
+		t.Fatalf("signal names run %q, want stream-run-1", failure.RunID)
+	}
+	if failure.Sequence != 1 {
+		t.Fatalf("signal resumes after %d, want the last delivered sequence 1", failure.Sequence)
+	}
+	// The adapter's own diagnostic stays out of the line: it is unbounded and
+	// the frame limit's floor has to hold.
+	if strings.Contains(failure.Message, "native transport died") {
+		t.Fatalf("the adapter diagnostic reached the wire: %s", failure.Message)
+	}
+	if err := f.finish(); err != nil {
 		t.Fatal(err)
 	}
 }
