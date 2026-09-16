@@ -655,23 +655,24 @@ func TestSubmitJudgesEveryControl(t *testing.T) {
 // an admitted output_schema binds the completion to the disclosed fixed
 // result.
 func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
-	for name, policy := range map[string]string{
-		"none":                 `{"mode":"none"}`,
-		"disallowed":           `{"mode":"auto","disallowed":["scripted_tool"]}`,
-		"allowed without tool": `{"mode":"auto","allowed":[]}`,
+	for name, testCase := range map[string]struct {
+		policy string
+		calls  int
+	}{
+		"none":       {policy: `{"mode":"none"}`},
+		"disallowed": {policy: `{"mode":"auto","disallowed":["scripted_tool"]}`},
+		// An allowlist the caller sent empty permits no tool at all. Under
+		// "auto" that is empty rather than unsatisfiable — the run simply
+		// calls nothing — so the policy is admitted and then governs.
+		"empty allowlist":     {policy: `{"mode":"auto","allowed":[]}`},
+		"allowlist with tool": {policy: `{"mode":"auto","allowed":["scripted_tool"]}`, calls: 1},
 	} {
 		session := newTestSession(t, 64)
-		request := protocol.MessageSubmitRequest{
+		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
 			SessionID: "session-1", Delivery: protocol.DeliveryAuto,
-			ToolChoice: json.RawMessage(policy),
+			ToolChoice: json.RawMessage(testCase.policy),
 			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-		}
-		if name == "allowed without tool" {
-			// An allowed list that omits the only tool filters it out; an
-			// empty list under "auto" is not unsatisfiable, only empty.
-			request.ToolChoice = json.RawMessage(`{"mode":"auto","allowed":["scripted_tool"]}`)
-		}
-		admission, stream, err := session.Submit(context.Background(), request)
+		})
 		if err != nil {
 			t.Fatalf("%s: policy refused: %v", name, err)
 		}
@@ -682,14 +683,23 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 				calls++
 			}
 		}
-		want := 0
-		if name == "allowed without tool" {
-			want = 1
+		if calls != testCase.calls {
+			t.Fatalf("%s: %d tool calls, want %d: %+v", name, calls, testCase.calls, events)
 		}
-		if calls != want {
-			t.Fatalf("%s: %d tool calls, want %d: %+v", name, calls, want, events)
-		}
-		_ = admission
+	}
+
+	// "required" over an allowlist the caller sent empty has an empty
+	// filtered set, which no run can satisfy, so it is refused rather than
+	// admitted and quietly run against the whole catalog.
+	session0 := newTestSession(t, 64)
+	_, _, err0 := session0.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		ToolChoice: json.RawMessage(`{"mode":"required","allowed":[]}`),
+		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	})
+	var emptyRequired *adapter.UnsupportedControlError
+	if !errors.As(err0, &emptyRequired) || emptyRequired.Feature != protocol.FeatureToolSelection || emptyRequired.Reason != adapter.ControlUnsatisfiable {
+		t.Fatalf("required over an empty allowlist: got %v, want an unsatisfiable tool_selection refusal", err0)
 	}
 
 	session := newTestSession(t, 64)

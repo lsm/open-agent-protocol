@@ -362,7 +362,7 @@ func (c ToolChoice) Unsatisfiable(catalog []string, known bool) *ToolChoiceDefec
 				return &ToolChoiceDefect{Pointer: "/payload/tool_choice/name", Tool: c.Name, Reason: "named tool is excluded by its own disallowed list"}
 			}
 		}
-		if len(c.Allowed) > 0 {
+		if c.Allowed != nil {
 			permitted := false
 			for _, name := range c.Allowed {
 				if name == c.Name {
@@ -385,7 +385,11 @@ func (c ToolChoice) Unsatisfiable(catalog []string, known bool) *ToolChoiceDefec
 func (c ToolChoice) Filter(catalog []string) []string {
 	filtered := make([]string, 0, len(catalog))
 	for _, name := range catalog {
-		if len(c.Allowed) > 0 && !slices.Contains(c.Allowed, name) {
+		// Presence, not length: an `allowed` the caller sent empty permits no
+		// tool at all. Reading it as absent would turn the most restrictive
+		// allowlist expressible into the most permissive one, and hand the
+		// whole catalog to a caller that allowed none of it.
+		if c.Allowed != nil && !slices.Contains(c.Allowed, name) {
 			continue
 		}
 		if slices.Contains(c.Disallowed, name) {
@@ -413,7 +417,7 @@ func (c ToolChoice) Permits(name string, catalog []string, known bool) bool {
 	if known && !slices.Contains(catalog, name) {
 		return false
 	}
-	if len(c.Allowed) > 0 && !slices.Contains(c.Allowed, name) {
+	if c.Allowed != nil && !slices.Contains(c.Allowed, name) {
 		return false
 	}
 	if slices.Contains(c.Disallowed, name) {
