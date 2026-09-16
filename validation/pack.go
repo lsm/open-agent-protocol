@@ -1,7 +1,9 @@
 package validation
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -345,7 +347,7 @@ func readPack(dir string) (*Pack, error) {
 		return nil, fmt.Errorf("pack descriptor %s: %w", filepath.Join(dir, "pack.json"), err)
 	}
 	var descriptor PackDescriptor
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&descriptor); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", filepath.Join(dir, "pack.json"), err)
@@ -967,7 +969,7 @@ func collectRefs(node any, depth int) []string {
 	case map[string]any:
 		var out []string
 		for key, value := range n {
-			if (key == "$ref" || key == "$dynamicRef") && depth >= 0 {
+			if key == "$ref" || key == "$dynamicRef" {
 				if ref, ok := value.(string); ok {
 					out = append(out, ref)
 					continue
@@ -1066,21 +1068,13 @@ func (p *Pack) resolveBranch(ref string) (string, map[string]any, error) {
 // structural check could not judge still fails at load rather than at first use.
 func trialCompile(packs []*Pack) []PackRefusal {
 	if _, err := compileBundle(CompileOptions{Mode: ModeStrict, Packs: packs}); err != nil {
-		var loadErr *PackLoadError
-		if asPackLoadError(err, &loadErr) {
-			return loadErr.Refusals
+		var refusal *PackLoadError
+		if errors.As(err, &refusal) {
+			return refusal.Refusals
 		}
 		return []PackRefusal{{Pack: packIDs(packs), Message: err.Error()}}
 	}
 	return nil
-}
-
-func asPackLoadError(err error, target **PackLoadError) bool {
-	if e, ok := err.(*PackLoadError); ok {
-		*target = e
-		return true
-	}
-	return false
 }
 
 func packIDs(packs []*Pack) string {
@@ -1111,9 +1105,9 @@ func checkPackCorpora(packs []*Pack) []PackRefusal {
 		options := ManifestOptions{Packs: packs, Owner: p}
 		manifest, err := LoadManifestWith(p.fixtures, options)
 		if err != nil {
-			var loadErr *PackLoadError
-			if asPackLoadError(err, &loadErr) {
-				refusals = append(refusals, loadErr.Refusals...)
+			var refusal *PackLoadError
+			if errors.As(err, &refusal) {
+				refusals = append(refusals, refusal.Refusals...)
 				continue
 			}
 			refusals = append(refusals, PackRefusal{Pack: p.ID(), Message: fmt.Sprintf("fixture manifest: %v", err)})
