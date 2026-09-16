@@ -268,6 +268,7 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 				// position and pending set describe a moment before the run's
 				// admission reached the trace, and the per-entry rules have
 				// nothing to judge them against there.
+				made := len(s.deferred)
 				for _, id := range anchors {
 					s.deferred = append(s.deferred, &deferredStateClaim{kind: claimAdmitted, session: p.SessionID, run: entry.RunID, request: id, pointer: pointer + "/run_id", index: i, line: line, envelope: e})
 				}
@@ -317,7 +318,17 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 				}
 				if claim != nil {
 					ledEntries = append(ledEntries, claim)
-					s.deferred[len(s.deferred)-1].entry = claim
+					// Every anchor the entry named carries the entry, not just
+					// the last of them. An entry may cite several submissions
+					// and any one of them may be the one whose response
+					// creates its run — including the first, whose claim would
+					// otherwise reach that response carrying nothing and let
+					// the entry's own rules go unasked. At most one of them
+					// can name the run, because a run has one admission, so
+					// binding them all judges the entry exactly once.
+					for _, held := range s.deferred[made:] {
+						held.entry = claim
+					}
 				}
 				leads++
 				continue

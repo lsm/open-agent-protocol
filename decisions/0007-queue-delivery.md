@@ -155,6 +155,17 @@ trace yet. A missed diagnosis leaves one stale refusal unflagged; a false one
 convicts an endpoint that did exactly the right thing under contention it could
 see and the validator could not.
 
+Every other *unanswered* one. A window stays open until its own response has
+been judged, so a submission whose response has already arrived is still in
+that set while no longer contending for anything: the run it admitted is
+counted among the session's runs already, and counting the request beside it
+would have one submission take two slots. The reckoning is sticky by design —
+reached anywhere inside the window is reached — so one pass of that arithmetic
+excuses every refusal on the session from then on. Only the pessimistic
+reckoning reads the outstanding set; the strict one counts admitted runs alone,
+and whether the session was ever busy, or ever held a started run, are facts
+about the session either way.
+
 `run_active` is not the queue's alone. A busy endpoint that cannot defer a
 queued `session_mutation` still owes it once the bound has cleared, so the
 stale-limit check stands down where another condition explains the code.
@@ -452,6 +463,21 @@ cancelling entry asks round 14's question with a run to ask it of, and the
 start it waits for settles that in turn: two answers in a chain, each from the
 event that carries it.
 
+An entry may name several submissions, and the one whose response creates its
+run may be any of them — including the first. So every anchor the entry names
+carries the entry, not only the last: an anchor that reached its response
+carrying nothing would leave the entry's own rules unasked in exactly the case
+where the earlier submission is the one that answers them. Binding them all
+judges the entry once rather than once per anchor, because a run is admitted
+once and at most one response can name it; whatever the others resolve to is
+their own identity claim about a run that turned out not to be this entry's.
+
+The entry that says its run is executing waits on a start like every other
+claim of the kind. What the listing could not know is how the run was admitted;
+once the response says it was admitted into the queue, an entry calling that
+run executing is making a known reservation's claim, and the same promotion
+answers it — or its absence refutes it, at the terminal or at the trace's end.
+
 Where several entries lead, they are settled as a set, because their queue
 places are one arrangement rather than several claims — and an arrangement has
 an order as well as numbers in it. Two leads listed one way and admitted the
@@ -538,14 +564,14 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 168 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 174 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
 grandfathered set, both directions of the refusal including the window races
-and the in-flight reservation, the ordering rule and its one exception, and the
-state rules — membership, capture positions, settled claims, and the model
-authority. `session.message.delivery.queue` carries a negative `gate` fixture
+and the in-flight reservation and the answered sibling that is not one, the
+ordering rule and its one exception, and the state rules — membership, capture
+positions, settled claims, entry anchors, and the model authority. `session.message.delivery.queue` carries a negative `gate` fixture
 and a negative `honour` fixture, so the corpus-completeness check binds the
 unit from here.
 

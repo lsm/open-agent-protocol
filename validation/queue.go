@@ -182,6 +182,20 @@ func (s *state) refreshQueueWindows(session protocol.SessionID) {
 		return
 	}
 	active, queued, started := s.queueCounts(session)
+	// A window stays open until its own response has been judged, so a
+	// request whose response has already arrived is still in this list while
+	// no longer being outstanding: the run it admitted is counted in active
+	// and queued already, and counting the request beside it would have one
+	// submission take two slots and set the loose reckoning for good. Only
+	// the loose reckoning reads this — the strict one counts admitted runs
+	// alone, and busyEver and startedEver are facts about the session either
+	// way.
+	outstanding := 0
+	for _, pending := range open {
+		if pending.queue != nil && !s.answeredRequest(pending.queue.request) {
+			outstanding++
+		}
+	}
 	for _, pending := range open {
 		w := pending.queue
 		if w == nil {
@@ -196,10 +210,21 @@ func (s *state) refreshQueueWindows(session protocol.SessionID) {
 		if w.exceeds(active, queued, 0) {
 			w.reachedStrict = true
 		}
-		if w.exceeds(active, queued, len(open)-1) {
+		others := outstanding
+		if !s.answeredRequest(w.request) {
+			others--
+		}
+		if w.exceeds(active, queued, others) {
 			w.reachedLoose = true
 		}
 	}
+}
+
+// answeredRequest reports a request whose correlated response the trace has
+// already carried.
+func (s *state) answeredRequest(id protocol.EnvelopeID) bool {
+	req := s.requests[id]
+	return req != nil && req.responded
 }
 
 // closeSubmitWindow drops one request's window once its correlated response
@@ -847,7 +872,14 @@ func (s *state) judgeLedEntry(claim *deferredStateClaim, r *runState) {
 	s.checkEntryPending(i, line, e, c.pointer, c.entry, r)
 	c.run, c.order = r.id, r.order
 	if !c.classify {
-		// Already classified where it was listed, and reported on there.
+		// Already classified where it was listed, and reported on there. What
+		// the listing could not know is how the run was admitted: if it was
+		// admitted into the queue, the entry calling it executing is the same
+		// claim a known reservation's entry makes, and waits on the same
+		// start.
+		if r.admittedQueued && !r.started {
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimReservation, session: r.session, run: r.id, index: i, line: line, envelope: e})
+		}
 		return
 	}
 	reservation := false
