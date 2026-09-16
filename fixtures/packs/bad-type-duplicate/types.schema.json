@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ping": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.twicetype.ping"
+        }
+      }
+    },
+    "pong": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.twicetype.ping"
+        },
+        "payload": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

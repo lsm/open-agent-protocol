@@ -331,6 +331,12 @@ func readPack(dir string) (*Pack, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The root is the resolved path: containment compares resolved paths
+	// against it, and a pack installed behind a version or current symlink
+	// would otherwise see every one of its own files as escaping.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	data, err := os.ReadFile(filepath.Join(root, "pack.json"))
 	if err != nil {
 		return nil, fmt.Errorf("read pack descriptor: %w", err)
@@ -430,6 +436,13 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 	for i := range p.Descriptor.EnvelopeTypes {
 		declared := &p.Descriptor.EnvelopeTypes[i]
 		if !contained("envelope type", declared.Type) {
+			continue
+		}
+		if _, dup := declaredTypes[declared.Type]; dup {
+			// Indexing and branch composition are keyed by type: a second
+			// declaration would be judged in part and compiled in part,
+			// and neither is what the pack meant.
+			refuse(LoadPackTypeDuplicate, "envelope type %q is declared more than once", declared.Type)
 			continue
 		}
 		declaredTypes[declared.Type] = declared

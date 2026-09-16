@@ -1,0 +1,25 @@
+{
+  "id": "com.example.twicetype",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.twicetype.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    },
+    {
+      "type": "com.example.twicetype.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/pong"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.twicetype.ping",
+      "ungated": true
+    }
+  ]
+}

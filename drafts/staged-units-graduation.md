@@ -337,7 +337,9 @@ a request has one response type, as every core request does. An `event`
 has no correlation and
 takes its own `gates` entry, judged on arrival. A declared type with no
 `role` is a load refusal (`pack_role_undeclared`), on the same rule as an
-ungated type: stated, not inferred. `payload_members` need none of this
+ungated type: stated, not inferred. A type declared twice is a load refusal
+(`pack_type_duplicate`): indexing keeps one declaration and the branches
+carry both, and neither is what the pack meant. `payload_members` need none of this
 — a member added to `session.message.submit.request` is judged where the
 submit is, on its own response.
 
@@ -552,7 +554,7 @@ and `ext-pack-restates-core-member` (load refusal).
   added to `diagnosticCodes()`, because a load error is what the loader
   says about a pack and a diagnostic is what the validator says about a
   trace — `pack_unprefixed_name`, `pack_foreign_prefix`,
-  `pack_id_collision`, `pack_branch_undeclared_type`,
+  `pack_id_collision`, `pack_type_duplicate`, `pack_branch_undeclared_type`,
   `pack_branch_unpinned`, `pack_ungated_type`,
   `pack_restates_core_member`, `pack_member_target_unknown`,
   `pack_member_duplicate`,
