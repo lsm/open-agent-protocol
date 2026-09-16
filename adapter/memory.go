@@ -565,14 +565,14 @@ func (s *memorySession) resolvePermission(run *memoryRun, request protocol.Permi
 		return err
 	}
 	if !request.Granted {
-		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: "scripted_tool", RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
+		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
 		if err := s.emit(run, protocol.TypeActionCallCancelled, call, false); err != nil {
 			return err
 		}
 		failure := protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "permission_denied", Message: "scripted tool permission denied"}}
 		return s.emit(run, protocol.TypeRunFailed, failure, true)
 	}
-	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: "scripted_tool", ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner}
+	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner}
 	if err := s.emit(run, protocol.TypeActionCallStarted, call, false); err != nil {
 		return err
 	}
@@ -648,7 +648,7 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 		reason := protocol.ProtocolError{Code: "run_cancelled", Message: "run cancellation closed the permission request"}
 		resolved := protocol.PermissionResolvedPayload{InteractionID: run.permissionID, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Outcome: protocol.InteractionCancelled, Reason: &reason}
 		_ = s.emit(run, protocol.TypeActionPermissionResolved, resolved, false)
-		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: "scripted_tool", RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
+		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
 		_ = s.emit(run, protocol.TypeActionCallCancelled, call, false)
 	} else if run.stage == stageInput {
 		resolved := protocol.UserInputResolvedPayload{InteractionID: run.inputID, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}
