@@ -7,11 +7,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
 	"github.com/lsm/open-agent-protocol/serve"
+	"github.com/lsm/open-agent-protocol/validation"
 )
 
 // recordingAdapter keeps the open request the daemon forwarded, so the
@@ -650,5 +652,120 @@ func TestTheOriginBoundaryHoldsWithoutAHostAllowlist(t *testing.T) {
 		if response.StatusCode != http.StatusForbidden {
 			t.Fatalf("host allowlist %v: status %d, want 403", options.HostAllowlist, response.StatusCode)
 		}
+	}
+}
+
+// TestOpenExchangeValidatesAsATrace is the test no route test was: every other
+// one here decodes a response envelope on its own, and the corpus hands the
+// adapter an attachment the daemon has already rewritten, so nothing put the
+// request and the response side by side and asked the validator whether they
+// agree. They must. A caller names an operator-configured source by id, the
+// daemon publishes the operator's full descriptor back, and the assembled
+// exchange is exactly the trace a conformance run would collect from the wire.
+func TestOpenExchangeValidatesAsATrace(t *testing.T) {
+	hub, server := newServer(t, registryWithToolSource(t), Options{})
+	descriptor, err := hub.Probe(context.Background(), "memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The id and the kind, and nothing else: the shape the route is for.
+	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-trace", protocol.SessionOpenRequest{
+		SessionID:   "trace",
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "workspace-files", Kind: protocol.ToolSourceProcess}},
+	}, "trace", "", string(descriptor.CapabilityRevision))
+	status, response := postEnvelope(t, server, "/adapters/memory/sessions", request)
+	if status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, response.Payload)
+	}
+
+	capabilitiesRequest, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities.InReplyTo, capabilities.CapabilityRevision = capabilitiesRequest.ID, descriptor.CapabilityRevision
+	trace, err := json.Marshal([]protocol.Envelope{capabilitiesRequest, capabilities, request, response})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().Validate(bytes.NewReader(trace), "open-exchange"); !result.Valid() {
+		t.Fatalf("the open exchange is not a valid trace: %v\ntrace: %s", result.Diagnostics, trace)
+	}
+
+	// What the caller left blank came back filled from the operator's entry,
+	// which is the half of the rule the trace check would also accept if the
+	// daemon published nothing at all.
+	var opened protocol.SessionOpenResponse
+	if err := response.DecodePayload(&opened); err != nil {
+		t.Fatal(err)
+	}
+	published := false
+	for _, source := range opened.Sources {
+		if source.ID != "workspace-files" {
+			continue
+		}
+		published = true
+		if source.DisplayName != "Workspace Files" || source.Protocol != protocol.ToolSourceMCP || source.Endpoint != "stdio:workspace-files" {
+			t.Fatalf("the open published %+v instead of the operator's descriptor", source)
+		}
+	}
+	if !published {
+		t.Fatalf("the open response omits the attached source: %+v", opened.Sources)
+	}
+}
+
+// TestOpenRefusesAWireSuppliedDescriptorMember is the other half. The registry
+// entry is authoritative for every published member, so a caller cannot label
+// the operator's own MCP server in the catalog a user reads. Overwriting the
+// value silently would be worse than refusing it: the request and the response
+// would then disagree about one source, and a caller could not tell an endpoint
+// that honoured its attachment from one that changed it.
+func TestOpenRefusesAWireSuppliedDescriptorMember(t *testing.T) {
+	for _, testCase := range []struct {
+		member     string
+		attachment protocol.ToolSourceAttachment
+	}{
+		{"display_name", protocol.ToolSourceAttachment{ID: "workspace-files", Kind: protocol.ToolSourceProcess, DisplayName: "Payroll (read-only)"}},
+		{"protocol", protocol.ToolSourceAttachment{ID: "workspace-files", Kind: protocol.ToolSourceProcess, Protocol: "not-mcp"}},
+		{"endpoint", protocol.ToolSourceAttachment{ID: "workspace-files", Kind: protocol.ToolSourceProcess, Endpoint: "stdio:somewhere-else"}},
+	} {
+		t.Run(testCase.member, func(t *testing.T) {
+			hub, server := newServer(t, registryWithToolSource(t), Options{})
+			status, envelope := openSessionWith(t, server, "spoof", protocol.SessionOpenRequest{
+				ToolSources: []protocol.ToolSourceAttachment{testCase.attachment},
+			})
+			if status != http.StatusBadRequest {
+				t.Fatalf("open status %d, want 400: %s", status, envelope.Payload)
+			}
+			var failure protocol.ErrorResponse
+			if err := envelope.DecodePayload(&failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.Error.Code != "unsupported_feature" || failure.Error.Details["source"] != "workspace-files" {
+				t.Fatalf("refusal %q details %+v", failure.Error.Code, failure.Error.Details)
+			}
+			if !strings.Contains(failure.Error.Message, testCase.member) {
+				t.Fatalf("refusal %q does not name the member it refused", failure.Error.Message)
+			}
+			if sessions := hub.Sessions(context.Background()); len(sessions) != 0 {
+				t.Fatalf("a refused open left %d sessions behind", len(sessions))
+			}
+		})
+	}
+
+	// Repeating the operator's own values contradicts nothing, so it is
+	// admitted: the rule is about disagreement, not about mentioning a member.
+	_, server := newServer(t, registryWithToolSource(t), Options{})
+	status, envelope := openSessionWith(t, server, "echoed", protocol.SessionOpenRequest{
+		ToolSources: []protocol.ToolSourceAttachment{{
+			ID: "workspace-files", Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
+			DisplayName: "Workspace Files", Endpoint: "stdio:workspace-files",
+		}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("an attachment echoing the operator's own members was refused: %s", envelope.Payload)
 	}
 }

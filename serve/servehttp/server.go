@@ -728,6 +728,12 @@ func (e *attachmentRefusal) Error() string {
 // environment a wire caller may write, because the literal form is not the
 // caller's own secret when the caller may be a webpage.
 //
+// The registry entry is authoritative for the published members too —
+// display_name, protocol, endpoint — and a caller that states one differing
+// from the operator's is refused. The open publishes what the operator
+// configured, so a caller naming the id alone gets a fuller descriptor back
+// than it sent, and never a different one.
+//
 // This is a binding rule, not a protocol rule: command, args, and a literal
 // environment stay legal exactly where the sender is the daemon itself or an
 // in-process embedding of serve.Hub, which has no network boundary to cross.
@@ -751,9 +757,32 @@ func (s *Server) resolveAttachments(attachments []protocol.ToolSourceAttachment)
 		if !ok {
 			return nil, &attachmentRefusal{Source: attachment.ID, Reason: "no tool source of that id is configured on this daemon"}
 		}
-		// The registry entry is authoritative for everything the operator
-		// configured; the caller's own descriptor members are not allowed to
-		// redirect an allowlisted executable's endpoint.
+		// The registry entry is authoritative for every published member, not
+		// only the three the daemon fills in. A caller that could set
+		// display_name or endpoint on an operator-configured source would label
+		// the operator's own MCP server in the catalog a user reads, which is a
+		// spoof rather than a configuration.
+		//
+		// A caller that states one anyway is refused rather than silently
+		// overwritten. Substituting would leave a request and its response
+		// disagreeing about the same source — the caller could not tell an
+		// endpoint that honoured its attachment from one that changed it, which
+		// is the fault this whole unit is built to make impossible, and the
+		// validator diagnoses it on a trace assembled from the exchange. Naming
+		// the id alone is the shape the route is for; repeating the operator's
+		// own values is permitted because it contradicts nothing.
+		for _, member := range []struct{ name, wire, operator string }{
+			{"display_name", attachment.DisplayName, configured.DisplayName},
+			{"protocol", attachment.Protocol, configured.Protocol},
+			{"endpoint", attachment.Endpoint, configured.Endpoint},
+		} {
+			if member.wire != "" && member.wire != member.operator {
+				return nil, &attachmentRefusal{
+					Source: attachment.ID,
+					Reason: fmt.Sprintf("the daemon does not accept %s from the wire for a configured source; name it by id", member.name),
+				}
+			}
+		}
 		configured.Environment = append(append([]string(nil), configured.Environment...), attachment.Environment...)
 		resolved = append(resolved, configured)
 	}

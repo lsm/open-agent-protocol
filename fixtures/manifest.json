@@ -2813,6 +2813,23 @@
       ]
     },
     {
+      "id": "tools-unattributed-tool",
+      "path": "semantic-invalid/tools-unattributed-tool.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "descriptor-duplicate-tool-name",
       "path": "semantic-invalid/descriptor-duplicate-tool-name.json",
       "kind": "semantic-invalid",
@@ -2875,6 +2892,36 @@
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-fills-unstated-members",
+      "path": "valid/open-attach-fills-unstated-members.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-contradicts-stated-member",
+      "path": "semantic-invalid/open-attach-contradicts-stated-member.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
         "decisions/0008-tool-sources.md"
       ]
     },

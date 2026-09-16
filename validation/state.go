@@ -344,7 +344,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		st.currentModel, st.currentKnown = p.CurrentModelID, true
 		s.checkPublishedSources(i, line, e)
-		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
+		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources, false)
 	case protocol.TypeSessionMessageSubmitRequest:
 		var p protocol.MessageSubmitRequest
 		_ = e.DecodePayload(&p)

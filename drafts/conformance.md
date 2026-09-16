@@ -292,10 +292,15 @@ For the catalog (`action.tools.list`), an implementation:
   key the request's `allow_degraded_features` omits with
   `capability_degraded` and `details.feature`;
 - serves a catalog in which a source `id` is unique, a tool `name` is unique
-  whatever its source, and every tool's `source` names a source the same
-  response declares. A harness that namespaces its MCP tools exposes the
-  namespaced string as `name`; `source` carries the attribution, so a
-  consumer never has to parse one out of the other;
+  whatever its source, and every tool names a `source`, which is a source the
+  same response declares. `source` is optional in the schema, because a
+  descriptor published by an endpoint outside this unit carries tools with no
+  attribution — but an `action.tools.list.response` is this unit's own
+  envelope and attribution is the whole of what its key adds, so a served
+  catalog that omits it is the flat list the unit replaces. A harness that
+  namespaces its MCP tools exposes the namespaced string as `name`; `source`
+  carries the attribution, so a consumer never has to parse one out of the
+  other;
 - answers a request that names a session with that session's effective
   catalog, repeating the session on the response's envelope and in its
   payload. A request names its session in either place — the payload member is
@@ -336,7 +341,11 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   only when the caller is told which entry put it there;
 - publishes the attached sources back through the open response, later
   session snapshots, and every session-scoped catalog, as
-  `ToolSourceDescriptor` values, one descriptor per `id` in each of them.
+  `ToolSourceDescriptor` values, one descriptor per `id` in each of them. The
+  open response must agree with every member the attachment stated and may
+  fill one it left blank — an attachment names a source, it does not claim to
+  describe it completely — and what that response publishes is what every
+  later snapshot and catalog repeats.
   `command`, `args`, and `environment` are attachment-only and never appear in
   a published source — in any of those, or in the capability descriptor's own
   `sources`, top level or under a layer.

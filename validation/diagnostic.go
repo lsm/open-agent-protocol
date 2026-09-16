@@ -84,8 +84,9 @@ const (
 	//
 	// CodeUnmatchedToolSource: a tool or a call names a source nothing
 	// declares, or one that disagrees with the source the session's catalog
-	// records for that tool. Either way the attribution resolves nowhere, or
-	// somewhere else.
+	// records for that tool, or — in a served catalog, whose whole point is
+	// attribution — names no source at all. Either way the attribution resolves
+	// nowhere, or somewhere else.
 	//
 	// CodeDuplicateToolSource: two descriptors share an id, so a tool's
 	// `source` and a call's `source` no longer resolve to one endpoint.

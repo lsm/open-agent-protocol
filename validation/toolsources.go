@@ -233,12 +233,28 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 	if name := duplicateToolName(names); name != "" {
 		s.addExpected(CodeDuplicateToolName, i, line, e, "/payload/tools", "a catalog lists two tools with one name", "one tool per name", name)
 	}
+	// A served catalog attributes every tool it lists. `source` stays optional
+	// in the schema, because a descriptor published by an endpoint outside this
+	// unit carries tools with no attribution and must keep validating — but an
+	// action.tools.list.response is this unit's own envelope, served only by an
+	// endpoint advertising action.tools.list, and attribution is the whole of
+	// what that key adds. A catalog whose tools name no source is the flat list
+	// the unit exists to replace, and a consumer cannot resolve any of it.
+	//
+	// A catalog the endpoint owed a refusal for is exempt: the serving is the
+	// defect, and judging the contents of a response that should not exist piles
+	// consequences onto one fault.
+	gated := pending != nil && pending.expectation != nil
 	for _, tool := range p.Tools {
-		if tool.Source == "" {
-			continue
-		}
-		if _, ok := declared[tool.Source]; !ok {
-			s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/tools", "a listed tool names a source the same response does not declare", "a declared source", tool.Source, tool.Name)
+		switch {
+		case tool.Source == "":
+			if !gated {
+				s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/tools", "a served catalog lists a tool that names no source", "a declared source", "none", tool.Name)
+			}
+		default:
+			if _, ok := declared[tool.Source]; !ok {
+				s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/tools", "a listed tool names a source the same response does not declare", "a declared source", tool.Source, tool.Name)
+			}
 		}
 	}
 	if p.SessionID == "" {
@@ -271,6 +287,27 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 		catalog.tools[tool.Name] = tool.Source
 	}
 	track.catalog = catalog
+}
+
+// describesSource reports whether a published descriptor is a description of
+// the same source an attachment stated: the id and the kind agree, and every
+// optional member the attachment named is repeated. A member the attachment
+// left blank may be supplied, because an attachment is a request to attach and
+// not a claim to have described the source completely.
+func describesSource(attached, published protocol.ToolSourceDescriptor) bool {
+	if attached.ID != published.ID || attached.Kind != published.Kind {
+		return false
+	}
+	for _, member := range [][2]string{
+		{attached.DisplayName, published.DisplayName},
+		{attached.Protocol, published.Protocol},
+		{attached.Endpoint, published.Endpoint},
+	} {
+		if member[0] != "" && member[0] != member[1] {
+			return false
+		}
+	}
+	return true
 }
 
 // describeSource renders one descriptor for a diagnostic's expected/actual.
@@ -481,7 +518,7 @@ func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol
 	s.checkPublishedSources(i, line, e)
 	pending := s.pendingOpens[e.InReplyTo]
 	if pending == nil {
-		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
+		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources, true)
 		return
 	}
 	if pending.expectation != nil {
@@ -504,7 +541,7 @@ func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol
 		}
 		track.attached[attachment.ID] = attachment.Descriptor()
 	}
-	s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources)
+	s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources, true)
 }
 
 // checkPublishedUnion holds a session snapshot's sources to the union of the
@@ -512,7 +549,19 @@ func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol
 // by each descriptor's published members. The check runs only for a session
 // whose open attached sources: without an attachment a snapshot can hide
 // nothing the descriptor does not already publish.
-func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session protocol.SessionID, published []protocol.ToolSourceDescriptor) {
+//
+// adopt is set for the open response alone, and it is what lets an endpoint
+// know more about a source than the caller did. An attachment states an id and
+// a kind and may state nothing else — over the daemon a caller names an
+// operator-configured source by id, and the display name, protocol, and
+// endpoint come from the operator's registry, which is the only copy a wire
+// caller is allowed to influence. So the open response is held to agreeing
+// with what the attachment *stated* and may fill what it left blank; the
+// descriptor it publishes is then adopted as the session's, and every later
+// snapshot and catalog is held to that, exactly. Both halves of the lifetime
+// rule survive: an endpoint cannot contradict what the caller asked for, and
+// once it has described a source it cannot redescribe it.
+func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session protocol.SessionID, published []protocol.ToolSourceDescriptor, adopt bool) {
 	track := s.sessions[session]
 	if track == nil || len(track.attachedOrder) == 0 {
 		return
@@ -542,8 +591,18 @@ func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session pr
 		switch {
 		case !ok:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/sources", "session state omits an attached or declared tool source", id, "absent", string(session))
-		case got != expected[id]:
+		case adopt && !describesSource(expected[id], got):
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/sources", "session state contradicts a member the attachment stated", describeSource(expected[id]), describeSource(got), string(session))
+		case !adopt && got != expected[id]:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/sources", "session state describes a tool source differently from the attachment it reflects", describeSource(expected[id]), describeSource(got), string(session))
+		case adopt:
+			// Accepted as published: this is now the session's description of
+			// the source, and every later snapshot and catalog is held to it.
+			if track.attached != nil {
+				if _, attached := track.attached[id]; attached {
+					track.attached[id] = got
+				}
+			}
 		}
 	}
 	for _, source := range published {

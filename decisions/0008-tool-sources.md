@@ -365,6 +365,19 @@ may differ between lists — a harness refreshes its own catalog — but the
 open-time entries never drop out and never change, because attachment is not
 revocable in this unit and runtime attach and detach stay deferred.
 
+The open response is the one snapshot held to a weaker rule, and only in one
+direction: it must agree with every member the attachment *stated*, and may
+fill one the attachment left blank. An attachment is a request to attach, not a
+claim to have described the source completely — over the daemon a caller names
+an operator-configured source by `id` and a `kind`, and the display name, the
+protocol, and the endpoint come from the operator's registry, which is the only
+copy a wire caller may influence. Requiring the response to echo an attachment
+member for member would make that binding unconformant for doing the right
+thing. What the open response publishes is then adopted as the session's
+description of the source, and every later snapshot and catalog is held to that
+exactly, so both halves survive: an endpoint cannot contradict what the caller
+asked for, and once it has described a source it cannot redescribe it.
+
 A snapshot is held to one descriptor per id as a catalog is, and it is held to
 it separately from the union above. Comparing id by id answers only what the
 union names: two entries under one id would be compared once, the second never
@@ -408,15 +421,35 @@ execute a process as the daemon's user.
 So the daemon's client-facing binding does not accept them, whatever the wire
 shape allows. On `POST /adapters/{name}/sessions` a `process` attachment names
 an operator-configured source by `id` only — from the registry document's new
-`tool_sources` map — and the daemon fills `command`, `args`, and `environment`
-from its own entry before forwarding the open. An attachment carrying a
-`command`, an argument list, or a literal `NAME=value` on that route is refused
-before the open is forwarded, with `unsupported_feature`, `details.feature:
-"action.tool_sources.attach"`, `details.reason: "unsatisfiable"`, and
-`details.source` naming it. The bare-`NAME` allowlist form is the only
-`environment` a wire caller may write: the literal form is not the caller's own
-secret when the caller may be a webpage, and `LD_PRELOAD` into an allowlisted
-executable is the same process execution by another member.
+`tool_sources` map — and the daemon fills the rest from its own entry before
+forwarding the open. An attachment carrying a `command`, an argument list, or a
+literal `NAME=value` on that route is refused before the open is forwarded, with
+`unsupported_feature`, `details.feature: "action.tool_sources.attach"`,
+`details.reason: "unsatisfiable"`, and `details.source` naming it. The
+bare-`NAME` allowlist form is the only `environment` a wire caller may write:
+the literal form is not the caller's own secret when the caller may be a
+webpage, and `LD_PRELOAD` into an allowlisted executable is the same process
+execution by another member.
+
+The registry entry is authoritative for the published members too, not only the
+three the daemon runs the source with. A caller that could set `display_name`
+or `endpoint` on an operator-configured source would label the operator's own
+MCP server in the catalog a user reads, which is a spoof rather than a
+configuration. So `display_name`, `protocol`, and `endpoint` come from the
+registry, and a caller that states one differing from the operator's is refused
+under the same typed shape rather than silently overwritten.
+
+Refusing is the part that took a correction. Overwriting seemed harmless —
+the operator's value is the right one either way — but it leaves the request
+and the response disagreeing about one source, so a caller cannot tell an
+endpoint that honoured its attachment from one that changed it, which is the
+fault this unit exists to make impossible. It is not only a principle: the
+unit's own validator diagnoses that disagreement as `session_state_mismatch` on
+a trace assembled from the exchange, so the daemon was emitting exchanges its
+own validator rejected. Nothing caught it because every route test decoded one
+envelope at a time and the corpus fed the adapter an attachment the daemon had
+already rewritten; `TestOpenExchangeValidatesAsATrace` is the test that puts the
+request and the response side by side and asks.
 
 This is a binding rule rather than a protocol rule — the validator cannot tell
 a daemon from an embedding — so it is pinned by `servehttp` tests rather than by
@@ -456,7 +489,7 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 55 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 58 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -464,10 +497,12 @@ descriptor, the attachment gate and its typed refusals, the remote mode ordered
 behind the capability rung, the attachment limits in three directions — a
 refusal within them, a conforming refusal outside them, and two refusals
 outside them that name neither the capability nor the source — the union
-a session snapshot publishes and the one id per source it is held to, the
-lifetime catalog an attachment binds, the attachment-only member a published
-source may never carry — in a list and in a descriptor, top level and under a
-layer — a call's attribution and its reassignment mid-lifecycle, a refresh that
+a session snapshot publishes and the one id per source it is held to, an open
+response filling a member the attachment left blank and one contradicting a
+member it stated, the lifetime catalog an attachment binds, a served catalog
+that attributes no source at all, the attachment-only member a published source
+may never carry — in a list and in a descriptor, top level and under a layer —
+a call's attribution and its reassignment mid-lifecycle, a refresh that
 collides with an attachment,
 an attach capability disclosing no session-open mode in both directions, one
 published under a layer alone, and the two schema-invalid disclosures no
@@ -480,8 +515,10 @@ one admitting its own published disclosure (`serve`), and the open route
 relaying both typed refusals with the details that name what to change,
 settling the capability and degradation rungs ahead of its own credential rule,
 reading the key out of a layer, reporting a probe it could not read rather than
-falling through to a constraint, and refusing an `Origin` header on every route
-it registers (`serve/servehttp`).
+falling through to a constraint, refusing an `Origin` header on every route it
+registers, refusing a wire-supplied descriptor member for a configured source,
+and validating a whole open exchange — request beside response — as the trace a
+conformance run would collect from the wire (`serve/servehttp`).
 
 Native evidence: Claude Code graduates the catalog at `degraded` on the
 per-turn `system/init` frame, now pinned in
