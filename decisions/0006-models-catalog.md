@@ -312,6 +312,54 @@ validator says the same thing from its own side — the catalog's gate rejects a
 `models.response` that cites no revision — so a client that hid the revision
 would be hiding the one field that makes the answer usable.
 
+### An empty catalog is an empty list, never a null
+
+`models` is a required array, and Go marshals a nil slice as `null`, so an
+adapter that builds its listing by appending publishes `{"models": null}` when
+it has nothing to append — schema-invalid, for a state that is perfectly legal.
+The OpenCode session is exactly that adapter: its catalog grows from durable
+step evidence, so a session that has run nothing has an empty one. It now
+starts the listing as an empty slice.
+
+The hub normalises the same case, and this is the one of its three checks that
+repairs rather than refuses. The distinction is not squeamishness about
+rejecting adapters. A missing revision and a foreign scope have no correct
+substitute: supplying either would publish something the adapter never said,
+and the label would disagree with the contents. An absent list and an empty one
+are two spellings of the same answer — this session lists no models — and only
+one of them is legal on the wire, so normalising states the adapter's own
+answer rather than replacing it. Repair where the meaning is unchanged, refuse
+where it would have to be invented.
+
+The rule lives in `serve.Session.Models` with the other two, so both codecs
+inherit it, and the adapter fix is not redundant with it: an adapter is used
+directly by its own tests and by `adaptertest`, neither of which goes through a
+hub. The `models-empty-catalog` fixture pins the other half — that a catalog
+listing nothing is a valid trace — so the shape the repair produces is one the
+validator accepts rather than merely one the schema tolerates.
+
+### The revision is schema-required, not only gated
+
+`capability_revision` was schema-required on exactly two envelopes,
+`capabilities.response` and `capabilities.updated`. This unit adds a third,
+`models.response`, and amends the invariant in `CLAUDE.md` that recorded the
+pair rather than letting the two drift apart.
+
+The validator already refused an unlabelled catalog: the catalog's gate rejects
+a `models.response` citing no revision. But that is a semantic rule, and the
+semantic phase reads a whole trace. Removing the schema rule and re-running
+`models-response-missing-revision` shows exactly this — the trace still fails,
+in the semantic phase instead of the schema one. So the schema rule does not
+change whether an unlabelled catalog is caught in a captured trace; it changes
+the case a trace never covers. A client talking to a live third-party endpoint
+validates envelopes only when asked to, and an endpoint that omits the field
+reaches an unvalidating client intact. Both clients therefore refuse an empty
+revision themselves, which is the same rule at the other end of the wire.
+
+The three envelopes that require the field are the three whose entire content
+belongs to one descriptor snapshot. That is the shape of the invariant; a
+catalog was simply the case that had not been written down yet.
+
 ### A descriptor's `id` is non-empty by schema
 
 Decision 0005 refuses an empty `model_id` unconditionally and owes that refusal
@@ -335,12 +383,14 @@ a listing and the revision it belongs to are one answer.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `models`): 30 traces covering the gate
+Fixtures (`fixtures/manifest.json`, unit `models`): 49 traces covering the gate
 and its conforming refusal, the degraded opt-in in all three directions, the
 catalog's internal consistency, `current_model_id` across a mutation window and
 ahead of the trace, the catalog-miss classification in both directions and in
-every refusal shape, the in-gap selection and its reconciliation, and the
-stability rule for ids and for descriptor metadata.
+every refusal shape, the in-gap selection and its reconciliation, the stability
+rule for ids and for descriptor metadata, and the two shapes a catalog must get
+right on the wire — an empty listing is valid, a listing citing no revision is
+not.
 
 Native evidence: OpenCode graduates the unit at `degraded`. The ledger names
 `model.list` and `provider.list` as catalog routes but pins no response shape
