@@ -18,6 +18,7 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
+	"github.com/lsm/open-agent-protocol/adapter/opencode/internal/httpapi"
 	"github.com/lsm/open-agent-protocol/adapter/opencode/internal/native"
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -144,23 +145,19 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
 		t.Fatalf("invalid case metadata: %+v", definition)
 	}
-	frames := opencodeLoadFrames(t, filepath.Join(dir, definition.Native))
+	frames, decoded := opencodeLoadFrames(t, filepath.Join(dir, definition.Native))
 	mappings := opencodeLoadJSON[[]opencodeCorpusMapping](t, filepath.Join(dir, definition.Mapping))
 	omissions := opencodeLoadJSON[[]opencodeCorpusOmission](t, filepath.Join(dir, definition.Omissions))
-	assertOpenCodeClassifications(t, frames, mappings, omissions)
+	assertOpenCodeClassifications(t, frames, decoded, mappings, omissions)
 
 	// Preset the history page before any frame is fed: settlement can fire
 	// on the dispatcher goroutine as soon as a terminal candidate arrives.
 	var presetHistory []native.Event
-	for _, frame := range frames {
+	for index, frame := range frames {
 		if frame.Source != "history" || frame.Action != "" {
 			continue
 		}
-		event, err := native.DecodeEvent(frame.Raw)
-		if err != nil {
-			t.Fatalf("history frame decode: %v", err)
-		}
-		presetHistory = append(presetHistory, event)
+		presetHistory = append(presetHistory, decoded[index])
 	}
 
 	capacity := definition.Journal
@@ -216,10 +213,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	for i, frame := range frames {
 		switch frame.Action {
 		case "", "observe":
-			event, err := native.DecodeEvent(frame.Raw)
-			if err != nil {
-				t.Fatalf("frame %d production decode: %v", i+1, err)
-			}
+			event := decoded[i]
 			if event.Type == native.TypePrompted {
 				// Bind the fixture's prompted turn to the identity the
 				// adapter actually admitted, mirroring the live contract.
@@ -309,7 +303,11 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	}
 }
 
-func opencodeLoadFrames(t *testing.T, filename string) []opencodeCorpusFrame {
+// opencodeLoadFrames returns each fixture wrapper alongside the native event the
+// production path yields for it, so the corpus exercises transport framing and
+// event decoding rather than only the reducer. Frames that carry a harness
+// action instead of a payload decode to the zero event.
+func opencodeLoadFrames(t *testing.T, filename string) ([]opencodeCorpusFrame, []native.Event) {
 	t.Helper()
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -320,6 +318,7 @@ func opencodeLoadFrames(t *testing.T, filename string) []opencodeCorpusFrame {
 		t.Fatal("empty native transcript")
 	}
 	frames := make([]opencodeCorpusFrame, 0, len(lines))
+	decoded := make([]native.Event, 0, len(lines))
 	for index, line := range lines {
 		var frame opencodeCorpusFrame
 		opencodeDecodeStrict(t, line, &frame, fmt.Sprintf("%s frame %d", filename, index+1))
@@ -327,11 +326,47 @@ func opencodeLoadFrames(t *testing.T, filename string) []opencodeCorpusFrame {
 			t.Fatalf("frame %d: invalid source %q", index+1, frame.Source)
 		}
 		frames = append(frames, frame)
+		decoded = append(decoded, opencodeDecodeFrame(t, filename, index+1, frame))
 	}
-	return frames
+	return frames, decoded
 }
 
-func assertOpenCodeClassifications(t *testing.T, frames []opencodeCorpusFrame, mappings []opencodeCorpusMapping, omissions []opencodeCorpusOmission) {
+// opencodeDecodeFrame turns one fixture payload into the native event the
+// adapter would see on the live path. A stream frame is rewritten as the SSE
+// wire text the pinned server writes and read back with the production SSE
+// decoder at the production frame limit, so a change to field parsing, the
+// event terminator, or the frame bound regresses the corpus and not only the
+// httpapi tests. A history frame is an element of the HTTP history endpoint's
+// JSON array, never an SSE event, so it stays on the payload path the
+// production client uses for that endpoint.
+func opencodeDecodeFrame(t *testing.T, filename string, index int, frame opencodeCorpusFrame) native.Event {
+	t.Helper()
+	if frame.Action != "" && frame.Action != "observe" {
+		return native.Event{}
+	}
+	payload := frame.Raw
+	if frame.Source == "stream" {
+		var wire bytes.Buffer
+		wire.WriteString("event: message\ndata: ")
+		wire.Write(frame.Raw)
+		wire.WriteString("\n\n")
+		sse, err := httpapi.NewSSEDecoder(&wire, httpapi.DefaultFrameLimit).Decode()
+		if err != nil {
+			t.Fatalf("%s frame %d production SSE decode: %v", filename, index, err)
+		}
+		if sse.Name != "message" {
+			t.Fatalf("%s frame %d decoded SSE event name %q, want \"message\"", filename, index, sse.Name)
+		}
+		payload = sse.Data
+	}
+	event, err := native.DecodeEvent(payload)
+	if err != nil {
+		t.Fatalf("%s frame %d production decode: %v", filename, index, err)
+	}
+	return event
+}
+
+func assertOpenCodeClassifications(t *testing.T, frames []opencodeCorpusFrame, decoded []native.Event, mappings []opencodeCorpusMapping, omissions []opencodeCorpusOmission) {
 	t.Helper()
 	if len(frames) != len(mappings) {
 		t.Fatalf("mapping count %d does not cover %d native frames", len(mappings), len(frames))
@@ -347,11 +382,7 @@ func assertOpenCodeClassifications(t *testing.T, frames []opencodeCorpusFrame, m
 		mapping := mappings[i]
 		typ := "action"
 		if frame.Action == "" {
-			event, err := native.DecodeEvent(frame.Raw)
-			if err != nil {
-				t.Fatalf("frame %d decode: %v", i+1, err)
-			}
-			typ = string(event.Type)
+			typ = string(decoded[i].Type)
 		}
 		if mapping.Index != i+1 || mapping.Type != typ || mapping.Source != frame.Source || mapping.Classification != frame.Classification || mapping.Fidelity != frame.Fidelity {
 			t.Fatalf("frame %d mapping mismatch", i+1)
