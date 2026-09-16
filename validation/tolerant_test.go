@@ -547,6 +547,53 @@ func TestTolerantStateChecksScopeOfUnknownEnvelopes(t *testing.T) {
 	}
 }
 
+func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
+	count := func(r Result, code string) int {
+		n := 0
+		for _, d := range r.Diagnostics {
+			if d.Code == code {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("a sequenced unknown run event reports one scope_mismatch", func(t *testing.T) {
+		// runEvent checks the generic payload scope itself; the classifier
+		// must not check it again on the way in.
+		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
+			return []map[string]any{{
+				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
+				"type": "com.example.run.mark", "id": "ext-mark",
+				"session_id": started["session_id"], "run_id": started["run_id"], "sequence": json.Number(itoa(seq)),
+				"payload": map[string]any{"run_id": "rB"},
+			}}
+		})
+		_, tolerant := validateBoth(t, trace, "mark-rB")
+		if n := count(tolerant, CodeScopeMismatch); n != 1 {
+			t.Fatalf("scope_mismatch reported %d times, want 1: %v", n, tolerant.Diagnostics)
+		}
+	})
+	t.Run("an unknown response is held to its own envelope", func(t *testing.T) {
+		// The response answers within the request's run (payload r1 = req
+		// r1) but its envelope names another run: one scope_mismatch for the
+		// envelope/payload disagreement, none for correlation.
+		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
+			common := map[string]any{"protocol": started["protocol"], "version": started["version"], "profile": started["profile"], "session_id": started["session_id"]}
+			scope := map[string]any{"session_id": started["session_id"], "run_id": started["run_id"]}
+			req := map[string]any{"type": "com.example.run.pause.request", "id": "req-pause", "run_id": started["run_id"], "payload": scope}
+			resp := map[string]any{"type": "com.example.run.pause.response", "id": "resp-pause", "in_reply_to": "req-pause", "run_id": "rA", "payload": scope}
+			for k, v := range common {
+				req[k], resp[k] = v, v
+			}
+			return []map[string]any{req, resp}
+		})
+		_, tolerant := validateBoth(t, trace, "pause-rA")
+		if n := count(tolerant, CodeScopeMismatch); n != 1 {
+			t.Fatalf("scope_mismatch reported %d times, want 1: %v", n, tolerant.Diagnostics)
+		}
+	})
+}
+
 func TestTolerantStateOpaqueAdmissionAtClose(t *testing.T) {
 	// A trace that ends while a foreign-admitted run is open owes a terminal
 	// (type-independent) but not run.started (a lifecycle rule the validator

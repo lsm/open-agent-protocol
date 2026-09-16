@@ -354,12 +354,14 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			// contiguity, terminality); one carrying session_id alone is
 			// session-scoped and advances no cursor; one carrying neither
 			// touches no bookkeeping at all.
-			if !isRequest(e.Type) && !isResponse(e.Type) {
+			switch {
+			case e.RunID != "" && e.Sequence != nil:
+				// runEvent is the sole scope checker for a run event; a
+				// second generic check here would report one defect twice.
+				s.runEvent(i, line, e)
+			case !isRequest(e.Type) && !isResponse(e.Type):
 				session, run := unknownScope(e)
 				s.checkScope(i, line, e, session, run)
-			}
-			if e.RunID != "" && e.Sequence != nil {
-				s.runEvent(i, line, e)
 			}
 		}
 	}
@@ -436,9 +438,11 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	session, run := responseScope(e)
 	if s.tolerant && !isKnownType(e.Type) {
 		// An unknown response, like an unknown request, is scoped by its
-		// generic payload members and its envelope; the correlation check
-		// binds it to the request it answers.
+		// generic payload members and its envelope. The two must agree (a
+		// known response is held to that in its own case) before the
+		// correlation check binds it to the request it answers.
 		session, run = unknownScope(e)
+		s.checkScope(i, line, e, session, run)
 	}
 	if req.session != "" && session != "" && session != req.session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "response session does not match the request scope", string(req.session), string(session), string(e.InReplyTo))
