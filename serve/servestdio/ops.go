@@ -47,6 +47,7 @@ const (
 	signalOverflow      = "oap-overflow"
 	signalReplayGap     = "oap-replay-gap"
 	signalSessionClosed = "oap-session-closed"
+	signalStreamFailed  = "oap-stream-failed"
 	signalFrameLimit    = "oap-frame-limit"
 )
 
@@ -90,6 +91,27 @@ type sessionClosedLine struct {
 	Event     string `json:"event"`
 	ID        int64  `json:"id"`
 	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}
+
+// streamFailedLine ends a subscription whose run stream failed.
+//
+// Over SSE this ending needs no event: the response body stops and the client
+// observes the closed connection. This framing has no such tell — the pipe
+// stays open and carries every other subscription — so without a line the
+// host cannot distinguish a dead subscription from an idle one and waits on
+// events that are never coming.
+//
+// The message is fixed rather than carrying the adapter's diagnostic. An SSE
+// client learns nothing about the cause either, and a fixed message stays
+// framable at the frame limit's floor; the underlying error goes to the
+// logger, which is where this package puts every unbounded adapter string.
+type streamFailedLine struct {
+	Event     string `json:"event"`
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id,omitempty"`
+	Sequence  uint64 `json:"sequence"`
 	Message   string `json:"message"`
 }
 
@@ -989,20 +1011,31 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 // envelope lines preserve the subscription's per-session order and carry the
 // events request's id; the single writer guarantees each line is atomic.
 //
-// Ends mirror the SSE stream's, which is what parity here means: the overflow
-// and replay-gap signals get named lines, a subscription that ends because
-// the session closed under it gets the session-closed line, and the clean end
-// at a run's terminal event produces no line — the terminal envelope
-// (run.completed / run.failed / run.cancelled) is the marker, exactly as the
-// SSE response simply ends after it.
+// Every ending a host could not otherwise observe gets a named line, because
+// this framing has no end to observe: the SSE route's response body stops and
+// the client sees a closed connection, while the pipe here stays open and
+// carries every other subscription. A host that got no line could not tell a
+// dead subscription from an idle one.
 //
-// Any other end — a failed run stream, the frontend's own teardown — also
-// produces no line, and the documented recovery is a fresh events op with an
-// after cursor. An envelope whose line exceeds the frame limit ends the
-// subscription the same way, but says so: this framing cannot carry it, and
-// skipping it would leave a sequence hole a later cursor would double-count.
+// So the overflow, replay-gap, session-closed, frame-limit and stream-failed
+// signals each name their ending and the cursor a fresh events op resumes
+// from. Two endings need no line. The clean end at a run's terminal event
+// already has its marker — the run.completed / run.failed / run.cancelled
+// envelope, delivered as an ordinary line, exactly as the SSE response simply
+// ends after it. And the frontend's own teardown ends the session the host is
+// watching, which the host observes directly.
+//
+// An envelope whose line exceeds the frame limit ends the subscription rather
+// than being skipped: skipping it would leave a sequence hole a later cursor
+// would double-count.
 func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *serve.Subscription, id int64, lines chan<- outLine) {
 	defer subscription.Close()
+	// What the host actually received, which is where a fresh cursor resumes
+	// if this subscription ends badly. It is the delivered position and not
+	// the hub's, because a line that never reached the writer is not an event
+	// the host can be asked to resume after.
+	var deliveredRun protocol.RunID
+	var deliveredSequence uint64
 	for {
 		envelope, err := subscription.Next()
 		if err == nil {
@@ -1025,6 +1058,10 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 				s.endAtFrameLimit(ctx, entry, envelope, id, lines)
 				return
 			}
+			deliveredRun = envelope.RunID
+			if envelope.Sequence != nil {
+				deliveredSequence = *envelope.Sequence
+			}
 			continue
 		}
 		var overflow *serve.OverflowError
@@ -1039,12 +1076,37 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 			}
 			return
 		}
-		if errors.Is(err, io.EOF) && entry.IsClosed() {
-			if sendErr := s.send(ctx, lines, sessionClosedLine{
-				Event: signalSessionClosed, ID: id, SessionID: string(entry.ID()),
-				Message: "the session is closed",
-			}); sendErr != nil {
-				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+		if errors.Is(err, io.EOF) {
+			if entry.IsClosed() {
+				if sendErr := s.send(ctx, lines, sessionClosedLine{
+					Event: signalSessionClosed, ID: id, SessionID: string(entry.ID()),
+					Message: "the session is closed",
+				}); sendErr != nil {
+					s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+				}
+			}
+			// A clean end on a live session is the run's terminal envelope,
+			// already delivered above: the host has its marker.
+			return
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// The frontend is tearing down. The host observes the session
+			// ending, and the output this would go to is already closing.
+			return
+		}
+		// The run's event stream failed. Nothing else will name this ending.
+		s.logger.Printf("servestdio: subscription %d: %v", id, err)
+		if sendErr := s.send(ctx, lines, streamFailedLine{
+			Event: signalStreamFailed, ID: id, SessionID: string(entry.ID()),
+			RunID: string(deliveredRun), Sequence: deliveredSequence,
+			Message: "the run's event stream failed; resume with a cursor after this sequence",
+		}); sendErr != nil {
+			s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+			if minimalErr := s.send(ctx, lines, streamFailedLine{
+				Event: signalStreamFailed, ID: id, Sequence: deliveredSequence,
+				Message: "the run's event stream failed",
+			}); minimalErr != nil {
+				s.logger.Printf("servestdio: subscription %d: %v", id, minimalErr)
 			}
 		}
 		return
