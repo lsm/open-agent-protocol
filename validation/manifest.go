@@ -81,6 +81,7 @@ const (
 	LoadPackUnprefixedName       = "pack_unprefixed_name"
 	LoadPackForeignPrefix        = "pack_foreign_prefix"
 	LoadPackIDCollision          = "pack_id_collision"
+	LoadPackTypeDuplicate        = "pack_type_duplicate"
 	LoadPackBranchUndeclaredType = "pack_branch_undeclared_type"
 	LoadPackBranchUnpinned       = "pack_branch_unpinned"
 	LoadPackUngatedType          = "pack_ungated_type"
@@ -101,7 +102,7 @@ const (
 
 func loadErrorCodes() map[string]bool {
 	codes := []string{
-		LoadPackUnprefixedName, LoadPackForeignPrefix, LoadPackIDCollision,
+		LoadPackUnprefixedName, LoadPackForeignPrefix, LoadPackIDCollision, LoadPackTypeDuplicate,
 		LoadPackBranchUndeclaredType, LoadPackBranchUnpinned, LoadPackUngatedType,
 		LoadPackRestatesCoreMember, LoadPackMemberTargetUnknown, LoadPackMemberDuplicate, LoadPackRoleUndeclared,
 		LoadPackResponseGated, LoadPackReplyTargetUnknown, LoadPackReplyTargetAmbiguous, LoadPackRefusalUndeclared,

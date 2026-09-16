@@ -41,6 +41,7 @@ func TestPackLoadRefusals(t *testing.T) {
 		{[]string{"bad-restates-core-member"}, []string{LoadPackRestatesCoreMember}},
 		{[]string{"bad-member-target-unknown"}, []string{LoadPackMemberTargetUnknown}},
 		{[]string{"bad-member-duplicate"}, []string{LoadPackMemberDuplicate}},
+		{[]string{"bad-type-duplicate"}, []string{LoadPackTypeDuplicate}},
 		{[]string{"bad-member-on-capabilities-updated"}, []string{LoadPackMemberTargetUnknown}},
 		{[]string{"bad-schema-path-escape"}, []string{LoadPackSchemaPathEscape}},
 		{[]string{"bad-external-ref"}, []string{LoadPackExternalRef}},
@@ -513,5 +514,65 @@ func TestPayloadMemberLocalReferencesAreAllowed(t *testing.T) {
 	}}
 	if refusals := checkReferences([]*Pack{p}); len(refusals) != 0 {
 		t.Fatalf("self-contained member schema refused: %v", refusals)
+	}
+}
+
+// A request is judged under the descriptor it was made under. A descriptor
+// that changes before the response neither excuses the typed refusal the
+// request was owed nor condemns a declared refusal it was entitled to.
+func TestGateAdvertisementIsSnapshottedWithTheRequest(t *testing.T) {
+	packs, err := LoadPacks(packDir(t, "storage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",`
+	advertised := `"com.example.storage.objects":{"level":"native"}`
+	trace := func(atRequest, atResponse string) string {
+		return "[" + strings.Join([]string{
+			head + `"type":"capabilities.request","id":"capq","payload":{}}`,
+			head + `"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{` + atRequest + `}}}`,
+			head + `"type":"com.example.storage.objects.read","id":"read1","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","bucket":"reports","key":"q3.csv"}}`,
+			head + `"type":"capabilities.updated","id":"capu","capability_revision":"v2","sequence":1,"payload":{"previous_revision":"v1"}}`,
+			head + `"type":"capabilities.request","id":"capq2","payload":{}}`,
+			head + `"type":"capabilities.response","id":"capr2","in_reply_to":"capq2","capability_revision":"v2","payload":{"endpoint":{"id":"agent"},"features":{` + atResponse + `}}}`,
+			head + `"type":"error.response","id":"err1","in_reply_to":"read1","session_id":"s1","payload":{"error":{"code":"com.example.storage.object_not_found","message":"no such object"}}}`,
+		}, ",") + "]"
+	}
+	// Unadvertised when made: the declared refusal does not stand in for the
+	// typed refusal the request was owed, however the descriptor moved since.
+	if result := v.ValidateBytes([]byte(trace("", advertised)), "later-advertised"); !result.HasCode(CodeUnavailableCapability) {
+		t.Fatalf("a request made under an unadvertised key was excused by a later descriptor: %v", result.Diagnostics)
+	}
+	// Advertised when made: the declared refusal is honoured even though the
+	// key has since been withdrawn.
+	if result := v.ValidateBytes([]byte(trace(advertised, "")), "later-withdrawn"); !result.Valid() {
+		t.Fatalf("a declared refusal was condemned by a later descriptor: %v", result.Diagnostics)
+	}
+}
+
+// A pack reached through a symlink runs its own corpus: containment is judged
+// against the resolved root, so the pack's own files never look like escapes.
+func TestPackBehindSymlinkRunsItsCorpus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture")
+	}
+	link := filepath.Join(t.TempDir(), "current")
+	if err := os.Symlink(packDir(t, "storage")[0], link); err != nil {
+		t.Fatal(err)
+	}
+	packs, err := LoadPacks([]string{link})
+	if err != nil {
+		t.Fatalf("pack behind a symlink refused: %v", err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.validateManifest(packs[0].fixtures, ManifestOptions{Packs: packs, Owner: packs[0]}, false); err != nil {
+		t.Fatalf("corpus of a pack behind a symlink did not run: %v", err)
 	}
 }

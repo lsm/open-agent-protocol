@@ -59,6 +59,9 @@ type requestState struct {
 	session            protocol.SessionID
 	run                protocol.RunID
 	interaction        protocol.InteractionID
+	// gates are the packed capability gates the request carried, with their
+	// advertisement under the descriptor current when it was made.
+	gates []packGate
 }
 type sessionTrack struct {
 	status protocol.SessionStatus

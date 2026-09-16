@@ -67,9 +67,10 @@ func (s *state) expectedResponse(t protocol.EnvelopeType) protocol.EnvelopeType 
 // packGate is one capability key an envelope's admission is judged against,
 // with the refusals its pack promised it could answer under.
 type packGate struct {
-	key      string
-	refusals map[string]bool
-	typed    bool // the gate of a packed request, which the honour rule bounds
+	key        string
+	refusals   map[string]bool
+	typed      bool // the gate of a packed request, which the honour rule bounds
+	advertised bool // under the descriptor current when the request was made
 }
 
 // packEnvelope applies the pack rules to one envelope. Where a gate settles
@@ -104,6 +105,16 @@ func (s *state) packEnvelope(i, line int, e protocol.Envelope) {
 			s.packFeature(i, line, e, gate.key)
 		}
 	}
+	if role == PackRoleRequest {
+		// The request is judged under the descriptor it was made under: its
+		// gates and their advertisement are retained with it, so a
+		// descriptor that changes before the response neither excuses a
+		// refusal the request was owed nor condemns one it was not.
+		if request := s.requests[e.ID]; request != nil {
+			request.gates = s.requestGates(request)
+		}
+		return
+	}
 	if role != PackRoleResponse && e.Type != protocol.TypeErrorResponse {
 		return
 	}
@@ -111,16 +122,20 @@ func (s *state) packEnvelope(i, line int, e protocol.Envelope) {
 	if request == nil {
 		return
 	}
-	gates := s.requestGates(request)
+	gates := request.gates
 	if e.Type == protocol.TypeErrorResponse {
 		s.settleRefusal(i, line, e, gates)
 		return
 	}
 	for _, gate := range gates {
-		if !s.advertised(gate.key) {
-			// A successful response to a request gated on an unadvertised
-			// key is the endpoint acting on a capability it does not have.
-			s.packFeature(i, line, e, gate.key)
+		if !gate.advertised {
+			// A successful response to a request gated on a key that was not
+			// advertised when the request was made admits what the endpoint
+			// owed a typed refusal for.
+			s.addExpected(CodeUnavailableCapability, i, line, e, "/type",
+				"response admits a request made under a capability that was not advertised",
+				fmt.Sprintf("%s with details.feature %q and details.reason %q", errorUnsupportedFeature, gate.key, reasonUnadvertised),
+				string(e.Type), string(e.InReplyTo))
 		}
 	}
 }
@@ -133,7 +148,11 @@ func (s *state) requestGates(request *requestState) []packGate {
 	if packed := s.packs.Type(string(request.typ)); packed != nil && packed.Capability != "" {
 		gates = append(gates, packGate{key: packed.Capability, refusals: packed.Refusals, typed: true})
 	}
-	return append(gates, s.memberGates(request.typ, request.envelope.Payload)...)
+	gates = append(gates, s.memberGates(request.typ, request.envelope.Payload)...)
+	for i := range gates {
+		gates[i].advertised = s.advertised(gates[i].key)
+	}
+	return gates
 }
 
 // memberGates lists the gates of the declared pack members one payload carries.
@@ -169,7 +188,7 @@ func (s *state) settleRefusal(i, line int, e protocol.Envelope, gates []packGate
 	var unadvertised []string
 	var typed *packGate
 	for idx := range gates {
-		if !s.advertised(gates[idx].key) {
+		if !gates[idx].advertised {
 			unadvertised = append(unadvertised, gates[idx].key)
 		} else if gates[idx].typed {
 			typed = &gates[idx]
