@@ -131,6 +131,20 @@ The origin refusal wraps the whole mux rather than living in the routes that
 parse an envelope, so it covers the ones that read no body — `close` — and the
 ones not yet written.
 
+Every served catalog carries the `capability_revision` it was served under, and
+`capability_revision` is schema-required on `action.tools.list.response` as it
+is on `models.response`: the catalog belongs to one descriptor snapshot, so a
+caller caches it against that revision and discards it when
+`capabilities.updated` reports another. It matters more here than on the models
+route, because a session's catalog is a function of the descriptor *and* of the
+sources that session attached under it. The hub checks what an adapter hands
+back before it reaches a codec — the payload's scope must be the scope the
+request named, in both directions, and the revision must be present — because a
+codec labels the envelope with the session it addressed, so an unchecked payload
+scope would survive into a response the clients reject. A mis-scoped catalog is
+refused rather than relabelled; a nil tool list is repaired, because an absent
+list and an empty one say the same thing and only one is legal on the wire.
+
 [Decision 0008](decisions/0008-tool-sources.md) graduates the unit: Claude Code
 serves the catalog at `degraded` from its per-turn `system/init` frame, and ACP
 attaches at `native` onto `session/new`'s `mcpServers`. Control-layer-provided
@@ -191,7 +205,11 @@ credentials of one executable the daemon itself launches, and dropping one
 starts that MCP server without its token to fail later as though the server
 were broken. Write `NAME=` if a name is meant to be optional. (The example
 config lists `MCP_TOKEN` for its filesystem source, so export it or drop the
-entry before starting with that document.) A client attaches one by `id` and
+entry before starting with that document.) A `process` entry must carry a
+`command`: it is the one kind the daemon supplies an executable for, so an
+entry without one could never resolve, and the failure is reported at startup
+naming the source rather than as a generic `open_failed` on the first open that
+attaches it. Other kinds need none, because nothing spawns them. A client attaches one by `id` and
 nothing else — see "Tool sources" above for why the wire form is refused on
 that route.
 

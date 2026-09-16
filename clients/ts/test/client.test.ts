@@ -559,6 +559,7 @@ test('a catalog scoped to another session is refused', async () => {
           id: 'resp-2',
           inReplyTo: 'oap-request-2',
           sessionId: 's-other',
+          capabilityRevision: 'reference-memory-v5',
           payload: {
             session_id: 's-other',
             sources: [{ id: 'secret', kind: 'process', endpoint: 'stdio:another-sessions-source' }],
@@ -584,6 +585,7 @@ test('a catalog payload naming another session is refused', async () => {
           id: 'resp-2',
           inReplyTo: 'oap-request-2',
           sessionId: 's-1',
+          capabilityRevision: 'reference-memory-v5',
           payload: { session_id: 's-other', tools: [] },
         }),
       ),
@@ -593,7 +595,7 @@ test('a catalog payload naming another session is refused', async () => {
   await assert.rejects(session.tools(), /payload names session "s-other", envelope "s-1"/);
 });
 
-function catalogTransport(payload: Record<string, unknown>): FakeTransport {
+function catalogTransport(payload: Record<string, unknown>, revision = 'reference-memory-v5'): FakeTransport {
   return new FakeTransport([
     {
       match: '/tools',
@@ -603,6 +605,7 @@ function catalogTransport(payload: Record<string, unknown>): FakeTransport {
           id: 'resp-2',
           inReplyTo: 'oap-request-2',
           sessionId: 's-1',
+          capabilityRevision: revision || undefined,
           payload,
         }),
       ),
@@ -623,5 +626,18 @@ test('a catalog payload naming no session is rejected', async () => {
 test('a catalog payload naming this session is accepted', async () => {
   const session = openedSession(catalogTransport({ session_id: 's-1', tools: [] }));
   const catalog = await session.tools();
-  assert.deepEqual(catalog.tools, []);
+  assert.deepEqual(catalog.tools.tools, []);
+  // The listing comes back bound to the snapshot that governs it.
+  assert.equal(catalog.revision, 'reference-memory-v5');
+});
+
+test('a catalog carrying no capability revision is refused', async () => {
+  // A tool catalog is valid for exactly one descriptor snapshot: it is a
+  // function of the descriptor and of the sources this session attached under
+  // it, and `capabilities.updated` is the only signal that a cached listing
+  // has stopped describing the session. A listing with no revision can be
+  // neither cached nor invalidated. models() refuses the same way, and the Go
+  // client draws the same boundary.
+  const session = openedSession(catalogTransport({ session_id: 's-1', tools: [] }, ''));
+  await assert.rejects(session.tools(), /carries no capability revision/);
 });

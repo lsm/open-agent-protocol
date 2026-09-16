@@ -57,6 +57,20 @@ export type ModelsOptions = { allowDegradedFeatures?: string[] };
  */
 export type Catalog = { revision: string; models: ModelsResponse };
 
+/**
+ * One session's tool listing together with the capability revision that
+ * governs it, mirroring Catalog on the models route.
+ *
+ * A tool catalog needs that pairing more than a model one does, not less. The
+ * listing is a function of the descriptor and of the sources this session
+ * attached under it, and an endpoint that republishes its tools mid-session
+ * changes what it lists without anyone asking; `capabilities.updated` is the
+ * only signal that a cached listing has stopped describing the session.
+ * Without the revision a caller cannot tell which snapshot it read, so it
+ * cannot tell which update invalidates it.
+ */
+export type ToolCatalog = { revision: string; tools: ToolsListResponse };
+
 /** open() input; see OapClient.open. */
 export type OpenOptions = { sessionId?: string; participant?: string };
 
@@ -207,7 +221,7 @@ export class OapSession {
    * `unsupported_feature` refusal naming `action.tools.list`, which surfaces
    * as a ServerError whose details say which capability to stop requesting.
    */
-  async tools(options: { allowDegradedFeatures?: string[] } = {}): Promise<ToolsListResponse> {
+  async tools(options: { allowDegradedFeatures?: string[] } = {}): Promise<ToolCatalog> {
     let path = this.path('/tools');
     if (options.allowDegradedFeatures?.length) {
       const query = new URLSearchParams();
@@ -223,6 +237,13 @@ export class OapSession {
         `client: ${this.path('/tools')} response is scoped to session "${response.session_id ?? ''}", want "${this.sessionId}"`,
       );
     }
+    // The envelope's own labels are read before the catalog inside it, as on
+    // the models route. A listing nothing can bind to a descriptor can be
+    // neither cached nor invalidated, so it is refused rather than handed back
+    // with an empty revision the caller has to notice on its own.
+    if (!response.capability_revision) {
+      throw new Error(`client: ${this.path('/tools')} response carries no capability revision`);
+    }
     const catalog = payload<ToolsListResponse>(response);
     // The payload must name this session too. `session_id` is optional on a
     // catalog payload — an endpoint-level catalog belongs to no session — but
@@ -235,7 +256,7 @@ export class OapSession {
         `client: ${this.path('/tools')} payload names session "${catalog.session_id ?? ''}", envelope "${response.session_id}"`,
       );
     }
-    return catalog;
+    return { revision: response.capability_revision, tools: catalog };
   }
 
   /**

@@ -541,13 +541,22 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 		s.writeToolsError(w, err, protocol.Envelope{SessionID: entry.ID()})
 		return
 	}
-	response, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, s.nextID("response"), catalog)
+	response, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, s.nextID("response"), catalog.Tools)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), protocol.Envelope{SessionID: entry.ID()})
 		return
 	}
 	response.InReplyTo = s.nextID("request")
+	// The hub verified the listing is this session's before returning it, so
+	// the envelope is labelled from the hub's own identity rather than from
+	// adapter data, as on the models route.
 	response.SessionID = entry.ID()
+	// The revision comes back with the listing rather than from a descriptor
+	// read at another moment: a catalog nothing can bind to a descriptor
+	// cannot be cached or invalidated, and this unit's catalogs move under a
+	// live descriptor more than the model ones do — an endpoint republishing
+	// its tools per turn changes what it lists without anyone asking.
+	response.CapabilityRevision = catalog.Revision
 	writeEnvelope(w, http.StatusOK, response)
 }
 

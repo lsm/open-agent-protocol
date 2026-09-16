@@ -341,7 +341,7 @@ func cancelExchangeCut(events []protocol.Envelope) int {
 // attached are the sources one session.open attached, spliced in as the open
 // exchange the catalog is judged against; pass none for an endpoint-level
 // catalog or a session that attached nothing.
-func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog protocol.ToolsListResponse) {
+func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) {
 	t.Helper()
 	trace, err := ToolCatalogTrace(descriptor, attached, request, catalog)
 	if err != nil {
@@ -356,7 +356,7 @@ func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, attached []p
 // ToolCatalogTrace assembles the canonical catalog trace: the capabilities
 // exchange, the open that attached the sources when there was one, and the
 // list exchange.
-func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog protocol.ToolsListResponse) ([]byte, error) {
+func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) ([]byte, error) {
 	revision := descriptor.CapabilityRevision
 	var trace []protocol.Envelope
 	capabilitiesRequest, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
@@ -371,7 +371,7 @@ func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSou
 	trace = append(trace, capabilitiesRequest, capabilities)
 	session := request.SessionID
 	if session == "" {
-		session = catalog.SessionID
+		session = catalog.Tools.SessionID
 	}
 	if len(attached) > 0 {
 		open, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "open-request", protocol.SessionOpenRequest{SessionID: session, ToolSources: attached})
@@ -395,11 +395,14 @@ func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSou
 		return nil, err
 	}
 	listRequest.SessionID, listRequest.CapabilityRevision = session, revision
-	listResponse, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, "tools-response", catalog)
+	listResponse, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, "tools-response", catalog.Tools)
 	if err != nil {
 		return nil, err
 	}
-	listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = catalog.SessionID, listRequest.ID, revision
+	// The revision on the envelope is the one the catalog came back with, not
+	// the descriptor's, so a listing served under a revision the adapter no
+	// longer advertises is visible here rather than laundered into agreement.
+	listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = catalog.Tools.SessionID, listRequest.ID, catalog.Revision
 	return json.Marshal(append(trace, listRequest, listResponse))
 }
 

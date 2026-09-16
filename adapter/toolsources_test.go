@@ -53,7 +53,7 @@ func TestReferenceCatalogResolvesEverySource(t *testing.T) {
 
 	// The published projection is the point: the attachment's command and its
 	// environment allowlist never reach a client.
-	for _, source := range catalog.Sources {
+	for _, source := range catalog.Tools.Sources {
 		if source.ID != attachment.ID {
 			continue
 		}
@@ -62,7 +62,7 @@ func TestReferenceCatalogResolvesEverySource(t *testing.T) {
 		}
 	}
 	found := false
-	for _, tool := range catalog.Tools {
+	for _, tool := range catalog.Tools.Tools {
 		if tool.Source == "" {
 			t.Fatalf("catalog entry %q names no source", tool.Name)
 		}
@@ -194,12 +194,12 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools: %v", err)
 	}
-	if catalog.SessionID != "" {
-		t.Fatalf("an unscoped request was answered under session %q", catalog.SessionID)
+	if catalog.Tools.SessionID != "" {
+		t.Fatalf("an unscoped request was answered under session %q", catalog.Tools.SessionID)
 	}
-	for _, source := range catalog.Sources {
+	for _, source := range catalog.Tools.Sources {
 		if source.ID == attachment.ID {
-			t.Fatalf("the endpoint catalog publishes a source one session attached: %+v", catalog.Sources)
+			t.Fatalf("the endpoint catalog publishes a source one session attached: %+v", catalog.Tools.Sources)
 		}
 	}
 	// It is the endpoint's own catalog, not an empty one: what the descriptor
@@ -213,17 +213,17 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 	for _, source := range descriptor.Capabilities.Sources {
 		declared[source.ID] = source
 	}
-	if len(catalog.Sources) != len(declared) {
-		t.Fatalf("the endpoint catalog lists %d sources, the descriptor declares %d", len(catalog.Sources), len(declared))
+	if len(catalog.Tools.Sources) != len(declared) {
+		t.Fatalf("the endpoint catalog lists %d sources, the descriptor declares %d", len(catalog.Tools.Sources), len(declared))
 	}
-	for _, source := range catalog.Sources {
+	for _, source := range catalog.Tools.Sources {
 		if declared[source.ID] != source {
 			t.Fatalf("source %q differs from the descriptor's: %+v", source.ID, source)
 		}
 	}
 	// Every tool still resolves, which is the property an endpoint catalog
 	// owes whatever its scope: dropping the attachments must not orphan one.
-	for _, tool := range catalog.Tools {
+	for _, tool := range catalog.Tools.Tools {
 		if tool.Source == "" {
 			continue
 		}
@@ -239,12 +239,12 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 		t.Fatalf("scoped tools: %v", err)
 	}
 	attached := false
-	for _, source := range scoped.Sources {
+	for _, source := range scoped.Tools.Sources {
 		if source.ID == attachment.ID {
 			attached = true
 		}
 	}
 	if !attached {
-		t.Fatalf("the session catalog dropped the attachment: %+v", scoped.Sources)
+		t.Fatalf("the session catalog dropped the attachment: %+v", scoped.Tools.Sources)
 	}
 }

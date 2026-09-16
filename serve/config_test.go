@@ -307,6 +307,37 @@ func TestLoadRegistryToolSourceNeedsKind(t *testing.T) {
 	}
 }
 
+// TestLoadRegistryProcessToolSourceNeedsCommand refuses the entry the daemon
+// could never resolve. A process source is the one kind the daemon supplies an
+// executable for, and the command is the whole of what it supplies: without
+// one there is nothing to spawn. The entry used to load, and the first open
+// naming it failed inside the adapter as an invalid resolution, which the route
+// reports as a generic open_failed — a 502 about a session, for a defect in one
+// line of the operator's config.
+//
+// Nothing that worked stops working: an entry in this shape was already
+// unusable and every open naming it already failed. Only where the failure is
+// reported changes, which is the argument the environment rule above makes too.
+func TestLoadRegistryProcessToolSourceNeedsCommand(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"filesystem": {"kind": "process", "endpoint": "stdio:filesystem"}}}`)
+	if _, err := LoadRegistry(path, os.LookupEnv); err == nil || !strings.Contains(err.Error(), "a process source needs a command") {
+		t.Fatalf("load error = %v", err)
+	}
+
+	// The rule is stated forwards only. A non-process entry carrying no command
+	// is a complete entry, because nothing spawns it; which kinds an operator
+	// may configure is the adapter's disclosed transports to answer at
+	// admission, not this loader's.
+	path = writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"remote-tools": {"kind": "remote", "endpoint": "https://tools.example"}}}`)
+	registry, err := LoadRegistry(path, os.LookupEnv)
+	if err != nil {
+		t.Fatalf("a commandless remote source was refused: %v", err)
+	}
+	if source, ok := registry.ToolSource("remote-tools"); !ok || source.Kind != protocol.ToolSourceRemote {
+		t.Fatalf("configured tool source = %+v (%v)", source, ok)
+	}
+}
+
 // TestEveryAdapterRefusesUnadvertisedToolSources is the fail-closed contract
 // held across the whole registry rather than per adapter. OpenRequest.ToolSources
 // is a field an adapter written before the tool-sources unit never reads, so

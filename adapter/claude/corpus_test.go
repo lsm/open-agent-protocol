@@ -473,7 +473,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 				if control.Catalog == nil {
 					t.Fatalf("frame %d: assert-catalog declares no expected catalog", i+1)
 				}
-				got, err := json.Marshal(catalog)
+				got, err := json.Marshal(catalog.Tools)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -485,7 +485,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 					t.Fatalf("frame %d: projected catalog\n got: %s\nwant: %s", i+1, got, want)
 				}
 				adaptertest.AssertToolCatalog(t, execution.descriptor, nil, request, catalog)
-				execution.catalogs = append(execution.catalogs, catalog)
+				execution.catalogs = append(execution.catalogs, catalog.Tools)
 			case "assert-state":
 				state, err := session.State(context.Background())
 				if err != nil {

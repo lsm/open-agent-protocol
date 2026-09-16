@@ -106,7 +106,12 @@ test(
     // The session's effective catalog: the scripted tool attributed to a
     // source id, beside every source the session resolves — the descriptor's
     // declared ones and the one the open attached.
-    const catalog = await session.tools();
+    const listing = await session.tools();
+    // The listing comes back with the revision that governs it, over the real
+    // daemon wire, so a caller can cache it against that descriptor and drop
+    // it when capabilities.updated reports another.
+    assert.equal(listing.revision, caps.revision);
+    const catalog = listing.tools;
     assert.equal(catalog.session_id, 'ts-integration-a');
     const attached = catalog.sources?.find((source) => source.id === 'ts-integration-mcp');
     assert.ok(attached, `attached source missing from ${JSON.stringify(catalog.sources)}`);

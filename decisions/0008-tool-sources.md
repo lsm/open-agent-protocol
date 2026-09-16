@@ -537,7 +537,7 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 60 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 61 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -556,7 +556,8 @@ mid-lifecycle, a refresh that collides with an attachment,
 an attach capability disclosing no session-open mode in both directions, one
 published under a layer alone, and the two schema-invalid disclosures no
 request can satisfy — `max_sources: 0` and a transport outside the source-kind
-vocabulary. Seven boundary tests carry what no trace can: the two limit
+vocabulary — and a served catalog carrying no `capability_revision`, the mirror
+of the models unit's own. Seven boundary tests carry what no trace can: the two limit
 accessors ignoring each of those disclosures for a descriptor that never passed
 through the schema (`protocol`), every registered adapter refusing an
 attachment it never advertised before a process starts and every advertising
@@ -595,7 +596,13 @@ Surfaces: `serve.Session.Tools`, `GET /sessions/{id}/tools` with a repeatable
 `?allow_degraded=<key>`, the stdio `tools` op taking `allow_degraded_features`
 directly, `POST /adapters/{name}/sessions` forwarding `tool_sources` and
 `allow_degraded_features`, and both clients' `Tools`/`tools` and open options.
-The stdio op is held to the HTTP route's body by `parity_test.go`.
+Each of those returns the listing paired with the revision that governs it —
+`adapter.ToolCatalog`, `client.ToolCatalog`, and the TypeScript `ToolCatalog` —
+and each client refuses a response carrying no revision, as it does on the
+models route. The stdio op is held to the HTTP route's body by `parity_test.go`,
+which compares the revision beside the payload: it is part of the answer rather
+than transport bookkeeping, and a caller that could only get it on one transport
+would need a per-transport table to cache a listing.
 
 ## Implementation details this decision chose
 
@@ -670,7 +677,20 @@ rediscovered from the code.
   `process` attachment with no command at all is refused as an invalid
   argument rather than as a capability refusal, because over the daemon the
   command comes from the operator's registry and is never empty, so only an
-  embedder can produce one.
+  embedder can produce one. That last clause was written from intent: the
+  registry loaded a `process` entry with no command, so the daemon could
+  produce one after all, and the adapter's invalid argument surfaced one open
+  later as a generic `open_failed`. The loader now refuses such an entry at
+  hub start, which makes the sentence true rather than aspirational.
+- **An attachment with no `id` is refused before the child starts**, beside
+  the kind and the command. Everything an adapter does with an attachment is
+  done by its id: it is the collision key, the name ACP routes the MCP server
+  by, and the id the session publishes the source under. An empty one passes
+  the collision check on its first use, reaches the child as a server nothing
+  can address, and reaches a client as a descriptor whose required `id` is
+  empty — the adapter emitting a document this project's own schema rejects.
+  The reference adapter already refused it in the same place; no other adapter
+  admits attachments at all, so the two admitting ones now state one rule.
 - **Both native revisions are bumped** (`claude-code-2.1.263-oap-v3`, which
   also declares the endpoint's native source,
   `acp-v1.7.0-schema-v1.21.0-oap-v2`) and the reference adapter's with them
@@ -682,6 +702,35 @@ rediscovered from the code.
   the revision exists to prevent. The number belongs to the unit merging
   beside this one, so this takes the one after it whether or not that lands
   first.
+- **A catalog is served with the revision it was served under, and the hub
+  checks both before either reaches a binding.** The revision is preserved
+  atomically with the listing — `adapter.ToolCatalog` pairs them, as
+  `adapter.Catalog` does for models — rather than read from a descriptor at
+  another moment, and `capability_revision` is schema-required on
+  `action.tools.list.response` for the reason it is on `models.response`: the
+  whole content of the envelope belongs to one snapshot. It matters more here,
+  because a session's catalog is a function of the descriptor *and* of the
+  sources that session attached under it, and an endpoint that republishes its
+  tools per turn changes what it lists without anyone asking; without the
+  pairing a caller cannot tell which `capabilities.updated` invalidates what it
+  cached. Both clients now return the pair.
+
+  `serve.Session` checks the answer against the question before a codec sees
+  it: the payload scope must be the scope the request named, in both
+  directions, and the revision must be present. This is the same class as the
+  adapter fixes above and as the follow-up Decision 0006 recorded — its third
+  sighting — so it is fixed generally: the boundary, not each adapter, is where
+  an adapter stops being taken at its word, because a codec labels the envelope
+  with the session it *addressed* and would otherwise let a conflicting payload
+  scope survive into a response this project's own clients reject. `State`
+  takes the same check, for the sharper reason that a snapshot now carries a
+  session's attachments. Mis-scoping is refused rather than relabelled — the
+  adapter computed that listing for the scope it named, so rewriting the label
+  would show one session's tools under another's id — while a nil tool slice is
+  repaired, because an absent list and an empty one say the same thing and only
+  one of the two spellings is legal on the wire. `Submit` and `Cancel` are
+  deliberately left alone here: they carry no tool-sources data, and their
+  scopes belong to the units that own them.
 - **`examples/tool-source.json` needed no change**: it was already a
   session-scoped request and response pair on the flat envelope, each tool
   carrying its source id and its `execution_owner`. Before this unit its
@@ -712,6 +761,19 @@ rediscovered from the code.
   `Content-Type: application/json` on the POSTs that carry a body. The two
   that do not — `close` on each client — carry no body and no content type,
   which is why the media-type rule is scoped to the routes that read one.
+- The registry refuses a `process` entry with no `command` at hub start. A
+  process source is the one kind the daemon supplies an executable for, and the
+  command is the whole of what it supplies, so such an entry could never
+  resolve: it used to load and fail one open later as a generic `open_failed`,
+  a 502 about a session for a defect in one line of config. No working
+  configuration changes — an entry in that shape was already unusable and every
+  open naming it already failed — only where the failure is reported. The rule
+  is stated forwards only: a non-process entry carrying no command is complete,
+  because nothing spawns it, and which kinds an operator may configure stays
+  the adapter's disclosed `transports` to answer at admission. That is why the
+  earlier proposal to refuse non-`process` entries at load was declined and
+  still is: it asked the loader to decide a question the adapters answer, and
+  it would have refused a `local` or `remote` entry that a daemon serves today.
 - The registry document gains a `tool_sources` map whose `environment` is
   resolved at load and is stricter than the adapter allowlist beside it: a bare
   `NAME` the daemon does not carry fails at hub start, naming the source and

@@ -309,6 +309,14 @@ For the catalog (`action.tools.list`), an implementation:
   endpoint-level catalog. An answer to a request naming no session carries no
   session's attachments: an attachment belongs to one session, and a response
   carrying no scope is read as what the endpoint publishes to everyone;
+- serves every catalog with the `capability_revision` it was served under, so
+  a caller can bind the listing to a descriptor snapshot and discard it when
+  `capabilities.updated` reports another. The field is schema-required on
+  `action.tools.list.response` for the reason it is on `models.response`: the
+  whole content of the envelope belongs to one snapshot. It matters more here
+  than there, because a session's catalog is a function of the descriptor
+  *and* of the sources that session attached under it, and an endpoint that
+  republishes its tools per turn changes what it lists without anyone asking;
 - attributes a call it emits with `source` to the source its own catalog
   records for that tool — the session's served catalog where it has served one,
   and otherwise the descriptor's, which is the published attribution until a
@@ -346,6 +354,12 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   `unsupported_feature` with `details.reason: "unsatisfiable"` and
   `details.source` naming the entry to drop — "over the limit" is actionable
   only when the caller is told which entry put it there;
+- refuses an attachment with no `id` before anything is done with it, because
+  everything an endpoint does with an attachment is done by its id: it is the
+  collision key above, the name a harness routes the source by, and the id the
+  session publishes the source under. An empty one reaches a client as a
+  descriptor whose required `id` is empty, which is the endpoint emitting a
+  document this schema rejects;
 - publishes the attached sources back through the open response, later
   session snapshots, and every session-scoped catalog, as
   `ToolSourceDescriptor` values, one descriptor per `id` in each of them. The

@@ -1005,6 +1005,7 @@ func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
 	}{
 		{"an unsupported transport", protocol.ToolSourceAttachment{ID: "hosted-tools", Kind: protocol.ToolSourceRemote, Endpoint: "https://tools.example"}},
 		{"a process source with no command", protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess}},
+		{"a source with no id", protocol.ToolSourceAttachment{Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			started := 0
@@ -1027,6 +1028,46 @@ func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
 				t.Fatalf("a refused attachment started %d children", started)
 			}
 		})
+	}
+}
+
+// TestAttachRefusesASourceWithNoID is the id half of admission, and the one
+// that otherwise produces a schema-invalid session rather than a wrong one.
+// Everything this adapter does with an attachment is done by its id: it is the
+// collision key, the name ACP routes the MCP server by, and the id the session
+// publishes the source under. An empty id passes the collision check on its
+// first use, so an open carrying one would reach the child as an MCP server
+// nothing can address and reach a client as a descriptor whose required `id`
+// is empty — this adapter emitting a document its own validator rejects.
+//
+// It is refused where the kind and the command are, for the reason they are:
+// the decision needs nothing but the request and this adapter's configuration.
+func TestAttachRefusesASourceWithNoID(t *testing.T) {
+	started := 0
+	a, err := New(Config{
+		Factory: countingFactory(newFake(), &started), WorkingDirectory: "/workspace",
+		Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.Open(context.Background(), base.OpenRequest{
+		SessionID: "session", Participant: protocol.Participant{ID: "user"},
+		ToolSources: []protocol.ToolSourceAttachment{{Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}},
+	})
+	if err == nil {
+		_ = session.Close(context.Background())
+		t.Fatal("an attachment with no id was admitted")
+	}
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("got %v, want an UnsupportedControlError", err)
+	}
+	if refusal.Feature != protocol.FeatureToolSourcesAttach || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("refusal = %+v", refusal)
+	}
+	if started != 0 {
+		t.Fatalf("a refused attachment started %d children", started)
 	}
 }
 

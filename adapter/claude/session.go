@@ -479,24 +479,24 @@ func toolSourceFor(name string, servers []string) string {
 // makes the empty answer readable: it says the catalog is only as current as
 // the last turn and that there has not been one yet, which is a fact a caller
 // can act on, where a refusal would leave it with nothing.
-func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (protocol.ToolsListResponse, error) {
+func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (base.ToolCatalog, error) {
 	if err := ctx.Err(); err != nil {
-		return protocol.ToolsListResponse{}, err
+		return base.ToolCatalog{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return protocol.ToolsListResponse{}, base.ErrSessionClosed
+		return base.ToolCatalog{}, base.ErrSessionClosed
 	}
 	if request.SessionID != "" && request.SessionID != s.state.SessionID {
-		return protocol.ToolsListResponse{}, base.ErrRunNotFound
+		return base.ToolCatalog{}, base.ErrRunNotFound
 	}
 	if !request.AllowsDegraded(protocol.FeatureToolsList) {
 		// The catalog is advertised degraded, so serving one without the
 		// caller's consent would give it degraded behaviour it never asked
 		// for: the snapshot is only as current as the last turn, and there is
 		// none before the first.
-		return protocol.ToolsListResponse{}, &base.DegradedControlError{Feature: protocol.FeatureToolsList}
+		return base.ToolCatalog{}, &base.DegradedControlError{Feature: protocol.FeatureToolsList}
 	}
 	// A request naming no session asks for the endpoint's own catalog, and this
 	// endpoint has one thing to say at that scope: it executes its own built-in
@@ -513,11 +513,11 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 	// the disclosure that makes the empty answer readable — the catalog is only
 	// as current as the last turn, and there has not been one.
 	if request.SessionID == "" || !s.catalogKnown {
-		return protocol.ToolsListResponse{
+		return base.ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{
 			SessionID: request.SessionID,
 			Sources:   []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}},
 			Tools:     []protocol.ToolDefinition{},
-		}, nil
+		}}, nil
 	}
 	// make and copy, not append onto a nil slice: appending nothing to nil
 	// yields nil, and `tools` is a required array, so a turn whose init frame
@@ -529,7 +529,13 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 	copy(tools, s.catalog)
 	sources := make([]protocol.ToolSourceDescriptor, len(s.catalogSources))
 	copy(sources, s.catalogSources)
-	return protocol.ToolsListResponse{SessionID: request.SessionID, Sources: sources, Tools: tools}, nil
+	// The descriptor this endpoint publishes is fixed at the pin, so the
+	// revision is constant even though the catalog under it is not: the CLI
+	// republishes its tool and MCP server lists every turn. That is what
+	// `degraded` discloses, and it is why the listing has to say which
+	// descriptor governed it — a caller holding one can tell a refresh from a
+	// re-listing only by the pair.
+	return base.ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{SessionID: request.SessionID, Sources: sources, Tools: tools}}, nil
 }
 
 func (s *Session) currentRun() *runState {

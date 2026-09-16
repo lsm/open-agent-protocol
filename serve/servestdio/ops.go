@@ -528,12 +528,16 @@ func (s *Server) toolsOp(ctx context.Context, request requestLine) (json.RawMess
 	if err != nil {
 		return nil, toolsError(err)
 	}
-	response, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, protocol.EnvelopeID(s.nextID("response")), catalog)
+	response, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, protocol.EnvelopeID(s.nextID("response")), catalog.Tools)
 	if err != nil {
 		return nil, internalError(err)
 	}
 	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
+	// Labelled from the hub's own identity and stamped with the listing's own
+	// revision, as on the HTTP route: parity_test.go holds the two bodies
+	// byte-equal, so a difference here would be a difference a test reports.
 	response.SessionID = entry.ID()
+	response.CapabilityRevision = catalog.Revision
 	return envelopeResult(response)
 }
 

@@ -106,6 +106,22 @@ func (r OpenRequest) AllowsDegraded(key string) bool {
 	return slices.Contains(r.AllowDegradedFeatures, key)
 }
 
+// ToolCatalog is one session's tool listing together with the capability
+// revision that governs it, for the reason Catalog pairs the two above: a
+// catalog is part of the capability snapshot, so it is meaningful only under
+// the revision it was produced within. A caller that stamped a revision it
+// read separately would label the listing with a descriptor it may not have
+// come from — and this unit's catalogs move under a live descriptor more than
+// the model ones do, because an endpoint republishing its tools per turn
+// changes what it lists without anyone asking.
+type ToolCatalog struct {
+	// Revision is the capability revision this listing belongs to. An empty
+	// one is a catalog nothing can bind, and is refused rather than served.
+	Revision string
+	// Tools is the served catalog.
+	Tools protocol.ToolsListResponse
+}
+
 // ToolLister is the optional catalog surface. An adapter that can publish a
 // portable catalog implements it and advertises action.tools.list; one that
 // cannot does not implement it, and the boundary answers the typed refusal
@@ -114,7 +130,7 @@ func (r OpenRequest) AllowsDegraded(key string) bool {
 // The argument is the wire payload struct so the adapter applies the
 // degraded opt-in rule to exactly what the caller sent.
 type ToolLister interface {
-	Tools(context.Context, protocol.ToolsListRequest) (protocol.ToolsListResponse, error)
+	Tools(context.Context, protocol.ToolsListRequest) (ToolCatalog, error)
 }
 
 // ErrToolCatalogUnavailable is the sentinel for an endpoint that serves no

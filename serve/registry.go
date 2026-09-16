@@ -209,6 +209,27 @@ func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, 
 		if entry.Kind == "" {
 			return nil, fmt.Errorf("serve: tool source %q: kind is required", id)
 		}
+		// A process source is the one kind the daemon supplies an executable
+		// for, and the command is the whole of what it supplies: without one
+		// there is nothing to spawn, so the entry can never resolve. It used to
+		// load anyway, and the error surfaced one open later as a generic
+		// open_failed from the adapter that could not start it — a 502 naming
+		// the session, not the line of config that is wrong.
+		//
+		// Nothing that worked stopped working: an entry in this shape was
+		// already unusable, and every open that named it already failed. Only
+		// where the failure is reported changed, which is the same argument the
+		// environment rule above makes — say which id and which field, once,
+		// before anything depends on it.
+		//
+		// The rule is stated forwards only. A non-process entry carrying a
+		// command is left alone: an adapter is free to ignore a member its
+		// transport has no use for, refusing it would break a daemon that boots
+		// today, and which kinds an operator may configure is the adapter's
+		// disclosed `transports` to answer at admission, not this loader's.
+		if entry.Kind == protocol.ToolSourceProcess && entry.Command == "" {
+			return nil, fmt.Errorf("serve: tool source %q: a process source needs a command", id)
+		}
 		environment, err := resolveToolSourceEnvironment(entry.Environment, environ)
 		if err != nil {
 			return nil, fmt.Errorf("serve: tool source %q: %w", id, err)

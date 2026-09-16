@@ -161,8 +161,9 @@ func TestToolsOpMatchesHTTP(t *testing.T) {
 		t.Fatalf("GET tools: %s: %s", httpResponse.Status, httpBody)
 	}
 	var overHTTP struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
+		Type     string          `json:"type"`
+		Revision string          `json:"capability_revision"`
+		Payload  json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(httpBody, &overHTTP); err != nil {
 		t.Fatal(err)
@@ -172,14 +173,24 @@ func TestToolsOpMatchesHTTP(t *testing.T) {
 	response := f.expectResponse(1)
 	requireOK(t, response)
 	var overStdio struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
+		Type     string          `json:"type"`
+		Revision string          `json:"capability_revision"`
+		Payload  json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(response.Result, &overStdio); err != nil {
 		t.Fatal(err)
 	}
 	if overStdio.Type != overHTTP.Type {
 		t.Fatalf("stdio answered %s, HTTP answered %s", overStdio.Type, overHTTP.Type)
+	}
+	// The revision is compared beside the payload, because it is now part of
+	// the answer rather than transport bookkeeping: it is what binds the catalog
+	// to a descriptor snapshot, and a caller that could only get it on one
+	// transport would have to hold a per-transport table to cache a listing.
+	// Both frontends mint their own envelope ids, so the id is the only field
+	// the mirror claim exempts.
+	if overStdio.Revision == "" || overStdio.Revision != overHTTP.Revision {
+		t.Fatalf("stdio revision %q, HTTP revision %q", overStdio.Revision, overHTTP.Revision)
 	}
 	if !bytes.Equal(overStdio.Payload, overHTTP.Payload) {
 		t.Fatalf("catalog payloads differ\nstdio: %s\nhttp:  %s", overStdio.Payload, overHTTP.Payload)

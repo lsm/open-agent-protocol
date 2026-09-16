@@ -3227,6 +3227,22 @@
       ]
     },
     {
+      "id": "tools-list-response-missing-revision",
+      "path": "schema-invalid/tools-list-response-missing-revision.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "tool-source-attach-limit-zero",
       "path": "schema-invalid/tool-source-attach-limit-zero.json",
       "kind": "schema-invalid",

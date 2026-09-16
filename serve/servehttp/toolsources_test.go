@@ -97,6 +97,14 @@ func TestToolsRouteServesTheSessionCatalog(t *testing.T) {
 	if envelope.Type != protocol.TypeActionToolsListResponse || envelope.SessionID != "catalog" {
 		t.Fatalf("tools response %s scoped to %q", envelope.Type, envelope.SessionID)
 	}
+	// The catalog is bound to the descriptor snapshot that governs it. It comes
+	// back with the listing rather than from a descriptor read at another
+	// moment: a listing a caller cannot bind to a revision can be neither cached
+	// nor invalidated by capabilities.updated, and the schema requires the field
+	// on this response as it does on the models one.
+	if envelope.CapabilityRevision != base.CapabilityRevision {
+		t.Fatalf("tools response carries revision %q, want %q", envelope.CapabilityRevision, base.CapabilityRevision)
+	}
 	var catalog protocol.ToolsListResponse
 	if err := envelope.DecodePayload(&catalog); err != nil {
 		t.Fatal(err)

@@ -1221,8 +1221,8 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 			if err != nil {
 				t.Fatalf("tools: %v", err)
 			}
-			if len(catalog.Tools) != 0 {
-				t.Fatalf("a toolless frame projected %d tools", len(catalog.Tools))
+			if len(catalog.Tools.Tools) != 0 {
+				t.Fatalf("a toolless frame projected %d tools", len(catalog.Tools.Tools))
 			}
 			encoded, err := json.Marshal(catalog)
 			if err != nil {
@@ -1275,19 +1275,19 @@ func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools: %v", err)
 	}
-	if catalog.SessionID != "" {
-		t.Fatalf("an unscoped request was answered under session %q", catalog.SessionID)
+	if catalog.Tools.SessionID != "" {
+		t.Fatalf("an unscoped request was answered under session %q", catalog.Tools.SessionID)
 	}
-	for _, source := range catalog.Sources {
+	for _, source := range catalog.Tools.Sources {
 		if strings.HasPrefix(source.ID, mcpSourcePrefix) {
-			t.Fatalf("the endpoint catalog publishes a session's MCP server: %+v", catalog.Sources)
+			t.Fatalf("the endpoint catalog publishes a session's MCP server: %+v", catalog.Tools.Sources)
 		}
 	}
-	if len(catalog.Sources) != 1 || catalog.Sources[0].ID != nativeToolSource {
-		t.Fatalf("endpoint catalog sources %+v", catalog.Sources)
+	if len(catalog.Tools.Sources) != 1 || catalog.Tools.Sources[0].ID != nativeToolSource {
+		t.Fatalf("endpoint catalog sources %+v", catalog.Tools.Sources)
 	}
-	if len(catalog.Tools) != 0 {
-		t.Fatalf("the endpoint catalog publishes %d of a session's tools", len(catalog.Tools))
+	if len(catalog.Tools.Tools) != 0 {
+		t.Fatalf("the endpoint catalog publishes %d of a session's tools", len(catalog.Tools.Tools))
 	}
 	// The same session asked in its own scope still answers with everything
 	// the turn taught it: the unscoped answer narrowed the question, not the
@@ -1297,13 +1297,13 @@ func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
 		t.Fatalf("scoped tools: %v", err)
 	}
 	attributed := false
-	for _, tool := range scoped.Tools {
+	for _, tool := range scoped.Tools.Tools {
 		if tool.Name == "mcp__files__read_file" && tool.Source == mcpSourcePrefix+"files" {
 			attributed = true
 		}
 	}
 	if !attributed {
-		t.Fatalf("the session catalog lost its MCP attribution: %+v", scoped.Tools)
+		t.Fatalf("the session catalog lost its MCP attribution: %+v", scoped.Tools.Tools)
 	}
 }
 

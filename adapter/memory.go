@@ -668,27 +668,30 @@ func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error
 // and the endpoint catalog is exactly what its own descriptor already
 // publishes. Silently scoping the answer to this session would be worse still,
 // substituting a different question's answer for the one asked.
-func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListRequest) (protocol.ToolsListResponse, error) {
+func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListRequest) (ToolCatalog, error) {
 	if err := ctx.Err(); err != nil {
-		return protocol.ToolsListResponse{}, err
+		return ToolCatalog{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return protocol.ToolsListResponse{}, ErrSessionClosed
+		return ToolCatalog{}, ErrSessionClosed
 	}
 	if request.SessionID != "" && request.SessionID != s.state.SessionID {
-		return protocol.ToolsListResponse{}, ErrRunNotFound
+		return ToolCatalog{}, ErrRunNotFound
 	}
 	sources := declaredSources()
 	if request.SessionID != "" {
 		sources = sessionSources(s.attached)
 	}
-	return protocol.ToolsListResponse{
+	// The revision travels with the listing because only the session knows
+	// which descriptor it served this one under; this adapter's never moves,
+	// which is exactly why saying so costs nothing.
+	return ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{
 		SessionID: request.SessionID,
 		Sources:   sources,
 		Tools:     scriptedCatalog(),
-	}, nil
+	}}, nil
 }
 
 // goldenInputQuestions is the deterministic prompt the reference adapter

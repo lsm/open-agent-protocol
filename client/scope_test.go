@@ -64,7 +64,12 @@ func stateResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.SessionID, response.InReplyTo = envelopeScope, "someone-elses-request"
+	// Stamped with a revision so these cases keep failing on the defect they
+	// name: the revision is checked before the payload is read, and a canned
+	// response without one would make every scope case pass for the wrong
+	// reason. TestClientRejectsACatalogItCannotBindToADescriptor covers the
+	// missing revision on its own.
+	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v5"
 	return response
 }
 
@@ -76,7 +81,12 @@ func catalogResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionI
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.SessionID, response.InReplyTo = envelopeScope, "someone-elses-request"
+	// Stamped with a revision so these cases keep failing on the defect they
+	// name: the revision is checked before the payload is read, and a canned
+	// response without one would make every scope case pass for the wrong
+	// reason. TestClientRejectsACatalogItCannotBindToADescriptor covers the
+	// missing revision on its own.
+	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v5"
 	return response
 }
 
@@ -133,6 +143,36 @@ func TestClientRejectsMisroutedGetResponses(t *testing.T) {
 				t.Fatalf("error %q does not report the scope defect %q", err, testCase.want)
 			}
 		})
+	}
+}
+
+// TestClientRejectsACatalogItCannotBindToADescriptor is the revision half of
+// the same binding. A tool catalog is valid for exactly one descriptor
+// snapshot: it is a function of the descriptor and of the sources this session
+// attached under it, and capabilities.updated is the only signal that a cached
+// listing has stopped describing the session. A listing arriving with no
+// revision cannot be bound to a snapshot, so it can be neither cached nor
+// invalidated, and it is refused here rather than handed back with an empty
+// field the caller has to notice. Session.Models refuses the same way.
+func TestClientRejectsACatalogItCannotBindToADescriptor(t *testing.T) {
+	unbound := catalogResponse(t, "s-1", "s-1", nil)
+	unbound.CapabilityRevision = ""
+	session := scopedSessionStub(t, unbound)
+	if _, err := session.Tools(context.Background()); err == nil {
+		t.Fatal("a catalog with no capability revision was accepted")
+	} else if !strings.Contains(err.Error(), "carries no capability revision") {
+		t.Fatalf("error %q does not report the missing revision", err)
+	}
+
+	// The same catalog with a revision is accepted and hands the revision
+	// back, so the rule is about the pairing and not about the catalog.
+	session = scopedSessionStub(t, catalogResponse(t, "s-1", "s-1", nil))
+	listing, err := session.Tools(context.Background())
+	if err != nil {
+		t.Fatalf("a bound catalog was rejected: %v", err)
+	}
+	if listing.Revision != "reference-memory-v5" {
+		t.Fatalf("catalog revision %q, want the envelope's", listing.Revision)
 	}
 }
 

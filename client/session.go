@@ -65,13 +65,31 @@ func AllowDegradedTools(keys ...string) ToolsOption {
 	}
 }
 
+// ToolCatalog is one session's tool listing together with the capability
+// revision that governs it, mirroring Catalog on the models route.
+//
+// A tool catalog needs that pairing more than a model one does, not less. The
+// listing is a function of the descriptor and of the sources this session
+// attached under it, and an endpoint that republishes its tools mid-session
+// changes what it lists without anyone asking; capabilities.updated is the
+// only signal that a cached listing no longer describes the session. Without
+// the revision a caller cannot tell which snapshot it read, so it cannot tell
+// which update invalidates it.
+type ToolCatalog struct {
+	// Revision names the descriptor snapshot this listing belongs to.
+	Revision string
+	// Tools is the served catalog.
+	Tools protocol.ToolsListResponse
+}
+
 // Tools reads this session's effective tool catalog: its tools, each
-// attributed to a source id, and every source the session resolves. An
-// endpoint that serves no portable catalog answers the typed
-// unsupported_feature refusal naming action.tools.list, which surfaces as a
-// *ServerError whose Details say which capability to stop requesting.
-func (s *Session) Tools(ctx context.Context, options ...ToolsOption) (protocol.ToolsListResponse, error) {
-	var catalog protocol.ToolsListResponse
+// attributed to a source id, and every source the session resolves, together
+// with the revision that governs them. An endpoint that serves no portable
+// catalog answers the typed unsupported_feature refusal naming
+// action.tools.list, which surfaces as a *ServerError whose Details say which
+// capability to stop requesting.
+func (s *Session) Tools(ctx context.Context, options ...ToolsOption) (ToolCatalog, error) {
+	var listing ToolCatalog
 	request := protocol.ToolsListRequest{SessionID: s.id}
 	for _, option := range options {
 		option(&request)
@@ -86,10 +104,19 @@ func (s *Session) Tools(ctx context.Context, options ...ToolsOption) (protocol.T
 	}
 	response, err := s.client.exchange(ctx, http.MethodGet, path, nil, protocol.TypeActionToolsListResponse)
 	if err != nil {
-		return protocol.ToolsListResponse{}, err
+		return ToolCatalog{}, err
 	}
-	if err := response.DecodePayload(&catalog); err != nil {
-		return protocol.ToolsListResponse{}, err
+	// The envelope's own labels are read before the catalog inside it, as on
+	// the models route. A listing nothing can bind to a descriptor cannot be
+	// cached or invalidated, so it is refused rather than handed back with an
+	// empty revision the caller has to notice on its own. The schema requires
+	// the field and the daemon refuses to serve a catalog without one, so this
+	// rejects a peer that honours neither.
+	if response.CapabilityRevision == "" {
+		return ToolCatalog{}, fmt.Errorf("client: %s response carries no capability revision", s.path("/tools"))
+	}
+	if err := response.DecodePayload(&listing.Tools); err != nil {
+		return ToolCatalog{}, err
 	}
 	// A catalog naming another session is not this session's catalog, and
 	// after the tool-sources unit it carries that session's attached sources.
@@ -97,10 +124,11 @@ func (s *Session) Tools(ctx context.Context, options ...ToolsOption) (protocol.T
 	// question: the request it just sent named this session, and an
 	// endpoint-level catalog is the answer to a different one — one that would
 	// be missing exactly the attached sources this session opened with.
-	if err := s.bindResponse(s.path("/tools"), response, catalog.SessionID, true); err != nil {
-		return protocol.ToolsListResponse{}, err
+	if err := s.bindResponse(s.path("/tools"), response, listing.Tools.SessionID, true); err != nil {
+		return ToolCatalog{}, err
 	}
-	return catalog, nil
+	listing.Revision = response.CapabilityRevision
+	return listing, nil
 }
 
 // ResolvePermission resolves one pending permission gate. InteractionID,

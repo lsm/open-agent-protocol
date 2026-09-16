@@ -247,6 +247,20 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 	}
 	servers := make([]native.MCPServer, 0, len(attachments))
 	for _, attachment := range attachments {
+		// The id is read before anything is done with it, because everything
+		// after this is done by it: it is the collision key below, the name ACP
+		// routes the MCP server by, and the id the session publishes the source
+		// under. An empty one passes the collision check on its first use, names
+		// a server nothing can address, and reaches a client as a descriptor
+		// whose required `id` is empty — a schema rejection produced by the
+		// adapter itself. The reference adapter refuses it in the same place, so
+		// an embedder meets one rule on both.
+		if attachment.ID == "" {
+			return nil, &base.UnsupportedControlError{
+				Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnsatisfiable,
+				Detail: "an attachment needs an id",
+			}
+		}
 		if seen[attachment.ID] {
 			return nil, &base.UnsupportedControlError{
 				Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnsatisfiable,

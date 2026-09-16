@@ -34,6 +34,7 @@ export {
   OapSession,
   finalText,
   type Catalog,
+  type ToolCatalog,
   type ModelsOptions,
   type SubmitInput,
   type PermissionResolveInput,
