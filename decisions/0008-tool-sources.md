@@ -537,7 +537,7 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 61 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 62 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -551,8 +551,9 @@ member it stated, the lifetime catalog an attachment binds, a served catalog
 that attributes no source at all, the attachment-only member a published source
 may never carry — in a list and in a descriptor, top level and under a layer —
 a call's attribution against a session catalog and against the descriptor's own,
-a call that names none where one of them attributes the tool, its reassignment
-mid-lifecycle, a refresh that collides with an attachment,
+a call that names none where the catalog in force attributes the tool, a served
+catalog superseding a descriptor entry so that neither check consults it again,
+its reassignment mid-lifecycle, a refresh that collides with an attachment,
 an attach capability disclosing no session-open mode in both directions, one
 published under a layer alone, and the two schema-invalid disclosures no
 request can satisfy — `max_sources: 0` and a transport outside the source-kind
@@ -682,6 +683,24 @@ rediscovered from the code.
   produce one after all, and the adapter's invalid argument surfaced one open
   later as a generic `open_failed`. The loader now refuses such an entry at
   hub start, which makes the sentence true rather than aspirational.
+- **Exactly one catalog is in force for a session, and every attribution check
+  reads that one.** The rule — the session's served catalog under the active
+  revision, otherwise the descriptor's — was implemented twice, once in the
+  check that judges a call's stated `source` and once in the check that judges
+  a call that states none, and the two disagreed about a session catalog that
+  omits a tool the descriptor maps. The first read the omission as unmapped;
+  the second fell through to the superseded descriptor entry and demanded an
+  attribution for a tool the endpoint no longer publishes one for. They now
+  share `attributionInForce`, which is also where the precedence is stated, so
+  the two cannot drift apart again.
+
+  A served catalog supersedes *wholly*, not tool by tool: an endpoint that
+  lists without a tool has republished its listing without it. And a catalog
+  served under a superseded revision does not count — the catalog belongs to
+  the revision it was served under, so `capabilities.updated` discards it —
+  which leaves no gap, because what takes over is the *new* descriptor's
+  attribution, rebuilt from the next `capabilities.response`. The fallback is
+  never to older information.
 - **An attachment with no `id` is refused before the child starts**, beside
   the kind and the command. Everything an adapter does with an attachment is
   done by its id: it is the collision key, the name ACP routes the MCP server
@@ -761,7 +780,15 @@ rediscovered from the code.
   `Content-Type: application/json` on the POSTs that carry a body. The two
   that do not — `close` on each client — carry no body and no content type,
   which is why the media-type rule is scoped to the routes that read one.
-- The registry refuses a `process` entry with no `command` at hub start. A
+- The registry refuses a `process` entry with no `command`, on both
+  registration paths, because they are one surface. The check lives in
+  `RegisterToolSource`, which the config loader reaches through with the value
+  it builds, rather than in the loader alone: a rule stated at one entry point
+  is a rule the other can be reached around, and an embedding host could
+  otherwise register exactly the entry a registry document is refused for.
+  Registering is not opening, so this does fail a host that registers an entry
+  it never opens; that reach is intended and narrower than it looks, because
+  the only thing a registered tool source is for is being resolved at open. A
   process source is the one kind the daemon supplies an executable for, and the
   command is the whole of what it supplies, so such an entry could never
   resolve: it used to load and fail one open later as a generic `open_failed`,

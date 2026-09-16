@@ -3474,6 +3474,21 @@
       ]
     },
     {
+      "id": "tools-session-catalog-supersedes-descriptor",
+      "path": "valid/tools-session-catalog-supersedes-descriptor.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "tools-call-source-mismatch",
       "path": "semantic-invalid/tools-call-source-mismatch.json",
       "kind": "semantic-invalid",

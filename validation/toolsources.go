@@ -663,6 +663,36 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 	}
 }
 
+// attributionInForce resolves which published catalog attributes this
+// session's tools, and returns its tool-to-source mapping together with the
+// served catalog when one supplied it.
+//
+// This is the precedence, stated once, because two checks read it and a rule
+// restated is a rule that can disagree with itself. A session's served catalog
+// supersedes the descriptor's — wholly, not tool by tool. That is the part
+// worth being explicit about: an endpoint that serves a catalog omitting a
+// tool the descriptor once mapped has republished its listing without that
+// tool, and reading the descriptor's entry for it anyway would hold a call to
+// an attribution the endpoint has stopped publishing.
+//
+// A catalog served under a superseded revision does not count, and does not
+// leave a gap when it stops counting. The catalog belongs to the revision it
+// was served under — this unit's rule for a tool catalog and Decision 0006's
+// for a model one — so `capabilities.updated` discards it; what takes over is
+// the *new* descriptor's attribution, rebuilt from the next
+// capabilities.response, which is current rather than stale. So the fallback
+// is never to older information: it is either the session's catalog under the
+// active revision, or the active descriptor's own.
+//
+// An ambiguous descriptor catalog attributes nothing rather than attributing
+// arbitrarily; descriptorAttribution is already nil in that case.
+func (s *state) attributionInForce(track *sessionTrack) (map[string]string, *sessionCatalog) {
+	if track != nil && track.toolCatalog != nil && track.toolCatalog.revision == s.currentCapability {
+		return track.toolCatalog.tools, track.toolCatalog
+	}
+	return s.descriptorAttribution, nil
+}
+
 // checkCallAttributed judges a call that names no source at all.
 //
 // The member stays optional on the wire, and the rule is scoped to where the
@@ -679,13 +709,14 @@ func (s *state) checkCallAttributed(i, line int, e protocol.Envelope, p protocol
 	if !affirmative(s.features[protocol.FeatureToolsList]) {
 		return
 	}
-	listed, ok := "", false
-	if track != nil && track.toolCatalog != nil && track.toolCatalog.revision == s.currentCapability {
-		listed, ok = track.toolCatalog.tools[p.Name]
-	}
-	if !ok {
-		listed, ok = s.descriptorAttribution[p.Name]
-	}
+	// One notion of "the catalog in force", shared with checkCallSource. The
+	// two used to resolve it separately and disagreed about a session catalog
+	// that omits a tool the descriptor maps: that check read the omission as
+	// unmapped, this one fell through to the superseded descriptor entry and
+	// demanded an attribution for a tool the endpoint no longer publishes one
+	// for. Silence about a tool no catalog in force lists is honest.
+	mapping, _ := s.attributionInForce(track)
+	listed, ok := mapping[p.Name]
 	if !ok || listed == "" {
 		return
 	}
@@ -698,13 +729,12 @@ func (s *state) checkCallAttributed(i, line int, e protocol.Envelope, p protocol
 // otherwise the call is attributed to the wrong endpoint, which is exactly what
 // `source` exists to prevent a consumer from having to infer from a name.
 //
-// Three mappings are consulted in order, and the order is which one supersedes
-// which. The session's own catalog wins where it has one under the active
-// revision. Otherwise the descriptor's catalog answers, because a descriptor
-// that publishes a tool under a source has published that attribution and
-// nothing has replaced it. Only a tool neither mapping lists falls back to "any
-// source this session resolves", which is all that can be said about a tool no
-// published catalog names.
+// Which catalog attributes the tool is attributionInForce's single answer: the
+// session's own where it has one under the active revision, and otherwise the
+// descriptor's, because a descriptor that publishes a tool under a source has
+// published that attribution and nothing has replaced it. A tool the catalog
+// in force does not list falls back to "any source this session resolves",
+// which is all that can be said about a tool no published catalog names.
 //
 // It runs on `action.call.requested` alone. The later events of the same call
 // carry an optional `name`, so a catalog lookup there could be evaded by
@@ -718,26 +748,22 @@ func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
 		s.checkCallAttributed(i, line, e, p, track)
 		return
 	}
-	if track != nil && track.toolCatalog != nil && track.toolCatalog.revision == s.currentCapability {
-		if listed, ok := track.toolCatalog.tools[p.Name]; ok {
-			if listed != p.Source {
-				s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "a call attributes a tool to a source other than the one the session catalog records", listed, p.Source, p.Name)
-			}
-			return
-		}
-		if track.toolCatalog.sources[p.Source] {
-			return
-		}
-	}
-	// No session catalog has superseded the descriptor, so the descriptor's own
-	// attribution is the published one and the call is judged against it. Without
-	// this a call before the first list could attribute any tool to any declared
-	// source, which is the inference `source` exists to remove: the descriptor
-	// said where that tool comes from, and a call may not say otherwise.
-	if listed, ok := s.descriptorAttribution[p.Name]; ok {
+	// The catalog in force decides, and only it: without this a call before the
+	// first list could attribute any tool to any declared source, which is the
+	// inference `source` exists to remove — the published catalog said where
+	// that tool comes from, and a call may not say otherwise.
+	mapping, served := s.attributionInForce(track)
+	if listed, ok := mapping[p.Name]; ok {
 		if listed != p.Source {
-			s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "a call attributes a tool to a source other than the one the descriptor records", listed, p.Source, p.Name)
+			which := "the descriptor"
+			if served != nil {
+				which = "the session catalog"
+			}
+			s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "a call attributes a tool to a source other than the one "+which+" records", listed, p.Source, p.Name)
 		}
+		return
+	}
+	if served != nil && served.sources[p.Source] {
 		return
 	}
 	if track != nil {

@@ -207,9 +207,12 @@ were broken. Write `NAME=` if a name is meant to be optional. (The example
 config lists `MCP_TOKEN` for its filesystem source, so export it or drop the
 entry before starting with that document.) A `process` entry must carry a
 `command`: it is the one kind the daemon supplies an executable for, so an
-entry without one could never resolve, and the failure is reported at startup
-naming the source rather than as a generic `open_failed` on the first open that
-attaches it. Other kinds need none, because nothing spawns them. A client attaches one by `id` and
+entry without one could never resolve, and the failure is reported when the
+entry is registered — naming the source — rather than as a generic
+`open_failed` on the first open that attaches it. Other kinds need none,
+because nothing spawns them. The rule belongs to `Registry.RegisterToolSource`,
+which the config loader goes through, so an embedding host registering entries
+programmatically meets the same check rather than a weaker one. A client attaches one by `id` and
 nothing else — see "Tool sources" above for why the wire form is refused on
 that route.
 

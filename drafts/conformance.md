@@ -317,15 +317,23 @@ For the catalog (`action.tools.list`), an implementation:
   than there, because a session's catalog is a function of the descriptor
   *and* of the sources that session attached under it, and an endpoint that
   republishes its tools per turn changes what it lists without anyone asking;
-- attributes a call it emits with `source` to the source its own catalog
-  records for that tool — the session's served catalog where it has served one,
-  and otherwise the descriptor's, which is the published attribution until a
-  session-scoped list supersedes it. A call that omits `source` for a tool one
-  of those catalogs attributes is `unattributed_call`: the member is optional
-  on the wire, but an endpoint advertising this key has the answer and is
-  publishing it everywhere except where a consumer needs it. A tool neither
-  catalog lists is one the endpoint has published no attribution for, and a
-  call for it may name none.
+- attributes a call it emits with `source` to the source the catalog *in force*
+  records for that tool. Exactly one catalog is in force for a session: the
+  catalog it has been served under the active capability revision, and
+  otherwise the descriptor's, which is the published attribution until a
+  session-scoped list supersedes it. A served catalog supersedes wholly, not
+  tool by tool — an endpoint that lists without a tool the descriptor once
+  mapped has republished its listing without it, and the superseded entry is
+  not consulted again for anything. A catalog served under a revision that has
+  since moved is not in force either, and leaves no gap when it stops being so:
+  `capabilities.updated` discards it, and what takes over is the new
+  descriptor's own attribution, which is current rather than stale. A call that
+  omits `source` for a tool the catalog in force attributes is
+  `unattributed_call`: the member is optional on the wire, but an endpoint
+  advertising this key has the answer and is publishing it everywhere except
+  where a consumer needs it. A tool that catalog does not list is one the
+  endpoint has published no attribution for, and a call for it may name none,
+  or name any source the session resolves.
 
 For attachment at open (`action.tool_sources.attach`), an implementation:
 

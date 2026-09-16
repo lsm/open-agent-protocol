@@ -308,7 +308,8 @@ func TestLoadRegistryToolSourceNeedsKind(t *testing.T) {
 }
 
 // TestLoadRegistryProcessToolSourceNeedsCommand refuses the entry the daemon
-// could never resolve. A process source is the one kind the daemon supplies an
+// could never resolve, on the config path; the programmatic path is held to
+// the same check by the test above, because the two share one. A process source is the one kind the daemon supplies an
 // executable for, and the command is the whole of what it supplies: without
 // one there is nothing to spawn. The entry used to load, and the first open
 // naming it failed inside the adapter as an invalid resolution, which the route
@@ -335,6 +336,56 @@ func TestLoadRegistryProcessToolSourceNeedsCommand(t *testing.T) {
 	}
 	if source, ok := registry.ToolSource("remote-tools"); !ok || source.Kind != protocol.ToolSourceRemote {
 		t.Fatalf("configured tool source = %+v (%v)", source, ok)
+	}
+}
+
+// TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged holds the
+// programmatic path to the rules the config path states, because they are one
+// surface and not two. An embedding host calls RegisterToolSource with exactly
+// the value LoadRegistry builds, so a rule enforced only while parsing a file
+// is a rule the other caller reaches around: it could register precisely the
+// entry a registry document is refused for, and the defect would surface one
+// open later as a generic open_failed.
+//
+// Registering is not opening, so this does fail a host that registers an entry
+// it never opens. That reach is intended and narrower than it looks: the only
+// thing a registered tool source is for is being resolved at open, so such an
+// entry is unusable by construction and every open that named it already
+// failed. Only where the failure is reported moves.
+func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		source protocol.ToolSourceAttachment
+		want   string
+	}{
+		{"no kind", protocol.ToolSourceAttachment{Command: "/usr/local/bin/mcp-filesystem"}, "kind is required"},
+		{"a process source with no command", protocol.ToolSourceAttachment{Kind: protocol.ToolSourceProcess}, "a process source needs a command"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			registry := NewRegistry()
+			err := registry.RegisterToolSource("filesystem", testCase.source)
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("register error = %v, want one reporting %q", err, testCase.want)
+			}
+			if _, ok := registry.ToolSource("filesystem"); ok {
+				t.Fatal("a refused entry was stored anyway")
+			}
+		})
+	}
+
+	// The complete entries both paths accept, including the non-process kind
+	// that needs no command: the rule is stated forwards only.
+	registry := NewRegistry()
+	for id, source := range map[string]protocol.ToolSourceAttachment{
+		"filesystem":   {Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"},
+		"remote-tools": {Kind: protocol.ToolSourceRemote, Endpoint: "https://tools.example"},
+	} {
+		if err := registry.RegisterToolSource(id, source); err != nil {
+			t.Fatalf("a complete %q entry was refused: %v", id, err)
+		}
+	}
+	if names := registry.ToolSourceNames(); strings.Join(names, ",") != "filesystem,remote-tools" {
+		t.Fatalf("registered sources = %v", names)
 	}
 }
 

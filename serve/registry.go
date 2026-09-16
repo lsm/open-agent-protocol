@@ -106,15 +106,54 @@ func NewRegistry() *Registry {
 // RegisterToolSource adds one operator-configured tool source. Programmatic
 // entries use the same surface as config-file entries; an embedding host that
 // registers none accepts no wire-supplied process attachment at all.
+//
+// Because it is the same surface, it enforces the same rules. Both documented
+// registration paths end here, so the entry is judged here rather than once per
+// path: a rule stated at one entry point is a rule the other can be reached
+// around, and the config loader's own check would have let an embedding host
+// register exactly what it refuses in a file.
 func (r *Registry) RegisterToolSource(id string, source protocol.ToolSourceAttachment) error {
 	if id == "" {
 		return errors.New("serve: tool source id is required")
+	}
+	if err := validateToolSource(id, source.Kind, source.Command); err != nil {
+		return err
 	}
 	if _, exists := r.toolSources[id]; exists {
 		return fmt.Errorf("serve: tool source %q is already registered", id)
 	}
 	source.ID = id
 	r.toolSources[id] = source
+	return nil
+}
+
+// validateToolSource judges one configured entry, whether it arrived from the
+// registry document or from an embedding host's own call.
+//
+// A process source is the one kind the daemon supplies an executable for, and
+// the command is the whole of what it supplies: without one there is nothing to
+// spawn, so the entry can never resolve. It used to be stored anyway, and the
+// error surfaced one open later as a generic open_failed from the adapter that
+// could not start it — a 502 naming the session, not the entry that is wrong.
+//
+// Registering is not opening, so this does fail a host that registers an entry
+// it never opens; that is the intended reach, and it is the narrower claim than
+// it looks. Such an entry is unusable by construction: the only thing a
+// registered tool source is for is being resolved at open, and every open that
+// named this one already failed. Refusing it at registration moves the report
+// to the call that can still be corrected, and says which id and which field.
+//
+// The rule is stated forwards only. A non-process entry carrying no command is
+// complete, because nothing spawns it, and which kinds an operator may
+// configure stays the adapter's disclosed transports to answer at admission,
+// not this registry's.
+func validateToolSource(id, kind, command string) error {
+	if kind == "" {
+		return fmt.Errorf("serve: tool source %q: kind is required", id)
+	}
+	if kind == protocol.ToolSourceProcess && command == "" {
+		return fmt.Errorf("serve: tool source %q: a process source needs a command", id)
+	}
 	return nil
 }
 
@@ -206,29 +245,13 @@ func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, 
 	}
 	for _, id := range sortedKeys(file.ToolSources) {
 		entry := file.ToolSources[id]
-		if entry.Kind == "" {
-			return nil, fmt.Errorf("serve: tool source %q: kind is required", id)
-		}
-		// A process source is the one kind the daemon supplies an executable
-		// for, and the command is the whole of what it supplies: without one
-		// there is nothing to spawn, so the entry can never resolve. It used to
-		// load anyway, and the error surfaced one open later as a generic
-		// open_failed from the adapter that could not start it — a 502 naming
-		// the session, not the line of config that is wrong.
-		//
-		// Nothing that worked stopped working: an entry in this shape was
-		// already unusable, and every open that named it already failed. Only
-		// where the failure is reported changed, which is the same argument the
-		// environment rule above makes — say which id and which field, once,
-		// before anything depends on it.
-		//
-		// The rule is stated forwards only. A non-process entry carrying a
-		// command is left alone: an adapter is free to ignore a member its
-		// transport has no use for, refusing it would break a daemon that boots
-		// today, and which kinds an operator may configure is the adapter's
-		// disclosed `transports` to answer at admission, not this loader's.
-		if entry.Kind == protocol.ToolSourceProcess && entry.Command == "" {
-			return nil, fmt.Errorf("serve: tool source %q: a process source needs a command", id)
+		// The entry's own shape is judged before anything is resolved for it, so
+		// the more fundamental defect is still reported first. This is
+		// RegisterToolSource's own check, called earlier rather than restated:
+		// that call below runs it again on the assembled value, and one function
+		// answers both registration paths.
+		if err := validateToolSource(id, entry.Kind, entry.Command); err != nil {
+			return nil, err
 		}
 		environment, err := resolveToolSourceEnvironment(entry.Environment, environ)
 		if err != nil {
