@@ -344,3 +344,35 @@ type SessionClosedError struct {
 
 func (e *SessionClosedError) Error() string { return "the session is closed" }
 func (e *SessionClosedError) Unwrap() error { return base.ErrSessionClosed }
+
+// ControlRefusal maps an adapter's typed refusal of a per-submit run control
+// onto the wire error a codec emits: the code, the diagnostic, and the details
+// that tell the caller what to change. It reports false for every other error,
+// which the codecs classify as before.
+//
+// Both frontends call it, so the HTTP daemon and the stdio transport report
+// one refusal identically — a control refused on one and merely "invalid" on
+// the other would make the fail-closed discipline depend on the binding
+// (decision 0005).
+func ControlRefusal(err error) (code, message string, details map[string]any, ok bool) {
+	var unsupported *base.UnsupportedControlError
+	if errors.As(err, &unsupported) {
+		details = map[string]any{"feature": unsupported.Feature, "reason": unsupported.Reason}
+		if unsupported.Tool != "" {
+			details["tool"] = unsupported.Tool
+		}
+		if unsupported.Field != "" {
+			details["field"] = unsupported.Field
+		}
+		return "unsupported_feature", unsupported.Error(), details, true
+	}
+	var degraded *base.DegradedControlError
+	if errors.As(err, &degraded) {
+		return "capability_degraded", degraded.Error(), map[string]any{"feature": degraded.Feature}, true
+	}
+	var missing *base.ModelNotFoundError
+	if errors.As(err, &missing) {
+		return "model_not_found", missing.Error(), map[string]any{"model_id": missing.ModelID}, true
+	}
+	return "", "", nil, false
+}

@@ -45,8 +45,9 @@ type responseLine struct {
 // wireError carries the code and message of the error.response payload the
 // HTTP route would have returned: the same codes, the same bounded messages.
 type wireError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // serveRequest executes one op and writes its response.
@@ -346,6 +347,13 @@ func (s *Server) fits(value any) bool {
 }
 
 func submitError(err error) *wireError {
+	// A refused control is reported under its own typed code with the details
+	// that say what to change, so a caller learns what to stop sending rather
+	// than only that the submission was invalid (decision 0005). The mapping
+	// is shared with the HTTP codec so the two frontends cannot diverge.
+	if code, message, details, ok := serve.ControlRefusal(err); ok {
+		return &wireError{Code: code, Message: trimMessage(message), Details: details}
+	}
 	code := "internal"
 	switch {
 	case errors.Is(err, serve.ErrScopeMismatch):

@@ -1,6 +1,11 @@
 package protocol
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"slices"
+)
 
 type EndpointDescriptor struct {
 	ID      EndpointID `json:"id"`
@@ -36,11 +41,49 @@ const (
 	SupportUnavailable SupportLevel = "unavailable"
 )
 
+// FeatureSupport reports the effective support level of one capability key and
+// discloses, machine-readably, how the endpoint applies it.
+//
+// Mode is the single application mode a key has one of (run.model_selection:
+// ModePerRun or ModeSessionMutation). Modes is the set a key can enforce more
+// than one of: run.tool_selection lists the tool_choice modes the endpoint
+// actually honours, so a refusal is conforming only for a mode outside the
+// list and the key cannot promise an empty thing. Constraints carries the
+// endpoint-specific limits a caller and a validator must be able to check —
+// ConstraintFixedResult for run.structured_output, the exact object every
+// run.completed under an accepted output_schema will carry.
 type FeatureSupport struct {
-	Level  SupportLevel `json:"level"`
-	Reason string       `json:"reason,omitempty"`
-	Mode   string       `json:"mode,omitempty"`
+	Level       SupportLevel               `json:"level"`
+	Reason      string                     `json:"reason,omitempty"`
+	Mode        string                     `json:"mode,omitempty"`
+	Modes       []string                   `json:"modes,omitempty"`
+	Constraints map[string]json.RawMessage `json:"constraints,omitempty"`
 }
+
+// Capability keys for the per-submit run controls. A control the endpoint has
+// not affirmatively advertised under its key is refused before admission; a
+// control it advertises is applied or refused with a typed error, never
+// dropped.
+const (
+	FeatureModelSelection   = "run.model_selection"
+	FeatureInstructions     = "run.instructions"
+	FeatureToolSelection    = "run.tool_selection"
+	FeatureStructuredOutput = "run.structured_output"
+)
+
+// Application modes FeatureSupport.Mode discloses for run.model_selection.
+// ModeRestart is named by the vocabulary but is not offered in this phase.
+const (
+	ModePerRun          = "per_run"
+	ModeSessionMutation = "session_mutation"
+	ModeRestart         = "restart"
+)
+
+// ConstraintFixedResult is the FeatureSupport.Constraints member for
+// run.structured_output: the exact result object every run.completed under an
+// accepted output_schema carries. Declaring it makes a fixed-output endpoint's
+// refusals checkable in both directions.
+const ConstraintFixedResult = "fixed_result"
 
 type CapabilityLayer struct {
 	Features               map[string]FeatureSupport `json:"features,omitempty"`
@@ -140,21 +183,198 @@ const (
 	EffectiveDeliveryBTW   EffectiveDeliveryMode = "btw"
 )
 
+// ToolChoice is the typed tool-selection policy a submission may carry. The
+// wire keeps tool_choice permissive, so this shape is enforced by
+// ToolChoicePolicy, by the validator's run-controls rules, and by adapters
+// rather than by the schema.
+//
+// Precedence is fixed: Allowed or Disallowed filters the advertised catalog
+// first, then Mode applies to the filtered set. Name is present when and only
+// when Mode is ToolChoiceNamed, and Allowed and Disallowed are mutually
+// exclusive.
 type ToolChoice struct {
-	Mode string `json:"mode,omitempty"`
-	Name string `json:"name,omitempty"`
+	Mode       string   `json:"mode,omitempty"`
+	Name       string   `json:"name,omitempty"`
+	Allowed    []string `json:"allowed,omitempty"`
+	Disallowed []string `json:"disallowed,omitempty"`
 }
 
+// The tool_choice modes. An endpoint discloses the subset it can enforce in
+// run.tool_selection's FeatureSupport.Modes.
+const (
+	ToolChoiceAuto     = "auto"
+	ToolChoiceNone     = "none"
+	ToolChoiceRequired = "required"
+	ToolChoiceNamed    = "named"
+)
+
+// MessageSubmitRequest carries the per-submit run controls. ModelID and
+// Instructions are pointers because presence is what the fail-closed gate is
+// about: the schema permits an empty string, so a plain string could not tell
+// an absent control from `{"model_id": ""}`, and an endpoint testing the field
+// with != "" would admit the second as "no selection" instead of refusing it.
 type MessageSubmitRequest struct {
 	SessionID             SessionID                  `json:"session_id"`
 	Messages              []Message                  `json:"messages"`
 	Delivery              RequestedDeliveryMode      `json:"delivery"`
-	ModelID               string                     `json:"model_id,omitempty"`
-	Instructions          string                     `json:"instructions,omitempty"`
+	ModelID               *string                    `json:"model_id,omitempty"`
+	Instructions          *string                    `json:"instructions,omitempty"`
 	ToolChoice            json.RawMessage            `json:"tool_choice,omitempty"`
 	OutputSchema          json.RawMessage            `json:"output_schema,omitempty"`
 	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
 	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+// Control reports a present-or-absent string control's value. A present-empty
+// control is a control: it is judged through the gate like any other, and only
+// then read as a value.
+func Control(control *string) string {
+	if control == nil {
+		return ""
+	}
+	return *control
+}
+
+// ControlValue wraps a value as a present control, so a caller can express
+// presence without taking the address of a local.
+func ControlValue(value string) *string { return &value }
+
+// AllowsDegraded reports whether the submission opted into the degraded
+// application of one capability key.
+func (r MessageSubmitRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+// ToolChoicePolicy decodes the typed policy a submission carries. It reports
+// (nil, nil) when no tool_choice is present, and an error when the member is
+// present but is not the typed shape: an unknown member, an unknown mode, a
+// name on a mode other than "named" or missing on "named", or both allowed and
+// disallowed. A policy that decodes here may still be unsatisfiable against a
+// catalog; ToolChoice.Unsatisfiable judges that.
+func (r MessageSubmitRequest) ToolChoicePolicy() (*ToolChoice, error) {
+	if len(r.ToolChoice) == 0 || string(r.ToolChoice) == "null" {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(r.ToolChoice))
+	decoder.DisallowUnknownFields()
+	var policy ToolChoice
+	if err := decoder.Decode(&policy); err != nil {
+		return nil, fmt.Errorf("tool_choice is not the typed policy: %w", err)
+	}
+	if decoder.More() {
+		return nil, fmt.Errorf("tool_choice carries trailing content")
+	}
+	switch policy.Mode {
+	case ToolChoiceAuto, ToolChoiceNone, ToolChoiceRequired, ToolChoiceNamed:
+	default:
+		return nil, fmt.Errorf("tool_choice mode %q is not one of auto, none, required, named", policy.Mode)
+	}
+	if (policy.Name != "") != (policy.Mode == ToolChoiceNamed) {
+		return nil, fmt.Errorf("tool_choice name is present when and only when mode is %q", ToolChoiceNamed)
+	}
+	if len(policy.Allowed) > 0 && len(policy.Disallowed) > 0 {
+		return nil, fmt.Errorf("tool_choice allowed and disallowed are mutually exclusive")
+	}
+	return &policy, nil
+}
+
+// ToolChoiceDefect names the one member that makes a policy unsatisfiable. The
+// pointer is relative to the submit payload, so the validator and an adapter
+// report the same offending entry; Tool is the name the refusal's
+// details.tool carries when the defect names one.
+type ToolChoiceDefect struct {
+	Pointer string
+	Tool    string
+	Reason  string
+}
+
+// Unsatisfiable judges a decoded policy against the catalog it governs and
+// reports the first offending member in JSON Pointer order (object members
+// lexicographically, array indices numerically), so two encodings of one
+// request owe the same refusal. Pass known=false when the trace or the session
+// carries no catalog: the self-contradiction checks still apply, and the
+// catalog-dependent ones are held until a catalog is in evidence.
+func (c ToolChoice) Unsatisfiable(catalog []string, known bool) *ToolChoiceDefect {
+	listed := make(map[string]bool, len(catalog))
+	for _, name := range catalog {
+		listed[name] = true
+	}
+	// "allowed" precedes "disallowed" precedes "mode" precedes "name".
+	for index, name := range c.Allowed {
+		if known && !listed[name] {
+			return &ToolChoiceDefect{Pointer: fmt.Sprintf("/payload/tool_choice/allowed/%d", index), Tool: name, Reason: "allowed names a tool outside the catalog"}
+		}
+	}
+	for index, name := range c.Disallowed {
+		if known && !listed[name] {
+			return &ToolChoiceDefect{Pointer: fmt.Sprintf("/payload/tool_choice/disallowed/%d", index), Tool: name, Reason: "disallowed names a tool outside the catalog"}
+		}
+	}
+	filtered := c.Filter(catalog)
+	if c.Mode == ToolChoiceRequired && known && len(filtered) == 0 {
+		return &ToolChoiceDefect{Pointer: "/payload/tool_choice/mode", Reason: "required cannot be honoured against an empty filtered set"}
+	}
+	if c.Mode == ToolChoiceNamed {
+		for _, name := range c.Disallowed {
+			if name == c.Name {
+				return &ToolChoiceDefect{Pointer: "/payload/tool_choice/name", Tool: c.Name, Reason: "named tool is excluded by its own disallowed list"}
+			}
+		}
+		if len(c.Allowed) > 0 {
+			permitted := false
+			for _, name := range c.Allowed {
+				if name == c.Name {
+					permitted = true
+				}
+			}
+			if !permitted {
+				return &ToolChoiceDefect{Pointer: "/payload/tool_choice/name", Tool: c.Name, Reason: "named tool is outside its own allowed list"}
+			}
+		}
+		if known && !slices.Contains(filtered, c.Name) {
+			return &ToolChoiceDefect{Pointer: "/payload/tool_choice/name", Tool: c.Name, Reason: "named tool is not in the filtered catalog"}
+		}
+	}
+	return nil
+}
+
+// Filter applies the policy's allowed/disallowed filter to a catalog, which is
+// the first half of the fixed precedence; Mode then applies to the result.
+func (c ToolChoice) Filter(catalog []string) []string {
+	filtered := make([]string, 0, len(catalog))
+	for _, name := range catalog {
+		if len(c.Allowed) > 0 && !slices.Contains(c.Allowed, name) {
+			continue
+		}
+		if slices.Contains(c.Disallowed, name) {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
+}
+
+// Permits reports whether a policy admits a call to one tool: the filter
+// first, then the mode.
+func (c ToolChoice) Permits(name string, catalog []string) bool {
+	if c.Mode == ToolChoiceNone {
+		return false
+	}
+	if len(c.Allowed) > 0 && !slices.Contains(c.Allowed, name) {
+		return false
+	}
+	if slices.Contains(c.Disallowed, name) {
+		return false
+	}
+	if c.Mode == ToolChoiceNamed && name != c.Name {
+		return false
+	}
+	return true
 }
 
 type Admission string

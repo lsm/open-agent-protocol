@@ -5,6 +5,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -105,6 +106,59 @@ var (
 	ErrInvalidResolution   = errors.New("adapter: invalid interaction resolution")
 	ErrEventStreamOverflow = errors.New("adapter: event stream consumer fell behind; resume from the last sequence")
 )
+
+// ErrModelNotFound reports a model_id outside the endpoint's effective
+// catalog. It is the one control refusal that is not an unsupported feature:
+// the capability is advertised and the request was understood.
+var ErrModelNotFound = errors.New("adapter: model is not in the effective catalog")
+
+// UnsupportedControlError refuses a per-submit control before admission:
+// either the endpoint never advertised the capability (Reason
+// ControlUnadvertised) or it cannot honour this request's value of the control
+// (Reason ControlUnsatisfiable). Codecs map it to the typed
+// `unsupported_feature` error with details.feature and details.reason.
+type UnsupportedControlError struct {
+	Feature string
+	Reason  string
+	// Tool and Field name the offending member of an unsatisfiable control,
+	// so a refusal and a validator name the same entry.
+	Tool, Field string
+	Detail      string
+}
+
+// The two conditions unsupported_feature covers.
+const (
+	ControlUnadvertised  = "unadvertised"
+	ControlUnsatisfiable = "unsatisfiable"
+)
+
+func (e *UnsupportedControlError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("%s: %s (%s): %s", ErrUnsupportedInput.Error(), e.Feature, e.Reason, e.Detail)
+	}
+	return fmt.Sprintf("%s: %s (%s)", ErrUnsupportedInput.Error(), e.Feature, e.Reason)
+}
+func (e *UnsupportedControlError) Unwrap() error { return ErrUnsupportedInput }
+
+// DegradedControlError refuses a control the endpoint advertises `degraded`
+// when the caller did not name its key in allow_degraded_features. The opt-in
+// it asks for is a request the caller can simply reissue.
+type DegradedControlError struct{ Feature string }
+
+func (e *DegradedControlError) Error() string {
+	return fmt.Sprintf("%s: %s is degraded and was not opted into", ErrUnsupportedInput.Error(), e.Feature)
+}
+func (e *DegradedControlError) Unwrap() error { return ErrUnsupportedInput }
+
+// ModelNotFoundError names the id a catalog does not carry. An empty id is
+// necessarily outside every catalog, so it takes this refusal too rather than
+// a second unsatisfiability of its own.
+type ModelNotFoundError struct{ ModelID string }
+
+func (e *ModelNotFoundError) Error() string {
+	return fmt.Sprintf("%s: %q", ErrModelNotFound.Error(), e.ModelID)
+}
+func (e *ModelNotFoundError) Unwrap() error { return ErrModelNotFound }
 
 type RunTerminalError struct {
 	RunID  protocol.RunID

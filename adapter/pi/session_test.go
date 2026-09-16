@@ -201,7 +201,7 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, _, err := s.Submit(ctx, protocol.MessageSubmitRequest{
-		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "glm-other",
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("glm-other"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
 	}); !errors.Is(err, ErrUnsupportedInput) {
 		t.Fatalf("got %v, want ErrUnsupportedInput", err)

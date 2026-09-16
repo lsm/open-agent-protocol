@@ -230,10 +230,10 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 // submitText validates the conservative v1 surface: one user message whose
 // content is text or text parts.
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
-	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return "", base.ErrInvalidSubmission
 	}
-	if req.ModelID != "" {
+	if req.ModelID != nil {
 		// prompt.submit carries only the session id and text, so a per-submit
 		// model cannot be applied; rejecting beats silently running the
 		// preconfigured model.

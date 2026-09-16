@@ -90,7 +90,11 @@ const samples: PayloadSample[] = [
     protocol_versions: ['0.1'],
     profiles: ['open-agent-protocol.agent-control-core'],
     bindings: [{ kind: 'stdio', serialization: 'jsonrpc' }],
-    features: { 'session.open': { level: 'native', reason: 'because', mode: 'direct' } },
+    features: {
+      'session.open': { level: 'native', reason: 'because', mode: 'direct' },
+      'run.tool_selection': { level: 'emulated', modes: ['auto', 'named'] },
+      'run.structured_output': { level: 'emulated', constraints: { fixed_result: { ok: true } } },
+    },
     layers: {
       core: {
         features: { 'session.open': { level: 'native', reason: 'because', mode: 'direct' } },
@@ -213,6 +217,7 @@ const samples: PayloadSample[] = [
     run_id: 'r-1',
     final_response: { id: 'm-2', role: 'assistant', content: 'done', metadata: { turn: 2 } },
     stop_reason: 'end_turn',
+    model_id: 'model-a',
     result: { answer: 42 },
     usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
     duration_ms: 1200,

@@ -132,9 +132,12 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	trace = append(trace, stateRequest, stateResponse)
 
 	// A submission the adapter refuses answers with a correlated
-	// error.response, which is itself a legal terminal for a request.
+	// error.response, which is itself a legal terminal for a request. A model
+	// outside the advertised catalog is refused with the typed
+	// model_not_found and the id it could not serve, so the caller learns
+	// which control to change.
 	rejected := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "lifecycle-rejected", protocol.MessageSubmitRequest{
-		SessionID: protocol.SessionID(sessionID), Delivery: protocol.DeliveryAuto, Instructions: "unsupported",
+		SessionID: protocol.SessionID(sessionID), Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("model-the-catalog-lacks"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 	}, sessionID, "", "")
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/"+sessionID+"/submit", rejected)
@@ -142,6 +145,13 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 		t.Fatalf("rejected submit status %d", status)
 	}
 	requireEnvelopeType(t, errorEnvelope, protocol.TypeErrorResponse)
+	var refusal protocol.ErrorResponse
+	if err := errorEnvelope.DecodePayload(&refusal); err != nil {
+		t.Fatal(err)
+	}
+	if refusal.Error.Code != "model_not_found" || refusal.Error.Details["model_id"] != "model-the-catalog-lacks" {
+		t.Fatalf("control refusal = %+v, want model_not_found naming the requested id", refusal.Error)
+	}
 	trace = append(trace, rejected, errorEnvelope)
 
 	result := validation.MustNew().ValidateBytes(mustMarshal(t, trace), "serve-lifecycle-"+adapterName)

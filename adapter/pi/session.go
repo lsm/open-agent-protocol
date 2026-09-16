@@ -285,10 +285,10 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []native.ImageContent, []protocol.MessageID, error) {
-	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return "", nil, nil, base.ErrInvalidSubmission
 	}
-	if req.ModelID != "" {
+	if req.ModelID != nil {
 		// The prompt command carries no model selection and no set_model is
 		// issued, so a requested model cannot be applied; reporting it as
 		// effective would misattribute the run to a model Pi never used.

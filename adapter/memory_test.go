@@ -543,35 +543,189 @@ func TestSubmitRejectsInvalidRequestBeforeAdmission(t *testing.T) {
 	}
 }
 
-// The deterministic memory script runs no model and Probe advertises no model
-// selection, so a caller ModelID must be refused rather than echoed as the
-// effective model on the state, run, and admission.
-func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+// A model id outside the advertised catalog is refused with the typed
+// model_not_found, and an id inside it is authoritative for its run alone: the
+// application is per_run, so current_model_id, the model the next control-free
+// submission would use, must not move.
+func TestSubmitAppliesModelPerRun(t *testing.T) {
 	session := newTestSession(t, 64)
-	request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: "another-model", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}
-	if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, adapter.ErrUnsupportedInput) {
-		t.Fatalf("got %v, want adapter.ErrUnsupportedInput", err)
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
+	unknown := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("another-model"), Messages: message}
+	var notFound *adapter.ModelNotFoundError
+	if _, _, err := session.Submit(context.Background(), unknown); !errors.As(err, &notFound) || !errors.Is(err, adapter.ErrModelNotFound) {
+		t.Fatalf("unknown model: got %v, want adapter.ErrModelNotFound", err)
+	}
+	// An empty id is a control the endpoint must judge, not an absent one, and
+	// no catalog can list it: it is a catalog miss like any other.
+	empty := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(""), Messages: message}
+	if _, _, err := session.Submit(context.Background(), empty); !errors.As(err, &notFound) || notFound.ModelID != "" {
+		t.Fatalf("empty model: got %v, want model_not_found naming the empty id", err)
 	}
 	state, err := session.State(context.Background())
 	if err != nil || state.Status != protocol.SessionIdle || state.CurrentModelID != "" {
-		t.Fatalf("model override reached state: %+v err=%v", state, err)
+		t.Fatalf("refused model reached state: %+v err=%v", state, err)
+	}
+
+	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary), Messages: message})
+	if err != nil {
+		t.Fatalf("admitted model refused: %v", err)
+	}
+	if admission.ModelID != adapter.ModelSecondary {
+		t.Fatalf("admission model = %q, want %q", admission.ModelID, adapter.ModelSecondary)
+	}
+	events := drainAvailable(stream)
+	var started protocol.RunStartedPayload
+	_ = events[0].DecodePayload(&started)
+	if started.ModelID != adapter.ModelSecondary {
+		t.Fatalf("run.started model = %q, want %q", started.ModelID, adapter.ModelSecondary)
+	}
+	if state, err := session.State(context.Background()); err != nil || state.CurrentModelID != "" {
+		t.Fatalf("per_run selection moved the session default: %+v err=%v", state, err)
 	}
 }
 
-// The fixed memory script reads no instructions, tool choice, or output schema,
-// so accepting them would report results from behavior the caller never got.
-func TestSubmitRejectsUnappliedControls(t *testing.T) {
-	session := newTestSession(t, 64)
+// Every control the reference adapter advertises is either applied or refused
+// with a typed error before admission; none is accepted and ignored.
+func TestSubmitJudgesEveryControl(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
-	for name, request := range map[string]protocol.MessageSubmitRequest{
-		"instructions":  {SessionID: "session-1", Delivery: protocol.DeliveryAuto, Instructions: "be terse", Messages: message},
-		"tool choice":   {SessionID: "session-1", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
-		"output schema": {SessionID: "session-1", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
+	for name, testCase := range map[string]struct {
+		request protocol.MessageSubmitRequest
+		feature string
+		tool    string
+	}{
+		"untyped tool choice": {
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`"none"`)},
+			feature: protocol.FeatureToolSelection,
+		},
+		"unknown tool choice member": {
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"auto","limit":2}`)},
+			feature: protocol.FeatureToolSelection,
+		},
+		"allowed and disallowed": {
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"auto","allowed":["scripted_tool"],"disallowed":["scripted_tool"]}`)},
+			feature: protocol.FeatureToolSelection,
+		},
+		"tool outside the catalog": {
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`)},
+			feature: protocol.FeatureToolSelection,
+			tool:    "absent_tool",
+		},
+		"required against an empty filtered set": {
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"required","disallowed":["scripted_tool"]}`)},
+			feature: protocol.FeatureToolSelection,
+		},
+		"non-object output schema": {
+			request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"array"}`)},
+			feature: protocol.FeatureStructuredOutput,
+		},
+		"external output schema reference": {
+			request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object","properties":{"a":{"$ref":"https://example.test/s.json"}}}`)},
+			feature: protocol.FeatureStructuredOutput,
+		},
+		"uncompilable output schema": {
+			request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object","required":"x"}`)},
+			feature: protocol.FeatureStructuredOutput,
+		},
+		"output schema the fixed result cannot satisfy": {
+			request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object","required":["answer"]}`)},
+			feature: protocol.FeatureStructuredOutput,
+		},
 	} {
-		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, adapter.ErrInvalidSubmission) {
-			t.Fatalf("%s: got %v, want adapter.ErrInvalidSubmission", name, err)
+		session := newTestSession(t, 64)
+		request := testCase.request
+		request.SessionID, request.Delivery, request.Messages = "session-1", protocol.DeliveryAuto, message
+		_, _, err := session.Submit(context.Background(), request)
+		var refusal *adapter.UnsupportedControlError
+		if !errors.As(err, &refusal) || !errors.Is(err, adapter.ErrUnsupportedInput) {
+			t.Fatalf("%s: got %v, want a typed unsupported-control refusal", name, err)
+		}
+		if refusal.Feature != testCase.feature || refusal.Reason != adapter.ControlUnsatisfiable {
+			t.Fatalf("%s: refusal %+v, want feature %q reason %q", name, refusal, testCase.feature, adapter.ControlUnsatisfiable)
+		}
+		if testCase.tool != "" && refusal.Tool != testCase.tool {
+			t.Fatalf("%s: refusal names tool %q, want %q", name, refusal.Tool, testCase.tool)
+		}
+		if state, err := session.State(context.Background()); err != nil || state.ActiveRunID != "" || state.Status != protocol.SessionIdle {
+			t.Fatalf("%s: refused control allocated identity: %+v err=%v", name, state, err)
 		}
 	}
+}
+
+// An admitted tool_choice selects whether the scripted tool runs at all, and
+// an admitted output_schema binds the completion to the disclosed fixed
+// result.
+func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
+	for name, policy := range map[string]string{
+		"none":                 `{"mode":"none"}`,
+		"disallowed":           `{"mode":"auto","disallowed":["scripted_tool"]}`,
+		"allowed without tool": `{"mode":"auto","allowed":[]}`,
+	} {
+		session := newTestSession(t, 64)
+		request := protocol.MessageSubmitRequest{
+			SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+			ToolChoice: json.RawMessage(policy),
+			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+		}
+		if name == "allowed without tool" {
+			// An allowed list that omits the only tool filters it out; an
+			// empty list under "auto" is not unsatisfiable, only empty.
+			request.ToolChoice = json.RawMessage(`{"mode":"auto","allowed":["scripted_tool"]}`)
+		}
+		admission, stream, err := session.Submit(context.Background(), request)
+		if err != nil {
+			t.Fatalf("%s: policy refused: %v", name, err)
+		}
+		events := drainAvailable(stream)
+		calls := 0
+		for _, event := range events {
+			if event.Type == protocol.TypeActionCallRequested {
+				calls++
+			}
+		}
+		want := 0
+		if name == "allowed without tool" {
+			want = 1
+		}
+		if calls != want {
+			t.Fatalf("%s: %d tool calls, want %d: %+v", name, calls, want, events)
+		}
+		_ = admission
+	}
+
+	session := newTestSession(t, 64)
+	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		ToolChoice:   json.RawMessage(`{"mode":"none"}`),
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+		Instructions: protocol.ControlValue("Be terse."),
+		Messages:     []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	})
+	if err != nil {
+		t.Fatalf("structured submission refused: %v", err)
+	}
+	initial := drainAvailable(stream)
+	var delta protocol.ContentDeltaPayload
+	_ = initial[1].DecodePayload(&delta)
+	if !strings.HasPrefix(delta.Part.Text, "Be terse.") {
+		t.Fatalf("instructions were not applied to the scripted text: %q", delta.Part.Text)
+	}
+	var prompt protocol.UserInputRequestedPayload
+	_ = initial[2].DecodePayload(&prompt)
+	answer := protocol.UserInputResolveRequest{InteractionID: prompt.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &answer}); err != nil {
+		t.Fatalf("resolve input: %v", err)
+	}
+	events := append(initial, drainAvailable(stream)...)
+	completed := events[len(events)-1]
+	if completed.Type != protocol.TypeRunCompleted {
+		t.Fatalf("last event is %s", completed.Type)
+	}
+	var payload protocol.RunCompletedPayload
+	_ = completed.DecodePayload(&payload)
+	if string(payload.Result) != `{"ok":true}` {
+		t.Fatalf("structured result = %s, want the disclosed fixed result", payload.Result)
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
 }
 
 // A permission resolution must preserve the stored ownership and select a choice

@@ -699,13 +699,22 @@ func TestSubmitRejections(t *testing.T) {
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/ghost/submit", unknown)
 	requireErrorResponse(t, status, http.StatusNotFound, errorEnvelope, "unknown_session")
 
-	// The adapter refuses the submission itself (memory rejects instructions).
+	// The adapter refuses one control of the submission itself, and the codec
+	// relays that refusal under its own typed code rather than flattening it
+	// to invalid_submission: a caller must learn what to stop sending.
 	rejected := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-refused", protocol.MessageSubmitRequest{
-		SessionID: "reject", Delivery: protocol.DeliveryAuto, Instructions: "not supported",
+		SessionID: "reject", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 	}, "reject", "", "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", rejected)
-	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "invalid_submission")
+	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "unsupported_feature")
+	var refusal protocol.ErrorResponse
+	if err := errorEnvelope.DecodePayload(&refusal); err != nil {
+		t.Fatal(err)
+	}
+	if refusal.Error.Details["feature"] != protocol.FeatureToolSelection || refusal.Error.Details["reason"] != "unsatisfiable" || refusal.Error.Details["tool"] != "absent_tool" {
+		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
+	}
 
 	// A second submission while the run is active conflicts.
 	_, admission := submitRun(t, server, "reject", "submit-active")

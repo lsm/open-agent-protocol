@@ -200,7 +200,7 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req := request()
-	req.ModelID = "hermes-other"
+	req.ModelID = protocol.ControlValue("hermes-other")
 	if _, _, err := s.Submit(ctx, req); !errors.Is(err, base.ErrUnsupportedInput) {
 		t.Fatalf("got %v, want ErrUnsupportedInput", err)
 	}

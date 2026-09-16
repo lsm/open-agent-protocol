@@ -78,7 +78,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	// ACP's session/prompt carries only message content: instructions, tool
 	// choice, and an output schema have no native mapping, so accepting them
 	// would silently run with controls the caller believes are applied.
-	if req.SessionID == "" || len(req.Messages) == 0 || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	if req.SessionID == "" || len(req.Messages) == 0 || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return protocol.MessageSubmitResponse{}, nil, base.ErrInvalidSubmission
 	}
 	if req.Delivery != "" && req.Delivery != protocol.DeliveryAuto {
@@ -88,7 +88,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	// no session configuration mutation, so a requested model cannot be applied.
 	// Echoing it back as effective would attribute the run to a model the agent
 	// never used, so an explicit request is refused instead.
-	if req.ModelID != "" {
+	if req.ModelID != nil {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: ACP cannot apply a requested model", ErrUnsupportedInput)
 	}
 	prompt, messageIDs, err := s.promptContent(req.Messages)
@@ -147,11 +147,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		close(stream)
 		return protocol.MessageSubmitResponse{}, stream, writeErr
 	}
-	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
-	response := protocol.MessageSubmitResponse{SessionID: s.state.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, MessageIDs: messageIDs}
+	response := protocol.MessageSubmitResponse{SessionID: s.state.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), MessageIDs: messageIDs}
 	close(run.admitted)
 	return response, stream, nil
 }

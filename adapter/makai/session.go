@@ -98,7 +98,10 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.runs[run.id] = run
 	s.state.Status = protocol.SessionRunning
 	s.state.ActiveRunID = run.id
-	s.state.CurrentModelID = req.ModelID
+	// model_ref is a per-run native parameter, so an admitted model_id is
+	// authoritative for its run and leaves the session default alone: writing
+	// it into current_model_id would make the next control-free submission
+	// inherit a selection the caller made once (decision 0005).
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	sequence := s.nativeSequence + 1
 	s.mu.Unlock()
@@ -118,18 +121,18 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.mu.Lock()
 	s.nativeSequence = sequence
 	s.mu.Unlock()
-	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
 		s.failRun(run, "makai_admission_projection_failed", err.Error())
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
-	response := protocol.MessageSubmitResponse{SessionID: s.state.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: req.ModelID, MessageIDs: messageIDs}
+	response := protocol.MessageSubmitResponse{SessionID: s.state.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), MessageIDs: messageIDs}
 	close(run.admitted)
 	return response, stream, nil
 }
 
 func (s *session) messageJSON(req protocol.MessageSubmitRequest) ([]byte, []protocol.MessageID, error) {
-	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return nil, nil, base.ErrInvalidSubmission
 	}
 	messages := make([]map[string]any, len(req.Messages))
@@ -148,7 +151,7 @@ func (s *session) messageJSON(req protocol.MessageSubmitRequest) ([]byte, []prot
 		}
 		messages[i] = map[string]any{"role": "user", "content": []map[string]string{{"type": "text", "text": text}}}
 	}
-	model := req.ModelID
+	model := protocol.Control(req.ModelID)
 	if model == "" {
 		model = "default"
 	}
@@ -481,7 +484,7 @@ func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
 	}
 	message := protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(run.text)}
 	usage := (*protocol.Usage)(nil)
-	resultMap := map[string]any(nil)
+	resultJSON := json.RawMessage(nil)
 	if result != nil {
 		content, err := s.resultContent(run, *result, run.text)
 		if err != nil {
@@ -490,9 +493,12 @@ func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
 		}
 		message.Content = content
 		usage = &protocol.Usage{InputTokens: result.Input, OutputTokens: result.Output, TotalTokens: result.Input + result.Output}
-		resultMap = map[string]any{"provider": result.Provider, "api": result.API, "model": result.Model, "cache_read": result.CacheRead, "cache_write": result.CacheWrite}
+		// The result travels raw so presence is preserved exactly as the
+		// adapter built it; an encoding failure leaves it absent rather than
+		// emitting a half-formed object.
+		resultJSON, _ = json.Marshal(map[string]any{"provider": result.Provider, "api": result.API, "model": result.Model, "cache_read": result.CacheRead, "cache_write": result.CacheWrite})
 	}
-	_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: message, StopReason: stopReason, Result: resultMap, Usage: usage}, true)
+	_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: message, StopReason: stopReason, Result: resultJSON, Usage: usage}, true)
 }
 
 func (s *session) resultContent(run *runState, result native.Result, fallback string) (protocol.MessageContent, error) {

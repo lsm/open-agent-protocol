@@ -187,10 +187,10 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native.Delivery, error) {
-	if req.SessionID == "" || len(req.Messages) != 1 || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	if req.SessionID == "" || len(req.Messages) != 1 || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return "", "", base.ErrInvalidSubmission
 	}
-	if req.ModelID != "" {
+	if req.ModelID != nil {
 		// OpenCode applies a model when the session is created and the prompt
 		// request carries no model, so a per-submit override cannot be applied
 		// and must not be reported as effective.

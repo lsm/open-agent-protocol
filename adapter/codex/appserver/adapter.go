@@ -130,16 +130,25 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"session.state":                 {Level: protocol.SupportNative},
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
-		"run.streaming":                 {Level: protocol.SupportNative},
-		"run.status":                    {Level: protocol.SupportNative},
-		"run.cancel":                    {Level: protocol.SupportNative, Reason: "turn/interrupt targets an exact native thread and turn; settlement is asynchronous"},
-		"run.resume":                    {Level: protocol.SupportDegraded, Reason: "thread/resume restores native attachment; canonical replay is bounded process memory"},
-		"run.reconciliation":            {Level: protocol.SupportEmulated, Reason: "state is the adapter's canonical projection of native observations"},
-		"run.replay":                    {Level: protocol.SupportDegraded, Reason: "only adapter-emitted events in bounded process memory are replayable"},
-		"action.tools":                  {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
-		"action.tools.execute":          {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
-		"action.permissions":            {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
-		"user_input":                    {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
+		// turn/start takes the model as a per-turn parameter, so a requested
+		// model binds exactly its own run and the thread's configured model
+		// stays the session default. The other three controls have no per-run
+		// native surface at this pin and are refused under their own keys
+		// rather than accepted and ignored (decision 0005).
+		protocol.FeatureModelSelection:   {Level: protocol.SupportNative, Mode: protocol.ModePerRun, Reason: "turn/start carries the model for one turn"},
+		protocol.FeatureInstructions:     {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn instruction override"},
+		protocol.FeatureToolSelection:    {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn tool policy"},
+		protocol.FeatureStructuredOutput: {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn output schema"},
+		"run.streaming":                  {Level: protocol.SupportNative},
+		"run.status":                     {Level: protocol.SupportNative},
+		"run.cancel":                     {Level: protocol.SupportNative, Reason: "turn/interrupt targets an exact native thread and turn; settlement is asynchronous"},
+		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "thread/resume restores native attachment; canonical replay is bounded process memory"},
+		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "state is the adapter's canonical projection of native observations"},
+		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "only adapter-emitted events in bounded process memory are replayable"},
+		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
+		"action.tools.execute":           {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
+		"action.permissions":             {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
+		"user_input":                     {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: "codex.app-server", Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
 	return adapter.Descriptor{

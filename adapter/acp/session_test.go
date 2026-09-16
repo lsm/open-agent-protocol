@@ -723,7 +723,7 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	s, _ := openTest(t, 64)
 	_, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "another-model",
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("another-model"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}},
 	})
 	if !errors.Is(err, ErrUnsupportedInput) {
@@ -754,7 +754,7 @@ func TestSubmitRejectsUnappliedControls(t *testing.T) {
 	s, _ := openTest(t, 64)
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}}
 	for name, request := range map[string]protocol.MessageSubmitRequest{
-		"instructions":  {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: "be terse", Messages: message},
+		"instructions":  {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
 		"tool choice":   {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
 		"output schema": {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
 	} {

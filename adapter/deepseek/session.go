@@ -185,10 +185,10 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) ([]native.ContentBlock, []protocol.MessageID, error) {
-	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
 		return nil, nil, base.ErrInvalidSubmission
 	}
-	if req.ModelID != "" {
+	if req.ModelID != nil {
 		// The native prompt carries no model, so a per-submit override cannot be
 		// applied; reject it instead of running the session model silently.
 		return nil, nil, fmt.Errorf("%w: DeepSeek applies a model when the runtime is initialized", base.ErrUnsupportedInput)

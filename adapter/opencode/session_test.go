@@ -233,7 +233,7 @@ func submitTest(t *testing.T, session base.Session) (protocol.MessageSubmitRespo
 func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	session, _ := openTest(t, newFakeClient(), 32)
 	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "other-model",
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("other-model"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
 	}); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("got %v, want ErrUnsupported", err)

@@ -226,7 +226,12 @@ export interface Participant {
 export interface FeatureSupport {
   level: SupportLevel;
   reason?: string;
+  /** The one application mode a key has one of: `run.model_selection` discloses `per_run` or `session_mutation`. */
   mode?: string;
+  /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it. */
+  modes?: string[];
+  /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries. */
+  constraints?: Record<string, unknown>;
 }
 
 export interface ToolDefinition {
@@ -331,14 +336,37 @@ export interface SessionState {
   recovery?: RecoveryMetadata;
 }
 
+/**
+ * The typed tool-selection policy `tool_choice` carries. The wire keeps
+ * `tool_choice` permissive, so this shape is enforced by the validator's
+ * run-controls rules and by adapters rather than by the schema.
+ *
+ * Precedence is fixed: `allowed` or `disallowed` filters the advertised
+ * catalog first, then `mode` applies to the filtered set. `name` is present
+ * when and only when `mode` is `named`, and `allowed`/`disallowed` are
+ * mutually exclusive.
+ */
+export type ToolChoicePolicy =
+  | { mode: 'auto' | 'none' | 'required'; name?: undefined; allowed?: string[]; disallowed?: undefined }
+  | { mode: 'auto' | 'none' | 'required'; name?: undefined; allowed?: undefined; disallowed?: string[] }
+  | { mode: 'named'; name: string; allowed?: string[]; disallowed?: undefined }
+  | { mode: 'named'; name: string; allowed?: undefined; disallowed?: string[] };
+
 export interface MessageSubmitRequest {
   session_id: string;
   /** At least one message: the schema refuses an empty submission. */
   messages: [Message, ...Message[]];
   delivery: RequestedDeliveryMode;
+  /**
+   * The per-submit run controls. Each is gated on its own capability key and
+   * is applied or refused before admission, never dropped: an endpoint that
+   * has not advertised the key answers `unsupported_feature` naming it.
+   * Presence is what the gate judges, so an empty `model_id` is a control the
+   * endpoint must refuse, not an absent one.
+   */
   model_id?: string;
   instructions?: string;
-  tool_choice?: unknown;
+  tool_choice?: ToolChoicePolicy | unknown;
   output_schema?: Record<string, unknown>;
   allow_degraded_features?: string[];
   metadata?: Record<string, unknown>;
@@ -405,6 +433,8 @@ export interface RunCompletedPayload {
   run_id: string;
   final_response: Message;
   stop_reason: string;
+  /** The model that produced the final response; under an admitted `model_id` it names that model. */
+  model_id?: string;
   result?: Record<string, unknown>;
   usage?: Usage;
   duration_ms?: number;

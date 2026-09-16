@@ -10,9 +10,22 @@ import (
 	"time"
 
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/validation"
 )
 
 const defaultJournalCapacity = 64
+
+// The reference adapter's fixed model catalog and structured result. Both are
+// disclosed: the catalog through model_not_found for anything outside it, the
+// result through run.structured_output's fixed_result constraint. A caller and
+// a validator can therefore check a refusal in both directions instead of
+// taking the endpoint's word for it.
+const (
+	ModelPrimary   = "reference-model-a"
+	ModelSecondary = "reference-model-b"
+	fixedResult    = `{"ok":true}`
+	scriptedTool   = "scripted_tool"
+)
 
 // CapabilityRevision is the advertised reference-adapter revision. Every
 // emitted envelope repeats it so a consumer can bind an event to the
@@ -78,6 +91,23 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"action.tools.execute":          {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
 		"action.permissions":            {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		"user_input":                    {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
+		// The run controls, executed deterministically. Each disclosure is
+		// machine-readable so a refusal is checkable in both directions: the
+		// mode says the session default never moves, the enforced tool_choice
+		// modes say which policies a refusal may cite, and fixed_result names
+		// the exact object every structured completion carries.
+		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Mode: protocol.ModePerRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
+		protocol.FeatureInstructions:   {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
+		protocol.FeatureToolSelection: {
+			Level:  protocol.SupportEmulated,
+			Modes:  []string{protocol.ToolChoiceAuto, protocol.ToolChoiceNone, protocol.ToolChoiceRequired, protocol.ToolChoiceNamed},
+			Reason: "the policy selects whether the scripted tool is called",
+		},
+		protocol.FeatureStructuredOutput: {
+			Level:       protocol.SupportEmulated,
+			Constraints: map[string]json.RawMessage{protocol.ConstraintFixedResult: json.RawMessage(fixedResult)},
+			Reason:      "the scripted result is fixed, so only a schema that object satisfies is admitted",
+		},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: "reference.memory", Name: "Deterministic In-Memory Reference Adapter", Version: protocol.Version, Adapter: "process-memory-script"}
 	return Descriptor{
@@ -146,6 +176,7 @@ type memoryRun struct {
 	id           protocol.RunID
 	status       protocol.RunStatus
 	stage        scriptStage
+	controls     admittedControls
 	nextSequence uint64
 	terminal     bool
 	permissionID protocol.InteractionID
@@ -162,17 +193,17 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	if request.SessionID == "" || len(request.Messages) == 0 || request.Instructions != "" || len(request.ToolChoice) > 0 || len(request.OutputSchema) > 0 {
+	if request.SessionID == "" || len(request.Messages) == 0 {
 		return protocol.MessageSubmitResponse{}, nil, ErrInvalidSubmission
 	}
 	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", ErrInvalidSubmission, request.Delivery)
 	}
-	// The fixed deterministic script runs no model and Probe advertises no model
-	// selection, so echoing a caller ModelID would attribute the run to a model it
-	// never used.
-	if request.ModelID != "" {
-		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: the memory adapter selects no model", ErrUnsupportedInput)
+	// Every control is judged before any identity is allocated: a refused
+	// submission reserves no submission id, no run id, and writes nothing.
+	controls, err := s.admitControls(request)
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
 	}
 
 	s.mu.Lock()
@@ -190,11 +221,17 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	}
 	run := &memoryRun{
 		id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunRunning,
-		nextSequence: 1, stage: stagePermission,
+		nextSequence: 1, stage: stagePermission, controls: controls,
 		permissionID: protocol.InteractionID(s.ids.NewID("permission")),
 		inputID:      protocol.InteractionID(s.ids.NewID("input")),
 		toolCallID:   protocol.ToolCallID(s.ids.NewID("tool-call")),
 		requestedBy:  "agent", respondedBy: s.participant,
+	}
+	if !controls.callsTool {
+		// The policy excludes the scripted tool, so the run never opens a
+		// call and its permission gate: the script goes straight to the
+		// input stage.
+		run.stage = stageInput
 	}
 	stream := make(chan Result, 32)
 	run.subscribers = append(run.subscribers, stream)
@@ -217,7 +254,7 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		SubmissionID:      protocol.SubmissionID(s.ids.NewID("submission")),
 		RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart,
 		DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted,
-		RunID: run.id, Status: protocol.RunRunning, ModelID: request.ModelID, MessageIDs: messageIDs,
+		RunID: run.id, Status: protocol.RunRunning, ModelID: controls.model, MessageIDs: messageIDs,
 	}
 
 	if err := s.emitInitial(run); err != nil {
@@ -227,20 +264,131 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 }
 
 func (s *memorySession) emitInitial(run *memoryRun) error {
-	started := protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}
+	// An admitted model is authoritative for the run; absent one the run
+	// reports the session default, as before. Either way the default itself
+	// does not move: the application is per_run.
+	model := run.controls.model
+	if model == "" {
+		model = s.state.CurrentModelID
+	}
+	started := protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: model, StartedAtMS: s.clock.Now().UnixMilli()}
 	if err := s.emit(run, protocol.TypeRunStarted, started, false); err != nil {
 		return err
 	}
-	delta := protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: protocol.MessageID(s.ids.NewID("message")), Part: protocol.ContentPart{Type: protocol.ContentText, Text: "I will use the scripted tool."}}
+	// Admitted instructions are prepended to the scripted text, so their
+	// effect is observable on the wire rather than only asserted.
+	text := "I will use the scripted tool."
+	if !run.controls.callsTool {
+		text = "I will answer without the scripted tool."
+	}
+	if run.controls.instructions != "" {
+		text = run.controls.instructions + " " + text
+	}
+	delta := protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: protocol.MessageID(s.ids.NewID("message")), Part: protocol.ContentPart{Type: protocol.ContentText, Text: text}}
 	if err := s.emit(run, protocol.TypeContentDelta, delta, false); err != nil {
 		return err
 	}
-	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: "scripted_tool", ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: "reference-adapter"}
+	if !run.controls.callsTool {
+		return s.requestInput(run)
+	}
+	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: "reference-adapter"}
 	if err := s.emit(run, protocol.TypeActionCallRequested, call, false); err != nil {
 		return err
 	}
 	permission := protocol.PermissionRequestedPayload{InteractionID: run.permissionID, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Title: "Allow scripted tool", Description: "The golden script requires approval.", Choices: []protocol.PermissionChoice{{ID: "approve", Label: "Approve"}, {ID: "deny", Label: "Deny"}}, ArgumentsJSON: call.ArgumentsJSON, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy}
 	return s.emit(run, protocol.TypeActionPermissionRequested, permission, false)
+}
+
+// requestInput opens the scripted prompt and reports the wait. It is the one
+// stage every script reaches, whether or not the tool was called.
+func (s *memorySession) requestInput(run *memoryRun) error {
+	input := protocol.UserInputRequestedPayload{InteractionID: run.inputID, SessionID: s.state.SessionID, RunID: run.id, Title: "Golden input", Description: "Choose the deterministic answer.", Questions: goldenInputQuestions(), RequestedBy: run.requestedBy, RespondedBy: run.respondedBy}
+	if run.controls.callsTool {
+		input.ToolCallID = run.toolCallID
+	}
+	if err := s.emit(run, protocol.TypeUserInputRequested, input, false); err != nil {
+		return err
+	}
+	status := protocol.RunStatusUpdatedPayload{
+		SessionID:          s.state.SessionID,
+		RunID:              run.id,
+		Status:             protocol.RunWaitingForInput,
+		PendingUserInputID: run.inputID,
+		UpdatedAtMS:        s.clock.Now().UnixMilli(),
+	}
+	if err := s.emit(run, protocol.TypeRunStatusUpdated, status, false); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if !run.terminal {
+		run.status = protocol.RunWaitingForInput
+		s.state.Status = protocol.SessionWaitingForInput
+		s.state.UpdatedAtMS = status.UpdatedAtMS
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// admittedControls is the control set one run was admitted with. It is read
+// back when the run completes, so the endpoint's execution and its admission
+// cannot drift.
+type admittedControls struct {
+	model        string
+	instructions string
+	choice       *protocol.ToolChoice
+	outputSchema json.RawMessage
+	callsTool    bool
+}
+
+// catalog is the reference adapter's effective tool catalog: the one scripted
+// tool a policy can name.
+func (s *memorySession) catalog() []string { return []string{scriptedTool} }
+
+// admitControls judges every per-submit control against what Probe advertises
+// and reports the first refusal in the plan's precedence order: capability,
+// then degradation, then unsatisfiability. The reference adapter advertises no
+// control `degraded`, so the middle rung never fires here; it is the validator
+// and the native adapters that exercise it.
+func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (admittedControls, error) {
+	controls := admittedControls{callsTool: true}
+	if request.Instructions != nil {
+		controls.instructions = *request.Instructions
+	}
+	if request.ModelID != nil {
+		// A present-but-empty id is a control like any other and, past the
+		// gate, a model id like any other: one no catalog can list.
+		model := *request.ModelID
+		if model != ModelPrimary && model != ModelSecondary {
+			return admittedControls{}, &ModelNotFoundError{ModelID: model}
+		}
+		controls.model = model
+	}
+	policy, err := request.ToolChoicePolicy()
+	if err != nil {
+		return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Detail: err.Error()}
+	}
+	if policy != nil {
+		if defect := policy.Unsatisfiable(s.catalog(), true); defect != nil {
+			return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason}
+		}
+		controls.choice = policy
+		controls.callsTool = policy.Permits(scriptedTool, s.catalog())
+	}
+	if len(request.OutputSchema) > 0 {
+		compiled, err := validation.CompileOutputSchema(request.OutputSchema)
+		if err != nil {
+			return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: err.Error()}
+		}
+		// The scripted result is fixed and disclosed as fixed_result, so a
+		// schema that object cannot satisfy could only complete
+		// nonconforming. Refusing it before admission is the promise the
+		// constraint makes, checkable in both directions.
+		if err := compiled.Validate(json.RawMessage(fixedResult)); err != nil {
+			return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: "the fixed result does not satisfy the requested schema"}
+		}
+		controls.outputSchema = append(json.RawMessage(nil), request.OutputSchema...)
+	}
+	return controls, nil
 }
 
 func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error) {
@@ -374,28 +522,7 @@ func (s *memorySession) resolvePermission(run *memoryRun, request protocol.Permi
 	if err := s.emit(run, protocol.TypeActionCallCompleted, call, false); err != nil {
 		return err
 	}
-	input := protocol.UserInputRequestedPayload{InteractionID: run.inputID, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Title: "Golden input", Description: "Choose the deterministic answer.", Questions: goldenInputQuestions(), RequestedBy: run.requestedBy, RespondedBy: run.respondedBy}
-	if err := s.emit(run, protocol.TypeUserInputRequested, input, false); err != nil {
-		return err
-	}
-	status := protocol.RunStatusUpdatedPayload{
-		SessionID:          s.state.SessionID,
-		RunID:              run.id,
-		Status:             protocol.RunWaitingForInput,
-		PendingUserInputID: run.inputID,
-		UpdatedAtMS:        s.clock.Now().UnixMilli(),
-	}
-	if err := s.emit(run, protocol.TypeRunStatusUpdated, status, false); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	if !run.terminal {
-		run.status = protocol.RunWaitingForInput
-		s.state.Status = protocol.SessionWaitingForInput
-		s.state.UpdatedAtMS = status.UpdatedAtMS
-	}
-	s.mu.Unlock()
-	return nil
+	return s.requestInput(run)
 }
 
 func (s *memorySession) resolveInput(run *memoryRun, request protocol.UserInputResolveRequest) error {
@@ -408,7 +535,12 @@ func (s *memorySession) resolveInput(run *memoryRun, request protocol.UserInputR
 	if err := s.emit(run, protocol.TypeContentDelta, delta, false); err != nil {
 		return err
 	}
-	completed := protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: delta.MessageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(finalText)}, StopReason: "end_turn"}
+	completed := protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: delta.MessageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(finalText)}, StopReason: "end_turn", ModelID: run.controls.model}
+	if len(run.controls.outputSchema) > 0 {
+		// The admitted schema binds the final response, and the disclosed
+		// fixed_result is what every structured completion carries.
+		completed.Result = json.RawMessage(fixedResult)
+	}
 	if err := s.emit(run, protocol.TypeRunCompleted, completed, true); err != nil && err != errTerminalWon {
 		return err
 	}
@@ -595,7 +727,11 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 	envelope.CapabilityRevision = CapabilityRevision
 	switch typ {
 	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeUserInputRequested:
-		envelope.ToolCallID = run.toolCallID
+		// A run whose tool_choice excluded the scripted tool opens no call, so
+		// its prompt carries no tool binding to name.
+		if run.controls.callsTool {
+			envelope.ToolCallID = run.toolCallID
+		}
 	}
 	s.journal = append(s.journal, envelope)
 	if len(s.journal) > s.capacity {

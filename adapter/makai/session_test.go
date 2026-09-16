@@ -126,7 +126,7 @@ func openTest(t *testing.T, capacity int) (base.Session, *fakeClient) {
 }
 func submitTest(t *testing.T, session base.Session) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
-	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("test"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestFirstMessageUsesNativeSequenceTwo(t *testing.T) {
 func TestAdmissionFailureRetiresSession(t *testing.T) {
 	session, client := openTest(t, 32)
 	client.sendErr = errors.New("write failed")
-	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("test"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
 	if err == nil {
 		t.Fatal("submission unexpectedly succeeded")
 	}

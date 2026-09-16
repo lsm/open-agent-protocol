@@ -86,7 +86,7 @@ func TestPinnedMakaiProcessAgainstResponsesMock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close(context.Background())
-	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "makai-process-session", Delivery: protocol.DeliveryAuto, ModelID: "openai/openai-responses@fixture-model", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}}})
+	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "makai-process-session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("openai/openai-responses@fixture-model"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}}})
 	if err != nil {
 		t.Fatal(err)
 	}
