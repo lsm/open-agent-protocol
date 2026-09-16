@@ -2182,3 +2182,43 @@ func TestBufferedDefectIsJudgedBehindASaturatedBound(t *testing.T) {
 		t.Fatal("Run did not return")
 	}
 }
+
+// TestHostsEndIsObservedBehindABlockedOutput pins the other half of the
+// liveness property. Answering what the bound cannot admit removed the wait
+// for room, but the refusal itself is a send, and the serving loop is what
+// gates the reader — so a host that stops draining its own stdout while
+// pipelining would park the loop inside that send and hide its end again,
+// at whatever depth the output queue happened to hold. The loop offers the
+// refusal instead of pushing it, so the end is reachable whether or not
+// anything is reading the answers.
+func TestHostsEndIsObservedBehindABlockedOutput(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The output never accepts a byte, so the writer parks on its first
+	// write and the queue behind it stays full for the whole session.
+	writer := &blockedWriter{release: make(chan struct{}), entered: make(chan struct{}), once: &sync.Once{}}
+	t.Cleanup(func() { close(writer.release) })
+	var input strings.Builder
+	fmt.Fprint(&input, `{"id":1,"op":"capabilities","adapter":"hang"}`+"\n")
+	for id := 2; id <= 64; id++ {
+		fmt.Fprintf(&input, `{"id":%d,"op":"adapters"}`+"\n", id)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), strings.NewReader(input.String()), writer) }()
+	select {
+	case err := <-done:
+		// Refusals that could not be queued are requests read and never
+		// answered, and the caller is owed that count even though no line
+		// could carry it.
+		if !errors.Is(err, ErrRequestsDropped) {
+			t.Fatalf("Run returned %v, want the unanswered requests reported", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run never observed the host's end behind a blocked output")
+	}
+}

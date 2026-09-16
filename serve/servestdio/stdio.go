@@ -698,36 +698,46 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // the host can correct, and the loop reads on past them.
 func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan struct{}) error {
 	number := 0
+	// Requests read and never answered, counted so the caller is told. A
+	// refusal the output could not take is exactly that: neither served nor
+	// answered, and the host cannot know to send it again.
+	unanswered := 0
+	ended := func(err error) error {
+		if unanswered > 0 {
+			return note(err, ErrRequestsDropped)
+		}
+		return err
+	}
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return ended(nil)
 		case <-writerFailed:
-			return nil
+			return ended(nil)
 		default:
 		}
 		select {
 		case <-ctx.Done():
-			return nil
+			return ended(nil)
 		case <-writerFailed:
-			return nil
+			return ended(nil)
 		case result := <-frames:
 			number++
 			if result.err != nil {
 				if errors.Is(result.err, io.EOF) {
-					return nil
+					return ended(nil)
 				}
 				var defect *frameDefect
 				if errors.As(result.err, &defect) {
-					return &MalformedLineError{Line: number, Detail: defect.Error()}
+					return ended(&MalformedLineError{Line: number, Detail: defect.Error()})
 				}
 				// A read failure is not the host's protocol fault: fail
 				// closed, but let the caller see the input's own error.
-				return result.err
+				return ended(result.err)
 			}
 			request, err := decodeRequest(result.frame)
 			if err != nil {
-				return &MalformedLineError{Line: number, Detail: err.Error()}
+				return ended(&MalformedLineError{Line: number, Detail: err.Error()})
 			}
 			size := len(result.frame)
 			switch run.offer(size) {
@@ -736,16 +746,27 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 				// and this frame, decoded and never served, is being let
 				// go. Say so rather than returning as though the input had
 				// simply ended.
-				return ErrRequestsDropped
+				return ended(ErrRequestsDropped)
 			case refused:
 				// Answered here rather than by a worker, because refusing
 				// is precisely the case where no worker was started. The
 				// host learns which request went unserved and may send it
 				// again, which is what waiting could never tell it.
-				s.respond(ctx, lines, request, nil, &wireError{
+				//
+				// Offered to the queue rather than pushed into it: this is
+				// the one send the serving loop makes, and the loop is what
+				// gates the reader, so blocking here would hide the host's
+				// end behind a full output exactly as waiting for room once
+				// hid it behind a full bound. An output too backed up to
+				// take a one-line refusal is an output nobody is draining,
+				// and telling a host that is not reading outranks nothing.
+				// What is owed then is the count, not the line.
+				if !s.offerLine(lines, request, &wireError{
 					Code:    "busy",
 					Message: fmt.Sprintf("the frontend is already running %d operations; send this request again", s.maxOps),
-				})
+				}) {
+					unanswered++
+				}
 				continue
 			}
 			go func(request requestLine, size int) {
@@ -987,6 +1008,22 @@ func scanKeys(frame []byte) (map[string]bool, error) {
 		}
 	}
 	return present, nil
+}
+
+// offerLine puts one refusal on the writer's queue if the queue can take it
+// now, and reports whether it did. It never waits: see the call site for why
+// the serving loop must not block on output.
+func (s *Server) offerLine(lines chan<- []byte, request requestLine, werr *wireError) bool {
+	line, err := json.Marshal(responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: werr})
+	if err != nil || len(line) > s.frameLimit {
+		return false
+	}
+	select {
+	case lines <- line:
+		return true
+	default:
+		return false
+	}
 }
 
 // send marshals one output line onto the writer channel, abandoning the send
