@@ -255,6 +255,14 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			listedReservation = true
 		}
 		if !reservation && !settled {
+			if listedReservation {
+				// Promotion is in admission order, so a reservation admitted
+				// first cannot still be queued behind a run admitted after
+				// it. The listing is one moment and this one describes an
+				// ordering the queue does not permit — which no capture
+				// position excuses, because there is no moment it describes.
+				s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs describes a run executing ahead of a reservation admitted before it", "a queued status behind the earlier reservation", string(entry.Status), string(entry.RunID))
+			}
 			if listedStarted != "" {
 				// One started run at a time is the whole of decision 0001 that
 				// this unit kept. A listing is one moment, so two entries

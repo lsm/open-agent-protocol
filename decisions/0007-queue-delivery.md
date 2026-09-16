@@ -189,7 +189,10 @@ What an entry cannot do is invent a queue: a run admitted started was never in
 one.
 
 A listing is one moment, and in one moment a session has one started run —
-the whole of Decision 0001 this unit kept. A promotion crossing the window lets
+the whole of Decision 0001 this unit kept. It also runs them in admission
+order, so a reservation admitted first cannot be queued behind a run admitted
+after it; a listing that says so describes no moment at all, and no capture
+position excuses it. A promotion crossing the window lets
 either run be the one the snapshot describes, never both, so a second entry
 describing a run as executing describes a moment that never existed and is
 diagnosed rather than silently replacing the first.
@@ -312,7 +315,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 103 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 105 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -350,7 +353,14 @@ terminal, and settles a cancelled reservation pre-start.
   endpoints will do this before it submits.
 - The hub keeps a reservation out of the run a bare replay cursor resolves
   onto: it has published nothing, and a client resumed onto a run that settles
-  pre-start would be stranded.
+  pre-start would be stranded. Its overflow recovery reads admission order the
+  same way. Those serials are execution order only while runs settle in the
+  order they were admitted, and a reservation cancelled before promotion is
+  precisely the case where they do not: its terminal carries the higher serial
+  while the run it was queued behind is still delivering. A run drained to its
+  end that is not the run the hub is on can no longer be a recovery target, so
+  it never outranks one that is still going — a cursor there has nothing left
+  to give, and the tail the drop lost would be unreachable from it.
 - A held envelope is not published, and publication is what the journal
   records. Buffering the reservation's envelopes while deferring the journal
   append is the same claim as keeping its queue slot until `published()`: a
