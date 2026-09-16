@@ -48,18 +48,41 @@ requests for that session waited, so unrelated requests would be refused
 
 ## What the frontend does instead
 
-Nothing is serialized, and no ordering failure is silent:
+Nothing is serialized. What the frontend can promise is narrower than it
+first appears, and the narrowing is the reason the next section exists:
 
 - `events` for a session that does not exist yet is refused
-  `session_not_found`. The host learns immediately.
-- `events` arriving after a run has started replays from its `after`
-  cursor, so a late subscription still receives what it missed.
-- A cursor the journal no longer retains produces the `oap-replay-gap`
-  signal naming what was lost and where to resume, per
-  `drafts/conformance.md`.
+  `unknown_session`, the code both codecs already emit. The host learns
+  immediately, which covers a subscription that loses the race with the
+  *open*.
+- `events` carrying an `after` cursor replays from it, and a cursor the
+  journal no longer retains produces the `oap-replay-gap` signal naming
+  what was lost and where to resume, per `drafts/conformance.md`.
+- **`events` without a cursor is a live subscription and does not replay.**
+  It delivers from wherever it joins. `TestSSELiveSubscriptionMidRun` pins
+  this deliberately: a second connection joining mid-run should not be
+  handed a prefix it did not ask for.
 
-This is the honest position for a frontend that cannot promise ordering: it
-promises instead that every ordering failure is reported.
+That third point is the hole, and it is worth stating plainly rather than
+leaving it implicit. The *canonical first* `events` request carries no
+cursor, because a host opening a session has nothing to resume from. So a
+host that loses the race with its own `submit` gets a successful
+subscription that silently omits the run's opening envelopes — the failure
+this document set out to eliminate, surviving in exactly the shape a first
+subscription takes.
+
+Two things follow. The uncursored semantics are not wrong: "give me what
+happens from now" is a legitimate request, and replaying into it would be
+worse for the second subscriber the test describes. What is wrong is that a
+host cannot tell which it got. So this design proposes, alongside the
+members below, that a successful `events` response report the sequence its
+subscription begins at, so a host can see it joined mid-run and resubscribe
+with a cursor. That converts the silence into information without changing
+what a live subscription delivers.
+
+And the compound open below stops being a convenience. It is the only
+shape in which the canonical sequence cannot lose the race at all, because
+the subscription is created inside the open rather than after it.
 
 ## The proposal
 
@@ -139,9 +162,11 @@ and locally a round trip costs microseconds; the argument that makes batch
 compelling over a network mostly evaporates here. Meanwhile the one
 sequence with a *silent* failure is the one compound open covers. Every
 other pipelined disorder this surface admits reports itself: resolving an
-interaction before the run waits for it is refused, submitting to a session
-that does not exist is refused, and a late subscription replays or reports
-its gap.
+interaction before the run waits for it is refused, and submitting to a
+session that does not exist is refused. The one disorder that does not
+report itself is an uncursored subscription joining mid-run, which is what
+the compound open closes and what the joined-at sequence above makes
+visible when a host subscribes separately anyway.
 
 **What would revive it.** A second sequence whose disorder is silent rather
 than refused; or OAP carried over a network where round trips are not free.
@@ -151,6 +176,9 @@ Either is sufficient; neither is true today.
 
 - Whether `subscribe` may carry an `after` cursor, making a compound open
   also the reattach path, or whether reattach stays with `events` alone.
+- Whether the joined-at sequence on an `events` response is a new member or
+  a reuse of an existing one, and whether the stdio binding reports it on
+  the response line or as one of its named signal lines.
 - Whether the acknowledgement for `message` is the submit response payload
   verbatim or a projection of it, and how it is named within the open
   response.
