@@ -1188,6 +1188,23 @@
       ]
     },
     {
+      "id": "ext-pack-reply-target-ambiguous",
+      "path": "packs/bad-reply-target-ambiguous",
+      "kind": "load-invalid",
+      "valid": false,
+      "phase": "load",
+      "codes": [
+        "pack_reply_target_ambiguous"
+      ],
+      "units": [
+        "extensions"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0004-extension-packs.md"
+      ]
+    },
+    {
       "id": "ext-pack-refusal-undeclared",
       "path": "packs/bad-refusal-undeclared",
       "kind": "load-invalid",

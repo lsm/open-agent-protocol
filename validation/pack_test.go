@@ -1,8 +1,10 @@
 package validation
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -34,6 +36,7 @@ func TestPackLoadRefusals(t *testing.T) {
 		{[]string{"bad-response-gated"}, []string{LoadPackResponseGated}},
 		{[]string{"bad-role-undeclared"}, []string{LoadPackRoleUndeclared}},
 		{[]string{"bad-reply-target-unknown"}, []string{LoadPackReplyTargetUnknown}},
+		{[]string{"bad-reply-target-ambiguous"}, []string{LoadPackReplyTargetAmbiguous}},
 		{[]string{"bad-refusal-undeclared"}, []string{LoadPackRefusalUndeclared}},
 		{[]string{"bad-restates-core-member"}, []string{LoadPackRestatesCoreMember}},
 		{[]string{"bad-member-target-unknown"}, []string{LoadPackMemberTargetUnknown}},
@@ -267,5 +270,74 @@ func TestPackedMemberOnCapabilitiesResponseIsJudgedAfterInstall(t *testing.T) {
 	}
 	if result := v.ValidateBytes([]byte(trace(``)), "unadvertised"); !result.HasCode(CodeUnavailableCapability) {
 		t.Fatalf("member on an unadvertised key passed: %v", result.Diagnostics)
+	}
+}
+
+// The reference walk has no depth cutoff: a reference buried under any amount
+// of nesting is still judged, since the compiler would still resolve it.
+func TestDocumentReferencesHaveNoDepthCutoff(t *testing.T) {
+	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/"}
+	p.Descriptor.ID = "com.example.a"
+	var doc any = map[string]any{"$ref": "https://example.invalid/private.schema.json"}
+	for i := 0; i < 100; i++ {
+		doc = map[string]any{"properties": map[string]any{"x": doc}}
+	}
+	refusals := checkDocumentReferences(p, p.Base+"types.schema.json", doc, map[string]bool{})
+	if len(refusals) != 1 || refusals[0].Code != LoadPackExternalRef {
+		t.Fatalf("deep external reference not refused: %v", refusals)
+	}
+}
+
+// An owned fixture path is resolved and verified beneath the pack root before
+// it is opened: a symlink out of the pack is refused, never followed.
+func TestPackFixturePathIsContainedBeforeOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture")
+	}
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside.json")
+	if err := os.WriteFile(outside, []byte("[]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, "pack")
+	if err := os.MkdirAll(filepath.Join(dir, "fixtures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string, v any) {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("pack.json", map[string]any{
+		"id": "com.example.linked", "version": "1.0.0", "schemas": []string{"types.schema.json"},
+		"envelope_types": []any{map[string]any{"type": "com.example.linked.ping", "role": "event", "schema": "types.schema.json#/$defs/ping"}},
+		"gates":          []any{map[string]any{"type": "com.example.linked.ping", "ungated": true}},
+		"fixtures":       "fixtures/manifest.json",
+	})
+	write("types.schema.json", map[string]any{"$defs": map[string]any{"ping": map[string]any{"type": "object", "properties": map[string]any{"type": map[string]any{"const": "com.example.linked.ping"}}}}})
+	write(filepath.Join("fixtures", "manifest.json"), map[string]any{"version": 1, "fixtures": []any{map[string]any{
+		"id": "linked", "path": "trace.json", "kind": "positive", "valid": true, "phase": "", "codes": []any{}, "units": []string{"ext:com.example.linked/1.0.0"}, "provenance": []any{},
+	}}})
+	if err := os.Symlink(outside, filepath.Join(dir, "fixtures", "trace.json")); err != nil {
+		t.Fatal(err)
+	}
+	packs, err := LoadPacks([]string{dir})
+	if err != nil {
+		t.Fatalf("pack with a symlinked fixture did not load (the refusal belongs to the run, not the load): %v", err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = v.validateManifest(packs[0].fixtures, ManifestOptions{Packs: packs, Owner: packs[0]}, false)
+	if err == nil || !strings.Contains(err.Error(), "outside the pack root") {
+		t.Fatalf("symlinked fixture was opened: %v", err)
 	}
 }

@@ -87,6 +87,7 @@ const (
 	LoadPackRoleUndeclared       = "pack_role_undeclared"
 	LoadPackResponseGated        = "pack_response_gated"
 	LoadPackReplyTargetUnknown   = "pack_reply_target_unknown"
+	LoadPackReplyTargetAmbiguous = "pack_reply_target_ambiguous"
 	LoadPackRefusalUndeclared    = "pack_refusal_undeclared"
 	LoadPackSchemaPathEscape     = "pack_schema_path_escape"
 	LoadPackExternalRef          = "pack_external_ref"
@@ -100,7 +101,7 @@ func loadErrorCodes() map[string]bool {
 		LoadPackUnprefixedName, LoadPackForeignPrefix, LoadPackIDCollision,
 		LoadPackBranchUndeclaredType, LoadPackBranchUnpinned, LoadPackUngatedType,
 		LoadPackRestatesCoreMember, LoadPackMemberTargetUnknown, LoadPackRoleUndeclared,
-		LoadPackResponseGated, LoadPackReplyTargetUnknown, LoadPackRefusalUndeclared,
+		LoadPackResponseGated, LoadPackReplyTargetUnknown, LoadPackReplyTargetAmbiguous, LoadPackRefusalUndeclared,
 		LoadPackSchemaPathEscape, LoadPackExternalRef, LoadPackDependencyMissing,
 		LoadPackFixtureClaimsCore, LoadExtClaimWithoutPack,
 	}
@@ -458,7 +459,7 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 			}
 			validator = validators[key]
 		}
-		outcome, err := runTraceFixture(validator, root, entry)
+		outcome, err := runTraceFixture(validator, root, ownerRoot(opts.Owner), entry)
 		out = append(out, outcome)
 		if err != nil {
 			return out, err
@@ -534,8 +535,41 @@ func runLoadFixture(root string, entry FixtureEntry) (FixtureOutcome, error) {
 	return outcome, nil
 }
 
-func runTraceFixture(v *Validator, root string, entry FixtureEntry) (FixtureOutcome, error) {
-	f, err := os.Open(filepath.Join(root, entry.Path))
+// ownerRoot is the pack root an owned manifest's fixtures must stay beneath,
+// or "" for the core corpus.
+func ownerRoot(owner *Pack) string {
+	if owner == nil {
+		return ""
+	}
+	return owner.Root
+}
+
+func runTraceFixture(v *Validator, root, packRoot string, entry FixtureEntry) (FixtureOutcome, error) {
+	path := filepath.Join(root, entry.Path)
+	if packRoot != "" {
+		// A pack's fixtures are third-party documents. The lexical check at
+		// load keeps the path beneath the manifest, but a symlink can still
+		// lead anywhere and a FIFO would block the run, so the path is
+		// resolved and verified before it is opened, as the loader does for
+		// the schemas and the manifest itself.
+		rel, err := filepath.Rel(packRoot, path)
+		if err != nil {
+			return FixtureOutcome{Entry: entry}, fmt.Errorf("fixture %s: path %q: %w", entry.ID, entry.Path, err)
+		}
+		resolved, err := containedPath(packRoot, rel)
+		if err != nil {
+			return FixtureOutcome{Entry: entry}, fmt.Errorf("fixture %s: path %q: %w", entry.ID, entry.Path, err)
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return FixtureOutcome{Entry: entry}, fmt.Errorf("fixture %s: path %q: %w", entry.ID, entry.Path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return FixtureOutcome{Entry: entry}, fmt.Errorf("fixture %s: path %q is not a regular file", entry.ID, entry.Path)
+		}
+		path = resolved
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return FixtureOutcome{Entry: entry}, fmt.Errorf("open fixture %s: %w", entry.ID, err)
 	}

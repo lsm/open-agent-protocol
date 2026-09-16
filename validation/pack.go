@@ -441,6 +441,7 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 		return refusals
 	}
 
+	answered := map[string]string{} // request type -> the response type that answers it
 	for _, declared := range p.Descriptor.EnvelopeTypes {
 		switch declared.Role {
 		case PackRoleRequest, PackRoleResponse, PackRoleEvent:
@@ -455,6 +456,13 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 			target, ok := declaredTypes[declared.RepliesTo]
 			if !ok || target.Role != PackRoleRequest {
 				refuse(LoadPackReplyTargetUnknown, "response %q answers %q, which is not a declared request of this pack", declared.Type, declared.RepliesTo)
+			} else if first, dup := answered[declared.RepliesTo]; dup {
+				// A request has one response type, as every core request
+				// does; correlation could otherwise expect only one of two
+				// declared answers and report the other as unmatched.
+				refuse(LoadPackReplyTargetAmbiguous, "responses %q and %q both answer %q; a request has one response type", first, declared.Type, declared.RepliesTo)
+			} else {
+				answered[declared.RepliesTo] = declared.Type
 			}
 		}
 		for _, refusal := range declared.Refusals {
@@ -931,7 +939,7 @@ func checkDocumentReferences(p *Pack, base string, document any, allowed map[str
 		return []PackRefusal{{Pack: p.ID(), Message: fmt.Sprintf("parse base %q: %v", base, err)}}
 	}
 	var refusals []PackRefusal
-	for _, ref := range collectRefs(document, baseURL, 0) {
+	for _, ref := range collectRefs(document, baseURL) {
 		if ref.err != nil {
 			refusals = append(refusals, PackRefusal{Code: LoadPackExternalRef, Pack: p.ID(), Message: fmt.Sprintf("reference %q is not a resolvable URI", ref.raw)})
 			continue
@@ -985,10 +993,10 @@ type documentRef struct {
 // rebases every reference beneath it, so the walk carries the base along and
 // resolves each $ref against the base in force where it appears. The $id
 // itself is returned too, so the caller can judge where the schema binds.
-func collectRefs(node any, base *url.URL, depth int) []documentRef {
-	if depth > 64 {
-		return nil
-	}
+// The walk has no depth cutoff: a reference the loader does not see is one it
+// cannot judge, and the compiler would still resolve it. Nesting is bounded
+// by the decoder's own limit, which the stack handles.
+func collectRefs(node any, base *url.URL) []documentRef {
 	switch n := node.(type) {
 	case map[string]any:
 		var out []documentRef
@@ -1009,13 +1017,13 @@ func collectRefs(node any, base *url.URL, depth int) []documentRef {
 					continue
 				}
 			}
-			out = append(out, collectRefs(value, base, depth+1)...)
+			out = append(out, collectRefs(value, base)...)
 		}
 		return out
 	case []any:
 		var out []documentRef
 		for _, item := range n {
-			out = append(out, collectRefs(item, base, depth+1)...)
+			out = append(out, collectRefs(item, base)...)
 		}
 		return out
 	default:

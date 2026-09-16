@@ -1,0 +1,32 @@
+{
+  "id": "com.example.ambiguous",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.ambiguous.ping",
+      "role": "request",
+      "schema": "types.schema.json#/$defs/ping"
+    },
+    {
+      "type": "com.example.ambiguous.ping.result",
+      "role": "response",
+      "replies_to": "com.example.ambiguous.ping",
+      "schema": "types.schema.json#/$defs/pingResult"
+    },
+    {
+      "type": "com.example.ambiguous.ping.echo",
+      "role": "response",
+      "replies_to": "com.example.ambiguous.ping",
+      "schema": "types.schema.json#/$defs/pingEcho"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.ambiguous.ping",
+      "ungated": true
+    }
+  ]
+}

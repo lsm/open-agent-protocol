@@ -331,7 +331,10 @@ every capability-rung refusal. A `response` must carry `in_reply_to`,
 which is what correlation is; it takes its gate from the request it
 answers and needs no `gates` entry of its own, and a `response` naming a
 `replies_to` that is not a declared `request` of the same pack is a load
-refusal (`pack_reply_target_unknown`). An `event` has no correlation and
+refusal (`pack_reply_target_unknown`), and so is a second `response`
+naming a request another already answers (`pack_reply_target_ambiguous`):
+a request has one response type, as every core request does. An `event`
+has no correlation and
 takes its own `gates` entry, judged on arrival. A declared type with no
 `role` is a load refusal (`pack_role_undeclared`), on the same rule as an
 ungated type: stated, not inferred. `payload_members` need none of this
@@ -546,7 +549,8 @@ and `ext-pack-restates-core-member` (load refusal).
   `pack_branch_unpinned`, `pack_ungated_type`,
   `pack_restates_core_member`, `pack_member_target_unknown`,
   `pack_role_undeclared`, `pack_response_gated`,
-  `pack_reply_target_unknown`, `pack_refusal_undeclared`,
+  `pack_reply_target_unknown`, `pack_reply_target_ambiguous`,
+  `pack_refusal_undeclared`,
   `pack_schema_path_escape`, `pack_external_ref`,
   `pack_dependency_missing`,
   `pack_fixture_claims_core_unit`, and

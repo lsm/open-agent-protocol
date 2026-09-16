@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ping": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.ambiguous.ping"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "pingResult": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "in_reply_to"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.ambiguous.ping.result"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            },
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "pingEcho": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "in_reply_to"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.ambiguous.ping.echo"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            },
+            "echo": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}
