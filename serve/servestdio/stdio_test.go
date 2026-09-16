@@ -1172,11 +1172,13 @@ func TestStalledDrainCarriesNothingLater(t *testing.T) {
 	}
 }
 
-// TestStallAndMalformedLineBothSurvive pins that the two are not
-// alternatives. A line this framing cannot carry arriving while a response
-// is stuck in out.Write produces both conditions, and a caller needs both:
-// the line number it reports and exits on, and the stall that tells it this
-// output must not be reused.
+// TestStallAndMalformedLineBothSurvive pins that these are not
+// alternatives. A line this framing cannot carry arriving while the loop is
+// parked at the in-flight bound produces three separate conditions, and a
+// caller needs all three: the line number it reports and exits on, the valid
+// requests it read and never served, and the stall that tells it this output
+// must not be reused. Each is a different question errors.Is and errors.As
+// are asked, so none of them may stand in for another.
 func TestStallAndMalformedLineBothSurvive(t *testing.T) {
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) })
@@ -1209,7 +1211,87 @@ func TestStallAndMalformedLineBothSurvive(t *testing.T) {
 		if !errors.Is(err, ErrShutdownStalled) {
 			t.Fatalf("Run returned %v, want the stall to survive alongside it", err)
 		}
+		if !errors.Is(err, ErrRequestsDropped) {
+			t.Fatalf("Run returned %v, want the requests it never served reported too", err)
+		}
 	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
+// gatedFailWriter parks inside its first Write until it is released, then
+// fails that write and every one after it. When the output dies is the whole
+// question in these tests: a writer that fails on contact kills the stream
+// before the in-flight bound is ever full, which is a different teardown
+// entirely from one where the bound is saturated and the output is already
+// broken.
+type gatedFailWriter struct {
+	release chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (w *gatedFailWriter) Write(data []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
+	return 0, io.ErrClosedPipe
+}
+
+// TestDroppedRequestsDoNotHideTheWriteFailure pins the clean teardown, where
+// nothing is abandoned and nothing stalls. The output dies while a worker
+// still holds the only admission slot, so the request the loop is holding
+// can only be refused and is reported as dropped; that worker then settles
+// well inside its window, so the writer is collected normally. The drop is
+// true, but it is not why the host heard nothing — the output was already
+// broken — and a caller told only that requests were dropped would go
+// looking for an adapter that was never slow.
+func TestDroppedRequestsDoNotHideTheWriteFailure(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("slow", &slowProbe{delay: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &gatedFailWriter{release: make(chan struct{}), entered: make(chan struct{})}
+	stdinReader, stdinWriter := io.Pipe()
+	t.Cleanup(func() { stdinWriter.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, writer) }()
+	// One request that answers at once, so there is a line for the writer to
+	// park on; one that answers slowly, so it still holds the only slot when
+	// the output dies; one more for the loop to be holding when it does.
+	for _, line := range []string{
+		`{"id":1,"op":"capabilities","adapter":"memory"}`,
+		`{"id":2,"op":"capabilities","adapter":"slow"}`,
+		`{"id":3,"op":"adapters"}`,
+	} {
+		if _, err := stdinWriter.Write([]byte(line + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-writer.entered                   // the first response reached the output
+	time.Sleep(100 * time.Millisecond) // let the loop park behind the bound
+	close(writer.release)              // and only now does the output die
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRequestsDropped) {
+			t.Fatalf("Run returned %v, want the request it never served reported", err)
+		}
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("Run returned %v, want the write failure reported with it", err)
+		}
+		if errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want no stall: the work settled and the writer was collected", err)
+		}
+	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return")
 	}
 }

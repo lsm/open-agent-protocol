@@ -381,9 +381,12 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	go func() { writerDone <- writeLines(out, lines, stop, abandon, writerFailed, outputFailed) }()
 
 	// The reader reports its terminal outcome on a buffered side channel as
-	// well as in the frame stream, because the serving loop may be inside a
-	// synchronous op and never take that final frame: the host's end of the
-	// session must bound shutdown even then.
+	// well as in the frame stream, because the loop may never take that
+	// final frame: every op here runs on an admitted worker, so the loop
+	// itself parks at the in-flight bound once the admitted work stops
+	// settling, and a frame waiting behind a parked loop is not a frame the
+	// loop will read the end behind. The host's end of the session must
+	// bound shutdown even then.
 	readerDone := make(chan readEnd, 1)
 	// One frame of slack, so the reader is always a frame ahead of the loop:
 	// a loop that has stopped taking frames — parked at the in-flight bound —
@@ -462,9 +465,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		select {
 		case writeErr := <-writerDone:
 			drained = true
-			if err == nil {
-				err = writeErr
-			}
+			// The writer's return joins whatever the loop already
+			// reported rather than only filling a gap. A write that
+			// failed while the loop was holding a frame produces both:
+			// the loop refuses the frame and reports the drop, and the
+			// output the drop would have been written to is dead. A
+			// caller told only that requests were dropped would go
+			// looking for a slow adapter and never find the broken pipe.
+			err = note(err, writeErr)
 		case <-drainWindow.C:
 			// The drain outlived its window, so the writer is parked inside
 			// out.Write on an output the host stopped reading. Stopping it
@@ -500,14 +508,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		// than only filling a gap: a malformed line and a dead output are
 		// two facts, and the host that sent the line is not the reason its
 		// answer never arrived.
-		if outputErr := outputFailed.get(); outputErr != nil {
-			switch {
-			case err == nil:
-				err = outputErr
-			case !errors.Is(err, outputErr):
-				err = fmt.Errorf("%w (%w)", err, outputErr)
-			}
-		}
+		err = note(err, outputFailed.get())
 	}
 	// A loop abandoned mid-op never reported the input's own end, so the
 	// reader's account of it stands in: the same host input returns the same
@@ -515,8 +516,8 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// still fails the frontend closed with its line number and a transport
 	// read failure still surfaces as itself. Only a clean end leaves the
 	// stall as the whole story.
-	if stuck && err == nil {
-		err = ended.terminal()
+	if stuck {
+		err = note(err, ended.terminal())
 	}
 	// The grace window expiring is not itself proof that anything was left
 	// behind. Closing admission releases a loop parked at the in-flight
@@ -531,9 +532,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	select {
 	case loopErr := <-serveDone:
 		released = true
-		if err == nil {
-			err = loopErr
-		}
+		// What the loop says it did with the frames it was holding is
+		// its own fact, not a fallback for a quiet teardown. A malformed
+		// line at the host's end already fills err from the reader's
+		// account above, and the valid requests the loop was holding
+		// when admission closed under it were still read and never
+		// served — which is the whole of what ErrRequestsDropped
+		// promises to tell a caller.
+		err = note(err, loopErr)
 	default:
 	}
 	// The stall and the input's own fault are not alternatives. A malformed
@@ -543,14 +549,30 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// joined rather than one shadowing the other, and errors.Is and
 	// errors.As each still find what they are looking for.
 	if (stuck && !released) || !drained {
-		switch {
-		case err == nil:
-			err = ErrShutdownStalled
-		case !errors.Is(err, ErrShutdownStalled):
-			err = fmt.Errorf("%w (%w)", err, ErrShutdownStalled)
-		}
+		err = note(err, ErrShutdownStalled)
 	}
 	return err
+}
+
+// note adds fact to err rather than letting either shadow the other. Every
+// error Run returns names something that independently happened to this
+// session — the input's own fault, a dead output, requests read but never
+// served, a stage that outlived its window — and none of them is evidence
+// about any of the others. A caller asking errors.Is or errors.As about any
+// one of them is asking a separate question, so each must still get a true
+// answer when several went wrong at once. A fact already carried is not
+// repeated.
+func note(err, fact error) error {
+	switch {
+	case fact == nil:
+		return err
+	case err == nil:
+		return fact
+	case errors.Is(err, fact):
+		return err
+	default:
+		return fmt.Errorf("%w (%w)", err, fact)
+	}
 }
 
 // readEnd is the reader's account of how the input ended: the line it was
@@ -591,9 +613,9 @@ type frameResult struct {
 // context end parks on its send and is reclaimed by process exit, the same
 // discipline as the writer's channel. The terminal outcome is also reported
 // on done — buffered, so the report never blocks, and sent before the final
-// frame — because the consumer may be stuck inside an op and never take that
-// frame, and the host's end of the session must still bound shutdown and
-// still be reported as what it was.
+// frame — because the consumer may be parked at its in-flight bound and
+// never take that frame, and the host's end of the session must still bound
+// shutdown and still be reported as what it was.
 func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- readEnd) {
 	reader := bufio.NewReader(in)
 	line := 0
