@@ -1,0 +1,26 @@
+{
+  "id": "com.example.client",
+  "version": "1.0.0",
+  "schemas": [
+    "client.schema.json"
+  ],
+  "depends_on": [
+    {
+      "id": "com.example.index",
+      "version": "1.0.0"
+    }
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.client.indexed",
+      "role": "event",
+      "schema": "client.schema.json#/$defs/indexed"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.client.indexed",
+      "ungated": true
+    }
+  ]
+}

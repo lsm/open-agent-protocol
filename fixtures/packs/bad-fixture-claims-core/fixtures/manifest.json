@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "claims-core",
+      "path": "trace.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": []
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+[
+  {
+    "id": "capq",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "v1",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "tools": {
+          "level": "unavailable"
+        }
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "v1",
+    "id": "read1",
+    "payload": {
+      "bucket": "reports",
+      "key": "q3.csv",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "com.example.storage.objects.read",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "v1",
+    "id": "res1",
+    "in_reply_to": "read1",
+    "payload": {
+      "bytes": 512,
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "com.example.storage.objects.read.result",
+    "version": "0.1"
+  }
+]

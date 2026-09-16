@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "path"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

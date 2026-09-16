@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "com.example.storage 1.0.0 envelope branches",
+  "$defs": {
+    "objectsRead": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.storage.objects.read"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "bucket",
+            "key"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            },
+            "bucket": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "objectsReadResult": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "in_reply_to"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.storage.objects.read.result"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "bytes"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "objectsChanged": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.storage.objects.changed"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "key"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

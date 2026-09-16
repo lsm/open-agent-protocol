@@ -123,7 +123,7 @@ func TestUndisclosedToolChoiceModeMayBeRefused(t *testing.T) {
 }
 
 // An output_schema is compiled with a loader that refuses every reference
-// outside the document, so an untrusted schema can never make the validator
+// outside the registered resources, so an untrusted schema can never make the validator
 // read a local path or fetch a URL.
 func TestOutputSchemaCompilationIsSelfContained(t *testing.T) {
 	for name, document := range map[string]string{

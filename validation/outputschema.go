@@ -17,17 +17,6 @@ import (
 // schema that compiles here is one whose refusal the validator diagnoses.
 type OutputSchema struct{ compiled *jsonschema.Schema }
 
-// refusingLoader refuses every reference outside the resources the compiler
-// was given. The engine's default loader reads local files, so without this an
-// untrusted `$ref` could make an adapter or a validator read a path or fetch a
-// URL; the draft 2020-12 metaschema is embedded in the engine, so nothing
-// legitimate needs a loader at all.
-type refusingLoader struct{}
-
-func (refusingLoader) Load(url string) (any, error) {
-	return nil, fmt.Errorf("output_schema references %s, which is outside the document", url)
-}
-
 const outputSchemaBase = "https://open-agent-protocol.local/output-schema"
 
 // CompileOutputSchema compiles one submitted output_schema. It fails when the
@@ -58,7 +47,7 @@ func CompileOutputSchema(raw json.RawMessage) (*OutputSchema, error) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
-	compiler.UseLoader(refusingLoader{})
+	compiler.UseLoader(&refusingLoader{})
 	if err := compiler.AddResource(outputSchemaBase, document); err != nil {
 		return nil, fmt.Errorf("output_schema is not a schema this engine accepts: %w", err)
 	}

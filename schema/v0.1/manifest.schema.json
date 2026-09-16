@@ -24,6 +24,12 @@
         { "contains": { "const": "action.schema.json" }, "minContains": 1 },
         { "contains": { "const": "interaction.schema.json" }, "minContains": 1 }
       ]
+    },
+    "extensions": {
+      "description": "Extension packs compiled alongside the core bundle. The schemas list above keeps its seven-of-seven bound, which from here describes the core bundle rather than the whole compiled set: a pack adds vocabulary, it does not amend the protocol.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "pack.schema.json" }
     }
   },
   "additionalProperties": false

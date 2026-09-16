@@ -1,0 +1,30 @@
+[
+  {
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "id": "capq",
+    "type": "capabilities.request",
+    "payload": {}
+  },
+  {
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "v1",
+    "type": "capabilities.response",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "com.example.descriptor.regions": {
+          "level": "native"
+        }
+      },
+      "com.example.descriptor.region": "eu-west"
+    }
+  }
+]

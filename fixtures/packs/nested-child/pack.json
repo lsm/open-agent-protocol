@@ -1,0 +1,20 @@
+{
+  "id": "com.nested.storage",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.nested.storage.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.nested.storage.ping",
+      "ungated": true
+    }
+  ]
+}

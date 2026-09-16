@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "claims-absent",
+      "path": "trace.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "ext:com.example.absent/1.0.0"
+      ],
+      "provenance": []
+    }
+  ]
+}

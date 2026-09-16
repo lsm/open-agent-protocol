@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ping": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.restates.ping"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "note": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "id": "com.example.notarget",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.notarget.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.notarget.ping",
+      "ungated": true
+    },
+    {
+      "payload_type": "com.example.notarget.ping",
+      "member": "com.example.notarget.extra",
+      "ungated": true
+    }
+  ],
+  "payload_members": [
+    {
+      "payload_type": "com.example.notarget.ping",
+      "member": "com.example.notarget.extra",
+      "schema": {
+        "type": "string"
+      }
+    }
+  ]
+}

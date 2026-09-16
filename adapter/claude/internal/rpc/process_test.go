@@ -210,8 +210,13 @@ while IFS= read -r line; do :; done
 		t.Fatal(err)
 	}
 	defer process.Close(context.Background()) //nolint:errcheck
+	// The script writes the secret line and the overflowing line as two
+	// separate writes, and the buffer marks truncation only once a write
+	// overflows the limit. Waiting for any stderr at all can observe the
+	// first line alone on a slow runner; wait for the state the assertions
+	// need, bounded by the deadline so a regression still fails.
 	deadline := time.Now().Add(5 * time.Second)
-	for process.Stderr() == "" && time.Now().Before(deadline) {
+	for !strings.Contains(process.Stderr(), "[truncated]") && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	captured := process.Stderr()

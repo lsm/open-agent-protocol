@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,6 +73,12 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	// for or fail the forward compatibility the live path needs. strict is
 	// the default so every existing invocation is unchanged.
 	modeFlag := fs.String("mode", string(validation.ModeStrict), "validation mode: strict (the bundle as published) or tolerant (the extension rules: unknown fields, enum values, and envelope types are accepted)")
+	// Packs are opt-in on the command line for the same reason the mode is:
+	// which vocabulary is in force must be the caller's stated choice, not
+	// inferred from the input. With the pack loaded its envelopes are validated
+	// against its own branches; without it they take the tolerant unknown path.
+	var packs repeatedFlag
+	fs.Var(&packs, "pack", "load an extension pack from a directory containing pack.json; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -85,7 +92,11 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() == 0 {
 		return errors.New("validate requires at least one file")
 	}
-	validator, err := validation.NewWith(validation.Options{Mode: mode})
+	loaded, err := validation.LoadPacks(packs)
+	if err != nil {
+		return err
+	}
+	validator, err := validation.NewWith(validation.Options{Mode: mode, Packs: loaded})
 	if err != nil {
 		return err
 	}
@@ -131,6 +142,12 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	}
 	return nil
 }
+
+// repeatedFlag collects a flag given more than once, in the order it was given.
+type repeatedFlag []string
+
+func (f *repeatedFlag) String() string     { return strings.Join(*f, ",") }
+func (f *repeatedFlag) Set(v string) error { *f = append(*f, v); return nil }
 
 func runFixtures(args []string, stdout io.Writer) error {
 	if len(args) > 1 {

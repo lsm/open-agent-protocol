@@ -108,6 +108,10 @@ type state struct {
 	// skipped. Without it a tolerated unknown run event at sequence N would be
 	// ignored and the next known event at N+1 diagnosed as sequence_gap.
 	tolerant bool
+	// packs is the loaded extension vocabulary. A packed type resolves its
+	// role and its feature key through the pack that declared it; the rules
+	// themselves are the core ones, in packstate.go.
+	packs *PackSet
 }
 
 func newState(f string) *state {
@@ -130,9 +134,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		return
 	}
 	s.ids[e.ID] = i
-	if isRequest(e.Type) {
+	if s.isRequestType(e.Type) {
 		session, run := requestScope(e)
-		if s.tolerant && !isKnownType(e.Type) {
+		if s.envelopeScoped(e.Type) {
 			// An unknown request has no typed payload decoder, but its
 			// generic payload scope and its envelope scope are still the
 			// wire's own: they must agree, and the result is retained so the
@@ -151,7 +155,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run, interaction: envelopeInteraction(e)}
 	}
 	duplicateResponse := false
-	if isResponse(e.Type) {
+	if s.isResponseType(e.Type) {
 		duplicateResponse = !s.response(i, line, e)
 	}
 	// capabilities.updated is the one operation that legitimately carries a
@@ -389,8 +393,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	default:
 		if isRunEvent(e.Type) {
 			s.runEvent(i, line, e)
-		} else if s.tolerant && !isKnownType(e.Type) {
-			// Tolerant mode classifies an unknown type by its wire scope.
+		} else if s.envelopeScoped(e.Type) {
+			// A type this revision does not define is classified by its wire
+			// scope, whether it is tolerated or claimed by a loaded pack.
 			// Whatever the type is called, the generic session_id and run_id
 			// its payload declares must agree with its envelope (a request or
 			// response was already held to that above). An envelope carrying
@@ -404,7 +409,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 				// runEvent is the sole scope checker for a run event; a
 				// second generic check here would report one defect twice.
 				s.runEvent(i, line, e)
-			case !isRequest(e.Type):
+			case !s.isRequestType(e.Type):
 				// An unknown request was held to this above. An unknown
 				// response is held to it here, whether or not it correlated
 				// with a request, as a known response is in its own case.
@@ -413,6 +418,11 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			}
 		}
 	}
+	// The pack rules run after the core case so a packed member on a core
+	// response is judged against the descriptor that response installs: the
+	// initial capabilities.response advertises the very key its own packed
+	// member is gated on, and no revision is current before it.
+	s.packEnvelope(i, line, e)
 }
 
 // isKnownType reports whether the type is one this revision defines. The
@@ -421,11 +431,15 @@ func isKnownType(t protocol.EnvelopeType) bool {
 	return payloadTarget(t) != nil
 }
 
-// tolerantRunEvent reports whether an envelope of unknown type is classified
-// as a run-scoped event in tolerant mode: it carries both run_id and
-// sequence. runEvent then does its scope check and run bookkeeping.
+// tolerantRunEvent reports whether an envelope whose type this revision does
+// not define is classified as a run-scoped event: it carries both run_id and
+// sequence. runEvent then does its scope check and run bookkeeping. A type a
+// loaded pack claims is classified the same way as a tolerated one — a pack
+// adds vocabulary, not a second lifecycle — so a packed run event advances the
+// run cursor rather than leaving a gap for the next core event to be blamed
+// for.
 func (s *state) tolerantRunEvent(e protocol.Envelope) bool {
-	return s.tolerant && !isKnownType(e.Type) && e.RunID != "" && e.Sequence != nil
+	return s.envelopeScoped(e.Type) && e.RunID != "" && e.Sequence != nil
 }
 
 // unknownScope is the scope of an envelope whose type this revision does not
@@ -463,7 +477,7 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 		s.add(CodeUnmatchedResponse, i, line, e, "/in_reply_to", "response does not match an earlier request")
 		return true
 	}
-	if expected := expectedResponse(req.typ); e.Type != expected && e.Type != protocol.TypeErrorResponse {
+	if expected := s.expectedResponse(req.typ); e.Type != expected && e.Type != protocol.TypeErrorResponse {
 		s.addExpected(CodeUnmatchedResponse, i, line, e, "/type", "response type does not match request", string(expected), string(e.Type), string(e.InReplyTo))
 		return true
 	}
@@ -492,7 +506,7 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	// A scoped response must answer within the request's scope: an internally
 	// consistent response for another session or run cannot answer this request.
 	session, run := responseScope(e)
-	if s.tolerant && !isKnownType(e.Type) {
+	if s.envelopeScoped(e.Type) {
 		// An unknown response, like an unknown request, is scoped by its
 		// generic payload members and its envelope; the correlation check
 		// binds it to the request it answers. Its own envelope/payload
@@ -1147,6 +1161,14 @@ func (s *state) lookupInteraction(run protocol.RunID, id protocol.InteractionID)
 	return nil
 }
 func (s *state) feature(i, line int, e protocol.Envelope, name string) {
+	// A core feature name is shorthand for the descriptor keys it may live
+	// under; a packed key (see packFeature) is never expanded.
+	s.featureKeys(i, line, e, []string{name, "session.message." + name, "agent_control." + name, "action." + name})
+}
+
+// featureKeys judges an envelope's use of an optional feature against the
+// first of the given descriptor keys the descriptor names.
+func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
 	if s.currentCapability == "" || s.capabilitiesStale {
 		s.add(CodeUnavailableCapability, i, line, e, "/type", "optional feature requires a current capability descriptor")
 		return
@@ -1155,7 +1177,7 @@ func (s *state) feature(i, line int, e protocol.Envelope, name string) {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "optional feature must cite the active capability descriptor", s.currentCapability, string(e.CapabilityRevision))
 		return
 	}
-	for _, key := range []string{name, "session.message." + name, "agent_control." + name, "action." + name} {
+	for _, key := range keys {
 		if level, ok := s.features[key]; ok {
 			switch level {
 			case protocol.SupportNative, protocol.SupportEmulated, protocol.SupportDegraded:

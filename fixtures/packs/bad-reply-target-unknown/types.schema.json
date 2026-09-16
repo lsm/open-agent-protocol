@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "result": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.noreply.result"
+        }
+      }
+    }
+  }
+}

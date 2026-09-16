@@ -1,0 +1,14 @@
+[
+  {
+    "id": "ev1",
+    "payload": {
+      "path": "reports/q3.csv",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "com.example.client.indexed",
+    "version": "0.1"
+  }
+]

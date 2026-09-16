@@ -27,6 +27,7 @@ Protocol artifacts:
 
 - [Illustrative protocol envelopes](examples/README.md)
 - `fixtures/`: normative executable conformance traces
+- `fixtures/packs/`: extension packs, loadable with `oap validate -pack`
 - `schema/v0.1/`: JSON Schema bundle for the agent-control core
 
 Executable core (Go 1.27 or later):
@@ -39,6 +40,26 @@ The command validates positive and negative fixtures and drives the deterministi
 in-memory reference adapter. The reference adapter proves the public adapter
 boundary and bounded process-memory recovery; it is not a production harness or
 a durable persistence implementation.
+
+### Validating a trace (`oap validate`)
+
+```sh
+go run ./cmd/oap validate [--format=human|json] [-mode strict|tolerant] [-pack <dir>]... <trace.json>...
+```
+
+`-mode strict` (the default) compiles the bundle exactly as published: an
+unknown member, enum value, or envelope type fails. `-mode tolerant` compiles
+it under the layered draft's extension rules, so a later revision's additive
+field or an extension's envelope type is accepted on the common fields alone.
+
+`-pack` loads an extension pack — a directory holding a `pack.json` descriptor
+and the schemas it contributes — and is repeatable. With the pack loaded its
+envelope types are validated against its own branches and its capability keys
+are gated exactly as core keys are; without it the same envelopes take the
+tolerant unknown path. Both flags are the caller's stated choice and neither is
+inferred from the input: a live envelope saved to a file is indistinguishable
+from a fixture. `fixtures/packs/storage` is a worked pack, and
+[Decision 0004](decisions/0004-extension-packs.md) specifies the format.
 
 ### Run controls (`+run-controls`)
 
