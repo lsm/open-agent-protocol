@@ -115,8 +115,22 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: true,
 		},
 		{
+			// A later revision's optional member on a known content kind is
+			// ignored like any other unknown member: the branch's required
+			// members and types stay exact, its closedness does not.
+			name: "text content part with an additive member",
+			envelope: func(t *testing.T) map[string]any {
+				e := firstOfType(t, loadTrace(t, "core-completed.json"), "session.message.submit.request")
+				messages := e["payload"].(map[string]any)["messages"].([]any)
+				messages[0].(map[string]any)["content"] = []any{map[string]any{"type": "text", "text": "hi", "annotations": []any{map[string]any{"kind": "cite"}}}}
+				return e
+			},
+			strict: false, tolerant: true,
+		},
+		{
 			// A known kind with a malformed body is rejected in both modes:
-			// known branches stay strict, only an unknown kind is tolerated.
+			// the branch's required members and member types stay exact, so
+			// only an unknown kind takes the fallback.
 			name: "text content part missing text",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "session.message.submit.request")

@@ -117,9 +117,9 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 // rules are the layered draft's extension rules made mechanical:
 //
 //   - `additionalProperties: false` is lifted from every object schema, so an
-//     unknown member is ignored rather than rejected. The one exception is the
-//     immediate branch of a discriminated union, which stays closed: a known
-//     content kind with a malformed body must still fail.
+//     unknown member is ignored rather than rejected — on a payload, on a
+//     nested object, and on a known branch of a discriminated union alike, so
+//     a later revision's optional member on a known content kind passes.
 //   - An extensible leaf `enum` of strings is widened to `type: string`, so an
 //     unknown value surfaces as a string instead of failing the message.
 //   - A `const` is never lifted. It is a fixed semantic value, not a vocabulary:
@@ -132,8 +132,11 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 //   - A `oneOf`/`anyOf` whose every member pins a `const` on one property is
 //     a discriminated union; it gains a fallback branch that accepts an object
 //     whose discriminator is a string outside the known set and that carries
-//     only the members every branch requires. Known branches stay strict, an
-//     unknown kind is tolerated, a known kind with a bad body is rejected.
+//     only the members every branch requires. A known branch keeps its
+//     discriminator const, required members, and member types exact, which
+//     is what rejects a known kind with a malformed body; closedness adds
+//     nothing to that and is lifted like everywhere else. An unknown kind
+//     is tolerated by the fallback, which excludes every known discriminator.
 //     The envelope root's oneOf over `type` is the largest instance; the
 //     content-part union is the other.
 func tolerate(document any) any {
@@ -142,8 +145,7 @@ func tolerate(document any) any {
 }
 
 type walkContext struct {
-	inIf       bool
-	branchRoot bool
+	inIf bool
 }
 
 type tolerator struct {
@@ -182,7 +184,7 @@ func (t *tolerator) walkObject(m map[string]any, ctx walkContext) map[string]any
 			if discriminator, known, common, ok := t.discriminated(members); ok {
 				walked := make([]any, 0, len(members)+1)
 				for _, member := range members {
-					walked = append(walked, t.walk(member, walkContext{branchRoot: true}))
+					walked = append(walked, t.walk(member, walkContext{}))
 				}
 				walked = append(walked, fallbackBranch(discriminator, known, common))
 				delete(out, key)
@@ -196,7 +198,7 @@ func (t *tolerator) walkObject(m map[string]any, ctx walkContext) map[string]any
 				out["type"] = "string"
 			}
 		}
-		if ap, ok := out["additionalProperties"]; ok && ap == false && !ctx.branchRoot {
+		if ap, ok := out["additionalProperties"]; ok && ap == false {
 			delete(out, "additionalProperties")
 		}
 	}
