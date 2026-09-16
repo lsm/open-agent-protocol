@@ -512,6 +512,19 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// read failure still surfaces as itself. Only a clean end leaves the
 	// stall as the whole story.
 	if stuck {
+		// The reader reports on a buffered channel, so its account is taken
+		// here whatever ended this session, not only when the reader's
+		// branch is what began the teardown. On this tree the two amount to
+		// the same thing — every point the loop can block at observes the
+		// context, so a cancelled session's loop returns and is never
+		// stuck — but that is an argument about send and about a select in
+		// another function. Reading the channel makes the line number
+		// survive without it, so a blocking point added later cannot
+		// quietly cost a host its fail-closed report.
+		select {
+		case ended = <-readerDone:
+		default:
+		}
 		err = note(err, ended.terminal())
 	}
 	// The grace window expiring is not itself proof that anything was left
