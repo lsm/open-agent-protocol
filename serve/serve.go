@@ -215,8 +215,14 @@ type SessionStatus struct {
 	Adapter string
 	// Status is the adapter-reported session status.
 	Status protocol.SessionStatus
-	// ActiveRunID names the session's active run, if any.
+	// ActiveRunID names the session's started run, if any.
 	ActiveRunID protocol.RunID
+	// ActiveRuns is every nonterminal run of the session in admission order,
+	// as the adapter reports it. A session holding a queued reservation
+	// beside a started run cannot be described by ActiveRunID alone, and a
+	// management listing that showed only the started run would report a
+	// session as having one run's worth of work outstanding when it has two.
+	ActiveRuns []protocol.ActiveRun
 	// CreatedAt is when the session was opened through the hub.
 	CreatedAt time.Time
 }
@@ -232,9 +238,11 @@ func (h *Hub) Sessions(ctx context.Context) []SessionStatus {
 		state, err := entry.session.State(ctx)
 		status.Status = state.Status
 		status.ActiveRunID = state.ActiveRunID
+		status.ActiveRuns = state.ActiveRuns
 		if err != nil && !errors.Is(err, base.ErrSessionClosed) {
 			status.Status = protocol.SessionError
 			status.ActiveRunID = ""
+			status.ActiveRuns = nil
 		}
 		statuses = append(statuses, status)
 	}

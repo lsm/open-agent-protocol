@@ -1036,3 +1036,60 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
 	}
 }
+
+// A queued admission and the state that describes it must survive the wire:
+// the daemon relays the reservation, the state response lists both
+// nonterminal runs in admission order, and the management listing reports the
+// same set rather than the started run alone.
+func TestQueuedSubmissionRoundTrips(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "queue-http")
+	_, first := submitRun(t, server, "queue-http", "submit-first")
+
+	queued := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-queued", protocol.MessageSubmitRequest{
+		SessionID: "queue-http", Delivery: protocol.DeliveryQueue,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}},
+	}, "queue-http", "", "")
+	status, reservation := postEnvelope(t, server, "/sessions/queue-http/submit", queued)
+	if status != http.StatusOK {
+		t.Fatalf("reservation status = %d: %s", status, reservation.Payload)
+	}
+	requireEnvelopeSchema(t, reservation)
+	var reserved protocol.MessageSubmitResponse
+	if err := reservation.DecodePayload(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved.Admission != protocol.AdmissionQueued || reserved.RequestedDelivery != protocol.DeliveryQueue ||
+		reserved.EffectiveDelivery != protocol.EffectiveDeliveryQueue || reserved.Status != protocol.RunQueued {
+		t.Fatalf("reservation = %+v", reserved)
+	}
+
+	response, err := server.Client().Get(server.URL + "/sessions/queue-http/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	envelope, err := protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEnvelopeSchema(t, envelope)
+	var state protocol.SessionState
+	if err := envelope.DecodePayload(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 2 || state.ActiveRuns[0].RunID != first.RunID || state.ActiveRuns[1].RunID != reserved.RunID {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	if state.ActiveRuns[1].QueuePosition == nil || *state.ActiveRuns[1].QueuePosition != 1 {
+		t.Fatalf("queue position = %+v", state.ActiveRuns[1])
+	}
+	if state.ActiveRunID != first.RunID {
+		t.Fatalf("active_run_id = %q", state.ActiveRunID)
+	}
+
+	if info := sessionAt(t, listSessions(t, server), "queue-http"); len(info.ActiveRuns) != 2 {
+		t.Fatalf("listing active_runs = %+v", info.ActiveRuns)
+	}
+}

@@ -169,7 +169,7 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 		}
 		return admission, err
 	}
-	s.adoptRun(admission.RunID, stream)
+	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
 	return admission, nil
 }
 
@@ -425,17 +425,48 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 // subscribers' outcome — but a deferred stream error is first delivered to
 // the cohort that observed the failed run: such errors are terminal for
 // the subscriptions that saw them, and a newer run must not bury one.
-func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
+// A queued admission is a reservation, not a run in flight: it has published
+// nothing and may never publish anything but a pre-start terminal. It
+// therefore takes an admission serial and a draining reader, but does not
+// become the run a bare replay cursor resolves onto and does not supersede
+// the started run's deferred end. It becomes current where it actually
+// begins, on the first envelope of its own execution.
+func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream, queued bool) {
 	s.mu.Lock()
 	s.reservations--
 	s.readers++
-	s.runID = runID
 	s.nextSerial++
 	s.serials[runID] = s.nextSerial
-	errored, failed := s.supersedeLocked()
+	var errored []*subscriber
+	var failed *terminalState
+	if !queued {
+		s.runID = runID
+		errored, failed = s.supersedeLocked()
+	}
 	s.mu.Unlock()
 	s.deliverDeferredError(errored, failed)
 	go s.readRun(runID, stream, 0)
+}
+
+// promoteCurrent makes a later-admitted run the one a bare replay cursor
+// resolves onto, once it publishes something that is not its own settlement.
+// A reservation that settles before promotion never executed, so its terminal
+// leaves the started run as the cursor's target — resolving a legacy client's
+// cursor onto a run that produced one envelope and stopped would strand it.
+func (s *Session) promoteCurrent(runID protocol.RunID, envelope protocol.Envelope) {
+	switch envelope.Type {
+	case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+		return
+	}
+	s.mu.Lock()
+	if s.runID == runID || s.serials[runID] <= s.serials[s.runID] {
+		s.mu.Unlock()
+		return
+	}
+	s.runID = runID
+	errored, failed := s.supersedeLocked()
+	s.mu.Unlock()
+	s.deliverDeferredError(errored, failed)
 }
 
 // supersedeLocked clears the deferred finish state a new run supersedes,
@@ -546,6 +577,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 			}(stream)
 			break
 		}
+		s.promoteCurrent(runID, result.Envelope)
 		s.publish(result.Envelope)
 	}
 	if reserved > 0 && runID == "" {

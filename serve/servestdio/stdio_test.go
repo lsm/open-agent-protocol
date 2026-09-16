@@ -1183,3 +1183,72 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 }
+
+// The stdio frontend mirrors the HTTP daemon one for one, so a queued
+// submission and the state that describes it must survive this codec too: the
+// reservation is relayed, the state op lists both nonterminal runs in
+// admission order, and the sessions listing reports the same set.
+func TestQueuedSubmissionOverStdio(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "queue-stdio")
+	f := startFrontend(t, hub, Options{})
+
+	f.send(`{"id":1,"op":"submit","session_id":"queue-stdio","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "queue-stdio", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("first")}},
+	}, "queue-stdio", "")) + `}`)
+	first := f.expectResponse(1)
+	requireOK(t, first)
+
+	f.send(`{"id":2,"op":"submit","session_id":"queue-stdio","request":` + string(requestEnvelope(t, "submit-2", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "queue-stdio", Delivery: protocol.DeliveryQueue,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}},
+	}, "queue-stdio", "")) + `}`)
+	reservation := f.expectResponse(2)
+	requireOK(t, reservation)
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(reservation.Result, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var reserved protocol.MessageSubmitResponse
+	if err := envelope.DecodePayload(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved.Admission != protocol.AdmissionQueued || reserved.RequestedDelivery != protocol.DeliveryQueue ||
+		reserved.EffectiveDelivery != protocol.EffectiveDeliveryQueue {
+		t.Fatalf("reservation = %+v", reserved)
+	}
+
+	f.send(`{"id":3,"op":"state","session_id":"queue-stdio"}`)
+	stateResponse := f.expectResponse(3)
+	requireOK(t, stateResponse)
+	if err := json.Unmarshal(stateResponse.Result, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var state protocol.SessionState
+	if err := envelope.DecodePayload(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 2 || state.ActiveRuns[1].RunID != reserved.RunID {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	if state.ActiveRuns[1].QueuePosition == nil || *state.ActiveRuns[1].QueuePosition != 1 {
+		t.Fatalf("queue position = %+v", state.ActiveRuns[1])
+	}
+
+	f.send(`{"id":4,"op":"sessions"}`)
+	listing := f.expectResponse(4)
+	requireOK(t, listing)
+	var sessions struct {
+		Sessions []sessionInfo `json:"sessions"`
+	}
+	if err := json.Unmarshal(listing.Result, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Sessions) != 1 || len(sessions.Sessions[0].ActiveRuns) != 2 {
+		t.Fatalf("sessions listing = %+v", sessions.Sessions)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}

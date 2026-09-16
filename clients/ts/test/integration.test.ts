@@ -151,6 +151,33 @@ test(
     const state = await session.state();
     assert.equal(state.status, 'idle');
     await session.close();
+
+    // The queue reaches the client as the reservation it is. A second session
+    // carries it, because this client does not yet follow a session across run
+    // domains: a subscription still reads the one run it is bound to.
+    assert.equal(caps.descriptor.limits?.max_queued_runs_per_session, 1);
+    const queued = await client.open('memory', { sessionId: 'ts-integration-queue' });
+    const started = await queued.submit({
+      messages: [{ role: 'user', content: 'parks at the gate' }],
+      delivery: 'auto',
+    });
+    const reservation = await queued.submit({
+      messages: [{ role: 'user', content: 'after you' }],
+      delivery: 'queue',
+    });
+    assert.equal(reservation.admission, 'queued');
+    assert.equal(reservation.effective_delivery, 'queue');
+    // The state the client reads describes both nonterminal runs: a caller
+    // seeing only active_run_id would think one run's work was outstanding.
+    const busy = await queued.state();
+    assert.equal(busy.active_runs?.length, 2);
+    assert.equal(busy.active_runs?.[0].run_id, started.run_id);
+    assert.equal(busy.active_runs?.[1].run_id, reservation.run_id);
+    assert.equal(busy.active_runs?.[1].queue_position, 1);
+    assert.equal(busy.active_run_id, started.run_id);
+    await queued.cancel(reservation.run_id ?? '');
+    await queued.cancel(started.run_id ?? '');
+    await queued.close();
   },
 );
 

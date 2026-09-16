@@ -169,11 +169,12 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 }
 
 type sessionInfo struct {
-	SessionID   string `json:"session_id"`
-	Adapter     string `json:"adapter"`
-	Status      string `json:"status"`
-	ActiveRunID string `json:"active_run_id,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	SessionID   string               `json:"session_id"`
+	Adapter     string               `json:"adapter"`
+	Status      string               `json:"status"`
+	ActiveRunID string               `json:"active_run_id,omitempty"`
+	ActiveRuns  []protocol.ActiveRun `json:"active_runs,omitempty"`
+	CreatedAt   string               `json:"created_at"`
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -183,7 +184,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		infos = append(infos, sessionInfo{
 			SessionID: string(status.SessionID), Adapter: status.Adapter,
 			Status: string(status.Status), ActiveRunID: string(status.ActiveRunID),
-			CreatedAt: status.CreatedAt.UTC().Format(time.RFC3339),
+			ActiveRuns: status.ActiveRuns,
+			CreatedAt:  status.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": infos})
