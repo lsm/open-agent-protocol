@@ -1,0 +1,119 @@
+[
+  {
+    "id": "caps-req",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "models-v1",
+    "id": "caps-resp",
+    "in_reply_to": "caps-req",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Models fixture endpoint"
+      },
+      "features": {
+        "models.list": {
+          "level": "native"
+        },
+        "run.model_selection": {
+          "level": "emulated",
+          "mode": "per_run"
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.message.submit": {
+          "level": "native"
+        },
+        "session.open": {
+          "level": "native"
+        },
+        "session.state": {
+          "level": "native"
+        }
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "models-v1",
+    "id": "models-req",
+    "payload": {
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "models.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "models-v1",
+    "id": "models-resp",
+    "in_reply_to": "models-req",
+    "payload": {
+      "current_model_id": "m1",
+      "models": [
+        {
+          "default": true,
+          "id": "m1"
+        },
+        {
+          "id": "m2"
+        }
+      ],
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "models.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "models-v1",
+    "id": "submit-req",
+    "payload": {
+      "delivery": "auto",
+      "messages": [
+        {
+          "content": "go",
+          "role": "user"
+        }
+      ],
+      "model_id": "m2",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.request",
+    "version": "0.1"
+  },
+  {
+    "id": "submit-err",
+    "in_reply_to": "submit-req",
+    "payload": {
+      "error": {
+        "code": "model_not_found",
+        "details": {
+          "model_id": "m2"
+        },
+        "message": "unknown model"
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "error.response",
+    "version": "0.1"
+  }
+]

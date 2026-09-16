@@ -78,6 +78,29 @@ const (
 	CodeDegradedWithoutOptin      = "degraded_without_optin"
 	CodeDuplicateToolName         = "duplicate_tool_name"
 	CodeUndisclosedSelectionModes = "undisclosed_selection_modes"
+
+	// The models unit. A catalog is a promise that its ids are selectable and
+	// that nothing else is, so each of these names one way the published
+	// catalog and the endpoint's own behaviour disagree.
+	//
+	// CodeModelNotInCatalog: a selection and the catalog contradict each other
+	// in either direction — an admitted model the catalog does not list, a
+	// listed model refused as missing, a refusal that names no id the caller
+	// can act on, or a catalog whose own current_model_id it does not describe.
+	//
+	// CodeAmbiguousDefaultModel: more than one descriptor claims to be the
+	// default, so the catalog names no default at all.
+	//
+	// CodeDuplicateModelID: two descriptors share an id, so an accepted
+	// model_id denotes no single descriptor's metadata.
+	//
+	// CodeUnannouncedCatalogChange: the catalog changed under one capability
+	// revision. The catalog is part of the capability snapshot, so a change
+	// that no capabilities.updated announced is one no consumer can observe.
+	CodeModelNotInCatalog        = "model_not_in_catalog"
+	CodeAmbiguousDefaultModel    = "ambiguous_default_model"
+	CodeDuplicateModelID         = "duplicate_model_id"
+	CodeUnannouncedCatalogChange = "unannounced_catalog_change"
 )
 
 type Diagnostic struct {
