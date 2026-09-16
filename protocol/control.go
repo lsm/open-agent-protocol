@@ -215,16 +215,17 @@ type SessionOpenRequest struct {
 }
 
 // SessionOpenResponse is the session state an open confirms. The schema
-// aliases it to the session state document, so CurrentModelID is the model a
-// control-free submission would use: the first snapshot a control layer sees,
-// and the one a catalog's current_model_id is judged against.
-type SessionOpenResponse struct {
-	SessionID      SessionID                  `json:"session_id"`
-	Status         SessionStatus              `json:"status"`
-	CurrentModelID string                     `json:"current_model_id,omitempty"`
-	Metadata       map[string]json.RawMessage `json:"metadata,omitempty"`
-	Recovery       *RecoveryMetadata          `json:"recovery,omitempty"`
-}
+// defines session.open.response as the state document itself
+// (session.schema.json: openResponse is a $ref to state), so it is one type
+// here, as it already is in the TypeScript client and as the two sibling
+// state responses already are below. It was a hand-written subset of those
+// members, which meant a daemon had to copy them across one by one and could
+// silently drop any it forgot.
+//
+// CurrentModelID is therefore the model a control-free submission would use:
+// the first snapshot a control layer sees, and the one a catalog's
+// current_model_id is judged against.
+type SessionOpenResponse = SessionState
 
 type SessionStateRequest struct {
 	SessionID SessionID `json:"session_id"`

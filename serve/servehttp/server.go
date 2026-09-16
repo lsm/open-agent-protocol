@@ -235,9 +235,12 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	// re-reading state here could fail after registration (an expired
 	// request context, a flaky adapter probe) and report a successful open
 	// as 502 while the session stays live in the hub.
-	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), protocol.SessionOpenResponse{
-		SessionID: state.SessionID, Status: state.Status,
-	})
+	//
+	// The state goes on the wire whole. Naming members here copied two of
+	// them and dropped the rest, so an adapter that reported the session's
+	// model at open — the first snapshot a control layer sees — had it
+	// discarded on the way out.
+	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), state)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
 		return
