@@ -429,12 +429,20 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	run.closeAdmission()
 	workDone := make(chan struct{})
 	go func() { run.work.Wait(); close(workDone) }()
-	drainWindow := time.NewTimer(s.shutdown)
-	defer drainWindow.Stop()
+	workWindow := time.NewTimer(s.shutdown)
+	defer workWindow.Stop()
 	drained := false
 	select {
 	case <-workDone:
 		close(stop)
+		// The drain opens its own window here rather than inheriting what
+		// the worker wait left of a shared one: workers that finish near
+		// the end of their window would otherwise leave almost no budget to
+		// flush responses they had already settled, so a session could be
+		// reported stalled for want of the milliseconds its own workers
+		// spent.
+		drainWindow := time.NewTimer(s.shutdown)
+		defer drainWindow.Stop()
 		select {
 		case writeErr := <-writerDone:
 			drained = true
@@ -450,7 +458,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 			// the caller has taken back.
 			close(abandon)
 		}
-	case <-drainWindow.C:
+	case <-workWindow.C:
 		// The workers being abandoned here may still finish, and the writer
 		// must not outlive Run waiting to carry what they produce: an
 		// orphaned writer holds the caller's output and could emit a stale
@@ -472,9 +480,17 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		// this window just gave up on — but it is still the truest account
 		// of why nothing reached the host, so it is read from where the
 		// writer records it rather than from a return this path never
-		// collects.
-		if err == nil {
-			err = outputFailed.get()
+		// collects. It joins whatever the input already produced rather
+		// than only filling a gap: a malformed line and a dead output are
+		// two facts, and the host that sent the line is not the reason its
+		// answer never arrived.
+		if outputErr := outputFailed.get(); outputErr != nil {
+			switch {
+			case err == nil:
+				err = outputErr
+			case !errors.Is(err, outputErr):
+				err = fmt.Errorf("%w (%w)", err, outputErr)
+			}
 		}
 	}
 	// A loop abandoned mid-op never reported the input's own end, so the
@@ -486,13 +502,31 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	if stuck && err == nil {
 		err = ended.terminal()
 	}
+	// The grace window expiring is not itself proof that anything was left
+	// behind. Closing admission releases a loop parked at the in-flight
+	// bound, so a session whose workers were merely slow finishes here
+	// after all — and if its work then settled and its responses drained,
+	// nothing was abandoned and the stall is not this session's story. The
+	// loop is asked rather than the timer. Its return value says nothing
+	// about the input, though: a released loop returns because admission
+	// closed, not because the host ended anything, which is why the
+	// reader's account above is what stands in either way.
+	released := false
+	select {
+	case loopErr := <-serveDone:
+		released = true
+		if err == nil {
+			err = loopErr
+		}
+	default:
+	}
 	// The stall and the input's own fault are not alternatives. A malformed
 	// line that arrives while a response is stuck in out.Write produces
 	// both, and a caller needs both: the line number to report and exit on,
 	// and the stall to know this output must not be reused. So the two are
 	// joined rather than one shadowing the other, and errors.Is and
 	// errors.As each still find what they are looking for.
-	if stuck || !drained {
+	if (stuck && !released) || !drained {
 		switch {
 		case err == nil:
 			err = ErrShutdownStalled

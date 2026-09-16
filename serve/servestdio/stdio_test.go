@@ -1259,6 +1259,89 @@ func TestAbandonedTeardownStillReportsTheWriteFailure(t *testing.T) {
 	}
 }
 
+// slowProbe answers after a delay, standing in for an adapter that is busy
+// rather than broken.
+type slowProbe struct{ delay time.Duration }
+
+func (a *slowProbe) Probe(context.Context) (base.Descriptor, error) {
+	time.Sleep(a.delay)
+	return base.Descriptor{
+		Capabilities: protocol.CapabilityDescriptor{
+			Endpoint:         protocol.EndpointDescriptor{ID: "slow.test", Name: "Slow test adapter", Version: "0.1", Adapter: "process-memory-script"},
+			ProtocolVersions: []string{protocol.Version},
+			Profiles:         []string{protocol.Profile},
+		},
+		CapabilityRevision: "slow-test-v1",
+	}, nil
+}
+
+func (a *slowProbe) Open(context.Context, base.OpenRequest) (base.Session, error) {
+	return nil, errors.New("slowProbe opens no session")
+}
+
+// TestSlowWorkersBehindTheBoundSettleCleanly pins that missing the grace
+// window is not the same as abandoning something. A loop parked at the
+// in-flight bound cannot return while the bound holds, so the window
+// expires — but closing admission releases it, and if the work then settles
+// and its responses drain, nothing was left behind. Reporting a stall there
+// would tell a caller its output is unusable when every answer arrived.
+func TestSlowWorkersBehindTheBoundSettleCleanly(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("slow", &slowProbe{delay: 250 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 150 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
+	drained := make(chan int, 1)
+	go func() {
+		reader := bufio.NewReader(stdoutReader)
+		lines := 0
+		for {
+			if _, err := reader.ReadString('\n'); err != nil {
+				drained <- lines
+				return
+			}
+			lines++
+		}
+	}()
+	// Three ops against a bound of one: the loop parks holding the second
+	// while the third waits, so the grace window cannot be met.
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"capabilities","adapter":"slow"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want a clean end: slow is not stalled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	if err := stdoutWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The admitted op's response reached the host. The two the loop had not
+	// admitted when the host disconnected are not served — that is the
+	// existing rule for work admission refuses, not something this test
+	// asserts about — and the point here is only that a session which
+	// settled and drained is not reported as stalled.
+	if lines := <-drained; lines < 1 {
+		t.Fatalf("%d responses reached the host, want the admitted op answered", lines)
+	}
+}
+
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
 // show: once an invocation has closed admission, it refuses, so a serving
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a
