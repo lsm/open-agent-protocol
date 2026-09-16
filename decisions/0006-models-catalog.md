@@ -71,13 +71,21 @@ was conforming when it was given owe a different code.
 
 ### A catalog belongs to the revision it was served under
 
-The catalog is part of the capability snapshot. A `capabilities.updated` or a
-new `capabilities.response` discards it, so no admission is judged against a
-stale list: a newly added model is not falsely diagnosed, and a removed one is
-not silently accepted. Within one revision the catalog may not move — a second
-response whose descriptors differ in any member is `unannounced_catalog_change`
-— because availability that changes with nothing to announce it is
-availability no consumer can observe.
+The catalog is part of the capability snapshot. A `capabilities.updated`, or a
+new `capabilities.response` that *changes the active revision*, discards it, so
+no admission is judged against a stale list: a newly added model is not falsely
+diagnosed, and a removed one is not silently accepted. Within one revision the
+catalog may not move — a second response whose descriptors differ in any member
+is `unannounced_catalog_change` — because availability that changes with
+nothing to announce it is availability no consumer can observe.
+
+Re-fetching capabilities is not what discards it. A revision identifies exactly
+one descriptor, so a `capabilities.response` repeating the active revision
+repeats that descriptor and licenses no different catalog. Discarding on the
+re-fetch instead would hand every endpoint a way out of the stability rule —
+answer `capabilities.request` between two listings and the change is never
+announced and never diagnosed — which is the whole of what the rule exists to
+catch (`models-catalog-mutates-across-refetch`).
 
 A selection made under a revision whose catalog the trace has not served is not
 skipped but retained, and the first catalog under that revision settles it,

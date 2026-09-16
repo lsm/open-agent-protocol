@@ -52,9 +52,15 @@ type unjudgedModel struct {
 // heldCatalog is a models.response naming a model event the trace has not
 // reached. It is reconciled when the event arrives, as a snapshot's
 // as_of_sequence is.
+//
+// window is the query's window start, kept because the named position may
+// arrive carrying no model at all — a completion, say. A position that moved
+// nothing says nothing, so the ordinary window rule stands there, and without
+// this the held claim would never be settled under any rule.
 type heldCatalog struct {
 	model    string
 	position protocol.ModelEventPosition
+	window   int
 	index    int
 	line     int
 	envelope protocol.Envelope
@@ -74,6 +80,13 @@ type modelCatalog struct {
 }
 
 // binds reports whether this catalog governs a selection made under revision.
+//
+// The revision is what retires a catalog, not the act of re-reading the
+// descriptor. A capabilities.response repeating the active revision repeats
+// one descriptor and licenses no different catalog, so the stored one goes on
+// binding across it; discarding there would let any endpoint answer
+// capabilities.request between two listings and never owe
+// unannounced_catalog_change for the change in between.
 func (c *modelCatalog) binds(revision string) bool {
 	return c != nil && c.known && c.binding && c.revision == revision && revision != ""
 }
@@ -219,8 +232,12 @@ func (s *state) checkCatalogCurrentModel(i, line int, e protocol.Envelope, p pro
 		if !s.positionReached(*position) {
 			// An endpoint reporting a position the trace has not reached is
 			// ahead of it, not wrong: the claim is reconciled when the event
-			// arrives.
-			st.heldCatalogs = append(st.heldCatalogs, heldCatalog{model: p.CurrentModelID, position: *position, index: i, line: line, envelope: e})
+			// arrives, whether or not that event turns out to carry a model.
+			held := heldCatalog{model: p.CurrentModelID, position: *position, index: i, line: line, envelope: e}
+			if query := s.pendingModels[e.InReplyTo]; query != nil {
+				held.window = query.window
+			}
+			st.heldCatalogs = append(st.heldCatalogs, held)
 			return
 		}
 		// The named position is one the trace passed without it moving the
@@ -274,17 +291,48 @@ func (s *state) positionReached(position protocol.ModelEventPosition) bool {
 }
 
 // reconcileHeldCatalogs settles the catalogs that named a model event the
-// trace had not reached when they arrived.
+// trace had not reached when they arrived. It runs wherever the trace can
+// newly satisfy one: when a model mark is recorded, and when a run reaches the
+// named sequence at all.
+//
+// The second is what keeps a held claim from escaping judgement entirely. A
+// position that arrives carrying no model — a completion, an ordinary delta —
+// moved nothing and so says nothing, and a claim resting on it is judged by
+// the ordinary window rule rather than left standing forever on the strength
+// of naming a position that never mattered. Only a position the trace never
+// reaches stays held: diagnosing that would convict an endpoint for a place
+// the trace simply never got to.
 func (s *state) reconcileHeldCatalogs(st *sessionTrack) {
 	remaining := st.heldCatalogs[:0]
 	for _, held := range st.heldCatalogs {
-		mark, ok := st.markAt(held.position)
-		if !ok {
+		if mark, ok := st.markAt(held.position); ok {
+			if mark != held.model {
+				s.addExpected(CodeSessionStateMismatch, held.index, held.line, held.envelope, "/payload/current_model_id", "catalog reports a model the session did not hold at the event it names", mark, held.model, string(held.position.RunID))
+			}
+			continue
+		}
+		if !s.positionReached(held.position) {
 			remaining = append(remaining, held)
 			continue
 		}
-		if mark != held.model {
-			s.addExpected(CodeSessionStateMismatch, held.index, held.line, held.envelope, "/payload/current_model_id", "catalog reports a model the session did not hold at the event it names", mark, held.model, string(held.position.RunID))
+		// The window is taken as it stands now rather than as it stood at the
+		// response: a catalog reporting a value the session took after the
+		// response but at or before this position was ahead of the trace, which
+		// is the whole reason the position was honoured. A value the session
+		// never held is still a value the session never held.
+		window := st.modelMarks[min(held.window, len(st.modelMarks)):]
+		if len(window) == 0 {
+			continue
+		}
+		matched := false
+		for _, mark := range window {
+			if mark.model == held.model {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			s.addExpected(CodeSessionStateMismatch, held.index, held.line, held.envelope, "/payload/current_model_id", "catalog names an event that moved no model, and reports a model the session never held", window[len(window)-1].model, held.model, string(held.position.RunID))
 		}
 	}
 	st.heldCatalogs = remaining
