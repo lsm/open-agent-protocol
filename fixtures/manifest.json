@@ -2762,6 +2762,23 @@
       ]
     },
     {
+      "id": "tools-list-unscoped-answer-scoped",
+      "path": "semantic-invalid/tools-list-unscoped-answer-scoped.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "tools-duplicate-name",
       "path": "semantic-invalid/tools-duplicate-name.json",
       "kind": "semantic-invalid",

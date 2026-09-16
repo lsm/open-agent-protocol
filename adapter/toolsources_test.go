@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/adapter"
@@ -354,4 +355,32 @@ func TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows(t *testing.T) {
 			SessionID: "kit", ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess}},
 		}, list, catalog)
 	})
+}
+
+// TestReferenceAdapterRefusesOneVariableNamedTwice keeps the reference honest.
+// It runs no client, so no child could be confused by the duplicate — but an
+// attachment naming one variable twice is ill-formed wherever it is sent, and
+// an endpoint the unit's rules are read off should not admit what they refuse.
+// The same check runs in ACP, where a child really does receive the pair, and
+// in the daemon's registry for the operator's own entries.
+func TestReferenceAdapterRefusesOneVariableNamedTwice(t *testing.T) {
+	implementation := adapter.NewMemory(adapter.Config{})
+	_, err := implementation.Open(context.Background(), adapter.OpenRequest{
+		SessionID:   "duplicate-env",
+		Participant: protocol.Participant{ID: "user"},
+		ToolSources: []protocol.ToolSourceAttachment{{
+			ID: "files", Kind: protocol.ToolSourceProcess,
+			Environment: []string{"TOKEN", "TOKEN=literal"},
+		}},
+	})
+	var refusal *adapter.UnsupportedControlError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("got %v, want an UnsupportedControlError", err)
+	}
+	if refusal.Feature != protocol.FeatureToolSourcesAttach || refusal.Source != "files" {
+		t.Fatalf("refusal = %+v", refusal)
+	}
+	if !strings.Contains(refusal.Detail, "TOKEN") {
+		t.Fatalf("refusal detail %q does not name the variable", refusal.Detail)
+	}
 }

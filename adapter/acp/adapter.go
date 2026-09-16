@@ -295,6 +295,18 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 				Source: attachment.ID, Detail: "ACP v1 accepts stdio MCP descriptors only at this pin",
 			}
 		}
+		if name := base.DuplicateEnvironmentName(attachment.Environment); name != "" {
+			// The daemon's registry refuses this on the operator's own entries,
+			// and the route drops a caller entry colliding with one — but this
+			// API is reachable without either, and an embedder handing over two
+			// entries for one variable would have both forwarded to the child
+			// with no defined winner. Judged where the attachment is admitted, so
+			// every path into this adapter meets it.
+			return nil, &base.UnsupportedControlError{
+				Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnsatisfiable,
+				Source: attachment.ID, Detail: "environment names " + name + " twice",
+			}
+		}
 		if attachment.Command == "" {
 			// Not a capability refusal: over the daemon the command comes
 			// from the operator's registry and is never empty, so a

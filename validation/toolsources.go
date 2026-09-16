@@ -214,6 +214,17 @@ func (s *state) toolsListRequest(i, line int, e protocol.Envelope) {
 	}
 }
 
+// answeredScope reports the session a catalog response answers in, reading the
+// payload first and the envelope after, mirroring the fallback a request's own
+// scope takes. A catalog names its session in either place, so a response is
+// scoped if either says so.
+func answeredScope(e protocol.Envelope, p protocol.ToolsListResponse) protocol.SessionID {
+	if p.SessionID != "" {
+		return p.SessionID
+	}
+	return e.SessionID
+}
+
 // toolsListResponse judges one served catalog: the gate it was owed, the scope
 // it must answer in, and the catalog's own resolvability.
 func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
@@ -229,6 +240,25 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 		// well as in the payload, or a consumer routing by envelope scope
 		// cannot tie the catalog to the attachment it reflects.
 		s.addExpected(CodeScopeMismatch, i, line, e, "/session_id", "a session-scoped catalog must name its session on the envelope", string(pending.session), string(e.SessionID), string(e.InReplyTo))
+	}
+	if pending != nil && !pending.scoped {
+		// The mirror of the rule above, and the direction that leaks. The
+		// generic correlation check binds a response to its request's scope only
+		// when the request named one, which is right everywhere else: an empty
+		// request scope usually means the operation is not scoped. Here it means
+		// something specific — the caller asked for the endpoint's own catalog —
+		// so a session's catalog is not a permissible answer to it, and it is the
+		// unit that knows that, not the correlation check.
+		//
+		// Unchecked, a response naming one session consistently in both places
+		// passed every rule and published that session's attachments as what the
+		// endpoint offers everyone. This is the same defect the hub was fixed for
+		// two rounds ago, on the other side of the wire: there the boundary took
+		// the adapter's word for the scope, here the validator took the
+		// response's. Both now read the scope the question was asked in.
+		if answered := answeredScope(e, p); answered != "" {
+			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "an unscoped catalog request was answered with one session's catalog", "no session", string(answered), string(e.InReplyTo))
+		}
 	}
 	s.checkPublishedSources(i, line, e)
 	declared, duplicate := toolSourceMap(p.Sources)

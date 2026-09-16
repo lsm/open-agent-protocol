@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -263,6 +264,35 @@ func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.Fe
 		}
 	}
 	return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
+}
+
+// DuplicateEnvironmentName reports the first variable an allowlist names twice,
+// or "" when each appears once.
+//
+// It lives here because both places that admit an attachment need it and
+// neither can import the other: the daemon's registry judges the operator's own
+// entries, and an adapter judges the attachment it is handed, which over an
+// in-process embedding never passed through the daemon at all.
+//
+// The rule is the same at both: one variable, one entry. `uniqueItems` on the
+// wire compares strings, so `TOKEN` and `TOKEN=x` — or `TOKEN=first` and
+// `TOKEN=second` — satisfy it while naming one variable, and a child handed
+// both has a credential whose value is decided by nothing the protocol, the
+// adapter, or the harness's own schema states. An environment is the last place
+// to leave an outcome undefined, because what is in it is credentials.
+func DuplicateEnvironmentName(entries []string) string {
+	if len(entries) < 2 {
+		return ""
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		name, _, _ := strings.Cut(entry, "=")
+		if seen[name] {
+			return name
+		}
+		seen[name] = true
+	}
+	return ""
 }
 
 // UnsupportedControlError refuses a per-submit control before admission:

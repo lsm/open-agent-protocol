@@ -537,7 +537,7 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 63 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 64 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -822,6 +822,16 @@ rediscovered from the code.
   exactly, with the value the operator chose, and refuses the override a caller
   might have intended by the same act. A name the operator did not configure is
   still added, which is what keeps the caller's list additive.
+
+  The rule that one variable gets one entry is stated once, in
+  `adapter.DuplicateEnvironmentName`, and read at every place an attachment is
+  admitted: the daemon's registry for the operator's own entries, ACP for the
+  attachment it is handed, and the reference adapter, which runs no client but
+  is the endpoint the unit's rules are read off. The in-process paths need it
+  independently of the daemon, because an embedder reaches an adapter without
+  passing through the daemon at all — and `uniqueItems` will not stand in for
+  it, since `TOKEN=first` and `TOKEN=second` are two strings naming one
+  variable.
 
   This is deliberately not the reasoning the registry's bare-`NAME` rule takes,
   and the difference is the whole of it: there, dropping an unresolvable name

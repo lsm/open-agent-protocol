@@ -306,8 +306,10 @@ For the catalog (`action.tools.list`), an implementation:
   payload. A request names its session in either place — the payload member is
   optional here, because an unscoped list asks for the endpoint's own catalog —
   and an unscoped answer to a request scoped either way is not an
-  endpoint-level catalog. An answer to a request naming no session carries no
-  session's attachments: an attachment belongs to one session, and a response
+  endpoint-level catalog. The rule binds in both directions: an answer to a
+  request naming no session may not name one either, because an attachment
+  belongs to one session, and a caller that asked what the endpoint publishes to
+  everyone would be handed that session's sources as the answer. A response
   carrying no scope is read as what the endpoint publishes to everyone;
 - serves every catalog with the `capability_revision` it was served under, so
   a caller can bind the listing to a descriptor snapshot and discard it when
@@ -379,6 +381,10 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
 - refuses an attachment whose `id` collides with another attachment or with a
   source the descriptor already declares, with `details.source` naming it,
   rather than shadowing or renaming one silently;
+- refuses an attachment whose `environment` names one variable twice, with
+  `details.source` naming the attachment. `uniqueItems` does not cover it —
+  `TOKEN=first` and `TOKEN=second` are two strings naming one variable — and a
+  source launched with both carries a credential whose value nothing decides;
 - discloses in `limits` the constraints it actually has — `max_sources`, the
   `transports` it accepts — because refusing an array that violates none of
   them and carries no defect any rule above names would make the advertised

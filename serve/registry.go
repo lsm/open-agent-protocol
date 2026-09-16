@@ -173,13 +173,8 @@ func validateToolSource(id, kind, command string, environment []string) error {
 	// the same defect the route's merge avoids on the caller's side, closed here
 	// on the operator's, and it is well-formedness like the two rules above:
 	// an entry in this shape can never do a defined thing.
-	names := make(map[string]bool, len(environment))
-	for _, entry := range environment {
-		name, _, _ := strings.Cut(entry, "=")
-		if names[name] {
-			return fmt.Errorf("serve: tool source %q: environment names %q twice", id, name)
-		}
-		names[name] = true
+	if name := base.DuplicateEnvironmentName(environment); name != "" {
+		return fmt.Errorf("serve: tool source %q: environment names %q twice", id, name)
 	}
 	return nil
 }

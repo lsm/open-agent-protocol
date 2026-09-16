@@ -1006,6 +1006,14 @@ func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
 		{"an unsupported transport", protocol.ToolSourceAttachment{ID: "hosted-tools", Kind: protocol.ToolSourceRemote, Endpoint: "https://tools.example"}},
 		{"a process source with no command", protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess}},
 		{"a source with no id", protocol.ToolSourceAttachment{Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}},
+		// Two entries, one variable. uniqueItems compares strings, so the wire
+		// admits this and the child would receive both with no defined winner.
+		// The daemon refuses it on the operator's entries and drops a caller's
+		// colliding one, but this API is reachable without the daemon at all.
+		{"one environment variable named twice", protocol.ToolSourceAttachment{
+			ID: "files", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem",
+			Environment: []string{"TOKEN=first", "TOKEN=second"},
+		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			started := 0

@@ -289,6 +289,12 @@ func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, err
 			return nil, refuse(attachment.ID, "the id already resolves to a declared or attached source")
 		case !slices.Contains(attachTransports, attachment.Kind):
 			return nil, refuse(attachment.ID, "kind "+attachment.Kind+" is outside the disclosed transports")
+		case DuplicateEnvironmentName(attachment.Environment) != "":
+			// This adapter runs no client, so no child could be confused by it —
+			// but it is the reference, and an attachment naming one variable
+			// twice is ill-formed wherever it is sent. An endpoint the unit's
+			// rules are read off should not admit what they say to refuse.
+			return nil, refuse(attachment.ID, "environment names "+DuplicateEnvironmentName(attachment.Environment)+" twice")
 		}
 		seen[attachment.ID] = true
 	}
