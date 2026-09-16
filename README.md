@@ -82,6 +82,46 @@ claims the unit by refusing all four correctly.
 alone and `current_model_id` — the model the next control-free submission
 would use — does not move. The reference adapter executes all four.
 
+### Tool sources (`+tool-sources`)
+
+A tool catalog says where each of its tools comes from. `action.tools.list.response`
+carries `sources` — `{ id, kind, display_name?, protocol?, endpoint? }` — and
+each `ToolDefinition` carries the `source` id it belongs to, so a consumer
+attributes a call to an MCP server without parsing a namespaced name, and
+`action.call.*` may carry the same id. A source `id` is unique across a
+session's catalog and a tool `name` is unique whatever its source. The catalog
+is gated on `action.tools.list` and nothing else: `action.tools` means
+lifecycle observation, and several adapters observe tool calls while publishing
+no portable catalog at all.
+
+A session may attach sources for its lifetime:
+`session.open.request.tool_sources` carries `ToolSourceAttachment` values —
+the descriptor's members plus, for a `process` source, `command`, `args`, and
+`environment`. The attachment shape is deliberately not the catalog shape,
+because an attachment's environment can hold a credential: a published source
+carries none of those three members, and an endpoint that reflected one back
+into its catalog is a schema rejection rather than a convention. The endpoint
+discloses what it accepts in `action.tool_sources.attach` — `mode`
+(`session_open`, and `remote` where offered) and `limits` (`max_sources`, the
+`transports` it takes) — so a refusal is checkable in both directions.
+
+**The daemon does not take a command from the wire.** "Loopback, single-user"
+describes the transport, not the origin of a request on it: a page in the
+user's browser can reach `127.0.0.1` with a valid envelope. On
+`POST /adapters/{name}/sessions` a `process` attachment therefore names an
+operator-configured source by `id` only — from the registry document's
+`tool_sources` map — and the daemon fills `command`, `args`, and `environment`
+from its own entry. A wire-supplied command, argument list, or literal
+`NAME=value` environment value is refused before the open is forwarded; the
+bare-`NAME` allowlist form is the only `environment` a wire caller may write.
+Beside that, the daemon requires `Content-Type: application/json` and refuses
+any request bearing an `Origin` header.
+
+[Decision 0008](decisions/0008-tool-sources.md) graduates the unit: Claude Code
+serves the catalog at `degraded` from its per-turn `system/init` frame, and ACP
+attaches at `native` onto `session/new`'s `mcpServers`. Control-layer-provided
+tools are the separate `+control-tools` unit and are not graduated by it.
+
 ### Local daemon (`oap serve`)
 
 `oap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
@@ -101,6 +141,15 @@ only. The registry document maps names to in-repo adapter configurations
 forwards the value the daemon itself carries (unset names are omitted) and
 `NAME=value` passes through literally — ambient credentials are never
 inherited by a child process unless their variable was listed.
+
+The document's `tool_sources` map is the same allowlist idea for the MCP
+sources a client may attach at session open: each entry names a `kind`, the
+descriptor members the catalog publishes, and the `command`, `args`, and
+`environment` the daemon supplies on the client's behalf. Its `environment`
+takes the same form and is resolved at load, so a bare `NAME` the operator
+never exported fails at startup rather than at open. A client attaches one by
+`id` and nothing else — see "Tool sources" above for why the wire form is
+refused on that route.
 
 The daemon binds `127.0.0.1` by default and has no authentication: v0 is a
 single-user local service, and pointing it at an external interface is
@@ -291,6 +340,7 @@ Decisions:
 - [0002 — admission before started](decisions/0002-admission-before-start.md)
 - [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (proposed)
 - [0005 — run controls](decisions/0005-run-controls.md) (proposed)
+- [0008 — tool sources](decisions/0008-tool-sources.md) (proposed)
 
 Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:

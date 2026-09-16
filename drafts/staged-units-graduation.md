@@ -2933,6 +2933,19 @@ Unit names: `tool-sources` (T3a and T3b) and `control-tools` (T3c). Planned
 decision: 0008 (one decision, three sub-units, each independently
 advertisable).
 
+**Status: `tool-sources` (T3a and T3b) is executable.** Decision
+[0008](../decisions/0008-tool-sources.md) graduates it and records what it does
+not admit; the sections below stay as the design the decision froze, and where
+an implementation detail had to be chosen that the text left open, the decision
+names the choice. `control-tools` (T3c) stays staged and is not graduated by
+that decision: `session.open.request.tools`, `action.call.resolve.*`, the
+`action.tools.provide` key, and the diagnostics `wrong_tool_owner`,
+`undisclosed_provide_limit`, and `resolution_payload_mismatch` are unregistered
+and unimplemented. The shared `Validator`, `Reference adapter`, `Surfaces`,
+`Fixtures`, and `Exit criteria` sections below cover all three sub-units
+together; the exit criteria apply per sub-unit, so the graduated claim is over
+the T3a and T3b halves alone.
+
 ### T3a. Catalog with sources
 
 Wire, in [`action.schema.json`](../schema/v0.1/action.schema.json) and

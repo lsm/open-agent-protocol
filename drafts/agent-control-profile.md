@@ -295,8 +295,8 @@ capabilities to show or hide controls.
 | Reasoning pane | `model.reasoning.output` |
 | Encrypted reasoning display | `model.reasoning.encrypted` |
 | Tool call rendering | `model.tool_calling`, `action.tools.execute` |
-| Tool catalog control | `action.tools.list` |
-| Tool-source attachment control | `action.tool_sources.attach` |
+| Tool catalog control | `action.tools.list` (executable, `+tool-sources`: the catalog carries `sources`, each tool a `source` id; the gate is this key alone, never the `action.tools` family key; fixtures `tools-catalog-with-sources`, `tools-list-unadvertised-served`, `tools-list-refused-advertised`) |
+| Tool-source attachment control | `action.tool_sources.attach` (executable, `+tool-sources`: `mode` discloses `session_open` and, where offered, `remote`; `limits` discloses `max_sources` and `transports`; fixtures `open-attach-process-source`, `open-attach-unadvertised`, `tool-source-attach-refused-within-limits`) |
 | Tool progress | `action.tools.progress` |
 | Approval prompts | `action.permissions` |
 | Artifact browser | `action.artifacts` |

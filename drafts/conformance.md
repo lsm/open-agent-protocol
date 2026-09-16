@@ -28,6 +28,7 @@ Conformance units are additive:
 - `+permissions`
 - `+user-input`
 - `+run-controls`
+- `+tool-sources`
 - `+models`
 - `+queue`
 - `+steer`
@@ -269,6 +270,62 @@ Execution, per advertised control, is that an implementation:
 
 Session-level defaults, a configuration document, and any control not named
 above are outside this unit.
+
+### `+tool-sources`
+
+An implementation conforms to `+tool-sources` if it serves a catalog whose
+tools are attributed to sources, and, where it advertises attachment, accepts
+tool sources at session open. The two halves are separate keys and an
+endpoint may claim the unit with either: what the unit requires is that a
+capability it advertises is honoured, and that one it does not is refused in
+a way the caller can act on.
+
+For the catalog (`action.tools.list`), an implementation:
+
+- gates `action.tools.list.request` and `action.tools.list.response` on that
+  key alone. `action.tools` is not an alias: that key means lifecycle
+  observation, and an endpoint that observes tool calls without publishing a
+  portable catalog advertises the one and not the other;
+- refuses a catalog request it has not advertised with
+  `unsupported_feature`, `details.feature: "action.tools.list"`, and
+  `details.reason: "unadvertised"`, and one it advertises `degraded` whose
+  key the request's `allow_degraded_features` omits with
+  `capability_degraded` and `details.feature`;
+- serves a catalog in which a source `id` is unique, a tool `name` is unique
+  whatever its source, and every tool's `source` names a source the same
+  response declares. A harness that namespaces its MCP tools exposes the
+  namespaced string as `name`; `source` carries the attribution, so a
+  consumer never has to parse one out of the other;
+- answers a request that names a session with that session's effective
+  catalog, repeating the session on the response's envelope and in its
+  payload. An unscoped answer to a scoped request is not an endpoint-level
+  catalog;
+- attributes a call it emits with `source` to the source its own catalog
+  records for that tool.
+
+For attachment at open (`action.tool_sources.attach`), an implementation:
+
+- accepts `session.open.request.tool_sources` and attaches them for the
+  session's lifetime, or refuses the open with `unsupported_feature`,
+  `details.feature: "action.tool_sources.attach"`, and
+  `details.reason: "unadvertised"`;
+- discloses `mode: "session_open"`, and additionally `mode: "remote"` where
+  it accepts a `remote` source; an open attaching one to an endpoint that
+  does not is refused `unsatisfiable` with `details.source`;
+- refuses an attachment whose `id` collides with another attachment or with a
+  source the descriptor already declares, with `details.source` naming it,
+  rather than shadowing or renaming one silently;
+- discloses in `limits` the constraints it actually has — `max_sources`, the
+  `transports` it accepts — because refusing an array that violates none of
+  them and carries no defect any rule above names would make the advertised
+  key promise nothing;
+- publishes the attached sources back through the open response, later
+  session snapshots, and every session-scoped catalog, as
+  `ToolSourceDescriptor` values. `command`, `args`, and `environment` are
+  attachment-only and never appear in a published source.
+
+Runtime attach and detach, a catalog served without a session, and
+control-layer-provided tools are outside this unit; the last is `+control-tools`.
 
 ### `+models`
 
