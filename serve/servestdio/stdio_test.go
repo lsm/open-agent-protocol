@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -346,10 +347,19 @@ func TestContextEndInterruptsIdleInput(t *testing.T) {
 }
 
 // blockedWriter parks every write until released, standing in for a host
-// that stopped reading stdout.
-type blockedWriter struct{ release chan struct{} }
+// that stopped reading stdout. entered, when supplied, is closed as the
+// first write parks, so a test can wait for the writer to be genuinely
+// stuck instead of assuming it won a race with its own next statement.
+type blockedWriter struct {
+	release chan struct{}
+	entered chan struct{}
+	once    *sync.Once
+}
 
 func (b blockedWriter) Write([]byte) (int, error) {
+	if b.once != nil {
+		b.once.Do(func() { close(b.entered) })
+	}
 	<-b.release
 	return 0, io.ErrClosedPipe
 }
@@ -372,12 +382,15 @@ func TestCancellationReturnsDespiteStoppedOutput(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- server.Run(ctx, stdinReader, blockedWriter{release: release}) }()
+	entered := make(chan struct{})
+	writer := blockedWriter{release: release, entered: entered, once: &sync.Once{}}
+	go func() { done <- server.Run(ctx, stdinReader, writer) }()
 	for id := 1; id <= 3; id++ {
 		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
 			t.Fatal(err)
 		}
 	}
+	<-entered // the writer is genuinely parked inside out.Write, not merely about to be
 	cancel()
 	select {
 	case err := <-done:
@@ -713,11 +726,13 @@ func TestShutdownDoesNotWaitOnStalledOutput(t *testing.T) {
 	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
 	stdinReader, stdinWriter := io.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- server.Run(context.Background(), stdinReader, blockedWriter{release: release}) }()
+	entered := make(chan struct{})
+	writer := blockedWriter{release: release, entered: entered, once: &sync.Once{}}
+	go func() { done <- server.Run(context.Background(), stdinReader, writer) }()
 	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"adapters"}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond) // the response parks the writer inside out.Write
+	<-entered // the response has parked the writer inside out.Write
 	if err := stdinWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -861,25 +876,93 @@ func TestTeardownSettlesAdmittedWork(t *testing.T) {
 }
 
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
-// show: once Run has torn down, admission refuses, so a serving loop
-// abandoned mid-op that then dispatches one more frame cannot Add to a
+// show: once an invocation has closed admission, it refuses, so a serving
+// loop abandoned mid-op that then dispatches one more frame cannot Add to a
 // WaitGroup whose Wait has already returned — the misuse the race detector
 // would report as a panic rather than a failed assertion.
 func TestAdmissionClosesAtTeardown(t *testing.T) {
+	run := newRunState(1)
+	if !run.admit() {
+		t.Fatal("admission refused before the session began")
+	}
+	run.work.Done()
+	run.closeAdmission()
+	if run.admit() {
+		t.Fatal("admission stayed open after teardown")
+	}
+}
+
+// TestServerServesAgainAfterTeardown pins that the gate is per invocation:
+// the state one session ends in is not a state the next session inherits,
+// so a Server whose host disconnected still serves the host after it. A
+// flag left set on the Server would leave the second host reading its own
+// requests back as silence.
+func TestServerServesAgainAfterTeardown(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	server, err := New(hub, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !server.admit() {
-		t.Fatal("admission refused before the session began")
+	for session := 1; session <= 2; session++ {
+		var out bytes.Buffer
+		if err := server.Run(context.Background(), strings.NewReader(`{"id":1,"op":"adapters"}`+"\n"), &out); err != nil {
+			t.Fatalf("session %d: Run returned %v", session, err)
+		}
+		if !strings.HasPrefix(out.String(), `{"id":1,"ok":true`) {
+			t.Fatalf("session %d answered %q", session, out.String())
+		}
 	}
-	server.work.Done()
-	if err := server.Run(context.Background(), strings.NewReader(""), io.Discard); err != nil {
-		t.Fatalf("Run returned %v, want a clean end", err)
+}
+
+// TestInFlightOpsAreBounded guards the backpressure the concurrent dispatch
+// could have thrown away: with the writer parked and the queue tiny, a host
+// that keeps sending must not make the daemon hold its whole stream as
+// goroutines, request frames and half-built responses. The serving loop
+// stops reading at the bound instead, exactly as the serial dispatch it
+// replaced did.
+func TestInFlightOpsAreBounded(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{WriteQueue: 2, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if server.admit() {
-		t.Fatal("admission stayed open after teardown")
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the abandoned writer finish after the assertion
+	stdinReader, stdinWriter := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	baseline := runtime.NumGoroutine()
+	go func() { done <- server.Run(ctx, stdinReader, blockedWriter{release: release}) }()
+	fed := make(chan struct{})
+	go func() {
+		defer close(fed)
+		for id := 1; id <= 500; id++ {
+			if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(250 * time.Millisecond) // long enough for an unbounded loop to admit the lot
+	if grew := runtime.NumGoroutine() - baseline; grew > 64 {
+		t.Fatalf("%d goroutines added against a bound of 2 in flight", grew)
+	}
+	// A loop parked at the bound has stopped reading, so the disconnect it
+	// would read is not what ends this session: with the writer parked too,
+	// nothing can make progress and cancellation is the escape — the same
+	// bargain the serial dispatch made.
+	cancel()
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	<-fed
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled against the parked writer", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not return Run from behind the bound")
 	}
 }
 

@@ -106,7 +106,10 @@ type Options struct {
 	// DefaultFrameLimit.
 	FrameLimit int
 	// WriteQueue bounds the lines buffered for the writer goroutine before
-	// producers block; zero means defaultWriteQueue.
+	// producers block, and with them the ops in flight: one op holds one
+	// slot, so the serving loop stops reading rather than admitting work
+	// whose responses the queue could not hold anyway. Zero means
+	// defaultWriteQueue.
 	WriteQueue int
 	// ShutdownTimeout bounds the final output drain once serving ends — the
 	// writer may be parked inside out.Write on a pipe the host stopped
@@ -129,6 +132,21 @@ type Server struct {
 	shutdown    time.Duration
 	logger      *log.Logger
 	nextIDValue atomic.Uint64
+}
+
+// runState is one Run's worker registry: the ops that invocation admitted
+// and the bound on how many of them run at once. It belongs to the
+// invocation and never to the Server, so a Server that served one host can
+// serve the next — the state a session ends in is not a state the next
+// session inherits.
+type runState struct {
+	// slots bounds the ops in flight. A worker holds one from admission
+	// until it is done, so the serving loop blocks on a full queue exactly
+	// as the serial dispatch it replaced did: the backpressure a host felt
+	// from a busy daemon is unchanged, and a host that pipelines faster
+	// than the adapters or stdout can answer cannot make the daemon hold
+	// its whole stream in memory.
+	slots chan struct{}
 
 	// mu guards the admission gate. work counts the op workers teardown
 	// waits for; shuttingDown closes admission so no worker joins after
@@ -136,6 +154,54 @@ type Server struct {
 	mu           sync.Mutex
 	work         sync.WaitGroup
 	shuttingDown bool
+}
+
+func newRunState(bound int) *runState {
+	return &runState{slots: make(chan struct{}, bound)}
+}
+
+// acquire takes one in-flight slot, ending the wait when the session does.
+// A loop parked here has stopped reading, so the host's disconnect is not
+// observed while it waits — the frames it would arrive on are exactly what
+// the loop is not taking. What ends the wait is a worker finishing, the
+// output failing, or the context: a host that closes stdin while refusing
+// to read stdout can still be answered only by cancellation, which is the
+// same bargain the serial dispatch made and what the caller's signal
+// handling is for.
+func (r *runState) acquire(ctx context.Context, writerFailed <-chan struct{}) bool {
+	select {
+	case r.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-writerFailed:
+		return false
+	}
+}
+
+func (r *runState) release() { <-r.slots }
+
+// admit registers one op worker with the teardown wait, refusing once
+// shutdown has begun: a late Add would race a Wait that may already have
+// seen the counter reach zero, and the worker it counted would never be
+// waited for. A refused op is simply not served — its host is already past
+// the end of the session.
+func (r *runState) admit() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.shuttingDown {
+		return false
+	}
+	r.work.Add(1)
+	return true
+}
+
+// closeAdmission ends admission for this invocation, before its teardown
+// waits for the workers already counted.
+func (r *runState) closeAdmission() {
+	r.mu.Lock()
+	r.shuttingDown = true
+	r.mu.Unlock()
 }
 
 // New compiles the request gate and returns a frontend over the hub.
@@ -235,8 +301,9 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	frames := make(chan frameResult)
 	go readFrames(in, s.frameLimit, frames, readerDone)
 
+	run := newRunState(s.writeQueue)
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- s.serveLoop(ctx, frames, lines, writerFailed) }()
+	go func() { serveDone <- s.serveLoop(ctx, run, frames, lines, writerFailed) }()
 
 	// The serving loop returning is the session's normal end. When the host
 	// has ended it while the loop is stuck, one fresh window — opened at
@@ -280,11 +347,9 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// stuck adapter costs one window and not the process. The writer may be
 	// parked inside out.Write on a pipe the host stopped reading, and
 	// shutdown never depends on the host's pipe.
-	s.mu.Lock()
-	s.shuttingDown = true
-	s.mu.Unlock()
+	run.closeAdmission()
 	workDone := make(chan struct{})
-	go func() { s.work.Wait(); close(workDone) }()
+	go func() { run.work.Wait(); close(workDone) }()
 	drainWindow := time.NewTimer(s.shutdown)
 	defer drainWindow.Stop()
 	drained := false
@@ -305,21 +370,6 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		err = ErrShutdownStalled
 	}
 	return err
-}
-
-// admit registers one op worker with the teardown wait, refusing once
-// shutdown has begun: a late Add would race a Wait that may already have
-// seen the counter reach zero, and the worker it counted would never be
-// waited for. A refused op is simply not served — its host is already past
-// the end of the session.
-func (s *Server) admit() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.shuttingDown {
-		return false
-	}
-	s.work.Add(1)
-	return true
 }
 
 // frameResult is one line read from the host: frame carries the line without
@@ -363,11 +413,14 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // the dispatch of frames under an already-dead context; the bounded teardown
 // owns what remains. Each op runs on its own admitted worker, exactly as the
 // HTTP server runs one handler per connection: one slow adapter call neither
-// delays the next line nor outlives the teardown that waits for it. A
+// delays the next line nor outlives the teardown that waits for it. The ops
+// in flight are bounded, and the loop stops reading while that bound is
+// reached, so a host that pipelines faster than the daemon can answer feels
+// the same backpressure the serial dispatch gave it. A
 // framing defect — anything readFrame or decodeRequest refuses — fails the
 // frontend closed as *MalformedLineError; op-level refusals are responses
 // the host can correct, and the loop reads on past them.
-func (s *Server) serveLoop(ctx context.Context, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan struct{}) error {
+func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan struct{}) error {
 	number := 0
 	for {
 		select {
@@ -400,12 +453,18 @@ func (s *Server) serveLoop(ctx context.Context, frames <-chan frameResult, lines
 			if err != nil {
 				return &MalformedLineError{Line: number, Detail: err.Error()}
 			}
-			if s.admit() {
-				go func(request requestLine) {
-					defer s.work.Done()
-					s.serveRequest(ctx, request, lines)
-				}(request)
+			if !run.acquire(ctx, writerFailed) {
+				return nil
 			}
+			if !run.admit() {
+				run.release()
+				continue
+			}
+			go func(request requestLine) {
+				defer run.release()
+				defer run.work.Done()
+				s.serveRequest(ctx, request, lines)
+			}(request)
 		}
 	}
 }
