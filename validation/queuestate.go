@@ -155,6 +155,11 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 	// against two different moments at once, and lets a listing disagree with
 	// itself about the same run.
 	listedStarted := protocol.RunID("")
+	// startedEntry is that run's entry, kept because the session status is
+	// judged against what the entry itself claims rather than against what the
+	// trace knows now: an interaction can be raised or resolved inside the
+	// window, so the two fields are compared to each other.
+	var startedEntry protocol.ActiveRun
 	// listedReservation records that the snapshot describes at least one run
 	// as queued, which is what makes "only reservations remain" a thing the
 	// listing says rather than a thing inferred from its emptiness.
@@ -217,7 +222,17 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			listedReservation = true
 		}
 		if !reservation && !settled {
-			listedStarted = r.id
+			if listedStarted != "" {
+				// One started run at a time is the whole of decision 0001 that
+				// this unit kept. A listing is one moment, so two entries
+				// describing runs as executing describe a moment that never
+				// existed, however the promotion fell inside the window — and
+				// letting the second replace the first would leave
+				// active_run_id owing nothing but the last one named.
+				s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(listedStarted), string(entry.Status), string(entry.RunID))
+			} else {
+				listedStarted, startedEntry = r.id, entry
+			}
 		}
 		s.checkEntryStatus(i, line, e, pointer, entry, r)
 		s.checkEntryAnchor(i, line, e, pointer, p.SessionID, entry, r)
@@ -242,7 +257,7 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		// run to follow would follow a run that has published nothing.
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must be absent where the session holds only reservations", "absent", string(p.ActiveRunID))
 	}
-	s.checkListedStatus(i, line, e, p, started, listedReservation)
+	s.checkListedStatus(i, line, e, p, started, startedEntry, listedReservation)
 }
 
 // checkListedStatus holds the session status to the same listing the other two
@@ -256,15 +271,31 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 // or errored session carries too, and those say something the runs cannot. An
 // entry with a terminal status is diagnosed as an entry, and says nothing about
 // the session either way.
-func (s *state) checkListedStatus(i, line int, e protocol.Envelope, p protocol.SessionState, started protocol.RunID, reservation bool) {
+func (s *state) checkListedStatus(i, line int, e protocol.Envelope, p protocol.SessionState, started protocol.RunID, entry protocol.ActiveRun, reservation bool) {
 	switch {
 	case started != "":
-		// A started run is executing or blocked on an interaction it raised.
-		// Every other status denies the run the same snapshot lists.
-		if p.Status == protocol.SessionRunning || p.Status == protocol.SessionWaitingForInput {
-			return
+		// A started run is executing or blocked on an interaction it raised,
+		// and which of those the session reports is the run's own business:
+		// session status describes the started run, so the two say the same
+		// thing or one of them is wrong. Every other status denies the run the
+		// snapshot lists outright.
+		//
+		// What counts as waiting is read from the entry, not from the trace,
+		// because an interaction can be raised or resolved inside the window
+		// and the snapshot is entitled to have caught either edge. The entry
+		// says so with its status or by naming what it is blocked on — and
+		// naming it is not free, since the pending set is judged against the
+		// run's own at the position the entry states.
+		waiting := entry.Status == protocol.RunWaitingForInput || len(entry.PendingInteractions) > 0
+		switch {
+		case p.Status == protocol.SessionWaitingForInput && !waiting:
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "session waits for input the run it lists reports nothing waiting on", string(protocol.SessionRunning), string(p.Status), string(started))
+		case p.Status == protocol.SessionRunning && entry.Status == protocol.RunWaitingForInput:
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "session status denies the wait the entry beside it reports", string(protocol.SessionWaitingForInput), string(p.Status), string(started))
+		case p.Status == protocol.SessionRunning || p.Status == protocol.SessionWaitingForInput:
+		default:
+			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "session status denies the started run the snapshot lists", "running or waiting_for_input", string(p.Status), string(started))
 		}
-		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "session status denies the started run the snapshot lists", "running or waiting_for_input", string(p.Status), string(started))
 	case reservation:
 		// Work is admitted and none of it has begun, which is the one thing
 		// queued says. idle would tell a reconnecting client there is nothing

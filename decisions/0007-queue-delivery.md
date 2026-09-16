@@ -185,9 +185,21 @@ after it reports a started run holding no position — and both are accurate.
 What an entry cannot do is invent a queue: a run admitted started was never in
 one.
 
+A listing is one moment, and in one moment a session has one started run —
+the whole of Decision 0001 this unit kept. A promotion crossing the window lets
+either run be the one the snapshot describes, never both, so a second entry
+describing a run as executing describes a moment that never existed and is
+diagnosed rather than silently replacing the first.
+
 `status` is read from that same listing. A snapshot listing a started run is
-running, or waiting on an interaction that run raised; one holding only
-reservations is queued. A reconnecting client reads the three fields at once,
+running, or waiting on an interaction that run raised, and which of the two is
+the run's own business: session status describes the started run, so the two
+agree or one of them is wrong. What counts as waiting is read from the entry
+rather than from the trace, because an interaction can be raised or resolved
+inside the window and a snapshot is entitled to have caught either edge; the
+entry says so with its own status or by naming what it is blocked on, and
+naming it is not free, since the pending set is judged against the run's own at
+the position the entry states. A session holding only reservations is queued. A reconnecting client reads the three fields at once,
 and a snapshot that lists a reservation while calling itself idle, or lists an
 executing run while calling itself queued, hands it a session that never
 existed and lets whichever field it happens to trust decide what it does. A
@@ -267,7 +279,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 86 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 92 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
