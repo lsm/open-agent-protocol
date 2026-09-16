@@ -114,6 +114,42 @@ func (s *state) observeModel(session protocol.SessionID, model string, run proto
 	s.reconcileHeldCatalogs(st)
 }
 
+// checkCatalogAdvertisement holds a capabilities.response that repeats the
+// active revision to repeating what that revision said about the catalog.
+//
+// A revision identifies exactly one descriptor, which is why re-reading
+// capabilities does not discard the catalog served under it. The same
+// identity makes a same-revision response that *changes* models.list the
+// defect: without this rule an endpoint could publish catalog A at `native`,
+// re-answer capabilities.request at the same revision with models.list
+// `degraded`, and serve a different catalog B — and the stability rule would
+// skip it, because the rule only binds a native or emulated catalog. Two
+// catalogs would stand under one revision with nothing announcing the change,
+// which is exactly what the diagnostic exists to catch. It is raised where the
+// descriptor is published rather than on the catalog that follows, because the
+// descriptor is the thing that changed: one fault, one diagnosis, and the fix
+// is to introduce a new revision.
+//
+// Only the advertised level is compared, because that is what every rule in
+// this unit keys on. A reason reworded under one revision is prose, and
+// diagnosing prose would make the rule noisy without making it stronger.
+func (s *state) checkCatalogAdvertisement(i, line int, e protocol.Envelope, previousRevision string, previous protocol.SupportLevel) {
+	if previousRevision == "" || previousRevision != s.currentCapability {
+		return
+	}
+	if current := s.features[protocol.FeatureModelsList]; current != previous {
+		s.addExpected(CodeUnannouncedCatalogChange, i, line, e, "/payload/features/"+protocol.FeatureModelsList, "models.list changed under one capability revision without a capabilities.updated", describeSupport(previous), describeSupport(current))
+	}
+}
+
+// describeSupport renders one key's advertisement, including its absence.
+func describeSupport(level protocol.SupportLevel) string {
+	if level == "" {
+		return "unadvertised"
+	}
+	return string(level)
+}
+
 // modelsRequest retains what one catalog query owes its correlated response.
 // Nothing is diagnosed on the query itself: refusing a query the endpoint
 // cannot serve is the required behaviour, and a conforming refusal must
