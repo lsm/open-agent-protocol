@@ -111,6 +111,17 @@ const (
 	ToolSourceHosted  = "hosted"
 )
 
+// IsToolSourceKind reports whether a value names one of them. The schema holds
+// `kind` and every disclosed transport to this set, and the Go decoders hold
+// the same line for a descriptor that never passed through the schema.
+func IsToolSourceKind(kind string) bool {
+	switch kind {
+	case ToolSourceNative, ToolSourceLocal, ToolSourceProcess, ToolSourceRemote, ToolSourceHosted:
+		return true
+	}
+	return false
+}
+
 // ToolSourceMCP is the `protocol` value an MCP source declares.
 const ToolSourceMCP = "mcp"
 

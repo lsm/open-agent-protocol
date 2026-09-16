@@ -3162,6 +3162,22 @@
       ]
     },
     {
+      "id": "tool-source-attach-unknown-transport",
+      "path": "schema-invalid/tool-source-attach-unknown-transport.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "open-degraded-attach-optin",
       "path": "valid/open-degraded-attach-optin.json",
       "kind": "positive",

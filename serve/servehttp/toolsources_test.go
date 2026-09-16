@@ -560,3 +560,95 @@ func TestOpenReportsAProbeItCouldNotRead(t *testing.T) {
 		t.Fatalf("a non-attaching open status %d: %s", status, envelope.Payload)
 	}
 }
+
+// TestEveryRouteRefusesABrowserOrigin holds the origin boundary where the
+// README and Decision 0008 put it: on the daemon, not on the four routes that
+// happen to parse a request envelope. It was enforced inside readRequest,
+// which POST /sessions/{id}/close never calls, so a page in the user's browser
+// could drop a live session and its in-flight runs with one no-cors POST. The
+// sweep below walks every registered route, so a route added later is covered
+// by the boundary rather than by whoever remembers to call the right helper.
+func TestEveryRouteRefusesABrowserOrigin(t *testing.T) {
+	hub, server := newServer(t, memoryRegistry(64), Options{})
+	if status, envelope := openSessionWith(t, server, "guarded", protocol.SessionOpenRequest{}); status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, envelope.Payload)
+	}
+	// Every route the mux registers, in its own order. A route missing from
+	// this list is a route the boundary was never checked on.
+	routes := []struct{ method, path string }{
+		{http.MethodGet, "/adapters"},
+		{http.MethodGet, "/adapters/memory/capabilities"},
+		{http.MethodPost, "/adapters/memory/sessions"},
+		{http.MethodGet, "/sessions"},
+		{http.MethodGet, "/sessions/guarded/events"},
+		{http.MethodGet, "/sessions/guarded/state"},
+		{http.MethodGet, "/sessions/guarded/tools"},
+		{http.MethodPost, "/sessions/guarded/submit"},
+		{http.MethodPost, "/sessions/guarded/resolve"},
+		{http.MethodPost, "/sessions/guarded/cancel"},
+		{http.MethodPost, "/sessions/guarded/close"},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			// No body and no content type: the shape a simple cross-origin
+			// POST from a page takes, which a media-type rule alone would not
+			// reach on a route that parses no body.
+			request, err := http.NewRequest(route.method, server.URL+route.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Origin", "https://evil.example")
+			response, err := server.Client().Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusForbidden {
+				t.Fatalf("status %d, want 403", response.StatusCode)
+			}
+			var envelope protocol.Envelope
+			if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			var failure protocol.ErrorResponse
+			if err := envelope.DecodePayload(&failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.Error.Code != "cross_origin_request" {
+				t.Fatalf("refusal code %q", failure.Error.Code)
+			}
+		})
+	}
+	// The refusals were refusals, not silent successes: the session the page
+	// tried to close is still live.
+	if _, err := hub.Session("guarded"); err != nil {
+		t.Fatalf("a cross-origin close took the session down: %v", err)
+	}
+	if sessions := hub.Sessions(context.Background()); len(sessions) != 1 {
+		t.Fatalf("the sweep left %d sessions, want the one it opened", len(sessions))
+	}
+}
+
+// TestTheOriginBoundaryHoldsWithoutAHostAllowlist pins the one asymmetry with
+// the host restriction beside it: that allowlist is an operator's
+// configuration and is absent by default, while the origin boundary is what
+// the daemon promises whatever it is configured with. Wrapping it inside the
+// conditional would have made the documented boundary configuration-dependent.
+func TestTheOriginBoundaryHoldsWithoutAHostAllowlist(t *testing.T) {
+	for _, options := range []Options{{}, {HostAllowlist: []string{"localhost", "127.0.0.1"}}} {
+		_, server := newServer(t, memoryRegistry(64), options)
+		request, err := http.NewRequest(http.MethodPost, server.URL+"/sessions/absent/close", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Origin", "https://evil.example")
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusForbidden {
+			t.Fatalf("host allowlist %v: status %d, want 403", options.HostAllowlist, response.StatusCode)
+		}
+	}
+}

@@ -76,8 +76,8 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 // Hub returns the hub the server serves.
 func (s *Server) Hub() *serve.Hub { return s.hub }
 
-// Handler returns the daemon's HTTP routes, wrapped in the host restriction
-// when one is configured.
+// Handler returns the daemon's HTTP routes, wrapped in the origin boundary
+// and, when one is configured, the host restriction.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /adapters", s.handleAdapters)
@@ -91,21 +91,55 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sessions/{id}/resolve", s.handleResolve)
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)
-	if len(s.allowHosts) == 0 {
-		return mux
+	var handler http.Handler = mux
+	if len(s.allowHosts) > 0 {
+		routed := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			host := strings.ToLower(strings.TrimSpace(r.Host))
+			if name, _, err := net.SplitHostPort(host); err == nil {
+				host = strings.ToLower(name)
+			}
+			if !s.allowHosts[host] {
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "unrecognized Host header; this daemon serves loopback clients only",
+				})
+				return
+			}
+			routed.ServeHTTP(w, r)
+		})
 	}
+	return s.refuseBrowserOrigins(handler)
+}
+
+// refuseBrowserOrigins is the daemon's origin boundary, and it wraps every
+// route rather than sitting inside the ones that read a request envelope.
+//
+// It began inside readRequest, which meant it covered the four routes that
+// parse a body and not POST /sessions/{id}/close, which parses none: a page in
+// the user's browser could issue a no-cors POST and drop a live session with
+// its in-flight runs. The registry allowlist still governed process execution,
+// so the reach was a lost session rather than an executed command — but the
+// boundary the README and Decision 0008 describe was not the boundary the code
+// enforced, and a per-route check is a boundary that has to be remembered
+// again for every route yet to be written. Here it holds for all of them,
+// including the ones that take no body and the ones that do not exist yet.
+//
+// It is unconditional, unlike the host restriction above: that allowlist is an
+// operator's configuration, while this is what the daemon promises whatever it
+// is configured with.
+//
+// The Fetch specification attaches Origin to every cross-origin request whose
+// method is not GET or HEAD, so refusing it turns a simple POST from a page
+// into a preflight this daemon never answers. Reads are covered too: no
+// legitimate OAP client sends Origin, and a local daemon has no reason to
+// serve a browser page any of its surfaces.
+func (s *Server) refuseBrowserOrigins(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := strings.ToLower(strings.TrimSpace(r.Host))
-		if name, _, err := net.SplitHostPort(host); err == nil {
-			host = strings.ToLower(name)
-		}
-		if !s.allowHosts[host] {
-			writeJSON(w, http.StatusForbidden, map[string]string{
-				"error": "unrecognized Host header; this daemon serves loopback clients only",
-			})
+		if _, ok := r.Header["Origin"]; ok {
+			s.writeError(w, http.StatusForbidden, "cross_origin_request", "the daemon does not serve cross-origin requests", protocol.Envelope{})
 			return
 		}
-		mux.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -741,17 +775,18 @@ func hasLiteralEnvironment(environment []string) bool {
 // OAP envelope schema, and checks its type against the endpoint. Every
 // rejection is written as a correlated error.response.
 //
-// It also carries the origin boundary a loopback daemon should have: the Host
-// allowlist admits a simple cross-origin POST from a page in the user's
-// browser, so the daemon requires a JSON content type and refuses any request
-// bearing an Origin header, which turns that simple request into a preflight
-// the daemon never answers. The boundary is defence in depth beside the
-// registry allowlist above, not instead of it.
+// It also carries the media-type half of the daemon's browser boundary: the
+// Host allowlist admits a simple cross-origin POST from a page in the user's
+// browser, and a simple request cannot declare a JSON content type. That
+// boundary is defence in depth beside the registry allowlist above, not
+// instead of it.
+//
+// Its other half, the Origin refusal, is enforced for every route in
+// refuseBrowserOrigins rather than here, because it is a statement about the
+// daemon. The media type stays here because it is a statement about a body:
+// the routes that read none — close — cannot require a content type without
+// refusing every client that posts them empty.
 func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...protocol.EnvelopeType) (protocol.Envelope, bool) {
-	if _, ok := r.Header["Origin"]; ok {
-		s.writeError(w, http.StatusForbidden, "cross_origin_request", "the daemon does not serve cross-origin requests", protocol.Envelope{})
-		return protocol.Envelope{}, false
-	}
 	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
 		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "the daemon requires Content-Type: application/json", protocol.Envelope{})
 		return protocol.Envelope{}, false

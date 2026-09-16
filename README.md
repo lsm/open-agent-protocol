@@ -116,8 +116,11 @@ operator-configured source by `id` only — from the registry document's
 from its own entry. A wire-supplied command, argument list, or literal
 `NAME=value` environment value is refused before the open is forwarded; the
 bare-`NAME` allowlist form is the only `environment` a wire caller may write.
-Beside that, the daemon requires `Content-Type: application/json` and refuses
-any request bearing an `Origin` header.
+Beside that, every route refuses a request bearing an `Origin` header, and the
+routes that read a request body also require `Content-Type: application/json`.
+The origin refusal wraps the whole mux rather than living in the routes that
+parse an envelope, so it covers the ones that read no body — `close` — and the
+ones not yet written.
 
 [Decision 0008](decisions/0008-tool-sources.md) graduates the unit: Claude Code
 serves the catalog at `degraded` from its per-turn `system/init` frame, and ACP

@@ -232,8 +232,8 @@ export interface FeatureSupport {
   modes?: string[];
   /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries — an object, because only an object is a structured result. */
   constraints?: { fixed_result?: Record<string, unknown> } & Record<string, unknown>;
-  /** The bounds that make a refusal checkable: `action.tool_sources.attach` discloses `max_sources` (a positive ceiling — zero would put every attaching request outside the limit and make refusing all of them conforming, so the schema refuses it) and the `transports` it accepts, and refusing an array that violates neither is a conformance failure. */
-  limits?: { max_sources?: number; transports?: string[] } & Record<string, unknown>;
+  /** The bounds that make a refusal checkable: `action.tool_sources.attach` discloses `max_sources` and the `transports` it accepts, and refusing an array that violates neither is a conformance failure. Both are held to values a request can satisfy — a positive ceiling, and transports drawn from the source-kind vocabulary — because a limit no attachment can meet would make refusing every one of them conforming, so the schema refuses it. */
+  limits?: { max_sources?: number; transports?: ToolSourceKind[] } & Record<string, unknown>;
 }
 
 /** Where a tool source's tools are executed from. An MCP source is a `process` or `remote` kind whose `protocol` is `mcp`. */

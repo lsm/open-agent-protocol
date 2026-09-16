@@ -239,6 +239,18 @@ non-positive value therefore discloses no ceiling at all, in the schema and in
 well-formed array. `fixtures/schema-invalid/tool-source-attach-limit-zero.json`
 pins the schema's half.
 
+`transports` is held to the source-kind vocabulary for the same reason, and by
+the same two halves. An attachment's `kind` is one of `native`, `local`,
+`process`, `remote`, `hosted`, so a list naming anything else — `["bogus"]`,
+`["stdio"]` — puts every possible attachment outside the disclosed limit and
+makes refusing all of them conforming: the `max_sources: 0` loophole wearing
+another member's clothes. The schema now `$ref`s one `toolSourceKind`
+definition from the descriptor's `kind`, the attachment's `kind`, and each
+disclosed transport, so the value and the vocabulary that constrains it cannot
+name different sets. `FeatureSupport.Transports` drops an unrecognized entry
+rather than obeying it, and a list left with nothing usable discloses no
+transports at all.
+
 ### Attachment discloses a set of modes, not one
 
 `action.tool_sources.attach` discloses where it attaches in
@@ -365,17 +377,39 @@ corpus fixtures, and `command`, `args`, and a literal `environment` stay legal
 exactly where the sender is the daemon itself or the in-process embedding of
 `serve.Hub`, which has no network boundary to cross.
 
-Alongside it, and not instead of it, `readRequest` gains the origin boundary a
-loopback daemon should have had: it requires `Content-Type: application/json`
-and rejects any request bearing an `Origin` header, which turns the browser's
-simple request into a preflight the daemon never answers. That hardening is
-defence in depth; the allowlist is what the unit graduates on, because an
-executable the operator never configured is not something the daemon should run
-under any boundary check.
+Alongside it, and not instead of it, the daemon gains the origin boundary a
+loopback service should have had: every route refuses a request bearing an
+`Origin` header, which turns the browser's simple request into a preflight the
+daemon never answers, and the routes that read a request body also require
+`Content-Type: application/json`.
+
+The two halves sit in different places because they are statements about
+different things. The media type is a statement about a body, so it stays in
+`readRequest` — `POST /sessions/{id}/close` reads none, and both clients post it
+empty, so requiring a content type there would refuse the callers it is meant
+to protect. The origin refusal is a statement about the daemon, so it wraps the
+whole mux in `refuseBrowserOrigins` rather than sitting inside the four routes
+that parse an envelope. It began inside `readRequest`, which meant `close` was
+outside it: a page could drop a live session and its in-flight runs with one
+no-cors POST. The reach was a lost session rather than an executed command,
+because the registry allowlist still governed process execution — but the
+boundary this document describes was not the boundary the code enforced, and a
+per-route check is a boundary that has to be remembered again for every route
+yet to be written. The wrapper is also unconditional, unlike the host
+allowlist beside it: that allowlist is an operator's configuration, while this
+is what the daemon promises whatever it is configured with. The Fetch
+specification attaches `Origin` to every cross-origin request whose method is
+not GET or HEAD, and reads are covered too, because no OAP client sends the
+header and a local daemon has no reason to serve a browser page any surface at
+all.
+
+That hardening is defence in depth; the allowlist is what the unit graduates
+on, because an executable the operator never configured is not something the
+daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 50 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 51 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -385,14 +419,18 @@ a session snapshot publishes, the lifetime catalog an attachment binds, the
 attachment-only member a published source may never carry, a call's attribution
 and its reassignment mid-lifecycle, a refresh that collides with an attachment,
 an attach capability disclosing no session-open mode in both directions, one
-published under a layer alone, and a schema-invalid `max_sources: 0`. Five
-boundary tests carry what no trace can: every registered adapter refusing an
-attachment it never advertised before a process starts and every advertising one
-admitting its own published disclosure (`serve`), and the open route relaying
-both typed refusals with the details that name what to change, settling the
-capability and degradation rungs ahead of its own credential rule, reading the
-key out of a layer, and reporting a probe it could not read rather than falling
-through to a constraint (`serve/servehttp`).
+published under a layer alone, and the two schema-invalid disclosures no
+request can satisfy — `max_sources: 0` and a transport outside the source-kind
+vocabulary. Seven boundary tests carry what no trace can: the two limit
+accessors ignoring each of those disclosures for a descriptor that never passed
+through the schema (`protocol`), every registered adapter refusing an
+attachment it never advertised before a process starts and every advertising
+one admitting its own published disclosure (`serve`), and the open route
+relaying both typed refusals with the details that name what to change,
+settling the capability and degradation rungs ahead of its own credential rule,
+reading the key out of a layer, reporting a probe it could not read rather than
+falling through to a constraint, and refusing an `Origin` header on every route
+it registers (`serve/servehttp`).
 
 Native evidence: Claude Code graduates the catalog at `degraded` on the
 per-turn `system/init` frame, now pinned in

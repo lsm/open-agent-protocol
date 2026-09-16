@@ -98,17 +98,37 @@ func (f FeatureSupport) MaxSources() (int, bool) {
 }
 
 // Transports reports the disclosed set of accepted source kinds, and false
-// when the endpoint declared none.
+// when the endpoint declared no usable one.
+//
+// Only the kinds an attachment can actually take are usable, for the reason
+// MaxSources refuses a zero ceiling: an attachment's `kind` is one of the five,
+// so a transport list naming anything else puts every possible attachment
+// outside the disclosed limit and makes refusing all of them conforming — an
+// endpoint advertising the key and honouring nothing, which is what the limit
+// mechanism exists to prevent. The schema refuses such a list outright; this
+// holds the same line for a descriptor that never passed through it, and an
+// unrecognized entry is dropped rather than obeyed. A list left with nothing
+// usable discloses no transports at all, and the endpoint is then held to
+// accepting every well-formed array.
 func (f FeatureSupport) Transports() ([]string, bool) {
 	raw, ok := f.Limits[LimitTransports]
 	if !ok {
 		return nil, false
 	}
 	var value []string
-	if err := json.Unmarshal(raw, &value); err != nil || len(value) == 0 {
+	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, false
 	}
-	return value, true
+	kinds := make([]string, 0, len(value))
+	for _, kind := range value {
+		if IsToolSourceKind(kind) {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) == 0 {
+		return nil, false
+	}
+	return kinds, true
 }
 
 // Capability keys for the per-submit run controls. A control the endpoint has
