@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/adapter/claude/internal/native"
@@ -61,7 +62,23 @@ type Session struct {
 	// session actually served, and nil until it has served one. It is what the
 	// adapter has published to this session, as against what it merely knows,
 	// and it is the adapter-side twin of the validator's attributionInForce.
+	// mu-domain, like the three fields above it.
 	servedTools map[string]string
+	// attribution is what those four fields *answer*: the mapping an emitted
+	// call may name, recomputed under mu whenever an input changes and then
+	// published as an immutable snapshot the dispatch loop reads with no lock
+	// at all.
+	//
+	// It exists because the answer is needed from the other lock domain. Every
+	// input is mu-domain, but startTool needs it while the reducer holds
+	// reduceMu, and reading the inputs there was a genuine race — a torn slice
+	// header at first, and a fatal `concurrent map read and map write` once a
+	// served catalog became a map. Taking mu in the reducer would have worked,
+	// and the established order (reduceMu then mu, as the InitFrame case uses)
+	// admits it, but a value replaced wholesale and never mutated does not need
+	// a lock: publishing it atomically makes the reducer's view immutable by
+	// construction rather than by a discipline the next reader has to know.
+	attribution atomic.Pointer[map[string]string]
 
 	pending      *runState
 	active       *runState
@@ -437,6 +454,39 @@ func (s *Session) projectCatalogLocked(init *native.InitFrame) {
 		})
 	}
 	s.catalog, s.catalogSources, s.catalogKnown = catalog, sources, true
+	s.publishAttributionLocked()
+}
+
+// publishAttributionLocked recomputes the mapping an emitted call may name and
+// publishes it for the dispatch loop. Called under mu by every writer of an
+// input, so the recompute is serialized and each published map is fresh,
+// complete, and never written again.
+//
+// The rule it encodes is the one Decision 0008 states: a call names exactly
+// what the catalog in force attributes the tool to. A catalog this session
+// served is in force wholly, and supersedes the projection — including for a
+// tool the served catalog omits, which this session has published no
+// attribution for whatever a later frame knows. With none served, only the
+// descriptor has published anything, so the projection is filtered to the
+// sources it declares.
+func (s *Session) publishAttributionLocked() {
+	published := map[string]string{}
+	if s.servedTools != nil {
+		for name, source := range s.servedTools {
+			published[name] = source
+		}
+		s.attribution.Store(&published)
+		return
+	}
+	declared := endpointSources()
+	for _, tool := range s.catalog {
+		for _, source := range declared {
+			if source.ID == tool.Source {
+				published[tool.Name] = tool.Source
+			}
+		}
+	}
+	s.attribution.Store(&published)
 }
 
 // toolSourceFor resolves one tool name against the servers the same frame
@@ -549,6 +599,7 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 			s.servedTools[tool.Name] = tool.Source
 		}
 	}
+	s.publishAttributionLocked()
 	return base.ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{SessionID: request.SessionID, Sources: sources, Tools: tools}}, nil
 }
 
@@ -755,7 +806,7 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 	args, _ := json.Marshal(input)
 	tool := &toolState{
 		nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run,
-		name: name, source: s.catalogSourceLocked(name), args: args,
+		name: name, source: s.attributionFor(name), args: args,
 	}
 	s.tools[nativeID] = tool
 	payload := s.toolPayload(tool)
@@ -820,9 +871,10 @@ func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
 }
 
-// catalogSourceLocked reports the source an emitted call may name for one tool
+// attributionFor reports the source an emitted call may name for one tool
 // name, and "" when the endpoint has published no attribution a consumer of
-// this stream could resolve.
+// this stream could resolve. It reads the snapshot publishAttributionLocked
+// published, so it is safe from the dispatch loop's own lock domain.
 //
 // This adapter advertises action.tools.list, so a consumer should be able to
 // relate an observed call to the catalog entry without re-parsing the tool
@@ -863,29 +915,18 @@ func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
 // `system/init` frame and for a tool no catalog lists. Inventing
 // `claude-code-native` for any of those would be the guess the member exists
 // to replace.
-func (s *Session) catalogSourceLocked(name string) string {
-	// A served catalog is the one in force, wholly: a tool it omits is one this
-	// session has published no attribution for, whatever a later projection
-	// knows, and naming one anyway would contradict the catalog a consumer
-	// holds.
-	if s.servedTools != nil {
-		return s.servedTools[name]
-	}
-	if !s.catalogKnown {
+func (s *Session) attributionFor(name string) string {
+	// One atomic load and a read of a map nothing will write again. The
+	// decision itself was made under mu by publishAttributionLocked; this is
+	// only the lookup, which is why it is safe from the reducer's domain.
+	published := s.attribution.Load()
+	if published == nil {
+		// Nothing published yet: before the first system/init frame this session
+		// has no catalog and the descriptor has attributed nothing to these
+		// tools.
 		return ""
 	}
-	for _, tool := range s.catalog {
-		if tool.Name != name {
-			continue
-		}
-		for _, declared := range endpointSources() {
-			if declared.ID == tool.Source {
-				return tool.Source
-			}
-		}
-		return ""
-	}
-	return ""
+	return (*published)[name]
 }
 
 // openGate surfaces one can_use_tool ask as an OAP permission interaction.

@@ -704,6 +704,25 @@ rediscovered from the code.
   `attributionInForce` mirrored on the adapter's side. The two must agree,
   because one judges what the other emits.
 
+  The mapping is recomputed under the session's own mutex and then published
+  as an immutable snapshot the dispatch loop reads with a plain atomic load.
+  Every input is mu-domain, but the answer is needed from the reducer's domain,
+  and reading the inputs there was a real race — a torn slice header first, and
+  a fatal `concurrent map read and map write` once a served catalog made it a
+  map. Taking the session mutex in the reducer would also have worked: the
+  established order is reduceMu then mu, the InitFrame case already nests them
+  that way, and nothing anywhere takes them in the other order, so there is no
+  deadlock to fear. It was not chosen because a value replaced wholesale and
+  never mutated does not need a lock, and because widening the reducer's
+  critical section would put a read-only route behind a whole reduction.
+  Publishing atomically makes the reducer's view immutable by construction
+  rather than by a discipline the next reader has to know.
+
+  The rest of this session was audited for the same exposure and has none: every
+  other field the two domains share — `closed`, `unusable`, `nativeSessionID`,
+  and `state` — is both written and read under the session mutex, and the
+  attribution was the one place an answer crossed domains without it.
+
   The alternative — recording a GET-served catalog as in force only when it is
   correlated — was declined. It answers an adapter-side mismatch on the
   validator's side: it would leave the adapter still unable to attribute in the

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1249,6 +1250,103 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 
 // catalogFrame decodes one system/init frame from the wire shape, because the
 // frame's MCP server list is an anonymous struct a test cannot name.
+// mcpInitFrame is the wire form of catalogFrame: a turn that publishes both a
+// tool list and an MCP server list, so the session has a catalog to project and
+// a catalog to serve.
+const mcpInitFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Bash","mcp__files__read_file"],"mcp_servers":[{"name":"files","status":"connected"}],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
+
+// TestServingACatalogRacesNoToolCall interleaves the two goroutines that reach
+// the session's catalog from opposite sides: a caller asking for the catalog,
+// and the dispatch loop starting a tool call that has to attribute itself from
+// it.
+//
+// It exists because nothing else in this package puts them in flight together,
+// so `go test -race` certified a genuine race as clean — twice, once for the
+// catalog slice and once for the served map that turned the same defect fatal
+// (`concurrent map read and map write` takes the daemon down rather than
+// returning a torn value). A rule the suite cannot catch is a rule nothing
+// defends, so this test is the defence rather than the fix.
+//
+// It asserts nothing beyond "the run settled": the detector is the assertion.
+func TestServingACatalogRacesNoToolCall(t *testing.T) {
+	_, session, peer := openWire(t)
+	outcome := submit(session)
+	uuid := turnUUIDOf(t, peer.writtenUser())
+	// The MCP-bearing frame is what gives both sides something to publish: a
+	// projection with an MCP attribution, and a serve that supersedes it.
+	peer.send(mcpInitFrame)
+	peer.send(streamEcho(uuid))
+	admitted := awaitSubmit(t, outcome)
+
+	lister, ok := session.(base.ToolLister)
+	if !ok {
+		t.Fatal("the session serves no catalog")
+	}
+	const rounds = 64
+	// The stream is drained while the frames are fed, because the point is the
+	// interleaving and a parked consumer would overflow the journal before the
+	// two goroutines had met.
+	drained := make(chan []protocol.Envelope, 1)
+	go func() {
+		var events []protocol.Envelope
+		for result := range admitted.stream {
+			if result.Error != nil {
+				break
+			}
+			events = append(events, result.Envelope)
+		}
+		drained <- events
+	}()
+	// The catalog goroutine runs until the frames are exhausted rather than for
+	// a fixed count, so the two are guaranteed to be in flight together: a
+	// bounded loop can finish before the first frame is reduced and certify
+	// nothing.
+	feeding := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-feeding:
+				return
+			default:
+			}
+			// Yield each round: the point is to overlap the two goroutines, not
+			// to starve the writer pump the peer feeds frames through.
+			runtime.Gosched()
+			// A scoped request: the one that records what this session served,
+			// and so the one that writes the state the reducer reads.
+			if _, err := lister.Tools(context.Background(), protocol.ToolsListRequest{
+				SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList},
+			}); err != nil {
+				t.Errorf("tools: %v", err)
+				return
+			}
+		}
+	}()
+	for i := 0; i < rounds; i++ {
+		id := fmt.Sprintf("toolu_%02d", i)
+		peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"` + id + `","name":"mcp__files__read_file","input":{"path":"/tmp/x"}}],"stop_reason":null,"usage":{"input_tokens":1}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a` + id + `"}`)
+		peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"` + id + `","type":"tool_result","content":"ok","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u` + id + `"}`)
+	}
+	close(feeding)
+	wg.Wait()
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	var events []protocol.Envelope
+	select {
+	case events = <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event stream never closed")
+	}
+	if last := terminalOf(events); last.Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal = %s", last.Type)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func catalogFrame(t *testing.T) *native.InitFrame {
 	t.Helper()
 	var frame native.InitFrame
@@ -1340,7 +1438,7 @@ func TestCallCarriesTheCatalogSource(t *testing.T) {
 		{"NotInTheCatalog", ""},
 	} {
 		t.Run(testCase.tool, func(t *testing.T) {
-			if got := session.catalogSourceLocked(testCase.tool); got != testCase.source {
+			if got := session.attributionFor(testCase.tool); got != testCase.source {
 				t.Fatalf("catalog source for %q = %q, want %q", testCase.tool, got, testCase.source)
 			}
 		})
@@ -1349,7 +1447,7 @@ func TestCallCarriesTheCatalogSource(t *testing.T) {
 	// Before the first turn there is no catalog at all, so there is nothing to
 	// attribute against and the adapter says so rather than guessing native.
 	fresh := &Session{state: protocol.SessionState{SessionID: "session"}}
-	if got := fresh.catalogSourceLocked("Bash"); got != "" {
+	if got := fresh.attributionFor("Bash"); got != "" {
 		t.Fatalf("a session with no catalog attributed a call to %q", got)
 	}
 
