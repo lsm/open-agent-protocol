@@ -360,8 +360,9 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	stop := make(chan struct{})
 	abandon := make(chan struct{})
 	writerFailed := make(chan struct{}, 1)
+	outputFailed := &outputFailure{}
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- writeLines(out, lines, stop, abandon, writerFailed) }()
+	go func() { writerDone <- writeLines(out, lines, stop, abandon, writerFailed, outputFailed) }()
 
 	// The reader reports its terminal outcome on a buffered side channel as
 	// well as in the frame stream, because the serving loop may be inside a
@@ -467,6 +468,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		// stall this window exists to abandon in the first place.
 		cancel()
 		close(abandon)
+		// The writer's own failure is not waited for here — waiting is what
+		// this window just gave up on — but it is still the truest account
+		// of why nothing reached the host, so it is read from where the
+		// writer records it rather than from a return this path never
+		// collects.
+		if err == nil {
+			err = outputFailed.get()
+		}
 	}
 	// A loop abandoned mid-op never reported the input's own end, so the
 	// reader's account of it stands in: the same host input returns the same
@@ -627,7 +636,7 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 // dead output. The channel is never closed: an abandoned producer parks on
 // its send and is reclaimed by process exit rather than panicking on a
 // closed channel.
-func writeLines(out io.Writer, lines <-chan []byte, stop, abandon <-chan struct{}, failed chan<- struct{}) error {
+func writeLines(out io.Writer, lines <-chan []byte, stop, abandon <-chan struct{}, failed chan<- struct{}, record *outputFailure) error {
 	var failure error
 	write := func(line []byte) {
 		if failure != nil {
@@ -645,6 +654,7 @@ func writeLines(out io.Writer, lines <-chan []byte, stop, abandon <-chan struct{
 		}
 		if _, err := out.Write(append(line, '\n')); err != nil {
 			failure = err
+			record.set(err)      // readable by a teardown that cannot wait for this goroutine
 			failed <- struct{}{} // buffered one-slot signal, sent only on the first failure
 		}
 	}
@@ -665,6 +675,29 @@ func writeLines(out io.Writer, lines <-chan []byte, stop, abandon <-chan struct{
 			}
 		}
 	}
+}
+
+// outputFailure records the writer's first failure where a teardown can read
+// it without waiting for the writer to return. The abandonment path needs
+// exactly that: it has just decided not to wait, and the return value it
+// therefore never collects is where the failure would otherwise live.
+type outputFailure struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (f *outputFailure) set(err error) {
+	f.mu.Lock()
+	if f.err == nil {
+		f.err = err
+	}
+	f.mu.Unlock()
+}
+
+func (f *outputFailure) get() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
 }
 
 // frameDefect marks a framing error the codec itself raised — the line

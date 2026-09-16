@@ -603,7 +603,7 @@ func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, abandon, failed) }()
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}) }()
 	lines <- []byte(`{"id":1,"ok":true}`)
 	lines <- []byte(`{"id":2,"ok":true}`)
 	close(stop)
@@ -630,7 +630,7 @@ func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(failWriter{}, lines, stop, abandon, failed) }()
+	go func() { done <- writeLines(failWriter{}, lines, stop, abandon, failed, &outputFailure{}) }()
 	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
 	lines <- []byte(`{"id":2,"ok":true}`) // dropped, but still consumed
 	close(stop)
@@ -659,7 +659,7 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, abandon, failed) }()
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}) }()
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatalf("writeLines returned %v", err)
@@ -1085,7 +1085,7 @@ func TestWriterAbandonedCarriesNothingMore(t *testing.T) {
 	lines <- []byte(`{"id":1,"ok":true}`) // queued, not yet taken
 	close(abandon)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, abandon, failed) }()
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -1208,6 +1208,51 @@ func TestStallAndMalformedLineBothSurvive(t *testing.T) {
 		}
 		if !errors.Is(err, ErrShutdownStalled) {
 			t.Fatalf("Run returned %v, want the stall to survive alongside it", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
+// TestAbandonedTeardownStillReportsTheWriteFailure pins the account a
+// caller is owed when both go wrong at once: one response has already
+// failed to write while another worker is stuck, so the teardown abandons
+// the stuck worker and never collects the writer's return. The write
+// failure is why nothing reached the host, and losing it would leave the
+// caller with only "shutdown stalled" for an output that was already dead.
+func TestAbandonedTeardownStillReportsTheWriteFailure(t *testing.T) {
+	registry := serve.NewRegistry()
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	if err := registry.Register("hang", &probeAdapter{hang: hang}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("memory", base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8})
+	server, err := New(hub, Options{MaxConcurrentOps: 2, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, failWriter{}) }()
+	// One op that answers, so its response fails the write; one that never
+	// answers, so the worker wait is what times out.
+	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"capabilities","adapter":"memory"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdinWriter.Write([]byte(`{"id":2,"op":"capabilities","adapter":"hang"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("Run returned %v, want the write failure", err)
+		}
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want the stall reported with it", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return")
