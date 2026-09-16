@@ -438,6 +438,10 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.CapabilitiesResponse{}
 	case protocol.TypeCapabilitiesUpdated:
 		return &protocol.CapabilitiesUpdated{}
+	case protocol.TypeModelsRequest:
+		return &protocol.ModelsRequest{}
+	case protocol.TypeModelsResponse:
+		return &protocol.ModelsResponse{}
 	case protocol.TypeSessionOpenRequest:
 		return &protocol.SessionOpenRequest{}
 	case protocol.TypeSessionOpenResponse:

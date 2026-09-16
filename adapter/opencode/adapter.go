@@ -159,6 +159,14 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools":                   {Level: protocol.SupportNative, Reason: "tool.called/progress/success/failed lifecycle observed natively"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "tools execute server-side; no client-hosted execution surface"},
 		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "durable stream carries no permission events; the polling surface is unexercised"},
+		// The pinned ledger names model.list and provider.list as native
+		// catalog routes but pins no response shape for either, and an adapter
+		// may not decode a shape no pin covers. What is pinned is what this
+		// session has run: the session record's model and the model each
+		// durable step names. That is served here, and it is why the key is
+		// degraded rather than native — it is this session's effective models,
+		// not the server's own list, and it grows as steps are observed.
+		protocol.FeatureModelsList: {Level: protocol.SupportDegraded, Reason: "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision"},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: "opencode.server", Name: "OpenCode Server Adapter", Version: PinnedTag, Adapter: "opencode-http-sse"}
 	return base.Descriptor{
@@ -228,6 +236,9 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		stop:         make(chan struct{}),
 		subCancel:    subCancel,
 	}
+	// The session's own model is the first catalog evidence there is; durable
+	// steps add whatever else this session turns out to run.
+	s.observeModel(model)
 	go s.dispatch()
 	return s, nil
 }
@@ -265,3 +276,7 @@ func (b *clientBridge) Subscribe(ctx context.Context, session native.SessionID, 
 }
 
 var _ base.Adapter = (*Adapter)(nil)
+
+// The graduating adapter for the models unit: it advertises models.list and
+// serves the catalog it advertises, at the fidelity the pinned ledger supports.
+var _ base.ModelLister = (*session)(nil)

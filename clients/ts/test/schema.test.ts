@@ -126,6 +126,28 @@ const samples: PayloadSample[] = [
     previous_revision: 'rev-1',
     reason: 'reloaded',
   }),
+  sample<protocol.ModelsRequest>('ModelsRequest', 'capabilities.schema.json', 'modelsRequest', {
+    session_id: 's-1',
+    allow_degraded_features: ['models.list'],
+  }),
+  sample<protocol.ModelDescriptor>('ModelDescriptor', 'capabilities.schema.json', 'modelDescriptor', {
+    id: 'provider/model-a',
+    display_name: 'Model A',
+    provider_id: 'provider',
+    context_window: 200000,
+    features: { 'model.reasoning.output': { level: 'native' } },
+    default: true,
+  }),
+  sample<protocol.ModelEventPosition>('ModelEventPosition', 'capabilities.schema.json', 'modelEventPosition', {
+    run_id: 'r-1',
+    sequence: 2,
+  }),
+  sample<protocol.ModelsResponse>('ModelsResponse', 'capabilities.schema.json', 'modelsResponse', {
+    session_id: 's-1',
+    current_model_id: 'provider/model-a',
+    models: [{ id: 'provider/model-a', display_name: 'Model A', provider_id: 'provider', default: true }],
+    as_of_model_event: { run_id: 'r-1', sequence: 2 },
+  }),
 
   // session.schema.json
   sample<protocol.SessionOpenRequest>('SessionOpenRequest', 'session.schema.json', 'openRequest', {

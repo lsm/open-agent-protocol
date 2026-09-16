@@ -85,7 +85,7 @@ test(
     const adapters = await client.adapters();
     assert.ok(adapters.some((adapter) => adapter.name === 'memory'));
     const caps = await client.capabilities('memory');
-    assert.equal(caps.revision, 'reference-memory-v2');
+    assert.equal(caps.revision, 'reference-memory-v3');
     assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
 
     // An unknown adapter is a coded refusal.
@@ -96,6 +96,20 @@ test(
     // admitted model is echoed on the admission and on run.started, and the
     // session default does not move, because the application is per_run.
     const session = await client.open('memory', { sessionId: 'ts-integration-a' });
+
+    // The catalog the endpoint publishes is the one its model gate enforces,
+    // so the id selected below is one this listing offered.
+    const catalog = await session.models();
+    assert.equal(catalog.models.session_id, session.id);
+    // The listing comes back with the revision that governs it, so a caller
+    // can cache it against that descriptor and discard it when it moves.
+    assert.equal(catalog.revision, caps.revision);
+    assert.deepEqual(
+      catalog.models.models.map((descriptor) => descriptor.id),
+      ['reference-model-a', 'reference-model-b'],
+    );
+    assert.equal(catalog.models.models.filter((descriptor) => descriptor.default).length, 1);
+
     const events = session.events();
     await events.ready;
     const admission = await session.submit({
