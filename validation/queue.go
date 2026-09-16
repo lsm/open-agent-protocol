@@ -531,8 +531,12 @@ type deferredStateClaim struct {
 	// accounted is the set of runs a session-level admission claim's snapshot
 	// listed or said it had settled. The admission the claim is waiting on has
 	// to land in it.
-	accounted   map[protocol.RunID]bool
-	sequence    uint64
+	accounted map[protocol.RunID]bool
+	sequence  uint64
+	// held is what a cancelling entry said about its own queue place at the
+	// position it states: kept, so its run had not begun there, or given up,
+	// so it had.
+	held        bool
 	listed      map[protocol.InteractionID]bool
 	model       string
 	index, line int
@@ -546,6 +550,7 @@ const (
 	claimModel
 	claimQueued
 	claimAdmitted
+	claimReservation
 )
 
 // reconcileDeferred settles every claim this run envelope answers.
@@ -593,6 +598,24 @@ func (s *state) reconcileDeferred(i, line int, e protocol.Envelope, r *runState)
 				continue
 			}
 			s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/active_runs", "active_runs reports a run as queued at a position it had already started at", "a started status", string(protocol.RunQueued), string(claim.run))
+		case claimReservation:
+			// The same start decides this one, from the other side: a
+			// cancelling entry that kept its queue place claims a position
+			// before the start, and one that gave the place up claims a
+			// position from the start onwards. Either is a claim, and the
+			// start is the only thing that answers it.
+			if !r.started {
+				continue
+			}
+			claim.done = true
+			if claim.held == (claim.sequence < r.startSequence) {
+				continue
+			}
+			if claim.held {
+				s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/active_runs", "active_runs keeps a cancelling run in the queue at a position it had already started at", "no queue position", fmt.Sprintf("a queue place stated at sequence %d", claim.sequence), string(claim.run))
+				continue
+			}
+			s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/active_runs", "active_runs drops a cancelling run from the queue at a position it had not started at", "the queue place it still held", fmt.Sprintf("no queue position at sequence %d", claim.sequence), string(claim.run))
 		}
 	}
 }
@@ -730,6 +753,14 @@ func (s *state) closeQueue() {
 			// The run never started, so queued is what it stayed. A stated
 			// position the run never reaches is the capture claim's business,
 			// and it is raised there rather than twice.
+		case claimReservation:
+			// The run never started, so it never left the queue. An entry
+			// that kept its place was right all along; one that gave the
+			// place up rests on a promotion that never came, which is the
+			// evasion every deferral here is closed against.
+			if !claim.held {
+				s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/active_runs", "active_runs drops a cancelling run from a queue its run never left", "the queue place it still held", "no queue position", string(claim.run))
+			}
 		case claimAdmitted:
 			s.judgeAdmissionClaim(claim)
 		}

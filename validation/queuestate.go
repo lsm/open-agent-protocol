@@ -192,6 +192,36 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 	unresolved := false
 	lastOrder := -1
 	queuePosition := 0
+	// led marks that the listing has already passed an entry leading its own
+	// admission. Everything after it is judged knowing that.
+	led := false
+	// markExecuting records an entry whose status says its run is executing.
+	// Both paths into it read that off the status: the known entry's
+	// classification, and, for an entry still leading its own admission, the
+	// part of that classification the admission cannot change. One listing is
+	// one moment either way, so both are held to the same two rules about what
+	// a moment may contain.
+	markExecuting := func(pointer string, entry protocol.ActiveRun) {
+		if listedReservation {
+			// Promotion is in admission order, so a reservation admitted
+			// first cannot still be queued behind a run admitted after it.
+			// The listing is one moment and this one describes an ordering
+			// the queue does not permit — which no capture position excuses,
+			// because there is no moment it describes.
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs describes a run executing ahead of a reservation admitted before it", "a queued status behind the earlier reservation", string(entry.Status), string(entry.RunID))
+		}
+		if listedStarted != "" {
+			// One started run at a time is the whole of decision 0001 that
+			// this unit kept. A listing is one moment, so two entries
+			// describing runs as executing describe a moment that never
+			// existed, however the promotion fell inside the window — and
+			// letting the second replace the first would leave active_run_id
+			// owing nothing but the last one named.
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(listedStarted), string(entry.Status), string(entry.RunID))
+			return
+		}
+		listedStarted, startedEntry = entry.RunID, entry
+	}
 	for index, entry := range p.ActiveRuns {
 		pointer := fmt.Sprintf("/payload/active_runs/%d", index)
 		if listed[entry.RunID] {
@@ -202,16 +232,6 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		r := s.runs[entry.RunID]
 		if r == nil || r.session != p.SessionID {
 			if anchors := pendingAnchors(s, entry, p.SessionID); len(anchors) > 0 {
-				if entry.Status != protocol.RunQueued && !terminalStatus(entry.Status) {
-					// Its admission is unknown, but its status is not: a
-					// reservation's entry is queued, so this one says the run
-					// is executing whatever the response turns out to say. The
-					// one-started-run rule reaches it even though the
-					// classification does not.
-					if listedStarted != "" {
-						s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(listedStarted), string(entry.Status), string(entry.RunID))
-					}
-				}
 				// A snapshot may lead an admission it made: the endpoint knows
 				// the run, the response that will tell the trace about it is
 				// still in flight, and the entry says which submission it came
@@ -228,7 +248,35 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 				for _, id := range anchors {
 					s.deferred = append(s.deferred, &deferredStateClaim{kind: claimAdmitted, session: p.SessionID, run: entry.RunID, request: id, pointer: pointer + "/run_id", index: i, line: line, envelope: e})
 				}
-				unresolved = true
+				// What the lead buys is time for the one thing the response
+				// says: which run this submission became. It does not buy the
+				// entry an exemption from what it says about itself. The
+				// entry's own status is not something an admission can change,
+				// so every rule that reads the status alone still reaches it,
+				// and only the statuses that settle nothing without the run's
+				// own history stand the classification down.
+				switch {
+				case terminalStatus(entry.Status):
+					// active_runs is the nonterminal set whatever admitted the
+					// run, so this entry is already wrong and no response
+					// could right it. It is classified too — a settled run is
+					// neither a reservation nor a started one — so the fields
+					// read off the listing are not left waiting on it either.
+					s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs lists a run with a terminal status; a settled run is dropped and named in as_of.settled", "a nonterminal status", string(entry.Status), string(entry.RunID))
+				case entry.Status == protocol.RunQueued || entry.Status == protocol.RunCancelling:
+					// The two the trace has to supply. Queued is what a
+					// reservation says and the admission decides whether this
+					// run is one; cancelling says nothing about whether the
+					// run began, and without the run there is no start to
+					// settle it against.
+					unresolved = true
+				default:
+					// Everything else says the run is executing, and a
+					// reservation's entry does not say that however it was
+					// admitted.
+					markExecuting(pointer, entry)
+				}
+				led = true
 				continue
 			}
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs names a run the trace does not carry for this session", "a run admitted on "+string(p.SessionID), string(entry.RunID))
@@ -256,7 +304,14 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			// active_run_id is judged against.
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/as_of_sequence", "active_runs lists a run at a position it had already settled at", fmt.Sprintf("a position before %d", r.next-1), fmt.Sprintf("%d", *entry.AsOfSequence), string(entry.RunID))
 		}
-		if r.order <= lastOrder {
+		if r.order <= lastOrder || led {
+			// A lead is an entry whose submit request the trace carries
+			// unanswered, so the response that admits its run comes after
+			// every admission the trace already has: whatever its place in
+			// the queue turns out to be, its place in admission order is
+			// last. A run the trace does carry, listed after it, is out of
+			// order on the listing's own terms — which is why the entry's own
+			// order is not what has to be waited for here.
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs is not in admission order", "admission order", string(entry.RunID))
 		}
 		lastOrder = r.order
@@ -279,8 +334,18 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		// the place it still holds. Cancelling says nothing about whether the
 		// run began, so unlike queued it cannot classify on its own: the
 		// trace decides, at the position the entry states.
-		cancelling := entry.Status == protocol.RunCancelling &&
-			(!r.started || (entry.AsOfSequence != nil && *entry.AsOfSequence < r.startSequence))
+		// Where the trace has not reached the stated position, there is
+		// nothing yet to decide it against, and reading it either way alone is
+		// a false verdict at one edge of the window: taking the entry for a
+		// reservation lets a snapshot hold a queue place at a position past a
+		// promotion that had not drained, and refusing to would reject the
+		// accurate entry of a run cancelled after one. So the entry answers
+		// for itself, with the field the classification governs, and is held
+		// to that answer when the start arrives.
+		cancelling, pending := cancellingReservation(entry, r)
+		if pending && r.admittedQueued {
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimReservation, session: r.session, run: r.id, sequence: *entry.AsOfSequence, held: cancelling, index: i, line: line, envelope: e})
+		}
 		reservation, settled := r.admittedQueued && (entry.Status == protocol.RunQueued || cancelling), terminalStatus(entry.Status)
 		switch {
 		case settled:
@@ -300,25 +365,7 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			listedReservation = true
 		}
 		if !reservation && !settled {
-			if listedReservation {
-				// Promotion is in admission order, so a reservation admitted
-				// first cannot still be queued behind a run admitted after
-				// it. The listing is one moment and this one describes an
-				// ordering the queue does not permit — which no capture
-				// position excuses, because there is no moment it describes.
-				s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs describes a run executing ahead of a reservation admitted before it", "a queued status behind the earlier reservation", string(entry.Status), string(entry.RunID))
-			}
-			if listedStarted != "" {
-				// One started run at a time is the whole of decision 0001 that
-				// this unit kept. A listing is one moment, so two entries
-				// describing runs as executing describe a moment that never
-				// existed, however the promotion fell inside the window — and
-				// letting the second replace the first would leave
-				// active_run_id owing nothing but the last one named.
-				s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs claims a second started run, and a session has one", "a queued status behind "+string(listedStarted), string(entry.Status), string(entry.RunID))
-			} else {
-				listedStarted, startedEntry = r.id, entry
-			}
+			markExecuting(pointer, entry)
 		}
 		s.checkEntryStatus(i, line, e, pointer, entry, r)
 		s.checkEntryAnchor(i, line, e, pointer, p.SessionID, entry, r)
@@ -453,6 +500,31 @@ func terminalStatus(status protocol.RunStatus) bool {
 		return true
 	}
 	return false
+}
+
+// cancellingReservation answers whether a cancelling entry still holds the
+// queue place its run was admitted into, and whether that answer is one the
+// trace cannot check yet.
+//
+// A run the trace has seen start settles it: the entry is a reservation where
+// it states a position before that start, and not where it states one from the
+// start onwards. Before the start arrives there is nothing to compare, so the
+// entry answers for itself — a queue position beside a stated capture position
+// claims the run had not begun there, its absence claims it had — and the
+// answer is reconciled when the start lands, or when the trace ends without
+// one. An entry stating no position at all claims no knowledge the trace
+// lacks and is read as the trace stands, which is a run still in its queue.
+func cancellingReservation(entry protocol.ActiveRun, r *runState) (reservation, pending bool) {
+	if entry.Status != protocol.RunCancelling {
+		return false, false
+	}
+	if r.started {
+		return entry.AsOfSequence != nil && *entry.AsOfSequence < r.startSequence, false
+	}
+	if entry.AsOfSequence == nil {
+		return true, false
+	}
+	return entry.QueuePosition != nil, true
 }
 
 func (s *state) checkEntryStatus(i, line int, e protocol.Envelope, pointer string, entry protocol.ActiveRun, r *runState) {
