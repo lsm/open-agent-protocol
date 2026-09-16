@@ -1005,6 +1005,68 @@ func TestAdmissionAdmitsOneOversizeRequest(t *testing.T) {
 	run.release(4096)
 }
 
+// TestAbandonedWorkersLeaveNoWriterBehind pins what an abandoned stage owes
+// the caller: a stuck worker whose window expires must not leave a writer
+// holding the caller's output. An orphaned writer can emit a stale response
+// after Run has returned — or into a later invocation that reuses the same
+// stream — which is output corruption rather than a slow shutdown.
+func TestAbandonedWorkersLeaveNoWriterBehind(t *testing.T) {
+	hang := make(chan struct{})
+	release := make(chan struct{})
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	var out lockedBuffer
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, &out) }()
+	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"capabilities","adapter":"hang"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // let the worker reach the hung probe
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stuck worker")
+	}
+	settled := out.String()
+	// Now let the abandoned worker finish. Nothing it produces may reach
+	// the output Run has already handed back.
+	close(hang)
+	close(release)
+	time.Sleep(200 * time.Millisecond)
+	if after := out.String(); after != settled {
+		t.Fatalf("the abandoned worker wrote %d bytes after Run returned", len(after)-len(settled))
+	}
+}
+
+// lockedBuffer is an io.Writer a test can read while the writer goroutine
+// may still hold it, which is the whole question above.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(data)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
 // show: once an invocation has closed admission, it refuses, so a serving
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a

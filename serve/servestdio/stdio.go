@@ -433,6 +433,17 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		case <-drainWindow.C:
 		}
 	case <-drainWindow.C:
+		// The workers being abandoned here may still finish, and the writer
+		// must not outlive Run waiting to carry what they produce: an
+		// orphaned writer holds the caller's output and could emit a stale
+		// response into it long after this returns, or across a later
+		// invocation that reuses it. Cancelling first makes those sends
+		// fail instead of queueing behind us; stopping the writer then
+		// drains what is already queued and ends it. A writer parked inside
+		// out.Write on a pipe the host stopped reading stays parked, which
+		// is the stall this window exists to abandon.
+		cancel()
+		close(stop)
 	}
 	// A loop abandoned mid-op never reported the input's own end, so the
 	// reader's account of it stands in: the same host input returns the same
