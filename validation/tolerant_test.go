@@ -461,6 +461,28 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 			t.Fatalf("unknown support level satisfied the tools gate: %v", tolerant.Diagnostics)
 		}
 	})
+	t.Run("a foreign status on an accepted cancel response is opaque", func(t *testing.T) {
+		// core-cancelled: run.started, cancel accepted, status.updated,
+		// run.cancelled. With the response declaring a foreign status the
+		// next known update is the first step out of it and is not judged as
+		// cancelling -> running; with the response declaring cancelling, it is.
+		cancelled := func(responseStatus, nextStatus string) []map[string]any {
+			trace := loadTrace(t, "core-cancelled.json")
+			firstOfType(t, trace, "run.cancel.response")["payload"].(map[string]any)["status"] = responseStatus
+			firstOfType(t, trace, "run.status.updated")["payload"].(map[string]any)["status"] = nextStatus
+			return trace
+		}
+		strict, tolerant := validateBoth(t, cancelled("draining", "running"), "cancel-draining")
+		if strict.Valid() {
+			t.Fatal("strict accepted an unknown cancel response status")
+		}
+		if !tolerant.Valid() {
+			t.Fatalf("step out of a foreign cancel status was judged: %v", tolerant.Diagnostics)
+		}
+		if _, tolerant := validateBoth(t, cancelled("cancelling", "running"), "cancel-cancelling"); !hasCode(tolerant, CodeIllegalRunTransition) {
+			t.Fatalf("cancelling -> running passed under a known cancel status: %v", tolerant.Diagnostics)
+		}
+	})
 	t.Run("a missing status is a shape defect, not an extension", func(t *testing.T) {
 		// The schema leaves status optional on submit.response; the state rule
 		// requires it for a started admission. An absent member is not a

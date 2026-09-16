@@ -330,6 +330,14 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			} else if !r.terminal {
 				r.cancelAccepted = true
 				r.status = protocol.RunCancelling
+				if s.tolerant && foreignRunStatus(p.Status) {
+					// The response declared a status this revision does not
+					// know. It is recorded as opaque, as a foreign status from
+					// run.status.updated is, so the first known step out of it
+					// is not judged as a step out of cancelling. The accepted
+					// exchange still stands as evidence for run.cancelled.
+					r.status = p.Status
+				}
 			}
 		}
 	default:
