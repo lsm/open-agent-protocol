@@ -155,6 +155,10 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 	// against two different moments at once, and lets a listing disagree with
 	// itself about the same run.
 	listedStarted := protocol.RunID("")
+	// listedReservation records that the snapshot describes at least one run
+	// as queued, which is what makes "only reservations remain" a thing the
+	// listing says rather than a thing inferred from its emptiness.
+	listedReservation := false
 	lastOrder := -1
 	queuePosition := 0
 	for index, entry := range p.ActiveRuns {
@@ -209,6 +213,9 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		case entry.QueuePosition != nil:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *entry.QueuePosition), string(entry.RunID))
 		}
+		if reservation {
+			listedReservation = true
+		}
 		if !reservation && !settled {
 			listedStarted = r.id
 		}
@@ -234,6 +241,38 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		// the field names one or it names none. A client reading it as the
 		// run to follow would follow a run that has published nothing.
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must be absent where the session holds only reservations", "absent", string(p.ActiveRunID))
+	}
+	s.checkListedStatus(i, line, e, p, started, listedReservation)
+}
+
+// checkListedStatus holds the session status to the same listing the other two
+// fields are read from. A reconnecting client reads all three at once, and a
+// snapshot that says a run is executing while calling the session queued, or
+// holds a reservation while calling itself idle, hands that client a session
+// that never existed — the field it happens to trust decides what it does.
+//
+// Only the two directions the listing settles are judged. A session listing
+// nothing keeps whatever status it reports: an empty listing is what a closed
+// or errored session carries too, and those say something the runs cannot. An
+// entry with a terminal status is diagnosed as an entry, and says nothing about
+// the session either way.
+func (s *state) checkListedStatus(i, line int, e protocol.Envelope, p protocol.SessionState, started protocol.RunID, reservation bool) {
+	switch {
+	case started != "":
+		// A started run is executing or blocked on an interaction it raised.
+		// Every other status denies the run the same snapshot lists.
+		if p.Status == protocol.SessionRunning || p.Status == protocol.SessionWaitingForInput {
+			return
+		}
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "session status denies the started run the snapshot lists", "running or waiting_for_input", string(p.Status), string(started))
+	case reservation:
+		// Work is admitted and none of it has begun, which is the one thing
+		// queued says. idle would tell a reconnecting client there is nothing
+		// to wait for; running would tell it something is already executing.
+		if p.Status == protocol.SessionQueued {
+			return
+		}
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "a session holding only reservations is queued", string(protocol.SessionQueued), string(p.Status))
 	}
 }
 

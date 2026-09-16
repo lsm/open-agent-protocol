@@ -37,6 +37,10 @@ type runState struct {
 	// than every run whose start has not yet reached the trace.
 	order          int
 	admittedQueued bool
+	// startedAt is the trace index the run's run.started reached, which is
+	// what a capture window is measured against: a run that began after a
+	// snapshot was requested is one the snapshot was right not to name.
+	startedAt int
 	// startSequence is the sequence run.started carried, which is the
 	// position a state capture names when it reports the model a promotion
 	// installed. terminalAt is the trace index the run settled at, which is
@@ -362,7 +366,13 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			// as_of.settled, and that claim is judged on its own terms — the
 			// terminal it names must be the next thing the run publishes. It
 			// is not a contradiction, so it is not diagnosed twice.
-			if r := s.runs[prev]; r != nil && !r.terminal && p.ActiveRunID != prev {
+			//
+			// Neither is a run that began after the read was requested. A
+			// promotion happens inside the endpoint and its run.started can
+			// drain after the response, so a snapshot naming no started run
+			// where none had started is describing the moment it was taken.
+			r := s.runs[prev]
+			if r != nil && !r.terminal && p.ActiveRunID != prev && r.startedAt <= s.captureWindowStart(i, e) {
 				contradiction = true
 				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
 			}
@@ -805,10 +815,17 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	run.deferredControls = queued && controls.present && controls.modelPresent
 	s.runs[p.RunID] = run
 	st.order = append(st.order, p.RunID)
-	if st.active == "" {
-		st.active = p.RunID
-	} else if prev := s.runs[st.active]; prev == nil || prev.terminal {
-		st.active = p.RunID
+	// st.active is the run a snapshot has to keep naming, so it tracks the
+	// started run and nothing else. A reservation is not one: active_run_id
+	// stays absent until it starts, and recording it here made a snapshot that
+	// correctly reports no started run read as erasing a live one. The pointer
+	// moves at the promotion instead, which is where the run actually begins.
+	if !queued {
+		if st.active == "" {
+			st.active = p.RunID
+		} else if prev := s.runs[st.active]; prev == nil || prev.terminal {
+			st.active = p.RunID
+		}
 	}
 	s.refreshQueueWindows(p.SessionID)
 }
@@ -896,6 +913,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 			s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.started occurred more than once")
 		} else {
 			r.started = true
+			r.startedAt = i
 			r.status = protocol.RunRunning
 			s.promote(i, e, r)
 		}

@@ -183,7 +183,25 @@ of a promotion inside the window — a snapshot taken before it reports the
 reservation, with the place it held and no started run to name, and one taken
 after it reports a started run holding no position — and both are accurate.
 What an entry cannot do is invent a queue: a run admitted started was never in
-one. Where the start has
+one.
+
+`status` is read from that same listing. A snapshot listing a started run is
+running, or waiting on an interaction that run raised; one holding only
+reservations is queued. A reconnecting client reads the three fields at once,
+and a snapshot that lists a reservation while calling itself idle, or lists an
+executing run while calling itself queued, hands it a session that never
+existed and lets whichever field it happens to trust decide what it does. A
+listing with no entries keeps whatever status it reports, because an empty
+listing is what a closed or errored session carries too and those say something
+the runs cannot.
+
+Which run the validator holds a snapshot to is the same question, so a
+reservation is not it. The run a snapshot may not erase is the started one, and
+that pointer moves where the run begins rather than where it was admitted: a
+reservation recorded as the session's active run turned a correct snapshot of
+an idle explicit queue — no started run, because none had started — into an
+erasure of a live one. The promotion moves it, and a run that began after the
+read was requested is exempt, for the reason every other capture rule is. Where the start has
 not arrived yet, the claim is deferred rather than accepted: the position the
 entry states may be one the run turns out to be running at, and only its start
 decides that. Deciding it at the response instead would let a snapshot name a
@@ -249,7 +267,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 79 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 86 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the

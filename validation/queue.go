@@ -459,6 +459,12 @@ func (s *state) promote(i int, e protocol.Envelope, r *runState) {
 	if e.Sequence != nil {
 		r.startSequence = *e.Sequence
 	}
+	if st := s.sessions[r.session]; st != nil {
+		// The run has begun, so this is the run a snapshot must name. A
+		// reservation was never it, and the run it displaces is terminal by
+		// the ordering rule — one run executes at a time.
+		st.active = r.id
+	}
 	if !r.deferredControls {
 		return
 	}
