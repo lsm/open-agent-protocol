@@ -208,6 +208,27 @@ func (c *child) signal() string {
 	}
 }
 
+// wait ends the child and returns its exit error, draining stdout to EOF
+// first.
+//
+// os/exec closes the StdoutPipe inside Wait, and its own documentation calls
+// it incorrect to Wait before every read from that pipe has finished: the
+// drain goroutine can still be parked in Scan when the close lands, and then
+// the scan ends with "file already closed" rather than a clean EOF. Draining
+// first cannot hang — the pipe reaches EOF when the child exits, which is the
+// same event Wait is waiting for.
+func (c *child) wait() error {
+	c.t.Helper()
+	for range c.lines {
+		// Whatever is still queued is read to EOF; tests that care about the
+		// content have already taken it.
+	}
+	if err := <-c.readErr; err != nil {
+		c.t.Fatalf("stdout scan: %v", err)
+	}
+	return c.cmd.Wait()
+}
+
 func (c *child) decode(line string) responseShape {
 	c.t.Helper()
 	var shape responseShape
@@ -353,14 +374,11 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	if err := c.stdin.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.cmd.Wait(); err != nil {
+	if err := c.wait(); err != nil {
 		t.Fatalf("clean exit expected, got %v; stderr:\n%s", err, c.stderr)
 	}
 	if banner := c.stderr.String(); !strings.Contains(banner, "serving adapters over stdio: memory") {
 		t.Fatalf("stderr carries no banner:\n%s", banner)
-	}
-	if err := <-c.readErr; err != nil {
-		t.Fatalf("stdout scan: %v", err)
 	}
 }
 
@@ -374,6 +392,15 @@ func TestStdioBinaryFailsClosedOnAMalformedLine(t *testing.T) {
 	c.response(1)
 	c.send(`{"id":2,"op":`)
 
+	// The stdout lines are collected before Wait, for the same reason: they
+	// are read from the pipe Wait closes.
+	var emitted []string
+	for line := range c.lines {
+		emitted = append(emitted, line)
+	}
+	if scanErr := <-c.readErr; scanErr != nil {
+		t.Fatalf("stdout scan: %v", scanErr)
+	}
 	err := c.cmd.Wait()
 	if err == nil {
 		t.Fatalf("a malformed line exited zero; stderr:\n%s", c.stderr)
@@ -389,7 +416,7 @@ func TestStdioBinaryFailsClosedOnAMalformedLine(t *testing.T) {
 	if len(diagnostic) > 4096 {
 		t.Fatalf("stderr diagnostic is unbounded (%d bytes)", len(diagnostic))
 	}
-	for line := range c.lines {
+	for _, line := range emitted {
 		if strings.Contains(line, "invalid JSON") {
 			t.Fatalf("the framing diagnostic reached stdout: %s", line)
 		}
@@ -552,7 +579,7 @@ func TestStdioExampleSessionRuns(t *testing.T) {
 	if err := c.stdin.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.cmd.Wait(); err != nil {
+	if err := c.wait(); err != nil {
 		t.Fatalf("the example session exited %v; stderr:\n%s", err, c.stderr)
 	}
 }
