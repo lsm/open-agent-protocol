@@ -310,8 +310,13 @@ advertises the key `native` and applies it. Changes at this pin:
 - the reservation's `run.started` is held until the started run's terminal is
   on the wire, even when `session.next.prompted` for it arrives first, so one
   run domain executes at a time in admission order;
+- an admission is a reservation until the server's `session.next.prompted`
+  begins its turn, including on an idle session: the run identity exists from
+  admission, the turn does not, and the state projection follows the trace
+  rather than the slot the adapter happens to park the run in;
 - the descriptor discloses `max_active_runs_per_session: 2` and
-  `max_queued_runs_per_session: 1`. The server queues more than one input
+  `max_queued_runs_per_session: 1`, and `Submit` counts against exactly those
+  numbers rather than testing whether a slot is occupied. The server queues more than one input
   natively, but settlement here is derived from quiescence over a single
   execution, so a second reservation exceeds what this pin's evidence
   supports and is refused `run_active`;

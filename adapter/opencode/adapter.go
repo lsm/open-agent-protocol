@@ -175,13 +175,13 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 			// beyond what the pin's evidence supports. The bound is disclosed
 			// because a queue nothing could ever reach promises nothing.
 			Limits: &protocol.CapabilityLimits{
-				MaxActiveRunsPerSession: protocol.Limit(2),
-				MaxQueuedRunsPerSession: protocol.Limit(1),
+				MaxActiveRunsPerSession: protocol.Limit(maxActiveRuns),
+				MaxQueuedRunsPerSession: protocol.Limit(maxQueuedRuns),
 			},
 		},
 		CapabilityRevision:         CapabilityRevision,
 		Journal:                    base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity},
-		MaxActiveRunsPerSession:    2,
+		MaxActiveRunsPerSession:    maxActiveRuns,
 		InteractiveGates:           false,
 		CancellationTarget:         "run",
 		CancellationImplementation: "session_interrupt_with_derived_settlement",

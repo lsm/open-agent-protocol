@@ -225,6 +225,11 @@ type memoryRun struct {
 	// that settles before promotion emits its terminal and nothing else:
 	// non-terminal run-scoped events before run.started are illegal.
 	started bool
+	// queuedAdmission records that the admission response said queued. With
+	// started it decides how the run is projected: the trace knows a run
+	// admitted queued as a reservation until its run.started reaches it, and
+	// that is the same test the queue unit's state rules apply.
+	queuedAdmission bool
 	// pendingInteraction is the gate this run has published and not yet
 	// resolved, which is what an active_runs entry reports.
 	pendingInteraction protocol.InteractionID
@@ -305,9 +310,16 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	// promotes at once, since "run after current work reaches a safe
 	// boundary" is trivially satisfied when there is no current work.
 	reservation := busy || request.Delivery == protocol.DeliveryQueue
+	run.queuedAdmission = reservation
+	if reservation {
+		// The response says queued, so the projection has to as well until
+		// run.started reaches the trace — including on an idle session, where
+		// the promotion is immediate but is still an event the trace has to
+		// be told about before a snapshot can claim it happened.
+		run.status = protocol.RunQueued
+	}
 	if busy {
 		s.reserved = run
-		run.status = protocol.RunQueued
 	} else {
 		s.active = run
 	}
@@ -361,25 +373,39 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 func live(run *memoryRun) bool { return run != nil && !run.terminal }
 
 func (s *memorySession) refreshStateLocked() {
+	// Which run is started is read from the trace, not from the slot it
+	// occupies. An explicit queue on an idle session is admitted queued and
+	// promotes at once, but the promotion is still an event: until it is
+	// emitted, naming that run in active_run_id and listing it without a
+	// queue position would describe a started run the trace has not been told
+	// about — the shape this repository's own state rules reject.
 	var entries []protocol.ActiveRun
-	if s.active != nil && !s.active.terminal {
-		entries = append(entries, s.entryLocked(s.active, 0))
-	}
-	if s.reserved != nil && !s.reserved.terminal {
-		entries = append(entries, s.entryLocked(s.reserved, 1))
+	position := 0
+	var started *memoryRun
+	for _, run := range []*memoryRun{s.active, s.reserved} {
+		if !live(run) {
+			continue
+		}
+		if !reservationOf(run) {
+			entries = append(entries, s.entryLocked(run, 0))
+			started = run
+			continue
+		}
+		position++
+		entries = append(entries, s.entryLocked(run, position))
 	}
 	s.state.ActiveRuns = entries
 	switch {
-	case s.active != nil && !s.active.terminal:
+	case started != nil:
 		// The session's status follows its started run's, so a refresh
 		// triggered by any later emission cannot quietly move a session
 		// waiting for input back to running.
 		s.state.Status = protocol.SessionRunning
-		if s.active.status == protocol.RunWaitingForInput {
+		if started.status == protocol.RunWaitingForInput {
 			s.state.Status = protocol.SessionWaitingForInput
 		}
-		s.state.ActiveRunID = s.active.id
-	case s.reserved != nil && !s.reserved.terminal:
+		s.state.ActiveRunID = started.id
+	case len(entries) > 0:
 		// Only reservations remain, so no run is started and active_run_id
 		// names none.
 		s.state.Status = protocol.SessionQueued
@@ -390,14 +416,25 @@ func (s *memorySession) refreshStateLocked() {
 	}
 }
 
+// reservationOf reports whether the trace still knows a run as a reservation:
+// it was admitted queued and its run.started has not been emitted.
+func reservationOf(run *memoryRun) bool { return run.queuedAdmission && !run.started }
+
 // entryLocked describes one nonterminal run. The capture position is the run's
 // own cursor, which is what makes the pending set judgeable: this adapter
 // captures state and publishes lifecycle under one mutex, so the position it
 // states is always one the trace has reached.
 func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.ActiveRun {
 	sequence := run.nextSequence - 1
+	status := run.status
+	if reservationOf(run) {
+		// A reservation is reported as one whatever its own bookkeeping says,
+		// for the same reason the position is: the trace has not been told it
+		// began.
+		status = protocol.RunQueued
+	}
 	entry := protocol.ActiveRun{
-		RunID: run.id, Status: run.status, Relationship: protocol.RelationshipPrimary,
+		RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary,
 		AsOfSequence: &sequence, PendingInteractions: pendingInteractions(run),
 	}
 	if position > 0 {

@@ -1109,6 +1109,133 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	}
 }
 
+// An explicit queue on an idle session is a reservation, and the session state
+// has to say so until the server's prompted event begins the turn. Naming it in
+// active_run_id and listing it without a queue position would describe a
+// started run the trace has been told nothing about — the shape this unit's own
+// state rules reject — and would spend the queue slot on a run that is in the
+// queue, letting a second submission past a bound of one.
+func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+
+	queued, stream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Admission != protocol.AdmissionQueued || queued.EffectiveDelivery != protocol.EffectiveDeliveryQueue || queued.Status != protocol.RunQueued {
+		t.Fatalf("idle explicit queue = %+v", queued)
+	}
+	if queued.DeliveryResolution != "" {
+		t.Fatalf("nothing was running, so nothing resolved: %q", queued.DeliveryResolution)
+	}
+
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != protocol.SessionQueued || state.ActiveRunID != "" {
+		t.Fatalf("session holding only a reservation = %s / %q", state.Status, state.ActiveRunID)
+	}
+	if len(state.ActiveRuns) != 1 {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	entry := state.ActiveRuns[0]
+	if entry.RunID != queued.RunID || entry.Status != protocol.RunQueued {
+		t.Fatalf("entry = %+v, want the reservation the response reported", entry)
+	}
+	if entry.QueuePosition == nil || *entry.QueuePosition != 1 {
+		t.Fatalf("a reservation holds its place in the queue: %+v", entry)
+	}
+
+	// One reservation is the disclosed bound, and it is taken.
+	if _, _, err := session.Submit(context.Background(), autoRequest("second")); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("second submission behind a reservation = %v, want run_active", err)
+	}
+
+	// The server begins the turn, and only then is there a started run.
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	started := adaptertest.Next(t, stream, 2*time.Second)
+	if started.Type != protocol.TypeRunStarted {
+		t.Fatalf("first envelope = %s, want run.started", started.Type)
+	}
+	state, err = session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != protocol.SessionRunning || state.ActiveRunID != queued.RunID {
+		t.Fatalf("session after the promotion = %s / %q", state.Status, state.ActiveRunID)
+	}
+	if len(state.ActiveRuns) != 1 || state.ActiveRuns[0].Status != protocol.RunRunning || state.ActiveRuns[0].QueuePosition != nil {
+		t.Fatalf("promoted entry = %+v", state.ActiveRuns)
+	}
+
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "later"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	rest := adaptertest.Drain(t, stream, 2*time.Second)
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: queueRequest("later"), Admission: queued},
+	}, descriptor, append([]protocol.Envelope{started}, rest...))
+}
+
+// A session that cannot be read from again owes a terminal on everything it
+// accepted. Settling only the started run leaves the reservation nonterminal,
+// which keeps Close refusing while Cancel and State answer session_closed: the
+// caller can neither settle the run nor close the session, and the child
+// process outlives both.
+func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+
+	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A durable event belonging to another session: this subscription cannot
+	// be trusted again, so the session stops being usable.
+	client.events <- native.Event{
+		ID:      "evt_fake0003",
+		Type:    native.TypeStepEnded,
+		Durable: &native.DurablePosition{AggregateID: "ses_other000000000000", Seq: 3, Version: 1},
+		Data:    json.RawMessage(`{"timestamp":3,"sessionID":"ses_other000000000000","assistantMessage":"msg_x","finish":"stop"}`),
+	}
+
+	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
+	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("started run = %v", types(firstEvents))
+	}
+	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	if len(queuedEvents) != 1 || queuedEvents[0].Type != protocol.TypeRunFailed {
+		t.Fatalf("reservation = %v, want one pre-start terminal", types(queuedEvents))
+	}
+	var failure protocol.RunFailedPayload
+	if err := queuedEvents[0].DecodePayload(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "queue_dropped" {
+		t.Fatalf("reservation failure = %q, want the code for a slot lost before promotion", failure.Error.Code)
+	}
+
+	// Nothing is outstanding now, so the session closes and the client with it.
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("close after an unusable session settled its runs: %v", err)
+	}
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+		{Request: queueRequest("later"), Admission: queued},
+	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
+}
+
 // A run the trace has seen start is running, and the projection a State call
 // reads has to say so from that envelope onwards — not from whatever envelope
 // happens to rebuild it next. The status moves inside the publication of
