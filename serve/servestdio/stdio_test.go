@@ -2292,3 +2292,62 @@ func TestRefusalNamesTheBoundThatRefused(t *testing.T) {
 		t.Fatalf("op-ceiling refusal said %q, want it to name the ceiling", why)
 	}
 }
+
+// TestRefusalHeldThroughAFullQueueStillArrives pins the difference between
+// an output that is briefly behind and one nobody is draining. The writer
+// parks on its first write while the queue fills, so a refusal cannot be
+// handed over at the moment it is decided; then the writer is released and
+// drains normally. A host that was told nothing about that request would
+// wait forever for a response it had every right to expect — and, still
+// holding stdin open, would keep the session from ending at all, so the
+// caller would never learn either. The refusal is held and goes out as soon
+// as there is room.
+func TestRefusalHeldThroughAFullQueueStillArrives(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	// One slot in the queue, so one blocked write plus one queued line is
+	// enough to leave the next refusal nowhere to go.
+	server, err := New(hub, Options{MaxConcurrentOps: 1, WriteQueue: 1, ShutdownTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &gatedWriter{release: make(chan struct{}), entered: make(chan struct{})}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, writer) }()
+	// The wedging op takes the only slot; everything after it is refused.
+	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"capabilities","adapter":"hang"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	for id := 2; id <= 4; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-writer.entered                   // the writer is parked on the first refusal
+	time.Sleep(100 * time.Millisecond) // the queue fills behind it
+	close(writer.release)              // and then the output recovers
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	answered := map[int64]bool{}
+	decoder := json.NewDecoder(strings.NewReader(writer.String()))
+	for {
+		var line responseLine
+		if err := decoder.Decode(&line); err != nil {
+			break
+		}
+		answered[line.ID] = true
+	}
+	for id := int64(2); id <= 4; id++ {
+		if !answered[id] {
+			t.Fatalf("request %d was never answered; the host would wait forever (output %q)", id, writer.String())
+		}
+	}
+}

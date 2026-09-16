@@ -163,21 +163,24 @@ type outLine struct {
 	refusal bool
 }
 
-// refusalTally counts refusals onto the queue and off it again as the writer
-// commits them, because entering the queue is not delivery: a teardown that
-// abandons the writer withdraws whatever is still queued, and a refusal lost
-// that way is a request the host was never told about.
+// refusalTally counts what the host is owed against what actually went out.
+// A refusal is owed from the moment the loop decides to refuse, and credited
+// only where its bytes are written, so everything in between — a line the
+// loop is still holding, a line the queue took and an abandoned writer then
+// withdrew, a request this framing could not even phrase a refusal for —
+// counts as owed and never delivered, which is precisely what the caller
+// needs to be told.
 //
 // On a drained teardown the writer has returned and the count is exact. On an
 // abandoned one it is a snapshot, and can be one high if a write commits
 // after it is read — which is what abandoning means, and is why the stall is
 // reported beside it.
 type refusalTally struct {
-	queued    atomic.Int64
+	owed      atomic.Int64
 	delivered atomic.Int64
 }
 
-func (t *refusalTally) undelivered() int64 { return t.queued.Load() - t.delivered.Load() }
+func (t *refusalTally) undelivered() int64 { return t.owed.Load() - t.delivered.Load() }
 
 // runState is one Run's worker registry: the ops that invocation admitted
 // and the bounds on how many of them run at once. It belongs to the
@@ -756,46 +759,66 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // the host can correct, and the loop reads on past them.
 func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan frameResult, lines chan<- outLine, writerFailed <-chan struct{}, refusals *refusalTally) error {
 	number := 0
-	// Requests read and never answered, counted so the caller is told. A
-	// refusal the output could not take is exactly that: neither served nor
-	// answered, and the host cannot know to send it again.
-	unanswered := 0
-	ended := func(err error) error {
-		if unanswered > 0 {
-			return note(err, ErrRequestsDropped)
-		}
-		return err
-	}
+	// Refusals the output could not take yet. The loop holds them rather
+	// than dropping them, because a full queue is not the same fact as an
+	// abandoned output: one blocked write and one line already waiting is
+	// enough to fill a small queue, and the writer may recover a moment
+	// later and drain normally. A host that dropped a refusal there would
+	// wait forever for a response to a request it had every right to expect
+	// one for — and, still holding stdin open, would keep this session from
+	// ending at all, so the caller never learns either.
+	var pending []outLine
 	for {
 		select {
 		case <-ctx.Done():
-			return ended(nil)
+			return nil
 		case <-writerFailed:
-			return ended(nil)
+			return nil
 		default:
+		}
+		// The queue is offered the oldest held refusal as one case beside
+		// the next frame, never as a send of its own. That is what keeps
+		// both promises at once: the loop cannot be parked on output, so
+		// the reader always reaches the host's end, and a refusal still
+		// goes out the moment the queue has room, without waiting for
+		// another frame to arrive and drive the loop round. A nil channel
+		// blocks forever, so with nothing held the case is simply never
+		// chosen.
+		var out chan<- outLine
+		var head outLine
+		if len(pending) > 0 {
+			out, head = lines, pending[0]
 		}
 		select {
 		case <-ctx.Done():
-			return ended(nil)
+			return nil
 		case <-writerFailed:
-			return ended(nil)
+			return nil
+		case out <- head:
+			pending = pending[1:]
 		case result := <-frames:
 			number++
 			if result.err != nil {
 				if errors.Is(result.err, io.EOF) {
-					return ended(nil)
+					// The host has said it will send nothing more, which
+					// is exactly when it is waiting on the answers it is
+					// owed. Anything still held goes out before this loop
+					// reports the end; the teardown's own window bounds
+					// how long that may take, because the reader's report
+					// of this end has already opened it.
+					return flushPending(ctx, lines, pending, writerFailed)
 				}
 				var defect *frameDefect
 				if errors.As(result.err, &defect) {
-					return ended(&MalformedLineError{Line: number, Detail: defect.Error()})
+					return &MalformedLineError{Line: number, Detail: defect.Error()}
 				}
 				// A read failure is not the host's protocol fault: fail
 				// closed, but let the caller see the input's own error.
-				return ended(result.err)
+				return result.err
 			}
 			request, err := decodeRequest(result.frame)
 			if err != nil {
-				return ended(&MalformedLineError{Line: number, Detail: err.Error()})
+				return &MalformedLineError{Line: number, Detail: err.Error()}
 			}
 			size := len(result.frame)
 			outcome, refusal := run.offer(size)
@@ -805,26 +828,40 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 				// and this frame, decoded and never served, is being let
 				// go. Say so rather than returning as though the input had
 				// simply ended.
-				return ended(ErrRequestsDropped)
+				return ErrRequestsDropped
 			case refused:
 				// Answered here rather than by a worker, because refusing
 				// is precisely the case where no worker was started. The
 				// host learns which request went unserved and may send it
 				// again, which is what waiting could never tell it.
-				//
-				// Offered to the queue rather than pushed into it: this is
-				// the one send the serving loop makes, and the loop is what
-				// gates the reader, so blocking here would hide the host's
-				// end behind a full output exactly as waiting for room once
-				// hid it behind a full bound. An output too backed up to
-				// take a one-line refusal is an output nobody is draining,
-				// and telling a host that is not reading outranks nothing.
-				// What is owed then is the count, not the line.
-				if !s.offerLine(lines, request, &wireError{
-					Code:    "busy",
-					Message: refusal + "; send this request again",
-				}, refusals) {
-					unanswered++
+				line, ok := refusalLine(request, refusal, s.frameLimit)
+				if !ok {
+					// Nothing to send and nothing to hold: the host is owed
+					// an answer this frontend cannot phrase, which the
+					// tally reports as unanswered like any other.
+					refusals.owed.Add(1)
+					continue
+				}
+				// Owed from the moment the refusal is decided, not from the
+				// moment it is queued. Delivery is credited where the bytes
+				// go out, so a line still held here, or lost with an
+				// abandoned writer, is simply owed and never delivered —
+				// with no window between publishing it and counting it.
+				refusals.owed.Add(1)
+				select {
+				case lines <- line:
+				default:
+					pending = append(pending, line)
+					if len(pending) > s.writeQueue {
+						// Holding as many refusals as the whole output
+						// queue means the output is not moving at all, not
+						// that it is briefly behind. Failing closed is what
+						// makes that observable: the host sees the session
+						// end rather than waiting on answers that are never
+						// coming, and the caller is told they went
+						// unserved.
+						return ErrRequestsDropped
+					}
 				}
 				continue
 			}
@@ -1074,28 +1111,35 @@ func scanKeys(frame []byte) (map[string]bool, error) {
 	return present, nil
 }
 
-// offerLine puts one refusal on the writer's queue if the queue can take it
-// now, and reports whether it did. It never waits: see the call site for why
-// the serving loop must not block on output.
-func (s *Server) offerLine(lines chan<- outLine, request requestLine, werr *wireError, refusals *refusalTally) bool {
-	line, err := json.Marshal(responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: werr})
-	if err != nil || len(line) > s.frameLimit {
-		return false
+// flushPending hands over whatever refusals the loop is still holding before
+// it reports the host's end. It stops early for the same two reasons the
+// loop itself does — the context ending, or an output that has already
+// failed — because neither leaves anything for a further line to reach.
+func flushPending(ctx context.Context, lines chan<- outLine, pending []outLine, writerFailed <-chan struct{}) error {
+	for _, line := range pending {
+		select {
+		case lines <- line:
+		case <-ctx.Done():
+			return nil
+		case <-writerFailed:
+			return nil
+		}
 	}
-	// Counted before the line is visible to the writer, not after. The
-	// writer can take it, and be abandoned, and Run can read the tally, all
-	// while this goroutine is still descheduled between the send and the
-	// increment — and the refusal would then be missing from a count whose
-	// whole purpose is to notice it. Rolled back when the queue is full,
-	// which is the only way the send does not happen.
-	refusals.queued.Add(1)
-	select {
-	case lines <- outLine{data: line, refusal: true}:
-		return true
-	default:
-		refusals.queued.Add(-1)
-		return false
+	return nil
+}
+
+// refusalLine encodes one busy refusal for the host. It reports false when
+// the encoding cannot be carried by this framing, which leaves the request
+// unanswerable rather than unanswered — the caller is told either way.
+func refusalLine(request requestLine, why string, limit int) (outLine, bool) {
+	line, err := json.Marshal(responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: &wireError{
+		Code:    "busy",
+		Message: why + "; send this request again",
+	}})
+	if err != nil || len(line) > limit {
+		return outLine{}, false
 	}
+	return outLine{data: line, refusal: true}, true
 }
 
 // send marshals one output line onto the writer channel, abandoning the send
