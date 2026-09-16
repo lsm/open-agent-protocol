@@ -62,6 +62,22 @@ func TestManifestCoversShape(t *testing.T) {
 			}(),
 			want: "is positive",
 		},
+		"a schema-invalid fixture cannot claim coverage": {
+			entry: func() FixtureEntry {
+				e := negative("x", "core", Coverage{Capability: "run.x", Aspect: AspectGate})
+				e.Kind, e.Phase, e.Codes = KindSchemaInvalid, PhaseSchema, []string{CodeSchemaInvalid}
+				return e
+			}(),
+			want: "is " + string(KindSchemaInvalid),
+		},
+		"a load-invalid fixture cannot claim coverage": {
+			entry: func() FixtureEntry {
+				e := negative("x", "core", Coverage{Capability: "run.x", Aspect: AspectHonour})
+				e.Kind, e.Phase, e.Codes = KindLoadInvalid, PhaseLoad, []string{LoadPackUnprefixedName}
+				return e
+			}(),
+			want: "is " + string(KindLoadInvalid),
+		},
 		"a well-formed coverage loads": {
 			entry: negative("x", "core", Coverage{Capability: "run.x", Aspect: AspectHonour}),
 		},

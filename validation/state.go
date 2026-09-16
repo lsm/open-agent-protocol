@@ -19,8 +19,13 @@ type runState struct {
 	cancelAccepted              bool
 	status                      protocol.RunStatus
 	admittedModel               string
-	tools                       map[protocol.ToolCallID]toolTrack
-	interactions                map[protocol.InteractionID]*interactionState
+	// opaqueAdmission marks a run admitted under a foreign admission in
+	// tolerant mode. Which lifecycle it follows is a later revision's rule,
+	// so the admission-dependent check — the pre-start rule — is suspended,
+	// while sequence, terminality, and scope bookkeeping stay.
+	opaqueAdmission bool
+	tools           map[protocol.ToolCallID]toolTrack
+	interactions    map[protocol.InteractionID]*interactionState
 }
 type interactionState struct {
 	kind                     string
@@ -568,7 +573,14 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		s.sessions[p.SessionID] = st
 	}
 	st.active = p.RunID
-	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunQueued}
+	status, opaque := protocol.RunQueued, s.tolerant && foreignAdmission(p.Admission)
+	if opaque {
+		// The run's status is what the response declared, not the queued
+		// shape's: a known status is judged from there, a foreign one is
+		// opaque until a known status is reached (see run.status.updated).
+		status = p.Status
+	}
+	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
 }
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
@@ -639,12 +651,13 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		return
 	}
-	// The pre-start rule is a known-type rule: only a known terminal may
-	// settle a run before run.started, and only a known type can be judged
-	// against that list. An unknown type (tolerant mode) says nothing about
-	// whether it is a valid pre-start event, so it takes only the
-	// type-independent bookkeeping.
-	if !r.started && !preStartSettlement(e.Type) && isKnownType(e.Type) {
+	// The pre-start rule is a known-type, known-admission rule: only a known
+	// terminal may settle a run before run.started, and only a known type can
+	// be judged against that list. An unknown type (tolerant mode) says
+	// nothing about whether it is a valid pre-start event, and a run admitted
+	// under a foreign admission says nothing about whether run.started is
+	// owed at all; both take only the type-independent bookkeeping.
+	if !r.started && !preStartSettlement(e.Type) && isKnownType(e.Type) && !r.opaqueAdmission {
 		s.add(CodeMissingRunStarted, i, line, e, "/type", "run-scoped event occurred before run.started")
 	}
 	if e.Type == protocol.TypeRunStatusUpdated {

@@ -209,8 +209,12 @@ func LoadManifest(filename string) (FixtureManifest, error) {
 			if c.Aspect != AspectGate && c.Aspect != AspectHonour {
 				return FixtureManifest{}, fmt.Errorf("fixture %q covers %q with unknown aspect %q", e.ID, c.Capability, c.Aspect)
 			}
-			if e.Valid {
-				return FixtureManifest{}, fmt.Errorf("fixture %q covers %q but is positive; coverage is asserted by negative fixtures", e.ID, c.Capability)
+			// Only a semantic-invalid fixture exercises the gate or honour
+			// behaviour and its refusal diagnostic; a schema- or load-invalid
+			// one fails before that behaviour is reached and proves nothing
+			// about it.
+			if e.Kind != KindSemanticInvalid {
+				return FixtureManifest{}, fmt.Errorf("fixture %q covers %q but is %s; coverage is asserted by semantic-invalid fixtures", e.ID, c.Capability, e.Kind)
 			}
 		}
 		if len(e.Units) == 0 {
@@ -253,7 +257,7 @@ func checkCorpusCompleteness(m FixtureManifest) error {
 		for _, unit := range e.Units {
 			claimed[unit] = true
 		}
-		if e.Valid {
+		if e.Kind != KindSemanticInvalid {
 			continue
 		}
 		for _, c := range e.Covers {

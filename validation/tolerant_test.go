@@ -414,6 +414,24 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 			t.Fatalf("tolerant held a foreign delivery to a capability key: %v", tolerant.Diagnostics)
 		}
 	})
+	t.Run("a run admitted under a foreign admission is not held to the started lifecycle", func(t *testing.T) {
+		// Whether run.started is owed under a later revision's admission is
+		// unknown, so a known run event before it is not missing_run_started;
+		// the run's status is the one the response declared, so the first
+		// transition is judged from running, not from a fabricated queued.
+		foreignAdmitted := func(before ...string) []map[string]any {
+			trace := loadTrace(t, "core-completed.json")
+			firstOfType(t, trace, "session.message.submit.response")["payload"].(map[string]any)["admission"] = "merged"
+			return beforeRunStarted(t, trace, statusUpdates(before...))
+		}
+		if _, tolerant := validateBoth(t, foreignAdmitted("waiting_for_input"), "merged-prestart"); !tolerant.Valid() {
+			t.Fatalf("pre-start rule applied under a foreign admission: %v", tolerant.Diagnostics)
+		}
+		_, tolerant := validateBoth(t, foreignAdmitted("queued"), "merged-prestart-queued")
+		if !hasCode(tolerant, CodeIllegalRunTransition) || hasCode(tolerant, CodeMissingRunStarted) {
+			t.Fatalf("declared status was not the one judged from: %v", tolerant.Diagnostics)
+		}
+	})
 	t.Run("a missing status is a shape defect, not an extension", func(t *testing.T) {
 		// The schema leaves status optional on submit.response; the state rule
 		// requires it for a started admission. An absent member is not a
@@ -544,35 +562,56 @@ func TestParseMode(t *testing.T) {
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
-// afterRunStarted returns the trace with the envelopes build produces
-// inserted right after run.started. build receives the run.started envelope
-// and its sequence; each run event it returns must take the next sequence
-// numbers in order, and every later run event is renumbered past them.
-func afterRunStarted(t *testing.T, trace []map[string]any, build func(started map[string]any, seq int64) []map[string]any) []map[string]any {
+// insertRunEvents returns the trace with the envelopes build produces
+// inserted before or after the first envelope of the anchor type. build
+// receives that envelope and the first sequence number the inserted run
+// events must take, in order; every run event from there on is renumbered
+// past them.
+func insertRunEvents(t *testing.T, trace []map[string]any, anchor string, before bool, build func(anchor map[string]any, seq int64) []map[string]any) []map[string]any {
 	t.Helper()
+	seqOf := func(e map[string]any) int64 {
+		seq, _ := e["sequence"].(json.Number).Int64()
+		return seq
+	}
 	var out []map[string]any
 	shift, seen := int64(0), false
+	insert := func(built []map[string]any) {
+		for _, inserted := range built {
+			if inserted["sequence"] != nil {
+				shift++
+			}
+			out = append(out, inserted)
+		}
+	}
 	for _, e := range trace {
+		isAnchor := !seen && e["type"] == anchor
+		if isAnchor && before {
+			seen = true
+			insert(build(e, seqOf(e)))
+		}
 		if seen && e["run_id"] != nil && e["sequence"] != nil {
-			seq, _ := e["sequence"].(json.Number).Int64()
-			e["sequence"] = json.Number(itoa(seq + shift))
+			e["sequence"] = json.Number(itoa(seqOf(e) + shift))
 		}
 		out = append(out, e)
-		if e["type"] == "run.started" && !seen {
+		if isAnchor && !before {
 			seen = true
-			seq, _ := e["sequence"].(json.Number).Int64()
-			for _, inserted := range build(e, seq) {
-				if inserted["sequence"] != nil {
-					shift++
-				}
-				out = append(out, inserted)
-			}
+			insert(build(e, seqOf(e)+1))
 		}
 	}
 	if !seen {
-		t.Fatal("trace has no run.started")
+		t.Fatalf("trace has no %s", anchor)
 	}
 	return out
+}
+
+func afterRunStarted(t *testing.T, trace []map[string]any, build func(started map[string]any, seq int64) []map[string]any) []map[string]any {
+	t.Helper()
+	return insertRunEvents(t, trace, "run.started", false, build)
+}
+
+func beforeRunStarted(t *testing.T, trace []map[string]any, build func(started map[string]any, seq int64) []map[string]any) []map[string]any {
+	t.Helper()
+	return insertRunEvents(t, trace, "run.started", true, build)
 }
 
 // statusUpdates builds one run.status.updated per status, in order.
@@ -584,7 +623,7 @@ func statusUpdates(statuses ...string) func(started map[string]any, seq int64) [
 				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
 				"type": "run.status.updated", "id": "ext-status-" + itoa(int64(n)),
 				"session_id": started["session_id"], "run_id": started["run_id"],
-				"sequence": json.Number(itoa(seq + int64(n) + 1)),
+				"sequence": json.Number(itoa(seq + int64(n))),
 				"payload":  map[string]any{"session_id": started["session_id"], "run_id": started["run_id"], "status": status},
 			})
 		}
