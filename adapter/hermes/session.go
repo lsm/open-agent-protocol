@@ -230,14 +230,16 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 // submitText validates the conservative v1 surface: one user message whose
 // content is text or text parts.
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
-	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
-		return "", base.ErrInvalidSubmission
+	// prompt.submit carries only the session id and text: no per-run model,
+	// instructions, tool policy, or output schema has a native surface, and
+	// Hermes fixes a model at session creation.
+	// Each is refused under its own capability key before admission, so a
+	// caller learns which control to stop sending (decision 0005).
+	if err := base.RefuseUnadvertisedControls(req); err != nil {
+		return "", err
 	}
-	if req.ModelID != nil {
-		// prompt.submit carries only the session id and text, so a per-submit
-		// model cannot be applied; rejecting beats silently running the
-		// preconfigured model.
-		return "", fmt.Errorf("%w: Hermes fixes a model at session creation", base.ErrUnsupportedInput)
+	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) {
+		return "", base.ErrInvalidSubmission
 	}
 	message := req.Messages[0]
 	if message.Role != protocol.RoleUser {

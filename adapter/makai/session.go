@@ -132,7 +132,20 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *session) messageJSON(req protocol.MessageSubmitRequest) ([]byte, []protocol.MessageID, error) {
-	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	// model_ref is native per message; instructions, tool policy, and output
+	// schema have no per-run native surface at this pin.
+	// Each is refused under its own capability key before admission, so a
+	// caller learns which control to stop sending (decision 0005).
+	if err := base.RefuseUnadvertisedControls(req, protocol.FeatureModelSelection); err != nil {
+		return nil, nil, err
+	}
+	// A present-but-empty model id is a control, not an absent one: no catalog
+	// carries it, and substituting the native default would admit the run while
+	// reporting a model the caller never chose.
+	if req.ModelID != nil && *req.ModelID == "" {
+		return nil, nil, &base.ModelNotFoundError{}
+	}
+	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) {
 		return nil, nil, base.ErrInvalidSubmission
 	}
 	messages := make([]map[string]any, len(req.Messages))

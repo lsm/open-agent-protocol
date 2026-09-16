@@ -212,13 +212,15 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 
 // submitText validates the conservative v1 surface: one user text message.
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
-	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
-		return "", base.ErrInvalidSubmission
+	// The native user frame carries no model override, instructions, tool policy,
+	// or output schema: Claude applies a model when the process is launched.
+	// Each is refused under its own capability key before admission, so a
+	// caller learns which control to stop sending (decision 0005).
+	if err := base.RefuseUnadvertisedControls(req); err != nil {
+		return "", err
 	}
-	if req.ModelID != nil {
-		// The native user frame carries no model override, so a per-submit model
-		// cannot be applied; accepting it would silently run a different model.
-		return "", fmt.Errorf("%w: Claude applies a model when the process is launched", base.ErrUnsupportedInput)
+	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) {
+		return "", base.ErrInvalidSubmission
 	}
 	message := req.Messages[0]
 	if message.Role != protocol.RoleUser {

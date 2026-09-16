@@ -285,14 +285,15 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []native.ImageContent, []protocol.MessageID, error) {
-	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
-		return "", nil, nil, base.ErrInvalidSubmission
+	// The prompt command carries only content and no set_model is issued, so no
+	// per-run model, instructions, tool policy, or output schema can be applied.
+	// Each is refused under its own capability key before admission, so a
+	// caller learns which control to stop sending (decision 0005).
+	if err := base.RefuseUnadvertisedControls(req); err != nil {
+		return "", nil, nil, err
 	}
-	if req.ModelID != nil {
-		// The prompt command carries no model selection and no set_model is
-		// issued, so a requested model cannot be applied; reporting it as
-		// effective would misattribute the run to a model Pi never used.
-		return "", nil, nil, fmt.Errorf("%w: Pi does not apply a requested model to a prompt", ErrUnsupportedInput)
+	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) {
+		return "", nil, nil, base.ErrInvalidSubmission
 	}
 	var texts []string
 	var images []native.ImageContent

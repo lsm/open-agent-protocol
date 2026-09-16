@@ -989,6 +989,85 @@ func TestSubmitRollsBackUnframableAcknowledgement(t *testing.T) {
 	}
 }
 
+// noControlsAdapter wraps the memory adapter as an endpoint that advertises no
+// per-submit run control, the position most harness adapters hold: every
+// control is refused before admission under its own capability key.
+type noControlsAdapter struct{ inner base.Adapter }
+
+func (a noControlsAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	return a.inner.Probe(ctx)
+}
+
+func (a noControlsAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	entry, err := a.inner.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return noControlsSession{entry}, nil
+}
+
+type noControlsSession struct{ base.Session }
+
+func (s noControlsSession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	if err := base.RefuseUnadvertisedControls(request); err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	return s.Session.Submit(ctx, request)
+}
+
+// TestUnadvertisedControlRefusalKeepsItsWireShape pins what a caller reads off
+// the wire when an endpoint refuses a control it never advertised: the typed
+// unsupported_feature code with the capability key and the reason, not a
+// generic invalid_submission that names neither. The codec must relay the
+// adapter's typed refusal rather than flattening it, and the run must not be
+// admitted behind it.
+func TestUnadvertisedControlRefusalKeepsItsWireShape(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", noControlsAdapter{base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	openSession(t, hub, "controls")
+	f := startFrontend(t, hub, Options{})
+	id := int64(0)
+	for _, control := range []struct {
+		feature string
+		request protocol.MessageSubmitRequest
+	}{
+		{protocol.FeatureInstructions, protocol.MessageSubmitRequest{Instructions: protocol.ControlValue("be terse")}},
+		{protocol.FeatureModelSelection, protocol.MessageSubmitRequest{ModelID: protocol.ControlValue("another-model")}},
+		{protocol.FeatureStructuredOutput, protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object"}`)}},
+		{protocol.FeatureToolSelection, protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`"none"`)}},
+	} {
+		id++
+		request := control.request
+		request.SessionID = "controls"
+		request.Delivery = protocol.DeliveryAuto
+		request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}}
+		f.send(fmt.Sprintf(`{"id":%d,"op":"submit","session_id":"controls","request":`, id) + string(requestEnvelope(t, fmt.Sprintf("submit-%d", id), protocol.TypeSessionMessageSubmitRequest, request, "controls", "")) + `}`)
+		response := f.expectResponse(id)
+		requireCode(t, response, "unsupported_feature")
+		if response.Error.Details["feature"] != control.feature {
+			t.Fatalf("%s: details = %+v, want the capability key", control.feature, response.Error.Details)
+		}
+		if response.Error.Details["reason"] != base.ControlUnadvertised {
+			t.Fatalf("%s: reason = %v, want %q", control.feature, response.Error.Details["reason"], base.ControlUnadvertised)
+		}
+	}
+
+	// Nothing was admitted behind the refusals: the session is still idle, so
+	// a submission carrying no control still starts a run.
+	id++
+	f.send(fmt.Sprintf(`{"id":%d,"op":"submit","session_id":"controls","request":`, id) + string(requestEnvelope(t, "submit-clean", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "controls", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+	}, "controls", "")) + `}`)
+	requireOK(t, f.expectResponse(id))
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 // neverSettlingAdapter wraps the memory adapter so Cancel acknowledges with
 // run.cancelling but cancels nothing: the run stays parked at its gate, the
 // asynchronous worst case the rollback must survive without claiming a

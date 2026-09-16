@@ -103,17 +103,8 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	// Every control this pin cannot apply is refused before admission under
 	// the key the descriptor advertises `unavailable`, naming what the caller
 	// must stop sending rather than dropping it (decision 0005).
-	for _, control := range []struct {
-		present bool
-		feature string
-	}{
-		{request.Instructions != nil, protocol.FeatureInstructions},
-		{len(request.ToolChoice) != 0, protocol.FeatureToolSelection},
-		{len(request.OutputSchema) != 0, protocol.FeatureStructuredOutput},
-	} {
-		if control.present {
-			return protocol.MessageSubmitResponse{}, nil, &adapter.UnsupportedControlError{Feature: control.feature, Reason: adapter.ControlUnadvertised}
-		}
+	if err := adapter.RefuseUnadvertisedControls(request, protocol.FeatureModelSelection); err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
 	}
 	if len(request.AllowDegradedFeatures) != 0 || len(request.Metadata) != 0 {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: degraded-feature consent and metadata are not supported", adapter.ErrInvalidSubmission)

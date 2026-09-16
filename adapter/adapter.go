@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -111,6 +112,40 @@ var (
 // catalog. It is the one control refusal that is not an unsupported feature:
 // the capability is advertised and the request was understood.
 var ErrModelNotFound = errors.New("adapter: model is not in the effective catalog")
+
+// RefuseUnadvertisedControls reports the typed refusal owed for the first
+// per-submit control a submission carries that this endpoint has not
+// advertised, and nil when it carries none. advertised names the capability
+// keys the endpoint offers above `unavailable`.
+//
+// Every endpoint owes this refusal whether or not it supports a single
+// control: refusing an unadvertised control correctly is the discipline, and
+// a generic "invalid submission" tells a caller only that something was wrong
+// — not which control to stop sending. The controls are judged in the refusal
+// precedence order, which within the capability rung is the lower capability
+// key, so an endpoint and the validator name the same one.
+//
+// Call it before ordinary submission validation, so a control is refused
+// before any identity is allocated or any native write happens.
+func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertised ...string) error {
+	offers := func(key string) bool { return slices.Contains(advertised, key) }
+	// Sorted by capability key: instructions, model_selection,
+	// structured_output, tool_selection.
+	for _, control := range []struct {
+		key     string
+		present bool
+	}{
+		{protocol.FeatureInstructions, request.Instructions != nil},
+		{protocol.FeatureModelSelection, request.ModelID != nil},
+		{protocol.FeatureStructuredOutput, len(request.OutputSchema) > 0},
+		{protocol.FeatureToolSelection, len(request.ToolChoice) > 0},
+	} {
+		if control.present && !offers(control.key) {
+			return &UnsupportedControlError{Feature: control.key, Reason: ControlUnadvertised}
+		}
+	}
+	return nil
+}
 
 // UnsupportedControlError refuses a per-submit control before admission:
 // either the endpoint never advertised the capability (Reason

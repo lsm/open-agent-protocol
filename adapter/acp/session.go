@@ -75,21 +75,19 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// ACP's session/prompt carries only message content: instructions, tool
-	// choice, and an output schema have no native mapping, so accepting them
-	// would silently run with controls the caller believes are applied.
-	if req.SessionID == "" || len(req.Messages) == 0 || req.Instructions != nil || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
+	// ACP's session/prompt carries only message content, and this adapter performs
+	// no session configuration mutation: no per-run model, instructions, tool
+	// policy, or output schema has a native mapping here.
+	// Each is refused under its own capability key before admission, so a
+	// caller learns which control to stop sending (decision 0005).
+	if err := base.RefuseUnadvertisedControls(req); err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	if req.SessionID == "" || len(req.Messages) == 0 {
 		return protocol.MessageSubmitResponse{}, nil, base.ErrInvalidSubmission
 	}
 	if req.Delivery != "" && req.Delivery != protocol.DeliveryAuto {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", base.ErrInvalidSubmission, req.Delivery)
-	}
-	// ACP's session/prompt carries no model selection and this adapter performs
-	// no session configuration mutation, so a requested model cannot be applied.
-	// Echoing it back as effective would attribute the run to a model the agent
-	// never used, so an explicit request is refused instead.
-	if req.ModelID != nil {
-		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: ACP cannot apply a requested model", ErrUnsupportedInput)
 	}
 	prompt, messageIDs, err := s.promptContent(req.Messages)
 	if err != nil {

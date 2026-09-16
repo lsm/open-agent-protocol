@@ -717,23 +717,43 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	return out
 }
 
-// ACP's session/prompt cannot carry a model selection and the adapter performs
-// no session configuration mutation, so a requested model cannot be applied. It
-// must be refused rather than echoed back as the effective model.
-func TestSubmitRejectsUnappliedModelID(t *testing.T) {
-	s, _ := openTest(t, 64)
-	_, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("another-model"),
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}},
-	})
-	if !errors.Is(err, ErrUnsupportedInput) {
-		t.Fatalf("err=%v", err)
+// None of the four run controls has a native mapping in ACP's session/prompt,
+// and this adapter performs no session configuration mutation. Each must be
+// refused under its own capability key with the typed unsupported-control
+// error, so the caller learns which control to stop sending; a generic invalid
+// submission names none of them, and echoing a requested model back as
+// effective would attribute the run to a model the agent never used.
+func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
+	s, f := openTest(t, 64)
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}}
+	for feature, request := range map[string]protocol.MessageSubmitRequest{
+		protocol.FeatureInstructions:     {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
+		protocol.FeatureModelSelection:   {SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("another-model"), Messages: message},
+		protocol.FeatureStructuredOutput: {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
+		protocol.FeatureToolSelection:    {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
+	} {
+		_, _, err := s.Submit(context.Background(), request)
+		var refusal *base.UnsupportedControlError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("%s: got %v, want an *adapter.UnsupportedControlError", feature, err)
+		}
+		if refusal.Feature != feature || refusal.Reason != base.ControlUnadvertised {
+			t.Fatalf("%s: refused as %q/%q", feature, refusal.Feature, refusal.Reason)
+		}
+		if !errors.Is(err, base.ErrUnsupportedInput) {
+			t.Fatalf("%s: the refusal does not unwrap to the shared sentinel: %v", feature, err)
+		}
 	}
+	// Every refusal precedes admission, so no run was reserved: a clean
+	// submission still runs and still validates as a complete protocol trace.
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.AgentMessageChunk{SessionUpdate: "agent_message_chunk", Content: native.ContentBlock{Type: "text", Text: "hi"}, MessageID: "m1"})
+	waitCursor(t, s, "2")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	assertValidTrace(t, admission, collect(t, stream))
 }
 
-// ACP's session/prompt has no mapping for instructions, tool choice, or an
-// output schema, so accepting them would silently run with controls the caller
-// believes are applied.
 // A completed prompt write is authoritative even when the caller's context
 // expires at the same instant: the run start boundary must not be discarded in
 // favour of the cancellation arm.
@@ -746,20 +766,6 @@ func TestAwaitAdmissionPrefersCompletedWrite(t *testing.T) {
 		err, done := awaitAdmission(started, ctx)
 		if !done || err != nil {
 			t.Fatalf("iteration %d: completed write discarded (done=%v err=%v)", i, done, err)
-		}
-	}
-}
-
-func TestSubmitRejectsUnappliedControls(t *testing.T) {
-	s, _ := openTest(t, 64)
-	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}}
-	for name, request := range map[string]protocol.MessageSubmitRequest{
-		"instructions":  {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
-		"tool choice":   {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
-		"output schema": {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
-	} {
-		if _, _, err := s.Submit(context.Background(), request); !errors.Is(err, base.ErrInvalidSubmission) {
-			t.Fatalf("%s: got %v, want ErrInvalidSubmission", name, err)
 		}
 	}
 }

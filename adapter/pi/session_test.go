@@ -192,19 +192,30 @@ func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse
 	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
 }
 
-// A requested model cannot be applied: the prompt carries no model selection
-// and no set_model is issued, so the submission must be rejected rather than
-// reporting the request as the effective model (which would misattribute the
-// run to a model Pi never used).
-func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+// None of the four run controls has a per-run native surface: the prompt
+// command carries no model and no set_model is issued. Each must be refused
+// under its own capability key with the typed unsupported-control error rather
+// than a generic rejection, which names none of them, or a reported effective
+// model the run never used.
+func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	s := openTest(t, newFakeClient(), 32)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, _, err := s.Submit(ctx, protocol.MessageSubmitRequest{
-		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("glm-other"),
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	}); !errors.Is(err, ErrUnsupportedInput) {
-		t.Fatalf("got %v, want ErrUnsupportedInput", err)
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
+	for feature, request := range map[string]protocol.MessageSubmitRequest{
+		protocol.FeatureInstructions:     {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
+		protocol.FeatureModelSelection:   {SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("glm-other"), Messages: message},
+		protocol.FeatureStructuredOutput: {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
+		protocol.FeatureToolSelection:    {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
+	} {
+		_, _, err := s.Submit(ctx, request)
+		var refusal *base.UnsupportedControlError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("%s: got %v, want an *adapter.UnsupportedControlError", feature, err)
+		}
+		if refusal.Feature != feature || refusal.Reason != base.ControlUnadvertised {
+			t.Fatalf("%s: refused as %q/%q", feature, refusal.Feature, refusal.Reason)
+		}
 	}
 }
 

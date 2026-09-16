@@ -48,7 +48,12 @@ The first is the *discipline*, common to all four: presence-carrying types, the
 fail-closed gate, the refusal ladder, and the typed refusals. Every endpoint
 implements it whether or not it supports a single control, because refusing an
 unadvertised control correctly *is* the discipline — and that has native
-evidence today, since Codex and Makai refuse three of the four.
+evidence today: every adapter in this repository refuses, under the control's
+own capability key, each of the four it does not advertise. A generic "invalid
+submission" would not do: it tells a caller that something in the request was
+wrong, not which control to stop sending, which is the one thing the refusal
+exists to say. `adapter.RefuseUnadvertisedControls` is the shared form, so
+every endpoint refuses in the same order the ladder ranks.
 
 The second is *execution*, claimed per control and only for the controls the
 endpoint advertises above `unavailable`. An endpoint claiming the unit passes
@@ -189,8 +194,11 @@ honour with the typed errors.
 
 ## Consequences
 
-- Six adapters now refuse the controls they cannot apply under the key they
-  advertise `unavailable`, rather than rejecting the submission as invalid.
+- Every adapter now refuses the controls it cannot apply under the key it
+  advertises `unavailable`, rather than rejecting the submission as invalid:
+  Codex and Makai refuse three each, the other six refuse all four, and all of
+  them do it through `adapter.RefuseUnadvertisedControls` so the order is the
+  ladder's.
 - Both codecs relay a control refusal through one shared mapping, so a control
   refused over HTTP is refused identically over stdio, and both clients expose
   the details that say what to change.
