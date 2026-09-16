@@ -357,6 +357,12 @@ func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, contr
 		if err != nil {
 			return unsatisfiableAs("/payload/tool_choice", "", "", "tool_choice is not the typed policy: "+err.Error()), false
 		}
+		if policy == nil {
+			// Unreachable while the accessor reports every present value as a
+			// policy or an error, and a defect rather than a panic if that
+			// ever changes: the schema admits any JSON value here.
+			return unsatisfiableAs("/payload/tool_choice", "", "", "tool_choice carries no typed policy"), false
+		}
 		catalog, known := s.toolCatalog()
 		// A catalog carrying one name twice cannot judge a policy at all: the
 		// ambiguity is diagnosed where the catalog is read, and the policy
@@ -594,12 +600,29 @@ func (s *state) checkCallAgainstChoice(i, line int, e protocol.Envelope, r *runS
 
 // sameJSON compares two encoded documents by value, so member order and
 // insignificant whitespace do not decide whether a promise was kept.
+//
+// Numbers are decoded as json.Number rather than float64: a declared
+// fixed_result is an exact promise, and float64 makes 9007199254740993 equal
+// to 9007199254740992, so an endpoint could break the commitment on any
+// integer past 2^53 and pass.
 func sameJSON(a, b json.RawMessage) bool {
-	var left, right any
-	if json.Unmarshal(a, &left) != nil || json.Unmarshal(b, &right) != nil {
+	left, leftErr := decodeExact(a)
+	right, rightErr := decodeExact(b)
+	if leftErr != nil || rightErr != nil {
 		return false
 	}
 	return fmt.Sprintf("%#v", canonical(left)) == fmt.Sprintf("%#v", canonical(right))
+}
+
+// decodeExact decodes one document without converting its numbers.
+func decodeExact(document json.RawMessage) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(document))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 // canonical rewrites a decoded document into a form whose Go rendering is

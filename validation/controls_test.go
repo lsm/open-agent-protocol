@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/lsm/open-agent-protocol/protocol"
 )
 
 // The run-controls rules the fixture corpus cannot state on its own: the
@@ -212,6 +214,70 @@ func TestRunControlCapabilitiesAreRegistered(t *testing.T) {
 	for _, key := range []string{"run.model_selection", "run.instructions", "run.tool_selection", "run.structured_output"} {
 		if !strings.Contains(keys, key) {
 			t.Fatalf("capability %q is not registered under run-controls: %q", key, keys)
+		}
+	}
+}
+
+// The schema admits any JSON value for tool_choice, so the validator must
+// classify every one of them rather than assume a decoded policy. A present
+// null is a control that is not the typed policy: presence is what the gate
+// judges, the same rule that makes an empty model_id a control.
+func TestNullToolChoiceIsUnsatisfiable(t *testing.T) {
+	v := MustNew()
+	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
+	for name, control := range map[string]string{
+		"null":    `,"tool_choice":null`,
+		"string":  `,"tool_choice":"none"`,
+		"number":  `,"tool_choice":3`,
+		"boolean": `,"tool_choice":true`,
+		"array":   `,"tool_choice":["scripted_tool"]`,
+	} {
+		admitted := v.ValidateBytes(controlsTrace(features, control, controlsAdmission), "untyped-"+name)
+		if !admitted.HasCode(CodeUnsatisfiableControl) {
+			t.Fatalf("%s: want %s when an untyped tool_choice is admitted: %+v", name, CodeUnsatisfiableControl, admitted.Diagnostics)
+		}
+		refused := v.ValidateBytes(
+			controlsTrace(features, control, refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.tool_selection", "reason": "unsatisfiable"})),
+			"untyped-refused-"+name,
+		)
+		if !refused.Valid() {
+			t.Fatalf("%s: the typed refusal was rejected: %+v", name, refused.Diagnostics)
+		}
+	}
+}
+
+// An absent tool_choice is not a control at all, so nothing is judged.
+func TestAbsentToolChoiceIsNotAControl(t *testing.T) {
+	policy, err := protocol.MessageSubmitRequest{}.ToolChoicePolicy()
+	if policy != nil || err != nil {
+		t.Fatalf("absent tool_choice decoded as %+v, %v", policy, err)
+	}
+	if _, err := (protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`null`)}).ToolChoicePolicy(); err == nil {
+		t.Fatal("a present null decoded as an absent control")
+	}
+}
+
+// A declared fixed_result is an exact promise, so the comparison must not pass
+// numbers through float64: the two integers below differ by one and are the
+// same float64.
+func TestFixedResultComparisonKeepsIntegerPrecision(t *testing.T) {
+	for name, pair := range map[string][2]string{
+		"integers past 2^53": {`{"n":9007199254740992}`, `{"n":9007199254740993}`},
+		"nested":             {`{"a":{"n":9007199254740992}}`, `{"a":{"n":9007199254740993}}`},
+		"in an array":        {`{"a":[9007199254740992]}`, `{"a":[9007199254740993]}`},
+	} {
+		if sameJSON(json.RawMessage(pair[0]), json.RawMessage(pair[1])) {
+			t.Fatalf("%s: %s and %s compared equal", name, pair[0], pair[1])
+		}
+	}
+	// Member order and whitespace still do not decide it.
+	for name, pair := range map[string][2]string{
+		"member order": {`{"a":1,"b":2}`, `{"b":2, "a":1}`},
+		"whitespace":   {`{"ok":true}`, "{\n  \"ok\": true\n}"},
+		"same integer": {`{"n":9007199254740993}`, `{"n":9007199254740993}`},
+	} {
+		if !sameJSON(json.RawMessage(pair[0]), json.RawMessage(pair[1])) {
+			t.Fatalf("%s: %s and %s compared unequal", name, pair[0], pair[1])
 		}
 	}
 }

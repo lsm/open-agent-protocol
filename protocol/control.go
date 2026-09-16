@@ -256,9 +256,19 @@ func (r MessageSubmitRequest) AllowsDegraded(key string) bool {
 // name on a mode other than "named" or missing on "named", or both allowed and
 // disallowed. A policy that decodes here may still be unsatisfiable against a
 // catalog; ToolChoice.Unsatisfiable judges that.
+//
+// A present `null` is a control, not an absent one. The schema admits any JSON
+// value here, and presence is what the gate judges — the same rule that makes
+// `{"model_id": ""}` a control the endpoint must refuse rather than read as
+// "no selection". A null is present and is not the typed policy, so it is
+// refused like any other untyped value; reading it as absence would put the
+// wire's meaning at the mercy of a decoder convention.
 func (r MessageSubmitRequest) ToolChoicePolicy() (*ToolChoice, error) {
-	if len(r.ToolChoice) == 0 || string(r.ToolChoice) == "null" {
+	if len(r.ToolChoice) == 0 {
 		return nil, nil
+	}
+	if string(bytes.TrimSpace(r.ToolChoice)) == "null" {
+		return nil, fmt.Errorf("tool_choice is null, which is not the typed policy")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(r.ToolChoice))
 	decoder.DisallowUnknownFields()
