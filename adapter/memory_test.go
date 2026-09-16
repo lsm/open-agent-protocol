@@ -947,3 +947,115 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 		t.Fatalf("got %v, want the ordinary refusal when no control is at fault", err)
 	}
 }
+
+// The catalog a tool_choice is judged against is the descriptor's, and the
+// validator treats every served descriptor as a known catalog — so an endpoint
+// that enforces a policy against a catalog it never published is judged
+// against an empty one. Its `auto` runs are diagnosed for calling a tool the
+// descriptor does not carry, and its `required` and `named` policies are
+// deemed unsatisfiable, both while the adapter itself accepts and executes
+// them. The reference adapter is the one endpoint that must not be able to
+// drift that way, so it publishes the scripted tool and reads that same
+// catalog at the gate.
+//
+// Proved end to end rather than by inspecting the descriptor: each policy is
+// submitted, the scripted call runs, and the whole trace — submit request
+// included, so the policy is in it — goes through the real validator.
+func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
+	for name, policy := range map[string]string{
+		"named":    `{"mode":"named","name":"scripted_tool"}`,
+		"required": `{"mode":"required"}`,
+		"auto":     `{"mode":"auto"}`,
+		"allowed":  `{"mode":"auto","allowed":["scripted_tool"]}`,
+	} {
+		session := newTestSession(t, 64)
+		request := protocol.MessageSubmitRequest{
+			SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+			ToolChoice: json.RawMessage(policy),
+			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+		}
+		admission, stream, err := session.Submit(context.Background(), request)
+		if err != nil {
+			t.Fatalf("%s: the adapter refused a policy its own catalog satisfies: %v", name, err)
+		}
+		trace := runScriptedTool(t, session, admission, stream)
+		calls := 0
+		for _, event := range trace {
+			if event.Type == protocol.TypeActionCallRequested {
+				calls++
+			}
+		}
+		if calls != 1 {
+			t.Fatalf("%s: %d scripted calls, want 1", name, calls)
+		}
+		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), trace)
+	}
+
+	// The descriptor and the gate read one catalog, so a name outside it is
+	// refused rather than admitted against a private list.
+	session := newTestSession(t, 64)
+	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`),
+		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}); err == nil {
+		t.Fatal("a tool outside the published catalog was admitted")
+	}
+
+	// And the descriptor publishes exactly what the gate enforces.
+	descriptor := testDescriptor(t)
+	if len(descriptor.Capabilities.Tools) != 1 || descriptor.Capabilities.Tools[0].Name != "scripted_tool" {
+		t.Fatalf("published catalog = %+v, want the one scripted tool", descriptor.Capabilities.Tools)
+	}
+}
+
+// runScriptedTool drives one admitted run through the scripted gates and
+// returns its whole event trace.
+func runScriptedTool(t *testing.T, session adapter.Session, admission protocol.MessageSubmitResponse, stream adapter.EventStream) []protocol.Envelope {
+	t.Helper()
+	trace := drainAvailable(stream)
+	var requested protocol.PermissionRequestedPayload
+	for _, event := range trace {
+		if event.Type == protocol.TypeActionPermissionRequested {
+			if err := event.DecodePayload(&requested); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if requested.InteractionID == "" {
+		t.Fatalf("the scripted run raised no permission gate: %+v", trace)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: admission.RunID, RespondedBy: "user",
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: requested.InteractionID, SessionID: "session-1", RunID: admission.RunID,
+			RequestedBy: "agent", RespondedBy: "user", ChoiceID: "approve", Granted: true,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events := drainAvailable(stream)
+	trace = append(trace, events...)
+	var input protocol.UserInputRequestedPayload
+	for _, event := range events {
+		if event.Type == protocol.TypeUserInputRequested {
+			if err := event.DecodePayload(&input); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if input.InteractionID == "" {
+		t.Fatalf("the scripted run raised no input gate: %+v", events)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: admission.RunID, RespondedBy: "user",
+		Input: &protocol.UserInputResolveRequest{
+			InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			SessionID: "session-1", RunID: admission.RunID,
+			Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return append(trace, drainAvailable(stream)...)
+}

@@ -27,12 +27,34 @@ const (
 	ModelSecondary = "reference-model-b"
 	fixedResult    = `{"ok":true}`
 	scriptedTool   = "scripted_tool"
+	// scriptedToolOwner runs the scripted tool, and is what every emitted
+	// action.call payload names as its execution_owner.
+	scriptedToolOwner = "reference-adapter"
 )
+
+// scriptedCatalog is the reference adapter's effective tool catalog: the one
+// tool its script calls, and the one a tool_choice policy can name. The
+// descriptor publishes it and the submit gate judges against it, from here, so
+// the endpoint cannot advertise one catalog and enforce another — which is the
+// contradiction a validator reads as an empty catalog, refusing every policy
+// the adapter itself accepts.
+func scriptedCatalog() []protocol.ToolDefinition {
+	return []protocol.ToolDefinition{{
+		Name:           scriptedTool,
+		Description:    "The deterministic scripted tool the reference adapter calls.",
+		InputSchema:    json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string"}}}`),
+		ExecutionOwner: scriptedToolOwner,
+	}}
+}
 
 // CapabilityRevision is the advertised reference-adapter revision. Every
 // emitted envelope repeats it so a consumer can bind an event to the
 // descriptor snapshot it was produced under.
-const CapabilityRevision = "reference-memory-v1"
+// v2 publishes the scripted tool in the catalog; v1 published none, and a
+// revision identifies exactly one descriptor, so a consumer holding the v1
+// snapshot must see this one as new rather than validate against an empty
+// catalog.
+const CapabilityRevision = "reference-memory-v2"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -118,6 +140,9 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 			ProtocolVersions: []string{protocol.Version},
 			Profiles:         []string{protocol.Profile},
 			Features:         features,
+			// The catalog a tool_choice is judged against is the descriptor's,
+			// so it is published rather than kept private to the session.
+			Tools: scriptedCatalog(),
 		},
 		CapabilityRevision:         CapabilityRevision,
 		Journal:                    JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: m.capacity},
@@ -298,7 +323,7 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	if !run.controls.callsTool {
 		return s.requestInput(run)
 	}
-	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: "reference-adapter"}
+	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner}
 	if err := s.emit(run, protocol.TypeActionCallRequested, call, false); err != nil {
 		return err
 	}
@@ -347,9 +372,15 @@ type admittedControls struct {
 	callsTool    bool
 }
 
-// catalog is the reference adapter's effective tool catalog: the one scripted
-// tool a policy can name.
-func (s *memorySession) catalog() []string { return []string{scriptedTool} }
+// catalog names the effective tool catalog this session's policies are judged
+// against, read from the one the descriptor publishes.
+func (s *memorySession) catalog() []string {
+	names := make([]string, 0, 1)
+	for _, tool := range scriptedCatalog() {
+		names = append(names, tool.Name)
+	}
+	return names
+}
 
 // admitControls judges every per-submit control against what Probe advertises
 // and reports the first refusal in the plan's precedence order: capability,
@@ -534,14 +565,14 @@ func (s *memorySession) resolvePermission(run *memoryRun, request protocol.Permi
 		return err
 	}
 	if !request.Granted {
-		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: "scripted_tool", RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: "reference-adapter"}
+		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
 		if err := s.emit(run, protocol.TypeActionCallCancelled, call, false); err != nil {
 			return err
 		}
 		failure := protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "permission_denied", Message: "scripted tool permission denied"}}
 		return s.emit(run, protocol.TypeRunFailed, failure, true)
 	}
-	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: "scripted_tool", ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: "reference-adapter"}
+	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner}
 	if err := s.emit(run, protocol.TypeActionCallStarted, call, false); err != nil {
 		return err
 	}
@@ -617,7 +648,7 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 		reason := protocol.ProtocolError{Code: "run_cancelled", Message: "run cancellation closed the permission request"}
 		resolved := protocol.PermissionResolvedPayload{InteractionID: run.permissionID, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Outcome: protocol.InteractionCancelled, Reason: &reason}
 		_ = s.emit(run, protocol.TypeActionPermissionResolved, resolved, false)
-		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: "scripted_tool", RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: "reference-adapter"}
+		call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, ExecutionOwner: scriptedToolOwner}
 		_ = s.emit(run, protocol.TypeActionCallCancelled, call, false)
 	} else if run.stage == stageInput {
 		resolved := protocol.UserInputResolvedPayload{InteractionID: run.inputID, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}
