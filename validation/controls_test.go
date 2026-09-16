@@ -516,3 +516,100 @@ func TestModelSelectionMustDiscloseItsApplicationMode(t *testing.T) {
 		t.Fatalf("an unavailable key was held to a mode: %+v", result.Diagnostics)
 	}
 }
+
+// A `modes` list naming nothing a caller can send is the empty list in a
+// costume: every policy the typed shape admits carries one of the four modes,
+// so a descriptor listing none of them refuses every policy as unsatisfiable
+// and passes — the empty advertisement the disclosure exists to prevent.
+// Unknown names beside a recognised one are additive vocabulary: the
+// descriptor still enforces the one it names here, and a mode a later unit
+// defines must not make today's disclosure a defect.
+func TestToolSelectionMustEnforceAModeCallersCanSend(t *testing.T) {
+	v := MustNew()
+	policy := `,"tool_choice":{"mode":"auto"}`
+	for name, modes := range map[string]string{
+		"none at all":     `[]`,
+		"nothing known":   `["whenever"]`,
+		"several unknown": `["whenever","someday"]`,
+	} {
+		features := `{"run.tool_selection":{"level":"emulated","modes":` + modes + `}}`
+		result := v.ValidateBytes(controlsTrace(features, policy, controlsAdmission), "modes-"+name)
+		if !result.HasCode(CodeUndisclosedSelectionModes) {
+			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionModes, result.Diagnostics)
+		}
+	}
+	for name, modes := range map[string]string{
+		"one known":            `["auto"]`,
+		"known and unknown":    `["auto","later_mode"]`,
+		"every mode this unit": `["auto","none","required","named"]`,
+	} {
+		features := `{"run.tool_selection":{"level":"emulated","modes":` + modes + `}}`
+		result := v.ValidateBytes(controlsTrace(features, policy, controlsAdmission), "modes-"+name)
+		if !result.Valid() {
+			t.Fatalf("%s: a disclosed mode was rejected: %+v", name, result.Diagnostics)
+		}
+	}
+}
+
+// Only an object is a structured result, so only an object is a fixed_result.
+// The schema requires one, so a trace carrying anything else never reaches the
+// semantic phase; if it ever did, the constraint is ignored rather than
+// enforced, because a null or a scalar satisfies no object-rooted schema and
+// reading it as a promise would make every structured-output request
+// unsatisfiable at an endpoint whose descriptor looked conformant.
+func TestFixedResultIsAnObjectOrNoConstraintAtAll(t *testing.T) {
+	v := MustNew()
+	schema := `,"output_schema":{"type":"object","properties":{"ok":{"type":"boolean"}}}`
+	for name, fixed := range map[string]string{
+		"null":   `null`,
+		"scalar": `"ok"`,
+		"number": `7`,
+		"array":  `[{"ok":true}]`,
+	} {
+		features := `{"run.structured_output":{"level":"emulated","constraints":{"fixed_result":` + fixed + `}}}`
+		result := v.ValidateBytes(controlsTrace(features, schema, controlsAdmission), "fixed-"+name)
+		// The admission is not refused for a constraint the descriptor did not
+		// state in the one shape a fixed result has.
+		if result.HasCode(CodeUnsatisfiableControl) {
+			t.Fatalf("%s: a fixed_result that is not an object refused a satisfiable schema: %+v", name, result.Diagnostics)
+		}
+	}
+	// A declared object still binds, in both directions.
+	features := `{"run.structured_output":{"level":"emulated","constraints":{"fixed_result":{"ok":true}}}}`
+	unsatisfiable := v.ValidateBytes(controlsTrace(features, `,"output_schema":{"type":"object","required":["answer"]}`, controlsAdmission), "fixed-unsatisfiable")
+	if !unsatisfiable.HasCode(CodeUnsatisfiableControl) {
+		t.Fatalf("a schema the declared fixed result cannot satisfy was admitted: %+v", unsatisfiable.Diagnostics)
+	}
+}
+
+// A declared fixed_result is an exact promise about a value, not about the
+// token that spelled it: 1, 1.0, and 1e0 are one number, and an endpoint that
+// emitted any of them kept a promise made with any other. Precision is the
+// other half — the comparison must stay exact past 2^53, where float64 stops
+// telling consecutive integers apart.
+func TestFixedResultComparesNumbersByValue(t *testing.T) {
+	for name, pair := range map[string][2]string{
+		"integer and decimal":    {`{"n":1}`, `{"n":1.0}`},
+		"integer and exponent":   {`{"n":1}`, `{"n":1e0}`},
+		"decimal and exponent":   {`{"n":1.0}`, `{"n":1e0}`},
+		"trailing zero":          {`{"n":1.5}`, `{"n":1.50}`},
+		"negative exponent":      {`{"n":0.001}`, `{"n":1e-3}`},
+		"large integer exponent": {`{"n":9007199254740992}`, `{"n":9.007199254740992e15}`},
+		"nested":                 {`{"a":{"n":1}}`, `{"a":{"n":1.0}}`},
+		"in an array":            {`{"a":[1]}`, `{"a":[1.0]}`},
+	} {
+		if !sameJSON(json.RawMessage(pair[0]), json.RawMessage(pair[1])) {
+			t.Fatalf("%s: %s and %s compared unequal", name, pair[0], pair[1])
+		}
+	}
+	for name, pair := range map[string][2]string{
+		"consecutive past 2^53": {`{"n":9007199254740992}`, `{"n":9007199254740993}`},
+		"different values":      {`{"n":1}`, `{"n":2}`},
+		"sign":                  {`{"n":1}`, `{"n":-1}`},
+		"number and string":     {`{"n":1}`, `{"n":"1"}`},
+	} {
+		if sameJSON(json.RawMessage(pair[0]), json.RawMessage(pair[1])) {
+			t.Fatalf("%s: %s and %s compared equal", name, pair[0], pair[1])
+		}
+	}
+}

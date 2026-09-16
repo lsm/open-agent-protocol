@@ -83,6 +83,11 @@ const (
 // run.structured_output: the exact result object every run.completed under an
 // accepted output_schema carries. Declaring it makes a fixed-output endpoint's
 // refusals checkable in both directions.
+//
+// The schema requires an object, because only an object is a structured
+// result. A null or a scalar would satisfy no object-rooted output_schema, so
+// an endpoint declaring one would refuse every structured-output request as
+// unsatisfiable while its descriptor read as conformant.
 const ConstraintFixedResult = "fixed_result"
 
 type CapabilityLayer struct {

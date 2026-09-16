@@ -3,8 +3,11 @@ package validation
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"math/big"
+	"reflect"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -386,7 +389,14 @@ func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, contr
 		// A disclosed fixed result binds the admission in both directions: a
 		// schema that object cannot satisfy could only complete
 		// nonconforming, so admitting it is the defect.
-		if fixed, ok := s.featureDetail(key).Constraints[protocol.ConstraintFixedResult]; ok && len(fixed) > 0 {
+		// Only an object is a fixed result. The schema requires one, so a
+		// trace carrying anything else never reaches this phase; the guard is
+		// here because the failure direction matters if it ever did. A null or
+		// a scalar satisfies no object-rooted schema, so reading it as a
+		// constraint would make every structured-output request unsatisfiable
+		// and let an endpoint refuse them all while looking conformant.
+		// Ignoring it refuses nothing that was satisfiable.
+		if fixed, ok := s.featureDetail(key).Constraints[protocol.ConstraintFixedResult]; ok && isJSONObject(fixed) {
 			controls.fixedResult = fixed
 			if err := compiled.Validate(json.RawMessage(fixed)); err != nil {
 				return unsatisfiableAs("/payload/output_schema", "field", "output_schema", "the disclosed fixed result cannot satisfy the requested schema"), false
@@ -395,6 +405,42 @@ func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, contr
 		return nil, true
 	}
 	return nil, false
+}
+
+// isJSONObject reports whether an encoded document is a JSON object. Only an
+// object is a structured result, so only an object is a fixed_result.
+func isJSONObject(document json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(document)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return false
+	}
+	var value map[string]any
+	return json.Unmarshal(trimmed, &value) == nil
+}
+
+// knownToolChoiceModes are the tool_choice modes this phase rules on. Every
+// policy the typed shape admits carries one of them, so a descriptor that
+// names none enforces nothing a caller can ask for.
+var knownToolChoiceModes = []string{protocol.ToolChoiceAuto, protocol.ToolChoiceNone, protocol.ToolChoiceRequired, protocol.ToolChoiceNamed}
+
+// enforcesAKnownMode reports whether a disclosure names at least one mode a
+// caller can actually send. Unknown names beside a known one are additive
+// vocabulary, not a defect.
+func enforcesAKnownMode(modes []string) bool {
+	for _, mode := range modes {
+		if slices.Contains(knownToolChoiceModes, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeModes renders a disclosure for a diagnostic's observed value.
+func describeModes(modes []string) string {
+	if len(modes) == 0 {
+		return "none"
+	}
+	return strings.Join(modes, ", ")
 }
 
 // disclosedMode reports whether the endpoint said it enforces one tool_choice
@@ -624,7 +670,10 @@ func sameJSON(a, b json.RawMessage) bool {
 	if leftErr != nil || rightErr != nil {
 		return false
 	}
-	return fmt.Sprintf("%#v", canonical(left)) == fmt.Sprintf("%#v", canonical(right))
+	// Compared structurally rather than through a rendering: a canonical
+	// number is its own type, and a rendering would flatten it back onto the
+	// string that spells it, so `{"n":1}` would equal `{"n":"1"}`.
+	return reflect.DeepEqual(canonical(left), canonical(right))
 }
 
 // decodeExact decodes one document without converting its numbers.
@@ -638,10 +687,30 @@ func decodeExact(document json.RawMessage) (any, error) {
 	return value, nil
 }
 
+// exactNumber is one JSON number in a canonical, value-based form. It is its
+// own type so that a number never compares equal to the string that spells it.
+type exactNumber string
+
+// canonicalNumber rewrites one JSON number into a form that depends on its
+// value and not on the token that spelled it, so `1`, `1.0`, and `1e0` compare
+// equal while 9007199254740993 stays distinct from 9007199254740992. A rat is
+// exact for every finite decimal, which float64 is not, and canonical, which
+// the token text is not. A number no rat can hold (an exponent past the
+// package's limit) keeps its token, which is what the comparison did for every
+// number before.
+func canonicalNumber(number json.Number) exactNumber {
+	if rat, ok := new(big.Rat).SetString(number.String()); ok {
+		return exactNumber(rat.RatString())
+	}
+	return exactNumber(number.String())
+}
+
 // canonical rewrites a decoded document into a form whose Go rendering is
-// stable: maps become sorted key/value pairs.
+// stable: maps become sorted key/value pairs, numbers their exact value.
 func canonical(value any) any {
 	switch typed := value.(type) {
+	case json.Number:
+		return canonicalNumber(typed)
 	case map[string]any:
 		keys := make([]string, 0, len(typed))
 		for key := range typed {
@@ -667,8 +736,16 @@ func canonical(value any) any {
 // with no enforceable modes promises nothing, since every policy could be
 // refused as unsatisfiable and pass.
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	if support, ok := effectiveSupport(p, protocol.FeatureToolSelection); ok && affirmative(support.Level) && len(support.Modes) == 0 {
-		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/modes", "run.tool_selection is advertised without disclosing the tool_choice modes the endpoint enforces", "at least one enforced mode", "none")
+	if support, ok := effectiveSupport(p, protocol.FeatureToolSelection); ok && affirmative(support.Level) && !enforcesAKnownMode(support.Modes) {
+		// A list of names this phase rules on nothing is the empty list in a
+		// costume: every policy the typed shape admits carries one of the four
+		// modes, so a descriptor listing none of them refuses every one of
+		// them as unsatisfiable and passes — the empty advertisement the
+		// disclosure exists to prevent. Unknown names alongside a recognised
+		// one are tolerated: the vocabulary is additive, and a descriptor
+		// naming a mode a later unit defines still enforces the one it names
+		// here.
+		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/modes", "run.tool_selection is advertised without disclosing a tool_choice mode the endpoint enforces", "at least one of "+strings.Join(knownToolChoiceModes, ", "), describeModes(support.Modes))
 	}
 	// The same rule for how a model selection is applied. Without it the key
 	// promises nothing a validator can check: the per_run rule and the

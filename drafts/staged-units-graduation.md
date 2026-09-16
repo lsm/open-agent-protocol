@@ -1195,8 +1195,15 @@ No new envelope types. Changes to
   `run.tool_selection`, refuse every `required` and `named` policy as
   `unsatisfiable`, and pass, which is the same empty advertisement
   `max_queued_runs_per_session` was disclosed to prevent on the queue.
-  A descriptor advertising the key with no `modes`, or with an empty
-  one, is `undisclosed_selection_modes` on the `capabilities.response`.
+  A descriptor advertising the key with no `modes`, with an empty one, or
+  with a list naming none of the four modes a caller can actually send, is
+  `undisclosed_selection_modes` on the `capabilities.response`: a list of
+  names nothing rules on is the empty list in a costume, since every policy
+  the typed shape admits carries one of the four, so such an endpoint
+  refuses every policy as unsatisfiable and passes. Unknown names beside a
+  recognised one are tolerated — the vocabulary is additive, and a
+  descriptor naming a mode a later unit defines still enforces the one it
+  names today.
 
   The catalog binds in both directions here as it does for models. A
   policy whose named and filtered tools are all carried by the active
@@ -1493,7 +1500,12 @@ the caller sent empty), `controls-tool-choice-empty-allowlist-call`
 call), `controls-model-mode-missing` and `controls-model-mode-unknown`
 (`undisclosed_selection_modes` on the `capabilities.response`;
 `run.model_selection` advertised with no `mode`, and with one this phase
-gives no rules),
+gives no rules), `controls-tool-choice-unenforced-modes`
+(`undisclosed_selection_modes`; `modes` naming only a mode no caller can
+send), `controls-tool-choice-extra-mode` (positive, `valid: true`, no
+diagnostic; `modes` naming a recognised mode and an unknown one beside
+it), `controls-fixed-result-not-an-object` (`schema_invalid`; a
+`fixed_result` that is a string),
 `controls-instructions-refused` (`unsatisfiable_control` on the
 `error.response`; `instructions` refused on an endpoint advertising
 `run.instructions` — the control has no unsatisfiability condition, so

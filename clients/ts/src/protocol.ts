@@ -230,8 +230,8 @@ export interface FeatureSupport {
   mode?: string;
   /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it. */
   modes?: string[];
-  /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries. */
-  constraints?: Record<string, unknown>;
+  /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries — an object, because only an object is a structured result. */
+  constraints?: { fixed_result?: Record<string, unknown> } & Record<string, unknown>;
 }
 
 export interface ToolDefinition {

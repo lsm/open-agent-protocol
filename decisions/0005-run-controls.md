@@ -151,11 +151,20 @@ two members beside `mode`:
 
 - `modes`, the `tool_choice` modes the endpoint can actually enforce. A refusal
   is conforming only for a mode outside the list, and a descriptor advertising
-  `run.tool_selection` with no modes at all is `undisclosed_selection_modes`.
+  `run.tool_selection` with no modes at all — an absent list, an empty one, or
+  one naming none of the four a caller can send — is
+  `undisclosed_selection_modes`. Unknown names beside a recognised one are
+  additive vocabulary, not a defect.
 - `constraints`, whose `fixed_result` member for `run.structured_output` is the
   exact object every `run.completed` under an accepted schema will carry.
   Declaring it makes a fixed-output endpoint's refusals checkable in both
-  directions, and binds it to emitting exactly that object.
+  directions, and binds it to emitting exactly that object. The schema requires
+  an object: only an object is a structured result, so a null or a scalar there
+  would satisfy no object-rooted `output_schema` and let an endpoint refuse
+  every structured-output request while its descriptor read as conformant.
+  Exactly that object is judged by value, not by spelling — `1`, `1.0`, and
+  `1e0` are one number, and the comparison stays exact past 2^53, where float64
+  stops telling consecutive integers apart.
 
 `run.model_selection`'s `mode` discloses how a selection is applied: `per_run`
 leaves the session default untouched, `session_mutation` changes it and the
