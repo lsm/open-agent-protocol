@@ -19,8 +19,13 @@ type runState struct {
 	cancelAccepted              bool
 	status                      protocol.RunStatus
 	admittedModel               string
-	tools                       map[protocol.ToolCallID]toolTrack
-	interactions                map[protocol.InteractionID]*interactionState
+	// opaqueAdmission marks a run admitted under a foreign admission in
+	// tolerant mode. Which lifecycle it follows is a later revision's rule,
+	// so the admission-dependent check — the pre-start rule — is suspended,
+	// while sequence, terminality, and scope bookkeeping stay.
+	opaqueAdmission bool
+	tools           map[protocol.ToolCallID]toolTrack
+	interactions    map[protocol.InteractionID]*interactionState
 }
 type interactionState struct {
 	kind                     string
@@ -76,6 +81,11 @@ type state struct {
 	initialized       bool
 	features          map[string]protocol.SupportLevel
 	recoveries        map[protocol.SessionID]*recoveryExpectation
+	// tolerant lets an envelope of unknown type take part in the
+	// type-independent bookkeeping its wire scope implies, instead of being
+	// skipped. Without it a tolerated unknown run event at sequence N would be
+	// ignored and the next known event at N+1 diagnosed as sequence_gap.
+	tolerant bool
 }
 
 func newState(f string) *state {
@@ -100,9 +110,22 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	s.ids[e.ID] = i
 	if isRequest(e.Type) {
 		session, run := requestScope(e)
+		if s.tolerant && !isKnownType(e.Type) {
+			// An unknown request has no typed payload decoder, but its
+			// generic payload scope and its envelope scope are still the
+			// wire's own: they must agree, and the result is retained so the
+			// generic correlation checks bind its response — a request on
+			// run A answered on run B is a scope_mismatch whatever the
+			// operation is called.
+			session, run = unknownScope(e)
+		}
 		// A request that declares scope in both its envelope and payload must
 		// agree; otherwise its stored correlation scope is self-contradictory.
-		s.checkScope(i, line, e, session, run)
+		// A sequenced unknown request is also a run event below, and runEvent
+		// is then its sole scope checker.
+		if !s.tolerantRunEvent(e) {
+			s.checkScope(i, line, e, session, run)
+		}
 		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run, interaction: envelopeInteraction(e)}
 	}
 	duplicateResponse := false
@@ -252,7 +275,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if s.capabilitiesStale {
 			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "submission occurred before refreshed capabilities")
 		}
-		if p.Delivery != protocol.DeliveryAuto {
+		if p.Delivery != protocol.DeliveryAuto && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
+			// A requested delivery outside this revision's vocabulary is
+			// opaque in tolerant mode: which capability key it needs is a
+			// later revision's rule, not one this validator can apply.
 			s.feature(i, line, e, "delivery."+string(p.Delivery))
 		}
 	case protocol.TypeSessionMessageSubmitResponse:
@@ -309,13 +335,76 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			} else if !r.terminal {
 				r.cancelAccepted = true
 				r.status = protocol.RunCancelling
+				if s.tolerant && foreignRunStatus(p.Status) {
+					// The response declared a status this revision does not
+					// know. It is recorded as opaque, as a foreign status from
+					// run.status.updated is, so the first known step out of it
+					// is not judged as a step out of cancelling. The accepted
+					// exchange still stands as evidence for run.cancelled.
+					r.status = p.Status
+				}
 			}
 		}
 	default:
 		if isRunEvent(e.Type) {
 			s.runEvent(i, line, e)
+		} else if s.tolerant && !isKnownType(e.Type) {
+			// Tolerant mode classifies an unknown type by its wire scope.
+			// Whatever the type is called, the generic session_id and run_id
+			// its payload declares must agree with its envelope (a request or
+			// response was already held to that above). An envelope carrying
+			// both run_id and sequence is a run-scoped event and enters the
+			// type-independent bookkeeping (an accepted admission, sequence
+			// contiguity, terminality); one carrying session_id alone is
+			// session-scoped and advances no cursor; one carrying neither
+			// touches no bookkeeping at all.
+			switch {
+			case s.tolerantRunEvent(e):
+				// runEvent is the sole scope checker for a run event; a
+				// second generic check here would report one defect twice.
+				s.runEvent(i, line, e)
+			case !isRequest(e.Type):
+				// An unknown request was held to this above. An unknown
+				// response is held to it here, whether or not it correlated
+				// with a request, as a known response is in its own case.
+				session, run := unknownScope(e)
+				s.checkScope(i, line, e, session, run)
+			}
 		}
 	}
+}
+
+// isKnownType reports whether the type is one this revision defines. The
+// payload table is the authority: every known type has a decode target.
+func isKnownType(t protocol.EnvelopeType) bool {
+	return payloadTarget(t) != nil
+}
+
+// tolerantRunEvent reports whether an envelope of unknown type is classified
+// as a run-scoped event in tolerant mode: it carries both run_id and
+// sequence. runEvent then does its scope check and run bookkeeping.
+func (s *state) tolerantRunEvent(e protocol.Envelope) bool {
+	return s.tolerant && !isKnownType(e.Type) && e.RunID != "" && e.Sequence != nil
+}
+
+// unknownScope is the scope of an envelope whose type this revision does not
+// define (tolerant mode). The generic payload members session_id and run_id
+// are read when present, so a payload declaring a scope other than the
+// envelope's is still a scope_mismatch; the envelope's own scope stands in
+// for an absent member, since an unknown type's payload owes none.
+func unknownScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
+	var p struct {
+		SessionID protocol.SessionID `json:"session_id"`
+		RunID     protocol.RunID     `json:"run_id"`
+	}
+	_ = e.DecodePayload(&p)
+	if p.SessionID == "" {
+		p.SessionID = e.SessionID
+	}
+	if p.RunID == "" {
+		p.RunID = e.RunID
+	}
+	return p.SessionID, p.RunID
 }
 func collectFeatures(dst map[string]protocol.SupportLevel, src map[string]protocol.FeatureSupport) {
 	for name, support := range src {
@@ -361,10 +450,22 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	// A scoped response must answer within the request's scope: an internally
 	// consistent response for another session or run cannot answer this request.
 	session, run := responseScope(e)
-	if req.session != "" && session != "" && session != req.session {
+	if s.tolerant && !isKnownType(e.Type) {
+		// An unknown response, like an unknown request, is scoped by its
+		// generic payload members and its envelope; the correlation check
+		// binds it to the request it answers. Its own envelope/payload
+		// agreement is judged in apply's generic unknown path, whether or
+		// not it correlated, as a known response's is in its own case.
+		session, run = unknownScope(e)
+	}
+	// A response that names no scope at all cannot be shown to answer within
+	// the request's scope, so an empty value is a mismatch too. A known
+	// response always names its scope (schema-required), so this only ever
+	// bites an unknown response whose envelope and payload are both silent.
+	if req.session != "" && session != req.session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "response session does not match the request scope", string(req.session), string(session), string(e.InReplyTo))
 	}
-	if req.run != "" && run != "" && run != req.run {
+	if req.run != "" && run != req.run {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/run_id", "response run does not match the request scope", string(req.run), string(run), string(e.InReplyTo))
 	}
 	// A resolution response must name the same interaction the request resolved;
@@ -503,13 +604,22 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	case p.RunID == "":
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "accepted submission must reserve a run identity")
 		return
-	case p.Admission == protocol.AdmissionStarted && p.EffectiveDelivery == protocol.DeliveryStart && p.Status == protocol.RunRunning:
-	case p.Admission == protocol.AdmissionQueued && p.EffectiveDelivery == protocol.EffectiveDeliveryQueue && p.Status == protocol.RunQueued:
-	default:
+	case !admissionShape(s.tolerant, p):
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "v0.1 admission must resolve auto to one started (status running) or queued (status queued) run (decision 0002)")
 		return
 	}
 	if old := s.runs[p.RunID]; old != nil {
+		if s.tolerant && foreignAdmission(p.Admission) {
+			// A foreign admission naming a run already tracked may describe
+			// an operation on that run rather than a second admission — a
+			// later revision's steer, say. What it does the validator cannot
+			// judge, so nothing is reserved and the run is left as it is;
+			// that the run belongs to the session it can judge.
+			if old.session != p.SessionID {
+				s.addExpected(CodeScopeMismatch, i, line, e, "/payload/run_id", "submit response names a run owned by another session", string(old.session), string(p.SessionID), string(old.id))
+			}
+			return
+		}
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "run was admitted more than once")
 		return
 	}
@@ -524,7 +634,14 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		s.sessions[p.SessionID] = st
 	}
 	st.active = p.RunID
-	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunQueued}
+	status, opaque := protocol.RunQueued, s.tolerant && foreignAdmission(p.Admission)
+	if opaque {
+		// The run's status is what the response declared, not the queued
+		// shape's: a known status is judged from there, a foreign one is
+		// opaque until a known status is reached (see run.status.updated).
+		status = p.Status
+	}
+	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
 }
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
@@ -595,15 +712,28 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		return
 	}
-	if !r.started && !preStartSettlement(e.Type) {
+	// The pre-start rule is a known-type, known-admission rule: only a known
+	// terminal may settle a run before run.started, and only a known type can
+	// be judged against that list. An unknown type (tolerant mode) says
+	// nothing about whether it is a valid pre-start event, and a run admitted
+	// under a foreign admission says nothing about whether run.started is
+	// owed at all; both take only the type-independent bookkeeping.
+	if !r.started && !preStartSettlement(e.Type) && isKnownType(e.Type) && !r.opaqueAdmission {
 		s.add(CodeMissingRunStarted, i, line, e, "/type", "run-scoped event occurred before run.started")
 	}
 	if e.Type == protocol.TypeRunStatusUpdated {
 		var p protocol.RunStatusUpdatedPayload
 		_ = e.DecodePayload(&p)
-		if !legalRunStatusTransition(r.status, p.Status) {
+		switch {
+		case s.tolerant && (foreignRunStatus(p.Status) || foreignRunStatus(r.status)):
+			// A foreign status is opaque in tolerant mode: the transition
+			// table can judge neither the step into it nor the first step
+			// out of it, so both pass and the run records it as its status.
+			// The table takes over again once a known status is reached.
+			r.status = p.Status
+		case !legalRunStatusTransition(r.status, p.Status):
 			s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/status", "illegal run status transition", legalRunStatusTargets(r.status), string(p.Status))
-		} else {
+		default:
 			r.status = p.Status
 		}
 	}
@@ -951,10 +1081,18 @@ func (s *state) feature(i, line int, e protocol.Envelope, name string) {
 	}
 	for _, key := range []string{name, "session.message." + name, "agent_control." + name, "action." + name} {
 		if level, ok := s.features[key]; ok {
-			if level != protocol.SupportUnavailable {
+			switch level {
+			case protocol.SupportNative, protocol.SupportEmulated, protocol.SupportDegraded:
 				return
+			case protocol.SupportUnavailable:
+				s.add(CodeUnavailableCapability, i, line, e, "/type", "event uses capability declared unavailable")
+			default:
+				// agent-control-profile.md: an unknown support level is
+				// treated as unavailable. Tolerant mode keeps the value
+				// opaque on the descriptor, but only a known affirmative
+				// level satisfies the gate.
+				s.addExpected(CodeUnavailableCapability, i, line, e, "/type", "event uses capability whose support level is not one this revision recognises; an unknown level is unavailable", "native, emulated, or degraded", string(level))
 			}
-			s.add(CodeUnavailableCapability, i, line, e, "/type", "event uses capability declared unavailable")
 			return
 		}
 	}
@@ -974,7 +1112,9 @@ func (s *state) close(index int) {
 		}
 	}
 	for _, r := range s.runs {
-		if r.admitted && !r.started && !r.terminal {
+		// Whether run.started was owed at all is unknown under a foreign
+		// admission (see runState.opaqueAdmission); a terminal always is.
+		if r.admitted && !r.started && !r.terminal && !r.opaqueAdmission {
 			e := protocol.Envelope{ID: protocol.EnvelopeID(r.id), Type: protocol.TypeRunStarted, RunID: r.id, SessionID: r.session}
 			s.add(CodeMissingRunStarted, r.lastIndex, r.lastLine, e, "", "admitted run never emitted run.started")
 		}
@@ -1015,6 +1155,83 @@ func isRunEvent(t protocol.EnvelopeType) bool {
 		return true
 	}
 	return false
+}
+
+// A foreign value is one present on the wire but outside the vocabulary this
+// revision defines for the field. Tolerant mode treats it as opaque: the
+// value-specific rule is suspended, since it cannot judge what it does not
+// know, while the type-independent bookkeeping around it still applies. An
+// absent value is not foreign — a missing member is a shape defect in any
+// revision, and the strict rule keeps judging it.
+func foreignRunStatus(s protocol.RunStatus) bool {
+	switch s {
+	case "", protocol.RunQueued, protocol.RunRunning, protocol.RunWaitingForInput, protocol.RunCancelling, protocol.RunCompleted, protocol.RunFailed, protocol.RunCancelled:
+		return false
+	}
+	return true
+}
+func foreignAdmission(a protocol.Admission) bool {
+	switch a {
+	case "", protocol.AdmissionStarted, protocol.AdmissionQueued, protocol.AdmissionSteered, protocol.AdmissionSideRun, protocol.AdmissionRejected:
+		return false
+	}
+	return true
+}
+func foreignEffectiveDelivery(d protocol.EffectiveDeliveryMode) bool {
+	switch d {
+	case "", protocol.DeliveryStart, protocol.EffectiveDeliveryQueue, protocol.EffectiveDeliverySteer, protocol.EffectiveDeliveryBTW:
+		return false
+	}
+	return true
+}
+func foreignRequestedDelivery(d protocol.RequestedDeliveryMode) bool {
+	switch d {
+	case "", protocol.DeliveryAuto, protocol.DeliveryQueue, protocol.DeliverySteer, protocol.DeliveryBTW:
+		return false
+	}
+	return true
+}
+
+// admissionShape judges Decision 0002's canonical-shape rule for an accepted
+// submission member by member. Admission, effective delivery, and status each
+// name one of the two shapes — started (started/start/running) or queued
+// (queued/queue/queued) — and every member that names a shape must name the
+// same one. A known value outside both shapes (a non-auto admission, a
+// missing status) names none and fails. In tolerant mode a foreign value is
+// opaque: it names no shape and constrains nothing, but the known members are
+// still held to each other, so admission started with status queued is
+// contradictory whatever the delivery is called.
+func admissionShape(tolerant bool, p protocol.MessageSubmitResponse) bool {
+	votes := []struct {
+		shape   string
+		foreign bool
+	}{
+		{namesShape(string(p.Admission), string(protocol.AdmissionStarted), string(protocol.AdmissionQueued)), foreignAdmission(p.Admission)},
+		{namesShape(string(p.EffectiveDelivery), string(protocol.DeliveryStart), string(protocol.EffectiveDeliveryQueue)), foreignEffectiveDelivery(p.EffectiveDelivery)},
+		{namesShape(string(p.Status), string(protocol.RunRunning), string(protocol.RunQueued)), foreignRunStatus(p.Status)},
+	}
+	named := ""
+	for _, v := range votes {
+		if tolerant && v.foreign {
+			continue
+		}
+		if v.shape == "" || (named != "" && named != v.shape) {
+			return false
+		}
+		named = v.shape
+	}
+	return true
+}
+
+// namesShape maps one member's value to the shape it names, or "" for none.
+func namesShape(value, started, queued string) string {
+	switch value {
+	case started:
+		return "started"
+	case queued:
+		return "queued"
+	}
+	return ""
 }
 func legalRunStatusTransition(from, to protocol.RunStatus) bool {
 	switch from {

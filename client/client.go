@@ -376,7 +376,11 @@ func (c *Client) checkEnvelope(envelope protocol.Envelope, raw []byte) error {
 		return nil
 	}
 	c.schemaOnce.Do(func() {
-		c.schema, c.schemaErr = validation.CompileSchemas()
+		// A live client validates tolerantly: the daemon it talks to may be a
+		// later revision carrying additive fields, enum values, or envelope
+		// types the wire rules already promise are ignored, and a strict
+		// compile would fail on the first of them.
+		c.schema, c.schemaErr = validation.CompileSchemasWith(validation.CompileOptions{Mode: validation.ModeTolerant})
 	})
 	if c.schemaErr != nil {
 		return fmt.Errorf("client: compile OAP schema: %w", c.schemaErr)
