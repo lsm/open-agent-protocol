@@ -1,0 +1,9 @@
+{
+  "session_id": "session",
+  "models": [
+    {
+      "id": "fixture/fixture",
+      "provider_id": "fixture"
+    }
+  ]
+}
