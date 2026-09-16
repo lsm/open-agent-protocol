@@ -131,6 +131,11 @@ var unitCapabilities = map[string][]string{
 		protocol.FeatureToolSelection,
 		protocol.FeatureStructuredOutput,
 	},
+	// The queue delivery unit owns one key. Its gate is the reservation an
+	// unadvertising endpoint must refuse; its honour is the refusal an
+	// advertising endpoint owes no caller — a run_active naming a bound the
+	// window shows was never reached.
+	"queue": {protocol.FeatureDeliveryQueue},
 }
 
 // honourDeferred names the unit whose corpus carries a key's honour fixture
@@ -168,6 +173,8 @@ func diagnosticCodes() map[string]bool {
 		CodeSessionStateMismatch,
 		CodeUnappliedControl, CodeUnsatisfiableControl, CodeDegradedWithoutOptin,
 		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
+		CodeQueueOrderViolation, CodeQueueLimitExceeded,
+		CodePrematureSessionMutation, CodeUndisclosedQueueLimit,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {

@@ -71,6 +71,15 @@ type controlExpectation struct {
 	// refuses under a shape that does not tell the caller what to change.
 	diagnostic string
 	message    string
+	// refusalOnly marks an expectation that only a refusal can betray. The
+	// state rung is one: a session busy when the endpoint looked and idle
+	// when the response lands admits either answer, so an admission
+	// discharges the expectation instead of failing it.
+	refusalOnly bool
+	// stateKind names which state-rung condition this expectation carries,
+	// so the refusal is judged against the window rather than against a value
+	// fixed at the request.
+	stateKind int
 }
 
 // less orders two expectations by the refusal precedence: rung, then
@@ -153,6 +162,10 @@ type admittedControls struct {
 // pendingSubmit is what one submit request left for its response to settle.
 type pendingSubmit struct {
 	expectation *controlExpectation
+	// queue is the queue unit's retained window: the bounds that applied to
+	// this submit, what the session held when it was made, and what happened
+	// to both while it was in flight.
+	queue *queueWindow
 	// satisfiable names the control keys the validator judged advertised and
 	// within every constraint the endpoint disclosed. A refusal citing one of
 	// them claims a condition the validator can see does not hold, which is
@@ -167,11 +180,23 @@ type pendingSubmit struct {
 // the endpoint is required to refuse, and a conforming refusal must validate.
 func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.MessageSubmitRequest) {
 	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line}
+	var expectations []*controlExpectation
 	defer func() {
+		// The delivery gate and the queue's state rung are collected whether
+		// or not the submission carries a control: an explicit queue is
+		// judged on its own, and a busy session owes an answer to a plain
+		// auto submit.
+		expectations = append(expectations, s.deliveryExpectations(i, line, e, p, pending)...)
+		sort.SliceStable(expectations, func(a, b int) bool { return expectations[a].less(expectations[b]) })
+		if len(expectations) > 0 {
+			pending.expectation = expectations[0]
+		}
 		if s.pendingControls == nil {
 			s.pendingControls = map[protocol.EnvelopeID]*pendingSubmit{}
 		}
 		s.pendingControls[e.ID] = pending
+		s.openSubmits[p.SessionID] = append(s.openSubmits[p.SessionID], pending)
+		s.refreshQueueWindows(p.SessionID)
 	}()
 	controls := []struct {
 		key     string
@@ -193,7 +218,6 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 	}
 	pending.controls.present = true
 	pending.controls.mode = s.featureDetail(protocol.FeatureModelSelection).Mode
-	var expectations []*controlExpectation
 	for _, control := range controls {
 		if !control.present {
 			continue
@@ -236,25 +260,6 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 		if satisfiable {
 			pending.satisfiable[control.key] = true
 		}
-	}
-	// The delivery an explicit non-auto request elects is gated like a
-	// control. The mandatory auto delivery is exempt: its degraded level is
-	// disclosure a caller reads from the descriptor, not a consent gate, and
-	// a caller refused auto could not submit at all.
-	if p.Delivery != "" && p.Delivery != protocol.DeliveryAuto {
-		key := "session.message.delivery." + string(p.Delivery)
-		if level, judged := s.controlDescriptor(i, line, e, key); judged && level == protocol.SupportDegraded && !p.AllowsDegraded(key) {
-			expectations = append(expectations, &controlExpectation{
-				rung: rungDegradation, key: key, pointer: "/payload/delivery",
-				code: errorCapabilityDegraded, detailName: "feature", detailValue: key,
-				diagnostic: CodeDegradedWithoutOptin,
-				message:    "submission elects a degraded delivery without the caller's opt-in",
-			})
-		}
-	}
-	sort.SliceStable(expectations, func(a, b int) bool { return expectations[a].less(expectations[b]) })
-	if len(expectations) > 0 {
-		pending.expectation = expectations[0]
 	}
 }
 
@@ -485,7 +490,7 @@ func (s *state) settleSubmitAdmission(i, line int, e protocol.Envelope, p protoc
 	if pending == nil {
 		return admittedControls{}
 	}
-	if pending.expectation != nil {
+	if pending.expectation != nil && !pending.expectation.refusalOnly {
 		s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/admission", pending.expectation.message, "a typed refusal naming "+pending.expectation.key, string(p.Admission), string(e.InReplyTo))
 		// The admission itself is the defect. Nothing is retained for the
 		// run: judging the execution of a control that should never have been
@@ -515,7 +520,15 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 		text, isText := value.(string)
 		return text, ok && isText
 	}
-	if expectation := pending.expectation; expectation != nil {
+	if expectation := pending.expectation; expectation != nil && expectation.rung == rungState {
+		// The state rung is judged across the request/response window rather
+		// than against a value settled at the request: Submit decides at an
+		// instant the trace cannot name, and both edges of that ignorance
+		// produce false verdicts. Whatever the window says, a refusal may
+		// still be the wrong answer to a control this request satisfies, so
+		// the other direction below still runs.
+		s.settleQueueRefusal(i, line, e, pending, payload)
+	} else if expectation := pending.expectation; expectation != nil {
 		conforming := payload.Error.Code == expectation.code
 		if conforming && expectation.code == errorUnsupportedFeature {
 			// unsupported_feature answers about one capability, so the key is

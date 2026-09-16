@@ -29,6 +29,31 @@ type runState struct {
 	controls     admittedControls
 	tools        map[protocol.ToolCallID]toolTrack
 	interactions map[protocol.InteractionID]*interactionState
+	// The queue unit's per-run bookkeeping. order is the run's position in
+	// its session's admission order, which is what the ordering rule and
+	// active_runs are judged against; admittedQueued records that the run was
+	// admitted as a reservation rather than started, so the queued subset a
+	// bound counts is the set of reservations still awaiting promotion rather
+	// than every run whose start has not yet reached the trace.
+	order          int
+	admittedQueued bool
+	// startSequence is the sequence run.started carried, which is the
+	// position a state capture names when it reports the model a promotion
+	// installed.
+	startSequence uint64
+	// admittedAt and submitRequest are the trace positions of the run's
+	// admission: the index of its submit response, and the envelope id of the
+	// request that admitted it. A state snapshot's membership anchor names the
+	// request, and whether an admission fell inside a snapshot's window is
+	// decided by the response's index.
+	admittedAt    int
+	submitRequest protocol.EnvelopeID
+	// deferredControls is a queued run's model control, held from admission
+	// until promotion: a reservation's session_mutation must not move the
+	// session default while an earlier run is still started, and a
+	// reservation's per_run snapshot of that default must be taken where the
+	// run actually begins.
+	deferredControls bool
 }
 type interactionState struct {
 	kind                     string
@@ -38,6 +63,11 @@ type interactionState struct {
 	questions                []protocol.InputQuestion
 	toolCallID               protocol.ToolCallID
 	resolved                 bool
+	// openedAt and resolvedAt are the run sequences the interaction joined
+	// and left the pending set at, so an active_runs entry that states the
+	// position it was captured at is judged there rather than at the position
+	// the trace happens to have reached.
+	openedAt, resolvedAt uint64
 }
 type recoveryExpectation struct {
 	session         protocol.SessionID
@@ -76,6 +106,17 @@ type sessionTrack struct {
 	currentKnown    bool
 	expectedDefault string
 	guardDefault    bool
+	// order is every run admitted on the session, in admission order. The
+	// queue unit reads the nonterminal prefix of it as the active set.
+	order []protocol.RunID
+	// openingModel is the session default before any model-affecting event,
+	// which is what a state capture marked at the genesis position reports.
+	openingModel string
+	openingKnown bool
+	// mutated records that a session_mutation selection has been applied on
+	// this session, after which the opening model is history rather than the
+	// current default.
+	mutated bool
 }
 
 // toolTrack retains a tool call's lifecycle status and the execution owner that
@@ -105,7 +146,20 @@ type state struct {
 	// pendingControls retains what each control-carrying submit request owes
 	// its correlated response, keyed by the request's envelope id.
 	pendingControls map[protocol.EnvelopeID]*pendingSubmit
-	recoveries      map[protocol.SessionID]*recoveryExpectation
+	// openSubmits are the unanswered submit requests per session, in arrival
+	// order. The queue unit reads them twice: as the window each retained
+	// expectation is judged across, and as the in-flight reservations a
+	// concurrent admission may already have taken.
+	openSubmits map[protocol.SessionID][]*pendingSubmit
+	// limits is the admission bounds the active descriptor discloses, or nil
+	// when it disclosed none. A refresh replaces them; absence enforces
+	// nothing, since absence advertises no bound.
+	limits *protocol.CapabilityLimits
+	// deferred holds every state claim the trace has not yet reached — a
+	// capture position ahead of its run, a settled run whose terminal has not
+	// arrived — so an accurate snapshot is reconciled rather than diagnosed.
+	deferred   []*deferredStateClaim
+	recoveries map[protocol.SessionID]*recoveryExpectation
 	// tolerant lets an envelope of unknown type take part in the
 	// type-independent bookkeeping its wire scope implies, instead of being
 	// skipped. Without it a tolerated unknown run event at sequence N would be
@@ -118,7 +172,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -214,7 +268,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			collectFeatures(s.features, s.featureSupports, layer.Features)
 		}
 		s.catalog, s.catalogKnown = collectCatalog(p), true
+		s.limits = p.Limits
 		s.checkSelectionModes(i, line, e, p)
+		s.checkQueueLimits(i, line, e, p)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)
@@ -230,6 +286,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// invalidated; a session's expected default model is not, or an
 		// unrelated refresh would excuse a per_run selection that moved it.
 		s.catalog, s.catalogKnown = nil, false
+		// The bounds belong to the descriptor that disclosed them; until the
+		// refreshed one arrives no bound is advertised, and absence enforces
+		// nothing rather than carrying the old numbers forward.
+		s.limits = nil
 	case protocol.TypeSessionOpenResponse:
 		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)
@@ -310,7 +370,14 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if st.guardDefault && p.CurrentModelID != st.expectedDefault {
 			s.addExpected(CodeUnappliedControl, i, line, e, "/payload/current_model_id", "a per_run model selection moved the session default", st.expectedDefault, p.CurrentModelID)
 		}
+		s.checkSessionCapture(i, line, e, p, st)
 		st.currentModel, st.currentKnown = p.CurrentModelID, true
+		if !st.mutated && !st.openingKnown {
+			// The session default before any model-affecting event is what a
+			// capture marked at the genesis position reports; it is learned
+			// from the first snapshot taken before the first mutation.
+			st.openingModel, st.openingKnown = p.CurrentModelID, true
+		}
 	case protocol.TypeSessionMessageSubmitRequest:
 		var p protocol.MessageSubmitRequest
 		_ = e.DecodePayload(&p)
@@ -319,10 +386,16 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "submission occurred before refreshed capabilities")
 		}
 		s.submitControls(i, line, e, p)
-		if p.Delivery != protocol.DeliveryAuto && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
+		if p.Delivery != protocol.DeliveryAuto && p.Delivery != protocol.DeliveryQueue && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
 			// A requested delivery outside this revision's vocabulary is
 			// opaque in tolerant mode: which capability key it needs is a
 			// later revision's rule, not one this validator can apply.
+			//
+			// queue is the exception the queue unit makes: the wire requires
+			// an unadvertised queue to be refused, so diagnosing the request
+			// would fail the conduct the protocol mandates. Its gate is
+			// retained by submitControls and settled on the correlated
+			// response, as T1's control gate is. T4 moves steer the same way.
 			s.feature(i, line, e, "delivery."+string(p.Delivery))
 		}
 	case protocol.TypeSessionMessageSubmitResponse:
@@ -420,6 +493,12 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 				s.checkScope(i, line, e, session, run)
 			}
 		}
+	}
+	// A submit window closes once its correlated response has been judged:
+	// every retained queue expectation is settled across the window, so the
+	// window must still be open while the response is read.
+	if e.Type == protocol.TypeSessionMessageSubmitResponse || e.Type == protocol.TypeErrorResponse {
+		s.closeSubmitWindow(e.InReplyTo)
 	}
 	// The pack rules run after the core case so a packed member on a core
 	// response is judged against the descriptor that response installs: the
@@ -682,31 +761,23 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "run was admitted more than once")
 		return
 	}
-	if sess := s.sessions[p.SessionID]; sess != nil && sess.active != "" {
-		if r := s.runs[sess.active]; r != nil && !r.terminal {
-			s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "session already has a nonterminal run")
-		}
-	}
 	st := s.sessions[p.SessionID]
 	if st == nil {
 		st = &sessionTrack{}
 		s.sessions[p.SessionID] = st
 	}
-	st.active = p.RunID
+	// A second admission on a session that already has a nonterminal run is
+	// the queue unit's admission: legal only as a reservation, and only where
+	// the descriptor advertises the queue. Anything else keeps decision
+	// 0001's one-nonterminal-run rule.
+	overlap := s.queueOverlap(i, line, e, p, st)
+	queued := p.Admission == protocol.AdmissionQueued
+	if !overlap {
+		s.queueAdmission(i, line, e, p, st)
+	}
 	controls := s.settleSubmitAdmission(i, line, e, p)
-	if controls.present && controls.modelPresent {
-		switch controls.mode {
-		case protocol.ModePerRun:
-			// The default the run was admitted against is what every later
-			// snapshot is judged against, and only an application the
-			// validator credits moves it.
-			st.expectedDefault, st.guardDefault = st.currentModel, st.currentKnown
-		case protocol.ModeSessionMutation:
-			// A session mutation runs immediately before the run it was
-			// requested for starts and changes the session default, so the
-			// admitted model becomes the expected default.
-			st.expectedDefault, st.guardDefault = controls.model, true
-		}
+	if controls.present && controls.modelPresent && !queued {
+		s.applyModelControl(st, controls)
 	}
 	status, opaque := protocol.RunQueued, s.tolerant && foreignAdmission(p.Admission)
 	if opaque {
@@ -715,7 +786,45 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		// opaque until a known status is reached (see run.status.updated).
 		status = p.Status
 	}
-	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, controls: controls, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
+	run := &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, controls: controls, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
+	run.order = len(st.order)
+	run.admittedQueued = queued
+	run.admittedAt = i
+	run.submitRequest = e.InReplyTo
+	// A reservation's model control is held until promotion: its
+	// session_mutation must not move the session default while an earlier run
+	// is still started, and its per_run snapshot of that default has to be
+	// taken where the run begins rather than where it was reserved.
+	run.deferredControls = queued && controls.present && controls.modelPresent
+	s.runs[p.RunID] = run
+	st.order = append(st.order, p.RunID)
+	if st.active == "" {
+		st.active = p.RunID
+	} else if prev := s.runs[st.active]; prev == nil || prev.terminal {
+		st.active = p.RunID
+	}
+	s.refreshQueueWindows(p.SessionID)
+}
+
+// applyModelControl moves the session's expected default for one admitted
+// model selection, in the way the disclosed mode says it moves.
+func (s *state) applyModelControl(st *sessionTrack, controls admittedControls) {
+	switch controls.mode {
+	case protocol.ModePerRun:
+		// The default the run was admitted against is what every later
+		// snapshot is judged against, and only an application the
+		// validator credits moves it.
+		st.expectedDefault, st.guardDefault = st.currentModel, st.currentKnown
+	case protocol.ModeSessionMutation:
+		// A session mutation changes the session default where it is
+		// applied — at admission for a started run, at promotion for a
+		// reservation — and the run that applied it is the authority every
+		// snapshot taken while it is started is judged against
+		// (premature_session_mutation). The per_run guard stays off: this
+		// selection is meant to move the default.
+		st.currentModel, st.currentKnown = controls.model, true
+		st.mutated = true
+	}
 }
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
@@ -732,6 +841,12 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	}
 	r.lastIndex = i
 	r.lastLine = line
+	// Every state claim the trace had not reached is reconciled against this
+	// envelope once the run's own bookkeeping is done, whichever branch
+	// below returns: a capture position the run has now reached, and a
+	// settled run's claimed terminal, which must be the next envelope its
+	// domain publishes.
+	defer s.reconcileDeferred(i, line, e, r)
 	if rec := s.recoveries[r.session]; rec != nil && !rec.gap && !rec.firstReplaySeen && e.RunID == rec.run {
 		rec.firstReplaySeen = true
 		if rec.cursorSet && (e.Sequence == nil || *e.Sequence != rec.cursor+1) {
@@ -768,12 +883,14 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		return
 	}
+	s.checkQueueOrder(i, line, e, r)
 	if e.Type == protocol.TypeRunStarted {
 		if r.started {
 			s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.started occurred more than once")
 		} else {
 			r.started = true
 			r.status = protocol.RunRunning
+			s.promote(i, e, r)
 		}
 		// The admitted model is authoritative for the run: a started event naming
 		// a different model would misattribute the same execution.
@@ -890,6 +1007,9 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		if st := s.sessions[r.session]; st != nil && st.active == r.id {
 			st.active = ""
 		}
+		// A terminal frees a reservation, and every open submit window on the
+		// session is re-reckoned against the set as it now stands.
+		s.refreshQueueWindows(r.session)
 	}
 }
 func (s *state) checkScope(i, line int, e protocol.Envelope, session protocol.SessionID, run protocol.RunID) {
@@ -999,7 +1119,11 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	if _, ok := r.interactions[id]; ok {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction id was requested more than once")
 	}
-	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices, questions: questions, toolCallID: toolCallID}
+	opened := uint64(0)
+	if e.Sequence != nil {
+		opened = *e.Sequence
+	}
+	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices, questions: questions, toolCallID: toolCallID, openedAt: opened}
 }
 func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, kind string) {
 	id, requested, responded := interactionFields(e, kind)
@@ -1131,6 +1255,9 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 		}
 	}
 	x.resolved = true
+	if e.Sequence != nil && x.resolvedAt == 0 {
+		x.resolvedAt = *e.Sequence
+	}
 }
 func interactionFields(e protocol.Envelope, kind string) (protocol.InteractionID, protocol.ParticipantID, protocol.ParticipantID) {
 	if kind == "permission" {
@@ -1200,6 +1327,7 @@ func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
 	s.add(CodeUnavailableCapability, i, line, e, "/type", "optional feature was not affirmatively advertised")
 }
 func (s *state) close(index int) {
+	s.closeQueue()
 	for _, rec := range s.recoveries {
 		if rec.gap && !rec.stateSeen {
 			e := protocol.Envelope{Type: protocol.TypeSessionStateResponse, SessionID: rec.session}

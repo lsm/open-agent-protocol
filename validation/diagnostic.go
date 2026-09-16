@@ -78,6 +78,36 @@ const (
 	CodeDegradedWithoutOptin      = "degraded_without_optin"
 	CodeDuplicateToolName         = "duplicate_tool_name"
 	CodeUndisclosedSelectionModes = "undisclosed_selection_modes"
+
+	// The queue-delivery unit. Each names one way admitting a second
+	// nonterminal run per session can go wrong.
+	//
+	// CodeQueueOrderViolation: a later-admitted run published a sequenced
+	// event while an earlier-admitted run of the session was nonterminal.
+	// One run executes at a time, in admission order; the pre-start terminal
+	// of a run that never started is exempt, because it has no execution to
+	// interleave and its release of a slot is capacity the trace must show at
+	// the moment it occurs.
+	//
+	// CodeQueueLimitExceeded: a reservation put the session's nonterminal set
+	// or its queued subset above a disclosed bound, or a refusal reported a
+	// bound that the window shows was never reached — a caller told to wait
+	// for capacity it never lacked.
+	//
+	// CodePrematureSessionMutation: a snapshot reported a session default
+	// other than the one in force at the position it states it was captured
+	// at, which is how a reservation's session_mutation applied before its
+	// promotion is caught.
+	//
+	// CodeUndisclosedQueueLimit: the queue capability is advertised without a
+	// bound a submission could ever reach — absent, nonpositive, or walled
+	// off by an active bound that leaves no room for it beside a started run.
+	// Without one the limit validation has nothing to test and the key
+	// promises nothing.
+	CodeQueueOrderViolation      = "queue_order_violation"
+	CodeQueueLimitExceeded       = "queue_limit_exceeded"
+	CodePrematureSessionMutation = "premature_session_mutation"
+	CodeUndisclosedQueueLimit    = "undisclosed_queue_limit"
 )
 
 type Diagnostic struct {
