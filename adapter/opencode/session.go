@@ -50,10 +50,19 @@ type session struct {
 	// promotes when the server's prompted event names it and the started run
 	// has settled, so one run domain executes at a time in admission order.
 	reserved *runState
-	runs     map[protocol.RunID]*runState
-	pending  map[native.MessageID]*runState
-	tools    map[string]*toolState
-	reduced  map[int64]bool
+	// settled is every run this session has published a terminal for, with
+	// the sequence that terminal carries. Rebuilding the projection after the
+	// publication it describes orders the adapter's own two steps; it does
+	// not make the terminal delivered. It leaves through a buffered channel
+	// and a state read is answered synchronously, so a snapshot can still be
+	// on the wire first, and one that drops a run silently reads as erasing a
+	// run the trace still holds. The claim is recorded where the envelope
+	// becomes history, so it says exactly what published() says.
+	settled []protocol.SettledRun
+	runs    map[protocol.RunID]*runState
+	pending map[native.MessageID]*runState
+	tools   map[string]*toolState
+	reduced map[int64]bool
 	// models is the effective catalog this session has evidence for, in the
 	// order the evidence arrived.
 	models       []string
@@ -380,6 +389,11 @@ func (s *session) refreshStateLocked() {
 		entries = append(entries, activeRunEntry(run, position))
 	}
 	s.state.ActiveRuns = entries
+	// What the listing leaves out has to be stated, not merely left out: the
+	// trace may not have been told about the terminal that removed it.
+	if len(s.settled) > 0 {
+		s.state.AsOf = &protocol.SessionCapture{Settled: s.settled}
+	}
 	switch {
 	case started != "":
 		s.state.Status = protocol.SessionRunning
@@ -1031,6 +1045,11 @@ func (s *session) cloneStateLocked() protocol.SessionState {
 			state.ActiveRuns[i].AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), entry.AdmittedSubmitRequests...)
 		}
 	}
+	if s.state.AsOf != nil {
+		capture := *s.state.AsOf
+		capture.Settled = append([]protocol.SettledRun(nil), s.state.AsOf.Settled...)
+		state.AsOf = &capture
+	}
 	return state
 }
 
@@ -1518,6 +1537,13 @@ func (s *session) publishLocked(run *runState, event protocol.Envelope, terminal
 	}
 	if event.Sequence != nil && *event.Sequence > run.publishedSeq {
 		run.publishedSeq = *event.Sequence
+	}
+	if terminal && event.Sequence != nil {
+		// Here rather than where the run is marked terminal: a held run's
+		// terminal is journalled but unpublished, and the projection keeps
+		// that run. Claiming it settled there would have one snapshot both
+		// list a run and say it had let it go.
+		s.settled = append(s.settled, protocol.SettledRun{RunID: run.id, Sequence: *event.Sequence})
 	}
 	s.deliverLocked(run, event, terminal)
 }

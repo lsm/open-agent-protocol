@@ -1521,6 +1521,17 @@ func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 	if entry.QueuePosition == nil || *entry.QueuePosition != 1 {
 		t.Fatalf("held entry keeps its queue position: %+v", entry)
 	}
+	// And the other half of the same rule: a run the projection still lists
+	// is not one the snapshot says it let go. The settlement claim is
+	// recorded where the envelope becomes history, so a held terminal —
+	// journalled, unpublished — makes none.
+	if state.AsOf != nil {
+		for _, claim := range state.AsOf.Settled {
+			if claim.RunID == queued.RunID {
+				t.Fatalf("snapshot both lists the held run and claims it settled: %+v", claim)
+			}
+		}
+	}
 
 	// Settling the first run releases the held turn. That it completes rather
 	// than failing with the transport is what proves it had already settled
@@ -1539,6 +1550,79 @@ func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 		{Request: autoRequest("hello"), Admission: first},
 		{Request: queueRequest("later"), Admission: queued},
 	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
+}
+
+// A state read is answered synchronously; a terminal leaves through a buffered
+// channel. Rebuilding the projection after the publication it describes orders
+// this adapter's own two steps, and it is right to — but sent is not
+// delivered, so a snapshot can still be on the wire before the terminal that
+// removed the run from it, and one that drops a run silently reads as erasing
+// a run the trace still holds. Measured on this adapter: with nothing reading
+// the stream the snapshot was idle in 300 of 300 settlements, and with a
+// consumer draining as fast as the reducer wrote, in 155 of 300. The claim is
+// what makes the drop legible either way.
+func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	started := adaptertest.Next(t, firstStream, 2*time.Second)
+	if started.Type != protocol.TypeRunStarted {
+		t.Fatalf("first envelope = %s", started.Type)
+	}
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+
+	// Nothing reads firstStream from here, so the terminal is history the
+	// trace has not been told about. Wait for the reducer to reach it.
+	snapshot := waitIdle(t, session)
+	if snapshot.ActiveRunID != "" || len(snapshot.ActiveRuns) != 0 {
+		t.Fatalf("snapshot still holds the run: %+v", snapshot)
+	}
+	if snapshot.AsOf == nil || len(snapshot.AsOf.Settled) != 1 {
+		t.Fatalf("snapshot dropped the run without saying so: %+v", snapshot.AsOf)
+	}
+
+	events := append([]protocol.Envelope{started}, adaptertest.Drain(t, firstStream, 2*time.Second)...)
+	terminal := events[len(events)-1]
+	if terminal.Type != protocol.TypeRunCompleted || terminal.Sequence == nil {
+		t.Fatalf("last envelope = %s", terminal.Type)
+	}
+	if claim := snapshot.AsOf.Settled[0]; claim.RunID != first.RunID || claim.Sequence != *terminal.Sequence {
+		t.Fatalf("settlement anchor = %+v, want %s at sequence %d", claim, first.RunID, *terminal.Sequence)
+	}
+
+	// The order the race produces: the snapshot reaches the wire, then the
+	// terminal it already reflects.
+	exchange, err := adaptertest.StateExchange(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange))
+}
+
+// waitIdle returns the projection once the session no longer holds a run.
+func waitIdle(t *testing.T, session base.Session) protocol.SessionState {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := session.State(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.ActiveRunID == "" && len(state.ActiveRuns) == 0 {
+			return state
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run never left the projection: %+v", state)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // describeSequence spells an optional capture position for a failure message.

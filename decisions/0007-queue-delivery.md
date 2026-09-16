@@ -578,10 +578,44 @@ the other end of the lifecycle, and it needs no barrier, because the anchor is
 true from the moment the terminal's sequence is allocated whether or not any
 consumer has read it.
 
-The reference adapter states this anchor; OpenCode does not need to, because it
-delivers to its subscribers under the same mutex that rebuilds the projection
-and rebuilds it after the publication it describes, so no read falls between
-the two.
+Both adapters that project this state state the anchor. An earlier revision of
+this decision exempted OpenCode, on the ground that it delivers to its
+subscribers under the same mutex that rebuilds the projection and rebuilds it
+after the publication it describes, so no read falls between the two. That
+exemption was wrong, and it was wrong by this decision's own argument about
+ordering across run domains: sent is not delivered. The two steps the mutex makes atomic are
+the send into a buffered channel and the rebuild. What a snapshot races is
+neither — it is the consumer's *publication* of that terminal, which no mutex
+in the adapter spans and which the adapter cannot observe. Ordering the two
+steps is right and OpenCode is right to do it, but it closes the window
+between them, not the window the anchor is for.
+
+The two are measurable apart, so they were measured. With nothing reading the
+stream, the snapshot reported the session idle while the terminal sat
+undelivered in 300 of 300 settlements on OpenCode. With a consumer draining as
+fast as the reducer wrote, the same experiment gave 155 of 300 on OpenCode and
+297 of 300 on the reference adapter, whose projection is rebuilt before the
+send rather than after. So the ordering does narrow the window — from
+essentially always to about half — and does not come close to closing it. That
+is the honest account of what each half buys, and neither half substitutes for
+the other.
+
+Where the claim is recorded matters on OpenCode, because a promoted
+reservation's envelopes can be held: journalled, sequenced, and deliberately
+not published until the earlier run's terminal is on the wire. The projection
+keeps a held run listed for exactly the reason the anchor exists, so the claim
+is recorded where an envelope becomes history rather than where a run is marked
+terminal. Otherwise one snapshot would both list a run and say it had let it
+go, which is a contradiction this unit diagnoses in its own right.
+
+Seven of the nine adapters in this repository project `active_run_id` and clear
+it at the terminal without an anchor, so the same window is open on all of
+them. It is not this unit's to close: none advertises the queue, none populates
+`active_runs`, and the rule they would meet — a snapshot contradicting a
+nonterminal active run — is on `main` today without the `as_of.settled` escape
+this unit adds. This unit therefore only loosens what they face. Closing it for
+them is a change to each adapter's projection and to its mapping ledger, and
+belongs with whoever takes that work.
 
 ## Evidence
 

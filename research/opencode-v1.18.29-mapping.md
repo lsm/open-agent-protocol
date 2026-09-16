@@ -344,6 +344,21 @@ reservation that finishes natively while the earlier run is still open is still
 described as the reservation the trace knows rather than as a settled run in a
 field defined as the session's nonterminal ones.
 
+A run whose terminal *is* published leaves the projection, and the projection
+says so rather than merely dropping it: `as_of.settled` names the run and the
+sequence its terminal carries. This is not the hold above. A state read is
+answered synchronously while a terminal leaves through a buffered stream, so
+the snapshot can be on the wire before the terminal that removed the run from
+it, and the reducer cannot see when a consumer publishes. Rebuilding the
+projection after the publication it describes — which this adapter does, under
+the mutex that also delivers — orders the adapter's own two steps and narrows
+the window without closing it: measured on this adapter, a snapshot reported
+the session idle ahead of an undelivered terminal in 300 of 300 settlements
+with nothing reading the stream, and in 155 of 300 with a consumer draining as
+fast as the reducer wrote. The claim is recorded where an envelope becomes
+history, not where a run is marked terminal, so a held terminal makes none and
+no snapshot both lists a run and says it let it go.
+
 **New mismatch (P1): no route withdraws one queued input.** The pinned
 server's cancellation surface is `POST /api/session/:id/interrupt`, which is
 documented as active-execution-scoped. Sending it to cancel a *reservation*
