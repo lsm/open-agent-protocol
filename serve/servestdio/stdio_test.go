@@ -1099,6 +1099,79 @@ func TestWriterAbandonedCarriesNothingMore(t *testing.T) {
 	}
 }
 
+// gatedWriter parks its first write until released and then writes for
+// real, standing in for a host that stopped reading stdout and started
+// again later — after the daemon had given up on it.
+type gatedWriter struct {
+	release chan struct{}
+	once    sync.Once
+	entered chan struct{}
+
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *gatedWriter) Write(data []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(data)
+}
+
+func (w *gatedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// TestStalledDrainCarriesNothingLater closes the other half of the
+// abandonment rule. The workers finished, so the teardown told the writer to
+// drain — but the drain outlived its window with the writer parked inside
+// out.Write. If that write later unblocks, the queue it was told to drain
+// must not follow Run out of the door and into an output the caller has
+// taken back.
+func TestStalledDrainCarriesNothingLater(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	server, err := New(hub, Options{WriteQueue: 8, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &gatedWriter{release: make(chan struct{}), entered: make(chan struct{})}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, writer) }()
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-writer.entered // the first response has parked the writer
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown hung on the stalled drain")
+	}
+	close(writer.release) // the host starts reading again, too late
+	time.Sleep(200 * time.Millisecond)
+	// The line already inside out.Write completes: those bytes were in
+	// flight before the abandonment and no daemon can recall them. What the
+	// rule forbids is the rest of the queue following them out, so exactly
+	// one line may appear where a continued drain would write three.
+	lines := strings.Count(writer.String(), "\n")
+	if lines > 1 {
+		t.Fatalf("the abandoned drain wrote %d lines after Run returned, want at most the one in flight", lines)
+	}
+}
+
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
 // show: once an invocation has closed admission, it refuses, so a serving
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a

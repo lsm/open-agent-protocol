@@ -432,6 +432,13 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 				err = writeErr
 			}
 		case <-drainWindow.C:
+			// The drain outlived its window, so the writer is parked inside
+			// out.Write on an output the host stopped reading. Stopping it
+			// was the instruction to finish; abandoning it withdraws the
+			// queue, because a write that unblocks after Run has returned
+			// would otherwise carry every line still waiting into an output
+			// the caller has taken back.
+			close(abandon)
 		}
 	case <-drainWindow.C:
 		// The workers being abandoned here may still finish, and the writer
