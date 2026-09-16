@@ -46,6 +46,11 @@ The leading `+` is compact claim syntax for a conformance unit. Unit names can
 also be written without the plus sign when listed in reports, manifests, or test
 plans.
 
+An implementation may also claim one term per extension pack it implements,
+written `+ext:<pack id>/<pack version>` — for example
+`open-agent-protocol.agent-control-core+tools+ext:com.example.storage/1.0.0`.
+See "Extension Packs" below.
+
 ## Profiles And Units
 
 A profile defines a coherent implementation target. The agent-control core
@@ -239,6 +244,42 @@ units if it:
 
 `btw` means a lightweight side question that uses the same session environment
 and configuration but does not block the main run.
+
+## Extension Packs
+
+The unprefixed namespace is the spec's, in its entirety: a capability key,
+envelope `type`, or `error.response` code carrying no reverse-DNS prefix is
+spec-owned, whatever its shape. An extension name carries a reverse-DNS prefix,
+and an extension pack may declare names only beneath its own `id`.
+
+A pack is a `pack.json` descriptor plus the schemas it contributes and,
+optionally, its own fixture manifest in the format above. The descriptor
+declares the pack's capability keys, envelope types with a stated `role`, error
+codes, the gate each request and event is judged against, and any members the
+pack adds to core payloads with the subschema each must satisfy. The loader
+refuses a pack that declares a name outside its own namespace, that is not
+prefix-free with the other loaded packs, that leaves a type ungated or a role
+unstated, that restates a member a core payload already defines, or whose
+schemas reach outside the pack, the core bundle, and its declared dependencies.
+A refusal to load is not a validation diagnostic: the validator never ran.
+
+An implementation conforms to `+ext:<pack id>/<pack version>` if it:
+
+- loads that pack at that exact version;
+- advertises each of the pack's capability keys it implements with an effective
+  support level other than `unavailable`, and refuses an operation gated on an
+  unadvertised key with the same typed `unsupported_feature` error naming the
+  key in `details.feature` that a core capability is refused with;
+- emits and accepts the pack's envelope types as the pack's own schemas define
+  them;
+- refuses a well-formed request it advertises a key for only under a code the
+  pack declared in that request's `refusals`;
+- passes the pack's own fixture manifest, which carries a negative gate fixture
+  and a negative honour fixture for every capability key the pack declares.
+
+A pack term carries no authority over the core claim beside it. A pack's
+fixtures may not claim a core unit, and a core fixture may not claim a pack
+term: conformance to an extension is never evidence for the protocol.
 
 ## Executable Validation And Fixture Plan
 

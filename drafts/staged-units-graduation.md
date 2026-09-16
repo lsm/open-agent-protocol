@@ -112,7 +112,11 @@ contributes no native evidence to any unit at its pin and advertises each
 
 ## T0. Extension packs
 
-Unit name: `extensions`. Planned decision: 0004.
+Unit name: `extensions`. Decision:
+[0004](../decisions/0004-extension-packs.md), which graduates this unit and
+records what it does not admit. The sections below stay as the design the
+decision froze; where an implementation detail had to be chosen that the text
+left open, the decision names the choice.
 
 ### Scope
 
