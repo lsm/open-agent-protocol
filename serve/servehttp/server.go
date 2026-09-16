@@ -279,6 +279,13 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeSubmitError(w http.ResponseWriter, err error, envelope protocol.Envelope) {
+	// A refused control is reported under its own typed code with the details
+	// that say what to change (decision 0005). The mapping is the hub's, so
+	// this codec and the stdio frontend report one refusal identically.
+	if code, message, details, ok := serve.ControlRefusal(err); ok {
+		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
+		return
+	}
 	status, code := http.StatusInternalServerError, "internal"
 	switch {
 	case errors.Is(err, serve.ErrScopeMismatch):
@@ -576,8 +583,14 @@ func envelopeTypes(types []protocol.EnvelopeType) string {
 // echo request content keep the message bounded; correlation is preserved
 // whenever the request itself parsed.
 func (s *Server) writeError(w http.ResponseWriter, status int, code, message string, request protocol.Envelope) {
+	s.writeErrorDetails(w, status, code, message, nil, request)
+}
+
+// writeErrorDetails writes one typed error.response, carrying the details a
+// typed refusal names.
+func (s *Server) writeErrorDetails(w http.ResponseWriter, status int, code, message string, details map[string]any, request protocol.Envelope) {
 	envelope, err := protocol.NewEnvelope(protocol.TypeErrorResponse, s.nextID("error"), protocol.ErrorResponse{
-		Error: protocol.ProtocolError{Code: code, Message: trimMessage(message)},
+		Error: protocol.ProtocolError{Code: code, Message: trimMessage(message), Details: details},
 	})
 	if err != nil {
 		http.Error(w, "oap: internal error", http.StatusInternalServerError)

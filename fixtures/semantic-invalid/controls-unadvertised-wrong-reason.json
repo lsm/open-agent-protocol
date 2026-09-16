@@ -1,0 +1,79 @@
+[
+  {
+    "id": "caps-req",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "controls-v1",
+    "id": "caps-resp",
+    "in_reply_to": "caps-req",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Run-controls fixture endpoint"
+      },
+      "features": {
+        "run.model_selection": {
+          "level": "unavailable",
+          "reason": "no per-run surface at this pin"
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.message.submit": {
+          "level": "native"
+        },
+        "session.state": {
+          "level": "native"
+        }
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "controls-v1",
+    "id": "submit-req",
+    "payload": {
+      "delivery": "auto",
+      "messages": [
+        {
+          "content": "go",
+          "role": "user"
+        }
+      ],
+      "model_id": "m1",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.request",
+    "version": "0.1"
+  },
+  {
+    "id": "err",
+    "in_reply_to": "submit-req",
+    "payload": {
+      "error": {
+        "code": "unsupported_feature",
+        "details": {
+          "feature": "run.model_selection",
+          "reason": "unsatisfiable"
+        },
+        "message": "refused"
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "error.response",
+    "version": "0.1"
+  }
+]

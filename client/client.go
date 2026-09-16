@@ -226,6 +226,11 @@ type ServerError struct {
 	Message string
 	// Envelope is the full error envelope; zero when the body carried none.
 	Envelope protocol.Envelope
+	// Details are the error's typed details, when it carries any. A refused
+	// run control names what to change there: feature and reason on
+	// unsupported_feature, feature on capability_degraded, model_id on
+	// model_not_found.
+	Details map[string]any
 }
 
 func (e *ServerError) Error() string {
@@ -362,6 +367,7 @@ func statusError(response *http.Response, body []byte) error {
 		var payload protocol.ErrorResponse
 		if err := envelope.DecodePayload(&payload); err == nil {
 			serverErr.Code, serverErr.Message = payload.Error.Code, payload.Error.Message
+			serverErr.Details = payload.Error.Details
 		}
 	}
 	if runes := []rune(serverErr.Message); len(runes) > 300 {

@@ -22,10 +22,23 @@ export class ServerError extends OapError {
   readonly code: string;
   /** The daemon's error message on its own; `message` carries the full rendered text. */
   readonly serverMessage: string;
+  /**
+   * The error's typed details, when it carries any. A refused run control
+   * names what to change there: `feature` and `reason` on
+   * `unsupported_feature`, `feature` on `capability_degraded`, `model_id` on
+   * `model_not_found`.
+   */
+  readonly details?: Record<string, unknown>;
   /** The full error envelope; absent when the body carried none. */
   readonly envelope?: Envelope;
 
-  constructor(status: number, code: string, serverMessage: string, envelope?: Envelope) {
+  constructor(
+    status: number,
+    code: string,
+    serverMessage: string,
+    envelope?: Envelope,
+    details?: Record<string, unknown>,
+  ) {
     super(
       code
         ? `client: server error ${code} (status ${status}): ${serverMessage}`
@@ -35,6 +48,7 @@ export class ServerError extends OapError {
     this.code = code;
     this.serverMessage = serverMessage;
     this.envelope = envelope;
+    this.details = details;
   }
 }
 

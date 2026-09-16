@@ -1390,6 +1390,954 @@
         "drafts/staged-units-graduation.md",
         "decisions/0004-extension-packs.md"
       ]
-    }
+    },
+    {
+      "id": "controls-model-admitted",
+      "path": "valid/controls-model-admitted.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-instructions-refused",
+      "path": "semantic-invalid/controls-instructions-refused.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.instructions",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "controls-instructions-emulated",
+      "path": "valid/controls-instructions-emulated.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-output",
+      "path": "valid/controls-structured-output.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-empty-object",
+      "path": "valid/controls-structured-empty-object.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-auto-degraded-admitted",
+      "path": "valid/controls-auto-degraded-admitted.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-unadvertised-model",
+      "path": "semantic-invalid/controls-unadvertised-model.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.model_selection",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "controls-unadvertised-instructions",
+      "path": "semantic-invalid/controls-unadvertised-instructions.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.instructions",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "controls-unadvertised-tool-choice",
+      "path": "semantic-invalid/controls-unadvertised-tool-choice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.tool_selection",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "controls-unadvertised-output-schema",
+      "path": "semantic-invalid/controls-unadvertised-output-schema.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.structured_output",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "controls-unadvertised-model-rejected",
+      "path": "valid/controls-unadvertised-model-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-unadvertised-wrong-reason",
+      "path": "semantic-invalid/controls-unadvertised-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-empty-model-id-unadvertised",
+      "path": "valid/controls-empty-model-id-unadvertised.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-empty-model-id-rejected",
+      "path": "valid/controls-empty-model-id-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-empty-model-id-admitted",
+      "path": "semantic-invalid/controls-empty-model-id-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-empty-model-id-wrong-refusal",
+      "path": "semantic-invalid/controls-empty-model-id-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-model-refused-as-unsupported",
+      "path": "semantic-invalid/controls-model-refused-as-unsupported.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.model_selection",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "controls-model-mismatch",
+      "path": "semantic-invalid/controls-model-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-per-run-overwrites-default",
+      "path": "semantic-invalid/controls-per-run-overwrites-default.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-per-run-changes-default",
+      "path": "semantic-invalid/controls-per-run-changes-default.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-per-run-overwrites-default-at-terminal",
+      "path": "semantic-invalid/controls-per-run-overwrites-default-at-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-per-run-overwrites-default-after-refresh",
+      "path": "semantic-invalid/controls-per-run-overwrites-default-after-refresh.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-missing-result",
+      "path": "semantic-invalid/controls-structured-missing-result.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-nonconforming-result",
+      "path": "semantic-invalid/controls-structured-nonconforming-result.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-fixed-result-not-emitted",
+      "path": "semantic-invalid/controls-structured-fixed-result-not-emitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-non-object-schema",
+      "path": "semantic-invalid/controls-structured-non-object-schema.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-external-ref",
+      "path": "semantic-invalid/controls-structured-external-ref.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-uncompilable-schema",
+      "path": "semantic-invalid/controls-structured-uncompilable-schema.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-output-schema-external-rejected",
+      "path": "valid/controls-output-schema-external-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-satisfiable-refused",
+      "path": "semantic-invalid/controls-structured-satisfiable-refused.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.structured_output",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "controls-structured-fixed-result-refuses-satisfiable",
+      "path": "semantic-invalid/controls-structured-fixed-result-refuses-satisfiable.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-structured-undisclosed-constraint",
+      "path": "semantic-invalid/controls-structured-undisclosed-constraint.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-contradictory",
+      "path": "semantic-invalid/controls-tool-choice-contradictory.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-contradictory-rejected",
+      "path": "valid/controls-tool-choice-contradictory-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-unsatisfiable-wrong-refusal",
+      "path": "semantic-invalid/controls-unsatisfiable-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-unknown-entry",
+      "path": "semantic-invalid/controls-tool-choice-unknown-entry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-two-unknown-entries",
+      "path": "valid/controls-tool-choice-two-unknown-entries.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-listed-false-refusal",
+      "path": "semantic-invalid/controls-tool-choice-listed-false-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.tool_selection",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "controls-tool-choice-undisclosed-mode",
+      "path": "valid/controls-tool-choice-undisclosed-mode.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-ignored",
+      "path": "semantic-invalid/controls-tool-choice-ignored.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-required-without-call",
+      "path": "semantic-invalid/controls-required-without-call.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-named-without-call",
+      "path": "semantic-invalid/controls-named-without-call.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-ambiguous-name",
+      "path": "semantic-invalid/controls-tool-choice-ambiguous-name.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_name"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-undisclosed-selection-modes",
+      "path": "semantic-invalid/controls-undisclosed-selection-modes.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_selection_modes"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-degraded-without-optin",
+      "path": "valid/controls-degraded-without-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-degraded-admitted-without-optin",
+      "path": "semantic-invalid/controls-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-degraded-wrong-refusal",
+      "path": "semantic-invalid/controls-degraded-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-degraded-model-unadvertised-instructions",
+      "path": "valid/controls-degraded-model-unadvertised-instructions.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-null",
+      "path": "semantic-invalid/controls-tool-choice-null.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-uncatalogued-call",
+      "path": "semantic-invalid/controls-tool-choice-uncatalogued-call.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-started-omits-model",
+      "path": "semantic-invalid/controls-started-omits-model.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {"id":"controls-refusal-omits-feature","path":"semantic-invalid/controls-refusal-omits-feature.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-refusal-names-wrong-feature","path":"semantic-invalid/controls-refusal-names-wrong-feature.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-tool-choice-empty-filters","path":"semantic-invalid/controls-tool-choice-empty-filters.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-tool-choice-empty-allowlist-required","path":"semantic-invalid/controls-tool-choice-empty-allowlist-required.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unsatisfiable_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-tool-choice-empty-allowlist-call","path":"semantic-invalid/controls-tool-choice-empty-allowlist-call.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unapplied_control"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-model-mode-missing","path":"semantic-invalid/controls-model-mode-missing.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_selection_modes"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-model-mode-unknown","path":"semantic-invalid/controls-model-mode-unknown.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_selection_modes"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-tool-choice-unenforced-modes","path":"semantic-invalid/controls-tool-choice-unenforced-modes.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_selection_modes"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-tool-choice-extra-mode","path":"valid/controls-tool-choice-extra-mode.json","kind":"positive","valid":true,"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]},
+    {"id":"controls-fixed-result-not-an-object","path":"schema-invalid/controls-fixed-result-not-an-object.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","run-controls"],"provenance":["drafts/staged-units-graduation.md","decisions/0005-run-controls.md"]}
   ]
 }

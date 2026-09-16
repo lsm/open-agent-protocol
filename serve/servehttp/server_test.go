@@ -699,13 +699,22 @@ func TestSubmitRejections(t *testing.T) {
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/ghost/submit", unknown)
 	requireErrorResponse(t, status, http.StatusNotFound, errorEnvelope, "unknown_session")
 
-	// The adapter refuses the submission itself (memory rejects instructions).
+	// The adapter refuses one control of the submission itself, and the codec
+	// relays that refusal under its own typed code rather than flattening it
+	// to invalid_submission: a caller must learn what to stop sending.
 	rejected := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-refused", protocol.MessageSubmitRequest{
-		SessionID: "reject", Delivery: protocol.DeliveryAuto, Instructions: "not supported",
+		SessionID: "reject", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 	}, "reject", "", "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", rejected)
-	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "invalid_submission")
+	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "unsupported_feature")
+	var refusal protocol.ErrorResponse
+	if err := errorEnvelope.DecodePayload(&refusal); err != nil {
+		t.Fatal(err)
+	}
+	if refusal.Error.Details["feature"] != protocol.FeatureToolSelection || refusal.Error.Details["reason"] != "unsatisfiable" || refusal.Error.Details["tool"] != "absent_tool" {
+		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
+	}
 
 	// A second submission while the run is active conflicts.
 	_, admission := submitRun(t, server, "reject", "submit-active")
@@ -937,4 +946,76 @@ func (bareAdapter) Probe(context.Context) (base.Descriptor, error) {
 }
 func (bareAdapter) Open(context.Context, base.OpenRequest) (base.Session, error) {
 	return nil, errors.New("not used")
+}
+
+// noControlsAdapter wraps the memory adapter as an endpoint that advertises no
+// per-submit run control, so an unadvertised-control refusal is reachable here
+// at all.
+type noControlsAdapter struct{ inner base.Adapter }
+
+func (a noControlsAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	return a.inner.Probe(ctx)
+}
+
+func (a noControlsAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	entry, err := a.inner.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return noControlsSession{entry}, nil
+}
+
+type noControlsSession struct{ base.Session }
+
+func (s noControlsSession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	if err := base.RefuseUnadvertisedControls(request); err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	return s.Session.Submit(ctx, request)
+}
+
+// Wire and schema validity are the floor beneath the refusal ladder, not a
+// rung of it: an envelope the protocol cannot read carries no controls to
+// judge, because the bytes in the control positions are not a policy or a
+// selection until the message is one at all. So the frontend validates before
+// it decodes, and a submit that is schema-invalid is answered schema_invalid
+// whatever sits in those positions — the endpoint is never reached, and could
+// not honestly answer about a control it never received. The ordering is
+// deliberate, and it is the same one the validator keeps: its semantic phase,
+// where every control rule lives, runs only on a trace whose decode and schema
+// phases were clean (decision 0005).
+func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", noControlsAdapter{base.NewMemory(base.Config{})}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	openSession(t, server, "memory", "floor")
+
+	// Schema-invalid (delivery is required) and carrying a control this
+	// endpoint advertises nowhere.
+	invalid := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-floor", map[string]any{
+		"session_id":   "floor",
+		"messages":     []any{map[string]any{"role": "user", "content": "x"}},
+		"instructions": "be terse",
+	}, "floor", "", "")
+	status, errorEnvelope := postEnvelope(t, server, "/sessions/floor/submit", invalid)
+	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "schema_invalid")
+
+	// Repair the envelope and the same control is refused under its own key,
+	// so the first answer was about the message and not about the control.
+	valid := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-floor-2", protocol.MessageSubmitRequest{
+		SessionID: "floor", Delivery: protocol.DeliveryAuto,
+		Instructions: protocol.ControlValue("be terse"),
+		Messages:     []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+	}, "floor", "", "")
+	status, errorEnvelope = postEnvelope(t, server, "/sessions/floor/submit", valid)
+	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "unsupported_feature")
+	var refusal protocol.ErrorResponse
+	if err := errorEnvelope.DecodePayload(&refusal); err != nil {
+		t.Fatal(err)
+	}
+	if refusal.Error.Details["feature"] != protocol.FeatureInstructions {
+		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
+	}
 }

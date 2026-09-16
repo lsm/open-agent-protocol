@@ -190,14 +190,15 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native.Delivery, error) {
-	if req.SessionID == "" || len(req.Messages) != 1 || req.Instructions != "" || len(req.ToolChoice) > 0 || len(req.OutputSchema) > 0 {
-		return "", "", base.ErrInvalidSubmission
+	// OpenCode applies a model when the session is created and the prompt request
+	// carries only content, so no per-run control has a native surface here.
+	// Each is refused under its own capability key before admission, so a
+	// caller learns which control to stop sending (decision 0005).
+	if err := base.RefuseUnadvertisedControls(req); err != nil {
+		return "", "", err
 	}
-	if req.ModelID != "" {
-		// OpenCode applies a model when the session is created and the prompt
-		// request carries no model, so a per-submit override cannot be applied
-		// and must not be reported as effective.
-		return "", "", fmt.Errorf("%w: OpenCode applies a model at session creation only", ErrUnsupported)
+	if req.SessionID == "" || len(req.Messages) != 1 {
+		return "", "", base.ErrInvalidSubmission
 	}
 	message := req.Messages[0]
 	if message.Role != protocol.RoleUser {

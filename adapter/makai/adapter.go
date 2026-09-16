@@ -123,15 +123,22 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.state":                 {Level: protocol.SupportEmulated, Reason: "adapter-owned projection"},
 		"session.message.submit":        {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the complete agent_message frame is written"},
 		"session.message.delivery.auto": {Level: protocol.SupportEmulated, Reason: "auto is normalized to start"},
-		"run.streaming":                 {Level: protocol.SupportNative, Reason: "pinned agent_event text stream normalized to OAP"},
-		"run.status":                    {Level: protocol.SupportEmulated},
-		"run.cancel":                    {Level: protocol.SupportDegraded, Reason: "agent_stop destroys the session and is not run-targeted"},
-		"run.resume":                    {Level: protocol.SupportDegraded, Reason: "canonical replay is bounded process memory only"},
-		"run.reconciliation":            {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
-		"run.replay":                    {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
-		"action.tools":                  {Level: protocol.SupportDegraded, Reason: "observed native tool lifecycle; no portable authoritative catalog"},
-		"action.tools.execute":          {Level: protocol.SupportUnavailable, Reason: "client-hosted tool execution requires an explicit executor boundary not yet exposed by this adapter"},
-		"action.permissions":            {Level: protocol.SupportUnavailable, Reason: "Makai agent protocol exposes no permission interaction"},
+		// agent_message carries model_ref per message, so a requested model is
+		// applied to exactly the run it was requested for and the session
+		// default is untouched (decision 0005).
+		protocol.FeatureModelSelection:   {Level: protocol.SupportNative, Mode: protocol.ModePerRun, Reason: "agent_message.model_ref selects the model for one message"},
+		protocol.FeatureInstructions:     {Level: protocol.SupportUnavailable, Reason: "agent_start.system_prompt is session-level; this pin exposes no per-run instructions"},
+		protocol.FeatureToolSelection:    {Level: protocol.SupportUnavailable, Reason: "the pinned agent protocol carries no per-run tool policy"},
+		protocol.FeatureStructuredOutput: {Level: protocol.SupportUnavailable, Reason: "the pinned agent protocol carries no per-run output schema"},
+		"run.streaming":                  {Level: protocol.SupportNative, Reason: "pinned agent_event text stream normalized to OAP"},
+		"run.status":                     {Level: protocol.SupportEmulated},
+		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "agent_stop destroys the session and is not run-targeted"},
+		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "canonical replay is bounded process memory only"},
+		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
+		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
+		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "observed native tool lifecycle; no portable authoritative catalog"},
+		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "client-hosted tool execution requires an explicit executor boundary not yet exposed by this adapter"},
+		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "Makai agent protocol exposes no permission interaction"},
 	}
 	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "makai.agent", Name: "Makai Agent Adapter", Version: PinnedCommit[:7], Adapter: "makai-agent-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "session", CancellationImplementation: "native_session_teardown"}, nil
 }

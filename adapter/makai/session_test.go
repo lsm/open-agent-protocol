@@ -126,7 +126,7 @@ func openTest(t *testing.T, capacity int) (base.Session, *fakeClient) {
 }
 func submitTest(t *testing.T, session base.Session) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
-	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("test"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +165,54 @@ func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, ev
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
 }
 
+// An empty model_id is present, so it is a control the caller chose, not an
+// absent one. No catalog carries the empty id, so it takes the same refusal
+// any other miss takes: substituting the native default would admit the run
+// under a model the caller never asked for and report that id back as
+// effective. The three controls with no native surface here are refused under
+// their own capability keys instead of a generic invalid submission.
+func TestSubmitRefusesAnEmptyModelAndUnadvertisedControls(t *testing.T) {
+	session, client := openTest(t, 32)
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
+	_, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(""), Messages: message,
+	})
+	var missing *base.ModelNotFoundError
+	if !errors.As(err, &missing) || !errors.Is(err, base.ErrModelNotFound) {
+		t.Fatalf("empty model_id: got %v, want a model_not_found refusal", err)
+	}
+	if missing.ModelID != "" {
+		t.Fatalf("the refusal names %q, want the id the caller sent", missing.ModelID)
+	}
+	client.mu.Lock()
+	sends := len(client.sends)
+	client.mu.Unlock()
+	if sends != 0 {
+		t.Fatalf("the refusal reached the native client: %d sends", sends)
+	}
+
+	for feature, request := range map[string]protocol.MessageSubmitRequest{
+		protocol.FeatureInstructions:     {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
+		protocol.FeatureStructuredOutput: {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
+		protocol.FeatureToolSelection:    {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
+	} {
+		_, _, err := session.Submit(context.Background(), request)
+		var refusal *base.UnsupportedControlError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("%s: got %v, want an *adapter.UnsupportedControlError", feature, err)
+		}
+		if refusal.Feature != feature || refusal.Reason != base.ControlUnadvertised {
+			t.Fatalf("%s: refused as %q/%q", feature, refusal.Feature, refusal.Reason)
+		}
+	}
+
+	// Every refusal preceded admission, so a named model still runs and the
+	// trace still validates.
+	admission, stream := submitTest(t, session)
+	client.event(t, 2, map[string]any{"type": "agent_end", "stop_reason": "stop"})
+	assertValidTrace(t, admission, collect(t, stream))
+}
+
 func TestFirstMessageUsesNativeSequenceTwo(t *testing.T) {
 	session, client := openTest(t, 32)
 	_, _ = submitTest(t, session)
@@ -178,7 +226,7 @@ func TestFirstMessageUsesNativeSequenceTwo(t *testing.T) {
 func TestAdmissionFailureRetiresSession(t *testing.T) {
 	session, client := openTest(t, 32)
 	client.sendErr = errors.New("write failed")
-	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("test"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
 	if err == nil {
 		t.Fatal("submission unexpectedly succeeded")
 	}

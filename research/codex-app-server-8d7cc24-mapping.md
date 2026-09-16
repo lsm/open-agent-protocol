@@ -72,6 +72,7 @@ they do not claim that a capture already exists.
 | `thread/start` response | `protocol/v2/thread.rs` | Open and associate an OAP session | normalized | `session.open`: native | `thread-start` |
 | `thread/resume` response | `protocol/v2/thread.rs` | Explicit adapter configuration restores native conversation attachment; it does not replay OAP events | normalized | attachment: native; canonical replay: degraded process memory | `thread-resume` |
 | `turn/start` response | `protocol/v2/turn.rs` | Successful run admission only | native | submit/admission: native | `turn-admitted` |
+| `turn/start.model` | `protocol/v2/turn.rs` | Per-run `model_id` control: the requested model binds exactly the run it was requested for | native | `run.model_selection`: native, mode `per_run` | `model-per-turn` |
 | `turn/started` | `protocol/v2/turn.rs` | `run.started`; first run sequence value | native | run start: native | `completed-text` |
 | `item/agentMessage/delta` | `protocol/v2/item.rs`; `AgentMessageDeltaNotification.json` | `content.delta` | native | text streaming: native once exercised | `completed-text` |
 | command execution item lifecycle | `protocol/v2/item.rs` | OAP action call lifecycle | normalized | tools: degraded until every mapped transition is exercised | `command-completed` |
@@ -144,6 +145,14 @@ listed in its omissions ledger.
 
 - one nonterminal foreground run per OAP session;
 - requested `auto`, effective `start`;
+- per-run model selection through `turn/start.model`, advertised
+  `run.model_selection` at `native` with mode `per_run`: the requested model
+  is applied to that turn and the thread's configured model remains the
+  session default (`current_model_id`). The other three per-submit controls
+  are advertised `unavailable` and refused before admission under their own
+  keys. `turn/start` does carry a `developerInstructions` parameter at this
+  pin, but no fixture exercises it and this ledger does not pin its
+  semantics, so `run.instructions` stays unavailable until it does;
 - explicit admission, start, text delta, and terminal mapping;
 - run-targeted cancellation intent with authoritative later settlement;
 - reconciliation from adapter state;

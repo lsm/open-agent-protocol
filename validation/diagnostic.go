@@ -49,6 +49,35 @@ const (
 	CodeUndeclaredReplayGap          = "undeclared_replay_gap"
 	CodeUnknownParticipant           = "unknown_participant"
 	CodeSessionStateMismatch         = "session_state_mismatch"
+
+	// The run-controls unit. Each names one way a per-submit control can be
+	// betrayed rather than applied or refused.
+	//
+	// CodeUnappliedControl: the control was admitted and then not applied —
+	// a substituted model, a missing or nonconforming structured result, a
+	// call the policy excludes or a required call never made, or a per_run
+	// selection written into the session default.
+	//
+	// CodeUnsatisfiableControl: a control the endpoint could not honour was
+	// admitted anyway, or one it could honour was refused as unsatisfiable.
+	//
+	// CodeDegradedWithoutOptin: a degraded control was executed without the
+	// caller's consent, or refused under a code that does not ask for it.
+	//
+	// CodeDuplicateToolName: the catalog a tool_choice is judged against
+	// lists two tools with one name, so no entry in it can be unambiguous.
+	//
+	// CodeUndisclosedSelectionModes: a selection capability is advertised
+	// without the disclosure that makes it checkable — run.tool_selection
+	// without the tool_choice modes the endpoint enforces, or
+	// run.model_selection without how a selection is applied. Either would
+	// let the key promise nothing: every rule that binds the capability keys
+	// on the disclosure.
+	CodeUnappliedControl          = "unapplied_control"
+	CodeUnsatisfiableControl      = "unsatisfiable_control"
+	CodeDegradedWithoutOptin      = "degraded_without_optin"
+	CodeDuplicateToolName         = "duplicate_tool_name"
+	CodeUndisclosedSelectionModes = "undisclosed_selection_modes"
 )
 
 type Diagnostic struct {

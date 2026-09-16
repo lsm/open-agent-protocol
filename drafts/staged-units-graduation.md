@@ -730,7 +730,19 @@ fixtures above in place; and `oap validate -pack` is documented beside
 
 ## T1. Run controls
 
-Unit name: `run-controls`. Planned decision: 0005.
+Unit name: `run-controls`. Decision:
+[0005](../decisions/0005-run-controls.md), accepted for the discipline and for
+`model_id` execution. `instructions`, `tool_choice`, and `output_schema` keep
+frozen shapes and reference-adapter execution; each graduates by an amendment
+to 0005 when a native adapter advertises its key against a pinned ledger. What
+shipped differs from the plan below in three recorded places: the
+`run.model_selection` honour deferral turned out to be unnecessary (a refusal
+of an advertised `model_id` under `unsupported_feature` is wrong whatever the
+id is, since the wire assigns every catalog miss to `model_not_found`), the
+gate fixtures for the other three keys were added because the
+corpus-completeness check requires one per key, and
+`controls-undisclosed-selection-modes` was added for the rule below that names
+no fixture.
 
 ### Scope
 
@@ -782,16 +794,31 @@ No new envelope types. Changes to
   "mode": "auto" | "none" | "required" | "named", "name"?: string,
   "allowed"?: [string], "disallowed"?: [string] }`, with `name` present
   when and only when `mode` is `named`, and `allowed`/`disallowed` mutually
-  exclusive. Precedence is fixed so no two implementations can read one
+  exclusive. Both rules are about *presence*, and a reader must decode
+  presence rather than infer it from a decoded value: `"name": ""` and
+  `"name": null` are present members, and `allowed` and `disallowed` both
+  present as empty lists are two members, not none. A reader that unmarshals
+  into value fields cannot tell those from absence, and would run under a
+  policy nobody wrote. A present `name` is a non-empty tool name and a present
+  `allowed` or `disallowed` is a list; null is neither. Precedence is fixed so no two implementations can read one
   policy differently: `allowed` or `disallowed` filters the catalog first,
   then `mode` applies to the filtered set; every entry of `allowed` and
   `disallowed` must name a tool in the advertised catalog (an unknown entry
   is unsatisfiable, not ignored, so a misspelled `disallowed` entry fails
   closed instead of silently blocking nothing), `named` must name a tool
-  in the filtered set, and `required` needs a non-empty filtered set;
+  in the filtered set, and `required` needs a non-empty filtered set. The
+  filter is applied by presence: an `allowed` the caller sent empty permits
+  no tool at all, so `auto` over it calls nothing and `required` over it is
+  unsatisfiable. Reading an empty list as an absent one would turn the most
+  restrictive allowlist expressible into the most permissive, handing the
+  whole catalog to a caller that allowed none of it;
   otherwise the policy is unsatisfiable and is rejected before admission
   (`unsupported_feature`, `details.reason: "unsatisfiable"`), never
-  resolved by choosing one member over another. The catalog a policy is
+  resolved by choosing one member over another. Every `unsupported_feature`
+  refusal names its subject in `details.feature`: it answers about one
+  capability, and a refusal that omits the key or names another tells the
+  caller only that something was unsupported, when what it must do next is
+  stop sending one particular control. The catalog a policy is
   judged against is the session's full catalog, including tools the control
   layer provides at open (T3c), so a policy governs those tools the same
   way. Plain names suffice only because the catalog a policy is judged
@@ -921,7 +948,16 @@ No new envelope types. Changes to
   applied: `per_run` (native per-run parameter), `session_mutation` (a
   serialized native config change applied immediately before the run it
   was requested for starts, which changes the session default), or
-  `restart` (not offered in this phase).
+  `restart` (not offered in this phase). The disclosure is required, not
+  optional, wherever the key is advertised above `unavailable`: the
+  `per_run` rule and the `session_mutation` rule below both key on it, so a
+  descriptor that omits it, or names a mode this phase gives no rules, is
+  one under which a session default may move or stay put with nothing to
+  diagnose either way. Such a descriptor is `undisclosed_selection_modes`
+  on the `capabilities.response`, the same diagnostic and the same argument
+  as `run.tool_selection` advertised with no `modes`. It is the
+  descriptor's defect, so it is diagnosed where the descriptor is published
+  rather than on every admission that descriptor governs.
 - Typed error codes on `error.response`: `unsupported_feature` with
   `details.feature` naming the key and `details.reason` distinguishing the
   two conditions it covers: `unadvertised` (control present, capability
@@ -1126,13 +1162,25 @@ No new envelope types. Changes to
 - New diagnostic `unapplied_control`: the submit response's `model_id` (when
   the request carried one) differs from the request; `run.started.model_id`
   differs from the admitted model (today's `illegal_run_transition` case
-  moves to this code); `run.completed` under an admitted `output_schema`
+  moves to this code), or is absent where the submission carried a `model_id`
+  — an admitted model is authoritative and `run.started` repeats it, so a
+  start that omits it leaves a consumer reading the start boundary unable to
+  see the control applied, and the present-only comparison would let any
+  endpoint opt out of the rule by saying nothing. A run whose submission
+  carried no `model_id` keeps the present-only comparison, since there the id
+  is attribution the endpoint volunteers rather than a control it owes, and
+  `run.completed` keeps it throughout for the reason given above. Also:
+  `run.completed` under an admitted `output_schema`
   lacks `result`, or carries a `result` that does not validate against the
   admitted schema (the validator compiles the schema with the same
   `jsonschema` engine it already uses for the bundle); an
   `action.call.requested` in a run whose admitted `tool_choice` excludes
-  that tool (`mode: "none"`, filtered out by `allowed` or `disallowed`, or
-  `named` naming another tool), whichever participant owns the call; and,
+  that tool (`mode: "none"`, filtered out by `allowed` or `disallowed`,
+  `named` naming another tool, or outside the effective catalog the policy is
+  judged against — the filter runs over the catalog and the mode over the
+  filtered set, so the permitted set never reaches past the catalog and a
+  plain `auto` or `required` policy would otherwise govern nothing),
+  whichever participant owns the call; and,
   at `run.completed`, a run admitted with `mode: "required"` that emitted
   no `action.call.requested`, or with `mode: "named"` that emitted none
   naming that tool (a run that fails or is cancelled first is not judged,
@@ -1147,8 +1195,15 @@ No new envelope types. Changes to
   `run.tool_selection`, refuse every `required` and `named` policy as
   `unsatisfiable`, and pass, which is the same empty advertisement
   `max_queued_runs_per_session` was disclosed to prevent on the queue.
-  A descriptor advertising the key with no `modes`, or with an empty
-  one, is `undisclosed_selection_modes` on the `capabilities.response`.
+  A descriptor advertising the key with no `modes`, with an empty one, or
+  with a list naming none of the four modes a caller can actually send, is
+  `undisclosed_selection_modes` on the `capabilities.response`: a list of
+  names nothing rules on is the empty list in a costume, since every policy
+  the typed shape admits carries one of the four, so such an endpoint
+  refuses every policy as unsatisfiable and passes. Unknown names beside a
+  recognised one are tolerated — the vocabulary is additive, and a
+  descriptor naming a mode a later unit defines still enforces the one it
+  names today.
 
   The catalog binds in both directions here as it does for models. A
   policy whose named and filtered tools are all carried by the active
@@ -1392,7 +1447,14 @@ native mutation frame appearing only after the started run's terminal.
 - `serve/servehttp` and the stdio frontend: `writeSubmitError` maps the new
   errors to `unsupported_feature`, `capability_degraded`, and
   `model_not_found` with `details`; the current `invalid_submission` mapping
-  stays for malformed input.
+  stays for malformed input. The mapping is of errors an endpoint returned,
+  and both frontends keep validating the envelope before they decode it: wire
+  and schema validity are the floor beneath the refusal ladder, not a rung of
+  it, so a submit that is schema-invalid is answered `schema_invalid` whatever
+  it carries in the control positions. An envelope the protocol cannot read
+  carries no controls to judge, which is why the validator's semantic phase —
+  where the rules above live — runs only on a trace whose decode and schema
+  phases were clean.
 - `client` and `clients/ts`: no new operations; `ServerError` exposes
   `details`; e2e tests drive a `model_id` submit against the memory adapter
   and assert the echoed model on `run.started`.
@@ -1426,6 +1488,24 @@ no diagnostic; the same policy refused with `unsupported_feature`,
 "unsatisfiable"`, `details.tool`),
 `controls-unsatisfiable-wrong-refusal` (`unsatisfiable_control` on the
 `error.response`; the same policy refused with `internal_error`),
+`controls-refusal-omits-feature` and `controls-refusal-names-wrong-feature`
+(`unsatisfiable_control` on the `error.response`; the same policy refused
+under the right code and reason with `details.feature` absent, and naming
+another capability), `controls-tool-choice-empty-filters`
+(`unsatisfiable_control` on the admission; `allowed` and `disallowed` both
+present as empty lists), `controls-tool-choice-empty-allowlist-required`
+(`unsatisfiable_control` on the admission; `required` over an `allowed`
+the caller sent empty), `controls-tool-choice-empty-allowlist-call`
+(`unapplied_control`; `auto` over the same empty `allowed`, then a tool
+call), `controls-model-mode-missing` and `controls-model-mode-unknown`
+(`undisclosed_selection_modes` on the `capabilities.response`;
+`run.model_selection` advertised with no `mode`, and with one this phase
+gives no rules), `controls-tool-choice-unenforced-modes`
+(`undisclosed_selection_modes`; `modes` naming only a mode no caller can
+send), `controls-tool-choice-extra-mode` (positive, `valid: true`, no
+diagnostic; `modes` naming a recognised mode and an unknown one beside
+it), `controls-fixed-result-not-an-object` (`schema_invalid`; a
+`fixed_result` that is a string),
 `controls-instructions-refused` (`unsatisfiable_control` on the
 `error.response`; `instructions` refused on an endpoint advertising
 `run.instructions` — the control has no unsatisfiability condition, so
@@ -1435,7 +1515,10 @@ check requires), `controls-structured-satisfiable-refused`
 object-rooted, self-contained `output_schema` refused as unsatisfiable;
 the `honour` fixture for `run.structured_output`),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
-under `mode: "none"`),
+under `mode: "none"`), `controls-tool-choice-uncatalogued-call`
+(`unapplied_control`; `action.call.requested` naming a tool outside the
+catalog under a plain `auto` policy), `controls-started-omits-model`
+(`unapplied_control`; a `model_id` submission whose `run.started` omits it),
 `controls-structured-non-object-schema` (`unsatisfiable_control` on the
 admission; a root-array `output_schema`), `controls-structured-external-ref`
 (`unsatisfiable_control` on the admission; an `output_schema` with an

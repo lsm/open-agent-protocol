@@ -1433,3 +1433,59 @@ func TestClientErrorCodeAbsentForPlainFailures(t *testing.T) {
 		t.Fatalf("ErrorCode on an untyped failure: %q, %v; want absent", code, ok)
 	}
 }
+
+// A per-submit run control crosses the daemon wire end to end: the admitted
+// model is echoed on the admission and on run.started, and a model outside the
+// endpoint's catalog comes back as a typed refusal naming the id it could not
+// serve rather than as a generic invalid submission (decision 0005).
+func TestClientDrivesRunControls(t *testing.T) {
+	server := newDaemon(t, memoryRegistry(64))
+	c := dial(t, server)
+	session := openMemorySession(t, c, "controls")
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	stream := session.Events(ctx)
+
+	admission, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("pick a model")}},
+		Delivery: protocol.DeliveryAuto,
+		ModelID:  protocol.ControlValue(base.ModelSecondary),
+	})
+	if err != nil {
+		t.Fatalf("admitted model refused: %v", err)
+	}
+	if admission.ModelID != base.ModelSecondary {
+		t.Fatalf("admission model %q, want %q", admission.ModelID, base.ModelSecondary)
+	}
+	started := readUntil(t, stream, typeStop(protocol.TypeRunStarted))
+	var payload protocol.RunStartedPayload
+	if err := started[len(started)-1].DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ModelID != base.ModelSecondary {
+		t.Fatalf("run.started model %q, want %q", payload.ModelID, base.ModelSecondary)
+	}
+	// The application is per_run, so the model the next control-free
+	// submission would use has not moved.
+	state, err := session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CurrentModelID != "" {
+		t.Fatalf("per_run selection moved the session default to %q", state.CurrentModelID)
+	}
+
+	_, err = session.Submit(ctx, protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("pick another")}},
+		Delivery: protocol.DeliveryAuto,
+		ModelID:  protocol.ControlValue("model-the-catalog-lacks"),
+	})
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) || serverErr.Code != "model_not_found" {
+		t.Fatalf("unknown model: got %v, want a typed model_not_found refusal", err)
+	}
+	if serverErr.Details["model_id"] != "model-the-catalog-lacks" {
+		t.Fatalf("refusal details %+v, want the requested id", serverErr.Details)
+	}
+}

@@ -311,6 +311,7 @@ export class OapClient {
     let code = '';
     let messageText = body.trim();
     let envelope: Envelope | undefined;
+    let details: Record<string, unknown> | undefined;
     try {
       const parsed = parseEnvelope(body);
       if (parsed.type === EnvelopeType.ErrorResponse) {
@@ -319,6 +320,9 @@ export class OapClient {
         if (payload.error && typeof payload.error.code === 'string') {
           code = payload.error.code;
           messageText = payload.error.message ?? '';
+          // A typed refusal names what to change in its details; the client
+          // exposes them rather than leaving a caller to re-parse the body.
+          details = payload.error.details;
         }
       }
     } catch {
@@ -326,7 +330,7 @@ export class OapClient {
     }
     const runes = Array.from(messageText);
     if (runes.length > 300) messageText = `${runes.slice(0, 300).join('')}…`;
-    return new ServerError(status, code, messageText || 'no body', envelope);
+    return new ServerError(status, code, messageText || 'no body', envelope, details);
   }
 
   /** Joins the daemon base address with an absolute path. */

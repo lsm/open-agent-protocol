@@ -10,13 +10,10 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The refusal an unadvertised capability is owed. These are wire vocabulary the
-// endpoint emits, not validator diagnostics: the two do not correspond, and a
-// pack can add to the first and never to the second.
-const (
-	errorUnsupportedFeature = "unsupported_feature"
-	reasonUnadvertised      = "unadvertised"
-)
+// The refusal an unadvertised capability is owed is the same typed error the
+// run-controls unit defines (errorUnsupportedFeature / reasonUnadvertised in
+// controls.go): wire vocabulary the endpoint emits, not validator diagnostics,
+// and a pack can add to the first and never to the second.
 
 // The stateful rules for packed vocabulary. They add no new machinery: a packed
 // type resolves its feature key through the loaded pack's `gates` instead of a

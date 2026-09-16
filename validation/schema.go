@@ -91,9 +91,12 @@ type compiledBundle struct {
 }
 
 // refusingLoader answers every reference the registered resources do not
-// already satisfy with a refusal. A third-party pack is a document a user loads
-// from someone else, so compiling it with the engine's default file loader
-// would let a `$ref` reach paths outside the pack on the loading machine.
+// already satisfy with a refusal, and records what was asked for. A
+// third-party pack is a document a user loads from someone else, and a
+// submitted output_schema is one the caller sends, so compiling either with
+// the engine's default loader would let a `$ref` read a path or fetch a URL on
+// the loading machine; the draft 2020-12 metaschema is embedded in the engine,
+// so nothing legitimate needs a loader at all.
 type refusingLoader struct{ attempted []string }
 
 func (l *refusingLoader) Load(url string) (any, error) {

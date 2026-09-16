@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/lsm/open-agent-protocol/protocol"
 )
 
 type FixtureManifest struct {
@@ -116,14 +118,33 @@ func loadErrorCodes() map[string]bool {
 // unitCapabilities lists the capability keys each conformance unit owns. A
 // unit registers its keys when it graduates, and from that moment the corpus
 // must carry a negative gate fixture and a negative honour fixture for each,
-// or the manifest fails to load. It is empty until the first unit that
-// introduces executable capability keys lands; the check is in place so that
-// unit is the first held to it rather than the first grandfathered past it.
-var unitCapabilities = map[string][]string{}
+// or the manifest fails to load.
+var unitCapabilities = map[string][]string{
+	// The run controls. The unit claims two things: the fail-closed
+	// discipline, common to all four and implemented by every endpoint
+	// whether or not it supports a single control, and execution, claimed per
+	// control by the endpoints that advertise one above `unavailable`.
+	"run-controls": {
+		protocol.FeatureModelSelection,
+		protocol.FeatureInstructions,
+		protocol.FeatureToolSelection,
+		protocol.FeatureStructuredOutput,
+	},
+}
 
 // honourDeferred names the unit whose corpus carries a key's honour fixture
 // when the key's own unit cannot falsify it yet — a stated deferral rather
-// than a silent gap. Empty until a unit declares one.
+// than a silent gap. Empty: every key registered above is falsifiable in its
+// own unit.
+//
+// run.model_selection was planned as the one deferral, to the models unit,
+// because whether a refused model id was one the endpoint serves is decidable
+// only against a catalog. Its honour fixture did not need to wait for that:
+// the wire assigns every catalog miss to model_not_found, so a refusal of an
+// advertised model_id under unsupported_feature is wrong whatever the id was —
+// either it was servable and owed an admission, or it was not and owed
+// model_not_found. The models unit still adds the catalog-dependent rule; the
+// key is not left unfalsifiable until then.
 var honourDeferred = map[string]string{}
 
 type FixtureOutcome struct {
@@ -144,6 +165,8 @@ func diagnosticCodes() map[string]bool {
 		CodeUnavailableCapability, CodeUnhonouredCapability, CodeStaleCapabilityRevision,
 		CodeCancelNotSettled, CodeUndeclaredReplayGap, CodeUnknownParticipant,
 		CodeSessionStateMismatch,
+		CodeUnappliedControl, CodeUnsatisfiableControl, CodeDegradedWithoutOptin,
+		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {

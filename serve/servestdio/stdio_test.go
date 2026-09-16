@@ -300,9 +300,9 @@ func TestMalformedLinesFailClosed(t *testing.T) {
 // limit; the prior response still fits and is flushed.
 func TestOversizedLineFailsClosed(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
-	f := startFrontend(t, hub, Options{FrameLimit: 1800})
+	f := startFrontend(t, hub, Options{FrameLimit: 3600})
 	f.send(`{"id":1,"op":"adapters"}`)
-	f.send(`{"id":2,"op":"adapters","pad":"` + strings.Repeat("x", 2000) + `"}`)
+	f.send(`{"id":2,"op":"adapters","pad":"` + strings.Repeat("x", 4000) + `"}`)
 	response := f.decodeResponse(f.line())
 	if response.ID != 1 || !response.OK {
 		t.Fatalf("prior response not flushed: %+v", response)
@@ -820,8 +820,8 @@ func TestGoldenSessionTranscript(t *testing.T) {
 // TestGoldenSessionTranscript: minted frontend ids run in request order and
 // the deterministic memory adapter fixes every envelope byte.
 var goldenTranscript = []string{
-	`{"id":1,"ok":true,"result":{"adapters":[{"name":"memory","capability_revision":"reference-memory-v1","capabilities":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"capabilities":{"level":"native"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}}}}]}}`,
-	`{"id":2,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"oap-response-2","payload":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"capabilities":{"level":"native"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}}},"in_reply_to":"oap-request-1","capability_revision":"reference-memory-v1"}}`,
+	`{"id":1,"ok":true,"result":{"adapters":[{"name":"memory","capability_revision":"reference-memory-v1","capabilities":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"capabilities":{"level":"native"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.instructions":{"level":"emulated","reason":"instructions are prepended to the scripted text so their effect is observable"},"run.model_selection":{"level":"emulated","reason":"the reference adapter runs no model; it echoes a selection from a fixed catalog for one run","mode":"per_run"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"run.structured_output":{"level":"emulated","reason":"the scripted result is fixed, so only a schema that object satisfies is admitted","constraints":{"fixed_result":{"ok":true}}},"run.tool_selection":{"level":"emulated","reason":"the policy selects whether the scripted tool is called","modes":["auto","none","required","named"]},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}}}}]}}`,
+	`{"id":2,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"oap-response-2","payload":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"capabilities":{"level":"native"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.instructions":{"level":"emulated","reason":"instructions are prepended to the scripted text so their effect is observable"},"run.model_selection":{"level":"emulated","reason":"the reference adapter runs no model; it echoes a selection from a fixed catalog for one run","mode":"per_run"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"run.structured_output":{"level":"emulated","reason":"the scripted result is fixed, so only a schema that object satisfies is admitted","constraints":{"fixed_result":{"ok":true}}},"run.tool_selection":{"level":"emulated","reason":"the policy selects whether the scripted tool is called","modes":["auto","none","required","named"]},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}}},"in_reply_to":"oap-request-1","capability_revision":"reference-memory-v1"}}`,
 	`{"id":3,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"oap-response-3","payload":{"session_id":"golden","accepted":true,"submission_id":"submission-06","requested_delivery":"auto","effective_delivery":"start","delivery_resolution":"session_idle","admission":"started","run_id":"run-01","status":"running","message_ids":["message-05"]},"in_reply_to":"submit-1","session_id":"golden","run_id":"run-01"}}`,
 	`{"id":4,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"oap-response-4","payload":{"interaction_id":"permission-02","session_id":"golden","run_id":"run-01","accepted":true},"in_reply_to":"resolve-p","session_id":"golden","run_id":"run-01"}}`,
 	`{"id":5,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.resolve.response","id":"oap-response-5","payload":{"interaction_id":"input-03","session_id":"golden","run_id":"run-01","accepted":true},"in_reply_to":"resolve-i","session_id":"golden","run_id":"run-01"}}`,
@@ -989,6 +989,85 @@ func TestSubmitRollsBackUnframableAcknowledgement(t *testing.T) {
 	}
 }
 
+// noControlsAdapter wraps the memory adapter as an endpoint that advertises no
+// per-submit run control, the position most harness adapters hold: every
+// control is refused before admission under its own capability key.
+type noControlsAdapter struct{ inner base.Adapter }
+
+func (a noControlsAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	return a.inner.Probe(ctx)
+}
+
+func (a noControlsAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	entry, err := a.inner.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return noControlsSession{entry}, nil
+}
+
+type noControlsSession struct{ base.Session }
+
+func (s noControlsSession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	if err := base.RefuseUnadvertisedControls(request); err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	return s.Session.Submit(ctx, request)
+}
+
+// TestUnadvertisedControlRefusalKeepsItsWireShape pins what a caller reads off
+// the wire when an endpoint refuses a control it never advertised: the typed
+// unsupported_feature code with the capability key and the reason, not a
+// generic invalid_submission that names neither. The codec must relay the
+// adapter's typed refusal rather than flattening it, and the run must not be
+// admitted behind it.
+func TestUnadvertisedControlRefusalKeepsItsWireShape(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", noControlsAdapter{base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	openSession(t, hub, "controls")
+	f := startFrontend(t, hub, Options{})
+	id := int64(0)
+	for _, control := range []struct {
+		feature string
+		request protocol.MessageSubmitRequest
+	}{
+		{protocol.FeatureInstructions, protocol.MessageSubmitRequest{Instructions: protocol.ControlValue("be terse")}},
+		{protocol.FeatureModelSelection, protocol.MessageSubmitRequest{ModelID: protocol.ControlValue("another-model")}},
+		{protocol.FeatureStructuredOutput, protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object"}`)}},
+		{protocol.FeatureToolSelection, protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`"none"`)}},
+	} {
+		id++
+		request := control.request
+		request.SessionID = "controls"
+		request.Delivery = protocol.DeliveryAuto
+		request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}}
+		f.send(fmt.Sprintf(`{"id":%d,"op":"submit","session_id":"controls","request":`, id) + string(requestEnvelope(t, fmt.Sprintf("submit-%d", id), protocol.TypeSessionMessageSubmitRequest, request, "controls", "")) + `}`)
+		response := f.expectResponse(id)
+		requireCode(t, response, "unsupported_feature")
+		if response.Error.Details["feature"] != control.feature {
+			t.Fatalf("%s: details = %+v, want the capability key", control.feature, response.Error.Details)
+		}
+		if response.Error.Details["reason"] != base.ControlUnadvertised {
+			t.Fatalf("%s: reason = %v, want %q", control.feature, response.Error.Details["reason"], base.ControlUnadvertised)
+		}
+	}
+
+	// Nothing was admitted behind the refusals: the session is still idle, so
+	// a submission carrying no control still starts a run.
+	id++
+	f.send(fmt.Sprintf(`{"id":%d,"op":"submit","session_id":"controls","request":`, id) + string(requestEnvelope(t, "submit-clean", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "controls", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+	}, "controls", "")) + `}`)
+	requireOK(t, f.expectResponse(id))
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 // neverSettlingAdapter wraps the memory adapter so Cancel acknowledges with
 // run.cancelling but cancels nothing: the run stays parked at its gate, the
 // asynchronous worst case the rollback must survive without claiming a
@@ -1048,6 +1127,47 @@ func TestSubmitRollbackWaitsForSettlement(t *testing.T) {
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
 	}, "unsettled", "")) + `}`)
 	requireCode(t, f.expectResponse(2), "run_active")
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// Wire and schema validity are the floor beneath the refusal ladder, not a
+// rung of it: an envelope the protocol cannot read carries no controls to
+// judge, because the bytes in the control positions are not a policy or a
+// selection until the message is one at all. So the frontend validates before
+// it decodes, and a submit that is schema-invalid is answered schema_invalid
+// whatever sits in those positions — the endpoint is never reached, and could
+// not honestly answer about a control it never received. The ordering is
+// deliberate, mirrors the HTTP route one for one, and is the same one the
+// validator keeps: its semantic phase, where every control rule lives, runs
+// only on a trace whose decode and schema phases were clean (decision 0005).
+func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", noControlsAdapter{base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	openSession(t, hub, "floor")
+	f := startFrontend(t, hub, Options{})
+
+	// Schema-invalid (delivery is required) and carrying a control this
+	// endpoint advertises nowhere.
+	f.send(`{"id":1,"op":"submit","session_id":"floor","request":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"submit-floor","session_id":"floor","payload":{"session_id":"floor","messages":[{"role":"user","content":"x"}],"instructions":"be terse"}}}`)
+	requireCode(t, f.expectResponse(1), "schema_invalid")
+
+	// Repair the envelope and the same control is refused under its own key,
+	// so the first answer was about the message and not about the control.
+	f.send(`{"id":2,"op":"submit","session_id":"floor","request":` + string(requestEnvelope(t, "submit-floor-2", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "floor", Delivery: protocol.DeliveryAuto,
+		Instructions: protocol.ControlValue("be terse"),
+		Messages:     []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+	}, "floor", "")) + `}`)
+	response := f.expectResponse(2)
+	requireCode(t, response, "unsupported_feature")
+	if response.Error.Details["feature"] != protocol.FeatureInstructions {
+		t.Fatalf("control refusal details = %+v", response.Error.Details)
+	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}

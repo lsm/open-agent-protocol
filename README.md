@@ -61,6 +61,27 @@ inferred from the input: a live envelope saved to a file is indistinguishable
 from a fixture. `fixtures/packs/storage` is a worked pack, and
 [Decision 0004](decisions/0004-extension-packs.md) specifies the format.
 
+### Run controls (`+run-controls`)
+
+A submission may carry four per-run controls — `model_id`, `instructions`,
+`tool_choice`, and `output_schema` — and each is gated on its own capability
+key. The discipline is fail-closed: a control an endpoint has not
+affirmatively advertised is refused *before* admission with
+`unsupported_feature` naming the key, a `degraded` one needs the caller's
+`allow_degraded_features` opt-in, and one whose value cannot be honoured is
+refused as `unsatisfiable`. Nothing is accepted and ignored, and a refusal
+always says what to change. A request failing more than one of these gets one
+refusal, ranked capability → degradation → unsatisfiability → state.
+
+Execution is claimed per control, only for the keys an endpoint advertises
+above `unavailable`, so an endpoint that supports none of the four still
+claims the unit by refusing all four correctly.
+[Decision 0005](decisions/0005-run-controls.md) graduates the discipline and
+`model_id`: Codex and Makai apply it natively per run
+(`run.model_selection`, mode `per_run`), which means the model binds that run
+alone and `current_model_id` — the model the next control-free submission
+would use — does not move. The reference adapter executes all four.
+
 ### Local daemon (`oap serve`)
 
 `oap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
@@ -269,6 +290,7 @@ Decisions:
 - [0001 — agent-control v0.1 executable core](decisions/0001-agent-control-v0.1-executable-core.md)
 - [0002 — admission before started](decisions/0002-admission-before-start.md)
 - [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (proposed)
+- [0005 — run controls](decisions/0005-run-controls.md) (proposed)
 
 Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:

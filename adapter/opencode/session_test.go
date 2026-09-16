@@ -244,16 +244,28 @@ func submitTest(t *testing.T, session base.Session) (protocol.MessageSubmitRespo
 	return response, stream
 }
 
-// A requested model cannot be applied: the session's model is fixed at creation
-// and the prompt request carries no model, so a per-submit override must be
-// rejected rather than echoed as effective.
-func TestSubmitRejectsUnappliedModelID(t *testing.T) {
+// None of the four run controls has a per-run native surface: the session's
+// model is fixed at creation and the prompt request carries content only. Each
+// must be refused under its own capability key with the typed
+// unsupported-control error rather than a generic rejection that names none of
+// them or an echoed effective model.
+func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	session, _ := openTest(t, newFakeClient(), 32)
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "other-model",
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	}); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported", err)
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
+	for feature, request := range map[string]protocol.MessageSubmitRequest{
+		protocol.FeatureInstructions:     {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
+		protocol.FeatureModelSelection:   {SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("other-model"), Messages: message},
+		protocol.FeatureStructuredOutput: {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
+		protocol.FeatureToolSelection:    {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
+	} {
+		_, _, err := session.Submit(context.Background(), request)
+		var refusal *base.UnsupportedControlError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("%s: got %v, want an *adapter.UnsupportedControlError", feature, err)
+		}
+		if refusal.Feature != feature || refusal.Reason != base.ControlUnadvertised {
+			t.Fatalf("%s: refused as %q/%q", feature, refusal.Feature, refusal.Reason)
+		}
 	}
 }
 

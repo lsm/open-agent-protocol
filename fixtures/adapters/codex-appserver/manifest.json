@@ -15,6 +15,7 @@
     {"id":"user-input","path":"cases/user-input","ledger_fixtures":["user-input"]},
     {"id":"permissions-approval-unsupported","path":"cases/permissions-approval-unsupported","ledger_fixtures":["permissions-approval"]},
     {"id":"duplicate-terminal","path":"cases/duplicate-terminal","ledger_fixtures":["duplicate-terminal"]},
-    {"id":"process-exit","path":"cases/process-exit","ledger_fixtures":["process-exit"]}
+    {"id":"process-exit","path":"cases/process-exit","ledger_fixtures":["process-exit"]},
+    {"id":"model-per-turn","path":"cases/model-per-turn","ledger_fixtures":["model-per-turn"]}
   ]
 }

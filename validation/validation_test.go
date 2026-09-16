@@ -356,7 +356,9 @@ func TestStateSnapshotCannotEraseLiveRun(t *testing.T) {
 	}
 }
 
-// run.started must not attribute the run to a model other than the admitted one.
+// run.started must not attribute the run to a model other than the admitted
+// one: the run was admitted under one model and started under another, which
+// is a control admitted and not applied.
 func TestRunStartedModelMustMatchAdmission(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -365,8 +367,8 @@ func TestRunStartedModelMustMatchAdmission(t *testing.T) {
 		{` + core + `,"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running","model_id":"m1"}},
 		{` + core + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running","model_id":"m2"}}
 	]`
-	if got := v.ValidateBytes([]byte(stream), "run-model-mismatch"); !got.HasCode(CodeIllegalRunTransition) {
-		t.Fatalf("want %s for a conflicting started model: %+v", CodeIllegalRunTransition, got.Diagnostics)
+	if got := v.ValidateBytes([]byte(stream), "run-model-mismatch"); !got.HasCode(CodeUnappliedControl) {
+		t.Fatalf("want %s for a conflicting started model: %+v", CodeUnappliedControl, got.Diagnostics)
 	}
 }
 

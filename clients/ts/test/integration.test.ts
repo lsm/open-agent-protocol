@@ -22,8 +22,10 @@ import {
   payload,
   type Envelope,
   type PermissionRequestedPayload,
+  type RunStartedPayload,
   type UserInputRequestedPayload,
 } from '../src/protocol.js';
+import { ServerError } from '../src/errors.js';
 import { findRepoRoot } from './transport.js';
 
 const repoRoot = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
@@ -90,26 +92,50 @@ test(
     await assert.rejects(client.open('nope'), /unknown_adapter/);
 
     // One session, subscribed before submitting so the run's first envelope
-    // cannot be missed.
+    // cannot be missed. The submission carries a per-submit run control: the
+    // admitted model is echoed on the admission and on run.started, and the
+    // session default does not move, because the application is per_run.
     const session = await client.open('memory', { sessionId: 'ts-integration-a' });
     const events = session.events();
     await events.ready;
     const admission = await session.submit({
       messages: [{ role: 'user', content: 'run the golden script' }],
       delivery: 'auto',
+      model_id: 'reference-model-a',
     });
     assert.equal(admission.accepted, true);
     assert.ok(admission.run_id);
+    assert.equal(admission.model_id, 'reference-model-a');
+
+    // A model outside the endpoint's catalog is a typed refusal naming the id
+    // it could not serve, not a generic invalid submission.
+    await assert.rejects(
+      session.submit({
+        messages: [{ role: 'user', content: 'pick another' }],
+        delivery: 'auto',
+        model_id: 'model-the-catalog-lacks',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ServerError, `want a ServerError, got ${String(error)}`);
+        assert.equal(error.code, 'model_not_found');
+        assert.equal(error.details?.model_id, 'model-the-catalog-lacks');
+        return true;
+      },
+    );
 
     // Consume the run, resolving the scripted gates as they arrive.
     const seen: string[] = [];
     const sequences: number[] = [];
+    let firstEnvelope: Envelope | undefined;
     for await (const envelope of events) {
+      firstEnvelope ??= envelope;
       seen.push(envelope.type);
       sequences.push(envelope.sequence ?? 0);
       await resolveGate(session, envelope);
     }
     assert.equal(seen[0], EnvelopeType.RunStarted);
+    assert.ok(firstEnvelope);
+    assert.equal(payload<RunStartedPayload>(firstEnvelope).model_id, 'reference-model-a');
     assert.equal(seen[seen.length - 1], EnvelopeType.RunCompleted);
     assert.equal(seen.filter((type) => type === EnvelopeType.RunCompleted).length, 1);
     assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => index + 1));

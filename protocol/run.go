@@ -50,14 +50,21 @@ type ContentDeltaPayload struct {
 	Part      ContentPart `json:"part"`
 }
 
+// RunCompletedPayload reports a completed run. ModelID names the model that
+// produced the final response, so a consumer need not correlate back to the
+// admission to see it; under an admitted model_id it may not name another
+// model. Result is raw so presence is preserved exactly as the endpoint
+// emitted it: a map with omitempty drops a valid empty object `{}`, which is a
+// conforming structured result under a schema that requires nothing.
 type RunCompletedPayload struct {
-	SessionID     SessionID      `json:"session_id"`
-	RunID         RunID          `json:"run_id"`
-	FinalResponse Message        `json:"final_response"`
-	StopReason    string         `json:"stop_reason"`
-	Result        map[string]any `json:"result,omitempty"`
-	Usage         *Usage         `json:"usage,omitempty"`
-	DurationMS    int64          `json:"duration_ms,omitempty"`
+	SessionID     SessionID       `json:"session_id"`
+	RunID         RunID           `json:"run_id"`
+	FinalResponse Message         `json:"final_response"`
+	StopReason    string          `json:"stop_reason"`
+	ModelID       string          `json:"model_id,omitempty"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	Usage         *Usage          `json:"usage,omitempty"`
+	DurationMS    int64           `json:"duration_ms,omitempty"`
 }
 
 type RunFailedPayload struct {

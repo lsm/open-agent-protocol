@@ -234,6 +234,26 @@ Core fields:
 delivery modes are capability gated. An implementation that cannot honor them should
 report the feature as degraded or unavailable.
 
+The gate is fail-closed and the refusal is typed. A control an endpoint has
+not affirmatively advertised under its key — `run.model_selection`,
+`run.instructions`, `run.tool_selection`, `run.structured_output` — is refused
+before admission with `unsupported_feature`, `details.feature`, and
+`details.reason: "unadvertised"`; no submission or run identity is allocated.
+A control advertised `degraded` needs its key in `allow_degraded_features`,
+else `capability_degraded`. A control whose value cannot be honored is refused
+as `unsatisfiable`, except a `model_id` outside the effective catalog, which
+is `model_not_found` with `details.model_id`. A control is never accepted and
+ignored, and presence is what the gate judges: a present-but-empty control is
+a control.
+[Decision 0005](../decisions/0005-run-controls.md) graduates that discipline
+for all four controls and the execution of `model_id`, which is applied to the
+run it was requested for and reported on the admission and on `run.started`;
+under `run.model_selection`'s `per_run` mode it leaves `current_model_id`
+unchanged. `instructions`, `tool_choice`, and `output_schema` have frozen
+shapes and reference-adapter execution, with native evidence pending: each
+becomes executable by an amendment to that decision when an adapter advertises
+its key against a pinned ledger.
+
 `tool_choice` is a policy over tools already exposed by the endpoint. The core
 submit request does not mean the control layer normally provides executable tool
 definitions. Control-layer-provided tools or per-run tool-source attachment
@@ -409,6 +429,7 @@ Common optional core features:
 - `session.message.delivery.queue`
 - `session.message.delivery.steer`
 - `session.message.delivery.btw`
+- `run.model_selection`
 - `run.instructions`
 - `run.tool_selection`
 - `run.structured_output`

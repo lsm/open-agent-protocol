@@ -213,7 +213,7 @@ func runMakaiCorpusCase(t *testing.T, root string, entry makaiCorpusManifestCase
 		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
 	}
 	if definition.RetireAfterTerminal {
-		if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: "test", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+		if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("test"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
 			t.Fatalf("submission after session-retiring terminal accepted: %v", err)
 		}
 		if _, err := session.State(context.Background()); !errors.Is(err, base.ErrSessionClosed) {

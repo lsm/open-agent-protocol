@@ -47,6 +47,7 @@ type runState struct {
 	cancelPending  bool
 	cancelInFlight chan struct{}
 	messageID      protocol.MessageID
+	model          string
 	text           string
 	subscribers    []*subscriber
 }
@@ -93,14 +94,36 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
+	// Every control this pin cannot apply is refused before admission under
+	// the key the descriptor advertises `unavailable`, naming what the caller
+	// must stop sending rather than dropping it (decision 0005). The gate runs
+	// ahead of ordinary submission validation because the ladder ranks a
+	// capability refusal above every other: a caller that fixes its messages
+	// and resubmits is refused for the control anyway, so naming the control
+	// first is the answer that saves the round trip. Every adapter here runs
+	// the gate in this position.
+	if err := adapter.RefuseUnadvertisedControls(request, protocol.FeatureModelSelection); err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	// turn/start carries the model per turn, so a requested model is applied
+	// to exactly this run. An empty id is a control the endpoint must refuse,
+	// not an absent one: no catalog can list it, and the native codec would
+	// read it as the configured default.
+	model := session.model
+	if request.ModelID != nil {
+		if *request.ModelID == "" {
+			return protocol.MessageSubmitResponse{}, nil, &adapter.ModelNotFoundError{}
+		}
+		model = *request.ModelID
+	}
 	if request.SessionID != session.state.SessionID || len(request.Messages) == 0 {
 		return protocol.MessageSubmitResponse{}, nil, adapter.ErrInvalidSubmission
 	}
 	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", adapter.ErrInvalidSubmission, request.Delivery)
 	}
-	if request.Instructions != "" || len(request.ToolChoice) != 0 || len(request.OutputSchema) != 0 || len(request.AllowDegradedFeatures) != 0 || len(request.Metadata) != 0 {
-		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: instructions, tool choice, output schema, degraded-feature consent, and metadata are not supported", adapter.ErrInvalidSubmission)
+	if len(request.AllowDegradedFeatures) != 0 || len(request.Metadata) != 0 {
+		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: degraded-feature consent and metadata are not supported", adapter.ErrInvalidSubmission)
 	}
 	input, messageIDs, err := session.nativeInput(request.Messages)
 	if err != nil {
@@ -117,13 +140,11 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	}
 	session.mu.Unlock()
 
-	params := native.TurnStartParams{ThreadID: session.threadID, Input: input, Model: request.ModelID}
-	if params.Model == "" {
-		params.Model = session.model
-	}
+	params := native.TurnStartParams{ThreadID: session.threadID, Input: input, Model: model}
 	run := &runState{
 		id: protocol.RunID(session.ids.NewID("run")), status: protocol.RunQueued,
 		nextSequence: 1, messageID: protocol.MessageID(session.ids.NewID("message")),
+		model: model,
 	}
 	stream := make(chan adapter.Result, liveStreamCapacity+1)
 	run.subscribers = append(run.subscribers, &subscriber{stream: stream})
@@ -133,7 +154,9 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	session.active = run
 	session.state.Status = protocol.SessionQueued
 	session.state.ActiveRunID = run.id
-	session.state.CurrentModelID = params.Model
+	// The model is a per-turn native parameter: it is authoritative for this
+	// run and leaves current_model_id, the model the next control-free
+	// submission would use, at the configured thread model (decision 0005).
 	session.state.UpdatedAtMS = session.clock.Now().UnixMilli()
 	session.mu.Unlock()
 	var nativeResponse native.TurnStartResponse
@@ -184,7 +207,7 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 		DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted,
 		// A started admission reports the running status (decision 0002);
 		// the run's internal state still promotes at run.started.
-		RunID: run.id, Status: protocol.RunRunning, ModelID: params.Model, MessageIDs: messageIDs,
+		RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, MessageIDs: messageIDs,
 	}, stream, nil
 }
 
@@ -739,7 +762,7 @@ func (session *session) onStarted(value native.TurnStartedNotification) {
 	session.state.Status = protocol.SessionRunning
 	session.state.UpdatedAtMS = session.clock.Now().UnixMilli()
 	session.mu.Unlock()
-	_ = session.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: session.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: session.state.CurrentModelID, StartedAtMS: session.clock.Now().UnixMilli()}, false)
+	_ = session.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: session.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, StartedAtMS: session.clock.Now().UnixMilli()}, false)
 }
 
 func (session *session) onDelta(value native.AgentMessageDeltaNotification) {

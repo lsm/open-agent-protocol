@@ -1,0 +1,95 @@
+[
+  {
+    "id": "caps-req",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "controls-v1",
+    "id": "caps-resp",
+    "in_reply_to": "caps-req",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Run-controls fixture endpoint"
+      },
+      "features": {
+        "run.tool_selection": {
+          "level": "emulated",
+          "modes": [
+            "auto",
+            "none",
+            "required",
+            "named"
+          ]
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.message.submit": {
+          "level": "native"
+        },
+        "session.state": {
+          "level": "native"
+        }
+      },
+      "tools": [
+        {
+          "execution_owner": "agent",
+          "input_schema": {
+            "type": "object"
+          },
+          "name": "scripted_tool"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "controls-v1",
+    "id": "submit-req",
+    "payload": {
+      "delivery": "auto",
+      "messages": [
+        {
+          "content": "go",
+          "role": "user"
+        }
+      ],
+      "session_id": "s1",
+      "tool_choice": {
+        "disallowed": [
+          "scripted_tool"
+        ],
+        "mode": "named",
+        "name": "scripted_tool"
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.request",
+    "version": "0.1"
+  },
+  {
+    "id": "err",
+    "in_reply_to": "submit-req",
+    "payload": {
+      "error": {
+        "code": "internal_error",
+        "message": "refused"
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "error.response",
+    "version": "0.1"
+  }
+]
