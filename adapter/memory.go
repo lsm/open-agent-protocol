@@ -235,6 +235,11 @@ type memoryRun struct {
 	// admitted queued as a reservation until its run.started reaches it, and
 	// that is the same test the queue unit's state rules apply.
 	queuedAdmission bool
+	// answered records that Submit has an admission response to return for
+	// this run. Until then the run holds a slot and counts against the
+	// bounds, but nothing has told anyone it was accepted, so a concurrent
+	// state read must not name it.
+	answered bool
 	// pendingInteraction is the gate this run has published and not yet
 	// resolved, which is what an active_runs entry reports.
 	pendingInteraction protocol.InteractionID
@@ -358,6 +363,13 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 			admission.DeliveryResolution = "session_busy"
 		}
 	}
+	// The response exists, so the run stops being provisional: a state read
+	// may name it from here, and everything this adapter emits for it is
+	// emitted after this point.
+	s.mu.Lock()
+	run.answered = true
+	s.refreshStateLocked()
+	s.mu.Unlock()
 	if busy {
 		// Nothing is emitted for a reservation: its run identity is reserved
 		// at admission and its first run-scoped event is either its promotion
@@ -388,7 +400,7 @@ func (s *memorySession) refreshStateLocked() {
 	position := 0
 	var started *memoryRun
 	for _, run := range []*memoryRun{s.active, s.reserved} {
-		if !live(run) {
+		if !live(run) || !run.answered {
 			continue
 		}
 		if !reservationOf(run) {

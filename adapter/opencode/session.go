@@ -108,6 +108,13 @@ type runState struct {
 	// is what the disclosed queue bound counts. A run admitted started is not
 	// in the queue even before its start reaches the trace.
 	queuedAdmission bool
+	// answered records that Submit has an admission response to return for
+	// this run. Until then the run exists only inside this adapter: it holds
+	// a slot and counts against the disclosed bounds, but nothing has told
+	// anyone it was accepted, so a state read must not name it. The prompt
+	// call that settles the admission is a round trip to the server, which is
+	// as wide as such a window gets.
+	answered        bool
 	cancelRequested bool
 	settling        bool
 	messageID       protocol.MessageID
@@ -167,6 +174,10 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	// wire's answer for a second submission is run_active.
 	live, queued := 0, 0
 	for _, r := range []*runState{s.active, s.reserved} {
+		// The bounds count what the session holds, which includes a
+		// provisional run no response has reported yet: it took the slot, and
+		// admitting a second one against the same slot is what the bound is
+		// there to stop.
 		if !published(r) {
 			continue
 		}
@@ -221,7 +232,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	}
 	nativeMessage := native.MessageID(s.ids.NewID("opencode-message"))
 	if !nativeMessage.Valid() {
-		close(run.admitted)
+		s.answerRun(run)
 		s.abandon(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message")
 		return reservation, stream, nil
 	}
@@ -240,7 +251,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.mu.Lock()
 		delete(s.pending, nativeMessage)
 		s.mu.Unlock()
-		close(run.admitted)
+		s.answerRun(run)
 		s.abandon(run, "opencode_admission_ambiguous", err.Error())
 		return reservation, stream, nil
 	}
@@ -248,7 +259,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.mu.Lock()
 		delete(s.pending, nativeMessage)
 		s.mu.Unlock()
-		close(run.admitted)
+		s.answerRun(run)
 		s.abandon(run, "opencode_foreign_admission", fmt.Sprintf("server admitted %s for request %s", admitted.ID, nativeMessage))
 		return reservation, stream, nil
 	}
@@ -278,8 +289,20 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		}
 		s.mu.Unlock()
 	}
-	close(run.admitted)
+	s.answerRun(run)
 	return reservation, stream, nil
+}
+
+// answerRun publishes a run into the session's projection and releases every
+// consumer waiting on its admission. Both happen together because they are one
+// fact: Submit has an answer for this run, so the trace is about to carry it
+// and a state read may name it.
+func (s *session) answerRun(run *runState) {
+	s.mu.Lock()
+	run.answered = true
+	s.refreshStateLocked()
+	s.mu.Unlock()
+	close(run.admitted)
 }
 
 func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native.Delivery, error) {
@@ -342,7 +365,7 @@ func (s *session) refreshStateLocked() {
 	position := 0
 	started := protocol.RunID("")
 	for _, run := range []*runState{s.active, s.reserved} {
-		if !published(run) {
+		if !published(run) || !run.answered {
 			continue
 		}
 		if !reservationOf(run) {

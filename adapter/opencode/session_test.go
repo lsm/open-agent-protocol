@@ -91,6 +91,12 @@ type fakeClient struct {
 	subscribeCtx context.Context
 	prompts      []native.PromptRequest
 	closed       bool
+	// promptGate, when set, holds every Prompt call until it is closed, and
+	// promptEntry reports that one has arrived. The real prompt is a round
+	// trip to the server, which is the window a state read can land in between
+	// a run taking its slot and its admission existing.
+	promptGate  <-chan struct{}
+	promptEntry chan struct{}
 	// idleGate, when set, reports the session as natively active until it is
 	// closed, holding settlement until the corpus has delivered the whole
 	// native stream. The real active set holds a session for one whole agent
@@ -115,6 +121,15 @@ func (f *fakeClient) CreateSession(_ context.Context, _ httpapi.CreateSessionReq
 	}{Created: 1, Updated: 1}, Location: json.RawMessage(`{"directory":"/w"}`)}, nil
 }
 func (f *fakeClient) Prompt(_ context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error) {
+	f.mu.Lock()
+	gate, entry := f.promptGate, f.promptEntry
+	f.mu.Unlock()
+	if entry != nil {
+		entry <- struct{}{}
+	}
+	if gate != nil {
+		<-gate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.promptErr != nil {
@@ -1106,6 +1121,66 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatalf("close after the reservation settled: %v", err)
+	}
+}
+
+// A run that has taken its slot but has no admission response yet exists only
+// inside this adapter. The prompt call that settles the admission is a round
+// trip to the server, and a state read landing in that window used to name the
+// run — a run the trace would carry no admission for, so the snapshot spoke of
+// a run nobody had been told was accepted.
+func TestProvisionalRunIsNotProjectedBeforeItsAdmission(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	gate, entered := make(chan struct{}), make(chan struct{}, 1)
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	// A failed assertion must not leave the submission parked on the gate:
+	// Fatalf runs this goroutine's defers, and the parked one would otherwise
+	// hold the test binary open past its deadline.
+	defer release()
+	client.mu.Lock()
+	client.promptGate, client.promptEntry = gate, entered
+	client.mu.Unlock()
+	session, _ := openTest(t, client, 64)
+
+	admitted := make(chan protocol.MessageSubmitResponse, 1)
+	go func() {
+		defer close(admitted)
+		response, _, err := session.Submit(context.Background(), autoRequest("hello"))
+		if err == nil {
+			admitted <- response
+		}
+	}()
+
+	// The prompt is in flight, so the run has its slot and its identity and
+	// nothing else. Submit holds its own lock for the whole call, so a second
+	// submission cannot observe the slot from here — what a caller can reach
+	// in this window is exactly the state read.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the prompt never reached the client")
+	}
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != protocol.SessionIdle || state.ActiveRunID != "" || len(state.ActiveRuns) != 0 {
+		t.Fatalf("a run with no admission response was projected: %s / %q / %+v", state.Status, state.ActiveRunID, state.ActiveRuns)
+	}
+
+	release()
+	response, ok := <-admitted
+	if !ok {
+		t.Fatal("the submission failed")
+	}
+	state, err = session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 1 || state.ActiveRuns[0].RunID != response.RunID {
+		t.Fatalf("the admitted run is not projected: %+v", state.ActiveRuns)
 	}
 }
 
