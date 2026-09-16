@@ -86,10 +86,13 @@ would use — does not move. The reference adapter executes all four.
 
 A session publishes the models it can run, and is bound by the listing in both
 directions: an id the catalog omits is refused `model_not_found` naming it, and
-an id it lists may not be. A catalog that accepts an unlisted model, refuses a
-listed one, or refuses an unlisted one under a code the caller cannot act on is
-diagnosed the same way — `model_not_in_catalog` — because each leaves a picker
-built on the listing unable to trust it.
+an id it lists is never reported missing. A catalog that accepts an unlisted
+model, answers `model_not_found` for a listed one, or refuses an unlisted one
+under a code the caller cannot act on is diagnosed the same way —
+`model_not_in_catalog` — because each leaves a picker built on the listing
+unable to trust it. A listed selection may still be refused for reasons that
+are not about the model at all — a busy session, another control — and those
+refusals are left alone.
 
 The catalog belongs to the capability revision it was served under: a refresh
 discards it, and within one revision it may not move without a

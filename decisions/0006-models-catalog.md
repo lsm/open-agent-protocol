@@ -59,6 +59,19 @@ which one to stop sending, and `internal_error` tells it nothing at all. Both
 are diagnosed, so the adapter that swallows a catalog miss behind an
 undiagnosable failure is treated exactly as the one that accepts it.
 
+The two directions are deliberately not symmetric about the refusal's code, and
+the asymmetry is the point rather than an oversight. A submission naming an
+unlisted id carries a defect the caller must fix, so the endpoint owes an answer
+that names it and every other code is judged. A submission naming a listed id
+carries no defect at all — and a request without a defect is owed no particular
+answer. It may still be refused because a run is active, because another
+control's gate fired, or because the endpoint simply failed, and none of those
+is a statement about the catalog. What the listed direction forbids is the one
+answer that contradicts the listing: `model_not_found` for an id the endpoint
+itself published. A rule that diagnosed *any* refusal of a listed id would make
+a busy session a catalog defect, and would contradict the run-controls rule
+that a refusal which is not about a control is left alone.
+
 ### The rule stands down where selection is not advertised
 
 An endpoint may serve a catalog and apply no per-submit selection — OpenCode is
@@ -111,6 +124,25 @@ stability rule —
 answer `capabilities.request` between two listings and the change is never
 announced and never diagnosed — which is the whole of what the rule exists to
 catch (`models-catalog-mutates-across-refetch`).
+
+What the rule catches is an *unannounced* change, so an announced one is exempt
+and must be. After `capabilities.updated` the active revision has already
+advanced while the trace's features still describe the descriptor being
+replaced, so the mandatory refresh that follows would otherwise be compared
+against the outgoing descriptor under what looks like one revision — reporting
+the very announcement that made the change legitimate. An outgoing descriptor
+already invalidated by an update is that case, and nothing it said is compared
+(`models-announced-advertisement-change`).
+
+The same window has another side. Between the announcement and the descriptor
+that resolves it the revision is the new one but what the trace knows about
+`models.list` is still the old one's, so a catalog arriving there is refused by
+its gate for want of a current descriptor and takes no authority from the
+window: recording it would bind — or not bind — a listing on a level the new
+descriptor has not stated yet, and it could then govern submissions under a
+descriptor that advertises the key degraded or not at all
+(`models-catalog-in-the-announce-window`). A catalog is recorded only under a
+revision whose descriptor is actually in hand.
 
 That argument has a sharp edge, and it is taken rather than avoided: the same
 identity makes a same-revision response that *changes* `models.list` the
@@ -189,6 +221,14 @@ any run on the endpoint. Where the position is this session's and the catalog
 claims no model at it there is nothing further to judge, which is a valid
 catalog and not a silence to diagnose
 (`models-position-without-current-model`).
+
+Ownership being the whole of what such a catalog claims, it is settled the
+moment the run appears — whatever sequence that run reaches, and whatever model
+the named event turns out to record. Reading the mark at the position and
+comparing it against an absent claim would diagnose a catalog that the same
+endpoint, sending the same bytes after the event rather than before it, gets
+validated: arrival order would decide conformance
+(`models-held-position-no-model-at-a-mark`).
 
 A nonempty `current_model_id` must also name one of the response's own ids. A
 picker shown a current model the catalog does not describe could not resolve

@@ -308,12 +308,16 @@ An implementation:
 - admits a `model_id` the catalog lists and refuses one it omits with
   `model_not_found` and `details.model_id` (`models-list-then-select`,
   `models-unlisted-selection-refused`). Admitting an unlisted id
-  (`models-select-unlisted`), refusing a listed one
+  (`models-select-unlisted`), answering `model_not_found` for a listed one
   (`models-listed-selection-false-miss`), or refusing an unlisted one under
   another code or without the detail
   (`models-unlisted-selection-wrong-refusal`,
   `models-unlisted-selection-missing-detail`) are each
-  `model_not_in_catalog`. A selection made before the first catalog under the
+  `model_not_in_catalog`. A listed selection refused under a code that makes
+  no claim about the model — a busy session, another control's gate, an
+  ordinary failure — is not a catalog defect and is not judged here: a valid
+  selection obliges no admission, only an answer that does not deny the id
+  exists. A selection made before the first catalog under the
   active revision is settled by it on the same terms
   (`models-refused-before-catalog`, `models-select-in-gap-unlisted`).
 
