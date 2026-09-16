@@ -17,21 +17,21 @@
       "ungated": true
     },
     {
-      "payload_type": "com.example.twice.ping",
+      "payload_type": "run.completed",
       "member": "com.example.twice.extra",
       "ungated": true
     }
   ],
   "payload_members": [
     {
-      "payload_type": "com.example.twice.ping",
+      "payload_type": "run.completed",
       "member": "com.example.twice.extra",
       "schema": {
         "type": "string"
       }
     },
     {
-      "payload_type": "com.example.twice.ping",
+      "payload_type": "run.completed",
       "member": "com.example.twice.extra",
       "schema": {
         "type": "integer"
