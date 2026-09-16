@@ -95,6 +95,7 @@ const samples: PayloadSample[] = [
       'run.tool_selection': { level: 'emulated', modes: ['auto', 'named'] },
       'run.structured_output': { level: 'emulated', constraints: { fixed_result: { ok: true } } },
     },
+    limits: { max_active_runs_per_session: 2, max_queued_runs_per_session: 1 },
     layers: {
       core: {
         features: { 'session.open': { level: 'native', reason: 'because', mode: 'direct' } },
@@ -143,11 +144,42 @@ const samples: PayloadSample[] = [
     session_id: 's-1',
     status: 'running',
     active_run_id: 'r-1',
+    active_runs: [
+      { run_id: 'r-1', status: 'running', relationship: 'primary', as_of_sequence: 4, pending_interactions: ['i-1'] },
+      { run_id: 'r-2', status: 'queued', relationship: 'primary', queue_position: 1, admitted_submit_requests: ['e-9'] },
+    ],
     current_model_id: 'model-a',
     transcript_cursor: '12',
     updated_at_ms: 1700000000000,
     metadata: { origin: 'test' },
     recovery: { recovered: false },
+    as_of: {
+      admitted_submit_requests: ['e-9'],
+      settled: [{ run_id: 'r-0', sequence: 7 }],
+      model_run_sequence: { run_id: null, sequence: 0 },
+    },
+  }),
+  sample<protocol.ActiveRun>('ActiveRun', 'session.schema.json', 'activeRun', {
+    run_id: 'r-2',
+    status: 'queued',
+    relationship: 'primary',
+    queue_position: 1,
+    as_of_sequence: 0,
+    admitted_submit_requests: ['e-9'],
+    pending_interactions: ['i-1'],
+  }),
+  sample<protocol.SessionCapture>('SessionCapture', 'session.schema.json', 'sessionCapture', {
+    admitted_submit_requests: ['e-9'],
+    settled: [{ run_id: 'r-0', sequence: 7 }],
+    model_run_sequence: { run_id: 'r-1', sequence: 3 },
+  }),
+  sample<protocol.SettledRun>('SettledRun', 'session.schema.json', 'settledRun', {
+    run_id: 'r-0',
+    sequence: 7,
+  }),
+  sample<protocol.RunPosition>('RunPosition', 'session.schema.json', 'runPosition', {
+    run_id: 'r-1',
+    sequence: 3,
   }),
   sample<protocol.SessionStateRequest>('SessionStateRequest', 'session.schema.json', 'stateRequest', {
     session_id: 's-1',
