@@ -27,6 +27,24 @@ type Session interface {
 	Close(context.Context) error
 }
 
+// Catalog is one session's model listing together with the capability
+// revision that governs it.
+//
+// The two travel together because they are one answer. The catalog is part of
+// the capability snapshot, so a listing is only meaningful under the revision
+// it was produced within, and a caller stamping a revision it read separately
+// is labelling the catalog with a descriptor it may not have come from: on an
+// endpoint whose capabilities can update, the revision can move between the
+// two reads and nothing downstream would know. Only the session can say which
+// descriptor it served this listing under, so it says it.
+type Catalog struct {
+	// Revision is the capability revision this listing belongs to. An empty
+	// one is a catalog nothing can bind, and is refused rather than served.
+	Revision string
+	// Models is the served catalog.
+	Models protocol.ModelsResponse
+}
+
 // ModelLister is the optional session capability for the session-scoped model
 // catalog (unit `models`). It is discovered by type assertion rather than
 // added to Session, so every existing implementation compiles unchanged and a
@@ -37,7 +55,7 @@ type Session interface {
 // serving a degraded catalog applies the opt-in rule itself: the consent is
 // per request, and only the adapter knows what its catalog costs.
 type ModelLister interface {
-	Models(context.Context, protocol.ModelsRequest) (protocol.ModelsResponse, error)
+	Models(context.Context, protocol.ModelsRequest) (Catalog, error)
 }
 
 // EventStream carries either an envelope or an error in one ordered channel.

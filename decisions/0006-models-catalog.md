@@ -141,6 +141,18 @@ judged at that point; where the trace has not reached that point the claim is
 held and reconciled when the event arrives, because an endpoint reporting
 knowledge the trace lacks is ahead of it, not wrong.
 
+A position is a claim about one session's model, so it can only name that
+session's own runs. The run map is the endpoint's, not the session's, so a
+catalog for one session naming a run in another is `scope_mismatch` and the
+claim it carried is not read: without that check such a position passes the
+ordinary window comparison when the foreign run is complete, and escapes
+judgement entirely when it is still ahead, because a held claim is revisited
+through the run's own session (`models-position-in-another-session`,
+`models-held-position-in-another-session`). Ownership is decided when the run
+appears rather than when the catalog does, since a catalog may legitimately
+name a run the trace has not reached — which is the whole reason positions are
+held.
+
 A nonempty `current_model_id` must also name one of the response's own ids. A
 picker shown a current model the catalog does not describe could not resolve
 it, and re-selecting the same id would be refused by the catalog rule, so the
@@ -167,11 +179,24 @@ is byte-identical to one made before the option existed.
 
 ### A served catalog travels with the revision that governs it
 
-Both codecs stamp the response's `capability_revision` from the hosted
-adapter's descriptor, read before the adapter is asked, so a catalog is either
-labelled correctly or not served at all. Both clients return it beside the
-listing rather than the payload alone — `client.Catalog`, `Catalog` in
-`clients/ts`, mirroring what `Capabilities` already returns.
+`adapter.ModelLister` returns `adapter.Catalog` — the listing and the revision
+that governs it — and both codecs stamp the response from it. Both clients
+return it beside the listing rather than the payload alone: `client.Catalog`,
+`Catalog` in `clients/ts`, mirroring what `Capabilities` already returns.
+
+The revision travels *with* the listing rather than beside it because the
+alternative cannot be made correct. Reading the descriptor and then asking for
+a catalog is two reads, and on an endpoint whose capabilities can update the
+revision moves between them: the daemon then labels a new-revision catalog with
+the old descriptor's revision, which is precisely the miscaching the label
+exists to prevent. Probing again afterwards and comparing would narrow that
+window rather than close it, at the cost of an extra probe per call and a
+failure mode — refuse, or retry — for a race the session never had. Only the
+session knows which descriptor it served a listing under, so the contract asks
+it. That also matches what every adapter here already does with the revision on
+the events it emits; a catalog was the one payload the daemon was labelling on
+the adapter's behalf. A listing that comes back with no revision is refused by
+the hub rather than labelled from elsewhere.
 
 The alternative is worse than it looks. A caller holding only the payload
 cannot tell which `models.list` promise it read, cannot cache the listing
@@ -198,6 +223,9 @@ refused under the ordinary gate rather than answered with an empty list: an
 endpoint that lists nothing and an endpoint that cannot list are different
 answers to the same question, and collapsing them would let a hub advertise a
 catalog no adapter serves.
+
+Its one method returns `Catalog`, not the payload alone, for the reason above:
+a listing and the revision it belongs to are one answer.
 
 ## Evidence
 

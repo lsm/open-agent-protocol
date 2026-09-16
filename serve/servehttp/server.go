@@ -454,35 +454,25 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The catalog is part of the capability snapshot, so the response names
-	// the revision whose models.list promise governs it: a consumer binds the
-	// listing to that revision and discards it on a refresh, and a catalog
-	// citing no revision is one the validator's own gate rejects. The
-	// descriptor is read before the adapter is asked, so a catalog is either
-	// labelled correctly or not served at all.
-	descriptor, err := s.hub.Probe(r.Context(), entry.Adapter())
-	if err != nil {
-		status, code := http.StatusInternalServerError, "probe_failed"
-		if errors.Is(err, serve.ErrUnknownAdapter) {
-			status, code = http.StatusNotFound, "unknown_adapter"
-		}
-		s.writeError(w, status, code, adapterMessage(err), protocol.Envelope{SessionID: entry.ID()})
-		return
-	}
 	request := protocol.ModelsRequest{SessionID: entry.ID(), AllowDegradedFeatures: r.URL.Query()["allow_degraded"]}
 	catalog, err := entry.Models(r.Context(), request)
 	if err != nil {
 		s.writeModelsError(w, err, protocol.Envelope{SessionID: entry.ID()})
 		return
 	}
-	response, err := protocol.NewEnvelope(protocol.TypeModelsResponse, s.nextID("response"), catalog)
+	response, err := protocol.NewEnvelope(protocol.TypeModelsResponse, s.nextID("response"), catalog.Models)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), protocol.Envelope{SessionID: entry.ID()})
 		return
 	}
 	response.InReplyTo = s.nextID("request")
-	response.SessionID = catalog.SessionID
-	response.CapabilityRevision = descriptor.CapabilityRevision
+	response.SessionID = catalog.Models.SessionID
+	// The revision comes back with the listing rather than from a descriptor
+	// read at another moment: on an endpoint whose capabilities can update, a
+	// separately probed revision can already be the wrong one by the time the
+	// catalog is produced, and the label is the whole of what makes the
+	// listing cacheable.
+	response.CapabilityRevision = catalog.Revision
 	writeEnvelope(w, http.StatusOK, response)
 }
 

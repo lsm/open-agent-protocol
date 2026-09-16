@@ -36,12 +36,17 @@ func TestModelsRequiresTheDegradedOptin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if catalog.SessionID != "session" || catalog.CurrentModelID != "anthropic/claude-sonnet" {
-		t.Fatalf("catalog: %+v", catalog)
+	// The listing comes back labelled with the revision it was produced
+	// under, so nothing downstream has to pair it with a separate probe.
+	if catalog.Revision != CapabilityRevision {
+		t.Fatalf("catalog cites revision %q, want %q", catalog.Revision, CapabilityRevision)
 	}
-	if len(catalog.Models) != 1 || catalog.Models[0].ID != "anthropic/claude-sonnet" ||
-		catalog.Models[0].ProviderID != "anthropic" || !catalog.Models[0].Default {
-		t.Fatalf("descriptors: %+v", catalog.Models)
+	if catalog.Models.SessionID != "session" || catalog.Models.CurrentModelID != "anthropic/claude-sonnet" {
+		t.Fatalf("catalog: %+v", catalog.Models)
+	}
+	if len(catalog.Models.Models) != 1 || catalog.Models.Models[0].ID != "anthropic/claude-sonnet" ||
+		catalog.Models.Models[0].ProviderID != "anthropic" || !catalog.Models.Models[0].Default {
+		t.Fatalf("descriptors: %+v", catalog.Models.Models)
 	}
 }
 
@@ -62,8 +67,8 @@ func TestCatalogGrowsWithDurableStepEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(empty.Models) != 0 || empty.CurrentModelID != "" {
-		t.Fatalf("a session with no model evidence served %+v", empty)
+	if len(empty.Models.Models) != 0 || empty.Models.CurrentModelID != "" {
+		t.Fatalf("a session with no model evidence served %+v", empty.Models)
 	}
 
 	response, stream := submitTest(t, session)
@@ -91,14 +96,14 @@ func TestCatalogGrowsWithDurableStepEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Models) != 1 || catalog.Models[0].ID != "p/m" || catalog.Models[0].ProviderID != "p" {
-		t.Fatalf("two steps naming one model produced %+v", catalog.Models)
+	if len(catalog.Models.Models) != 1 || catalog.Models.Models[0].ID != "p/m" || catalog.Models.Models[0].ProviderID != "p" {
+		t.Fatalf("two steps naming one model produced %+v", catalog.Models.Models)
 	}
 	// The session holds no default of its own, so the catalog claims none:
 	// an accepted model_id is what a run attributes to, and nothing here has
 	// told the session which model it would otherwise use.
-	if catalog.CurrentModelID != "" || catalog.Models[0].Default {
-		t.Fatalf("a session with no default claimed one: %+v", catalog)
+	if catalog.Models.CurrentModelID != "" || catalog.Models.Models[0].Default {
+		t.Fatalf("a session with no default claimed one: %+v", catalog.Models)
 	}
 }
 

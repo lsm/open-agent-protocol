@@ -440,7 +440,7 @@ func assertOpenCodeCatalog(t *testing.T, session base.Session, filename string) 
 	var expected protocol.ModelsResponse
 	opencodeDecodeStrict(t, stored, &expected, filename)
 	want, _ := json.Marshal(expected)
-	got, _ := json.Marshal(catalog)
+	got, _ := json.Marshal(catalog.Models)
 	if !bytes.Equal(want, got) {
 		t.Fatalf("catalog mismatch\nwant: %s\n got: %s", want, got)
 	}

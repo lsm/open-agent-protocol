@@ -821,20 +821,20 @@ func (s *session) observeModel(model string) {
 // steps are observed. A caller must consent to that through
 // allow_degraded_features, exactly as the run-controls discipline requires,
 // or the query is refused.
-func (s *session) Models(ctx context.Context, request protocol.ModelsRequest) (protocol.ModelsResponse, error) {
+func (s *session) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
 	if err := ctx.Err(); err != nil {
-		return protocol.ModelsResponse{}, err
+		return base.Catalog{}, err
 	}
 	if !request.AllowsDegraded(protocol.FeatureModelsList) {
-		return protocol.ModelsResponse{}, &base.DegradedControlError{Feature: protocol.FeatureModelsList}
+		return base.Catalog{}, &base.DegradedControlError{Feature: protocol.FeatureModelsList}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.unusable {
-		return protocol.ModelsResponse{}, base.ErrSessionClosed
+		return base.Catalog{}, base.ErrSessionClosed
 	}
 	if request.SessionID != "" && request.SessionID != s.state.SessionID {
-		return protocol.ModelsResponse{}, base.ErrRunNotFound
+		return base.Catalog{}, base.ErrRunNotFound
 	}
 	catalog := protocol.ModelsResponse{SessionID: s.state.SessionID, CurrentModelID: s.state.CurrentModelID}
 	for _, model := range s.models {
@@ -846,7 +846,10 @@ func (s *session) Models(ctx context.Context, request protocol.ModelsRequest) (p
 		}
 		catalog.Models = append(catalog.Models, descriptor)
 	}
-	return catalog, nil
+	// The revision is read with the listing rather than paired with a
+	// descriptor probed separately: this adapter's is fixed, but the contract
+	// is the one an adapter whose descriptor moves can also keep.
+	return base.Catalog{Revision: CapabilityRevision, Models: catalog}, nil
 }
 
 func (s *session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {

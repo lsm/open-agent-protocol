@@ -138,20 +138,28 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 // adapter does not serve a catalog is refused rather than answered with an
 // empty one: an endpoint that lists nothing and an endpoint that cannot list
 // are different answers to the same question.
-func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (protocol.ModelsResponse, error) {
+func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
 	if request.SessionID != "" && request.SessionID != s.id {
-		return protocol.ModelsResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+		return base.Catalog{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
 	}
 	request.SessionID = s.id
 	lister, ok := s.session.(base.ModelLister)
 	if !ok {
-		return protocol.ModelsResponse{}, &base.UnsupportedControlError{
+		return base.Catalog{}, &base.UnsupportedControlError{
 			Feature: protocol.FeatureModelsList, Reason: base.ControlUnadvertised,
 		}
 	}
 	catalog, err := lister.Models(ctx, request)
 	if errors.Is(err, base.ErrSessionClosed) {
 		s.markClosed()
+	}
+	if err == nil && catalog.Revision == "" {
+		// A listing nothing can bind to a descriptor is worse than none: a
+		// consumer would cache it under no revision and never know when to
+		// discard it, and the validator's own gate rejects the envelope. The
+		// adapter is at fault, so the hub refuses rather than inventing a
+		// revision from a descriptor it read at another moment.
+		return base.Catalog{}, errors.New("serve: adapter served a model catalog with no capability revision")
 	}
 	return catalog, err
 }

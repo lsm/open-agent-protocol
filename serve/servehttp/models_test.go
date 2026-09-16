@@ -127,6 +127,97 @@ func TestModelsRouteRefusesAnAdapterWithoutACatalog(t *testing.T) {
 	}
 }
 
+// The revision a catalog carries is the one its lister produced it under, not
+// one the daemon read from a descriptor at some other moment. An adapter whose
+// capabilities can update moves between the two reads, and a listing labelled
+// with the older revision is one a client caches against the wrong models.list
+// promise — the exact property the label exists to provide.
+func TestModelsRouteStampsTheListersRevision(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("moving", &movingLister{revision: "moved-past-the-probe"}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	openSession(t, server, "moving", "moving")
+
+	response, err := server.Client().Get(server.URL + "/sessions/moving/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d: %s", response.StatusCode, data)
+	}
+	envelope, err := protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.CapabilityRevision != "moved-past-the-probe" {
+		t.Fatalf("catalog cites revision %q, want the one its lister produced it under", envelope.CapabilityRevision)
+	}
+	if envelope.CapabilityRevision == base.CapabilityRevision {
+		t.Fatal("catalog cites the probed descriptor's revision rather than the listing's")
+	}
+}
+
+// A listing nothing can bind to a descriptor is worse than none: a consumer
+// would cache it under no revision and never know when to discard it, and the
+// validator's own gate rejects the envelope. The hub refuses rather than
+// inventing a label.
+func TestModelsRouteRefusesAnUnlabelledCatalog(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("unlabelled", &movingLister{}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	openSession(t, server, "unlabelled", "unlabelled")
+
+	response, err := server.Client().Get(server.URL + "/sessions/unlabelled/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	envelope, err := protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireErrorResponse(t, response.StatusCode, http.StatusInternalServerError, envelope, "internal")
+}
+
+// movingLister probes as the reference adapter but serves its catalog under a
+// revision of its own, standing in for an adapter whose descriptor moved
+// between the two reads. An empty revision stands in for one that labels
+// nothing at all.
+type movingLister struct{ revision string }
+
+func (a *movingLister) Probe(ctx context.Context) (base.Descriptor, error) {
+	return base.NewMemory(base.Config{}).Probe(ctx)
+}
+
+func (a *movingLister) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	session, err := base.NewMemory(base.Config{}).Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return &movingSession{Session: session, revision: a.revision}, nil
+}
+
+type movingSession struct {
+	base.Session
+	revision string
+}
+
+func (s *movingSession) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
+	catalog, err := s.Session.(base.ModelLister).Models(ctx, request)
+	if err != nil {
+		return base.Catalog{}, err
+	}
+	catalog.Revision = s.revision
+	return catalog, nil
+}
+
 // recordingLister is the reference adapter with one addition: it records the
 // catalog request it was handed, so a test can see what crossed the boundary
 // rather than only what came back.
@@ -161,7 +252,7 @@ type recordingSession struct {
 	adapter *recordingLister
 }
 
-func (s *recordingSession) Models(ctx context.Context, request protocol.ModelsRequest) (protocol.ModelsResponse, error) {
+func (s *recordingSession) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
 	s.adapter.mu.Lock()
 	s.adapter.requests = append(s.adapter.requests, request)
 	s.adapter.mu.Unlock()

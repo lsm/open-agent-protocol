@@ -396,22 +396,27 @@ func modelCatalog() []protocol.ModelDescriptor {
 // session default: a per_run selection binds its own run and leaves the
 // default alone, and a session that has never been told which model to use has
 // none to report. The default descriptor says which one it would pick.
-func (s *memorySession) Models(ctx context.Context, request protocol.ModelsRequest) (protocol.ModelsResponse, error) {
+func (s *memorySession) Models(ctx context.Context, request protocol.ModelsRequest) (Catalog, error) {
 	if err := ctx.Err(); err != nil {
-		return protocol.ModelsResponse{}, err
+		return Catalog{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return protocol.ModelsResponse{}, ErrSessionClosed
+		return Catalog{}, ErrSessionClosed
 	}
 	if request.SessionID != "" && request.SessionID != s.state.SessionID {
-		return protocol.ModelsResponse{}, fmt.Errorf("%w: catalog query names session %q", ErrInvalidSubmission, request.SessionID)
+		return Catalog{}, fmt.Errorf("%w: catalog query names session %q", ErrInvalidSubmission, request.SessionID)
 	}
-	return protocol.ModelsResponse{
-		SessionID:      s.state.SessionID,
-		CurrentModelID: s.state.CurrentModelID,
-		Models:         modelCatalog(),
+	// The revision is read here, with the listing, rather than left for a
+	// caller to pair with a descriptor it probed separately.
+	return Catalog{
+		Revision: CapabilityRevision,
+		Models: protocol.ModelsResponse{
+			SessionID:      s.state.SessionID,
+			CurrentModelID: s.state.CurrentModelID,
+			Models:         modelCatalog(),
+		},
 	}, nil
 }
 
