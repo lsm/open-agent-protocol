@@ -31,6 +31,8 @@ const (
 	TypeCapabilitiesRequest             EnvelopeType = "capabilities.request"
 	TypeCapabilitiesResponse            EnvelopeType = "capabilities.response"
 	TypeCapabilitiesUpdated             EnvelopeType = "capabilities.updated"
+	TypeModelsRequest                   EnvelopeType = "models.request"
+	TypeModelsResponse                  EnvelopeType = "models.response"
 	TypeSessionOpenRequest              EnvelopeType = "session.open.request"
 	TypeSessionOpenResponse             EnvelopeType = "session.open.response"
 	TypeSessionStateRequest             EnvelopeType = "session.state.request"
