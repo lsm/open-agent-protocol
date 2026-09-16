@@ -83,17 +83,13 @@ func toolSourceMap(sources []protocol.ToolSourceDescriptor) (map[string]protocol
 // descriptorSources normalizes a capability descriptor's declared sources: its
 // top-level `sources` and every layer's, since a valid descriptor may declare
 // them under a layer alone, exactly as its catalog may be published there.
+//
+// The normalization itself lives in protocol beside EffectiveSupport's, so the
+// validator, the daemon, and the test kit all read a layered descriptor the
+// same way. This wrapper stays because the phase's callers hold a
+// CapabilitiesResponse rather than a descriptor.
 func descriptorSources(p protocol.CapabilitiesResponse) []protocol.ToolSourceDescriptor {
-	sources := append([]protocol.ToolSourceDescriptor(nil), p.Sources...)
-	layers := make([]string, 0, len(p.Layers))
-	for name := range p.Layers {
-		layers = append(layers, name)
-	}
-	sort.Strings(layers)
-	for _, name := range layers {
-		sources = append(sources, p.Layers[name].Sources...)
-	}
-	return sources
+	return protocol.CapabilityDescriptor(p).EffectiveSources()
 }
 
 // descriptorTools normalizes a descriptor's effective catalog entries, the way

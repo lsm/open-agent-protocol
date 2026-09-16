@@ -484,7 +484,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 				if !bytes.Equal(got, want) {
 					t.Fatalf("frame %d: projected catalog\n got: %s\nwant: %s", i+1, got, want)
 				}
-				adaptertest.AssertToolCatalog(t, execution.descriptor, nil, request, catalog)
+				adaptertest.AssertToolCatalog(t, execution.descriptor, protocol.SessionOpenRequest{}, request, catalog)
 				execution.catalogs = append(execution.catalogs, catalog.Tools)
 				// From here the session has published this catalog, so a later
 				// run's calls are judged against it rather than the descriptor.

@@ -128,7 +128,13 @@ operator's own MCP server in the catalog a user reads would be spoofing it, one
 that could set its `kind` would choose how it is reached, and overwriting either
 silently would leave the request and its response disagreeing about one source.
 The bare-`NAME` allowlist form is the only `environment` a wire caller may
-write. A configured `id` resolves to the operator's source whatever the caller
+write. An attaching open must also cite the descriptor it elected against:
+`capability_revision` on the open envelope has to equal the endpoint's current
+one, or the route answers `stale_capabilities` with `expected_revision` and
+`current_revision`. That is the core profile's rule for any envelope exercising
+an optional feature rather than a rule of this route's own, and both clients
+read the descriptor and cite it — one extra request, on attaching opens only.
+An open that attaches nothing elects nothing and is not gated. A configured `id` resolves to the operator's source whatever the caller
 claims about it, so an open that names an id alone gets a fuller descriptor back
 than it sent, and never a different one.
 Beside that, every route refuses a request bearing an `Origin` header, and the

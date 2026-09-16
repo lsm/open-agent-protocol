@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -49,7 +50,9 @@ func TestReferenceCatalogResolvesEverySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.AssertToolCatalog(t, descriptor, []protocol.ToolSourceAttachment{attachment}, request, catalog)
+	adaptertest.AssertToolCatalog(t, descriptor, protocol.SessionOpenRequest{
+		SessionID: "tool-sources", ToolSources: []protocol.ToolSourceAttachment{attachment},
+	}, request, catalog)
 
 	// The published projection is the point: the attachment's command and its
 	// environment allowlist never reach a client.
@@ -247,4 +250,108 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 	if !attached {
 		t.Fatalf("the session catalog dropped the attachment: %+v", scoped.Tools.Sources)
 	}
+}
+
+// TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows holds the test kit to
+// the standard it exists to enforce. A helper whose whole purpose is to certify
+// conforming adapters convicting one is worse than a helper that certifies
+// nothing: the adapter's author reads a defect the endpoint does not have, and
+// the honest fix looks like a regression.
+//
+// Neither shape below is exercised by any adapter in this repository — none is
+// a degraded-attachment endpoint and none declares its sources under a layer —
+// which is exactly why the suite passed over both. The cases are synthetic for
+// that reason, not for convenience.
+func TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows(t *testing.T) {
+	const revision = "kit-fixture-v1"
+	files := protocol.ToolSourceDescriptor{
+		ID: "files", Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
+		DisplayName: "Filesystem", Endpoint: "stdio:filesystem",
+	}
+	native := protocol.ToolSourceDescriptor{ID: "native", Kind: protocol.ToolSourceNative, DisplayName: "Harness tools"}
+	base := func() map[string]protocol.FeatureSupport {
+		return map[string]protocol.FeatureSupport{
+			"session.open":                  {Level: protocol.SupportNative},
+			"session.state":                 {Level: protocol.SupportNative},
+			"session.message.submit":        {Level: protocol.SupportNative},
+			"session.message.delivery.auto": {Level: protocol.SupportNative},
+			"action.tools.list":             {Level: protocol.SupportNative},
+		}
+	}
+	catalog := adapter.ToolCatalog{Revision: revision, Tools: protocol.ToolsListResponse{
+		SessionID: "kit",
+		Sources:   []protocol.ToolSourceDescriptor{native, files},
+		Tools: []protocol.ToolDefinition{{
+			Name: "grep", Source: "native", ExecutionOwner: "agent",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+	}}
+	attachment := protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess}
+	list := protocol.ToolsListRequest{SessionID: "kit"}
+
+	t.Run("a degraded attachment the caller consented to", func(t *testing.T) {
+		// The open the caller actually made carries the consent. The helper
+		// used to synthesize an open from the attachments alone, so it could
+		// not carry one, and every conforming degraded-attachment endpoint
+		// failed here for degraded_without_optin — a defect belonging to the
+		// synthetic trace and not to the adapter.
+		features := base()
+		features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
+			Level: protocol.SupportDegraded, Reason: "sources are attached on a best-effort basis",
+			Modes: []string{protocol.ModeSessionOpen},
+		}
+		descriptor := adapter.Descriptor{CapabilityRevision: revision, Capabilities: protocol.CapabilityDescriptor{
+			Endpoint: protocol.EndpointDescriptor{ID: "kit.fixture", Name: "Kit fixture endpoint"},
+			Features: features, Sources: []protocol.ToolSourceDescriptor{native},
+		}}
+		adaptertest.AssertToolCatalog(t, descriptor, protocol.SessionOpenRequest{
+			SessionID:             "kit",
+			ToolSources:           []protocol.ToolSourceAttachment{attachment},
+			AllowDegradedFeatures: []string{protocol.FeatureToolSourcesAttach},
+		}, list, catalog)
+	})
+
+	t.Run("sources declared under a layer alone", func(t *testing.T) {
+		// A valid descriptor may publish its sources under a layer, exactly as
+		// it may publish its catalog there, and the validator reads both that
+		// way. The helper read the top level alone, so it expected a union it
+		// had itself truncated and reported its own trace invalid.
+		features := base()
+		features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
+			Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen},
+		}
+		descriptor := adapter.Descriptor{CapabilityRevision: revision, Capabilities: protocol.CapabilityDescriptor{
+			Endpoint: protocol.EndpointDescriptor{ID: "kit.fixture", Name: "Kit fixture endpoint"},
+			Features: features,
+			Layers: map[string]protocol.CapabilityLayer{
+				"harness": {Sources: []protocol.ToolSourceDescriptor{native}},
+			},
+		}}
+		adaptertest.AssertToolCatalog(t, descriptor, protocol.SessionOpenRequest{
+			SessionID: "kit", ToolSources: []protocol.ToolSourceAttachment{attachment},
+		}, list, catalog)
+	})
+
+	t.Run("an open response that filled a member the attachment left blank", func(t *testing.T) {
+		// The third instance of the same pattern, found by auditing for it:
+		// an attachment states an id and a kind and may state nothing else, and
+		// the endpoint fills the rest — which the unit invites, because over the
+		// daemon the operator's registry supplies them. The reconstructed open
+		// response therefore publishes the catalog's own descriptor for an
+		// attached id, not the bare attachment, or every later catalog would be
+		// held to a description the endpoint never published.
+		features := base()
+		features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
+			Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen},
+		}
+		descriptor := adapter.Descriptor{CapabilityRevision: revision, Capabilities: protocol.CapabilityDescriptor{
+			Endpoint: protocol.EndpointDescriptor{ID: "kit.fixture", Name: "Kit fixture endpoint"},
+			Features: features, Sources: []protocol.ToolSourceDescriptor{native},
+		}}
+		// The attachment names the id and the kind; the catalog publishes the
+		// display name, protocol, and endpoint the endpoint filled in.
+		adaptertest.AssertToolCatalog(t, descriptor, protocol.SessionOpenRequest{
+			SessionID: "kit", ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess}},
+		}, list, catalog)
+	})
 }

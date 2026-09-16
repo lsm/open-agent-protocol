@@ -185,6 +185,19 @@ export class OapClient {
     }
     const request = this.envelope(EnvelopeType.SessionOpenRequest, requestPayload);
     if (options.sessionId) request.session_id = options.sessionId;
+    if (requestPayload.tool_sources?.length) {
+      // An open that attaches sources exercises an optional feature, and such
+      // an envelope must cite the descriptor it was built against — the core
+      // profile's rule, which the validator enforces on every optional-feature
+      // envelope and the daemon enforces on this route. Omitting it made every
+      // attaching open this client issued produce an exchange this project's
+      // own validator rejects.
+      //
+      // The revision is read here rather than taken from the caller because
+      // electing a capability means having seen it. The probe costs one
+      // request, and only on an attaching open.
+      request.capability_revision = (await this.capabilities(adapter)).revision;
+    }
     const envelope = await this.exchange(
       'POST',
       `/adapters/${encodeURIComponent(adapter)}/sessions`,

@@ -225,6 +225,24 @@ func (c *Client) Open(ctx context.Context, adapter string, sessionID protocol.Se
 	if sessionID != "" {
 		request.SessionID = sessionID
 	}
+	if len(payload.ToolSources) > 0 {
+		// An open that attaches sources exercises an optional feature, and such
+		// an envelope must cite the descriptor it was built against — the core
+		// profile's rule, which the validator enforces on every optional-feature
+		// envelope and the daemon now enforces on this route. Omitting it made
+		// every attaching open this client issued produce an exchange this
+		// project's own validator rejects.
+		//
+		// The revision is read here rather than taken from the caller because
+		// electing a capability means having seen it: a client that cited a
+		// revision it had not read would be asserting a precondition it never
+		// checked. The probe costs one request, and only on an attaching open.
+		capabilities, err := c.Capabilities(ctx, adapter)
+		if err != nil {
+			return nil, err
+		}
+		request.CapabilityRevision = capabilities.Revision
+	}
 	envelope, err := c.exchange(ctx, http.MethodPost, "/adapters/"+url.PathEscape(adapter)+"/sessions", &request, protocol.TypeSessionOpenResponse)
 	if err != nil {
 		return nil, err

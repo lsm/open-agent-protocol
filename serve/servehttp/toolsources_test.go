@@ -49,10 +49,98 @@ func registryWithToolSource(t *testing.T) *serve.Registry {
 	return registry
 }
 
+// adapterRevision reads the revision the daemon is currently serving for one
+// adapter, the way a conforming client does: an open that elects an optional
+// feature must cite the descriptor it elected against, and the only way to know
+// it is to have read it. An adapter whose descriptor cannot be read answers
+// nothing, so the open proceeds and the route reports the probe failure itself.
+func adapterRevision(t *testing.T, server *httptest.Server, name string) string {
+	t.Helper()
+	var envelope protocol.Envelope
+	if status := getJSON(t, server, "/adapters/"+name+"/capabilities", &envelope); status != http.StatusOK {
+		return ""
+	}
+	return envelope.CapabilityRevision
+}
+
 func openSessionWith(t *testing.T, server *httptest.Server, id string, request protocol.SessionOpenRequest) (int, protocol.Envelope) {
 	t.Helper()
 	request.SessionID = protocol.SessionID(id)
-	return postEnvelope(t, server, "/adapters/memory/sessions", requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-"+id, request, id, "", ""))
+	// Every open here goes through the capability probe first, because an
+	// attaching one is refused without the revision — which is the rule, not an
+	// inconvenience: a caller electing attachment has to have seen the
+	// disclosure it is electing against.
+	revision := adapterRevision(t, server, "memory")
+	return postEnvelope(t, server, "/adapters/memory/sessions", requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-"+id, request, id, "", revision))
+}
+
+// TestAttachingOpenMustCiteTheActiveDescriptor holds the open route to a rule
+// the core profile already states: an envelope exercising an optional feature
+// must cite the active capability descriptor. An attaching open is an instance
+// of it and not a rule of this unit's own — the validator enforces it for every
+// such envelope in controlDescriptor — but the route did not, so it admitted
+// opens that cited nothing and then labelled the response with whatever the
+// caller sent. Every attaching open both in-repo clients issued therefore
+// produced an exchange this project's own validator rejects, and a caller
+// holding a descriptor from before a refresh could elect attachment against a
+// disclosure that no longer exists.
+//
+// An open that attaches nothing elects nothing and is not gated, which is where
+// the validator draws the same line.
+func TestAttachingOpenMustCiteTheActiveDescriptor(t *testing.T) {
+	_, server := newServer(t, registryWithToolSource(t), Options{})
+	current := adapterRevision(t, server, "memory")
+	if current == "" {
+		t.Fatal("the daemon serves no capability revision")
+	}
+	attaching := func(id, revision string) (int, protocol.Envelope) {
+		return postEnvelope(t, server, "/adapters/memory/sessions", requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-"+id, protocol.SessionOpenRequest{
+			SessionID:   protocol.SessionID(id),
+			ToolSources: []protocol.ToolSourceAttachment{{ID: "workspace-files", Kind: protocol.ToolSourceProcess}},
+		}, id, "", revision))
+	}
+	for _, testCase := range []struct{ name, id, revision string }{
+		{"no revision at all", "uncited", ""},
+		{"a revision that is not current", "stale", "reference-memory-v1"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			status, response := attaching(testCase.id, testCase.revision)
+			if status != http.StatusConflict {
+				t.Fatalf("open status %d, want 409: %s", status, response.Payload)
+			}
+			var failure protocol.ErrorResponse
+			if err := response.DecodePayload(&failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.Error.Code != "stale_capabilities" {
+				t.Fatalf("error code %q", failure.Error.Code)
+			}
+			// Both details, because a caller told only that its revision is
+			// stale cannot tell whether to refresh and retry or to stop.
+			details := failure.Error.Details
+			if details["expected_revision"] != current || details["current_revision"] != testCase.revision {
+				t.Fatalf("details %+v, want the endpoint's %q beside the caller's %q", details, current, testCase.revision)
+			}
+		})
+	}
+
+	// The same open citing the descriptor it was built against is admitted, and
+	// the response repeats the revision the daemon itself verified rather than
+	// echoing the caller's.
+	status, response := attaching("cited", current)
+	if status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, response.Payload)
+	}
+	if response.CapabilityRevision != current {
+		t.Fatalf("open response cites %q, want %q", response.CapabilityRevision, current)
+	}
+
+	// An open attaching nothing elects no optional feature, so it is admitted
+	// with no revision at all — the line the validator draws too.
+	status, response = postEnvelope(t, server, "/adapters/memory/sessions", requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-plain", protocol.SessionOpenRequest{SessionID: "plain"}, "plain", "", ""))
+	if status != http.StatusOK {
+		t.Fatalf("a plain open was refused: %d %s", status, response.Payload)
+	}
 }
 
 // TestToolsRouteServesTheSessionCatalog drives the new route end to end: the
@@ -225,7 +313,7 @@ func TestDaemonFillsTheRegistrysCommand(t *testing.T) {
 	envelope := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-filled", protocol.SessionOpenRequest{
 		SessionID:   "filled",
 		ToolSources: []protocol.ToolSourceAttachment{{ID: "workspace-files", Kind: protocol.ToolSourceProcess}},
-	}, "filled", "", "")
+	}, "filled", "", adapterRevision(t, server, "recorder"))
 	if status, response := postEnvelope(t, server, "/adapters/recorder/sessions", envelope); status != http.StatusOK {
 		t.Fatalf("open status %d: %s", status, response.Payload)
 	}

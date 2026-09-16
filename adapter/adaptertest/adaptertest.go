@@ -391,9 +391,9 @@ func cancelExchangeCut(events []protocol.Envelope) int {
 // attached are the sources one session.open attached, spliced in as the open
 // exchange the catalog is judged against; pass none for an endpoint-level
 // catalog or a session that attached nothing.
-func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) {
+func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, open protocol.SessionOpenRequest, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) {
 	t.Helper()
-	trace, err := ToolCatalogTrace(descriptor, attached, request, catalog)
+	trace, err := ToolCatalogTrace(descriptor, open, request, catalog)
 	if err != nil {
 		t.Fatalf("assemble catalog trace: %v", err)
 	}
@@ -406,7 +406,15 @@ func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, attached []p
 // ToolCatalogTrace assembles the canonical catalog trace: the capabilities
 // exchange, the open that attached the sources when there was one, and the
 // list exchange.
-func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSourceAttachment, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) ([]byte, error) {
+//
+// It takes the open request the caller actually made, not a list of
+// attachments, because an open carries more than its attachments and every
+// missing part convicted a conforming adapter. The synthesized open could not
+// carry `allow_degraded_features`, so an endpoint advertising attachment as
+// `degraded` failed here for `degraded_without_optin` however correctly its
+// caller had consented — the helper reporting a defect the endpoint did not
+// have, which is the worst thing a certifier can do.
+func ToolCatalogTrace(descriptor adapter.Descriptor, open protocol.SessionOpenRequest, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) ([]byte, error) {
 	revision := descriptor.CapabilityRevision
 	var trace []protocol.Envelope
 	capabilitiesRequest, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
@@ -423,22 +431,42 @@ func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSou
 	if session == "" {
 		session = catalog.Tools.SessionID
 	}
-	if len(attached) > 0 {
-		open, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "open-request", protocol.SessionOpenRequest{SessionID: session, ToolSources: attached})
+	if len(open.ToolSources) > 0 {
+		open.SessionID = session
+		openRequest, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "open-request", open)
 		if err != nil {
 			return nil, err
 		}
-		open.SessionID, open.CapabilityRevision = session, revision
-		sources := append([]protocol.ToolSourceDescriptor(nil), descriptor.Capabilities.Sources...)
-		for _, attachment := range attached {
+		openRequest.SessionID, openRequest.CapabilityRevision = session, revision
+		// The descriptor's declared sources are read across its layers, because
+		// a valid descriptor may declare them under one alone and the validator
+		// reads them that way. Reading the top level alone made this helper
+		// expect a union it had itself truncated, and report the trace it
+		// generated as invalid for an adapter using a shape the protocol
+		// explicitly supports.
+		declared := descriptor.Capabilities.EffectiveSources()
+		sources := append([]protocol.ToolSourceDescriptor(nil), declared...)
+		// An open response publishes what the session publishes, and an endpoint
+		// may fill a member the attachment left blank. The served catalog is that
+		// session's own description of the source, and every later snapshot and
+		// catalog is held to what the open response published — exactly — so the
+		// reconstructed response adopts the catalog's descriptor where it has
+		// one. Publishing the bare attachment instead would convict an endpoint
+		// that filled a display name at open, which is behaviour the unit invites.
+		served, _ := indexSources(catalog.Tools.Sources)
+		for _, attachment := range open.ToolSources {
+			if published, ok := served[attachment.ID]; ok {
+				sources = append(sources, published)
+				continue
+			}
 			sources = append(sources, attachment.Descriptor())
 		}
 		opened, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, "open-response", protocol.SessionOpenResponse{SessionID: session, Status: protocol.SessionIdle, Sources: sources})
 		if err != nil {
 			return nil, err
 		}
-		opened.SessionID, opened.InReplyTo, opened.CapabilityRevision = session, open.ID, revision
-		trace = append(trace, open, opened)
+		opened.SessionID, opened.InReplyTo, opened.CapabilityRevision = session, openRequest.ID, revision
+		trace = append(trace, openRequest, opened)
 	}
 	listRequest, err := protocol.NewEnvelope(protocol.TypeActionToolsListRequest, "tools-request", request)
 	if err != nil {
@@ -454,6 +482,25 @@ func ToolCatalogTrace(descriptor adapter.Descriptor, attached []protocol.ToolSou
 	// longer advertises is visible here rather than laundered into agreement.
 	listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = catalog.Tools.SessionID, listRequest.ID, catalog.Revision
 	return json.Marshal(append(trace, listRequest, listResponse))
+}
+
+// indexSources indexes published descriptors by id, reporting the first
+// duplicate. One id resolving to two descriptors is a defect the validator
+// diagnoses on the catalog itself, so this keeps the first and leaves the
+// diagnosis where it belongs.
+func indexSources(sources []protocol.ToolSourceDescriptor) (map[string]protocol.ToolSourceDescriptor, string) {
+	indexed := make(map[string]protocol.ToolSourceDescriptor, len(sources))
+	duplicate := ""
+	for _, source := range sources {
+		if _, seen := indexed[source.ID]; seen {
+			if duplicate == "" {
+				duplicate = source.ID
+			}
+			continue
+		}
+		indexed[source.ID] = source
+	}
+	return indexed, duplicate
 }
 
 func AssertTypes(t testing.TB, envelopes []protocol.Envelope, want ...protocol.EnvelopeType) {

@@ -353,6 +353,12 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   session's lifetime, or refuses the open with `unsupported_feature`,
   `details.feature: "action.tool_sources.attach"`, and
   `details.reason: "unadvertised"`;
+- requires such an open to cite the active `capability_revision`, since it is an
+  envelope exercising an optional feature and the core profile already binds
+  those; an open citing none or a stale one is refused `stale_capabilities` with
+  `expected_revision` and `current_revision`, and its successful response
+  repeats the revision the endpoint verified. An open attaching nothing elects
+  nothing and is not revision-gated;
 - discloses `modes: ["session_open"]` wherever the key is advertised at all,
   and additionally `"remote"` in that set where it accepts a `remote` source;
   the plural is what lets the second be said without erasing the first. The set

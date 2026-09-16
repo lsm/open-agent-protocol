@@ -1243,7 +1243,7 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			adaptertest.AssertToolCatalog(t, descriptor, nil, request, catalog)
+			adaptertest.AssertToolCatalog(t, descriptor, protocol.SessionOpenRequest{}, request, catalog)
 		})
 	}
 }

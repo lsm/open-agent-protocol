@@ -250,7 +250,15 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	// cannot attach sources at all, answers a question it never asked and
 	// hides the one it did. So the endpoint's own disclosure is consulted
 	// first, before any daemon-specific constraint is applied.
-	if refusal := s.attachmentGate(r.Context(), name, request); refusal != nil {
+	revision, refusal := s.attachmentGate(r.Context(), name, envelope, request)
+	if refusal != nil {
+		var stale *staleRevisionError
+		if errors.As(refusal, &stale) {
+			s.writeErrorDetails(w, http.StatusConflict, "stale_capabilities", stale.Error(), map[string]any{
+				"expected_revision": stale.expected, "current_revision": stale.current,
+			}, envelope)
+			return
+		}
 		code, message, details, typed := serve.ControlRefusal(refusal)
 		if !typed {
 			// The descriptor could not be read, so no rung has an answer and
@@ -262,10 +270,10 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
 		return
 	}
-	attachments, refusal := s.resolveAttachments(request.ToolSources)
-	if refusal != nil {
-		s.writeErrorDetails(w, http.StatusBadRequest, "unsupported_feature", refusal.Error(), map[string]any{
-			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": refusal.Source,
+	attachments, unresolvable := s.resolveAttachments(request.ToolSources)
+	if unresolvable != nil {
+		s.writeErrorDetails(w, http.StatusBadRequest, "unsupported_feature", unresolvable.Error(), map[string]any{
+			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": unresolvable.Source,
 		}, envelope)
 		return
 	}
@@ -319,7 +327,14 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
+	// An attaching open is held to the revision the gate verified, so the
+	// response repeats a value the daemon checked rather than echoing whatever
+	// the caller sent. For any other open the caller's value is repeated as it
+	// always was: it elected no optional feature, so nothing was gated on it.
 	response.CapabilityRevision = envelope.CapabilityRevision
+	if revision != "" {
+		response.CapabilityRevision = revision
+	}
 	writeEnvelope(w, http.StatusOK, response)
 }
 
@@ -749,13 +764,31 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // the wrong thing to tell a caller whose endpoint may attach nothing at all.
 // The open is not forwarded either way, so no wire-supplied command reaches an
 // adapter behind an unread descriptor.
-func (s *Server) attachmentGate(ctx context.Context, name string, request protocol.SessionOpenRequest) error {
+func (s *Server) attachmentGate(ctx context.Context, name string, envelope protocol.Envelope, request protocol.SessionOpenRequest) (string, error) {
 	if len(request.ToolSources) == 0 {
-		return nil
+		return "", nil
 	}
 	descriptor, err := s.hub.Probe(ctx, name)
 	if err != nil {
-		return err
+		return "", err
+	}
+	// An open that attaches sources exercises an optional feature, so it is an
+	// instance of the rule the core profile already states — an envelope
+	// exercising one must cite the active descriptor — and not a rule of this
+	// unit's own. The validator enforces it for every such envelope in
+	// controlDescriptor; the daemon did not, so the route admitted opens that
+	// cite nothing and then labelled the response with whatever the caller sent.
+	// Every attaching open both in-repo clients issued therefore produced an
+	// exchange this project's own validator rejects as stale_capability_revision,
+	// and a caller holding a descriptor from before a refresh could elect
+	// attachment against a disclosure that no longer exists.
+	//
+	// Enforced here rather than in readRequest, because here is where the route
+	// knows the envelope exercises an optional feature and has the current
+	// revision in hand. An open that attaches nothing elects nothing, and the
+	// validator does not revision-gate it either.
+	if string(envelope.CapabilityRevision) != descriptor.CapabilityRevision {
+		return "", &staleRevisionError{expected: descriptor.CapabilityRevision, current: string(envelope.CapabilityRevision)}
 	}
 	// The key is resolved across the descriptor's layers, because a valid
 	// descriptor may publish it under one alone. Reading only the top level
@@ -767,12 +800,25 @@ func (s *Server) attachmentGate(ctx context.Context, name string, request protoc
 	// A key advertised for no session-open mode is one an open cannot elect,
 	// which is the capability rung and not a constraint on any one source.
 	if !affirmative || !support.DisclosesMode(protocol.ModeSessionOpen) {
-		return &base.UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnadvertised}
+		return "", &base.UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnadvertised}
 	}
 	if support.Level == protocol.SupportDegraded && !request.AllowsDegraded(protocol.FeatureToolSourcesAttach) {
-		return &base.DegradedControlError{Feature: protocol.FeatureToolSourcesAttach}
+		return "", &base.DegradedControlError{Feature: protocol.FeatureToolSourcesAttach}
 	}
-	return nil
+	return descriptor.CapabilityRevision, nil
+}
+
+// staleRevisionError refuses a request whose cited revision is not the
+// endpoint's current one. The core profile names the code and both details:
+// a caller told only that it is stale cannot tell whether to refresh or to
+// stop, and the pair says which.
+type staleRevisionError struct{ expected, current string }
+
+func (e *staleRevisionError) Error() string {
+	if e.current == "" {
+		return "an open electing attachment must cite the active capability revision"
+	}
+	return "the open cites a capability revision that is no longer current"
 }
 
 // attachmentRefusal names the one tool source an open may not attach over the

@@ -802,6 +802,47 @@ rediscovered from the code.
   moves from positive to `semantic-invalid` with this code, and it proves the
   refusal more sharply there than it did as a positive: the descriptor is now
   the only defect the trace carries, so a wrong refusal would add a second.
+- **An attaching open cites the descriptor it elected against.** This is not a
+  rule this unit invents: the core profile already says an envelope exercising
+  an optional feature must cite the active descriptor, and the validator
+  enforces it for every such envelope in `controlDescriptor`. The open route did
+  not, so it admitted opens citing nothing and labelled the response with
+  whatever the caller sent — which meant every attaching open both in-repo
+  clients issued produced an exchange this project's own validator rejects as
+  `stale_capability_revision`, and a caller holding a pre-refresh descriptor
+  could elect attachment against a disclosure that no longer existed. The gate
+  now requires the probed revision, answers `stale_capabilities` with
+  `expected_revision` and `current_revision` when it is absent or stale, and the
+  response repeats the revision the daemon verified rather than the caller's.
+
+  It is enforced at the gate rather than in `readRequest` because the gate is
+  where the route knows the envelope elects an optional feature and has the
+  current revision in hand. An open attaching nothing elects nothing and is not
+  gated, which is where the validator draws the same line. Both clients read the
+  descriptor before an attaching open and cite it: electing a capability means
+  having seen it, and a client citing a revision it had not read would assert a
+  precondition it never checked.
+- **The test kit is held to certifying every shape the protocol allows.** Three
+  faults of one pattern were found in `AssertToolCatalog`'s synthetic open, each
+  a case of the helper building from a narrower shape than the validator
+  accepts, and each convicting a conforming adapter — the worst failure mode for
+  something whose purpose is to certify them. It now takes the caller's actual
+  `SessionOpenRequest` instead of a list of attachments, so a degraded
+  attachment's `allow_degraded_features` travels with it; it reads the
+  descriptor's sources across layers through the new
+  `CapabilityDescriptor.EffectiveSources`, which the validator also reads
+  through, so a layered descriptor is not held to a union the helper truncated;
+  and the reconstructed open response publishes the served catalog's own
+  descriptor for an attached id rather than the bare attachment, because an
+  endpoint may fill a member the attachment left blank and every later catalog
+  is held exactly to what the open published.
+
+  `EffectiveSources` exists for the reason `EffectiveSupport` does, and was
+  added for the same failure: a second normalization beside the first is how one
+  surface starts refusing what another accepts. None of these shapes is
+  exercised by an adapter in this repository — none is a degraded-attachment or
+  layered-descriptor endpoint — which is why the suite passed over all three, so
+  the cases that pin them are synthetic by necessity rather than convenience.
 - **ACP declares the MCP servers it was configured with, because it reserves
   their names.** Admission refuses an attachment whose id collides with one, and
   ACP routes by that id, so the collision is real — but while the descriptor

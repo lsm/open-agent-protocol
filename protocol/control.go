@@ -259,6 +259,33 @@ func (d CapabilityDescriptor) EffectiveSupport(key string) (FeatureSupport, bool
 	return FeatureSupport{}, false
 }
 
+// EffectiveSources normalizes a descriptor's declared tool sources: its
+// top-level `sources` followed by every layer's, layers in sorted name order,
+// since a valid descriptor may declare them under a layer alone exactly as it
+// may publish its catalog there.
+//
+// It exists for the reason EffectiveSupport does, and it was added for the same
+// failure: the validator normalized across layers while a helper read the top
+// level alone, so the test kit reported a generated trace invalid for an
+// adapter publishing the layered shape the protocol explicitly supports. A
+// second normalization beside the first is how one surface starts refusing what
+// another accepts.
+//
+// Duplicates are not resolved here. One id resolving to two descriptors is a
+// defect the validator diagnoses, and collapsing it silently would hide it.
+func (d CapabilityDescriptor) EffectiveSources() []ToolSourceDescriptor {
+	sources := append([]ToolSourceDescriptor(nil), d.Sources...)
+	names := make([]string, 0, len(d.Layers))
+	for name := range d.Layers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		sources = append(sources, d.Layers[name].Sources...)
+	}
+	return sources
+}
+
 type Binding struct {
 	Kind          string `json:"kind"`
 	Serialization string `json:"serialization,omitempty"`
