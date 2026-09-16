@@ -329,7 +329,11 @@ as the settlement fence above — that the last durable event of a turn is
 persisted before the loop goes idle — and rests on the same property, that the
 run coordinator drains one agent loop per turn. The adapter's *publication* of
 the promoted run waits for the earlier run's derived terminal even so, because
-the terminal is derived from quiescence and lags the boundary.
+the terminal is derived from quiescence and lags the boundary. Held envelopes
+are withheld from the journal as well as from the stream, since a journalled
+envelope is replayable: a caller resuming the reserved run mid hold would
+otherwise read its start before the earlier run's terminal and be handed the
+same envelopes again at release.
 
 **New mismatch (P1): no route withdraws one queued input.** The pinned
 server's cancellation surface is `POST /api/session/:id/interrupt`, which is
@@ -338,8 +342,14 @@ would interrupt the started run instead — the wrong work. The adapter
 therefore drops the reservation locally and settles it `run.cancelled`
 pre-start without calling the server, and ignores a later promotion for a
 run its terminal has already absorbed. The consequence is that the server
-may still execute a withdrawn input while OAP reports the run cancelled.
-Closing it needs an upstream route that removes one admitted input by its
+may still execute a withdrawn input while OAP reports the run cancelled. That
+turn is quarantined: it has no OAP run to own it, since the reservation's run
+already settled, and reducing it into whatever run is started would hand that
+run another turn's content, reopen its step accounting, and settle it on a
+boundary it never reached. Quarantine is the general rule for a turn no OAP
+run owns — a foreign input takes the same path — and it lifts at the next
+`session.next.prompted` naming an input this adapter admitted. Closing the
+mismatch itself needs an upstream route that removes one admitted input by its
 `SessionMessage.ID`; until one is pinned, `run.cancel` stays `degraded` and
 this is recorded rather than compensated.
 

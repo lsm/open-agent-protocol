@@ -1108,3 +1108,124 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 		t.Fatalf("close after the reservation settled: %v", err)
 	}
 }
+
+// The pin has no route that withdraws a queued input, so the server executing
+// one this adapter cancelled is expected. Its turn has no OAP run to own it —
+// the reservation's run already settled — and falling back on the started run
+// would give that run another turn's output and could keep it from settling.
+// The turn is quarantined instead. Any other native turn with no OAP run to
+// own it, a foreign input among them, takes the same path.
+func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	descriptor := testAdapterDescriptor(t)
+
+	// The first run is left mid-turn, with its step still open, so nothing
+	// about its settlement is in flight while the quarantined turn arrives.
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+
+	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Cancel(context.Background(), queued.RunID); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	if len(cancelled) != 1 || cancelled[0].Type != protocol.TypeRunCancelled {
+		t.Fatalf("cancelled reservation = %v", types(cancelled))
+	}
+
+	// The server runs the withdrawn input anyway. None of it may reach the
+	// first run: a quarantined step.started would reopen its step accounting,
+	// a quarantined text would become its content, and the quarantined turn's
+	// boundary would settle it on a turn it never ran.
+	client.emit(t, 4, native.TypePrompted, native.PromptedData{Timestamp: 4, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	client.emit(t, 5, native.TypeStepStarted, native.StepStartedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "abandoned"})
+	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+
+	// Losing the stream is the only thing left that can settle the first run,
+	// which is the point: the quarantined boundary did not.
+	client.subscription.fail(errors.New("stream gone"))
+	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
+	if fmt.Sprint(types(firstEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunFailed}) {
+		t.Fatalf("first run = %v", types(firstEvents))
+	}
+	if text := deltaText(t, firstEvents[1]); text != "first" {
+		t.Fatalf("first run took the quarantined turn's text: %q", text)
+	}
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: autoRequest("hello"), Admission: first},
+		{Request: queueRequest("later"), Admission: queued, Cancelled: true},
+	}, descriptor, append(append([]protocol.Envelope(nil), cancelled...), firstEvents...))
+}
+
+// Held means held from everyone. A journalled envelope is replayable, so a
+// caller resuming the reserved run while its buffer is unreleased would read
+// its start before the earlier run's terminal and then be handed the same
+// envelopes again when the buffer flushed.
+func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	gate := make(chan struct{})
+	client.mu.Lock()
+	client.idleGate = gate
+	client.mu.Unlock()
+	session, _ := openTest(t, client, 64)
+
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+
+	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
+
+	// Resume the reserved run while its buffer is unreleased: nothing has been
+	// published for it, so nothing replays and a cursor past zero is future.
+	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: queued.RunID, AfterSequence: 0})
+	if err != nil {
+		t.Fatalf("resume a held run: %v", err)
+	}
+	if recovery.ReplayGap != nil || recovery.ReplayedThrough != 0 {
+		t.Fatalf("held run replayed early: %+v", recovery)
+	}
+	if _, _, err := session.Resume(context.Background(), base.ResumeRequest{RunID: queued.RunID, AfterSequence: 1}); !errors.Is(err, base.ErrReplayCursorFuture) {
+		t.Fatalf("cursor into the held buffer = %v, want ErrReplayCursorFuture", err)
+	}
+
+	close(gate)
+	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
+	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("first run = %v", types(firstEvents))
+	}
+	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+
+	// Both the original stream and the resumed one see the promoted run's
+	// envelopes exactly once, in order.
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	if fmt.Sprint(types(queuedEvents)) != fmt.Sprint(want) {
+		t.Fatalf("promoted run = %v", types(queuedEvents))
+	}
+	resumedEvents := adaptertest.Drain(t, resumed, 2*time.Second)
+	if fmt.Sprint(types(resumedEvents)) != fmt.Sprint(want) {
+		t.Fatalf("resumed stream = %v", types(resumedEvents))
+	}
+	for index, envelope := range resumedEvents {
+		if envelope.Sequence == nil || *envelope.Sequence != uint64(index+1) {
+			t.Fatalf("resumed sequences are not contiguous: %v", types(resumedEvents))
+		}
+	}
+}
