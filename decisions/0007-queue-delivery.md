@@ -180,7 +180,14 @@ happens inside the endpoint and its `run.started` may drain after the snapshot,
 which is the race the capture positions exist to allow. And `active_run_id`
 names the started run or names none: where only reservations remain it is
 absent, because a client reading it as the run to follow would follow a run
-that has published nothing.
+that has published nothing. Which run that is, is read off the listing the
+snapshot carries, not off the set the trace requires it to carry. The two
+differ by exactly the run that settled inside the window and was allowed to
+stay listed, and judging against the required set would demand that a snapshot
+listing such a run as started leave `active_run_id` empty — the same run named
+`running` in one field and absent from the other. So a listing that shows a
+started run and names none disagrees with itself and is
+`session_state_mismatch`.
 
 A stated position the trace has not reached is held and reconciled when it
 arrives. A position that never exists is not: a snapshot may describe a
@@ -206,7 +213,10 @@ model, judged at the position the snapshot states. A position is a position in t
 an anchor on another session's run would let a snapshot borrow a model
 authority that says nothing about the session it describes, and an anchor on a
 sequence its run did not start at, or on a promotion that never arrives, would
-leave the model it reported judged against nothing. All three are
+leave the model it reported judged against nothing. And it names a
+model-affecting promotion: supplying an anchor is what sets the unanchored
+check aside, so a run that applied no `session_mutation` would let a snapshot
+point at a control-free start and report any model at all. All four are
 `session_state_mismatch`. The marker has a genesis
 form, `{"run_id": null, "sequence": 0}`, naming the position before the
 session's first model-affecting event; without it the one case the marker
@@ -216,7 +226,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 56 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 70 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -255,6 +265,21 @@ terminal, and settles a cancelled reservation pre-start.
 - The hub keeps a reservation out of the run a bare replay cursor resolves
   onto: it has published nothing, and a client resumed onto a run that settles
   pre-start would be stranded.
+- A held envelope is not published, and publication is what the journal
+  records. Buffering the reservation's envelopes while deferring the journal
+  append is the same claim as keeping its queue slot until `published()`: a
+  journalled envelope is replayable, so a caller resuming the reserved run mid
+  hold would read its start before the earlier run's terminal and then be
+  handed the same envelopes again when the buffer flushed. A cursor into the
+  unflushed prefix is future, not replayable, and the stream stays open while a
+  terminal is held.
+- A native turn that no OAP run can own is quarantined, not reduced onto
+  whatever run is started. The pin has no route that withdraws a queued input,
+  so a cancelled reservation's turn may still execute; falling back on the
+  started run would hand that run another turn's content, reopen its step
+  accounting, and settle it on a boundary it never reached. Any other unowned
+  turn — a foreign input among them — takes the same path, and suppression
+  lifts at the next `prompted` an OAP run does own.
 - A reservation is admitted work, so it refuses a session close exactly as a
   started run does. Between a started run's terminal and a reservation's
   promotion the reservation is the session's only nonterminal run, and a close

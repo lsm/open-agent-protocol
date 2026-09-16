@@ -583,7 +583,13 @@ func (s *state) judgePendingInteractions(claim *deferredStateClaim, r *runState)
 
 func (s *state) judgeCaptureModel(claim *deferredStateClaim, r *runState) {
 	model, known := mutationModel(r)
-	if !known || model == claim.model {
+	if !known {
+		// The promotion arrived and applied no session_mutation, so the
+		// position the snapshot anchored on was never a model-affecting event.
+		s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/as_of/model_run_sequence", "capture position names a run that applied no session_mutation, so it is not a model-affecting event", "a run admitted with a session_mutation model selection", string(claim.run), string(claim.run))
+		return
+	}
+	if model == claim.model {
 		return
 	}
 	s.addExpected(CodePrematureSessionMutation, claim.index, claim.line, claim.envelope, "/payload/current_model_id", "snapshot reports a model other than the one in force at the position it states", model, claim.model, string(claim.run))

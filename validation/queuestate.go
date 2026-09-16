@@ -141,6 +141,12 @@ func (s *state) checkActiveRunsOmitted(i, line int, e protocol.Envelope, require
 // entry's pending set is accurate at the position the entry states.
 func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p protocol.SessionState, required []*runState, window int) {
 	listed := map[protocol.RunID]bool{}
+	// listedStarted is a started run the snapshot itself lists but that the
+	// required set excludes because it settled inside the window. The snapshot
+	// says it was started when the capture was taken, so it is what
+	// active_run_id has to name — deriving that only from the required set
+	// would let a listing disagree with itself.
+	listedStarted := protocol.RunID("")
 	lastOrder := -1
 	queuePosition := 0
 	for index, entry := range p.ActiveRuns {
@@ -179,6 +185,9 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		case entry.QueuePosition != nil:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *entry.QueuePosition), string(entry.RunID))
 		}
+		if !reservation {
+			listedStarted = r.id
+		}
 		s.checkEntryStatus(i, line, e, pointer, entry, r)
 		s.checkEntryAnchor(i, line, e, pointer, p.SessionID, entry, r)
 		s.checkEntryPending(i, line, e, pointer, entry, r)
@@ -195,6 +204,9 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		if r.started || !r.admittedQueued {
 			started = r.id
 		}
+	}
+	if started == "" {
+		started = listedStarted
 	}
 	switch {
 	case started != "" && p.ActiveRunID != started:
@@ -398,7 +410,16 @@ func (s *state) checkCaptureModel(i, line int, e protocol.Envelope, p protocol.S
 		return
 	}
 	model, known := mutationModel(r)
-	if known && p.CurrentModelID != model {
+	if !known {
+		// model_run_sequence names the last model-affecting event, and a run
+		// that applied no session_mutation is not one. Accepting the anchor
+		// anyway would let a snapshot point at a control-free start and report
+		// any model at all, since supplying an anchor is what sets the
+		// unanchored check aside.
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/model_run_sequence", "capture position names a run that applied no session_mutation, so it is not a model-affecting event", "a run admitted with a session_mutation model selection", string(r.id), string(r.id))
+		return
+	}
+	if p.CurrentModelID != model {
 		s.addExpected(CodePrematureSessionMutation, i, line, e, "/payload/current_model_id", "snapshot reports a model other than the one in force at the position it states", model, p.CurrentModelID, string(r.id))
 	}
 }
