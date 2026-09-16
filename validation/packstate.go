@@ -46,6 +46,16 @@ func (s *state) isResponseType(t protocol.EnvelopeType) bool {
 	return isResponse(t)
 }
 
+// envelopeScoped reports whether an envelope's own scope stands in for a
+// payload the validator has no decoder for. A packed type is in exactly the
+// position a tolerated unknown one is: there is no payload decoder to read
+// scope from, but the envelope scope is the wire's own, and retaining it keeps
+// the generic correlation checks binding — a request on run A answered on run B
+// is a scope mismatch whatever the operation is called.
+func (s *state) envelopeScoped(t protocol.EnvelopeType) bool {
+	return !isKnownType(t) && (s.tolerant || s.packs.Type(string(t)) != nil)
+}
+
 // expectedResponse is the response type a request is answered by. A packed
 // request names it through the `replies_to` of the response that declares it,
 // which is what correlation is for a vocabulary with no naming convention.

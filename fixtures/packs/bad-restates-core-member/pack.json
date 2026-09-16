@@ -1,0 +1,34 @@
+{
+  "id": "com.example.restates",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.restates.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.restates.ping",
+      "ungated": true
+    },
+    {
+      "payload_type": "session.message.submit.request",
+      "member": "model_id",
+      "ungated": true
+    }
+  ],
+  "payload_members": [
+    {
+      "payload_type": "session.message.submit.request",
+      "member": "model_id",
+      "schema": {
+        "type": "string"
+      }
+    }
+  ]
+}

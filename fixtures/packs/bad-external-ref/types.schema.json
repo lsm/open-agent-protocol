@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ping": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "com.example.external.ping"
+        },
+        "payload": {
+          "$ref": "https://example.invalid/private.schema.json"
+        }
+      }
+    }
+  }
+}

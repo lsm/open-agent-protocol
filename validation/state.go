@@ -114,7 +114,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	s.ids[e.ID] = i
 	if s.isRequestType(e.Type) {
 		session, run := requestScope(e)
-		if s.tolerant && !isKnownType(e.Type) {
+		if s.envelopeScoped(e.Type) {
 			// An unknown request has no payload decoder to read scope from,
 			// but its envelope scope is the wire's own and is retained so the
 			// generic correlation checks still bind its response: a request
@@ -409,7 +409,7 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	// A scoped response must answer within the request's scope: an internally
 	// consistent response for another session or run cannot answer this request.
 	session, run := responseScope(e)
-	if s.tolerant && !isKnownType(e.Type) {
+	if s.envelopeScoped(e.Type) {
 		// An unknown response, like an unknown request, is scoped by its
 		// envelope: the correlation check binds it to the request it answers.
 		session, run = e.SessionID, e.RunID

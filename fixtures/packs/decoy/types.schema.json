@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ping": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "run_id",
+        "sequence"
+      ],
+      "properties": {
+        "type": {
+          "const": "com.example.decoy.run.started"
+        },
+        "session_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "run_id": {
+          "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "run_id"
+          ],
+          "properties": {
+            "run_id": {
+              "$ref": "https://open-agent-protocol.local/v0.1/common.schema.json#/$defs/opaqueID"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

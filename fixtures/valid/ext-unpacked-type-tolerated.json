@@ -1,0 +1,15 @@
+[
+  {
+    "capability_revision": "v1",
+    "id": "read1",
+    "payload": {
+      "bucket": "reports",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "com.example.storage.objects.read",
+    "version": "0.1"
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "id": "com.example.index",
+  "version": "1.0.0",
+  "schemas": [
+    "index.schema.json"
+  ]
+}

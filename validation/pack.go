@@ -432,9 +432,6 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 		}
 		declaredTypes[declared.Type] = declared
 	}
-	for _, member := range p.Descriptor.PayloadMembers {
-		contained("payload member", member.Member)
-	}
 	if len(refusals) > 0 {
 		// Containment decides which names the pack owns; every later rule is
 		// stated over those names, so judging them now would report failures
@@ -520,8 +517,16 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 			refuse(LoadPackMemberTargetUnknown, "payload member %q targets %q, which is not a core envelope type; a target with no known role has no gate point", member.Member, member.PayloadType)
 			continue
 		}
+		// Restatement is judged before containment, and that order is what
+		// makes the rule reachable: the member a pack would restate is a core
+		// one, which is unprefixed by definition, so containment alone would
+		// report every restatement as a namespace error and never as the
+		// override it is.
 		if payload.members[member.Member] {
-			refuse(LoadPackRestatesCoreMember, "payload member %q restates a member %q already defines; a pack adds vocabulary, it does not amend the protocol", member.Member, member.PayloadType)
+			refuse(LoadPackRestatesCoreMember, "payload member %q restates a member %q already defines; a pack that could narrow a core member would change core validity", member.Member, member.PayloadType)
+			continue
+		}
+		if !contained("payload member", member.Member) {
 			continue
 		}
 		if len(member.Schema) == 0 {

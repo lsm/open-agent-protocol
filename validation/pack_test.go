@@ -1,0 +1,182 @@
+package validation
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func packDir(t *testing.T, names ...string) []string {
+	t.Helper()
+	dirs := make([]string, 0, len(names))
+	for _, name := range names {
+		dirs = append(dirs, filepath.Join(repositoryRoot(t), "fixtures", "packs", name))
+	}
+	return dirs
+}
+
+// Every refusal the loader can make, against the pack that makes it. A pack is
+// refused rather than diagnosed: the validator never ran, so it has said
+// nothing about any trace.
+func TestPackLoadRefusals(t *testing.T) {
+	cases := []struct {
+		dirs  []string
+		codes []string
+	}{
+		{[]string{"bad-unprefixed-name"}, []string{LoadPackUnprefixedName}},
+		{[]string{"bad-foreign-prefix"}, []string{LoadPackForeignPrefix}},
+		{[]string{"nested-parent", "nested-child"}, []string{LoadPackIDCollision}},
+		{[]string{"duplicate-a", "duplicate-b"}, []string{LoadPackIDCollision}},
+		{[]string{"bad-branch-undeclared-type"}, []string{LoadPackBranchUndeclaredType}},
+		{[]string{"bad-branch-unpinned"}, []string{LoadPackBranchUnpinned}},
+		{[]string{"bad-ungated-type"}, []string{LoadPackUngatedType}},
+		{[]string{"bad-response-gated"}, []string{LoadPackResponseGated}},
+		{[]string{"bad-role-undeclared"}, []string{LoadPackRoleUndeclared}},
+		{[]string{"bad-reply-target-unknown"}, []string{LoadPackReplyTargetUnknown}},
+		{[]string{"bad-refusal-undeclared"}, []string{LoadPackRefusalUndeclared}},
+		{[]string{"bad-restates-core-member"}, []string{LoadPackRestatesCoreMember}},
+		{[]string{"bad-member-target-unknown"}, []string{LoadPackMemberTargetUnknown}},
+		{[]string{"bad-schema-path-escape"}, []string{LoadPackSchemaPathEscape}},
+		{[]string{"bad-external-ref"}, []string{LoadPackExternalRef}},
+		{[]string{"bad-dependency-missing"}, []string{LoadPackDependencyMissing}},
+		{[]string{"bad-fixture-claims-core"}, []string{LoadPackFixtureClaimsCore}},
+		{[]string{"bad-ext-claim-without-pack"}, []string{LoadExtClaimWithoutPack}},
+	}
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.dirs, "+"), func(t *testing.T) {
+			_, err := LoadPacks(packDir(t, tc.dirs...))
+			if err == nil {
+				t.Fatalf("pack loaded cleanly, want %v", tc.codes)
+			}
+			refusal, ok := err.(*PackLoadError)
+			if !ok {
+				t.Fatalf("refused without a load-error code: %v", err)
+			}
+			if got := strings.Join(refusal.Codes(), ","); got != strings.Join(tc.codes, ",") {
+				t.Fatalf("load errors: got %v want %v (%s)", refusal.Codes(), tc.codes, refusal.Error())
+			}
+		})
+	}
+}
+
+// A dependency is satisfied only by a loaded pack of that exact id and version.
+// Loaded alone, the dependent pack is refused; loaded together, the reference
+// into the declared dependency resolves.
+func TestPackDependencyIsExactAndDeclared(t *testing.T) {
+	if _, err := LoadPacks(packDir(t, "client")); err == nil {
+		t.Fatal("a pack loaded without its declared dependency")
+	}
+	if _, err := LoadPacks(packDir(t, "index", "client")); err != nil {
+		t.Fatalf("declared cross-pack reference refused: %v", err)
+	}
+}
+
+// Containment is what makes two vendors' packs composable: their names cannot
+// overlap, so loading both together is safe by construction.
+func TestPacksComposeWhenPrefixFree(t *testing.T) {
+	packs, err := LoadPacks(packDir(t, "storage", "decoy"))
+	if err != nil {
+		t.Fatalf("prefix-free packs refused: %v", err)
+	}
+	set := NewPackSet(packs)
+	if set.Type("com.example.storage.objects.read") == nil || set.Type("com.example.decoy.run.started") == nil {
+		t.Fatal("a composed set lost one pack's vocabulary")
+	}
+	if set.Type("run.started") != nil {
+		t.Fatal("a pack claimed a core type")
+	}
+}
+
+// The core claim is unchanged by a pack: the whole core corpus passes
+// identically with and without one loaded, run against a pack whose declared
+// type is deliberately close to a core one.
+func TestCoreClaimUnchangedWithPackLoaded(t *testing.T) {
+	manifest := filepath.Join(repositoryRoot(t), "fixtures", "manifest.json")
+	packs, err := LoadPacks(packDir(t, "decoy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPack, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := MustNew()
+	root := filepath.Dir(manifest)
+	for _, entry := range m.Fixtures {
+		if entry.Kind == KindLoadInvalid || len(entry.Packs) > 0 || entry.Mode != "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, entry.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := bare.ValidateBytes(data, entry.ID)
+		after := withPack.ValidateBytes(data, entry.ID)
+		if before.Valid() != after.Valid() || len(before.Diagnostics) != len(after.Diagnostics) {
+			t.Fatalf("fixture %s changed meaning when a pack was loaded: %v -> %v", entry.ID, before.Diagnostics, after.Diagnostics)
+		}
+	}
+}
+
+// Loading a pack turns tolerance into conformance for its vocabulary: the same
+// envelope is accepted on the common fields alone without the pack and judged
+// against the pack's own branch with it.
+func TestPackTurnsToleranceIntoConformance(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), "fixtures", "valid", "ext-unpacked-type-tolerated.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tolerant, err := NewWith(Options{Mode: ModeTolerant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := tolerant.ValidateBytes(data, "unpacked"); !result.Valid() {
+		t.Fatalf("an unclaimed type was not tolerated: %v", result.Diagnostics)
+	}
+	packs, err := LoadPacks(packDir(t, "storage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []Mode{ModeStrict, ModeTolerant} {
+		v, err := NewWith(Options{Mode: mode, Packs: packs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := v.ValidateBytes(data, "packed")
+		if result.Valid() || !result.HasCode(CodeSchemaInvalid) {
+			t.Fatalf("%s: a malformed packed envelope was accepted with its pack loaded: %v", mode, result.Diagnostics)
+		}
+	}
+}
+
+// A pack may not amend the protocol. The core pass judges the core projection,
+// so a core rule on a core member is neither relaxed nor tightened by a pack:
+// an undeclared member is still refused and a missing required member is still
+// missing, while the declared member is judged by its own subschema.
+func TestCoreProjectionKeepsCoreRules(t *testing.T) {
+	packs, err := LoadPacks(packDir(t, "storage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",` +
+		`"type":"session.message.submit.request","id":"req1","session_id":"s1","payload":{"delivery":"auto",` +
+		`"session_id":"s1","messages":[{"role":"user","content":"go"}],"com.example.storage.workspace":{"bucket":"reports"}}}`
+	// The lone request draws missing_response either way; the schema phase is
+	// what the projection decides.
+	if result := v.ValidateBytes([]byte(valid), "member"); result.HasCode(CodeSchemaInvalid) {
+		t.Fatalf("a declared member was refused: %v", result.Diagnostics)
+	}
+	strict := MustNew()
+	if result := strict.ValidateBytes([]byte(valid), "member"); !result.HasCode(CodeSchemaInvalid) {
+		t.Fatal("the closed core payload accepted an undeclared member without the pack")
+	}
+}

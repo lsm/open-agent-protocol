@@ -38,7 +38,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["type", "role", "schema"],
+        "required": ["type"],
         "properties": {
           "type": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
           "role": {
@@ -100,9 +100,9 @@
   "additionalProperties": false,
   "$defs": {
     "relativePath": {
+      "description": "A path the loader cleans, joins beneath the pack root, and resolves symlinks for. Shape alone cannot decide containment — a symlink is a relative path that leaves the root — so the rule has one home, in the loader.",
       "type": "string",
-      "minLength": 1,
-      "pattern": "^[^/]"
+      "minLength": 1
     }
   }
 }

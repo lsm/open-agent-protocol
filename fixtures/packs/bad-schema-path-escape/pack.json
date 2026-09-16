@@ -1,0 +1,21 @@
+{
+  "id": "com.example.escape",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json",
+    "escape.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.escape.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.escape.ping",
+      "ungated": true
+    }
+  ]
+}

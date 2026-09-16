@@ -1,0 +1,15 @@
+{
+  "id": "com.example.ungated",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.ungated.ping",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/ping"
+    }
+  ],
+  "gates": []
+}
