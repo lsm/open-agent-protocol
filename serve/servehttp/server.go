@@ -291,7 +291,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			open.Metadata[key] = value
 		}
 	}
-	_, state, err := s.hub.Open(r.Context(), name, open)
+	entry, state, err := s.hub.Open(r.Context(), name, open)
 	if err != nil {
 		// A capability the open elected and the adapter refused is reported
 		// under its own typed code with the details that say what to change —
@@ -324,7 +324,18 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	// been the next to go.
 	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), state)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
+		// The session is already registered, so an encode failure here is not
+		// the open failing: it is the open succeeding and the answer being
+		// lost. An adapter that reports a state this frontend cannot encode —
+		// an invalid raw value in its metadata is enough — would otherwise
+		// leave a live session behind a 500, with a minted id the caller never
+		// saw and cannot close, while retrying its own id earns 409.
+		//
+		// So the session is rolled back unless the caller named it, in which
+		// case it is theirs to close and the message says it is there. This is
+		// the policy servestdio's open takes for the same fact; the two routes
+		// answer one situation the same way or a caller has to learn both.
+		s.writeError(w, http.StatusInternalServerError, "internal", rollbackOpen(entry, request.SessionID != ""), envelope)
 		return
 	}
 	response.InReplyTo = envelope.ID
@@ -341,6 +352,24 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		response.CapabilityRevision = revision
 	}
 	writeEnvelope(w, http.StatusOK, response)
+}
+
+// rollbackOpen closes a session whose open response could not be encoded, and
+// reports what it left behind.
+//
+// The rollback runs on a context of its own rather than the request's: the
+// request is already being answered, and a caller that hung up must not decide
+// whether a session it cannot see gets closed.
+func rollbackOpen(entry *serve.Session, named bool) string {
+	if named {
+		return "the open response could not be encoded; the session is open under the session_id the request supplied"
+	}
+	rollback, cancel := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
+	defer cancel()
+	if err := entry.Close(rollback); err != nil && !errors.Is(err, base.ErrSessionClosed) {
+		return "the open response could not be encoded; rolling the session back failed and it may still be live"
+	}
+	return "the open response could not be encoded; the session was rolled back"
 }
 
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {

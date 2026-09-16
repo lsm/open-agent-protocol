@@ -1045,9 +1045,16 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 	case refused:
 		// The same refusal an op over the in-flight bound gets, and for the
 		// same reason: the frontend answers rather than waits, and the
-		// request was never served, so sending it again is safe. It succeeds
-		// once a subscription ends.
-		fail(&wireError{Code: "busy", Message: why + "; send this request again"})
+		// request was never served, so sending it again is safe.
+		//
+		// The message names how a slot frees, because this framing gives a
+		// host no way to hang up one subscription the way an SSE client drops
+		// one connection. Saying only "send this request again" would promise
+		// something the host cannot bring about: a pump ends at its run's
+		// terminal, at an overflow or stream failure, or when its session
+		// closes — and nothing else. Whether it should also end on request is
+		// issue #53.
+		fail(&wireError{Code: "busy", Message: why + "; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has"})
 		return
 	}
 	// The subscription takes the pump's context and not this worker's. It is
