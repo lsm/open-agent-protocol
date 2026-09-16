@@ -521,10 +521,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		// So it takes the same rollback policy, and the same exemption: a
 		// session the host named is one it can still close itself.
 		s.logger.Printf("servestdio: open %d: encode response: %v", *request.ID, err)
-		if werr := s.rollbackOpen(ctx, request, entry, payload.SessionID != ""); werr != nil {
-			return nil, werr
-		}
-		return nil, internalError(err)
+		return nil, s.refuseUnencodableOpen(ctx, request, entry, payload.SessionID != "")
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
@@ -550,22 +547,27 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 	return result, nil
 }
 
-// rollbackOpen closes a session the host will never be told the id of, and
-// reports nil when there is nothing to roll back — because the host named the
-// session itself, or because the close succeeded.
+// refuseUnencodableOpen answers an open whose response cannot be encoded, and
+// rolls the session back when the host could not name it.
 //
-// It returns a wireError only when the rollback failed, so the caller can say
-// the session may still be live rather than claim an outcome it did not
-// observe.
-func (s *Server) rollbackOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool) *wireError {
+// Every branch says what it left behind, because that is the only thing the
+// host can act on: an encode failure alone tells it the open failed, which is
+// half true and the wrong half — the session exists. Its sibling
+// refuseOversizedOpen says the same three things for the same three outcomes,
+// and a host that had to tell them apart by code would be reading the same
+// situation two ways.
+//
+// The messages are fixed-size and the encode error goes to the logger, which
+// is this package's rule for every refusal that has to stay framable.
+func (s *Server) refuseUnencodableOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool) *wireError {
 	if named {
-		return nil
+		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session is open under the session_id the request supplied"}
 	}
 	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
 	err := entry.Close(rollback)
 	cancelRollback()
 	if err == nil || errors.Is(err, base.ErrSessionClosed) {
-		return nil
+		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session was rolled back"}
 	}
 	s.logger.Printf("servestdio: roll back open %d: %v", *request.ID, err)
 	return &wireError{Code: "internal", Message: "the open response could not be encoded; rolling the session back failed and it may still be live"}

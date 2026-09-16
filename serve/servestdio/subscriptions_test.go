@@ -1092,10 +1092,45 @@ func TestAnOpenThatCannotEncodeIsRolledBack(t *testing.T) {
 	if response.Error.Code != "internal" {
 		t.Fatalf("code %q, want internal: %s", response.Error.Code, response.Error.Message)
 	}
+	if !strings.Contains(response.Error.Message, "rolled back") {
+		t.Fatalf("the refusal does not say what it left behind: %s", response.Error.Message)
+	}
 	// The adapter's own session is the ground truth. A closed session stays
 	// in the hub's listing, so the listing cannot answer this.
 	if !adapter.opened(t).isClosed() {
 		t.Fatal("the failed open left a live session behind; the host was told it failed and cannot name what to close")
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAnOpenTheHostNamedIsKeptAndSaidSo is the other half of the same rule.
+// A session the host named is not unknowable, so it is kept — but a refusal
+// that only reported the encode failure would tell the host the open failed,
+// which is half true and the wrong half. It has to say the session is there,
+// exactly as the oversized path does for the same three outcomes.
+func TestAnOpenTheHostNamedIsKeptAndSaidSo(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &unencodableStateAdapter{}
+	if err := registry.Register("broken", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	f := startFrontend(t, hub, Options{})
+
+	request := requestEnvelope(t, "req-named", protocol.TypeSessionOpenRequest,
+		protocol.SessionOpenRequest{SessionID: "named-by-host"}, "", "")
+	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"broken","request":%s}`, request))
+	response := f.expectResponse(1)
+	if response.OK {
+		t.Fatal("an open whose state cannot be encoded reported success")
+	}
+	if !strings.Contains(response.Error.Message, "the session is open under the session_id the request supplied") {
+		t.Fatalf("the refusal hides the kept session: %s", response.Error.Message)
+	}
+	if adapter.opened(t).isClosed() {
+		t.Fatal("a session the host named was rolled back; it is the one thing the host could still close itself")
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
