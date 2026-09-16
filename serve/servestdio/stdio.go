@@ -477,8 +477,19 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	if stuck && err == nil {
 		err = ended.terminal()
 	}
-	if (stuck || !drained) && err == nil {
-		err = ErrShutdownStalled
+	// The stall and the input's own fault are not alternatives. A malformed
+	// line that arrives while a response is stuck in out.Write produces
+	// both, and a caller needs both: the line number to report and exit on,
+	// and the stall to know this output must not be reused. So the two are
+	// joined rather than one shadowing the other, and errors.Is and
+	// errors.As each still find what they are looking for.
+	if stuck || !drained {
+		switch {
+		case err == nil:
+			err = ErrShutdownStalled
+		case !errors.Is(err, ErrShutdownStalled):
+			err = fmt.Errorf("%w (%w)", err, ErrShutdownStalled)
+		}
 	}
 	return err
 }

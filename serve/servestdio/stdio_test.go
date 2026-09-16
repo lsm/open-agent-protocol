@@ -1172,6 +1172,48 @@ func TestStalledDrainCarriesNothingLater(t *testing.T) {
 	}
 }
 
+// TestStallAndMalformedLineBothSurvive pins that the two are not
+// alternatives. A line this framing cannot carry arriving while a response
+// is stuck in out.Write produces both conditions, and a caller needs both:
+// the line number it reports and exits on, and the stall that tells it this
+// output must not be reused.
+func TestStallAndMalformedLineBothSurvive(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), stdinReader, io.Discard) }()
+	for id := 1; id <= 3; id++ {
+		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"capabilities","adapter":"hang"}`+"\n", id))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // let the loop park behind the bound
+	if _, err := stdinWriter.Write([]byte("{\"id\":4,\"op\":\"adapters\"}\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		var malformed *MalformedLineError
+		if !errors.As(err, &malformed) {
+			t.Fatalf("Run returned %v, want the malformed line to survive", err)
+		}
+		if malformed.Line != 4 {
+			t.Fatalf("malformed line %d, want 4", malformed.Line)
+		}
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want the stall to survive alongside it", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
 // TestAdmissionClosesAtTeardown pins the gate itself, which no trace can
 // show: once an invocation has closed admission, it refuses, so a serving
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a
