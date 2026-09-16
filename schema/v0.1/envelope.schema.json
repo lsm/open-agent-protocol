@@ -76,7 +76,7 @@
     "capabilitiesResponse": { "allOf": [{ "$ref": "#/$defs/response" }], "required": ["capability_revision"], "properties": { "type": { "const": "capabilities.response" }, "payload": { "$ref": "capabilities.schema.json#/$defs/capabilitiesResponse" } } },
     "capabilitiesUpdated": { "required": ["capability_revision", "sequence"], "properties": { "type": { "const": "capabilities.updated" }, "payload": { "$ref": "capabilities.schema.json#/$defs/capabilitiesUpdated" } } },
     "modelsRequest": { "allOf": [{ "$ref": "#/$defs/session" }], "properties": { "type": { "const": "models.request" }, "payload": { "$ref": "capabilities.schema.json#/$defs/modelsRequest" } } },
-    "modelsResponse": { "allOf": [{ "$ref": "#/$defs/response" }, { "$ref": "#/$defs/session" }], "properties": { "type": { "const": "models.response" }, "payload": { "$ref": "capabilities.schema.json#/$defs/modelsResponse" } } },
+    "modelsResponse": { "allOf": [{ "$ref": "#/$defs/response" }, { "$ref": "#/$defs/session" }], "required": ["capability_revision"], "properties": { "type": { "const": "models.response" }, "payload": { "$ref": "capabilities.schema.json#/$defs/modelsResponse" } } },
     "sessionOpenRequest": { "properties": { "type": { "const": "session.open.request" }, "payload": { "$ref": "session.schema.json#/$defs/openRequest" } } },
     "sessionOpenResponse": { "allOf": [{ "$ref": "#/$defs/response" }, { "$ref": "#/$defs/session" }], "properties": { "type": { "const": "session.open.response" }, "payload": { "$ref": "session.schema.json#/$defs/openResponse" } } },
     "sessionStateRequest": { "allOf": [{ "$ref": "#/$defs/session" }], "properties": { "type": { "const": "session.state.request" }, "payload": { "$ref": "session.schema.json#/$defs/stateRequest" } } },
