@@ -230,6 +230,34 @@ func TestDaemonFillsTheRegistrysCommand(t *testing.T) {
 	}
 }
 
+// TestOpenRelaysTheAdaptersAttachmentRefusal pins the other end of the
+// refusal path: a source the adapter itself cannot attach is reported under
+// the typed code with the details that name it, not as a generic open
+// failure, so a caller learns which source to drop.
+func TestOpenRelaysTheAdaptersAttachmentRefusal(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(64), Options{})
+	// The reference adapter declares reference-mcp, so attaching an id it
+	// already resolves is a collision it refuses by naming the source.
+	status, envelope := openSessionWith(t, server, "collide", protocol.SessionOpenRequest{
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "reference-mcp", Kind: protocol.ToolSourceLocal}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("open status %d, want 400: %s", status, envelope.Payload)
+	}
+	var failure protocol.ErrorResponse
+	if err := envelope.DecodePayload(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "unsupported_feature" {
+		t.Fatalf("refusal code %q", failure.Error.Code)
+	}
+	if failure.Error.Details["feature"] != protocol.FeatureToolSourcesAttach ||
+		failure.Error.Details["reason"] != base.ControlUnsatisfiable ||
+		failure.Error.Details["source"] != "reference-mcp" {
+		t.Fatalf("refusal details %+v", failure.Error.Details)
+	}
+}
+
 // TestReadRequestRefusesBrowserOrigins pins the origin boundary that lands
 // beside the registry allowlist: a simple cross-origin POST from a page is
 // refused, and so is a body that does not declare itself JSON, which turns

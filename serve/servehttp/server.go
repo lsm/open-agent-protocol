@@ -230,6 +230,15 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	_, state, err := s.hub.Open(r.Context(), name, open)
 	if err != nil {
+		// A capability the open elected and the adapter refused is reported
+		// under its own typed code with the details that say what to change —
+		// the same mapping a refused run control takes — so an open refused
+		// for an attachment tells the caller which source to drop rather than
+		// only that the open failed.
+		if code, message, details, ok := serve.ControlRefusal(err); ok {
+			s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
+			return
+		}
 		status, code := http.StatusBadGateway, "open_failed"
 		switch {
 		case errors.Is(err, serve.ErrUnknownAdapter):
