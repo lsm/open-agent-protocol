@@ -975,14 +975,14 @@ func TestMalformedLineSurvivesASaturatedBound(t *testing.T) {
 // release is what lets the next one in.
 func TestAdmissionBudgetsRequestBytes(t *testing.T) {
 	run := newRunState(64, 1024)
-	if got := run.offer(900); got != admitted {
+	if got, _ := run.offer(900); got != admitted {
 		t.Fatalf("the first offer got %v, want admitted", got)
 	}
-	if got := run.offer(900); got != refused {
+	if got, _ := run.offer(900); got != refused {
 		t.Fatalf("offer past the byte budget got %v, want refused with the count ceiling nowhere near", got)
 	}
 	run.release(900)
-	if got := run.offer(900); got != admitted {
+	if got, _ := run.offer(900); got != admitted {
 		t.Fatalf("offer after room appeared got %v, want admitted", got)
 	}
 	run.release(900)
@@ -993,7 +993,7 @@ func TestAdmissionBudgetsRequestBytes(t *testing.T) {
 // against a bound it can never fit, so an idle registry admits anything.
 func TestAdmissionAdmitsOneOversizeRequest(t *testing.T) {
 	run := newRunState(64, 1024)
-	if got := run.offer(4096); got != admitted {
+	if got, _ := run.offer(4096); got != admitted {
 		t.Fatalf("an idle registry got %v for a request larger than its budget, want admitted", got)
 	}
 	run.release(4096)
@@ -1416,15 +1416,15 @@ func TestSlowWorkersBehindTheBoundAreAnswered(t *testing.T) {
 // queued behind.
 func TestAdmissionClosesAtTeardown(t *testing.T) {
 	run := newRunState(1, 0)
-	if got := run.offer(1); got != admitted {
+	if got, _ := run.offer(1); got != admitted {
 		t.Fatalf("admission got %v before the session began, want admitted", got)
 	}
-	if got := run.offer(1); got != refused {
+	if got, _ := run.offer(1); got != refused {
 		t.Fatalf("a full gate got %v, want refused", got)
 	}
 	run.release(1)
 	run.closeAdmission()
-	if got := run.offer(1); got != closedToWork {
+	if got, _ := run.offer(1); got != closedToWork {
 		t.Fatalf("admission got %v after teardown, want closedToWork", got)
 	}
 }
@@ -2256,5 +2256,39 @@ func TestQueuedRefusalWithdrawnUnwrittenIsReported(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return")
+	}
+}
+
+// TestRefusalNamesTheBoundThatRefused pins that the two bounds are not
+// interchangeable to a host. A refusal citing an op ceiling when the byte
+// budget is what filled sends the host looking for requests it does not
+// have: two large requests can exhaust the budget while the op ceiling is
+// nowhere near, and the count in that message would simply be false.
+func TestRefusalNamesTheBoundThatRefused(t *testing.T) {
+	ops := newRunState(64, 1024)
+	if got, _ := ops.offer(900); got != admitted {
+		t.Fatalf("first offer got %v, want admitted", got)
+	}
+	got, why := ops.offer(900)
+	if got != refused {
+		t.Fatalf("offer past the byte budget got %v, want refused", got)
+	}
+	if !strings.Contains(why, "budget") {
+		t.Fatalf("byte-budget refusal said %q, want it to name the budget", why)
+	}
+	if strings.Contains(why, "64 operations") {
+		t.Fatalf("byte-budget refusal cited the op ceiling: %q", why)
+	}
+
+	counted := newRunState(1, 1<<20)
+	if got, _ := counted.offer(1); got != admitted {
+		t.Fatalf("first offer got %v, want admitted", got)
+	}
+	got, why = counted.offer(1)
+	if got != refused {
+		t.Fatalf("offer past the op ceiling got %v, want refused", got)
+	}
+	if !strings.Contains(why, "1 operations") {
+		t.Fatalf("op-ceiling refusal said %q, want it to name the ceiling", why)
 	}
 }

@@ -238,20 +238,26 @@ const (
 
 // offer charges a request against both bounds without ever waiting. An idle
 // registry admits anything, so a request larger than the whole byte budget
-// still runs; otherwise both bounds must hold.
-func (r *runState) offer(size int) admission {
+// still runs; otherwise both bounds must hold. A refusal reports which bound
+// refused it, because the two are not interchangeable to a host: one says
+// too many requests are in flight, the other says too many bytes are, and a
+// host holding two large requests is under no op ceiling at all.
+func (r *runState) offer(size int) (admission, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.shuttingDown {
-		return closedToWork
+		return closedToWork, ""
 	}
 	if r.ops == 0 || (r.ops < r.maxOps && r.bytes+size <= r.maxBytes) {
 		r.ops++
 		r.bytes += size
 		r.work.Add(1)
-		return admitted
+		return admitted, ""
 	}
-	return refused
+	if r.ops >= r.maxOps {
+		return refused, fmt.Sprintf("the frontend is already running %d operations", r.maxOps)
+	}
+	return refused, fmt.Sprintf("the requests already in flight fill the frontend's %d-byte budget", r.maxBytes)
 }
 
 func (r *runState) release(size int) {
@@ -332,13 +338,17 @@ var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame lim
 // frames it had taken — the one it holds and any the reader had handed on —
 // are let go rather than served behind a session the host has ended.
 //
-// This is the narrow case that remains once a saturated bound is answered
-// rather than waited on. A request that does not fit is refused on the wire
-// and the host can send it again; this error is for the frames that were
-// past that point when the teardown closed admission under them, which no
-// response can reach because the output is being given up. What the caller
-// is owed is to be told, rather than a nil return that reads as "all
-// served".
+// Two things produce it, and they are the same fact by different routes.
+// Admission can close under the loop at the teardown, letting go frames that
+// were decoded and never served, which no response can reach because the
+// output is being given up. Or a request that did not fit the bound was
+// refused, and the refusal never reached the host — the output queue could
+// not take it, or the teardown withdrew it before the bytes went out — which
+// leaves that request neither served nor answered just the same.
+//
+// A refusal that does reach the host is not this: the request was answered,
+// and the host can send it again. What the caller is owed here is to be
+// told, rather than a nil return that reads as "all served".
 var ErrRequestsDropped = errors.New("servestdio: requests read before the host's end were dropped unserved")
 
 // ErrShutdownStalled reports that a shutdown stage outlived its bounded
@@ -503,6 +513,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 			// would otherwise carry every line still waiting into an output
 			// the caller has taken back.
 			close(abandon)
+			// A write may already have failed and been recorded before this
+			// window expired — the two become ready together often enough
+			// that the select can take either. This branch never collects
+			// the writer's return, so the recorded failure is read from
+			// where the writer leaves it, exactly as the worker-timeout
+			// path does, rather than being lost to the timer winning a
+			// race.
+			err = note(err, outputFailed.get())
 		}
 	case <-workWindow.C:
 		// The workers being abandoned here may still finish, and the writer
@@ -778,7 +796,8 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 				return ended(&MalformedLineError{Line: number, Detail: err.Error()})
 			}
 			size := len(result.frame)
-			switch run.offer(size) {
+			outcome, refusal := run.offer(size)
+			switch outcome {
 			case closedToWork:
 				// Admission closed under us: the teardown is past waiting
 				// and this frame, decoded and never served, is being let
@@ -801,7 +820,7 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 				// What is owed then is the count, not the line.
 				if !s.offerLine(lines, request, &wireError{
 					Code:    "busy",
-					Message: fmt.Sprintf("the frontend is already running %d operations; send this request again", s.maxOps),
+					Message: refusal + "; send this request again",
 				}, refusals) {
 					unanswered++
 				}
@@ -1061,11 +1080,18 @@ func (s *Server) offerLine(lines chan<- outLine, request requestLine, werr *wire
 	if err != nil || len(line) > s.frameLimit {
 		return false
 	}
+	// Counted before the line is visible to the writer, not after. The
+	// writer can take it, and be abandoned, and Run can read the tally, all
+	// while this goroutine is still descheduled between the send and the
+	// increment — and the refusal would then be missing from a count whose
+	// whole purpose is to notice it. Rolled back when the queue is full,
+	// which is the only way the send does not happen.
+	refusals.queued.Add(1)
 	select {
 	case lines <- outLine{data: line, refusal: true}:
-		refusals.queued.Add(1)
 		return true
 	default:
+		refusals.queued.Add(-1)
 		return false
 	}
 }
