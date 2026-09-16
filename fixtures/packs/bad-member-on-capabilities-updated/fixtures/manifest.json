@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "updated-gate",
+      "path": "gate.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "ext:com.example.updated/1.0.0"
+      ],
+      "covers": [
+        {
+          "capability": "com.example.updated.regions",
+          "aspect": "gate"
+        }
+      ],
+      "provenance": []
+    },
+    {
+      "id": "updated-honour",
+      "path": "honour.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unhonoured_capability"
+      ],
+      "units": [
+        "ext:com.example.updated/1.0.0"
+      ],
+      "covers": [
+        {
+          "capability": "com.example.updated.regions",
+          "aspect": "honour"
+        }
+      ],
+      "provenance": []
+    }
+  ]
+}

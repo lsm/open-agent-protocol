@@ -1,0 +1,38 @@
+{
+  "id": "com.example.updated",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "capability_keys": [
+    "com.example.updated.regions"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.updated.region.changed",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/regionChanged"
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.updated.region.changed",
+      "capability": "com.example.updated.regions"
+    },
+    {
+      "payload_type": "capabilities.updated",
+      "member": "com.example.updated.region",
+      "capability": "com.example.updated.regions"
+    }
+  ],
+  "payload_members": [
+    {
+      "payload_type": "capabilities.updated",
+      "member": "com.example.updated.region",
+      "schema": {
+        "type": "string"
+      }
+    }
+  ],
+  "fixtures": "fixtures/manifest.json"
+}

@@ -40,6 +40,7 @@ func TestPackLoadRefusals(t *testing.T) {
 		{[]string{"bad-refusal-undeclared"}, []string{LoadPackRefusalUndeclared}},
 		{[]string{"bad-restates-core-member"}, []string{LoadPackRestatesCoreMember}},
 		{[]string{"bad-member-target-unknown"}, []string{LoadPackMemberTargetUnknown}},
+		{[]string{"bad-member-on-capabilities-updated"}, []string{LoadPackMemberTargetUnknown}},
 		{[]string{"bad-schema-path-escape"}, []string{LoadPackSchemaPathEscape}},
 		{[]string{"bad-external-ref"}, []string{LoadPackExternalRef}},
 		{[]string{"bad-schema-id-escape"}, []string{LoadPackExternalRef}},
@@ -339,5 +340,130 @@ func TestPackFixturePathIsContainedBeforeOpen(t *testing.T) {
 	_, err = v.validateManifest(packs[0].fixtures, ManifestOptions{Packs: packs, Owner: packs[0]}, false)
 	if err == nil || !strings.Contains(err.Error(), "outside the pack root") {
 		t.Fatalf("symlinked fixture was opened: %v", err)
+	}
+}
+
+// writeTempPack writes a pack directory from file name to JSON value and
+// returns its symlink-resolved path.
+func writeTempPack(t *testing.T, files map[string]any) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, v := range files {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// negativeCorpus is a pack fixture manifest covering both aspects of each key;
+// the files need not exist for the load, which judges the manifest only.
+func negativeCorpus(unit string, keys ...string) map[string]any {
+	var entries []any
+	for _, key := range keys {
+		for aspect, code := range map[string]string{AspectGate: CodeUnavailableCapability, AspectHonour: CodeUnhonouredCapability} {
+			entries = append(entries, map[string]any{
+				"id": key + "-" + aspect, "path": key + "-" + aspect + ".json", "kind": KindSemanticInvalid, "valid": false, "phase": PhaseSemantic,
+				"codes": []string{code}, "units": []string{unit}, "covers": []any{map[string]any{"capability": key, "aspect": aspect}}, "provenance": []any{},
+			})
+		}
+	}
+	return map[string]any{"version": 1, "fixtures": entries}
+}
+
+// A pack's own unit is checked whether or not its corpus claims it: keys
+// with an empty fixture manifest are refused as uncovered.
+func TestPackKeysAreCheckedWithEmptyCorpus(t *testing.T) {
+	dir := writeTempPack(t, map[string]any{
+		"pack.json": map[string]any{
+			"id": "com.example.empty", "version": "1.0.0", "schemas": []string{"types.schema.json"},
+			"capability_keys": []string{"com.example.empty.things"},
+			"envelope_types":  []any{map[string]any{"type": "com.example.empty.ping", "role": "event", "schema": "types.schema.json#/$defs/ping"}},
+			"gates":           []any{map[string]any{"type": "com.example.empty.ping", "capability": "com.example.empty.things"}},
+			"fixtures":        "fixtures/manifest.json",
+		},
+		"types.schema.json":      map[string]any{"$defs": map[string]any{"ping": map[string]any{"type": "object", "properties": map[string]any{"type": map[string]any{"const": "com.example.empty.ping"}}}}},
+		"fixtures/manifest.json": map[string]any{"version": 1, "fixtures": []any{}},
+	})
+	_, err := LoadPacks([]string{dir})
+	if err == nil || !strings.Contains(err.Error(), "no negative gate fixture") {
+		t.Fatalf("pack with keys and an empty corpus loaded: %v", err)
+	}
+}
+
+// One error.response settles every gate its request carried: a request gated
+// on two unadvertised keys is rightly refused by naming either of them.
+func TestRefusalSettlesEveryUnadvertisedGateAtOnce(t *testing.T) {
+	unit := "ext:com.example.twin/1.0.0"
+	dir := writeTempPack(t, map[string]any{
+		"pack.json": map[string]any{
+			"id": "com.example.twin", "version": "1.0.0", "schemas": []string{"types.schema.json"},
+			"capability_keys": []string{"com.example.twin.left", "com.example.twin.right"},
+			"envelope_types":  []any{map[string]any{"type": "com.example.twin.ping", "role": "event", "schema": "types.schema.json#/$defs/ping"}},
+			"gates": []any{
+				map[string]any{"type": "com.example.twin.ping", "ungated": true},
+				map[string]any{"payload_type": "session.message.submit.request", "member": "com.example.twin.a", "capability": "com.example.twin.left"},
+				map[string]any{"payload_type": "session.message.submit.request", "member": "com.example.twin.b", "capability": "com.example.twin.right"},
+			},
+			"payload_members": []any{
+				map[string]any{"payload_type": "session.message.submit.request", "member": "com.example.twin.a", "schema": map[string]any{"type": "string"}},
+				map[string]any{"payload_type": "session.message.submit.request", "member": "com.example.twin.b", "schema": map[string]any{"type": "string"}},
+			},
+			"fixtures": "fixtures/manifest.json",
+		},
+		"types.schema.json":      map[string]any{"$defs": map[string]any{"ping": map[string]any{"type": "object", "properties": map[string]any{"type": map[string]any{"const": "com.example.twin.ping"}}}}},
+		"fixtures/manifest.json": negativeCorpus(unit, "com.example.twin.left", "com.example.twin.right"),
+	})
+	packs, err := LoadPacks([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",`
+	trace := func(refused string) string {
+		return "[" + strings.Join([]string{
+			head + `"type":"capabilities.request","id":"capq","payload":{}}`,
+			head + `"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{}}}`,
+			head + `"type":"session.message.submit.request","id":"req1","session_id":"s1","capability_revision":"v1","payload":{"delivery":"auto","session_id":"s1","messages":[{"role":"user","content":"go"}],"com.example.twin.a":"x","com.example.twin.b":"y"}}`,
+			head + `"type":"error.response","id":"err1","in_reply_to":"req1","session_id":"s1","payload":{"error":{"code":"unsupported_feature","message":"no","details":{"feature":"` + refused + `","reason":"unadvertised"}}}}`,
+		}, ",") + "]"
+	}
+	for _, key := range []string{"com.example.twin.left", "com.example.twin.right"} {
+		if result := v.ValidateBytes([]byte(trace(key)), key); !result.Valid() {
+			t.Fatalf("refusal naming %s was not accepted: %v", key, result.Diagnostics)
+		}
+	}
+	if result := v.ValidateBytes([]byte(trace("com.example.twin.other")), "other"); !result.HasCode(CodeUnavailableCapability) {
+		t.Fatalf("refusal naming neither gate passed: %v", result.Diagnostics)
+	}
+}
+
+// A resource a document binds with an in-pack $id is referable by the pack's
+// other schemas, as the compiler registers it.
+func TestInPackIdentifiersAreReferable(t *testing.T) {
+	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/", documents: map[string]any{}}
+	p.Descriptor.ID, p.Descriptor.Version = "com.example.a", "1.0.0"
+	uri := p.Base + "types.schema.json"
+	p.documents[uri] = map[string]any{"$defs": map[string]any{
+		"a": map[string]any{"$id": "sub/a.json", "properties": map[string]any{"next": map[string]any{"$ref": "b.json"}}},
+		"b": map[string]any{"$id": "sub/b.json", "type": "object"},
+	}}
+	p.order = []string{uri}
+	if refusals := checkReferences([]*Pack{p}); len(refusals) != 0 {
+		t.Fatalf("reference to an in-pack $id resource refused: %v", refusals)
 	}
 }

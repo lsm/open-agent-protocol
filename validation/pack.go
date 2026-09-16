@@ -527,6 +527,14 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 			refuse(LoadPackMemberTargetUnknown, "payload member %q targets %q, which is not a core envelope type; a target with no known role has no gate point", member.Member, member.PayloadType)
 			continue
 		}
+		if member.PayloadType == "capabilities.updated" && memberGateKey(p, member) != "" {
+			// The update introduces a revision and marks the descriptor
+			// stale until the next capabilities.response; no descriptor of
+			// its own governs a gated member on it. An ungated member is
+			// schema only and needs none.
+			refuse(LoadPackMemberTargetUnknown, "payload member %q targets %q under a gate; that envelope introduces a revision and has no descriptor of its own to judge the gate against", member.Member, member.PayloadType)
+			continue
+		}
 		// Restatement is judged before containment, and that order is what
 		// makes the rule reachable: the member a pack would restate is a core
 		// one, which is unprefixed by definition, so containment alone would
@@ -598,6 +606,17 @@ func (p *Pack) index() {
 			URI:         p.memberURI(i),
 		}
 	}
+}
+
+// memberGateKey is the capability key a payload member's gate names, or ""
+// for an ungated member.
+func memberGateKey(p *Pack, member PackPayloadMember) string {
+	for _, gate := range p.Descriptor.Gates {
+		if gate.PayloadType == member.PayloadType && gate.Member == member.Member {
+			return gate.Capability
+		}
+	}
+	return ""
 }
 
 func (p *Pack) memberURI(index int) string {
@@ -906,15 +925,22 @@ func checkReferences(packs []*Pack) []PackRefusal {
 	var refusals []PackRefusal
 	for _, p := range packs {
 		allowed := map[string]bool{}
-		for uri := range p.documents {
-			allowed[uri] = true
+		admit := func(owner *Pack) {
+			// A pack's referable resources are the documents its descriptor
+			// names and every in-pack resource those documents bind with an
+			// $id, which the compiler registers just the same.
+			for uri, document := range owner.documents {
+				allowed[uri] = true
+				for _, id := range documentIdentifiers(owner, uri, document) {
+					allowed[id] = true
+				}
+			}
 		}
+		admit(p)
 		for _, dependency := range p.Descriptor.DependsOn {
 			for _, other := range packs {
 				if other.ID() == dependency.ID && other.Version() == dependency.Version {
-					for uri := range other.documents {
-						allowed[uri] = true
-					}
+					admit(other)
 				}
 			}
 		}
@@ -931,6 +957,23 @@ func checkReferences(packs []*Pack) []PackRefusal {
 		}
 	}
 	return refusals
+}
+
+// documentIdentifiers lists the resources a document binds within its pack's
+// own base through $id, root or nested; identifiers elsewhere are refused by
+// checkDocumentReferences and are not resources of the pack.
+func documentIdentifiers(p *Pack, base string, document any) []string {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, ref := range collectRefs(document, baseURL) {
+		if ref.identifier && ref.err == nil && strings.HasPrefix(ref.absolute, p.Base) {
+			ids = append(ids, ref.absolute)
+		}
+	}
+	return ids
 }
 
 func checkDocumentReferences(p *Pack, base string, document any, allowed map[string]bool) []PackRefusal {

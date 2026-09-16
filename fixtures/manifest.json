@@ -1256,6 +1256,23 @@
       ]
     },
     {
+      "id": "ext-pack-member-on-capabilities-updated",
+      "path": "packs/bad-member-on-capabilities-updated",
+      "kind": "load-invalid",
+      "valid": false,
+      "phase": "load",
+      "codes": [
+        "pack_member_target_unknown"
+      ],
+      "units": [
+        "extensions"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0004-extension-packs.md"
+      ]
+    },
+    {
       "id": "ext-pack-schema-path-escape",
       "path": "packs/bad-schema-path-escape",
       "kind": "load-invalid",

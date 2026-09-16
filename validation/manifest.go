@@ -373,6 +373,12 @@ func checkCorpusCompleteness(m FixtureManifest, extra map[string][]string) error
 			covered[c] = append(covered[c], e.Units...)
 		}
 	}
+	for unit := range extra {
+		// A pack's own unit is checked whether or not any fixture claims it:
+		// an empty corpus claims nothing and would otherwise owe nothing,
+		// which is exactly the pack this rule exists to refuse.
+		claimed[unit] = true
+	}
 	units := make([]string, 0, len(claimed))
 	for unit := range claimed {
 		units = append(units, unit)

@@ -3,6 +3,7 @@ package validation
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -113,8 +114,17 @@ func (s *state) packEnvelope(i, line int, e protocol.Envelope) {
 	if request == nil {
 		return
 	}
-	for _, gate := range s.requestGates(request) {
-		s.settleGate(i, line, e, gate)
+	gates := s.requestGates(request)
+	if e.Type == protocol.TypeErrorResponse {
+		s.settleRefusal(i, line, e, gates)
+		return
+	}
+	for _, gate := range gates {
+		if !s.advertised(gate.key) {
+			// A successful response to a request gated on an unadvertised
+			// key is the endpoint acting on a capability it does not have.
+			s.feature(i, line, e, gate.key)
+		}
 	}
 }
 
@@ -148,50 +158,49 @@ func (s *state) memberGates(t protocol.EnvelopeType, payload json.RawMessage) []
 	return gates
 }
 
-// settleGate judges one correlated response against the gate its request
-// carried.
-//
-// While the key is unadvertised the ladder is the one every capability-rung
-// refusal uses: a success response is the endpoint acting on a capability it
-// does not have, and a refusal must be the typed `unsupported_feature` naming
-// the key. Once the key is advertised the gate has nothing left to say, and the
-// honour rule takes over for a packed request: a refusal under a code the pack
-// declared is a domain refusal the validator cannot evaluate and is conforming,
-// while a refusal under any other code convicts an endpoint that advertised a
-// capability and refused to honour it.
-func (s *state) settleGate(i, line int, e protocol.Envelope, gate packGate) {
-	advertised := s.advertised(gate.key)
-	if e.Type != protocol.TypeErrorResponse {
-		if !advertised {
-			s.feature(i, line, e, gate.key)
-		}
-		return
-	}
+// settleRefusal judges one error.response against every gate its request
+// carried, collectively. A request refused for any one of its unadvertised
+// keys is rightly refused — one refusal cannot name two keys, and naming
+// either is the typed refusal the ladder asks for — so the honour rule for
+// the advertised gates does not apply to it. With every gate advertised, the
+// typed gate's honour rule applies: the refusal must be one its pack declared.
+func (s *state) settleRefusal(i, line int, e protocol.Envelope, gates []packGate) {
 	var payload protocol.ErrorResponse
 	if err := e.DecodePayload(&payload); err != nil {
 		return
 	}
-	if !advertised {
+	var unadvertised []string
+	var typed *packGate
+	for idx := range gates {
+		if !s.advertised(gates[idx].key) {
+			unadvertised = append(unadvertised, gates[idx].key)
+		} else if gates[idx].typed {
+			typed = &gates[idx]
+		}
+	}
+	if len(unadvertised) > 0 {
+		sort.Strings(unadvertised)
 		feature, _ := payload.Error.Details["feature"].(string)
 		reason, _ := payload.Error.Details["reason"].(string)
-		if payload.Error.Code == errorUnsupportedFeature && feature == gate.key && reason == reasonUnadvertised {
+		if payload.Error.Code == errorUnsupportedFeature && reason == reasonUnadvertised && slices.Contains(unadvertised, feature) {
 			return
+		}
+		named := fmt.Sprintf("details.feature %q", unadvertised[0])
+		if len(unadvertised) > 1 {
+			named = fmt.Sprintf("details.feature one of %q", unadvertised)
 		}
 		s.addExpected(CodeUnavailableCapability, i, line, e, "/payload/error/code",
 			"an unadvertised capability must be refused with the typed unsupported-feature error naming it",
-			fmt.Sprintf("%s with details.feature %q and details.reason %q", errorUnsupportedFeature, gate.key, reasonUnadvertised),
+			fmt.Sprintf("%s with %s and details.reason %q", errorUnsupportedFeature, named, reasonUnadvertised),
 			payload.Error.Code, string(e.InReplyTo))
 		return
 	}
-	if !gate.typed {
-		return
-	}
-	if gate.refusals[payload.Error.Code] {
+	if typed == nil || typed.refusals[payload.Error.Code] {
 		return
 	}
 	s.addExpected(CodeUnhonouredCapability, i, line, e, "/payload/error/code",
 		"an endpoint advertising this capability refused a well-formed request under a code its pack never declared",
-		declaredRefusals(gate.refusals), payload.Error.Code, string(e.InReplyTo))
+		declaredRefusals(typed.refusals), payload.Error.Code, string(e.InReplyTo))
 }
 
 // advertised reports whether a capability key is affirmatively advertised by

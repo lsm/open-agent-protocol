@@ -398,6 +398,10 @@ known role has no gate point. Fixtures `ext-member-on-event-unadvertised`
 (`unavailable_capability` on a `run.completed` carrying a packed member
 while its key is unadvertised) and `ext-pack-member-target-unknown`
 (load refusal).
+The same refusal covers a gated member on `capabilities.updated`: that
+envelope introduces a revision and marks the descriptor stale until the
+next `capabilities.response`, so no descriptor of its own governs the
+gate; an ungated member there is schema only.
 Fixtures `ext-member-validated` (a packed member with a body its
 subschema rejects: tolerated without the pack, diagnosed with it),
 `ext-member-undeclared-still-rejected` (positive; a different unknown
