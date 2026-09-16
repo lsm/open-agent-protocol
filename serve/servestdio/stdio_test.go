@@ -1536,9 +1536,14 @@ func requestEnvelope(t *testing.T, id string, typ protocol.EnvelopeType, payload
 	return data
 }
 
-// readGate reads envelopes from one hub-side subscription until a gate of
-// the wanted type arrives — the test counterpart of a host reading the run
-// stream to answer an interaction, until the events op lands its slice.
+// readGate reads envelopes from one hub-side subscription until a gate of the
+// wanted type arrives — the test counterpart of a host reading the run stream
+// to answer an interaction.
+//
+// It reads from the hub rather than through the events op for the reason
+// openSession opens there: a test about resolve should fail for resolve, not
+// for something the subscription did. The e2e harness in cmd/oap drives the
+// gates over the wire, which is where that path is covered.
 func readGate(t *testing.T, subscription *serve.Subscription, want protocol.EnvelopeType) protocol.Envelope {
 	t.Helper()
 	type read struct {
