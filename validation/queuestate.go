@@ -555,10 +555,16 @@ func cancellingReservation(entry protocol.ActiveRun, r *runState) (reservation, 
 	if r.started {
 		return entry.AsOfSequence != nil && *entry.AsOfSequence < r.startSequence, false
 	}
-	if entry.AsOfSequence == nil {
-		return true, false
-	}
-	return entry.QueuePosition != nil, true
+	return cancellingHoldsItsPlace(entry), entry.AsOfSequence != nil
+}
+
+// cancellingHoldsItsPlace is a cancelling entry's own answer to the one thing
+// its status does not settle, for wherever the trace cannot settle it: a queue
+// position beside a stated capture position claims the run had not begun
+// there, its absence claims it had, and an entry stating no position at all
+// claims no knowledge the trace lacks and is read as a run still in its queue.
+func cancellingHoldsItsPlace(entry protocol.ActiveRun) bool {
+	return entry.AsOfSequence == nil || entry.QueuePosition != nil
 }
 
 func (s *state) checkEntryStatus(i, line int, e protocol.Envelope, pointer string, entry protocol.ActiveRun, r *runState) {

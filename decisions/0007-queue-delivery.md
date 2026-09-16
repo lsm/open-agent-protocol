@@ -178,6 +178,20 @@ status agrees with the rest of it. An open response that names runs without
 declaring a recovery declares nothing that could have created them, and its
 entries are runs from nowhere like any others.
 
+Taking a run from that document means taking two things from it. Where its
+trace picks up is the position the entry states, then the cursor the recovery
+resumed from, then the beginning — one question asked of one recovery block,
+so both recovery paths read it the same way. The cursor belongs to the run the
+recovery names, so a reservation listed beside that run was never at that
+position and starts from the beginning; a declared gap states no position at
+all, its cursor being the retained boundary the endpoint could not serve from
+rather than where the events that follow come from. And what the run *is* is
+read from the entry's shape rather than from its status alone: `queued` is a
+reservation, `cancelling` says nothing about whether the run began and answers
+with the queue place it reports holding, exactly as it does where the trace has
+not reached the run's start, and anything else is a run that began before
+everything this trace can see.
+
 `session.state` gains `active_runs`: every nonterminal run in admission order,
 each with its status, its 1-based `queue_position` when it is a reservation,
 the position it was captured at, and the unresolved interactions it is blocked
@@ -435,7 +449,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 142 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 147 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the

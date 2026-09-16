@@ -397,11 +397,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 				}
 				run := s.runs[p.ActiveRunID]
 				if run == nil {
-					next := uint64(1)
-					if rec.cursorSet {
-						next = rec.cursor + 1
-					}
-					s.runs[p.ActiveRunID] = &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: next, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
+					s.runs[p.ActiveRunID] = &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
 				}
 			}
 		}
@@ -1160,21 +1156,43 @@ func (s *state) applyStateDocument(i, line int, e protocol.Envelope, p protocol.
 // agrees with the rest of it. An open response that names runs without
 // declaring a recovery declares nothing that could have created them, and its
 // entries are runs from nowhere like any others.
+// resumeSequence is where a run a recovery introduces picks its trace up: the
+// position the entry states, then the cursor the recovery resumed from, then
+// the beginning. Both recovery paths take it from here rather than each
+// deciding, because they ask one question of one recovery block, and the
+// answer was right in only one of them.
+//
+// The cursor belongs to the run the recovery names, so a second entry beside it
+// — a reservation the reattach also carries — starts from the beginning rather
+// than from a position that was never about it. A declared gap states no
+// position at all: its cursor is the retained boundary the endpoint could not
+// serve from, not where the events that follow come from, so counting from it
+// would diagnose the endpoint for the gap it declared.
+func resumeSequence(rec *recoveryExpectation, run protocol.RunID, asOf *uint64) uint64 {
+	if asOf != nil {
+		return *asOf + 1
+	}
+	if rec != nil && !rec.gap && rec.cursorSet && (rec.run == "" || rec.run == run) {
+		return rec.cursor + 1
+	}
+	return 1
+}
+
 func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st *sessionTrack) {
+	rec := s.recoveries[p.SessionID]
 	for _, entry := range p.ActiveRuns {
 		if s.runs[entry.RunID] != nil {
 			continue
 		}
-		next := uint64(1)
-		if entry.AsOfSequence != nil {
-			next = *entry.AsOfSequence + 1
-		}
-		// The entry's own status is what the reattach knows: a queued one is
-		// a reservation that has not begun, and anything else is a run that
-		// has. Its start is before everything this trace can see, so a
-		// capture position stated here is behind it.
-		queued := entry.Status == protocol.RunQueued
-		run := &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: next, admittedAt: i, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status}
+		// The entry's own shape is what the reattach knows. A queued one is a
+		// reservation that has not begun; a cancelling one says nothing about
+		// whether its run began, so it answers with the queue place it reports
+		// holding, exactly as it does where the trace has not reached its
+		// start; anything else is a run that has begun, before everything this
+		// trace can see.
+		queued := entry.Status == protocol.RunQueued ||
+			(entry.Status == protocol.RunCancelling && cancellingHoldsItsPlace(entry))
+		run := &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: resumeSequence(rec, entry.RunID, entry.AsOfSequence), admittedAt: i, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status}
 		run.order = len(st.order)
 		s.runs[entry.RunID] = run
 		st.order = append(st.order, entry.RunID)
