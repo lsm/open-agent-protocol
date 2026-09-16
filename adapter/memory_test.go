@@ -837,8 +837,15 @@ func TestDescriptorTruthful(t *testing.T) {
 	if descriptor.Journal.Persistence != "process_memory" || descriptor.Journal.Replay != protocol.SupportDegraded || descriptor.Journal.Capacity != 7 {
 		t.Fatalf("journal: %+v", descriptor.Journal)
 	}
-	if descriptor.MaxActiveRunsPerSession != 1 || !descriptor.InteractiveGates || descriptor.CancellationTarget != "run" || descriptor.CancellationImplementation != "session_emulated" {
+	// One started run beside one reservation, and the wire projection of that
+	// bound beside it: a descriptor advertising a queue with no reachable
+	// bound promises nothing.
+	if descriptor.MaxActiveRunsPerSession != 2 || !descriptor.InteractiveGates || descriptor.CancellationTarget != "run" || descriptor.CancellationImplementation != "session_emulated" {
 		t.Fatalf("descriptor: %+v", descriptor)
+	}
+	limits := descriptor.Capabilities.Limits
+	if limits == nil || limits.MaxActiveRunsPerSession == nil || *limits.MaxActiveRunsPerSession != 2 || limits.MaxQueuedRunsPerSession == nil || *limits.MaxQueuedRunsPerSession != 1 {
+		t.Fatalf("limits: %+v", limits)
 	}
 }
 

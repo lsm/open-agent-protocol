@@ -716,11 +716,28 @@ func TestSubmitRejections(t *testing.T) {
 		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
 	}
 
-	// A second submission while the run is active conflicts.
+	// A second submission while the run is active reserves the one queued
+	// slot the reference adapter discloses; the third exceeds the bound and
+	// conflicts, which is the wire's run_active.
 	_, admission := submitRun(t, server, "reject", "submit-active")
-	active := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-second", protocol.MessageSubmitRequest{
+	queued := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-second", protocol.MessageSubmitRequest{
 		SessionID: "reject", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}},
+	}, "reject", string(admission.RunID), "")
+	status, reservation := postEnvelope(t, server, "/sessions/reject/submit", queued)
+	if status != http.StatusOK {
+		t.Fatalf("reservation status = %d, want 200 (%s)", status, reservation.Payload)
+	}
+	var reserved protocol.MessageSubmitResponse
+	if err := reservation.DecodePayload(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved.Admission != protocol.AdmissionQueued || reserved.EffectiveDelivery != protocol.EffectiveDeliveryQueue || reserved.DeliveryResolution != "session_busy" {
+		t.Fatalf("reservation = %+v", reserved)
+	}
+	active := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-third", protocol.MessageSubmitRequest{
+		SessionID: "reject", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("and again")}},
 	}, "reject", string(admission.RunID), "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", active)
 	requireErrorResponse(t, status, http.StatusConflict, errorEnvelope, "run_active")
