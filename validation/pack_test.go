@@ -154,6 +154,33 @@ func TestPackTurnsToleranceIntoConformance(t *testing.T) {
 	}
 }
 
+// A pack adds vocabulary, not a second lifecycle: a packed run-scoped event
+// takes part in the run bookkeeping its wire scope implies, so it advances the
+// cursor instead of leaving a gap for the next core event to be blamed for.
+func TestPackedRunEventAdvancesTheCursor(t *testing.T) {
+	packs, err := LoadPacks(packDir(t, "storage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWith(Options{Packs: packs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",`
+	trace := "[" + strings.Join([]string{
+		head + `"type":"capabilities.request","id":"capq","payload":{}}`,
+		head + `"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"com.example.storage.objects":{"level":"native"}}}}`,
+		head + `"type":"session.message.submit.request","id":"req1","session_id":"s1","payload":{"delivery":"auto","session_id":"s1","messages":[{"role":"user","content":"go"}]}}`,
+		head + `"type":"session.message.submit.response","id":"resp1","in_reply_to":"req1","session_id":"s1","payload":{"accepted":true,"admission":"started","effective_delivery":"start","requested_delivery":"auto","run_id":"r1","session_id":"s1","status":"running","submission_id":"sub1"}}`,
+		head + `"type":"run.started","id":"ev1","session_id":"s1","run_id":"r1","sequence":1,"payload":{"run_id":"r1","session_id":"s1","status":"running"}}`,
+		head + `"type":"com.example.storage.objects.changed","id":"ev2","session_id":"s1","run_id":"r1","sequence":2,"capability_revision":"v1","payload":{"session_id":"s1","key":"q3.csv"}}`,
+		head + `"type":"run.completed","id":"ev3","session_id":"s1","run_id":"r1","sequence":3,"payload":{"final_response":{"role":"assistant","content":"ok"},"run_id":"r1","session_id":"s1","stop_reason":"end_turn"}}`,
+	}, ",") + "]"
+	if result := v.ValidateBytes([]byte(trace), "packed-run-event"); !result.Valid() {
+		t.Fatalf("a packed run event broke the run bookkeeping: %v", result.Diagnostics)
+	}
+}
+
 // A pack may not amend the protocol. The core pass judges the core projection,
 // so a core rule on a core member is neither relaxed nor tightened by a pack:
 // an undeclared member is still refused and a missing required member is still
