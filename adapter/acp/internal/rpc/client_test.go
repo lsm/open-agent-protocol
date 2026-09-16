@@ -455,8 +455,22 @@ func TestClientCancelledQueuedWriteIsNotEncoded(t *testing.T) {
 		t.Fatalf("second: %v", err)
 	}
 	close(writer.release)
-	if err := <-first; err != nil {
-		t.Fatal(err)
+	// Cancelling a queued write can retire the transport: once the pump has
+	// accepted the frame, the absence of a write result cannot prove that no
+	// bytes were written, so the client fails the transport closed rather
+	// than risk a partial frame followed by unrelated traffic. Whether it
+	// gets that far is a race with the cancellation — the write may instead
+	// be refused before it is ever queued, which retires nothing — so the
+	// frame still inside Encode legitimately ends either way, and the test
+	// requires the outcome the transport's own state says it should have
+	// rather than assuming the race went one way.
+	err := <-first
+	if retired := client.Err(); retired != nil {
+		if err != nil && !errors.Is(err, retired) && !errors.Is(err, ErrClosed) {
+			t.Fatalf("first: %v, want its own result or the retirement %v", err, retired)
+		}
+	} else if err != nil {
+		t.Fatalf("first: %v, want its own result on a live transport", err)
 	}
 }
 
