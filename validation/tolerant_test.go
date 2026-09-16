@@ -309,34 +309,27 @@ func hasCode(r Result, code string) bool {
 // not — rather than judging it against a table it is not in.
 func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 	t.Run("run.status.updated with an unknown status", func(t *testing.T) {
-		trace := loadTrace(t, "core-completed.json")
-		var out []map[string]any
-		inserted := false
-		for _, e := range trace {
-			out = append(out, e)
-			if e["type"] == "run.started" && !inserted {
-				seq, _ := e["sequence"].(json.Number).Int64()
-				out = append(out, map[string]any{
-					"protocol": e["protocol"], "version": e["version"], "profile": e["profile"],
-					"type": "run.status.updated", "id": "ext-paused",
-					"session_id": e["session_id"], "run_id": e["run_id"],
-					"sequence": json.Number(itoa(seq + 1)),
-					"payload":  map[string]any{"session_id": e["session_id"], "run_id": e["run_id"], "status": "paused"},
-				})
-				inserted = true
-				continue
-			}
-			if inserted && e["run_id"] != nil && e["sequence"] != nil {
-				seq, _ := e["sequence"].(json.Number).Int64()
-				e["sequence"] = json.Number(itoa(seq + 1))
-			}
-		}
-		strict, tolerant := validateBoth(t, out, "paused")
+		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), statusUpdates("paused"))
+		strict, tolerant := validateBoth(t, trace, "paused")
 		if strict.Valid() {
 			t.Fatal("strict accepted an unknown run status")
 		}
 		if !tolerant.Valid() {
 			t.Fatalf("tolerant rejected an unknown run status: %v", tolerant.Diagnostics)
+		}
+	})
+	t.Run("the first step out of an unknown status is not judged by the table", func(t *testing.T) {
+		// running -> paused -> queued: running -> queued is illegal in this
+		// revision's table, but the validator cannot know what may follow
+		// paused. Once queued is reached the table applies again, so
+		// queued -> waiting_for_input is illegal.
+		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), statusUpdates("paused", "queued"))
+		if _, tolerant := validateBoth(t, trace, "paused-queued"); !tolerant.Valid() {
+			t.Fatalf("tolerant judged the exit from an unknown status: %v", tolerant.Diagnostics)
+		}
+		trace = afterRunStarted(t, loadTrace(t, "core-completed.json"), statusUpdates("paused", "queued", "waiting_for_input"))
+		if _, tolerant := validateBoth(t, trace, "paused-queued-waiting"); !hasCode(tolerant, CodeIllegalRunTransition) {
+			t.Fatalf("table did not re-engage after a known status: %v", tolerant.Diagnostics)
 		}
 	})
 	t.Run("submit response with an unknown admission still registers the run", func(t *testing.T) {
@@ -354,6 +347,71 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		// event would carry "run event has no accepted admission".
 		if hasCode(tolerant, CodeIllegalRunTransition) {
 			t.Fatalf("run was not registered under an unknown admission: %v", tolerant.Diagnostics)
+		}
+	})
+	t.Run("known members are still held to each other", func(t *testing.T) {
+		// A foreign effective delivery suspends only the predicates that read
+		// it; admission started with status queued contradicts itself.
+		trace := loadTrace(t, "core-completed.json")
+		resp := firstOfType(t, trace, "session.message.submit.response")
+		payload := resp["payload"].(map[string]any)
+		payload["effective_delivery"], payload["status"] = "later", "queued"
+		if _, tolerant := validateBoth(t, trace, "later-queued"); !hasCode(tolerant, CodeIllegalRunTransition) {
+			t.Fatalf("contradictory known members passed under a foreign delivery: %v", tolerant.Diagnostics)
+		}
+		// Likewise a foreign admission leaves effective delivery and status
+		// bound to each other.
+		trace = loadTrace(t, "core-completed.json")
+		payload = firstOfType(t, trace, "session.message.submit.response")["payload"].(map[string]any)
+		payload["admission"], payload["effective_delivery"] = "parked", "queue"
+		if _, tolerant := validateBoth(t, trace, "parked-queue-running"); !hasCode(tolerant, CodeIllegalRunTransition) {
+			t.Fatalf("contradictory known members passed under a foreign admission: %v", tolerant.Diagnostics)
+		}
+	})
+	t.Run("a foreign admission naming a tracked run reserves nothing", func(t *testing.T) {
+		// A later revision's admission may describe an operation on the
+		// existing run; the validator cannot judge it, so it neither reports
+		// a second admission nor reserves anything. The run's session is
+		// still checked.
+		secondSubmit := func(session any, admission string) func(started map[string]any, seq int64) []map[string]any {
+			return func(started map[string]any, seq int64) []map[string]any {
+				common := map[string]any{"protocol": started["protocol"], "version": started["version"], "profile": started["profile"], "session_id": session}
+				req := map[string]any{"type": "session.message.submit.request", "id": "req-again", "payload": map[string]any{"session_id": session, "delivery": "auto", "messages": []any{map[string]any{"role": "user", "content": "more"}}}}
+				resp := map[string]any{"type": "session.message.submit.response", "id": "resp-again", "in_reply_to": "req-again", "payload": map[string]any{
+					"session_id": session, "accepted": true, "submission_id": "sub-again", "requested_delivery": "auto",
+					"admission": admission, "effective_delivery": "merge", "run_id": started["run_id"], "status": "running",
+				}}
+				for k, v := range common {
+					req[k], resp[k] = v, v
+				}
+				return []map[string]any{req, resp}
+			}
+		}
+		base := loadTrace(t, "core-completed.json")
+		session := firstOfType(t, base, "run.started")["session_id"]
+		trace := afterRunStarted(t, base, secondSubmit(session, "merged"))
+		strict, tolerant := validateBoth(t, trace, "merged")
+		if strict.Valid() {
+			t.Fatal("strict accepted an unknown admission")
+		}
+		if !tolerant.Valid() {
+			t.Fatalf("tolerant reported a foreign admission on a tracked run: %v", tolerant.Diagnostics)
+		}
+		trace = afterRunStarted(t, loadTrace(t, "core-completed.json"), secondSubmit("s-other", "merged"))
+		if _, tolerant := validateBoth(t, trace, "merged-other-session"); !hasCode(tolerant, CodeScopeMismatch) {
+			t.Fatalf("foreign admission naming another session's run passed: %v", tolerant.Diagnostics)
+		}
+	})
+	t.Run("a foreign requested delivery is not held to a capability key", func(t *testing.T) {
+		trace := loadTrace(t, "core-completed.json")
+		firstOfType(t, trace, "session.message.submit.request")["payload"].(map[string]any)["delivery"] = "later"
+		firstOfType(t, trace, "session.message.submit.response")["payload"].(map[string]any)["requested_delivery"] = "later"
+		strict, tolerant := validateBoth(t, trace, "delivery-later")
+		if strict.Valid() {
+			t.Fatal("strict accepted an unknown requested delivery")
+		}
+		if !tolerant.Valid() || hasCode(tolerant, CodeUnavailableCapability) {
+			t.Fatalf("tolerant held a foreign delivery to a capability key: %v", tolerant.Diagnostics)
 		}
 	})
 	t.Run("a missing status is a shape defect, not an extension", func(t *testing.T) {
@@ -485,3 +543,51 @@ func TestParseMode(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// afterRunStarted returns the trace with the envelopes build produces
+// inserted right after run.started. build receives the run.started envelope
+// and its sequence; each run event it returns must take the next sequence
+// numbers in order, and every later run event is renumbered past them.
+func afterRunStarted(t *testing.T, trace []map[string]any, build func(started map[string]any, seq int64) []map[string]any) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	shift, seen := int64(0), false
+	for _, e := range trace {
+		if seen && e["run_id"] != nil && e["sequence"] != nil {
+			seq, _ := e["sequence"].(json.Number).Int64()
+			e["sequence"] = json.Number(itoa(seq + shift))
+		}
+		out = append(out, e)
+		if e["type"] == "run.started" && !seen {
+			seen = true
+			seq, _ := e["sequence"].(json.Number).Int64()
+			for _, inserted := range build(e, seq) {
+				if inserted["sequence"] != nil {
+					shift++
+				}
+				out = append(out, inserted)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("trace has no run.started")
+	}
+	return out
+}
+
+// statusUpdates builds one run.status.updated per status, in order.
+func statusUpdates(statuses ...string) func(started map[string]any, seq int64) []map[string]any {
+	return func(started map[string]any, seq int64) []map[string]any {
+		var out []map[string]any
+		for n, status := range statuses {
+			out = append(out, map[string]any{
+				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
+				"type": "run.status.updated", "id": "ext-status-" + itoa(int64(n)),
+				"session_id": started["session_id"], "run_id": started["run_id"],
+				"sequence": json.Number(itoa(seq + int64(n) + 1)),
+				"payload":  map[string]any{"session_id": started["session_id"], "run_id": started["run_id"], "status": status},
+			})
+		}
+		return out
+	}
+}

@@ -265,7 +265,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if s.capabilitiesStale {
 			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "submission occurred before refreshed capabilities")
 		}
-		if p.Delivery != protocol.DeliveryAuto {
+		if p.Delivery != protocol.DeliveryAuto && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
+			// A requested delivery outside this revision's vocabulary is
+			// opaque in tolerant mode: which capability key it needs is a
+			// later revision's rule, not one this validator can apply.
 			s.feature(i, line, e, "delivery."+string(p.Delivery))
 		}
 	case protocol.TypeSessionMessageSubmitResponse:
@@ -535,18 +538,22 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	case p.RunID == "":
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "accepted submission must reserve a run identity")
 		return
-	case p.Admission == protocol.AdmissionStarted && p.EffectiveDelivery == protocol.DeliveryStart && p.Status == protocol.RunRunning:
-	case p.Admission == protocol.AdmissionQueued && p.EffectiveDelivery == protocol.EffectiveDeliveryQueue && p.Status == protocol.RunQueued:
-	case s.tolerant && (foreignAdmission(p.Admission) || foreignEffectiveDelivery(p.EffectiveDelivery) || foreignRunStatus(p.Status)):
-		// Tolerant mode treats a value outside this revision's vocabulary as
-		// opaque: the shape rule is suspended, because it cannot judge an
-		// admission it does not know, while the type-independent bookkeeping
-		// below — the run identity is reserved exactly once — still applies.
-	default:
+	case !admissionShape(s.tolerant, p):
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "v0.1 admission must resolve auto to one started (status running) or queued (status queued) run (decision 0002)")
 		return
 	}
 	if old := s.runs[p.RunID]; old != nil {
+		if s.tolerant && foreignAdmission(p.Admission) {
+			// A foreign admission naming a run already tracked may describe
+			// an operation on that run rather than a second admission — a
+			// later revision's steer, say. What it does the validator cannot
+			// judge, so nothing is reserved and the run is left as it is;
+			// that the run belongs to the session it can judge.
+			if old.session != p.SessionID {
+				s.addExpected(CodeScopeMismatch, i, line, e, "/payload/run_id", "submit response names a run owned by another session", string(old.session), string(p.SessionID), string(old.id))
+			}
+			return
+		}
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "run was admitted more than once")
 		return
 	}
@@ -644,10 +651,12 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		var p protocol.RunStatusUpdatedPayload
 		_ = e.DecodePayload(&p)
 		switch {
-		case s.tolerant && foreignRunStatus(p.Status):
-			// An unknown status is opaque in tolerant mode: the transition
-			// table cannot judge it, and adopting it would make every later
-			// transition illegal, so the run keeps the status it had.
+		case s.tolerant && (foreignRunStatus(p.Status) || foreignRunStatus(r.status)):
+			// A foreign status is opaque in tolerant mode: the transition
+			// table can judge neither the step into it nor the first step
+			// out of it, so both pass and the run records it as its status.
+			// The table takes over again once a known status is reached.
+			r.status = p.Status
 		case !legalRunStatusTransition(r.status, p.Status):
 			s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/status", "illegal run status transition", legalRunStatusTargets(r.status), string(p.Status))
 		default:
@@ -1090,6 +1099,55 @@ func foreignEffectiveDelivery(d protocol.EffectiveDeliveryMode) bool {
 		return false
 	}
 	return true
+}
+func foreignRequestedDelivery(d protocol.RequestedDeliveryMode) bool {
+	switch d {
+	case "", protocol.DeliveryAuto, protocol.DeliveryQueue, protocol.DeliverySteer, protocol.DeliveryBTW:
+		return false
+	}
+	return true
+}
+
+// admissionShape judges Decision 0002's canonical-shape rule for an accepted
+// submission member by member. Admission, effective delivery, and status each
+// name one of the two shapes — started (started/start/running) or queued
+// (queued/queue/queued) — and every member that names a shape must name the
+// same one. A known value outside both shapes (a non-auto admission, a
+// missing status) names none and fails. In tolerant mode a foreign value is
+// opaque: it names no shape and constrains nothing, but the known members are
+// still held to each other, so admission started with status queued is
+// contradictory whatever the delivery is called.
+func admissionShape(tolerant bool, p protocol.MessageSubmitResponse) bool {
+	votes := []struct {
+		shape   string
+		foreign bool
+	}{
+		{namesShape(string(p.Admission), string(protocol.AdmissionStarted), string(protocol.AdmissionQueued)), foreignAdmission(p.Admission)},
+		{namesShape(string(p.EffectiveDelivery), string(protocol.DeliveryStart), string(protocol.EffectiveDeliveryQueue)), foreignEffectiveDelivery(p.EffectiveDelivery)},
+		{namesShape(string(p.Status), string(protocol.RunRunning), string(protocol.RunQueued)), foreignRunStatus(p.Status)},
+	}
+	named := ""
+	for _, v := range votes {
+		if tolerant && v.foreign {
+			continue
+		}
+		if v.shape == "" || (named != "" && named != v.shape) {
+			return false
+		}
+		named = v.shape
+	}
+	return true
+}
+
+// namesShape maps one member's value to the shape it names, or "" for none.
+func namesShape(value, started, queued string) string {
+	switch value {
+	case started:
+		return "started"
+	case queued:
+		return "queued"
+	}
+	return ""
 }
 func legalRunStatusTransition(from, to protocol.RunStatus) bool {
 	switch from {
