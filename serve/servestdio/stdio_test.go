@@ -2036,3 +2036,59 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 }
+
+// TestCollectLoopWaitsOutTheScheduler pins the distinction the teardown's
+// classification rests on: a loop the teardown has released returns on its
+// own schedule, and a teardown that merely asked would record it as never
+// having returned. The interleaving that exposes this — the admitted worker
+// settling and the drain finishing before the freed loop is scheduled — is
+// a race no test can stage on demand, so what is pinned here is the
+// decision itself.
+func TestCollectLoopWaitsOutTheScheduler(t *testing.T) {
+	serveDone := make(chan error, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		serveDone <- ErrRequestsDropped
+	}()
+	window := time.NewTimer(5 * time.Second)
+	defer window.Stop()
+	loopErr, released := collectLoop(serveDone, window.C)
+	if !released {
+		t.Fatal("a loop that published late was recorded as never returning")
+	}
+	if !errors.Is(loopErr, ErrRequestsDropped) {
+		t.Fatalf("collectLoop returned %v, want the loop's own account", loopErr)
+	}
+}
+
+// TestCollectLoopBoundsTheWait pins that the wait is a bound and not an
+// expectation: a loop parked somewhere this teardown did not release must
+// cost one window, not the process.
+func TestCollectLoopBoundsTheWait(t *testing.T) {
+	window := time.NewTimer(10 * time.Millisecond)
+	defer window.Stop()
+	loopErr, released := collectLoop(make(chan error, 1), window.C)
+	if released {
+		t.Fatal("collectLoop claimed a loop that never returned")
+	}
+	if loopErr != nil {
+		t.Fatalf("collectLoop returned %v, want nothing from a loop that said nothing", loopErr)
+	}
+}
+
+// TestCollectLoopOnlyAsksWhenNothingReleasedIt pins the abandoned path,
+// where waiting would buy a verdict that is already settled.
+func TestCollectLoopOnlyAsksWhenNothingReleasedIt(t *testing.T) {
+	serveDone := make(chan error, 1)
+	if _, released := collectLoop(serveDone, nil); released {
+		t.Fatal("collectLoop claimed a loop that had published nothing")
+	}
+	serveDone <- ErrRequestsDropped
+	loopErr, released := collectLoop(serveDone, nil)
+	if !released {
+		t.Fatal("collectLoop missed an account already published")
+	}
+	if !errors.Is(loopErr, ErrRequestsDropped) {
+		t.Fatalf("collectLoop returned %v, want the published account", loopErr)
+	}
+}

@@ -528,20 +528,33 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	// about the input, though: a released loop returns because admission
 	// closed, not because the host ended anything, which is why the
 	// reader's account above is what stands in either way.
-	released := false
-	select {
-	case loopErr := <-serveDone:
-		released = true
-		// What the loop says it did with the frames it was holding is
-		// its own fact, not a fallback for a quiet teardown. A malformed
-		// line at the host's end already fills err from the reader's
-		// account above, and the valid requests the loop was holding
-		// when admission closed under it were still read and never
-		// served — which is the whole of what ErrRequestsDropped
-		// promises to tell a caller.
-		err = note(err, loopErr)
-	default:
+	//
+	// When this teardown is the only thing that can still free the loop and
+	// the writer was collected normally, the loop is waited for and not
+	// merely polled, because being runnable is not the same as having run.
+	// A loop already collected above published once and will not publish
+	// again, so waiting on it there would buy nothing and cost a window. Admission is closed and the queue is being consumed, so every
+	// point the loop can be parked at is one this teardown has already
+	// released; but the worker can settle and the drain can finish in a
+	// handful of channel operations, and a loop that has not yet been
+	// scheduled would be recorded as never returning. That would report a
+	// stall for a session that settled and drained everything it admitted,
+	// and lose its account of the frames it let go. The window is a bound
+	// on the reasoning, not an expectation.
+	var wait <-chan time.Time
+	if stuck && drained {
+		loopWindow := time.NewTimer(s.shutdown)
+		defer loopWindow.Stop()
+		wait = loopWindow.C
 	}
+	// What the loop says it did with the frames it was holding is its own
+	// fact, not a fallback for a quiet teardown. A malformed line at the
+	// host's end already fills err from the reader's account above, and the
+	// valid requests the loop was holding when admission closed under it
+	// were still read and never served — which is the whole of what
+	// ErrRequestsDropped promises to tell a caller.
+	loopErr, released := collectLoop(serveDone, wait)
+	err = note(err, loopErr)
 	// The stall and the input's own fault are not alternatives. A malformed
 	// line that arrives while a response is stuck in out.Write produces
 	// both, and a caller needs both: the line number to report and exit on,
@@ -572,6 +585,31 @@ func note(err, fact error) error {
 		return err
 	default:
 		return fmt.Errorf("%w (%w)", err, fact)
+	}
+}
+
+// collectLoop takes the serving loop's own account of what it did with the
+// frames it was still holding. A nil wait asks without waiting, which is
+// what an abandoned teardown can afford: nothing there has released a loop
+// parked on a send to a writer that carries nothing more, and its answer
+// could not change the verdict anyway, since an undrained teardown reports
+// the stall either way. A non-nil wait is for the teardown that did release
+// it, where the only thing still in question is whether the scheduler has
+// got to it yet.
+func collectLoop(serveDone <-chan error, wait <-chan time.Time) (error, bool) {
+	if wait == nil {
+		select {
+		case loopErr := <-serveDone:
+			return loopErr, true
+		default:
+			return nil, false
+		}
+	}
+	select {
+	case loopErr := <-serveDone:
+		return loopErr, true
+	case <-wait:
+		return nil, false
 	}
 }
 
