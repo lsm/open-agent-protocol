@@ -518,7 +518,7 @@ func TestCancelledRespondEmitsNoSizeRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := make(chan []byte, 4)
+	lines := make(chan outLine, 4)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	id := int64(1)
@@ -526,8 +526,8 @@ func TestCancelledRespondEmitsNoSizeRefusal(t *testing.T) {
 	for {
 		select {
 		case line := <-lines:
-			if bytes.Contains(line, []byte("response_too_large")) {
-				t.Fatalf("cancelled respond emitted a size refusal: %s", line)
+			if bytes.Contains(line.data, []byte("response_too_large")) {
+				t.Fatalf("cancelled respond emitted a size refusal: %s", line.data)
 			}
 			continue
 		default:
@@ -598,14 +598,14 @@ func TestErrorMessagesAreBounded(t *testing.T) {
 // terminator, in order, before the writer returns.
 func TestWriterDrainsQueuedLinesOnStop(t *testing.T) {
 	var buf bytes.Buffer
-	lines := make(chan []byte, 4)
+	lines := make(chan outLine, 4)
 	stop := make(chan struct{})
 	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}) }()
-	lines <- []byte(`{"id":1,"ok":true}`)
-	lines <- []byte(`{"id":2,"ok":true}`)
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}, &refusalTally{}) }()
+	lines <- outLine{data: []byte(`{"id":1,"ok":true}`)}
+	lines <- outLine{data: []byte(`{"id":2,"ok":true}`)}
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatalf("writeLines returned %v", err)
@@ -625,14 +625,16 @@ func (failWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 // consuming queued lines so a producer blocked on the channel hands off
 // instead of deadlocking.
 func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
-	lines := make(chan []byte, 4)
+	lines := make(chan outLine, 4)
 	stop := make(chan struct{})
 	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(failWriter{}, lines, stop, abandon, failed, &outputFailure{}) }()
-	lines <- []byte(`{"id":1,"ok":true}`) // the write fails; the failure is remembered
-	lines <- []byte(`{"id":2,"ok":true}`) // dropped, but still consumed
+	go func() {
+		done <- writeLines(failWriter{}, lines, stop, abandon, failed, &outputFailure{}, &refusalTally{})
+	}()
+	lines <- outLine{data: []byte(`{"id":1,"ok":true}`)} // the write fails; the failure is remembered
+	lines <- outLine{data: []byte(`{"id":2,"ok":true}`)} // dropped, but still consumed
 	close(stop)
 	if err := <-done; !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("writeLines returned %v, want the remembered write failure", err)
@@ -644,7 +646,7 @@ func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 	}
 	select {
 	case line := <-lines:
-		t.Fatalf("writer left %q unconsumed", line)
+		t.Fatalf("writer left %q unconsumed", line.data)
 	default:
 	}
 }
@@ -654,18 +656,18 @@ func TestWriterRemembersFailureAndKeepsDraining(t *testing.T) {
 // completing nor panicking — because the channel was never closed.
 func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 	var buf bytes.Buffer
-	lines := make(chan []byte)
+	lines := make(chan outLine)
 	stop := make(chan struct{})
 	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}) }()
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}, &refusalTally{}) }()
 	close(stop)
 	if err := <-done; err != nil {
 		t.Fatalf("writeLines returned %v", err)
 	}
 	sent := make(chan struct{})
-	go func() { lines <- []byte(`{"id":1}`); close(sent) }()
+	go func() { lines <- outLine{data: []byte(`{"id":1}`)}; close(sent) }()
 	select {
 	case <-sent:
 		t.Fatal("late send completed — the channel was closed or drained")
@@ -1067,14 +1069,14 @@ func (b *lockedBuffer) String() string {
 // into it is corruption rather than lateness.
 func TestWriterAbandonedCarriesNothingMore(t *testing.T) {
 	var buf bytes.Buffer
-	lines := make(chan []byte, 4)
+	lines := make(chan outLine, 4)
 	stop := make(chan struct{})
 	abandon := make(chan struct{})
 	failed := make(chan struct{}, 1)
-	lines <- []byte(`{"id":1,"ok":true}`) // queued, not yet taken
+	lines <- outLine{data: []byte(`{"id":1,"ok":true}`)} // queued, not yet taken
 	close(abandon)
 	done := make(chan error, 1)
-	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}) }()
+	go func() { done <- writeLines(&buf, lines, stop, abandon, failed, &outputFailure{}, &refusalTally{}) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -2220,5 +2222,39 @@ func TestHostsEndIsObservedBehindABlockedOutput(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run never observed the host's end behind a blocked output")
+	}
+}
+
+// TestQueuedRefusalWithdrawnUnwrittenIsReported pins that entering the
+// writer's queue is not delivery. A refusal can be queued while the writer
+// is parked in an earlier write; if the teardown then abandons that writer,
+// the queued line is withdrawn and never goes out, leaving the host with no
+// account of that request at all — not served, because it never fit, and not
+// answered, because the line never left. The stall says the output is
+// unreliable; only this says a request went unanswered.
+func TestQueuedRefusalWithdrawnUnwrittenIsReported(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	// A queue deep enough that the refusal is accepted, behind a writer that
+	// never returns from its first write, so nothing queued is ever emitted.
+	server, err := New(hub, Options{MaxConcurrentOps: 1, WriteQueue: 8, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &blockedWriter{release: make(chan struct{}), entered: make(chan struct{}), once: &sync.Once{}}
+	t.Cleanup(func() { close(writer.release) })
+	input := `{"id":1,"op":"adapters"}` + "\n" + // answered, and parks the writer
+		`{"id":2,"op":"capabilities","adapter":"hang"}` + "\n" + // wedges the only slot
+		`{"id":3,"op":"adapters"}` + "\n" // refused, queued, never written
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), strings.NewReader(input), writer) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRequestsDropped) {
+			t.Fatalf("Run returned %v, want the refusal that never went out reported", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
 	}
 }

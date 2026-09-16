@@ -153,6 +153,32 @@ const maxConcurrentOps = 16
 // is served rather than deadlocked against a budget it cannot fit.
 const admissionBytes = maxEnvelopeBytes
 
+// outLine is one line for the writer, and whether the host is still owed an
+// account of the request behind it. Only a refusal carries that: a response
+// the writer withdraws belongs to work that actually ran, which the stall
+// already reports, but a refusal withdrawn unwritten leaves the host with no
+// account of that request at all — neither served nor answered.
+type outLine struct {
+	data    []byte
+	refusal bool
+}
+
+// refusalTally counts refusals onto the queue and off it again as the writer
+// commits them, because entering the queue is not delivery: a teardown that
+// abandons the writer withdraws whatever is still queued, and a refusal lost
+// that way is a request the host was never told about.
+//
+// On a drained teardown the writer has returned and the count is exact. On an
+// abandoned one it is a snapshot, and can be one high if a write commits
+// after it is read — which is what abandoning means, and is why the stall is
+// reported beside it.
+type refusalTally struct {
+	queued    atomic.Int64
+	delivered atomic.Int64
+}
+
+func (t *refusalTally) undelivered() int64 { return t.queued.Load() - t.delivered.Load() }
+
 // runState is one Run's worker registry: the ops that invocation admitted
 // and the bounds on how many of them run at once. It belongs to the
 // invocation and never to the Server, so a Server that served one host can
@@ -368,13 +394,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	lines := make(chan []byte, s.writeQueue)
+	lines := make(chan outLine, s.writeQueue)
 	stop := make(chan struct{})
 	abandon := make(chan struct{})
 	writerFailed := make(chan struct{}, 1)
 	outputFailed := &outputFailure{}
+	refusals := &refusalTally{}
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- writeLines(out, lines, stop, abandon, writerFailed, outputFailed) }()
+	go func() { writerDone <- writeLines(out, lines, stop, abandon, writerFailed, outputFailed, refusals) }()
 
 	// The reader reports its terminal outcome on a buffered side channel as
 	// well as in the frame stream, so that the end is a fact the teardown
@@ -395,7 +422,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	run := newRunState(s.maxOps, 0)
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- s.serveLoop(ctx, run, frames, lines, writerFailed) }()
+	go func() { serveDone <- s.serveLoop(ctx, run, frames, lines, writerFailed, refusals) }()
 
 	// The serving loop returning is the session's normal end. When the host
 	// has ended it while the loop is stuck, one fresh window — opened at
@@ -572,6 +599,17 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	if (stuck && !released) || !drained {
 		err = note(err, ErrShutdownStalled)
 	}
+	// Entering the writer's queue was never delivery. A teardown that
+	// abandons the writer withdraws whatever is still queued, and a refusal
+	// lost that way leaves the host with no account of that request at all:
+	// it was not served, because it never fit, and it was not answered,
+	// because the line never went out. That is exactly what this error
+	// means, so the loop's own count of refusals it could not queue and the
+	// writer's count of refusals it never committed are the same fact
+	// arriving by two routes.
+	if refusals.undelivered() > 0 {
+		err = note(err, ErrRequestsDropped)
+	}
 	return err
 }
 
@@ -696,7 +734,7 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // never stops reading. A framing defect — anything readFrame or decodeRequest refuses — fails the
 // frontend closed as *MalformedLineError; op-level refusals are responses
 // the host can correct, and the loop reads on past them.
-func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan struct{}) error {
+func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan frameResult, lines chan<- outLine, writerFailed <-chan struct{}, refusals *refusalTally) error {
 	number := 0
 	// Requests read and never answered, counted so the caller is told. A
 	// refusal the output could not take is exactly that: neither served nor
@@ -764,7 +802,7 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 				if !s.offerLine(lines, request, &wireError{
 					Code:    "busy",
 					Message: fmt.Sprintf("the frontend is already running %d operations; send this request again", s.maxOps),
-				}) {
+				}, refusals) {
 					unanswered++
 				}
 				continue
@@ -790,9 +828,9 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 // dead output. The channel is never closed: an abandoned producer parks on
 // its send and is reclaimed by process exit rather than panicking on a
 // closed channel.
-func writeLines(out io.Writer, lines <-chan []byte, stop, abandon <-chan struct{}, failed chan<- struct{}, record *outputFailure) error {
+func writeLines(out io.Writer, lines <-chan outLine, stop, abandon <-chan struct{}, failed chan<- struct{}, record *outputFailure, refusals *refusalTally) error {
 	var failure error
-	write := func(line []byte) {
+	write := func(line outLine) {
 		if failure != nil {
 			return
 		}
@@ -806,10 +844,15 @@ func writeLines(out io.Writer, lines <-chan []byte, stop, abandon <-chan struct{
 			return
 		default:
 		}
-		if _, err := out.Write(append(line, '\n')); err != nil {
+		if _, err := out.Write(append(line.data, '\n')); err != nil {
 			failure = err
 			record.set(err)      // readable by a teardown that cannot wait for this goroutine
 			failed <- struct{}{} // buffered one-slot signal, sent only on the first failure
+			return
+		}
+		if line.refusal {
+			// Credited only here, where the bytes have actually gone out.
+			refusals.delivered.Add(1)
 		}
 	}
 	for {
@@ -1013,13 +1056,14 @@ func scanKeys(frame []byte) (map[string]bool, error) {
 // offerLine puts one refusal on the writer's queue if the queue can take it
 // now, and reports whether it did. It never waits: see the call site for why
 // the serving loop must not block on output.
-func (s *Server) offerLine(lines chan<- []byte, request requestLine, werr *wireError) bool {
+func (s *Server) offerLine(lines chan<- outLine, request requestLine, werr *wireError, refusals *refusalTally) bool {
 	line, err := json.Marshal(responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: werr})
 	if err != nil || len(line) > s.frameLimit {
 		return false
 	}
 	select {
-	case lines <- line:
+	case lines <- outLine{data: line, refusal: true}:
+		refusals.queued.Add(1)
 		return true
 	default:
 		return false
@@ -1034,7 +1078,7 @@ func (s *Server) offerLine(lines chan<- []byte, request requestLine, werr *wireE
 // terminal condition) rather than emitted; a value that cannot marshal —
 // near-unreachable, as every line type is a closed struct over already
 // validated JSON — is refused the same way.
-func (s *Server) send(ctx context.Context, lines chan<- []byte, value any) error {
+func (s *Server) send(ctx context.Context, lines chan<- outLine, value any) error {
 	line, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("encode line: %w", err)
@@ -1043,7 +1087,7 @@ func (s *Server) send(ctx context.Context, lines chan<- []byte, value any) error
 		return ErrLineTooLarge
 	}
 	select {
-	case lines <- line:
+	case lines <- outLine{data: line}:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
