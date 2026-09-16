@@ -17,23 +17,29 @@ func TestSessionModels(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	catalog, err := session.Models(ctx)
+	listing, err := session.Models(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if catalog.SessionID != session.ID() {
-		t.Fatalf("catalog names session %q, want %q", catalog.SessionID, session.ID())
+	if listing.Models.SessionID != session.ID() {
+		t.Fatalf("catalog names session %q, want %q", listing.Models.SessionID, session.ID())
 	}
-	ids := make([]string, 0, len(catalog.Models))
+	// The catalog is valid for exactly one descriptor snapshot, so the caller
+	// is handed the revision to cache it against; without it a client cannot
+	// tell which models.list promise it just read.
+	if listing.Revision != base.CapabilityRevision {
+		t.Fatalf("catalog cites revision %q, want %q", listing.Revision, base.CapabilityRevision)
+	}
+	ids := make([]string, 0, len(listing.Models.Models))
 	defaults := 0
-	for _, descriptor := range catalog.Models {
+	for _, descriptor := range listing.Models.Models {
 		ids = append(ids, descriptor.ID)
 		if descriptor.Default {
 			defaults++
 		}
 	}
 	if len(ids) != 2 || ids[0] != base.ModelPrimary || ids[1] != base.ModelSecondary || defaults != 1 {
-		t.Fatalf("catalog: %+v", catalog.Models)
+		t.Fatalf("catalog: %+v", listing.Models.Models)
 	}
 
 	// Every listed id is selectable, which is the promise a catalog makes.

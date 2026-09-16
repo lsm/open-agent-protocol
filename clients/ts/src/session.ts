@@ -43,6 +43,19 @@ export type UserInputResolveInput = Omit<UserInputResolveRequest, 'session_id' |
 /** models() input: the per-query degraded opt-in, absent by default. */
 export type ModelsOptions = { allowDegradedFeatures?: string[] };
 
+/**
+ * One session's model listing together with the capability revision that
+ * governs it, mirroring the shape capabilities() returns.
+ *
+ * The revision is not decoration. The catalog is part of the capability
+ * snapshot, so it is valid for exactly that revision: a caller caches it
+ * against the revision and discards it when the descriptor moves. The payload
+ * alone would leave a caller unable to tell which `models.list` promise it
+ * read, and a later probe may already report a different revision than the one
+ * the listing came under.
+ */
+export type Catalog = { revision: string; models: ModelsResponse };
+
 /** open() input; see OapClient.open. */
 export type OpenOptions = { sessionId?: string; participant?: string };
 
@@ -193,7 +206,7 @@ export class OapSession {
    * what makes a degraded catalog readable at all; a call without it is
    * identical to one made before the option existed.
    */
-  async models(options: ModelsOptions = {}): Promise<ModelsResponse> {
+  async models(options: ModelsOptions = {}): Promise<Catalog> {
     const query = (options.allowDegradedFeatures ?? [])
       .map((key) => `allow_degraded=${encodeURIComponent(key)}`)
       .join('&');
@@ -213,7 +226,7 @@ export class OapSession {
         `client: ${this.path('/models')} payload names session "${catalog.session_id}", envelope "${response.session_id}"`,
       );
     }
-    return catalog;
+    return { revision: response.capability_revision ?? '', models: catalog };
   }
 
   /** Closes the session. An active run refuses the close; cancel it first. */

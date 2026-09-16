@@ -100,12 +100,15 @@ test(
     // The catalog the endpoint publishes is the one its model gate enforces,
     // so the id selected below is one this listing offered.
     const catalog = await session.models();
-    assert.equal(catalog.session_id, session.id);
+    assert.equal(catalog.models.session_id, session.id);
+    // The listing comes back with the revision that governs it, so a caller
+    // can cache it against that descriptor and discard it when it moves.
+    assert.equal(catalog.revision, caps.revision);
     assert.deepEqual(
-      catalog.models.map((descriptor) => descriptor.id),
+      catalog.models.models.map((descriptor) => descriptor.id),
       ['reference-model-a', 'reference-model-b'],
     );
-    assert.equal(catalog.models.filter((descriptor) => descriptor.default).length, 1);
+    assert.equal(catalog.models.models.filter((descriptor) => descriptor.default).length, 1);
 
     const events = session.events();
     await events.ready;

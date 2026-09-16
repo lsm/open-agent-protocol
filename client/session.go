@@ -134,27 +134,44 @@ func AllowDegraded(keys ...string) ModelsOption {
 	}
 }
 
+// Catalog is one session's model listing together with the capability
+// revision that governs it, mirroring Capabilities.
+//
+// The revision is not decoration. The catalog is part of the capability
+// snapshot, so it is valid for exactly that revision: a caller caches it
+// against the revision and discards it when the descriptor moves. Returning
+// the payload alone would leave a caller unable to tell which `models.list`
+// promise it just read, and a later probe may already report a different
+// revision than the one the listing came under.
+type Catalog struct {
+	// Revision names the descriptor snapshot this listing belongs to.
+	Revision string
+	// Models is the served catalog.
+	Models protocol.ModelsResponse
+}
+
 // Models reads the session's effective model catalog: the models a submission
 // may select, and the one the session would use without a selection.
-func (s *Session) Models(ctx context.Context, options ...ModelsOption) (protocol.ModelsResponse, error) {
-	var catalog protocol.ModelsResponse
+func (s *Session) Models(ctx context.Context, options ...ModelsOption) (Catalog, error) {
+	var listing Catalog
 	response, err := s.client.exchange(ctx, http.MethodGet, s.modelsPath(options...), nil, protocol.TypeModelsResponse)
 	if err != nil {
-		return catalog, err
+		return listing, err
 	}
 	// The GET carries no request envelope, so the exchange's request-based
 	// scope check never runs: verify the response names this session before
 	// reading it as this session's catalog.
 	if response.SessionID != s.id {
-		return catalog, fmt.Errorf("client: %s response is scoped to session %q, want %q", s.path("/models"), response.SessionID, s.id)
+		return listing, fmt.Errorf("client: %s response is scoped to session %q, want %q", s.path("/models"), response.SessionID, s.id)
 	}
-	if err := response.DecodePayload(&catalog); err != nil {
-		return catalog, err
+	if err := response.DecodePayload(&listing.Models); err != nil {
+		return listing, err
 	}
-	if catalog.SessionID != response.SessionID {
-		return catalog, fmt.Errorf("client: %s payload names session %q, envelope %q", s.path("/models"), catalog.SessionID, response.SessionID)
+	if listing.Models.SessionID != response.SessionID {
+		return listing, fmt.Errorf("client: %s payload names session %q, envelope %q", s.path("/models"), listing.Models.SessionID, response.SessionID)
 	}
-	return catalog, nil
+	listing.Revision = response.CapabilityRevision
+	return listing, nil
 }
 
 // modelsPath builds the catalog route, carrying the degraded opt-in only when

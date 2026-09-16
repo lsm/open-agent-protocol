@@ -87,6 +87,30 @@ answer `capabilities.request` between two listings and the change is never
 announced and never diagnosed — which is the whole of what the rule exists to
 catch (`models-catalog-mutates-across-refetch`).
 
+That argument has a sharp edge, and it is taken rather than avoided: the same
+identity makes a same-revision response that *changes* `models.list` the
+defect. Two remedies were available — hold the catalog to the level it was
+served under whatever the descriptor later says, or diagnose the descriptor
+mutation itself — and this decision takes the second. The reason is which
+thing is wrong. The catalog that follows a flipped advertisement is a correct
+catalog under the descriptor now in force; what cannot be true is that one
+revision named two descriptors. Diagnosing it where the descriptor is
+published is also what makes the fix obvious — introduce a new revision, after
+which both catalogs are legal — and it keeps one fault to one diagnosis rather
+than reporting the mutation and then every catalog that follows it.
+
+So a `capabilities.response` whose revision equals the active one and whose
+`models.list` level differs from what that revision advertised is
+`unannounced_catalog_change`, raised on the descriptor
+(`models-advertisement-mutates-within-revision`). Without it an endpoint could
+publish a `native` catalog, re-answer `capabilities.request` at the same
+revision with `models.list` `degraded`, and serve a different catalog: the
+stability rule binds only a `native` or `emulated` catalog, so the level change
+would switch the rule off and both listings would stand. Only the level is
+compared, because that is what every rule in this unit keys on; a reworded
+`reason` is prose, and diagnosing prose would make the rule noisy without
+making it stronger.
+
 A selection made under a revision whose catalog the trace has not served is not
 skipped but retained, and the first catalog under that revision settles it,
 admissions and refusals alike. Without that an endpoint could accept an
@@ -140,6 +164,22 @@ wire-visible field from logs and curl — an `allow_degraded_features` field on
 the stdio `models` op, `AllowDegraded(...)` on the Go client,
 `allowDegradedFeatures` on the TypeScript one. A call that does not ask for it
 is byte-identical to one made before the option existed.
+
+### A served catalog travels with the revision that governs it
+
+Both codecs stamp the response's `capability_revision` from the hosted
+adapter's descriptor, read before the adapter is asked, so a catalog is either
+labelled correctly or not served at all. Both clients return it beside the
+listing rather than the payload alone — `client.Catalog`, `Catalog` in
+`clients/ts`, mirroring what `Capabilities` already returns.
+
+The alternative is worse than it looks. A caller holding only the payload
+cannot tell which `models.list` promise it read, cannot cache the listing
+against a revision, and cannot invalidate it: probing again answers with
+whatever revision is current *now*, which may already be a different one. The
+validator says the same thing from its own side — the catalog's gate rejects a
+`models.response` that cites no revision — so a client that hid the revision
+would be hiding the one field that makes the answer usable.
 
 ### A descriptor's `id` is non-empty by schema
 
@@ -200,7 +240,11 @@ identifies exactly one descriptor.
   answer.
 - `SessionOpenResponse` gains the `current_model_id` the schema already
   promised it, so the first snapshot a control layer sees can report the
-  session's model.
+  session's model. The validator reads it as session state and not only as
+  catalog evidence: it is the default a `per_run` selection must leave alone,
+  so a session that reported its model at open and nowhere else is now guarded
+  from the first submission rather than from the first snapshot
+  (`models-open-response-guards-the-default`).
 - No existing fixture changes meaning.
 
 ## What this unit does not admit
