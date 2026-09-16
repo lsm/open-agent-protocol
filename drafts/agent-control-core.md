@@ -256,8 +256,10 @@ its key against a pinned ledger.
 
 `tool_choice` is a policy over tools already exposed by the endpoint. The core
 submit request does not mean the control layer normally provides executable tool
-definitions. Control-layer-provided tools or per-run tool-source attachment
-belong in a richer optional unit.
+definitions: control-layer-provided tools stay in the staged `+control-tools`
+unit. Attaching a tool *source* at session open is executable under
+`+tool-sources` (Decision 0008), which describes and attaches a source the
+harness runs; per-run attachment remains staged.
 
 The endpoint must answer an accepted `session.message.submit.request` with
 `session.message.submit.response` before or alongside the stream. The response
@@ -337,6 +339,18 @@ Core tool definitions use JSON Schema input:
 - `description`
 - `input_schema`
 - `annotations`
+- `source`, the id of the `ToolSourceDescriptor` the tool comes from
+  (`+tool-sources`, Decision 0008) — never an inline copy of the descriptor,
+  so a consumer attributes a tool to an MCP server without parsing its name
+- `features`, this one tool's effective support map
+
+A catalog that carries sources declares them beside its tools, in
+`action.tools.list.response.sources` and in the capability descriptor. A source
+`id` is unique across a session's catalog and a tool `name` is unique whatever
+its source, so a policy, a call, and an attribution each resolve to one entry.
+Attaching a source at session open is `action.tool_sources.attach`; the
+attachment shape is the only one carrying `command`, `args`, and `environment`,
+and a published source never carries them.
 
 The core does not define how tools are hosted. An implementation may execute tools
 natively, call out to another process, or bridge an external tool system.
@@ -436,6 +450,7 @@ Common optional core features:
 - `content.reasoning`
 - `content.image`
 - `action.tools.list`
+- `action.tool_sources.attach`
 - `action.tools.execute`
 - `action.tools.progress`
 - `action.permissions`
@@ -541,7 +556,9 @@ These are deliberately outside the core for now:
 - checkpoint, rewind, branch, fork, and file rollback;
 - artifact creation, retrieval, hashing, and persistent stores;
 - workspace, cwd, environment, sandbox, and network policy;
-- external tool-source attachment and management;
+- runtime tool-source attach and detach, and tool-source management of any
+  kind — describing and attaching a source at session open is executable
+  under `+tool-sources`, but nothing in this protocol manages one;
 - control-layer-provided tool definitions;
 - hooks, subagents, background tasks, and task notifications;
 - telemetry, cost accounting, rate-limit events, and retry detail;

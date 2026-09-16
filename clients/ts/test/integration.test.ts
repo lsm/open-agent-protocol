@@ -85,7 +85,7 @@ test(
     const adapters = await client.adapters();
     assert.ok(adapters.some((adapter) => adapter.name === 'memory'));
     const caps = await client.capabilities('memory');
-    assert.equal(caps.revision, 'reference-memory-v4');
+    assert.equal(caps.revision, 'reference-memory-v6');
     assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
 
     // An unknown adapter is a coded refusal.
@@ -95,20 +95,51 @@ test(
     // cannot be missed. The submission carries a per-submit run control: the
     // admitted model is echoed on the admission and on run.started, and the
     // session default does not move, because the application is per_run.
-    const session = await client.open('memory', { sessionId: 'ts-integration-a' });
+    const session = await client.open('memory', {
+      sessionId: 'ts-integration-a',
+      // A process source is named by id only: the daemon fills the command
+      // and the environment from its own registry, so a wire caller cannot
+      // make it run an executable the operator never configured.
+      toolSources: [{ id: 'ts-integration-mcp', kind: 'local', protocol: 'mcp', endpoint: 'stdio:ts-integration' }],
+    });
 
-    // The catalog the endpoint publishes is the one its model gate enforces,
-    // so the id selected below is one this listing offered.
-    const catalog = await session.models();
-    assert.equal(catalog.models.session_id, session.id);
+    // The session's effective catalog: the scripted tool attributed to a
+    // source id, beside every source the session resolves — the descriptor's
+    // declared ones and the one the open attached.
+    const listing = await session.tools();
+    // The listing comes back with the revision that governs it, over the real
+    // daemon wire, so a caller can cache it against that descriptor and drop
+    // it when capabilities.updated reports another.
+    assert.equal(listing.revision, caps.revision);
+    const catalog = listing.tools;
+    assert.equal(catalog.session_id, 'ts-integration-a');
+    const attached = catalog.sources?.find((source) => source.id === 'ts-integration-mcp');
+    assert.ok(attached, `attached source missing from ${JSON.stringify(catalog.sources)}`);
+    assert.equal(attached.kind, 'local');
+    const scripted = catalog.tools.find((tool) => tool.name === 'scripted_tool');
+    assert.ok(scripted, 'scripted_tool missing from the catalog');
+    assert.ok(
+      catalog.sources?.some((source) => source.id === scripted.source),
+      `tool source ${String(scripted.source)} resolves to no declared source`,
+    );
+
+    // The open's attachments are published back through session state too,
+    // in the descriptor shape: no command, no args, no environment.
+    const opened = await session.state();
+    assert.ok(opened.sources?.some((source) => source.id === 'ts-integration-mcp'));
+
+    // The model catalog the endpoint publishes is the one its model gate
+    // enforces, so the id selected below is one this listing offered.
+    const models = await session.models();
+    assert.equal(models.models.session_id, session.id);
     // The listing comes back with the revision that governs it, so a caller
     // can cache it against that descriptor and discard it when it moves.
-    assert.equal(catalog.revision, caps.revision);
+    assert.equal(models.revision, caps.revision);
     assert.deepEqual(
-      catalog.models.models.map((descriptor) => descriptor.id),
+      models.models.models.map((descriptor) => descriptor.id),
       ['reference-model-a', 'reference-model-b'],
     );
-    assert.equal(catalog.models.models.filter((descriptor) => descriptor.default).length, 1);
+    assert.equal(models.models.models.filter((descriptor) => descriptor.default).length, 1);
 
     const events = session.events();
     await events.ready;

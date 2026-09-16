@@ -5,6 +5,7 @@
   "$defs": {
     "nonEmptyString": { "type": "string", "minLength": 1 },
     "opaqueID": { "$ref": "#/$defs/nonEmptyString" },
+    "toolSourceKind": { "enum": ["native", "local", "process", "remote", "hosted"] },
     "jsonObject": { "type": "object" },
     "role": { "enum": ["system", "developer", "user", "assistant", "tool"] },
     "image": {

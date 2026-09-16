@@ -16,7 +16,7 @@
     "timestamp_ms": 3,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -37,7 +37,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -65,7 +65,7 @@
     "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -84,7 +84,7 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-9",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -112,7 +112,7 @@
     "timestamp_ms": 8,
     "session_id": "session",
     "run_id": "run-9",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -131,7 +131,7 @@
     "timestamp_ms": 10,
     "session_id": "session",
     "run_id": "run-14",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -153,7 +153,7 @@
     "timestamp_ms": 11,
     "session_id": "session",
     "run_id": "run-14",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -172,7 +172,7 @@
     "timestamp_ms": 13,
     "session_id": "session",
     "run_id": "run-19",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -198,6 +198,6 @@
     "timestamp_ms": 14,
     "session_id": "session",
     "run_id": "run-19",
-    "capability_revision": "claude-code-2.1.263-oap-v1"
+    "capability_revision": "claude-code-2.1.263-oap-v3"
   }
 ]

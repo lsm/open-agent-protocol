@@ -108,6 +108,55 @@ const (
 	CodeQueueLimitExceeded       = "queue_limit_exceeded"
 	CodePrematureSessionMutation = "premature_session_mutation"
 	CodeUndisclosedQueueLimit    = "undisclosed_queue_limit"
+	// The tool-sources unit. Each names one way a catalog can stop resolving
+	// a tool to one source, one owner, and one endpoint.
+	//
+	// CodeUnmatchedToolSource: a tool or a call names a source nothing
+	// declares, or one that disagrees with the source the session's catalog
+	// records for that tool, or — in a served catalog, whose whole point is
+	// attribution — names no source at all. Either way the attribution resolves
+	// nowhere, or somewhere else.
+	//
+	// CodeDuplicateToolSource: two descriptors share an id, so a tool's
+	// `source` and a call's `source` no longer resolve to one endpoint.
+	//
+	// CodeCatalogMismatch: a session-scoped catalog does not reflect the
+	// attachment it is required to. Attachment is for the session's lifetime,
+	// so an attached source never drops out of a later list and never changes
+	// the members it was attached with.
+	//
+	// CodeAttachmentFieldInCatalog: a published source carries `command`,
+	// `args`, or `environment` — the attachment-only members, one of which can
+	// hold a literal credential. The descriptor shape excludes them, so this
+	// catches a tolerant or hand-rolled serializer reflecting the open-time
+	// value straight back to clients.
+	//
+	// CodeUndisclosedAttachModes: action.tool_sources.attach is advertised
+	// affirmatively while disclosing no session_open mode, so the key names an
+	// application no open can elect. Diagnosed on the descriptor that
+	// publishes it, as undisclosed_selection_modes is.
+	//
+	// CodeUndisclosedAttachLimit: an attachment carrying no defect any rule
+	// names, and violating no limit the endpoint disclosed, was refused. The
+	// refusal is itself the evidence that a constraint exists which the caller
+	// was never told about.
+	//
+	// CodeUnattributedCall: an endpoint that advertises action.tools.list
+	// emitted a call naming no source for a tool its own published catalog
+	// attributes. `source` is optional on the wire for every endpoint, because
+	// one outside this unit has no catalog to attribute against — but an
+	// endpoint that publishes the mapping and then omits it on the call leaves a
+	// consumer parsing the tool name again, which is the inference the member
+	// exists to remove. It is distinct from unmatched_tool_source: that one says
+	// the attribution resolves somewhere wrong, this one that an endpoint which
+	// could attribute did not.
+	CodeUnmatchedToolSource      = "unmatched_tool_source"
+	CodeDuplicateToolSource      = "duplicate_tool_source"
+	CodeCatalogMismatch          = "catalog_mismatch"
+	CodeAttachmentFieldInCatalog = "attachment_field_in_catalog"
+	CodeUndisclosedAttachModes   = "undisclosed_attach_modes"
+	CodeUndisclosedAttachLimit   = "undisclosed_attach_limit"
+	CodeUnattributedCall         = "unattributed_call"
 	// The models unit. A catalog is a promise that its ids are selectable and
 	// that nothing else is, so each of these names one way the published
 	// catalog and the endpoint's own behaviour disagree.

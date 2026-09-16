@@ -32,7 +32,7 @@ test('dial accepts a bare address and lists adapters', async () => {
         adapters: [
           {
             name: 'memory',
-            capability_revision: 'reference-memory-v4',
+            capability_revision: 'reference-memory-v6',
             capabilities: { endpoint: { id: 'reference.memory' } },
           },
           { name: 'broken', error: 'probe failed' },
@@ -44,7 +44,7 @@ test('dial accepts a bare address and lists adapters', async () => {
   const adapters = await client.adapters();
   assert.equal(adapters.length, 2);
   assert.equal(adapters[0].name, 'memory');
-  assert.equal(adapters[0].capability_revision, 'reference-memory-v4');
+  assert.equal(adapters[0].capability_revision, 'reference-memory-v6');
   assert.equal(adapters[1].error, 'probe failed');
   assert.equal(transport.calls[0].url, `${BASE}/adapters`);
 });
@@ -58,7 +58,7 @@ test('capabilities returns the revision and descriptor', async () => {
           type: EnvelopeType.CapabilitiesResponse,
           id: 'resp-1',
           inReplyTo: 'oap-request-1',
-          capabilityRevision: 'reference-memory-v4',
+          capabilityRevision: 'reference-memory-v6',
           payload: { endpoint: { id: 'reference.memory', name: 'Memory' }, protocol_versions: ['0.1'] },
         }),
       ),
@@ -66,7 +66,7 @@ test('capabilities returns the revision and descriptor', async () => {
   ]);
   const client = dial(BASE, { fetch: transport.fetch });
   const caps = await client.capabilities('memory');
-  assert.equal(caps.revision, 'reference-memory-v4');
+  assert.equal(caps.revision, 'reference-memory-v6');
   assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
   assert.deepEqual(caps.descriptor.protocol_versions, ['0.1']);
 });
@@ -543,4 +543,101 @@ test('an unknown adapter is a coded ServerError', async () => {
   ]);
   const client = dial(BASE, { fetch: transport.fetch });
   await assert.rejects(client.open('nope'), (err: unknown) => serverCode(err) === 'unknown_adapter');
+});
+
+test('a catalog scoped to another session is refused', async () => {
+  // The GET carries no request envelope, so the exchange's request-based
+  // scope check never runs. After the tool-sources unit a misrouted catalog
+  // also carries that session's attached sources, so accepting one would hand
+  // a caller another session's tool sources as its own.
+  const transport = new FakeTransport([
+    {
+      match: '/tools',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.ActionToolsListResponse,
+          id: 'resp-2',
+          inReplyTo: 'oap-request-2',
+          sessionId: 's-other',
+          capabilityRevision: 'reference-memory-v6',
+          payload: {
+            session_id: 's-other',
+            sources: [{ id: 'secret', kind: 'process', endpoint: 'stdio:another-sessions-source' }],
+            tools: [],
+          },
+        }),
+      ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(session.tools(), /scoped to session "s-other", want "s-1"/);
+});
+
+test('a catalog payload naming another session is refused', async () => {
+  // The envelope and its payload are individually schema-valid documents; the
+  // protocol binds them to one scope, which per-envelope validation cannot see.
+  const transport = new FakeTransport([
+    {
+      match: '/tools',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.ActionToolsListResponse,
+          id: 'resp-2',
+          inReplyTo: 'oap-request-2',
+          sessionId: 's-1',
+          capabilityRevision: 'reference-memory-v6',
+          payload: { session_id: 's-other', tools: [] },
+        }),
+      ),
+    },
+  ]);
+  const session = openedSession(transport);
+  await assert.rejects(session.tools(), /payload names session "s-other", envelope "s-1"/);
+});
+
+function catalogTransport(payload: Record<string, unknown>, revision = 'reference-memory-v6'): FakeTransport {
+  return new FakeTransport([
+    {
+      match: '/tools',
+      body: JSON.stringify(
+        testEnvelope({
+          type: EnvelopeType.ActionToolsListResponse,
+          id: 'resp-2',
+          inReplyTo: 'oap-request-2',
+          sessionId: 's-1',
+          capabilityRevision: revision || undefined,
+          payload,
+        }),
+      ),
+    },
+  ]);
+}
+
+test('a catalog payload naming no session is rejected', async () => {
+  // `session_id` is optional on a catalog payload — an endpoint-level catalog
+  // belongs to no session — but it is the answer to an unscoped request, and
+  // this call never sends one: it asks for this session's effective catalog.
+  // An unscoped answer would be missing exactly the sources this session
+  // attached at open. This is the same boundary the Go client draws.
+  const session = openedSession(catalogTransport({ tools: [] }));
+  await assert.rejects(session.tools(), /payload names session "", envelope "s-1"/);
+});
+
+test('a catalog payload naming this session is accepted', async () => {
+  const session = openedSession(catalogTransport({ session_id: 's-1', tools: [] }));
+  const catalog = await session.tools();
+  assert.deepEqual(catalog.tools.tools, []);
+  // The listing comes back bound to the snapshot that governs it.
+  assert.equal(catalog.revision, 'reference-memory-v6');
+});
+
+test('a catalog carrying no capability revision is refused', async () => {
+  // A tool catalog is valid for exactly one descriptor snapshot: it is a
+  // function of the descriptor and of the sources this session attached under
+  // it, and `capabilities.updated` is the only signal that a cached listing
+  // has stopped describing the session. A listing with no revision can be
+  // neither cached nor invalidated. models() refuses the same way, and the Go
+  // client draws the same boundary.
+  const session = openedSession(catalogTransport({ session_id: 's-1', tools: [] }, ''));
+  await assert.rejects(session.tools(), /carries no capability revision/);
 });

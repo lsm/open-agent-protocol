@@ -480,7 +480,7 @@ func (s *state) promote(i int, e protocol.Envelope, r *runState) {
 // an endpoint could advertise queueing and refuse every queued submission with
 // run_active while remaining conforming.
 func (s *state) checkQueueLimits(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	support, ok := effectiveSupport(p, protocol.FeatureDeliveryQueue)
+	support, ok := p.EffectiveSupport(protocol.FeatureDeliveryQueue)
 	if !ok || !affirmative(support.Level) {
 		// Only an unavailable or absent capability is exempt, because
 		// neither claims anything. degraded is held to the same disclosure:

@@ -29,7 +29,15 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 	settled := map[protocol.RunID]uint64{}
 	var claimedAdmissions []protocol.EnvelopeID
 	if p.AsOf != nil {
-		for _, entry := range p.AsOf.Settled {
+		for index, entry := range p.AsOf.Settled {
+			if _, seen := settled[entry.RunID]; seen {
+				// One run settles once, so two claims about it are two
+				// terminals. They are also two claims into one map, where the
+				// later would silently replace the earlier and take its
+				// reconciliation with it.
+				s.addExpected(CodeSessionStateMismatch, i, line, e, fmt.Sprintf("/payload/as_of/settled/%d/run_id", index), "as_of.settled claims one run settled twice", "one claim per run", string(entry.RunID), string(entry.RunID))
+				continue
+			}
 			settled[entry.RunID] = entry.Sequence
 		}
 		for _, id := range p.AsOf.AdmittedSubmitRequests {
@@ -73,7 +81,7 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 		s.checkActiveRunsOmitted(i, line, e, required)
 		return
 	}
-	s.checkActiveRunsListing(i, line, e, p, required, s.captureWindowStart(i, e))
+	s.checkActiveRunsListing(i, line, e, p, required, settled, s.captureWindowStart(i, e))
 }
 
 // requiredActiveRuns is the set of nonterminal runs a snapshot had to list.
@@ -167,7 +175,7 @@ func (s *state) checkActiveRunsOmitted(i, line int, e protocol.Envelope, require
 // checkActiveRunsListing judges a present active_runs: that it lists every run
 // it owed, in admission order, with consistent queue positions, and that each
 // entry's pending set is accurate at the position the entry states.
-func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p protocol.SessionState, required []*runState, window int) {
+func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p protocol.SessionState, required []*runState, settled map[protocol.RunID]uint64, window int) {
 	listed := map[protocol.RunID]bool{}
 	// listedStarted is the run the snapshot itself describes as started: the
 	// entry that is not a reservation at the position it states. It is what
@@ -231,6 +239,19 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			continue
 		}
 		listed[entry.RunID] = true
+		if _, gone := settled[entry.RunID]; gone {
+			// active_runs is what the session still holds and as_of.settled is
+			// what it has already let go, so one run cannot be in both. The
+			// two are read by different rules that each believe their own
+			// input: the entry would take a place in the listing while the
+			// settlement claim waits for a terminal that arrives on schedule
+			// and vindicates it, and the snapshot would be accepted for
+			// saying one run is two things at once. Neither field is judged
+			// for this entry afterwards — a run the snapshot says it dropped
+			// describes no position, no status and no queue place.
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs lists a run the same snapshot says it had already settled", "a run the snapshot still holds", string(entry.RunID), string(entry.RunID))
+			continue
+		}
 		r := s.runs[entry.RunID]
 		if r == nil || r.session != p.SessionID {
 			if anchors := pendingAnchors(s, entry, p.SessionID); len(anchors) > 0 {
@@ -691,7 +712,15 @@ func (s *state) recordSettledClaims(i, line int, e protocol.Envelope, p protocol
 	if p.AsOf == nil {
 		return
 	}
+	handled := map[protocol.RunID]bool{}
 	for _, entry := range p.AsOf.Settled {
+		if handled[entry.RunID] {
+			// A second claim about one run is diagnosed where the settled set
+			// is read. It is not a second thing to reconcile: one run settles
+			// once, so there is one terminal for a claim to be judged against.
+			continue
+		}
+		handled[entry.RunID] = true
 		r := s.runs[entry.RunID]
 		if r == nil || r.session != p.SessionID {
 			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/settled", "snapshot claims a settled run the trace does not carry for this session", "a run admitted on "+string(p.SessionID), string(entry.RunID))

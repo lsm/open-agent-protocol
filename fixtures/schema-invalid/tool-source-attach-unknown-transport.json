@@ -1,0 +1,1 @@
+[{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"caps-resp","in_reply_to":"caps-req","capability_revision":"tools-v1","payload":{"endpoint":{"id":"fixture.endpoint"},"features":{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"transports":["bogus"]}}}}}]

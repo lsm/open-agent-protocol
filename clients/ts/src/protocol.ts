@@ -230,10 +230,32 @@ export interface FeatureSupport {
   reason?: string;
   /** The one application mode a key has one of: `run.model_selection` discloses `per_run` or `session_mutation`. */
   mode?: string;
-  /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it. */
+  /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it, and `action.tool_sources.attach` lists where it attaches — `session_open` wherever attachment is usable at all, plus `remote` when a source the operator never configured is accepted. */
   modes?: string[];
   /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries — an object, because only an object is a structured result. */
   constraints?: { fixed_result?: Record<string, unknown> } & Record<string, unknown>;
+  /** The bounds that make a refusal checkable: `action.tool_sources.attach` discloses `max_sources` and the `transports` it accepts, and refusing an array that violates neither is a conformance failure. Both are held to values a request can satisfy — a positive ceiling, and transports drawn from the source-kind vocabulary — because a limit no attachment can meet would make refusing every one of them conforming, so the schema refuses it. */
+  limits?: { max_sources?: number; transports?: ToolSourceKind[] } & Record<string, unknown>;
+}
+
+/** Where a tool source's tools are executed from. An MCP source is a `process` or `remote` kind whose `protocol` is `mcp`. */
+export type ToolSourceKind = 'native' | 'local' | 'process' | 'remote' | 'hosted';
+
+/**
+ * The published shape of one tool source: what `action.tools.list.response`,
+ * `session.state`, and the capability descriptor report back to clients.
+ *
+ * It carries no `command`, `args`, or `environment` — those belong to
+ * `ToolSourceAttachment`, the open-time shape — because an attachment's
+ * environment can hold a literal credential and one shape serving both would
+ * make a leak into a published catalog valid.
+ */
+export interface ToolSourceDescriptor {
+  id: string;
+  kind: ToolSourceKind;
+  display_name?: string;
+  protocol?: string;
+  endpoint?: string;
 }
 
 export interface ToolDefinition {
@@ -241,6 +263,10 @@ export interface ToolDefinition {
   description?: string;
   input_schema: Record<string, unknown>;
   execution_owner: string;
+  /** The id of the `ToolSourceDescriptor` this tool comes from — never an inline copy — so a consumer can attribute a tool to an MCP server without parsing its name. */
+  source?: string;
+  /** This one tool's effective support map. */
+  features?: Record<string, FeatureSupport>;
   annotations?: Record<string, unknown>;
 }
 
@@ -267,6 +293,7 @@ export interface CapabilityLayer {
   /** At least one mode when present: the schema refuses an empty list. */
   effective_delivery_modes?: [EffectiveDeliveryMode, ...EffectiveDeliveryMode[]];
   tools?: ToolDefinition[];
+  sources?: ToolSourceDescriptor[];
 }
 
 export interface InitializeRequest {
@@ -301,6 +328,7 @@ export interface CapabilityDescriptor {
   features?: Record<string, FeatureSupport>;
   layers?: Record<string, CapabilityLayer>;
   tools?: ToolDefinition[];
+  sources?: ToolSourceDescriptor[];
   degradation?: Degradation[];
   /** The admission bounds the endpoint discloses (queue unit). */
   limits?: CapabilityLimits;
@@ -367,9 +395,34 @@ export interface ModelsResponse {
 
 export type SessionStatus = 'idle' | 'queued' | 'running' | 'waiting_for_input' | 'closed' | 'error';
 
+/**
+ * The open-time shape of one tool source: the descriptor's published members
+ * plus, for a `process` source, the attachment-only `command`, `args`, and
+ * `environment`. `environment` takes the registry's allowlist form — a bare
+ * `NAME` forwards the endpoint's own value, `NAME=value` passes literally.
+ *
+ * The daemon's client-facing route accepts neither `command`, `args`, nor a
+ * literal `NAME=value`: a `process` attachment names an operator-configured
+ * source by `id` only and the daemon fills the rest from its own registry.
+ */
+export interface ToolSourceAttachment {
+  id: string;
+  kind: ToolSourceKind;
+  display_name?: string;
+  protocol?: string;
+  endpoint?: string;
+  command?: string;
+  args?: string[];
+  environment?: string[];
+}
+
 export interface SessionOpenRequest {
   session_id?: string;
   metadata?: Record<string, unknown>;
+  /** The sources the session resolves for its lifetime. */
+  tool_sources?: ToolSourceAttachment[];
+  /** Consent to the degraded application of the capabilities the open elects. */
+  allow_degraded_features?: string[];
   recovery?: RecoveryMetadata;
 }
 
@@ -391,6 +444,8 @@ export interface SessionState {
   transcript_cursor?: string;
   updated_at_ms?: number;
   metadata?: Record<string, unknown>;
+  /** The sanitized projection of the session's attached and declared sources. */
+  sources?: ToolSourceDescriptor[];
   recovery?: RecoveryMetadata;
   /** What the snapshot knew when it was taken, so membership is judged against the endpoint's knowledge rather than the reader's. */
   as_of?: SessionCapture;
@@ -565,9 +620,17 @@ export interface RunCancelledPayload {
 
 // --- action.schema.json ---
 
-export type ToolsListRequest = EmptyRequestPayload;
+/** A catalog request. `session_id` asks for that session's effective catalog; an absent one asks for the endpoint-level catalog a static adapter serves. */
+export interface ToolsListRequest {
+  session_id?: string;
+  /** Consent to a catalog the endpoint advertises `degraded`; without it such a request is refused `capability_degraded`. */
+  allow_degraded_features?: string[];
+}
 
 export interface ToolsListResponse {
+  /** Repeated from the request when the catalog is a session's effective catalog. */
+  session_id?: string;
+  sources?: ToolSourceDescriptor[];
   tools: ToolDefinition[];
 }
 
@@ -580,6 +643,8 @@ interface ActionCallBase {
   requested_by?: string;
   responded_by?: string;
   execution_owner: string;
+  /** The id of the tool source this call is attributed to, so a consumer need not parse the name. */
+  source?: string;
   name?: string;
 }
 

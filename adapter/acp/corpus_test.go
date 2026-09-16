@@ -35,6 +35,7 @@ var acpEvidenceFixtures = map[string]bool{
 	"cancel-confirmed": true, "completion-wins-race": true, "tool-lifecycle-permission": true,
 	"refusal": true, "prompt-error": true, "process-exit": true,
 	"malformed-update": true, "update-after-terminal": true, "replay-degradation": true,
+	"session-new-tool-sources": true,
 }
 
 type acpCorpusManifest struct {
@@ -65,6 +66,14 @@ type acpCorpusCase struct {
 	IdentityMap  map[string]string `json:"identity_map"`
 	Journal      int               `json:"journal_capacity,omitempty"`
 	ReplayAfter  *uint64           `json:"replay_after,omitempty"`
+	// ToolSources are the attachments the open supplies, Environment the
+	// operator allowlist a bare NAME resolves against, and ExpectedServers
+	// the mcpServers array session/new must have carried. Attachment is not
+	// an event, so the case declares what the adapter owed the native wire
+	// rather than expecting it in the OAP trace.
+	ToolSources     []protocol.ToolSourceAttachment `json:"tool_sources,omitempty"`
+	Environment     []string                        `json:"environment,omitempty"`
+	ExpectedServers []native.MCPServer              `json:"expected_mcp_servers,omitempty"`
 }
 type acpProvenance struct {
 	Repository    string `json:"repository"`
@@ -104,6 +113,7 @@ type corpusClient struct {
 	done          chan struct{}
 	promptStarted chan struct{}
 	prompt        chan promptOutcome
+	sessionNew    native.SessionNewParams
 	closed        bool
 	err           error
 }
@@ -111,9 +121,14 @@ type corpusClient struct {
 func newCorpusClient() *corpusClient {
 	return &corpusClient{notifications: make(chan rpc.NotificationMessage, 32), requests: make(chan *rpc.IncomingRequest, 8), inbound: make(chan rpc.InboundMessage, 32), done: make(chan struct{}), promptStarted: make(chan struct{}, 1), prompt: make(chan promptOutcome, 2)}
 }
-func (c *corpusClient) Call(_ context.Context, method string, _ any, result any) error {
+func (c *corpusClient) Call(_ context.Context, method string, params any, result any) error {
 	switch method {
 	case native.MethodSessionNew:
+		// The params are kept so a case can assert what the adapter actually
+		// wrote to session/new, which is where an attachment lands natively.
+		if typed, ok := params.(native.SessionNewParams); ok {
+			c.sessionNew = typed
+		}
 		*result.(*native.SessionNewResult) = native.SessionNewResult{SessionID: "native-session"}
 		return nil
 	case native.MethodSessionPrompt:
@@ -201,7 +216,7 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 	client := newCorpusClient()
 	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, rpc.InitializeResponse, error) {
 		return client, rpc.InitializeResponse{ProtocolVersion: 1, AgentCapabilities: rpc.AgentCapabilities{}}, nil
-	}), WorkingDirectory: "/workspace", Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
+	}), WorkingDirectory: "/workspace", Environment: definition.Environment, Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +225,10 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 		t.Fatal(err)
 	}
 	adaptertest.AssertDescriptor(t, descriptor)
-	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}, ToolSources: definition.ToolSources})
+	if len(definition.ToolSources) > 0 {
+		assertACPAttachment(t, session, client, definition)
+	}
 	admission, stream := submit(t, session)
 	<-client.promptStarted
 	prefix := []protocol.Envelope{adaptertest.Next(t, stream, time.Second)}
@@ -287,6 +305,53 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 		prettyWant, _ := json.MarshalIndent(expected, "", "  ")
 		prettyGot, _ := json.MarshalIndent(events, "", "  ")
 		t.Fatalf("normalized trace mismatch\nwant: %s\ngot: %s", prettyWant, prettyGot)
+	}
+}
+
+// assertACPAttachment proves attachment at open on both sides of the
+// boundary: the mcpServers array the adapter actually wrote to session/new —
+// with the operator's allowlist resolved and a name it never exposed dropped
+// — and the sanitized projection the session publishes back, which carries
+// the descriptor's members and none of the attachment-only ones.
+func assertACPAttachment(t *testing.T, session base.Session, client *corpusClient, definition acpCorpusCase) {
+	t.Helper()
+	got, err := json.Marshal(client.sessionNew.MCPServers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(definition.ExpectedServers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("session/new mcpServers\n got: %s\nwant: %s", got, want)
+	}
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := make(map[string]protocol.ToolSourceDescriptor, len(state.Sources))
+	for _, source := range state.Sources {
+		published[source.ID] = source
+	}
+	if len(published) != len(definition.ToolSources) {
+		t.Fatalf("session state publishes %d sources, want %d", len(published), len(definition.ToolSources))
+	}
+	for _, attachment := range definition.ToolSources {
+		if published[attachment.ID] != attachment.Descriptor() {
+			t.Fatalf("session state publishes %+v for %q, want the descriptor projection", published[attachment.ID], attachment.ID)
+		}
+	}
+	// The projection is the point: nothing that could carry a credential
+	// reaches a client through state.
+	encoded, err := json.Marshal(state.Sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []string{"command", "args", "environment"} {
+		if bytes.Contains(encoded, []byte(`"`+member+`"`)) {
+			t.Fatalf("session state leaked the attachment-only member %q: %s", member, encoded)
+		}
 	}
 }
 

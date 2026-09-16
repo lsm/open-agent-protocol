@@ -2,6 +2,7 @@
 package adaptertest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -100,7 +101,7 @@ func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageS
 func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
-	trace, err := protocolTraceWith(&request, admission, descriptor, events, false)
+	trace, err := protocolTraceWith(&request, admission, descriptor, nil, events, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +117,30 @@ func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitR
 func AssertProtocolValidWithCancellation(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, true)
+}
+
+// AssertProtocolValidWithCatalog certifies a run against the catalog the
+// session had already served when the run happened, by splicing that exchange
+// into the trace ahead of the submission.
+//
+// A call's `source` is a cross-reference, and what it may reference is the
+// catalog in force: the session's own where one has been served under the
+// active revision, and otherwise the descriptor's. A trace that drops the
+// serve therefore judges the run against the wrong catalog — it would report a
+// correctly attributed call as naming a source nothing declares, and would
+// excuse an omitted attribution the served catalog obliged. Use this wherever
+// the endpoint served a session catalog before the run; the plain assertion
+// covers the other ordering, where only the descriptor has published anything.
+func AssertProtocolValidWithCatalog(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, request protocol.ToolsListRequest, catalog adapter.ToolCatalog, events []protocol.Envelope) {
+	t.Helper()
+	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
+	trace, err := protocolTraceWith(nil, admission, descriptor, &servedCatalog{request: request, catalog: catalog}, events, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().ValidateBytes(trace, "adaptertest"); !result.Valid() {
+		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
+	}
 }
 
 func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, revision string, events []protocol.Envelope, cancelled bool) {
@@ -431,14 +456,24 @@ func ProtocolTraceWithCancellation(admission protocol.MessageSubmitResponse, des
 }
 
 func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
-	return protocolTraceWith(nil, admission, descriptor, events, cancelled)
+	return protocolTraceWith(nil, admission, descriptor, nil, events, cancelled)
 }
 
 // protocolTraceWith assembles the canonical trace. When submitted is nil the
 // submission is synthesized as a neutral one carrying no controls; when it is
 // given, the caller's own request is what the admission answers, so the
 // validator judges the controls it actually carried.
-func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
+// servedCatalog is one catalog exchange that actually happened: the request as
+// the caller sent it, and the catalog the endpoint answered with. The request
+// is kept rather than synthesized because it carries the caller's own degraded
+// opt-in, and a catalog requested without consent is its own diagnostic — a
+// trace that dropped it would fail for a defect the endpoint never had.
+type servedCatalog struct {
+	request protocol.ToolsListRequest
+	catalog adapter.ToolCatalog
+}
+
+func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, served *servedCatalog, events []protocol.Envelope, cancelled bool) ([]byte, error) {
 	var trace []protocol.Envelope
 	if descriptor.CapabilityRevision != "" {
 		request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
@@ -452,6 +487,22 @@ func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission proto
 		response.InReplyTo = request.ID
 		response.CapabilityRevision = descriptor.CapabilityRevision
 		trace = append(trace, request, response)
+	}
+	if served != nil {
+		// The serve sits between the descriptor and the submission, which is
+		// where it happened: the catalog it published is the one in force for
+		// every call the run below emits.
+		listRequest, err := protocol.NewEnvelope(protocol.TypeActionToolsListRequest, "tools-request", served.request)
+		if err != nil {
+			return nil, err
+		}
+		listRequest.SessionID, listRequest.CapabilityRevision = admission.SessionID, served.catalog.Revision
+		listResponse, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, "tools-response", served.catalog.Tools)
+		if err != nil {
+			return nil, err
+		}
+		listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = admission.SessionID, listRequest.ID, served.catalog.Revision
+		trace = append(trace, listRequest, listResponse)
 	}
 	request := protocol.MessageSubmitRequest{
 		SessionID: admission.SessionID,
@@ -525,6 +576,128 @@ func cancelExchangeCut(events []protocol.Envelope) int {
 		}
 	}
 	return len(events)
+}
+
+// AssertToolCatalog runs one served catalog through the real validator: the
+// descriptor that advertises the capability, the caller's own request, and the
+// correlated response. It is what proves a catalog resolves — one source per
+// id, one tool per name, every tool's source declared, and every attachment
+// the open made still listed — rather than asserting those rules a second time
+// in each adapter's tests.
+//
+// attached are the sources one session.open attached, spliced in as the open
+// exchange the catalog is judged against; pass none for an endpoint-level
+// catalog or a session that attached nothing.
+func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, open protocol.SessionOpenRequest, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) {
+	t.Helper()
+	trace, err := ToolCatalogTrace(descriptor, open, request, catalog)
+	if err != nil {
+		t.Fatalf("assemble catalog trace: %v", err)
+	}
+	result := validation.MustNew().Validate(bytes.NewReader(trace), "adaptertest-catalog")
+	if !result.Valid() {
+		t.Fatalf("served catalog is not protocol-valid:\n%s\ntrace: %s", FormatDiagnostics(result), trace)
+	}
+}
+
+// ToolCatalogTrace assembles the canonical catalog trace: the capabilities
+// exchange, the open that attached the sources when there was one, and the
+// list exchange.
+//
+// It takes the open request the caller actually made, not a list of
+// attachments, because an open carries more than its attachments and every
+// missing part convicted a conforming adapter. The synthesized open could not
+// carry `allow_degraded_features`, so an endpoint advertising attachment as
+// `degraded` failed here for `degraded_without_optin` however correctly its
+// caller had consented — the helper reporting a defect the endpoint did not
+// have, which is the worst thing a certifier can do.
+func ToolCatalogTrace(descriptor adapter.Descriptor, open protocol.SessionOpenRequest, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) ([]byte, error) {
+	revision := descriptor.CapabilityRevision
+	var trace []protocol.Envelope
+	capabilitiesRequest, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	capabilities, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+	capabilities.InReplyTo, capabilities.CapabilityRevision = capabilitiesRequest.ID, revision
+	trace = append(trace, capabilitiesRequest, capabilities)
+	session := request.SessionID
+	if session == "" {
+		session = catalog.Tools.SessionID
+	}
+	if len(open.ToolSources) > 0 {
+		open.SessionID = session
+		openRequest, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "open-request", open)
+		if err != nil {
+			return nil, err
+		}
+		openRequest.SessionID, openRequest.CapabilityRevision = session, revision
+		// The descriptor's declared sources are read across its layers, because
+		// a valid descriptor may declare them under one alone and the validator
+		// reads them that way. Reading the top level alone made this helper
+		// expect a union it had itself truncated, and report the trace it
+		// generated as invalid for an adapter using a shape the protocol
+		// explicitly supports.
+		declared := descriptor.Capabilities.EffectiveSources()
+		sources := append([]protocol.ToolSourceDescriptor(nil), declared...)
+		// An open response publishes what the session publishes, and an endpoint
+		// may fill a member the attachment left blank. The served catalog is that
+		// session's own description of the source, and every later snapshot and
+		// catalog is held to what the open response published — exactly — so the
+		// reconstructed response adopts the catalog's descriptor where it has
+		// one. Publishing the bare attachment instead would convict an endpoint
+		// that filled a display name at open, which is behaviour the unit invites.
+		served, _ := indexSources(catalog.Tools.Sources)
+		for _, attachment := range open.ToolSources {
+			if published, ok := served[attachment.ID]; ok {
+				sources = append(sources, published)
+				continue
+			}
+			sources = append(sources, attachment.Descriptor())
+		}
+		opened, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, "open-response", protocol.SessionOpenResponse{SessionID: session, Status: protocol.SessionIdle, Sources: sources})
+		if err != nil {
+			return nil, err
+		}
+		opened.SessionID, opened.InReplyTo, opened.CapabilityRevision = session, openRequest.ID, revision
+		trace = append(trace, openRequest, opened)
+	}
+	listRequest, err := protocol.NewEnvelope(protocol.TypeActionToolsListRequest, "tools-request", request)
+	if err != nil {
+		return nil, err
+	}
+	listRequest.SessionID, listRequest.CapabilityRevision = session, revision
+	listResponse, err := protocol.NewEnvelope(protocol.TypeActionToolsListResponse, "tools-response", catalog.Tools)
+	if err != nil {
+		return nil, err
+	}
+	// The revision on the envelope is the one the catalog came back with, not
+	// the descriptor's, so a listing served under a revision the adapter no
+	// longer advertises is visible here rather than laundered into agreement.
+	listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = catalog.Tools.SessionID, listRequest.ID, catalog.Revision
+	return json.Marshal(append(trace, listRequest, listResponse))
+}
+
+// indexSources indexes published descriptors by id, reporting the first
+// duplicate. One id resolving to two descriptors is a defect the validator
+// diagnoses on the catalog itself, so this keeps the first and leaves the
+// diagnosis where it belongs.
+func indexSources(sources []protocol.ToolSourceDescriptor) (map[string]protocol.ToolSourceDescriptor, string) {
+	indexed := make(map[string]protocol.ToolSourceDescriptor, len(sources))
+	duplicate := ""
+	for _, source := range sources {
+		if _, seen := indexed[source.ID]; seen {
+			if duplicate == "" {
+				duplicate = source.ID
+			}
+			continue
+		}
+		indexed[source.ID] = source
+	}
+	return indexed, duplicate
 }
 
 func AssertTypes(t testing.TB, envelopes []protocol.Envelope, want ...protocol.EnvelopeType) {

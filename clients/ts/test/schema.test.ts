@@ -94,6 +94,11 @@ const samples: PayloadSample[] = [
       'session.open': { level: 'native', reason: 'because', mode: 'direct' },
       'run.tool_selection': { level: 'emulated', modes: ['auto', 'named'] },
       'run.structured_output': { level: 'emulated', constraints: { fixed_result: { ok: true } } },
+      'action.tool_sources.attach': {
+        level: 'emulated',
+        modes: ['session_open', 'remote'],
+        limits: { max_sources: 2, transports: ['process', 'local'] },
+      },
     },
     limits: { max_active_runs_per_session: 2, max_queued_runs_per_session: 1 },
     layers: {
@@ -101,12 +106,15 @@ const samples: PayloadSample[] = [
         features: { 'session.open': { level: 'native', reason: 'because', mode: 'direct' } },
         requested_delivery_modes: ['auto'],
         effective_delivery_modes: ['start'],
+        sources: [{ id: 'native', kind: 'native', display_name: 'Layer source' }],
         tools: [
           {
             name: 'echo',
             description: 'echoes',
             input_schema: { type: 'object' },
             execution_owner: 'user',
+            source: 'native',
+            features: { 'action.tools.execute': { level: 'native' } },
             annotations: { area: 'test' },
           },
         ],
@@ -118,8 +126,14 @@ const samples: PayloadSample[] = [
         description: 'echoes',
         input_schema: { type: 'object' },
         execution_owner: 'user',
+        source: 'native',
+        features: { 'action.tools.execute': { level: 'native' } },
         annotations: { area: 'test' },
       },
+    ],
+    sources: [
+      { id: 'native', kind: 'native', display_name: 'Adapter script' },
+      { id: 'files', kind: 'process', protocol: 'mcp', endpoint: 'stdio:filesystem-tools', display_name: 'Files' },
     ],
     degradation: [{ feature: 'run.replay', from: 'native', to: 'degraded', mode: 'journal', reason: 'bounded' }],
   }),
@@ -151,9 +165,28 @@ const samples: PayloadSample[] = [
   }),
 
   // session.schema.json
+  sample<protocol.ToolSourceAttachment>('ToolSourceAttachment', 'session.schema.json', 'toolSourceAttachment', {
+    id: 'files',
+    kind: 'process',
+    display_name: 'Files',
+    protocol: 'mcp',
+    endpoint: 'stdio:filesystem-tools',
+    command: '/usr/local/bin/mcp-filesystem',
+    args: ['--root', '/workspace'],
+    environment: ['MCP_TOKEN'],
+  }),
+  sample<protocol.ToolSourceDescriptor>('ToolSourceDescriptor', 'capabilities.schema.json', 'toolSourceDescriptor', {
+    id: 'files',
+    kind: 'process',
+    display_name: 'Files',
+    protocol: 'mcp',
+    endpoint: 'stdio:filesystem-tools',
+  }),
   sample<protocol.SessionOpenRequest>('SessionOpenRequest', 'session.schema.json', 'openRequest', {
     session_id: 's-1',
     metadata: { origin: 'test' },
+    tool_sources: [{ id: 'files', kind: 'process', protocol: 'mcp', command: '/usr/local/bin/mcp-filesystem' }],
+    allow_degraded_features: ['action.tool_sources.attach'],
     recovery: {
       recovered: true,
       previous_session_id: 's-0',
@@ -174,6 +207,7 @@ const samples: PayloadSample[] = [
     transcript_cursor: '12',
     updated_at_ms: 1700000000000,
     metadata: { origin: 'test' },
+    sources: [{ id: 'files', kind: 'process', protocol: 'mcp', endpoint: 'stdio:filesystem-tools' }],
     recovery: { recovered: false },
     as_of: {
       admitted_submit_requests: ['e-9'],
@@ -293,14 +327,21 @@ const samples: PayloadSample[] = [
   }),
 
   // action.schema.json
-  sample<protocol.ToolsListRequest>('ToolsListRequest', 'action.schema.json', 'toolsListRequest', {}),
+  sample<protocol.ToolsListRequest>('ToolsListRequest', 'action.schema.json', 'toolsListRequest', {
+    session_id: 's-1',
+    allow_degraded_features: ['action.tools.list'],
+  }),
   sample<protocol.ToolsListResponse>('ToolsListResponse', 'action.schema.json', 'toolsListResponse', {
+    session_id: 's-1',
+    sources: [{ id: 'native', kind: 'native', display_name: 'Adapter script' }],
     tools: [
       {
         name: 'echo',
         description: 'echoes',
         input_schema: { type: 'object' },
         execution_owner: 'user',
+        source: 'native',
+        features: { 'action.tools.execute': { level: 'native' } },
         annotations: { area: 'test' },
       },
     ],
@@ -313,6 +354,7 @@ const samples: PayloadSample[] = [
     requested_by: 'agent',
     responded_by: 'user',
     execution_owner: 'user',
+    source: 'native',
     name: 'echo',
     arguments_json: { text: 'hi' },
   }),
@@ -324,6 +366,7 @@ const samples: PayloadSample[] = [
     requested_by: 'agent',
     responded_by: 'user',
     execution_owner: 'user',
+    source: 'native',
     name: 'echo',
     arguments_json: { text: 'hi' },
   }),
@@ -335,6 +378,7 @@ const samples: PayloadSample[] = [
     requested_by: 'agent',
     responded_by: 'user',
     execution_owner: 'user',
+    source: 'native',
     name: 'echo',
     progress: { percent: 50 },
   }),
@@ -346,6 +390,7 @@ const samples: PayloadSample[] = [
     requested_by: 'agent',
     responded_by: 'user',
     execution_owner: 'user',
+    source: 'native',
     name: 'echo',
     result: { output: 'hi' },
   }),
@@ -357,6 +402,7 @@ const samples: PayloadSample[] = [
     requested_by: 'agent',
     responded_by: 'user',
     execution_owner: 'user',
+    source: 'native',
     name: 'echo',
     error: { code: 'tool_error', message: 'boom' },
   }),
@@ -368,6 +414,7 @@ const samples: PayloadSample[] = [
     requested_by: 'agent',
     responded_by: 'user',
     execution_owner: 'user',
+    source: 'native',
     name: 'echo',
   }),
   sample<protocol.PermissionRequestedPayload>('PermissionRequestedPayload', 'action.schema.json', 'permissionRequested', {

@@ -460,6 +460,21 @@ The identity claim itself is always reconciled. Accepting it at the state
 response and never returning to it is what lets a snapshot assert an admission
 that did not happen.
 
+Two claims of one snapshot are read by different rules, and each rule believes
+its own input, so a snapshot that contradicts itself can satisfy both. That is
+a different failure from a rule that misjudges its own input, and it is caught
+where the inputs meet rather than where they are reconciled. `active_runs` is
+what the session still holds and `as_of.settled` is what it has already let go,
+so one run may not be in both: the entry would take its place in the listing
+while the settlement claim waited for a terminal that arrives on schedule and
+vindicates it, and the snapshot would be accepted for saying one run is two
+things at once. An entry the same snapshot says it dropped describes no
+position, no status and no queue place, so nothing further about it is judged.
+`as_of.settled` may not name one run twice either, for the same reason read
+from one field instead of two: one run settles once, so two claims about it are
+two terminals, and the second would replace the first and take its
+reconciliation with it.
+
 A stated position the trace has not reached is held and reconciled when it
 arrives. A position that never exists is not: a snapshot may describe a
 position the trace has not yet seen, but not one the run never reaches, and a
@@ -511,7 +526,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 162 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 165 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -528,9 +543,14 @@ Native evidence: OpenCode graduates the key at `native` on
 its promotion after the started run's derived settlement, and its pre-start
 cancellation exercised through the production reducer.
 
-Reference execution: `adapter/memory.go` moves to `reference-memory-v4` — T5a
-took v3 for the models catalog, and a revision identifies exactly one
-descriptor — and advertises the key `emulated` with
+Reference execution: `adapter/memory.go` moves to `reference-memory-v6` — T5a
+took v3 for the models catalog and tool sources v5, a revision identifies
+exactly one descriptor, and this one says everything both of theirs say and
+advertises the queue besides, so it is neither of theirs. `v4` belongs to no
+published descriptor: the units graduating in parallel each reserved a number
+so that two branches could not publish two descriptors under one revision, and
+the one merging last takes the number after what it finds. The descriptor
+advertises the key `emulated` with
 `max_active_runs_per_session: 2` and `max_queued_runs_per_session: 1`, reserves
 one run beside the started one, lists both in `active_runs`, promotes on the
 terminal, and settles a cancelled reservation pre-start.

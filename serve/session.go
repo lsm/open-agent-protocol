@@ -137,7 +137,21 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	if errors.Is(err, base.ErrSessionClosed) {
 		s.markClosed()
 	}
-	return state, err
+	if err != nil {
+		return state, err
+	}
+	if state.SessionID != s.id {
+		// The same rule the catalog takes below, and this unit is why it
+		// applies here: a snapshot now carries the sources a session attached,
+		// so a snapshot answered in the wrong scope publishes one session's
+		// attachments under another's id — or under none, which no later rule
+		// can catch, because every one of them keys off the session the
+		// snapshot names. The codec labels the envelope from the session it
+		// addressed, so an unchecked value here survives into a response the
+		// clients reject.
+		return protocol.SessionState{}, fmt.Errorf("serve: adapter reported state scoped to session %q, want %q", state.SessionID, s.id)
+	}
+	return state, nil
 }
 
 // Models reads the session's effective model catalog. The request is
@@ -243,6 +257,72 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	}
 	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
 	return admission, nil
+}
+
+// Tools serves this session's effective tool catalog. The request is
+// forwarded unchanged — the hub adds no protocol semantics, so the degraded
+// opt-in the caller sent is applied by the adapter to exactly what the wire
+// said — and its SessionID, when present, must name this session. An adapter
+// that serves no portable catalog answers ErrToolCatalogUnavailable, which
+// every binding maps to the typed refusal naming action.tools.list.
+//
+// What the adapter hands back is checked against what the hub asked before any
+// of it reaches a binding, exactly as Models does. Forwarding it unchecked is
+// how one session's catalog reaches another session's envelope: a codec labels
+// the envelope with the session it addressed, so an adapter's conflicting
+// payload scope survives into a response this project's own clients reject.
+// Fixing the adapters that get it wrong is necessary and not sufficient — the
+// boundary is where every adapter, including ones this repository never sees,
+// stops being taken at its word.
+func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (base.ToolCatalog, error) {
+	if request.SessionID != "" && request.SessionID != s.id {
+		return base.ToolCatalog{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	lister, ok := s.session.(base.ToolLister)
+	if !ok {
+		return base.ToolCatalog{}, base.ErrToolCatalogUnavailable
+	}
+	catalog, err := lister.Tools(ctx, request)
+	if errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
+	}
+	if err != nil {
+		return base.ToolCatalog{}, err
+	}
+	if catalog.Revision == "" {
+		// A listing nothing can bind to a descriptor is worse than none: a
+		// consumer would cache it under no revision and never know when to
+		// discard it. This unit's catalogs need that more than the model ones,
+		// not less — an endpoint that republishes its tools per turn changes
+		// what it lists without anyone asking, and the revision is what tells a
+		// caller which descriptor it is holding.
+		return base.ToolCatalog{}, errors.New("serve: adapter served a tool catalog with no capability revision")
+	}
+	if catalog.Tools.SessionID != request.SessionID {
+		// The scope the adapter answered in must be the scope the caller asked
+		// in, in both directions. An unscoped request asks for the endpoint's
+		// own catalog and a scoped one for a session's; answering either with
+		// the other substitutes a different question's answer, and the one that
+		// leaks — a session's attachments published with no scope — escapes
+		// every later rule, because the lifetime checks that would catch it key
+		// off the session the response names.
+		//
+		// Refused rather than relabelled: the adapter computed this listing for
+		// the scope it named, so rewriting the label would show one session's
+		// tools under another's id and launder the fault into something that
+		// looks correct.
+		return base.ToolCatalog{}, fmt.Errorf("serve: adapter served a tool catalog scoped to session %q, want %q", catalog.Tools.SessionID, request.SessionID)
+	}
+	if catalog.Tools.Tools == nil {
+		// An adapter that builds its listing by appending hands back an absent
+		// list where it meant an empty one, and Go marshals that as null while
+		// the schema requires an array. This is the one fault of the three that
+		// is repaired rather than refused, for the reason Models gives: an
+		// absent list and an empty one say the same thing, and only one of the
+		// two spellings is legal on the wire.
+		catalog.Tools.Tools = []protocol.ToolDefinition{}
+	}
+	return catalog, nil
 }
 
 // Resolve resolves one pending interactive gate. The resolution's inner

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/adapter/claude/internal/native"
@@ -16,6 +17,19 @@ import (
 )
 
 const streamCapacity = 64
+
+// The catalog vocabulary. harnessOwner is the participant that executes every
+// tool the CLI publishes — the CLI runs them itself — and is the same id every
+// emitted action.call payload names. nativeToolSource is the source a built-in
+// tool comes from; mcpSourcePrefix namespaces an MCP server's source id so it
+// can never collide with the native one; mcpToolPrefix is the prefix the CLI
+// gives a tool it exposes from an MCP server.
+const (
+	harnessOwner     = "claude-code"
+	nativeToolSource = "claude-code-native"
+	mcpSourcePrefix  = "mcp:"
+	mcpToolPrefix    = "mcp__"
+)
 
 var errTerminalWon = errors.New("claude adapter: terminal already selected")
 var errUnavailable = errors.New("claude adapter: operation unavailable")
@@ -36,6 +50,35 @@ type Session struct {
 	state           protocol.SessionState
 	closed          bool
 	unusable        bool
+
+	// catalog is the tool catalog projected from the newest system/init
+	// frame: the CLI republishes its tools and its MCP server list on every
+	// turn, so the newest frame wins and there is none at all before the
+	// first submit. That is what makes action.tools.list degraded here.
+	catalog        []protocol.ToolDefinition
+	catalogSources []protocol.ToolSourceDescriptor
+	catalogKnown   bool
+	// servedTools is the tool-to-source mapping of the last catalog this
+	// session actually served, and nil until it has served one. It is what the
+	// adapter has published to this session, as against what it merely knows,
+	// and it is the adapter-side twin of the validator's attributionInForce.
+	// mu-domain, like the three fields above it.
+	servedTools map[string]string
+	// attribution is what those four fields *answer*: the mapping an emitted
+	// call may name, recomputed under mu whenever an input changes and then
+	// published as an immutable snapshot the dispatch loop reads with no lock
+	// at all.
+	//
+	// It exists because the answer is needed from the other lock domain. Every
+	// input is mu-domain, but startTool needs it while the reducer holds
+	// reduceMu, and reading the inputs there was a genuine race — a torn slice
+	// header at first, and a fatal `concurrent map read and map write` once a
+	// served catalog became a map. Taking mu in the reducer would have worked,
+	// and the established order (reduceMu then mu, as the InitFrame case uses)
+	// admits it, but a value replaced wholesale and never mutated does not need
+	// a lock: publishing it atomically makes the reducer's view immutable by
+	// construction rather than by a discipline the next reader has to know.
+	attribution atomic.Pointer[map[string]string]
 
 	pending      *runState
 	active       *runState
@@ -82,10 +125,16 @@ type runState struct {
 }
 
 type toolState struct {
-	nativeID  string
-	id        protocol.ToolCallID
-	run       *runState
-	name      string
+	nativeID string
+	id       protocol.ToolCallID
+	run      *runState
+	name     string
+	// source is the tool source this session's published catalog records for
+	// this tool, captured once when the call is created. Capturing rather than
+	// re-deriving is what makes the call and the catalog agree by construction:
+	// a call's attribution may not move mid-lifecycle, and the catalog it was
+	// attributed against is the one that was current when the call began.
+	source    string
 	args      json.RawMessage
 	requested protocol.EnvelopeID
 	started   protocol.EnvelopeID
@@ -360,8 +409,198 @@ func (s *Session) observeIdle(observation *rpc.ObservationMessage) {
 	if init, ok := observation.Value.(*native.InitFrame); ok {
 		s.mu.Lock()
 		s.state.CurrentModelID = init.Model
+		s.projectCatalogLocked(init)
 		s.mu.Unlock()
 	}
+}
+
+// projectCatalogLocked turns one system/init frame into the session's
+// catalog. The frame carries two lists and nothing joining them: the tool
+// names, and the MCP servers by name. A tool is attributed to an MCP source
+// only when its name carries the `mcp__<server>__` prefix of a server the
+// same frame listed — the join is between two members of one pinned frame
+// rather than a convention read out of a name — and every other tool is
+// attributed to the adapter's own native source. The frame reports no
+// endpoint for a server, so the descriptor carries none either; inventing one
+// would put a value on the wire that the harness never said.
+func (s *Session) projectCatalogLocked(init *native.InitFrame) {
+	sources := []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}}
+	var servers []string
+	seenServers := make(map[string]bool, len(init.MCPServers))
+	for _, server := range init.MCPServers {
+		if server.Name == "" || seenServers[server.Name] {
+			continue
+		}
+		seenServers[server.Name] = true
+		servers = append(servers, server.Name)
+		sources = append(sources, protocol.ToolSourceDescriptor{
+			ID: mcpSourcePrefix + server.Name, Kind: protocol.ToolSourceProcess,
+			Protocol: protocol.ToolSourceMCP, DisplayName: server.Name,
+		})
+	}
+	catalog := make([]protocol.ToolDefinition, 0, len(init.Tools))
+	seen := make(map[string]bool, len(init.Tools))
+	for _, name := range init.Tools {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		catalog = append(catalog, protocol.ToolDefinition{
+			Name: name, InputSchema: json.RawMessage(`{"type":"object"}`),
+			ExecutionOwner: harnessOwner, Source: toolSourceFor(name, servers),
+			Features: map[string]protocol.FeatureSupport{
+				"action.tools.execute": {Level: protocol.SupportUnavailable, Reason: "the CLI executes its own tools"},
+			},
+		})
+	}
+	s.catalog, s.catalogSources, s.catalogKnown = catalog, sources, true
+	s.publishAttributionLocked()
+}
+
+// publishAttributionLocked recomputes the mapping an emitted call may name and
+// publishes it for the dispatch loop. Called under mu by every writer of an
+// input, so the recompute is serialized and each published map is fresh,
+// complete, and never written again.
+//
+// The rule it encodes is the one Decision 0008 states: a call names exactly
+// what the catalog in force attributes the tool to. A catalog this session
+// served is in force wholly, and supersedes the projection — including for a
+// tool the served catalog omits, which this session has published no
+// attribution for whatever a later frame knows. With none served, only the
+// descriptor has published anything, so the projection is filtered to the
+// sources it declares.
+func (s *Session) publishAttributionLocked() {
+	published := map[string]string{}
+	if s.servedTools != nil {
+		for name, source := range s.servedTools {
+			published[name] = source
+		}
+		s.attribution.Store(&published)
+		return
+	}
+	declared := endpointSources()
+	for _, tool := range s.catalog {
+		for _, source := range declared {
+			if source.ID == tool.Source {
+				published[tool.Name] = tool.Source
+			}
+		}
+	}
+	s.attribution.Store(&published)
+}
+
+// toolSourceFor resolves one tool name against the servers the same frame
+// listed. A name whose mcp__<server>__ prefix names no listed server is a
+// built-in tool that merely looks namespaced, and is attributed natively
+// rather than to a source the catalog would not declare.
+//
+// Overlapping server names are why this takes the longest match rather than
+// the first. One frame may list both `foo` and `foo__bar`, and
+// `mcp__foo__bar__tool` then carries both prefixes: the separator is the same
+// `__` the names may themselves contain, so the split is genuinely ambiguous
+// and the wire offers nothing to disambiguate it. The longest match is the
+// one reading under which every listed server's own tools reach it — `foo`
+// winning would strand `foo__bar` entirely — and, being a total order over a
+// set of distinct names, it is the same answer on every run. Scanning a map
+// instead would let Go's randomized iteration give identical native evidence
+// two different catalogs.
+func toolSourceFor(name string, servers []string) string {
+	rest, namespaced := strings.CutPrefix(name, mcpToolPrefix)
+	if !namespaced {
+		return nativeToolSource
+	}
+	longest := ""
+	for _, server := range servers {
+		if len(server) > len(longest) && strings.HasPrefix(rest, server+"__") {
+			longest = server
+		}
+	}
+	if longest == "" {
+		return nativeToolSource
+	}
+	return mcpSourcePrefix + longest
+}
+
+// Tools serves this session's effective catalog, projected from the newest
+// system/init frame.
+//
+// Before the first turn the CLI has published no init frame, so the session
+// knows of no tools yet. It answers with the native source and an empty tool
+// list rather than refusing: the descriptor advertises action.tools.list
+// affirmatively, and an endpoint that advertises a capability and then refuses
+// a request within every constraint it disclosed honours nothing — which is
+// exactly what unhonoured_capability names, and what this adapter's own
+// validator would say about such a refusal. `degraded` is the disclosure that
+// makes the empty answer readable: it says the catalog is only as current as
+// the last turn and that there has not been one yet, which is a fact a caller
+// can act on, where a refusal would leave it with nothing.
+func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (base.ToolCatalog, error) {
+	if err := ctx.Err(); err != nil {
+		return base.ToolCatalog{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return base.ToolCatalog{}, base.ErrSessionClosed
+	}
+	if request.SessionID != "" && request.SessionID != s.state.SessionID {
+		return base.ToolCatalog{}, base.ErrRunNotFound
+	}
+	if !request.AllowsDegraded(protocol.FeatureToolsList) {
+		// The catalog is advertised degraded, so serving one without the
+		// caller's consent would give it degraded behaviour it never asked
+		// for: the snapshot is only as current as the last turn, and there is
+		// none before the first.
+		return base.ToolCatalog{}, &base.DegradedControlError{Feature: protocol.FeatureToolsList}
+	}
+	// A request naming no session asks for the endpoint's own catalog, and this
+	// endpoint has one thing to say at that scope: it executes its own built-in
+	// tools. Everything else it knows — which tools this turn offered, which MCP
+	// servers this session's operator configured — was learned from one
+	// session's `system/init` frame and belongs to that session. Answering with
+	// it would present one caller's MCP servers as endpoint-wide, and because
+	// such a response carries no session the validator's lifetime rule would
+	// never run over it.
+	//
+	// The same answer serves a scoped request before the first turn, for the
+	// same reason: the CLI publishes no init frame until it has been given
+	// input, so a session's catalog is genuinely unknown at open. `degraded` is
+	// the disclosure that makes the empty answer readable — the catalog is only
+	// as current as the last turn, and there has not been one.
+	if request.SessionID == "" || !s.catalogKnown {
+		return base.ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{
+			SessionID: request.SessionID,
+			Sources:   []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}},
+			Tools:     []protocol.ToolDefinition{},
+		}}, nil
+	}
+	// make and copy, not append onto a nil slice: appending nothing to nil
+	// yields nil, and `tools` is a required array, so a turn whose init frame
+	// listed no tools would serve `"tools": null` and fail the schema at the
+	// one endpoint that has no validator in front of it. The projection above
+	// already allocates an empty slice for that case; this is what carries the
+	// non-nilness out through the copy.
+	tools := make([]protocol.ToolDefinition, len(s.catalog))
+	copy(tools, s.catalog)
+	sources := make([]protocol.ToolSourceDescriptor, len(s.catalogSources))
+	copy(sources, s.catalogSources)
+	// The descriptor this endpoint publishes is fixed at the pin, so the
+	// revision is constant even though the catalog under it is not: the CLI
+	// republishes its tool and MCP server lists every turn. That is what
+	// `degraded` discloses, and it is why the listing has to say which
+	// descriptor governed it — a caller holding one can tell a refresh from a
+	// re-listing only by the pair.
+	// What this session has served is now published, and a call may name it.
+	// Only a session-scoped answer counts: an unscoped request asks for the
+	// endpoint's own catalog, which is answered above and belongs to no session.
+	s.servedTools = make(map[string]string, len(tools))
+	for _, tool := range tools {
+		if tool.Source != "" {
+			s.servedTools[tool.Name] = tool.Source
+		}
+	}
+	s.publishAttributionLocked()
+	return base.ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{SessionID: request.SessionID, Sources: sources, Tools: tools}}, nil
 }
 
 func (s *Session) currentRun() *runState {
@@ -490,6 +729,7 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 	case *native.InitFrame:
 		s.mu.Lock()
 		s.state.CurrentModelID = frame.Model
+		s.projectCatalogLocked(frame)
 		s.mu.Unlock()
 	case *native.TaskStartedFrame:
 		s.trackChild(run, frame.TaskID, frame.ToolUseID, frame.TaskType)
@@ -564,7 +804,10 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 		return
 	}
 	args, _ := json.Marshal(input)
-	tool := &toolState{nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: name, args: args}
+	tool := &toolState{
+		nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run,
+		name: name, source: s.attributionFor(name), args: args,
+	}
 	s.tools[nativeID] = tool
 	payload := s.toolPayload(tool)
 	requested, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, payload, false, "")
@@ -625,7 +868,65 @@ func toolResultText(content json.RawMessage) string {
 }
 
 func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: "claude-code", Name: tool.name, ArgumentsJSON: cloneRaw(tool.args)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
+}
+
+// attributionFor reports the source an emitted call may name for one tool
+// name, and "" when the endpoint has published no attribution a consumer of
+// this stream could resolve. It reads the snapshot publishAttributionLocked
+// published, so it is safe from the dispatch loop's own lock domain.
+//
+// This adapter advertises action.tools.list, so a consumer should be able to
+// relate an observed call to the catalog entry without re-parsing the tool
+// name — which is the inference `source` exists to remove. The value is read
+// out of the projected catalog rather than derived again from the name: a
+// second derivation is a second chance to disagree with the catalog, and the
+// catalog is what a consumer resolves the id against.
+//
+// It is then bounded by what this endpoint has actually published, which is
+// the rule the adapter has to get right in both directions. `source` is a
+// cross-reference, and what it may reference is the catalog in force: the
+// session's own where one has been served, and otherwise the descriptor's.
+// This is the adapter-side twin of the validator's attributionInForce, and the
+// two must agree, because the validator judges what this emits.
+//
+//   - A catalog this session served is published, so a call names exactly what
+//     that catalog recorded — until a later serve supersedes it. Declining
+//     there would be the inverse fault: the catalog in force attributes the
+//     tool, so a call omitting the source is `unattributed_call`.
+//   - With no catalog served, only the descriptor has published anything, and
+//     it declares the native source alone. The MCP servers are learned from
+//     this session's system/init frame and belong to the session; an event
+//     stream carries the descriptor and the events, and this catalog is
+//     advertised degraded and served on request by design, so a consumer may
+//     observe a whole run without one. A call naming `mcp:<server>` there
+//     names an id nothing in the stream declares — `unmatched_tool_source`.
+//
+// So neither direction is a preference: each is the only answer that does not
+// make the adapter fail a rule its own corpus exists to prove. What the
+// endpoint knows and what it has published are different things, and only the
+// second may be referenced.
+//
+// The reverse case is ACP's, and the two are one rule with different facts:
+// ACP's servers are the *adapter's* configuration, known before any session,
+// so its descriptor declares them and a call may name them from the start.
+//
+// An empty answer is an honest one, as it already was before the first
+// `system/init` frame and for a tool no catalog lists. Inventing
+// `claude-code-native` for any of those would be the guess the member exists
+// to replace.
+func (s *Session) attributionFor(name string) string {
+	// One atomic load and a read of a map nothing will write again. The
+	// decision itself was made under mu by publishAttributionLocked; this is
+	// only the lookup, which is why it is safe from the reducer's domain.
+	published := s.attribution.Load()
+	if published == nil {
+		// Nothing published yet: before the first system/init frame this session
+		// has no catalog and the descriptor has attributed nothing to these
+		// tools.
+		return ""
+	}
+	return (*published)[name]
 }
 
 // openGate surfaces one can_use_tool ask as an OAP permission interaction.

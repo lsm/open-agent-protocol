@@ -940,3 +940,254 @@ func TestPermissionGateIsCorrelatedWhenPublished(t *testing.T) {
 	events = append(events, collect(t, stream)...)
 	assertValidTrace(t, admission, events)
 }
+
+// countingFactory reports how many times an open reached the child process, so
+// a test can require that a refused attachment never paid for one.
+func countingFactory(f *fakeClient, started *int) ClientFactoryFunc {
+	return func(context.Context) (Client, rpc.InitializeResponse, error) {
+		*started++
+		return f, rpc.InitializeResponse{ProtocolVersion: 1, AgentCapabilities: rpc.AgentCapabilities{}}, nil
+	}
+}
+
+// ACP names each MCP server by the attachment's id, and the native schema does
+// not require those names to be unique. Two entries under one id would leave
+// both the catalog's attribution and the native routing ambiguous — a call
+// naming that source could have come from either server — so a colliding id is
+// refused by name rather than appended. The collision is refused whichever
+// side it comes from: another attachment in the same open, or a server the
+// operator configured.
+func TestAttachRefusesACollidingSourceID(t *testing.T) {
+	files := protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}
+	for _, testCase := range []struct {
+		name       string
+		configured []native.MCPServer
+		attach     []protocol.ToolSourceAttachment
+	}{
+		{"a configured server", []native.MCPServer{{Name: "files", Command: "/opt/mcp-files"}}, []protocol.ToolSourceAttachment{files}},
+		{"another attachment", nil, []protocol.ToolSourceAttachment{files, files}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			started := 0
+			a, err := New(Config{
+				Factory: countingFactory(newFake(), &started), WorkingDirectory: "/workspace",
+				Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32, MCPServers: testCase.configured,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = a.Open(context.Background(), base.OpenRequest{
+				SessionID: "session", Participant: protocol.Participant{ID: "user"}, ToolSources: testCase.attach,
+			})
+			var refusal *base.UnsupportedControlError
+			if !errors.As(err, &refusal) {
+				t.Fatalf("got %v, want an UnsupportedControlError", err)
+			}
+			if refusal.Feature != protocol.FeatureToolSourcesAttach || refusal.Reason != base.ControlUnsatisfiable || refusal.Source != "files" {
+				t.Fatalf("refusal = %+v", refusal)
+			}
+			if started != 0 {
+				t.Fatalf("a refused attachment started %d children", started)
+			}
+		})
+	}
+}
+
+// Admission depends only on the request and this adapter's own configuration,
+// so it is decided before the child is started: an open that cannot be
+// honoured should not pay a process spawn and an initialize round trip, nor
+// leave a started child behind for the refusal path to clean up. Every
+// attachment refusal this adapter owes takes the same placement.
+func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		attach protocol.ToolSourceAttachment
+	}{
+		{"an unsupported transport", protocol.ToolSourceAttachment{ID: "hosted-tools", Kind: protocol.ToolSourceRemote, Endpoint: "https://tools.example"}},
+		{"a process source with no command", protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess}},
+		{"a source with no id", protocol.ToolSourceAttachment{Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}},
+		// Two entries, one variable. uniqueItems compares strings, so the wire
+		// admits this and the child would receive both with no defined winner.
+		// The daemon refuses it on the operator's entries and drops a caller's
+		// colliding one, but this API is reachable without the daemon at all.
+		{"one environment variable named twice", protocol.ToolSourceAttachment{
+			ID: "files", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem",
+			Environment: []string{"TOKEN=first", "TOKEN=second"},
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			started := 0
+			a, err := New(Config{
+				Factory: countingFactory(newFake(), &started), WorkingDirectory: "/workspace",
+				Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := a.Open(context.Background(), base.OpenRequest{
+				SessionID: "session", Participant: protocol.Participant{ID: "user"},
+				ToolSources: []protocol.ToolSourceAttachment{testCase.attach},
+			})
+			if err == nil {
+				_ = session.Close(context.Background())
+				t.Fatal("the open was admitted")
+			}
+			if started != 0 {
+				t.Fatalf("a refused attachment started %d children", started)
+			}
+		})
+	}
+}
+
+// TestConfiguredServersAreDeclaredBeforeTheyAreReserved closes the loop the
+// collision refusal left open. attachToolSources reserves every configured MCP
+// server's name, and ACP routes by that name, so the reservation is real — but
+// until the descriptor declared them a caller could not see it: a `process`
+// attachment within every disclosed limit, carrying no defect any rule names,
+// came back unsatisfiable against a source nothing had published. That is a
+// refusal no disclosure covers, which this unit's own validator reports as
+// undisclosed_attach_limit.
+//
+// Declared in the descriptor and in the session's sources both, because the two
+// are held to each other: a snapshot publishing only the attachments would
+// contradict the descriptor it was opened under.
+func TestConfiguredServersAreDeclaredBeforeTheyAreReserved(t *testing.T) {
+	configured := []native.MCPServer{{Name: "files", Command: "/opt/mcp-files"}}
+	a, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, rpc.InitializeResponse, error) {
+			return newFake(), rpc.InitializeResponse{ProtocolVersion: 1, AgentCapabilities: rpc.AgentCapabilities{}}, nil
+		}),
+		WorkingDirectory: "/workspace", Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32,
+		MCPServers: configured,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := a.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := descriptor.Capabilities.Sources
+	if len(declared) != 1 || declared[0].ID != "files" || declared[0].Kind != protocol.ToolSourceProcess {
+		t.Fatalf("descriptor declares %+v, want the configured server as a process source", declared)
+	}
+	// The projection carries no attachment-only member: the operator's command
+	// is not something a client may read back out of the descriptor.
+	if declared[0].Endpoint != "" {
+		t.Fatalf("descriptor invented an endpoint for a configured server: %+v", declared[0])
+	}
+
+	session, err := a.Open(context.Background(), base.OpenRequest{
+		SessionID: "session", Participant: protocol.Participant{ID: "user"},
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "docs", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-docs"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background())
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := map[string]bool{}
+	for _, source := range state.Sources {
+		published[source.ID] = true
+	}
+	if !published["files"] || !published["docs"] {
+		t.Fatalf("session publishes %+v, want the configured server beside the attachment", state.Sources)
+	}
+}
+
+// TestNewRefusesAnUnusableConfiguredServer holds a configured name to what a
+// published source id must be, because it is now one: present, and one per
+// source. These are the two defects an attachment is refused for, at the other
+// place a name enters this adapter.
+func TestNewRefusesAnUnusableConfiguredServer(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		configured []native.MCPServer
+		want       string
+	}{
+		{"no name", []native.MCPServer{{Command: "/opt/mcp-files"}}, "needs a name"},
+		{"one name twice", []native.MCPServer{{Name: "files", Command: "/opt/a"}, {Name: "files", Command: "/opt/b"}}, "configured twice"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := New(Config{
+				Factory: countingFactory(newFake(), new(int)), WorkingDirectory: "/workspace",
+				Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32, MCPServers: testCase.configured,
+			})
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("New error = %v, want one reporting %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+// TestAttachRefusesASourceWithNoID is the id half of admission, and the one
+// that otherwise produces a schema-invalid session rather than a wrong one.
+// Everything this adapter does with an attachment is done by its id: it is the
+// collision key, the name ACP routes the MCP server by, and the id the session
+// publishes the source under. An empty id passes the collision check on its
+// first use, so an open carrying one would reach the child as an MCP server
+// nothing can address and reach a client as a descriptor whose required `id`
+// is empty — this adapter emitting a document its own validator rejects.
+//
+// It is refused where the kind and the command are, for the reason they are:
+// the decision needs nothing but the request and this adapter's configuration.
+func TestAttachRefusesASourceWithNoID(t *testing.T) {
+	started := 0
+	a, err := New(Config{
+		Factory: countingFactory(newFake(), &started), WorkingDirectory: "/workspace",
+		Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.Open(context.Background(), base.OpenRequest{
+		SessionID: "session", Participant: protocol.Participant{ID: "user"},
+		ToolSources: []protocol.ToolSourceAttachment{{Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}},
+	})
+	if err == nil {
+		_ = session.Close(context.Background())
+		t.Fatal("an attachment with no id was admitted")
+	}
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("got %v, want an UnsupportedControlError", err)
+	}
+	if refusal.Feature != protocol.FeatureToolSourcesAttach || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("refusal = %+v", refusal)
+	}
+	if started != 0 {
+		t.Fatalf("a refused attachment started %d children", started)
+	}
+}
+
+// The admitted path still reaches the child with the attachment in place: the
+// pre-spawn gate moved the decision, not the effect.
+func TestAdmittedAttachmentReachesSessionNew(t *testing.T) {
+	f := newFake()
+	started := 0
+	a, err := New(Config{
+		Factory: countingFactory(f, &started), WorkingDirectory: "/workspace",
+		Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Open(context.Background(), base.OpenRequest{
+		SessionID: "session", Participant: protocol.Participant{ID: "user"},
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem", Args: []string{"--root", "/workspace"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	params := f.sessionNew
+	f.mu.Unlock()
+	if started != 1 {
+		t.Fatalf("an admitted open started %d children", started)
+	}
+	if len(params.MCPServers) != 1 || params.MCPServers[0].Name != "files" || params.MCPServers[0].Command != "/usr/local/bin/mcp-filesystem" {
+		t.Fatalf("session/new carried %+v", params.MCPServers)
+	}
+}

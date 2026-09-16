@@ -136,6 +136,14 @@ var unitCapabilities = map[string][]string{
 	// advertising endpoint owes no caller — a run_active naming a bound the
 	// window shows was never reached.
 	"queue": {protocol.FeatureDeliveryQueue},
+	// Tool sources: the catalog that carries them (T3a) and attachment at
+	// session open (T3b). Control-layer-provided tools are the separate
+	// `control-tools` unit and register action.tools.provide when they
+	// graduate; nothing here claims them.
+	"tool-sources": {
+		protocol.FeatureToolsList,
+		protocol.FeatureToolSourcesAttach,
+	},
 	// The session-scoped model catalog. One key, and the two aspects every key
 	// owes: a catalog served without the key advertised, and a catalog query
 	// refused on an endpoint that advertises it.
@@ -183,6 +191,8 @@ func diagnosticCodes() map[string]bool {
 		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
 		CodeQueueOrderViolation, CodeQueueLimitExceeded,
 		CodePrematureSessionMutation, CodeUndisclosedQueueLimit,
+		CodeUnmatchedToolSource, CodeDuplicateToolSource, CodeCatalogMismatch,
+		CodeAttachmentFieldInCatalog, CodeUndisclosedAttachLimit, CodeUndisclosedAttachModes, CodeUnattributedCall,
 		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
 	}
 	result := make(map[string]bool, len(codes))

@@ -1019,7 +1019,9 @@ type requestLine struct {
 	SessionID string          `json:"session_id,omitempty"`
 	After     json.RawMessage `json:"after,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
-	// AllowDegradedFeatures is the models op's per-request degraded opt-in.
+	// AllowDegradedFeatures is the tools and models ops' consent carrier, the
+	// direct form of the HTTP routes' repeatable ?allow_degraded query
+	// parameter.
 	AllowDegradedFeatures []string `json:"allow_degraded_features,omitempty"`
 
 	// present records which keys the raw object actually carried, set by

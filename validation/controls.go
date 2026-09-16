@@ -642,7 +642,7 @@ func describeRefusal(err protocol.ProtocolError) string {
 	if reason, ok := err.Details["reason"].(string); ok {
 		description += "/" + reason
 	}
-	for _, name := range []string{"feature", "model_id", "tool", "field"} {
+	for _, name := range []string{"feature", "model_id", "tool", "field", "source"} {
 		if value, ok := err.Details[name].(string); ok {
 			description += " " + name + "=" + value
 		}
@@ -655,6 +655,15 @@ func describeRefusal(err protocol.ProtocolError) string {
 // entry ambiguous. It is judged where the policy is judged, since that is
 // where the catalog is read.
 func (s *state) duplicateToolNames(i, line int, e protocol.Envelope) {
+	if s.catalogAmbiguous {
+		// The tool-sources unit judges every accepted descriptor's effective
+		// catalog where it is published, which is where the ambiguity is. One
+		// fault gets one diagnosis: repeating it on every submission the
+		// descriptor governs would blame each policy for the descriptor's
+		// defect. This check still owns a catalog the descriptor did not
+		// publish.
+		return
+	}
 	catalog, known := s.toolCatalog()
 	if !known {
 		return
@@ -805,7 +814,7 @@ func canonical(value any) any {
 // with no enforceable modes promises nothing, since every policy could be
 // refused as unsatisfiable and pass.
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	if support, ok := effectiveSupport(p, protocol.FeatureToolSelection); ok && affirmative(support.Level) && !enforcesAKnownMode(support.Modes) {
+	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) && !enforcesAKnownMode(support.Modes) {
 		// A list of names this phase rules on nothing is the empty list in a
 		// costume: every policy the typed shape admits carries one of the four
 		// modes, so a descriptor listing none of them refuses every one of
@@ -827,27 +836,13 @@ func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol
 	// `restart` is a defined mode this phase gives no rules, so advertising it
 	// here leaves the same hole; it discloses something checkable when the
 	// unit that rules on it graduates.
-	support, ok := effectiveSupport(p, protocol.FeatureModelSelection)
+	support, ok := p.EffectiveSupport(protocol.FeatureModelSelection)
 	if !ok || !affirmative(support.Level) {
 		return
 	}
 	if support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
 		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.model_selection/mode", "run.model_selection is advertised without disclosing how a selection is applied", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
 	}
-}
-
-// effectiveSupport reads one key's disclosure from a descriptor, top level
-// first and then the layers, mirroring how the gate resolves a key.
-func effectiveSupport(p protocol.CapabilitiesResponse, key string) (protocol.FeatureSupport, bool) {
-	if support, ok := p.Features[key]; ok {
-		return support, true
-	}
-	for _, layer := range p.Layers {
-		if support, ok := layer.Features[key]; ok {
-			return support, true
-		}
-	}
-	return protocol.FeatureSupport{}, false
 }
 
 // collectCatalog normalizes a descriptor's effective tool catalog: its
