@@ -303,10 +303,19 @@ func (e *MalformedLineError) Error() string {
 // than emitted.
 var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame limit")
 
-// ErrShutdownStalled reports that the final output drain outlived its
-// bounded window: the host stopped reading stdout, so the writer was parked
-// inside out.Write and was abandoned rather than waited on. The caller's
-// session sweep and the process exit still happen.
+// ErrShutdownStalled reports that a shutdown stage outlived its bounded
+// window and was abandoned rather than waited on. The caller's session
+// sweep and the process exit still happen.
+//
+// It also marks the one condition under which the output stream must not be
+// reused. Run abandons a stalled writer rather than waiting for it, because
+// waiting is the stall it is escaping — so on this path, and only this path,
+// a write may already be underway or already chosen, and those bytes land
+// when the host reads again whatever Run has returned. The queue behind them
+// is withdrawn, but a single line is beyond recall. A caller that runs
+// another session over the same stream after ErrShutdownStalled may see it
+// arrive there; `oap serve` exits the process instead, which is why the
+// condition does not arise for it.
 var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded window; the stalled stage was abandoned")
 
 // Run serves requests from in until the host closes it (clean end), the
