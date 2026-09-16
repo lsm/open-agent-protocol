@@ -93,12 +93,19 @@ type Session struct {
 	subs         map[*subscriber]struct{}
 	nextSerial   uint64
 	serials      map[protocol.RunID]uint64
+	// finished records the runs whose stream has been drained to its end.
+	// The serials stand for admission order, and overflow recovery reads
+	// them as execution order too — which they are, until a later-admitted
+	// run settles before an earlier one. A reservation cancelled before
+	// promotion does exactly that, so the two orders have to be told apart.
+	finished map[protocol.RunID]bool
 }
 
 func newSession(id protocol.SessionID, adapterName string, session base.Session) *Session {
 	return &Session{
 		id: id, adapterName: adapterName, session: session,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
+		finished: make(map[protocol.RunID]bool),
 	}
 }
 
@@ -248,7 +255,7 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 		}
 		return admission, err
 	}
-	s.adoptRun(admission.RunID, stream)
+	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
 	return admission, nil
 }
 
@@ -429,19 +436,34 @@ func (sub *subscriber) untrack(run protocol.RunID) {
 // tails. The drain before the terminal records the queued envelopes'
 // positions, so the cursor resumes a queued run exactly where delivery
 // stopped; a run never delivered replays from its start.
-func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64, current protocol.RunID, currentSerial uint64) protocol.RunID {
+//
+// "Newer" is admission order, which is execution order until a later-admitted
+// run settles before an earlier one — a reservation cancelled before promotion
+// is exactly that, and its terminal carries the higher serial while the run it
+// was queued behind is still delivering. Such a run is spent: drained to its
+// end and never the run the hub is on, so a cursor there has nothing left to
+// give and resuming at it would strand the tail the drop actually lost. A
+// spent run never outranks one that is not, and among runs alike in that the
+// newest serial still wins. The current run is never spent even once its own
+// reader has exited: its end may still be deferred, and the detach discards
+// that too.
+func (sub *subscriber) lossRun(dropped protocol.RunID, droppedSerial uint64, current protocol.RunID, currentSerial uint64, finished map[protocol.RunID]bool) protocol.RunID {
 	sub.pendMu.Lock()
 	defer sub.pendMu.Unlock()
+	spent := func(run protocol.RunID) bool { return run != current && finished[run] }
 	newest, newestSerial := dropped, droppedSerial
+	live := !spent(dropped)
 	consider := func(run protocol.RunID, serial uint64) {
-		if serial > newestSerial {
+		switch {
+		case live && spent(run):
+		case !live && !spent(run):
+			newest, newestSerial, live = run, serial, true
+		case serial > newestSerial:
 			newest, newestSerial = run, serial
 		}
 	}
-	if sub.ackSerial > newestSerial {
-		if ack := sub.ack.Load(); ack != nil {
-			newest, newestSerial = *ack, sub.ackSerial
-		}
+	if ack := sub.ack.Load(); ack != nil {
+		consider(*ack, sub.ackSerial)
 	}
 	if sub.ackSerial == 0 {
 		consider(sub.attached, sub.attachedSerial)
@@ -570,17 +592,48 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 // subscribers' outcome — but a deferred stream error is first delivered to
 // the cohort that observed the failed run: such errors are terminal for
 // the subscriptions that saw them, and a newer run must not bury one.
-func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream) {
+// A queued admission is a reservation, not a run in flight: it has published
+// nothing and may never publish anything but a pre-start terminal. It
+// therefore takes an admission serial and a draining reader, but does not
+// become the run a bare replay cursor resolves onto and does not supersede
+// the started run's deferred end. It becomes current where it actually
+// begins, on the first envelope of its own execution.
+func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream, queued bool) {
 	s.mu.Lock()
 	s.reservations--
 	s.readers++
-	s.runID = runID
 	s.nextSerial++
 	s.serials[runID] = s.nextSerial
-	errored, failed := s.supersedeLocked()
+	var errored []*subscriber
+	var failed *terminalState
+	if !queued {
+		s.runID = runID
+		errored, failed = s.supersedeLocked()
+	}
 	s.mu.Unlock()
 	s.deliverDeferredError(errored, failed)
 	go s.readRun(runID, stream, 0)
+}
+
+// promoteCurrent makes a later-admitted run the one a bare replay cursor
+// resolves onto, once it publishes something that is not its own settlement.
+// A reservation that settles before promotion never executed, so its terminal
+// leaves the started run as the cursor's target — resolving a legacy client's
+// cursor onto a run that produced one envelope and stopped would strand it.
+func (s *Session) promoteCurrent(runID protocol.RunID, envelope protocol.Envelope) {
+	switch envelope.Type {
+	case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+		return
+	}
+	s.mu.Lock()
+	if s.runID == runID || s.serials[runID] <= s.serials[s.runID] {
+		s.mu.Unlock()
+		return
+	}
+	s.runID = runID
+	errored, failed := s.supersedeLocked()
+	s.mu.Unlock()
+	s.deliverDeferredError(errored, failed)
 }
 
 // supersedeLocked clears the deferred finish state a new run supersedes,
@@ -691,6 +744,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 			}(stream)
 			break
 		}
+		s.promoteCurrent(runID, result.Envelope)
 		s.publish(result.Envelope)
 	}
 	if reserved > 0 && runID == "" {
@@ -775,6 +829,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 	var exposed []*subscriber
 	s.mu.Lock()
 	s.readers--
+	s.finished[runID] = true
 	current := s.runID
 	// A stale drainer's error must not vanish because a newer run keeps
 	// the hub busy: the subscribers still exposed to the failed run are
@@ -867,7 +922,7 @@ func (s *Session) publish(envelope protocol.Envelope) {
 			// acknowledged position is newer — a cursor on an older run
 			// cannot recover the newer run's remaining events.
 			delete(s.subs, sub)
-			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID])})
+			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID], s.finished)})
 		}
 	}
 	s.mu.Unlock()
@@ -1006,8 +1061,8 @@ func (s *Session) markClosed() {
 	s.deliverDeferredError(errored, failed)
 }
 
-// closeForShutdown cancels any active run and then closes the adapter
-// session: active runs refuse Close by contract, so shutdown settles them
+// closeForShutdown cancels every live run and then closes the adapter
+// session: live runs refuse Close by contract, so shutdown settles them
 // through Cancel where the adapter supports it. Some adapters acknowledge a
 // cancel before the run settles, so the refused Close is retried briefly — a
 // shutdown that gave up here would leave the session's child process
@@ -1019,8 +1074,10 @@ func (s *Session) closeForShutdown(ctx context.Context) error {
 			break
 		}
 		state, stateErr := s.session.State(ctx)
-		if stateErr == nil && state.ActiveRunID != "" {
-			_, _ = s.session.Cancel(ctx, state.ActiveRunID)
+		if stateErr == nil {
+			for _, run := range liveRuns(state) {
+				_, _ = s.session.Cancel(ctx, run)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -1032,4 +1089,31 @@ func (s *Session) closeForShutdown(ctx context.Context) error {
 		s.markClosed()
 	}
 	return err
+}
+
+// liveRuns names every run shutdown has to settle before a session will close.
+//
+// active_run_id names the started run, and on an endpoint that queues it is
+// deliberately absent where only reservations remain — a client reading it as
+// the run to follow would follow one that has published nothing. A reservation
+// is still admitted work that owes a terminal, so a Close refuses for it, and
+// a shutdown reading active_run_id alone would retry until it gave up and
+// leave the child process and an accepted submission alive. active_runs is the
+// complete list of what is outstanding; active_run_id is the fallback for an
+// endpoint that keeps no entries. The hub adds no semantics here: it cancels
+// what the session says is live, in the order the session listed it.
+func liveRuns(state protocol.SessionState) []protocol.RunID {
+	runs := make([]protocol.RunID, 0, len(state.ActiveRuns)+1)
+	seen := map[protocol.RunID]bool{}
+	for _, entry := range state.ActiveRuns {
+		if entry.RunID == "" || seen[entry.RunID] {
+			continue
+		}
+		seen[entry.RunID] = true
+		runs = append(runs, entry.RunID)
+	}
+	if state.ActiveRunID != "" && !seen[state.ActiveRunID] {
+		runs = append(runs, state.ActiveRunID)
+	}
+	return runs
 }

@@ -29,6 +29,53 @@ type runState struct {
 	controls     admittedControls
 	tools        map[protocol.ToolCallID]toolTrack
 	interactions map[protocol.InteractionID]*interactionState
+	// The queue unit's per-run bookkeeping. order is the run's position in
+	// its session's admission order, which is what the ordering rule and
+	// active_runs are judged against; admittedQueued records that the run was
+	// admitted as a reservation rather than started, so the queued subset a
+	// bound counts is the set of reservations still awaiting promotion rather
+	// than every run whose start has not yet reached the trace.
+	order          int
+	admittedQueued bool
+	// startedAt is the trace index the run's run.started reached, which is
+	// what a capture window is measured against: a run that began after a
+	// snapshot was requested is one the snapshot was right not to name.
+	startedAt int
+	// startSequence is the sequence run.started carried, which is the
+	// position a state capture names when it reports the model a promotion
+	// installed. terminalAt is the trace index the run settled at, which is
+	// what decides whether a snapshot listing it was stale or merely
+	// captured before the terminal it could not have seen.
+	startSequence uint64
+	terminalAt    int
+	// admittedAt and submitRequest are the trace positions of the run's
+	// admission: the index of its submit response, and the envelope id of the
+	// request that admitted it. A state snapshot's membership anchor names the
+	// request, and whether an admission fell inside a snapshot's window is
+	// decided by the response's index.
+	admittedAt    int
+	submitRequest protocol.EnvelopeID
+	// deferredControls is a queued run's model control, held from admission
+	// until promotion: a reservation's session_mutation must not move the
+	// session default while an earlier run is still started, and a
+	// reservation's per_run snapshot of that default must be taken where the
+	// run actually begins.
+	deferredControls bool
+	// recovered marks a run this trace never saw admitted: a reattach named
+	// it and everything it did before the cursor is outside the trace. What a
+	// recovered document can state about it is taken from the document; what
+	// no document can state — the tool calls it had open, the cancellation it
+	// had already accepted — is unknown rather than absent, and a rule that
+	// derives its expectation from this trace's history would derive an empty
+	// one and convict the endpoint for the disconnect.
+	recovered bool
+	// priorUnknown marks a run a recovery introduced without saying what it
+	// was blocked on. Everything that run did before the cursor is outside
+	// this trace, so an interaction id the trace has never carried for it is
+	// neither evidence that the interaction exists nor evidence that it does
+	// not, and a set derived from history here is empty because the validator
+	// saw nothing rather than because nothing happened.
+	priorUnknown bool
 }
 type interactionState struct {
 	kind                     string
@@ -38,6 +85,16 @@ type interactionState struct {
 	questions                []protocol.InputQuestion
 	toolCallID               protocol.ToolCallID
 	resolved                 bool
+	// opaque marks an interaction the trace never saw opened: a recovered
+	// entry named it as pending and nothing else about it. Its ownership,
+	// kind, questions, choices and tool binding are unknown rather than
+	// absent, so nothing is held to them.
+	opaque bool
+	// openedAt and resolvedAt are the run sequences the interaction joined
+	// and left the pending set at, so an active_runs entry that states the
+	// position it was captured at is judged there rather than at the position
+	// the trace happens to have reached.
+	openedAt, resolvedAt uint64
 }
 type recoveryExpectation struct {
 	session         protocol.SessionID
@@ -76,6 +133,17 @@ type sessionTrack struct {
 	currentKnown    bool
 	expectedDefault string
 	guardDefault    bool
+	// order is every run admitted on the session, in admission order. The
+	// queue unit reads the nonterminal prefix of it as the active set.
+	order []protocol.RunID
+	// openingModel is the session default before any model-affecting event,
+	// which is what a state capture marked at the genesis position reports.
+	openingModel string
+	openingKnown bool
+	// mutated records that a session_mutation selection has been applied on
+	// this session, after which the opening model is history rather than the
+	// current default.
+	mutated bool
 	// attached is the sanitized projection of the sources the open attached,
 	// kept for the session's lifetime: attachment is not revocable in this
 	// unit, so every later catalog and snapshot is held to them. attachedOrder
@@ -133,6 +201,23 @@ type state struct {
 	// pendingControls retains what each control-carrying submit request owes
 	// its correlated response, keyed by the request's envelope id.
 	pendingControls map[protocol.EnvelopeID]*pendingSubmit
+	// openSubmits are the unanswered submit requests per session, in arrival
+	// order. The queue unit reads them twice: as the window each retained
+	// expectation is judged across, and as the in-flight reservations a
+	// concurrent admission may already have taken.
+	openSubmits map[protocol.SessionID][]*pendingSubmit
+	// limits is the admission bounds the active descriptor discloses, or nil
+	// when it disclosed none. A refresh replaces them; absence enforces
+	// nothing, since absence advertises no bound.
+	limits *protocol.CapabilityLimits
+	// deferred holds every state claim the trace has not yet reached — a
+	// capture position ahead of its run, a settled run whose terminal has not
+	// arrived — so an accurate snapshot is reconciled rather than diagnosed.
+	deferred []*deferredStateClaim
+	// ledGroups is every listing whose leading entries are still being
+	// settled, kept so the trace's end can judge what never resolved.
+	ledGroups  []*ledGroup
+	recoveries map[protocol.SessionID]*recoveryExpectation
 	// pendingLists and pendingOpens retain what a catalog request and an
 	// attaching open owe their correlated responses, for the same reason
 	// pendingControls does: the wire makes a typed refusal the required
@@ -151,7 +236,6 @@ type state struct {
 	// pendingModels retains what each catalog query owes its correlated
 	// response, keyed by the query's envelope id.
 	pendingModels map[protocol.EnvelopeID]*pendingModelsQuery
-	recoveries    map[protocol.SessionID]*recoveryExpectation
 	// tolerant lets an envelope of unknown type take part in the
 	// type-independent bookkeeping its wire scope implies, instead of being
 	// skipped. Without it a tolerated unknown run event at sequence N would be
@@ -164,7 +248,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -261,6 +345,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			revision: s.currentCapability,
 			stale:    s.capabilitiesStale,
 			models:   s.features[protocol.FeatureModelsList],
+			queue:    s.features[protocol.FeatureDeliveryQueue],
+			limits:   s.limits,
 		}
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = false
@@ -268,10 +354,13 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.featureSupports = map[string]protocol.FeatureSupport{}
 		collectFeatures(s.features, s.featureSupports, p)
 		s.catalog, s.catalogKnown = collectCatalog(p), true
+		s.limits = p.Limits
 		s.checkSelectionModes(i, line, e, p)
+		s.checkQueueLimits(i, line, e, p)
 		s.checkAttachModes(i, line, e, p)
 		s.checkDescriptorSources(i, line, e, p)
 		s.checkCatalogAdvertisement(i, line, e, outgoing)
+		s.checkQueueAdvertisement(i, line, e, outgoing)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)
@@ -289,6 +378,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// The open-time attachments are not invalidated either: they are
 		// session-lifetime facts the next catalog must still carry.
 		s.catalog, s.catalogKnown = nil, false
+		// The bounds belong to the descriptor that disclosed them; until the
+		// refreshed one arrives no bound is advertised, and absence enforces
+		// nothing rather than carrying the old numbers forward.
+		s.limits = nil
 		s.declaredSources = map[string]protocol.ToolSourceDescriptor{}
 		s.descriptorAttribution = nil
 	case protocol.TypeModelsRequest:
@@ -326,7 +419,11 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// Reopening a known session must not clear a tracked nonterminal run:
 		// that would let a later admission overlap it unseen.
 		st := s.track(p.SessionID)
-		st.status = p.Status
+		if p.Recovery != nil && p.Recovery.Recovered {
+			s.bootstrapRecoveredRuns(i, line, p, st)
+		}
+		s.applyStateDocument(i, line, e, p, st)
+		s.checkSessionCapture(i, line, e, p, st)
 		// The open response is a session-state document, so the model it
 		// reports is the first value the session is known to hold: what a
 		// catalog served before any snapshot is judged against, and the
@@ -340,6 +437,21 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// snapshot against the empty string.
 		if p.CurrentModelID != "" {
 			st.currentModel, st.currentKnown = p.CurrentModelID, true
+			if !st.mutated && !st.openingKnown {
+				// The open response is a snapshot taken before anything can
+				// have moved the default, so a model it states is the value
+				// the session opened on — which is what a capture marked at
+				// genesis reports, and the only thing such a capture can be
+				// judged against. A promotion inside the first read's window
+				// is one that capture may ignore, so without this the first
+				// snapshot answers to nothing and the mutation behind it
+				// stops the opening value from ever being learned.
+				//
+				// Only a model the response states. What an absent member
+				// means here is the same question the line above leaves
+				// alone, and this leaves it alone too.
+				st.openingModel, st.openingKnown = p.CurrentModelID, true
+			}
 		}
 		s.observeModel(p.SessionID, p.CurrentModelID, "", 0)
 		s.sessionOpenResponse(i, line, e, p)
@@ -358,13 +470,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 				if rec.run != "" && p.ActiveRunID != rec.run {
 					s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "recovered state names a different active run", string(rec.run), string(p.ActiveRunID))
 				}
-				run := s.runs[p.ActiveRunID]
-				if run == nil {
-					next := uint64(1)
-					if rec.cursorSet {
-						next = rec.cursor + 1
-					}
-					s.runs[p.ActiveRunID] = &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: next, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
+				if s.runs[p.ActiveRunID] == nil {
+					s.introduceRecoveredRun(i, line, s.track(p.SessionID), &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}, nil)
 				}
 			}
 		}
@@ -374,30 +481,21 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			st = &sessionTrack{}
 			s.sessions[p.SessionID] = st
 		}
-		if p.ActiveRunID != "" && p.Status == protocol.SessionIdle {
-			s.add(CodeSessionStateMismatch, i, line, e, "/payload/status", "idle session cannot have an active run")
-		}
-		// A snapshot may not erase a run the trace has admitted and not terminated:
-		// that would allow an overlapping second admission on one session. Keep the
-		// tracked run when the snapshot contradicts it.
-		contradiction := false
-		if prev := st.active; prev != "" {
-			if r := s.runs[prev]; r != nil && !r.terminal && p.ActiveRunID != prev {
-				contradiction = true
-				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
-			}
-		}
-		st.status = p.Status
-		if !contradiction {
-			st.active = p.ActiveRunID
-		}
+		s.applyStateDocument(i, line, e, p, st)
 		// A per_run application binds its own run and leaves the session
 		// default untouched; a snapshot reporting anything else — the run's
 		// model or a third one — says the endpoint moved it.
 		if st.guardDefault && p.CurrentModelID != st.expectedDefault {
 			s.addExpected(CodeUnappliedControl, i, line, e, "/payload/current_model_id", "a per_run model selection moved the session default", st.expectedDefault, p.CurrentModelID)
 		}
+		s.checkSessionCapture(i, line, e, p, st)
 		st.currentModel, st.currentKnown = p.CurrentModelID, true
+		if !st.mutated && !st.openingKnown {
+			// The session default before any model-affecting event is what a
+			// capture marked at the genesis position reports; it is learned
+			// from the first snapshot taken before the first mutation.
+			st.openingModel, st.openingKnown = p.CurrentModelID, true
+		}
 		s.observeModel(p.SessionID, p.CurrentModelID, "", 0)
 		s.checkPublishedSources(i, line, e)
 		s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources, false)
@@ -409,10 +507,16 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "submission occurred before refreshed capabilities")
 		}
 		s.submitControls(i, line, e, p)
-		if p.Delivery != protocol.DeliveryAuto && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
+		if p.Delivery != protocol.DeliveryAuto && p.Delivery != protocol.DeliveryQueue && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
 			// A requested delivery outside this revision's vocabulary is
 			// opaque in tolerant mode: which capability key it needs is a
 			// later revision's rule, not one this validator can apply.
+			//
+			// queue is the exception the queue unit makes: the wire requires
+			// an unadvertised queue to be refused, so diagnosing the request
+			// would fail the conduct the protocol mandates. Its gate is
+			// retained by submitControls and settled on the correlated
+			// response, as T1's control gate is. T4 moves steer the same way.
 			s.feature(i, line, e, "delivery."+string(p.Delivery))
 		}
 	case protocol.TypeSessionMessageSubmitResponse:
@@ -521,6 +625,12 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 				s.checkScope(i, line, e, session, run)
 			}
 		}
+	}
+	// A submit window closes once its correlated response has been judged:
+	// every retained queue expectation is settled across the window, so the
+	// window must still be open while the response is read.
+	if e.Type == protocol.TypeSessionMessageSubmitResponse || e.Type == protocol.TypeErrorResponse {
+		s.closeSubmitWindow(e.InReplyTo)
 	}
 	// The pack rules run after the core case so a packed member on a core
 	// response is judged against the descriptor that response installs: the
@@ -834,31 +944,23 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "run was admitted more than once")
 		return
 	}
-	if sess := s.sessions[p.SessionID]; sess != nil && sess.active != "" {
-		if r := s.runs[sess.active]; r != nil && !r.terminal {
-			s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "session already has a nonterminal run")
-		}
-	}
 	st := s.sessions[p.SessionID]
 	if st == nil {
 		st = &sessionTrack{}
 		s.sessions[p.SessionID] = st
 	}
-	st.active = p.RunID
+	// A second admission on a session that already has a nonterminal run is
+	// the queue unit's admission: legal only as a reservation, and only where
+	// the descriptor advertises the queue. Anything else keeps decision
+	// 0001's one-nonterminal-run rule.
+	overlap := s.queueOverlap(i, line, e, p, st)
+	queued := p.Admission == protocol.AdmissionQueued
+	if !overlap {
+		s.queueAdmission(i, line, e, p, st)
+	}
 	controls := s.settleSubmitAdmission(i, line, e, p)
-	if controls.present && controls.modelPresent {
-		switch controls.mode {
-		case protocol.ModePerRun:
-			// The default the run was admitted against is what every later
-			// snapshot is judged against, and only an application the
-			// validator credits moves it.
-			st.expectedDefault, st.guardDefault = st.currentModel, st.currentKnown
-		case protocol.ModeSessionMutation:
-			// A session mutation runs immediately before the run it was
-			// requested for starts and changes the session default, so the
-			// admitted model becomes the expected default.
-			st.expectedDefault, st.guardDefault = controls.model, true
-		}
+	if controls.present && controls.modelPresent && !queued {
+		s.applyModelControl(st, controls)
 	}
 	status, opaque := protocol.RunQueued, s.tolerant && foreignAdmission(p.Admission)
 	if opaque {
@@ -867,7 +969,56 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		// opaque until a known status is reached (see run.status.updated).
 		status = p.Status
 	}
-	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, controls: controls, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
+	run := &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, controls: controls, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
+	run.order = len(st.order)
+	run.admittedQueued = queued
+	run.admittedAt = i
+	run.submitRequest = e.InReplyTo
+	// A reservation's model control is held until promotion: its
+	// session_mutation must not move the session default while an earlier run
+	// is still started, and its per_run snapshot of that default has to be
+	// taken where the run begins rather than where it was reserved.
+	run.deferredControls = queued && controls.present && controls.modelPresent
+	s.runs[p.RunID] = run
+	st.order = append(st.order, p.RunID)
+	// st.active is the run a snapshot has to keep naming, so it tracks the
+	// started run and nothing else. A reservation is not one: active_run_id
+	// stays absent until it starts, and recording it here made a snapshot that
+	// correctly reports no started run read as erasing a live one. The pointer
+	// moves at the promotion instead, which is where the run actually begins.
+	if !queued {
+		if st.active == "" {
+			st.active = p.RunID
+		} else if prev := s.runs[st.active]; prev == nil || prev.terminal {
+			st.active = p.RunID
+		}
+	}
+	s.refreshQueueWindows(p.SessionID)
+	// A snapshot may name a run whose admission is still in flight. This is
+	// that admission: the entries that led it are judged here, where what
+	// they were waiting on is finally known.
+	s.admitLedEntries(run)
+}
+
+// applyModelControl moves the session's expected default for one admitted
+// model selection, in the way the disclosed mode says it moves.
+func (s *state) applyModelControl(st *sessionTrack, controls admittedControls) {
+	switch controls.mode {
+	case protocol.ModePerRun:
+		// The default the run was admitted against is what every later
+		// snapshot is judged against, and only an application the
+		// validator credits moves it.
+		st.expectedDefault, st.guardDefault = st.currentModel, st.currentKnown
+	case protocol.ModeSessionMutation:
+		// A session mutation changes the session default where it is
+		// applied — at admission for a started run, at promotion for a
+		// reservation — and the run that applied it is the authority every
+		// snapshot taken while it is started is judged against
+		// (premature_session_mutation). The per_run guard stays off: this
+		// selection is meant to move the default.
+		st.currentModel, st.currentKnown = controls.model, true
+		st.mutated = true
+	}
 }
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
@@ -879,11 +1030,23 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	r := s.runs[e.RunID]
 	if r == nil {
 		s.add(CodeIllegalRunTransition, i, line, e, "/run_id", "run event has no accepted admission")
+		// A placeholder so the rest of this run's events are read rather than
+		// dropped, and the only created run deliberately left out of the
+		// session's admission order: admission order is precisely what this
+		// run does not have, the trace has already been convicted for that,
+		// and counting it against the queue would diagnose the same fault a
+		// second time under another name.
 		r = &runState{id: e.RunID, session: e.SessionID, next: 1, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}}
 		s.runs[e.RunID] = r
 	}
 	r.lastIndex = i
 	r.lastLine = line
+	// Every state claim the trace had not reached is reconciled against this
+	// envelope once the run's own bookkeeping is done, whichever branch
+	// below returns: a capture position the run has now reached, and a
+	// settled run's claimed terminal, which must be the next envelope its
+	// domain publishes.
+	defer s.reconcileDeferred(i, line, e, r)
 	// A catalog held against a position in this run may become settleable
 	// here: this event moves the run's cursor, and may itself record the model
 	// the catalog named, or simply reveal whose run it is. It is settled after
@@ -918,7 +1081,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	}
 	if r.terminal {
 		if isTerminal(e.Type) {
-			if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted {
+			if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted && !r.recovered {
 				s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.cancelled requires accepted cancellation")
 			}
 			// A pre-start-settled run is still settled: its terminal is its
@@ -929,12 +1092,15 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		return
 	}
+	s.checkQueueOrder(i, line, e, r)
 	if e.Type == protocol.TypeRunStarted {
 		if r.started {
 			s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.started occurred more than once")
 		} else {
 			r.started = true
+			r.startedAt = i
 			r.status = protocol.RunRunning
+			s.promote(i, e, r)
 		}
 		if r.controls.modelPresent && r.controls.mode == protocol.ModeSessionMutation && e.Sequence != nil {
 			// A session mutation runs immediately before the run it was
@@ -1030,7 +1196,12 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		s.interactionResolved(i, line, e, "input")
 	}
 	if isTerminal(e.Type) {
-		if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted {
+		// A cancel exchange is evidence, and a run this trace never saw
+		// admitted may have been cancelled before the cursor: the exchange
+		// that accepted it is behind the disconnect and no envelope for it
+		// will arrive. Requiring it here would convict the one endpoint that
+		// answered the reattach honestly.
+		if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted && !r.recovered {
 			s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.cancelled requires accepted cancellation")
 		}
 		if e.Type == protocol.TypeRunCompleted {
@@ -1051,6 +1222,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		r.terminal = true
 		r.terminalType = e.Type
+		r.terminalAt = i
 		switch e.Type {
 		case protocol.TypeRunCompleted:
 			r.status = protocol.RunCompleted
@@ -1062,8 +1234,161 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		if st := s.sessions[r.session]; st != nil && st.active == r.id {
 			st.active = ""
 		}
+		// A terminal frees a reservation, and every open submit window on the
+		// session is re-reckoned against the set as it now stands.
+		s.refreshQueueWindows(r.session)
 	}
 }
+
+// applyStateDocument is what every session-state document says about its
+// session, wherever it arrives. session.open.response carries the same
+// document — SessionOpenResponse is SessionState, and the schema defines the
+// open response as that document — and a client reattaching reads it as its
+// initial state, so a rule keyed to the response type rather than to the
+// document is a rule with a hole in it. The model bookkeeping stays with each
+// branch, because an open response that names no model is silent where a state
+// response is authoritative.
+func (s *state) applyStateDocument(i, line int, e protocol.Envelope, p protocol.SessionState, st *sessionTrack) {
+	if p.ActiveRunID != "" && p.Status == protocol.SessionIdle {
+		s.add(CodeSessionStateMismatch, i, line, e, "/payload/status", "idle session cannot have an active run")
+	}
+	// A snapshot may not erase a run the trace has admitted and not terminated:
+	// that would allow an overlapping second admission on one session. Keep the
+	// tracked run when the snapshot contradicts it.
+	contradiction, excused := false, false
+	if prev := st.active; prev != "" && !claimedSettled(p, prev) {
+		// A snapshot that claims it already removed the run states so in
+		// as_of.settled, and that claim is judged on its own terms — the
+		// terminal it names must be the next thing the run publishes. It
+		// is not a contradiction, so it is not diagnosed twice, and the
+		// pointer follows the snapshot because the snapshot said the run
+		// is over and answers for saying so.
+		//
+		// A run that began after the read was requested is different. A
+		// promotion happens inside the endpoint and its run.started can
+		// drain after the response, so a snapshot naming no started run
+		// where none had started is describing the moment it was taken —
+		// but excusing that omission is not agreeing with it. The run did
+		// start, nothing reconciles the omission later, and letting the
+		// snapshot clear the pointer would leave every snapshot after it
+		// free to omit the run as well.
+		r := s.runs[prev]
+		if r != nil && !r.terminal && p.ActiveRunID != prev {
+			if r.startedAt <= s.captureWindowStart(i, e) {
+				contradiction = true
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "snapshot contradicts a nonterminal active run", string(prev), string(p.ActiveRunID), string(prev))
+			} else {
+				excused = true
+			}
+		}
+	}
+	st.status = p.Status
+	if !contradiction && !excused {
+		st.active = p.ActiveRunID
+	}
+}
+
+// bootstrapRecoveredRuns registers the runs a recovered open response
+// introduces. A reattach joins a session already under way: the response is
+// the first thing the trace hears about its runs and is authoritative about
+// them by construction, since there is no earlier admission for it to
+// contradict. So the runs it lists are taken from it, and the document is then
+// held to everything that does not depend on where they came from — that it
+// lists each of them once, that none of them has already settled, that it
+// names the one it says is executing and only one, and that its own status
+// agrees with the rest of it. An open response that names runs without
+// declaring a recovery declares nothing that could have created them, and its
+// entries are runs from nowhere like any others.
+// introduceRecoveredRun registers a run a recovery names that the trace has
+// never carried. It is what an admission does minus the admission itself: the
+// run table, the session's admission order, and the position the run entered
+// it at, followed by the windows every submission still in flight is judged
+// in. A run entered in the table alone is a run the queue rules cannot see —
+// every accounting and ordering check reads the session's order, so a run
+// missing from it leaves the session looking empty and a second started
+// admission beside it escapes both the overlap rule and execution order.
+func (s *state) introduceRecoveredRun(i, line int, st *sessionTrack, run *runState, entry *protocol.ActiveRun) {
+	run.order = len(st.order)
+	run.admittedAt = i
+	run.lastIndex, run.lastLine = i, line
+	// The document is also the trace's first authoritative word on what the
+	// run is blocked on. An entry that names its pending interactions names
+	// ones the trace will never see opened — their requests are behind the
+	// cursor — so they are recorded as pending from before every position this
+	// trace can state, and recorded opaquely, because naming an interaction is
+	// not describing it. Where no entry introduced the run the document said
+	// nothing at all, and nothing is what the validator knows.
+	run.recovered = true
+	if entry == nil {
+		run.priorUnknown = true
+	}
+	for _, id := range entryPending(entry) {
+		run.interactions[id] = &interactionState{opaque: true}
+	}
+	s.runs[run.id] = run
+	st.order = append(st.order, run.id)
+	s.refreshQueueWindows(run.session)
+}
+
+func entryPending(entry *protocol.ActiveRun) []protocol.InteractionID {
+	if entry == nil {
+		return nil
+	}
+	return entry.PendingInteractions
+}
+
+// resumeSequence is where a run a recovery introduces picks its trace up: the
+// position the entry states, then the cursor the recovery resumed from, then
+// the beginning. Both recovery paths take it from here rather than each
+// deciding, because they ask one question of one recovery block, and the
+// answer was right in only one of them.
+//
+// The cursor belongs to the run the recovery names, so a second entry beside it
+// — a reservation the reattach also carries — starts from the beginning rather
+// than from a position that was never about it. A declared gap states no
+// position at all: its cursor is the retained boundary the endpoint could not
+// serve from, not where the events that follow come from, so counting from it
+// would diagnose the endpoint for the gap it declared.
+func resumeSequence(rec *recoveryExpectation, run protocol.RunID, asOf *uint64) uint64 {
+	if asOf != nil {
+		return *asOf + 1
+	}
+	if rec != nil && !rec.gap && rec.cursorSet && (rec.run == "" || rec.run == run) {
+		return rec.cursor + 1
+	}
+	return 1
+}
+
+func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st *sessionTrack) {
+	rec := s.recoveries[p.SessionID]
+	listed := map[protocol.RunID]bool{}
+	for _, entry := range p.ActiveRuns {
+		listed[entry.RunID] = true
+		if s.runs[entry.RunID] != nil {
+			continue
+		}
+		// The entry's own shape is what the reattach knows. A queued one is a
+		// reservation that has not begun; a cancelling one says nothing about
+		// whether its run began, so it answers with the queue place it reports
+		// holding, exactly as it does where the trace has not reached its
+		// start; anything else is a run that has begun, before everything this
+		// trace can see.
+		queued := entry.Status == protocol.RunQueued ||
+			(entry.Status == protocol.RunCancelling && cancellingHoldsItsPlace(entry))
+		s.introduceRecoveredRun(i, line, st, &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: resumeSequence(rec, entry.RunID, entry.AsOfSequence), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status}, &entry)
+	}
+	// active_runs is required only where active_run_id cannot carry the
+	// answer, so a reattach whose session holds one started run says so with
+	// the pointer alone, and that run is introduced by the document just as an
+	// entry would be. Without it the retained replay that may follow the open
+	// response directly has no admission behind it and no position to resume
+	// from — the shape the state-response path has always bootstrapped, and
+	// the one the listing never sees because there is no listing.
+	if p.ActiveRunID != "" && !listed[p.ActiveRunID] && s.runs[p.ActiveRunID] == nil {
+		s.introduceRecoveredRun(i, line, st, &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}, nil)
+	}
+}
+
 func (s *state) checkScope(i, line int, e protocol.Envelope, session protocol.SessionID, run protocol.RunID) {
 	if e.SessionID != "" && session != "" && e.SessionID != session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "envelope and payload session_id differ", string(e.SessionID), string(session))
@@ -1100,12 +1425,20 @@ func (s *state) tool(i, line int, e protocol.Envelope, next string) {
 		// emits exactly one terminal event for each *started* tool call.
 		valid = ok && (current == "started" || current == "progress")
 	}
-	if !valid {
+	if !valid && !(!ok && r.recovered) {
 		code := CodeIllegalToolTransition
 		if !ok && next != "requested" {
 			code = CodeUnmatchedTool
 		}
 		s.add(code, i, line, e, "/tool_call_id", "illegal tool-call lifecycle transition")
+	}
+	if !ok && r.recovered {
+		// No document names the tool calls a recovered run had open, so a
+		// call this trace never saw requested is one that opened before the
+		// cursor rather than one that never opened. Its lifecycle is picked up
+		// from here: what this trace does see of it is judged as any other
+		// call's, and only the part it cannot see stands down.
+		r.tools[p.ToolCallID] = toolTrack{status: next, owner: p.ExecutionOwner}
 	}
 	// execution_owner is required on every action-call payload and must not be
 	// reassigned mid-lifecycle.
@@ -1184,13 +1517,35 @@ func (s *state) interactionRequested(i, line int, e protocol.Envelope, kind stri
 	if _, ok := r.interactions[id]; ok {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction id was requested more than once")
 	}
-	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices, questions: questions, toolCallID: toolCallID}
+	opened := uint64(0)
+	if e.Sequence != nil {
+		opened = *e.Sequence
+	}
+	r.interactions[id] = &interactionState{kind: kind, requestedBy: requested, respondedBy: responded, allowCancel: allowCancel, choices: choices, questions: questions, toolCallID: toolCallID, openedAt: opened}
 }
 func (s *state) interactionResolutionRequest(i, line int, e protocol.Envelope, kind string) {
 	id, requested, responded := interactionFields(e, kind)
 	x := s.lookupInteraction(e.RunID, id)
 	if x == nil {
+		if r := s.runs[e.RunID]; r != nil && r.priorUnknown {
+			// Same as the resolution event: a run introduced by a recovery
+			// that said nothing about what it was blocked on may be asked to
+			// resolve an interaction opened before the cursor, and unmatched
+			// here is what the validator does not know.
+			r.interactions[id] = &interactionState{opaque: true}
+			return
+		}
 		s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution has no pending interaction")
+		return
+	}
+	if x.opaque {
+		// Answering a recovered interaction is what reattaching to a blocked
+		// run is for: the client reads pending_interactions and resolves what
+		// it finds there. The request that opened it is behind the cursor, so
+		// its kind, ownership, cancellation policy, offered choices and
+		// questions were never stated to this trace — they are unknown, not
+		// empty, and a request cannot be held to fields nobody stated. The
+		// event side stands the same checks down for the same reason.
 		return
 	}
 	if x.kind != kind {
@@ -1273,11 +1628,35 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 	id, requested, responded := interactionFields(e, kind)
 	x := s.lookupInteraction(e.RunID, id)
 	if x == nil {
-		s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution event has no pending interaction")
-		return
+		r := s.runs[e.RunID]
+		if r == nil || !r.priorUnknown {
+			s.add(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution event has no pending interaction")
+			return
+		}
+		// The run entered this trace through a recovery that said nothing
+		// about what it was blocked on, so an interaction it resolves may have
+		// been opened before the cursor and no envelope for it will ever
+		// arrive. Unmatched here is what the validator does not know, not what
+		// the endpoint got wrong. The resolution is still recorded, so a later
+		// snapshot that keeps the interaction pending is judged against it.
+		x = &interactionState{opaque: true}
+		r.interactions[id] = x
 	}
 	if x.resolved {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload", "interaction was resolved more than once")
+	}
+	if x.opaque {
+		// The request is behind the recovery cursor: a recovered entry named
+		// this interaction as pending and said nothing else about it. Its
+		// ownership, kind, questions, choices and tool binding are unknown,
+		// not absent, and a resolution cannot answer to fields nobody stated.
+		// That it is resolved once, and that it leaves the pending set where
+		// it does, are facts of this trace and stay judged.
+		x.resolved = true
+		if e.Sequence != nil && x.resolvedAt == 0 {
+			x.resolvedAt = *e.Sequence
+		}
+		return
 	}
 	if responded != x.respondedBy || requested != x.requestedBy {
 		s.addExpected(CodeWrongInteractionResponder, i, line, e, "/payload/responded_by", "resolution ownership differs from request", string(x.respondedBy), string(responded), string(id))
@@ -1316,6 +1695,9 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 		}
 	}
 	x.resolved = true
+	if e.Sequence != nil && x.resolvedAt == 0 {
+		x.resolvedAt = *e.Sequence
+	}
 }
 func interactionFields(e protocol.Envelope, kind string) (protocol.InteractionID, protocol.ParticipantID, protocol.ParticipantID) {
 	if kind == "permission" {
@@ -1385,6 +1767,7 @@ func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
 	s.add(CodeUnavailableCapability, i, line, e, "/type", "optional feature was not affirmatively advertised")
 }
 func (s *state) close(index int) {
+	s.closeQueue()
 	for _, rec := range s.recoveries {
 		if rec.gap && !rec.stateSeen {
 			e := protocol.Envelope{Type: protocol.TypeSessionStateResponse, SessionID: rec.session}

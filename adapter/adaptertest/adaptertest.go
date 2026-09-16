@@ -155,6 +155,161 @@ func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse,
 	}
 }
 
+// QueuedSubmission is one submission in a session that admits more than one
+// nonterminal run: the request the caller made and the admission it received.
+// Cancelled marks a run the caller cancelled and the adapter accepted, so the
+// harness-side cancel exchange is spliced for it.
+type QueuedSubmission struct {
+	Request   protocol.MessageSubmitRequest
+	Admission protocol.MessageSubmitResponse
+	Cancelled bool
+}
+
+// AssertProtocolValidQueued certifies a session whose trace carries more than
+// one run. The single-run assertions cannot: they synthesize one submission
+// and check one contiguous sequence domain, while a queued session has a
+// reservation admitted beside a started run and two domains interleaved only
+// by the one exception the ordering rule makes.
+//
+// Every submission's request and response is spliced ahead of the events in
+// admission order, since the reservation is admitted while the started run is
+// still nonterminal, and each run's own sequence is checked inside its domain.
+func AssertProtocolValidQueued(t testing.TB, submissions []QueuedSubmission, descriptor adapter.Descriptor, events []protocol.Envelope) {
+	t.Helper()
+	assertQueuedInvariants(t, submissions, descriptor.CapabilityRevision, events)
+	trace, err := queuedTrace(submissions, descriptor, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().ValidateBytes(trace, "adaptertest"); !result.Valid() {
+		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
+	}
+}
+
+// assertQueuedInvariants checks per-run scope, contiguity, revision, and
+// terminality across a multi-run trace.
+func assertQueuedInvariants(t testing.TB, submissions []QueuedSubmission, revision string, events []protocol.Envelope) {
+	t.Helper()
+	next := map[protocol.RunID]uint64{}
+	owner := map[protocol.RunID]protocol.SessionID{}
+	terminals := map[protocol.RunID]int{}
+	for _, submission := range submissions {
+		if !submission.Admission.Accepted || submission.Admission.RunID == "" {
+			t.Fatalf("invalid admission: %+v", submission.Admission)
+		}
+		next[submission.Admission.RunID] = 1
+		owner[submission.Admission.RunID] = submission.Admission.SessionID
+	}
+	for index, envelope := range events {
+		if isControlExchange(envelope.Type) {
+			continue
+		}
+		session, known := owner[envelope.RunID]
+		if !known {
+			t.Fatalf("event %d names run %s, which no submission admitted", index, envelope.RunID)
+		}
+		if envelope.SessionID != session {
+			t.Fatalf("event %d scope: %+v", index, envelope)
+		}
+		if envelope.Sequence == nil || *envelope.Sequence != next[envelope.RunID] {
+			t.Fatalf("event %d sequence: got %v want %d for run %s", index, envelope.Sequence, next[envelope.RunID], envelope.RunID)
+		}
+		next[envelope.RunID]++
+		if revision != "" && envelope.CapabilityRevision != revision {
+			t.Fatalf("event %d capability revision: got %q want %q", index, envelope.CapabilityRevision, revision)
+		}
+		if isTerminal(envelope.Type) {
+			terminals[envelope.RunID]++
+		} else if terminals[envelope.RunID] > 0 {
+			t.Fatalf("event %d follows run %s's terminal", index, envelope.RunID)
+		}
+	}
+	for run := range next {
+		if terminals[run] != 1 {
+			t.Fatalf("run %s has %d terminal events", run, terminals[run])
+		}
+	}
+}
+
+func queuedTrace(submissions []QueuedSubmission, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
+	var trace []protocol.Envelope
+	if descriptor.CapabilityRevision != "" {
+		request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
+		if err != nil {
+			return nil, err
+		}
+		response, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
+		if err != nil {
+			return nil, err
+		}
+		response.InReplyTo = request.ID
+		response.CapabilityRevision = descriptor.CapabilityRevision
+		trace = append(trace, request, response)
+	}
+	for index, submission := range submissions {
+		submit, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, protocol.EnvelopeID(fmt.Sprintf("submit-request-%d", index+1)), submission.Request)
+		if err != nil {
+			return nil, err
+		}
+		submit.SessionID = submission.Admission.SessionID
+		response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, protocol.EnvelopeID(fmt.Sprintf("submit-response-%d", index+1)), submission.Admission)
+		if err != nil {
+			return nil, err
+		}
+		response.SessionID = submission.Admission.SessionID
+		response.InReplyTo = submit.ID
+		if descriptor.CapabilityRevision != "" {
+			submit.CapabilityRevision = descriptor.CapabilityRevision
+			response.CapabilityRevision = descriptor.CapabilityRevision
+		}
+		trace = append(trace, submit, response)
+	}
+	// A cancel exchange is run-scoped and exempt from the ordering rule, so
+	// it sits directly ahead of the terminal it settles.
+	for index, submission := range submissions {
+		if !submission.Cancelled {
+			continue
+		}
+		run := submission.Admission.RunID
+		request, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, protocol.EnvelopeID(fmt.Sprintf("cancel-request-%d", index+1)), protocol.RunCancelRequest{SessionID: submission.Admission.SessionID, RunID: run})
+		if err != nil {
+			return nil, err
+		}
+		request.SessionID, request.RunID = submission.Admission.SessionID, run
+		ack, err := protocol.NewEnvelope(protocol.TypeRunCancelResponse, protocol.EnvelopeID(fmt.Sprintf("cancel-response-%d", index+1)), protocol.RunCancelResponse{SessionID: submission.Admission.SessionID, RunID: run, Accepted: true, Status: protocol.RunCancelling})
+		if err != nil {
+			return nil, err
+		}
+		ack.SessionID, ack.RunID, ack.InReplyTo = submission.Admission.SessionID, run, request.ID
+		cut := runCancelCut(events, run)
+		rest := append([]protocol.Envelope(nil), events[cut:]...)
+		events = append(append(append([]protocol.Envelope(nil), events[:cut]...), request, ack), rest...)
+	}
+	trace = append(trace, events...)
+	return json.Marshal(trace)
+}
+
+// runCancelCut reports where a cancel exchange for one run belongs: directly
+// ahead of that run's first cancelling status update, otherwise ahead of its
+// terminal, otherwise at the end.
+func runCancelCut(events []protocol.Envelope, run protocol.RunID) int {
+	for index, event := range events {
+		if event.RunID != run || event.Type != protocol.TypeRunStatusUpdated {
+			continue
+		}
+		var payload protocol.RunStatusUpdatedPayload
+		if err := event.DecodePayload(&payload); err == nil && payload.Status == protocol.RunCancelling {
+			return index
+		}
+	}
+	for index, event := range events {
+		if event.RunID == run && isTerminal(event.Type) {
+			return index
+		}
+	}
+	return len(events)
+}
+
 // AssertRunEvents checks adapter-owned invariants without constructing control
 // requests. Use it when a caller supplies its own complete canonical trace.
 func AssertRunEvents(t testing.TB, admission protocol.MessageSubmitResponse, revision string, envelopes []protocol.Envelope) {
@@ -216,10 +371,52 @@ func isControlExchange(typ protocol.EnvelopeType) bool {
 		protocol.TypeRunCancelRequest, protocol.TypeRunCancelResponse,
 		protocol.TypeActionPermissionResolveRequest, protocol.TypeActionPermissionResolveResponse,
 		protocol.TypeUserInputResolveRequest, protocol.TypeUserInputResolveResponse,
-		protocol.TypeUserInputCancelRequest, protocol.TypeUserInputCancelResponse:
+		protocol.TypeUserInputCancelRequest, protocol.TypeUserInputCancelResponse,
+		protocol.TypeSessionStateRequest, protocol.TypeSessionStateResponse:
 		return true
 	}
 	return false
+}
+
+// StateExchange is a session.state request and response carrying one snapshot
+// an adapter handed out, ready to be spliced into the event stream at the point
+// it was taken.
+//
+// Nothing else in this kit reads State, and that is a real hole rather than an
+// omission of convenience: an adapter's projection can contradict the very run
+// the same trace carries and still pass every assertion here, because the
+// snapshot never enters the trace the validator sees. Splicing one in is what
+// holds an adapter's own state to the rules a fixture is held to.
+func StateExchange(state protocol.SessionState) ([]protocol.Envelope, error) {
+	request, err := protocol.NewEnvelope(protocol.TypeSessionStateRequest, "state-request", protocol.SessionStateRequest{SessionID: state.SessionID})
+	if err != nil {
+		return nil, err
+	}
+	request.SessionID = state.SessionID
+	response, err := protocol.NewEnvelope(protocol.TypeSessionStateResponse, "state-response", state)
+	if err != nil {
+		return nil, err
+	}
+	response.SessionID = state.SessionID
+	response.InReplyTo = request.ID
+	return []protocol.Envelope{request, response}, nil
+}
+
+// SpliceAfter puts a state exchange into an event stream directly after the
+// envelope it was taken at, which is where the capture window rules judge it:
+// the request opens the window, and anything the endpoint published in between
+// is a race the snapshot is allowed to have missed or led.
+func SpliceAfter(t testing.TB, events []protocol.Envelope, after protocol.EnvelopeID, exchange []protocol.Envelope) []protocol.Envelope {
+	t.Helper()
+	for index, envelope := range events {
+		if envelope.ID != after {
+			continue
+		}
+		head := append([]protocol.Envelope(nil), events[:index+1]...)
+		return append(append(head, exchange...), events[index+1:]...)
+	}
+	t.Fatalf("no envelope %s to splice a state read after", after)
+	return nil
 }
 
 // AssertInitialState verifies that opening a session preserves the requested ID

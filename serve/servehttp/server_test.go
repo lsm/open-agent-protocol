@@ -594,7 +594,9 @@ func TestSessionsListingAcrossLifecycle(t *testing.T) {
 
 	stream := connectSSE(t, server, "/sessions/listing/events", "")
 	_, admission := submitRun(t, server, "listing", "submit-listing")
-	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "running" || entry.ActiveRunID != string(admission.RunID) {
+	// The scripted run stops at its permission gate, so the listing reports a
+	// session waiting on it rather than one executing.
+	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "waiting_for_input" || entry.ActiveRunID != string(admission.RunID) {
 		t.Fatalf("running listing: %+v", entry)
 	}
 
@@ -788,11 +790,28 @@ func TestSubmitRejections(t *testing.T) {
 		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
 	}
 
-	// A second submission while the run is active conflicts.
+	// A second submission while the run is active reserves the one queued
+	// slot the reference adapter discloses; the third exceeds the bound and
+	// conflicts, which is the wire's run_active.
 	_, admission := submitRun(t, server, "reject", "submit-active")
-	active := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-second", protocol.MessageSubmitRequest{
+	queued := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-second", protocol.MessageSubmitRequest{
 		SessionID: "reject", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}},
+	}, "reject", string(admission.RunID), "")
+	status, reservation := postEnvelope(t, server, "/sessions/reject/submit", queued)
+	if status != http.StatusOK {
+		t.Fatalf("reservation status = %d, want 200 (%s)", status, reservation.Payload)
+	}
+	var reserved protocol.MessageSubmitResponse
+	if err := reservation.DecodePayload(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved.Admission != protocol.AdmissionQueued || reserved.EffectiveDelivery != protocol.EffectiveDeliveryQueue || reserved.DeliveryResolution != "session_busy" {
+		t.Fatalf("reservation = %+v", reserved)
+	}
+	active := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-third", protocol.MessageSubmitRequest{
+		SessionID: "reject", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("and again")}},
 	}, "reject", string(admission.RunID), "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", active)
 	requireErrorResponse(t, status, http.StatusConflict, errorEnvelope, "run_active")
@@ -1089,5 +1108,62 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 	}
 	if refusal.Error.Details["feature"] != protocol.FeatureInstructions {
 		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
+	}
+}
+
+// A queued admission and the state that describes it must survive the wire:
+// the daemon relays the reservation, the state response lists both
+// nonterminal runs in admission order, and the management listing reports the
+// same set rather than the started run alone.
+func TestQueuedSubmissionRoundTrips(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "queue-http")
+	_, first := submitRun(t, server, "queue-http", "submit-first")
+
+	queued := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-queued", protocol.MessageSubmitRequest{
+		SessionID: "queue-http", Delivery: protocol.DeliveryQueue,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}},
+	}, "queue-http", "", "")
+	status, reservation := postEnvelope(t, server, "/sessions/queue-http/submit", queued)
+	if status != http.StatusOK {
+		t.Fatalf("reservation status = %d: %s", status, reservation.Payload)
+	}
+	requireEnvelopeSchema(t, reservation)
+	var reserved protocol.MessageSubmitResponse
+	if err := reservation.DecodePayload(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved.Admission != protocol.AdmissionQueued || reserved.RequestedDelivery != protocol.DeliveryQueue ||
+		reserved.EffectiveDelivery != protocol.EffectiveDeliveryQueue || reserved.Status != protocol.RunQueued {
+		t.Fatalf("reservation = %+v", reserved)
+	}
+
+	response, err := server.Client().Get(server.URL + "/sessions/queue-http/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	envelope, err := protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEnvelopeSchema(t, envelope)
+	var state protocol.SessionState
+	if err := envelope.DecodePayload(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 2 || state.ActiveRuns[0].RunID != first.RunID || state.ActiveRuns[1].RunID != reserved.RunID {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	if state.ActiveRuns[1].QueuePosition == nil || *state.ActiveRuns[1].QueuePosition != 1 {
+		t.Fatalf("queue position = %+v", state.ActiveRuns[1])
+	}
+	if state.ActiveRunID != first.RunID {
+		t.Fatalf("active_run_id = %q", state.ActiveRunID)
+	}
+
+	if info := sessionAt(t, listSessions(t, server), "queue-http"); len(info.ActiveRuns) != 2 {
+		t.Fatalf("listing active_runs = %+v", info.ActiveRuns)
 	}
 }

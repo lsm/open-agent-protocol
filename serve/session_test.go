@@ -97,6 +97,97 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	}
 }
 
+// TestOverflowRecoversFromTheLiveRunNotASettledReservation pins what the
+// admission serials are for. They are admission order, and overflow recovery
+// reads them as execution order too — true until a later-admitted run settles
+// before an earlier one, which is exactly what a reservation cancelled before
+// promotion does. Its terminal carries the higher serial, so a consumer that
+// acknowledged it and then fell behind on the still-live earlier run was handed
+// a cursor on a run that had already ended: the lost envelopes were
+// unreachable from it.
+func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
+	entry := newSession("hub", "memory", nil)
+	sub, ok := entry.subscribe(2)
+	if !ok {
+		t.Fatal("subscribe on an open session was refused")
+	}
+
+	// The started run, still delivering.
+	streamA := make(chan base.Result, 4)
+	entry.startRun("run-a", streamA)
+	entry.publish(runEnvelope(t, "run-a", 1))
+
+	// A reservation admitted behind it, cancelled before promotion: it takes
+	// the higher serial, publishes one terminal and never becomes current.
+	entry.mu.Lock()
+	entry.reservations++
+	entry.mu.Unlock()
+	streamB := make(chan base.Result, 4)
+	entry.adoptRun("run-b", streamB, true)
+	cancelled := runEnvelope(t, "run-b", 1)
+	cancelled.Type = protocol.TypeRunCancelled
+	streamB <- base.Result{Envelope: cancelled}
+	close(streamB)
+
+	// The consumer reads both and acknowledges, so its position is the
+	// reservation's — the newest serial the session has handed out.
+	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
+	for _, want := range []protocol.RunID{"run-a", "run-b"} {
+		envelope, err := subscription.Next()
+		if err != nil {
+			t.Fatalf("reading %s: %v", want, err)
+		}
+		if envelope.RunID != want {
+			t.Fatalf("envelope run = %s, want %s", envelope.RunID, want)
+		}
+	}
+	waitForFinished(t, entry, "run-b")
+
+	// Now it falls behind on the still-live earlier run.
+	entry.publish(runEnvelope(t, "run-a", 2))
+	entry.publish(runEnvelope(t, "run-a", 3))
+	entry.publish(runEnvelope(t, "run-a", 4))
+
+	drained := 0
+	var overflow *OverflowError
+	for {
+		envelope, err := subscription.Next()
+		if errors.As(err, &overflow) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("terminal %v (%T), want an OverflowError", err, err)
+		}
+		if drained++; drained > 8 {
+			t.Fatal("the subscriber never overflowed")
+		}
+		_ = envelope
+	}
+	if overflow.RunID != "run-a" {
+		t.Fatalf("overflow cursor %+v, want the still-live run the drop lost", overflow)
+	}
+	close(streamA)
+}
+
+// waitForFinished waits until the hub has recorded a run's stream as drained.
+func waitForFinished(t *testing.T, entry *Session, run protocol.RunID) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	for {
+		entry.mu.Lock()
+		done := entry.finished[run]
+		entry.mu.Unlock()
+		if done {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("run %s never finished draining", run)
+		default:
+		}
+	}
+}
+
 // TestDeferredEndDoesNotClobberOverflowTerminal pins first-writer-wins on a
 // subscriber's terminal state: a slow consumer sitting in a deferred cohort
 // that a queue-full publish already signalled must keep its recovery cursor
@@ -2041,6 +2132,94 @@ func TestCloseStopsAtContextDeadline(t *testing.T) {
 }
 
 var _ base.Session = (*stubSession)(nil)
+
+// queuedStubSession is an endpoint that queues: it reports its live runs in
+// active_runs and leaves active_run_id empty while only reservations remain,
+// which is what the queue unit requires of a snapshot. Its Close refuses until
+// needed cancels have been issued.
+type queuedStubSession struct {
+	live      []protocol.ActiveRun
+	activeRun protocol.RunID
+	needed    int
+	cancelled []protocol.RunID
+}
+
+func (s *queuedStubSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, nil
+}
+func (s *queuedStubSession) State(context.Context) (protocol.SessionState, error) {
+	return protocol.SessionState{ActiveRunID: s.activeRun, ActiveRuns: s.live}, nil
+}
+func (s *queuedStubSession) Resolve(context.Context, base.InteractionResolution) error { return nil }
+func (s *queuedStubSession) Cancel(_ context.Context, run protocol.RunID) (protocol.RunCancelResponse, error) {
+	s.cancelled = append(s.cancelled, run)
+	return protocol.RunCancelResponse{Accepted: true}, nil
+}
+func (s *queuedStubSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, nil
+}
+func (s *queuedStubSession) Close(context.Context) error {
+	if len(s.cancelled) < s.needed {
+		return base.ErrRunActive
+	}
+	return nil
+}
+
+var _ base.Session = (*queuedStubSession)(nil)
+
+// TestCloseCancelsReservationsTheSnapshotNames proves shutdown settles work
+// active_run_id cannot name. A reservation is admitted work that owes a
+// terminal, so an adapter's Close refuses for it, but the queue unit leaves
+// active_run_id absent while only reservations remain — reading that field
+// alone, the sweep would retry until it gave up and leave the child process
+// and an accepted submission alive.
+func TestCloseCancelsReservationsTheSnapshotNames(t *testing.T) {
+	stub := &queuedStubSession{needed: 1, live: []protocol.ActiveRun{{RunID: "run-queued", Status: protocol.RunQueued, Relationship: protocol.RelationshipPrimary}}}
+	entry := newSession("stub", "stub", stub)
+	if err := entry.closeForShutdown(context.Background()); err != nil {
+		t.Fatalf("close did not settle a reservation-only session: %v", err)
+	}
+	if fmt.Sprint(stub.cancelled) != fmt.Sprint([]protocol.RunID{"run-queued"}) {
+		t.Fatalf("cancelled %v, want the reservation", stub.cancelled)
+	}
+	if !entry.IsClosed() {
+		t.Fatal("session did not record the close")
+	}
+}
+
+// Both slots are live work and each owes a terminal, so shutdown cancels the
+// started run and the reservation behind it, in the order the snapshot lists
+// them.
+func TestCloseCancelsEveryRunTheSnapshotLists(t *testing.T) {
+	stub := &queuedStubSession{
+		needed:    2,
+		activeRun: "run-started",
+		live: []protocol.ActiveRun{
+			{RunID: "run-started", Status: protocol.RunRunning, Relationship: protocol.RelationshipPrimary},
+			{RunID: "run-queued", Status: protocol.RunQueued, Relationship: protocol.RelationshipPrimary},
+		},
+	}
+	entry := newSession("stub", "stub", stub)
+	if err := entry.closeForShutdown(context.Background()); err != nil {
+		t.Fatalf("close did not settle: %v", err)
+	}
+	if fmt.Sprint(stub.cancelled) != fmt.Sprint([]protocol.RunID{"run-started", "run-queued"}) {
+		t.Fatalf("cancelled %v, want both runs in admission order", stub.cancelled)
+	}
+}
+
+// An endpoint that keeps no entries is unaffected: active_run_id is the whole
+// answer there, and it is still the one run shutdown cancels.
+func TestCloseFallsBackToTheNamedActiveRun(t *testing.T) {
+	stub := &queuedStubSession{needed: 1, activeRun: "run-started"}
+	entry := newSession("stub", "stub", stub)
+	if err := entry.closeForShutdown(context.Background()); err != nil {
+		t.Fatalf("close did not settle: %v", err)
+	}
+	if fmt.Sprint(stub.cancelled) != fmt.Sprint([]protocol.RunID{"run-started"}) {
+		t.Fatalf("cancelled %v, want the named active run", stub.cancelled)
+	}
+}
 
 // blockingSession refuses to close until its context is done, recording
 // whether it ever observed a live (not-yet-expired) context.

@@ -939,7 +939,9 @@ rediscovered from the code.
   also declares the endpoint's native source,
   `acp-v1.7.0-schema-v1.21.0-oap-v3`, which declares the configured ones) and
   the reference adapter's with them
-  (`reference-memory-v5`, superseding the `v3` Decision 0006 introduced),
+  (`reference-memory-v5`, superseding the `v3` Decision 0006 introduced; the
+  queue unit merged afterwards and the combined descriptor is `v6`, by this
+  same rule),
   because a revision identifies exactly one descriptor and each of the three
   changed. `v4` is skipped rather than reused: the units graduating in parallel
   each bump this constant, and two branches that both took the next number

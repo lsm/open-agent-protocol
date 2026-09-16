@@ -136,8 +136,13 @@ func (f FeatureSupport) Transports() ([]string, bool) {
 // control it advertises is applied or refused with a typed error, never
 // dropped.
 const (
-	FeatureModelSelection   = "run.model_selection"
-	FeatureInstructions     = "run.instructions"
+	FeatureModelSelection = "run.model_selection"
+	FeatureInstructions   = "run.instructions"
+	// FeatureDeliveryQueue is the delivery key the queue unit gives
+	// executable meaning. Delivery keys are built from the requested mode, so
+	// this is the name DeliveryKey(DeliveryQueue) produces; the constant
+	// exists so the unit's tables and gates cannot spell it differently.
+	FeatureDeliveryQueue    = "session.message.delivery.queue"
 	FeatureToolSelection    = "run.tool_selection"
 	FeatureStructuredOutput = "run.structured_output"
 )
@@ -227,7 +232,30 @@ type CapabilityDescriptor struct {
 	Tools            []ToolDefinition           `json:"tools,omitempty"`
 	Sources          []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Degradation      []Degradation              `json:"degradation,omitempty"`
+	Limits           *CapabilityLimits          `json:"limits,omitempty"`
 }
+
+// CapabilityLimits are the admission bounds a descriptor discloses (queue
+// unit). MaxActiveRunsPerSession bounds the nonterminal set — the started run
+// plus every queued reservation, which is what session.state.active_runs
+// lists — and is the wire projection of adapter.Descriptor's field of the same
+// name. MaxQueuedRunsPerSession bounds the queued subset.
+//
+// Both are pointers because absence and a value are different claims: an
+// endpoint that states no bound has promised nothing about it, while one that
+// states a bound is held to the arithmetic it implies. A descriptor
+// advertising session.message.delivery.queue above unavailable must disclose a
+// positive MaxQueuedRunsPerSession, and any MaxActiveRunsPerSession it
+// discloses beside it must leave room for that subset next to a started run;
+// otherwise the capability promises a queue no admission could ever reach.
+type CapabilityLimits struct {
+	MaxActiveRunsPerSession *int `json:"max_active_runs_per_session,omitempty"`
+	MaxQueuedRunsPerSession *int `json:"max_queued_runs_per_session,omitempty"`
+}
+
+// Limit wraps a bound as a disclosed value, so a caller can state one without
+// taking the address of a local.
+func Limit(value int) *int { return &value }
 
 // EffectiveSupport reads one capability key's disclosure from a descriptor:
 // the top-level `features` first, then each layer's, since a valid descriptor
@@ -455,12 +483,125 @@ type SessionState struct {
 	SessionID        SessionID                  `json:"session_id"`
 	Status           SessionStatus              `json:"status"`
 	ActiveRunID      RunID                      `json:"active_run_id,omitempty"`
+	ActiveRuns       []ActiveRun                `json:"active_runs,omitempty"`
 	CurrentModelID   string                     `json:"current_model_id,omitempty"`
 	TranscriptCursor string                     `json:"transcript_cursor,omitempty"`
 	UpdatedAtMS      int64                      `json:"updated_at_ms,omitempty"`
 	Metadata         map[string]json.RawMessage `json:"metadata,omitempty"`
 	Sources          []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Recovery         *RecoveryMetadata          `json:"recovery,omitempty"`
+	AsOf             *SessionCapture            `json:"as_of,omitempty"`
+}
+
+// RelationshipPrimary is the only relationship an active_runs entry carries in
+// this phase: the run is a foreground execution of the session, started or
+// reserved. Side runs and subagent lifecycles stay deferred, so no other value
+// has rules.
+const RelationshipPrimary = "primary"
+
+// ActiveRun is one nonterminal run of a session, in admission order (queue
+// unit). A queued reservation carries its 1-based QueuePosition; the started
+// run carries none.
+//
+// AsOfSequence is the last sequence of this run the entry reflects, and it is
+// what makes PendingInteractions judgeable: a state read is not serialized
+// with lifecycle publication, so an interaction can resolve inside the
+// endpoint before capture while the event carrying that sequence is drained
+// afterwards. The position makes the read self-describing instead of leaving
+// an accurate omission to be diagnosed. An entry carrying PendingInteractions
+// must carry it.
+//
+// AdmittedSubmitRequests names the submit request envelope ids on this run the
+// entry reflects as admitted. It is the per-run capture anchor for pending
+// sets that a run sequence cannot order, and every id in it must name a submit
+// request the trace carries for the run.
+type ActiveRun struct {
+	RunID                  RunID           `json:"run_id"`
+	Status                 RunStatus       `json:"status"`
+	Relationship           string          `json:"relationship"`
+	QueuePosition          *int            `json:"queue_position,omitempty"`
+	AsOfSequence           *uint64         `json:"as_of_sequence,omitempty"`
+	AdmittedSubmitRequests []EnvelopeID    `json:"admitted_submit_requests,omitempty"`
+	PendingInteractions    []InteractionID `json:"pending_interactions,omitempty"`
+}
+
+// SessionCapture is the session-level capture position of a state snapshot
+// (queue unit): what the snapshot knew when it was taken, so membership is
+// judged against the endpoint's knowledge rather than against the trace's
+// current state.
+//
+// AdmittedSubmitRequests are the submit requests on the session the snapshot
+// reflects as admitted; only an admission whose response falls inside the
+// state request/response window may be omitted on the strength of being absent
+// from it. Settled are the runs the snapshot has already removed, each with
+// the sequence of its terminal — a terminal the trace need not have reached
+// yet, which is then held and reconciled when it arrives.
+//
+// ModelRunSequence names the last model-affecting event the snapshot reflects,
+// so a model reported during a concurrent promotion is judged at the position
+// it was captured at. Its genesis form, {"run_id": null, "sequence": 0}, names
+// the position before any model-affecting event — the session's opening model,
+// judged against no run at all.
+type SessionCapture struct {
+	AdmittedSubmitRequests []EnvelopeID `json:"admitted_submit_requests,omitempty"`
+	Settled                []SettledRun `json:"settled,omitempty"`
+	ModelRunSequence       *RunPosition `json:"model_run_sequence,omitempty"`
+}
+
+// SettledRun is one run a snapshot has removed, with the sequence its terminal
+// carries.
+type SettledRun struct {
+	RunID    RunID  `json:"run_id"`
+	Sequence uint64 `json:"sequence"`
+}
+
+// RunPosition is a stated position in a run's sequence domain. RunID is empty
+// in the genesis form, which names the position before the session's first
+// model-affecting event; the wire spells that as null.
+type RunPosition struct {
+	RunID    RunID  `json:"run_id"`
+	Sequence uint64 `json:"sequence"`
+}
+
+// Genesis reports whether the position is the genesis form: before any
+// model-affecting event on the session.
+func (p RunPosition) Genesis() bool { return p.RunID == "" && p.Sequence == 0 }
+
+// MarshalJSON spells the genesis run as null rather than as an empty id: the
+// wire's opaque ids are non-empty, so "" would be a malformed id where null is
+// the stated absence of a run.
+func (p RunPosition) MarshalJSON() ([]byte, error) {
+	if p.RunID == "" {
+		return json.Marshal(struct {
+			RunID    *RunID `json:"run_id"`
+			Sequence uint64 `json:"sequence"`
+		}{nil, p.Sequence})
+	}
+	return json.Marshal(struct {
+		RunID    RunID  `json:"run_id"`
+		Sequence uint64 `json:"sequence"`
+	}{p.RunID, p.Sequence})
+}
+
+func (p *RunPosition) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		RunID    *RunID `json:"run_id"`
+		Sequence uint64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	p.Sequence = wire.Sequence
+	p.RunID = ""
+	if wire.RunID != nil {
+		p.RunID = *wire.RunID
+	}
+	return nil
+}
+
+// DeliveryKey is the capability key one requested delivery mode is gated on.
+func DeliveryKey(mode RequestedDeliveryMode) string {
+	return "session.message.delivery." + string(mode)
 }
 
 type SessionStateResponse = SessionState

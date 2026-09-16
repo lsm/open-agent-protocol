@@ -32,7 +32,7 @@ test('dial accepts a bare address and lists adapters', async () => {
         adapters: [
           {
             name: 'memory',
-            capability_revision: 'reference-memory-v3',
+            capability_revision: 'reference-memory-v6',
             capabilities: { endpoint: { id: 'reference.memory' } },
           },
           { name: 'broken', error: 'probe failed' },
@@ -44,7 +44,7 @@ test('dial accepts a bare address and lists adapters', async () => {
   const adapters = await client.adapters();
   assert.equal(adapters.length, 2);
   assert.equal(adapters[0].name, 'memory');
-  assert.equal(adapters[0].capability_revision, 'reference-memory-v3');
+  assert.equal(adapters[0].capability_revision, 'reference-memory-v6');
   assert.equal(adapters[1].error, 'probe failed');
   assert.equal(transport.calls[0].url, `${BASE}/adapters`);
 });
@@ -58,7 +58,7 @@ test('capabilities returns the revision and descriptor', async () => {
           type: EnvelopeType.CapabilitiesResponse,
           id: 'resp-1',
           inReplyTo: 'oap-request-1',
-          capabilityRevision: 'reference-memory-v3',
+          capabilityRevision: 'reference-memory-v6',
           payload: { endpoint: { id: 'reference.memory', name: 'Memory' }, protocol_versions: ['0.1'] },
         }),
       ),
@@ -66,7 +66,7 @@ test('capabilities returns the revision and descriptor', async () => {
   ]);
   const client = dial(BASE, { fetch: transport.fetch });
   const caps = await client.capabilities('memory');
-  assert.equal(caps.revision, 'reference-memory-v3');
+  assert.equal(caps.revision, 'reference-memory-v6');
   assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
   assert.deepEqual(caps.descriptor.protocol_versions, ['0.1']);
 });
@@ -559,7 +559,7 @@ test('a catalog scoped to another session is refused', async () => {
           id: 'resp-2',
           inReplyTo: 'oap-request-2',
           sessionId: 's-other',
-          capabilityRevision: 'reference-memory-v5',
+          capabilityRevision: 'reference-memory-v6',
           payload: {
             session_id: 's-other',
             sources: [{ id: 'secret', kind: 'process', endpoint: 'stdio:another-sessions-source' }],
@@ -585,7 +585,7 @@ test('a catalog payload naming another session is refused', async () => {
           id: 'resp-2',
           inReplyTo: 'oap-request-2',
           sessionId: 's-1',
-          capabilityRevision: 'reference-memory-v5',
+          capabilityRevision: 'reference-memory-v6',
           payload: { session_id: 's-other', tools: [] },
         }),
       ),
@@ -595,7 +595,7 @@ test('a catalog payload naming another session is refused', async () => {
   await assert.rejects(session.tools(), /payload names session "s-other", envelope "s-1"/);
 });
 
-function catalogTransport(payload: Record<string, unknown>, revision = 'reference-memory-v5'): FakeTransport {
+function catalogTransport(payload: Record<string, unknown>, revision = 'reference-memory-v6'): FakeTransport {
   return new FakeTransport([
     {
       match: '/tools',
@@ -628,7 +628,7 @@ test('a catalog payload naming this session is accepted', async () => {
   const catalog = await session.tools();
   assert.deepEqual(catalog.tools.tools, []);
   // The listing comes back bound to the snapshot that governs it.
-  assert.equal(catalog.revision, 'reference-memory-v5');
+  assert.equal(catalog.revision, 'reference-memory-v6');
 });
 
 test('a catalog carrying no capability revision is refused', async () => {

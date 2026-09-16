@@ -161,7 +161,7 @@ func TestResponseCorrelationCorrections(t *testing.T) {
 	t.Run("canonical delivery feature key is recognized", func(t *testing.T) {
 		stream := `[
 			{` + core + `,"type":"capabilities.request","id":"capq","payload":{}},
-			{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"session.message.delivery.queue":{"level":"native"}}}},
+			{` + core + `,"type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"session.message.delivery.queue":{"level":"native"}},"limits":{"max_active_runs_per_session":2,"max_queued_runs_per_session":1}}},
 			{` + core + `,"type":"session.message.submit.request","id":"submit","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"queue"}},
 			{` + core + `,"type":"session.message.submit.response","id":"admit","in_reply_to":"submit","session_id":"s1","capability_revision":"v1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"queue","effective_delivery":"queue","admission":"queued","run_id":"r1","status":"queued"}},
 			{` + core + `,"type":"run.failed","id":"fail","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","error":{"code":"harness_conflict","message":"conflict"}}}

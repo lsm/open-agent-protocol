@@ -1,0 +1,4 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"capq","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"cap-v1","payload":{"endpoint":{"id":"agent"},"features":{"session.message.delivery.queue":{"level":"native"}}}}
+]

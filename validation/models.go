@@ -125,6 +125,25 @@ type descriptorSnapshot struct {
 	revision string
 	stale    bool
 	models   protocol.SupportLevel
+	// queue is how the descriptor advertised the delivery queue, and limits
+	// the bounds it disclosed with it. They travel here because they are held
+	// to the same rule for the same reason: one revision, one descriptor.
+	queue  protocol.SupportLevel
+	limits *protocol.CapabilityLimits
+}
+
+// repeats reports a capabilities.response that re-published the descriptor
+// this snapshot came from, which is what makes its contents comparable.
+//
+// A revision identifies exactly one descriptor, so a response carrying the
+// active revision is claiming to be that same descriptor and everything it
+// says is judged against what that descriptor already said. The rule is about
+// an unannounced change, so an announced one is exempt and must be: after
+// capabilities.updated the revision has already advanced while this snapshot
+// still describes the descriptor being replaced, and comparing those two would
+// report the very announcement that made the change legitimate.
+func (d descriptorSnapshot) repeats(current string) bool {
+	return d.revision != "" && !d.stale && d.revision == current
 }
 
 // checkCatalogAdvertisement holds a capabilities.response that repeats the
@@ -156,7 +175,7 @@ type descriptorSnapshot struct {
 // this unit keys on. A reason reworded under one revision is prose, and
 // diagnosing prose would make the rule noisy without making it stronger.
 func (s *state) checkCatalogAdvertisement(i, line int, e protocol.Envelope, outgoing descriptorSnapshot) {
-	if outgoing.revision == "" || outgoing.stale || outgoing.revision != s.currentCapability {
+	if !outgoing.repeats(s.currentCapability) {
 		return
 	}
 	if current := s.features[protocol.FeatureModelsList]; current != outgoing.models {

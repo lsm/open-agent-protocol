@@ -293,6 +293,90 @@ this adapter:
 - explicit `queue`/`steer` delivery *requests* remain outside the v0.1
   subset, exactly as before.
 
+### Resolution under the queue unit (2026-09-16)
+
+The queue unit graduates `session.message.delivery.queue`, and this adapter
+is where its native evidence lives: `SessionInput.Admitted` carries
+`delivery: "queue"` with an optional `promotedSeq`, and admission and
+promotion are separately observable on the durable stream
+(`session.next.prompt.admitted`, `session.next.prompted`). The adapter now
+advertises the key `native` and applies it. Changes at this pin:
+
+- an explicit `queue` request maps to `native.DeliveryQueue`; `steer` and
+  `btw` are still refused under their own keys;
+- a submission while the started run is nonterminal — explicit `queue` or an
+  `auto` the busy session resolves to one — is admitted as a reservation and
+  reports `delivery_resolution: "session_busy"` for the `auto` case;
+- the reservation's `run.started` is held until the started run's terminal is
+  on the wire, even when `session.next.prompted` for it arrives first, so one
+  run domain executes at a time in admission order;
+- an admission is a reservation until the server's `session.next.prompted`
+  begins its turn, including on an idle session: the run identity exists from
+  admission, the turn does not, and the state projection follows the trace
+  rather than the slot the adapter happens to park the run in;
+- the descriptor discloses `max_active_runs_per_session: 2` and
+  `max_queued_runs_per_session: 1`, and `Submit` counts against exactly those
+  numbers rather than testing whether a slot is occupied. The server queues more than one input
+  natively, but settlement here is derived from quiescence over a single
+  execution, so a second reservation exceeds what this pin's evidence
+  supports and is refused `run_active`;
+- the capability revision becomes `opencode-v1.18.29-oap-v2`, since a
+  revision identifies exactly one descriptor.
+
+**Recorded assumption: promotion marks the turn boundary.** Once
+`session.next.prompted` names a queued input, every later durable event of the
+session belongs to that input's turn, and the previous turn's step and text
+events are already persisted. The adapter relies on this to route native events
+after a promotion into the promoted run rather than the one still finishing;
+reducing them into the earlier run would attribute one run's output to another
+and leave the promoted run unable to settle. It is the same shape of assumption
+as the settlement fence above — that the last durable event of a turn is
+persisted before the loop goes idle — and rests on the same property, that the
+run coordinator drains one agent loop per turn. The adapter's *publication* of
+the promoted run waits for the earlier run's derived terminal even so, because
+the terminal is derived from quiescence and lags the boundary. Held envelopes
+are withheld from the journal as well as from the stream, since a journalled
+envelope is replayable: a caller resuming the reserved run mid hold would
+otherwise read its start before the earlier run's terminal and be handed the
+same envelopes again at release. The same holds for the state projection: a
+held run is listed at the status and position it has published, so a promoted
+reservation that finishes natively while the earlier run is still open is still
+described as the reservation the trace knows rather than as a settled run in a
+field defined as the session's nonterminal ones.
+
+A run whose terminal *is* published leaves the projection, and the projection
+says so rather than merely dropping it: `as_of.settled` names the run and the
+sequence its terminal carries. This is not the hold above. A state read is
+answered synchronously while a terminal leaves through a buffered stream, so
+the snapshot can be on the wire before the terminal that removed the run from
+it, and the reducer cannot see when a consumer publishes. Rebuilding the
+projection after the publication it describes — which this adapter does, under
+the mutex that also delivers — orders the adapter's own two steps and narrows
+the window without closing it: measured on this adapter, a snapshot reported
+the session idle ahead of an undelivered terminal in 300 of 300 settlements
+with nothing reading the stream, and in 155 of 300 with a consumer draining as
+fast as the reducer wrote. The claim is recorded where an envelope becomes
+history, not where a run is marked terminal, so a held terminal makes none and
+no snapshot both lists a run and says it let it go.
+
+**New mismatch (P1): no route withdraws one queued input.** The pinned
+server's cancellation surface is `POST /api/session/:id/interrupt`, which is
+documented as active-execution-scoped. Sending it to cancel a *reservation*
+would interrupt the started run instead — the wrong work. The adapter
+therefore drops the reservation locally and settles it `run.cancelled`
+pre-start without calling the server, and ignores a later promotion for a
+run its terminal has already absorbed. The consequence is that the server
+may still execute a withdrawn input while OAP reports the run cancelled. That
+turn is quarantined: it has no OAP run to own it, since the reservation's run
+already settled, and reducing it into whatever run is started would hand that
+run another turn's content, reopen its step accounting, and settle it on a
+boundary it never reached. Quarantine is the general rule for a turn no OAP
+run owns — a foreign input takes the same path — and it lifts at the next
+`session.next.prompted` naming an input this adapter admitted. Closing the
+mismatch itself needs an upstream route that removes one admitted input by its
+`SessionMessage.ID`; until one is pinned, `run.cancel` stays `degraded` and
+this is recorded rather than compensated.
+
 
 ## Initial capabilities
 

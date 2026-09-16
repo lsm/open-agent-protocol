@@ -186,7 +186,7 @@ func TestAdaptersOpListsRegistry(t *testing.T) {
 	if len(listing.Adapters) != 1 || listing.Adapters[0].Name != "memory" {
 		t.Fatalf("adapters listing %+v", listing.Adapters)
 	}
-	if listing.Adapters[0].CapabilityRevision != "reference-memory-v5" {
+	if listing.Adapters[0].CapabilityRevision != "reference-memory-v6" {
 		t.Fatalf("capability revision %q", listing.Adapters[0].CapabilityRevision)
 	}
 	if caps := listing.Adapters[0].Capabilities; caps == nil || caps.Endpoint.ID != "reference.memory" {
@@ -1670,13 +1670,13 @@ func TestGoldenSessionTranscript(t *testing.T) {
 // TestGoldenSessionTranscript: minted frontend ids run in request order and
 // the deterministic memory adapter fixes every envelope byte.
 var goldenTranscript = []string{
-	`{"id":1,"ok":true,"result":{"adapters":[{"name":"memory","capability_revision":"reference-memory-v5","capabilities":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tool_sources.attach":{"level":"emulated","reason":"sources are described and published back; the reference adapter runs no client for them","modes":["session_open"],"limits":{"max_sources":2,"transports":["process","local"]}},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"action.tools.list":{"level":"emulated","reason":"the reference catalog is the scripted tool plus the session's attached sources"},"capabilities":{"level":"native"},"models.list":{"level":"native","reason":"the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.instructions":{"level":"emulated","reason":"instructions are prepended to the scripted text so their effect is observable"},"run.model_selection":{"level":"emulated","reason":"the reference adapter runs no model; it echoes a selection from a fixed catalog for one run","mode":"per_run"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"run.structured_output":{"level":"emulated","reason":"the scripted result is fixed, so only a schema that object satisfies is admitted","constraints":{"fixed_result":{"ok":true}}},"run.tool_selection":{"level":"emulated","reason":"the policy selects whether the scripted tool is called","modes":["auto","none","required","named"]},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}},"tools":[{"name":"scripted_tool","description":"The deterministic scripted tool the reference adapter calls.","input_schema":{"type":"object","properties":{"operation":{"type":"string"}}},"execution_owner":"reference-adapter","source":"reference-native","features":{"action.permissions":{"level":"emulated","reason":"the scripted call is gated"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"}}}],"sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}]}}]}}`,
-	`{"id":2,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"oap-response-2","payload":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tool_sources.attach":{"level":"emulated","reason":"sources are described and published back; the reference adapter runs no client for them","modes":["session_open"],"limits":{"max_sources":2,"transports":["process","local"]}},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"action.tools.list":{"level":"emulated","reason":"the reference catalog is the scripted tool plus the session's attached sources"},"capabilities":{"level":"native"},"models.list":{"level":"native","reason":"the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.instructions":{"level":"emulated","reason":"instructions are prepended to the scripted text so their effect is observable"},"run.model_selection":{"level":"emulated","reason":"the reference adapter runs no model; it echoes a selection from a fixed catalog for one run","mode":"per_run"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"run.structured_output":{"level":"emulated","reason":"the scripted result is fixed, so only a schema that object satisfies is admitted","constraints":{"fixed_result":{"ok":true}}},"run.tool_selection":{"level":"emulated","reason":"the policy selects whether the scripted tool is called","modes":["auto","none","required","named"]},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}},"tools":[{"name":"scripted_tool","description":"The deterministic scripted tool the reference adapter calls.","input_schema":{"type":"object","properties":{"operation":{"type":"string"}}},"execution_owner":"reference-adapter","source":"reference-native","features":{"action.permissions":{"level":"emulated","reason":"the scripted call is gated"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"}}}],"sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}]},"in_reply_to":"oap-request-1","capability_revision":"reference-memory-v5"}}`,
+	`{"id":1,"ok":true,"result":{"adapters":[{"name":"memory","capability_revision":"reference-memory-v6","capabilities":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tool_sources.attach":{"level":"emulated","reason":"sources are described and published back; the reference adapter runs no client for them","modes":["session_open"],"limits":{"max_sources":2,"transports":["process","local"]}},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"action.tools.list":{"level":"emulated","reason":"the reference catalog is the scripted tool plus the session's attached sources"},"capabilities":{"level":"native"},"models.list":{"level":"native","reason":"the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.instructions":{"level":"emulated","reason":"instructions are prepended to the scripted text so their effect is observable"},"run.model_selection":{"level":"emulated","reason":"the reference adapter runs no model; it echoes a selection from a fixed catalog for one run","mode":"per_run"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"run.structured_output":{"level":"emulated","reason":"the scripted result is fixed, so only a schema that object satisfies is admitted","constraints":{"fixed_result":{"ok":true}}},"run.tool_selection":{"level":"emulated","reason":"the policy selects whether the scripted tool is called","modes":["auto","none","required","named"]},"session.message.delivery.auto":{"level":"native"},"session.message.delivery.queue":{"level":"emulated","reason":"a busy session reserves one second run and promotes it when the started run settles"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}},"tools":[{"name":"scripted_tool","description":"The deterministic scripted tool the reference adapter calls.","input_schema":{"type":"object","properties":{"operation":{"type":"string"}}},"execution_owner":"reference-adapter","source":"reference-native","features":{"action.permissions":{"level":"emulated","reason":"the scripted call is gated"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"}}}],"sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}],"limits":{"max_active_runs_per_session":2,"max_queued_runs_per_session":1}}}]}}`,
+	`{"id":2,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"oap-response-2","payload":{"endpoint":{"id":"reference.memory","name":"Deterministic In-Memory Reference Adapter","version":"0.1","adapter":"process-memory-script"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"features":{"action.permissions":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"},"action.tool_sources.attach":{"level":"emulated","reason":"sources are described and published back; the reference adapter runs no client for them","modes":["session_open"],"limits":{"max_sources":2,"transports":["process","local"]}},"action.tools":{"level":"emulated","reason":"the reference adapter projects the scripted tool lifecycle"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"},"action.tools.list":{"level":"emulated","reason":"the reference catalog is the scripted tool plus the session's attached sources"},"capabilities":{"level":"native"},"models.list":{"level":"native","reason":"the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},"protocol.initialize":{"level":"native"},"run.cancel":{"level":"emulated","reason":"run-target API is implemented over a one-active-run session"},"run.instructions":{"level":"emulated","reason":"instructions are prepended to the scripted text so their effect is observable"},"run.model_selection":{"level":"emulated","reason":"the reference adapter runs no model; it echoes a selection from a fixed catalog for one run","mode":"per_run"},"run.reconciliation":{"level":"native"},"run.replay":{"level":"degraded","reason":"older cursors can expire and no cross-process replay is claimed"},"run.resume":{"level":"degraded","reason":"reattachment and replay use a bounded process-memory journal"},"run.status":{"level":"native"},"run.streaming":{"level":"native"},"run.structured_output":{"level":"emulated","reason":"the scripted result is fixed, so only a schema that object satisfies is admitted","constraints":{"fixed_result":{"ok":true}}},"run.tool_selection":{"level":"emulated","reason":"the policy selects whether the scripted tool is called","modes":["auto","none","required","named"]},"session.message.delivery.auto":{"level":"native"},"session.message.delivery.queue":{"level":"emulated","reason":"a busy session reserves one second run and promotes it when the started run settles"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"user_input":{"level":"emulated","reason":"the reference adapter exposes an interactive scripted gate"}},"tools":[{"name":"scripted_tool","description":"The deterministic scripted tool the reference adapter calls.","input_schema":{"type":"object","properties":{"operation":{"type":"string"}}},"execution_owner":"reference-adapter","source":"reference-native","features":{"action.permissions":{"level":"emulated","reason":"the scripted call is gated"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"}}}],"sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}],"limits":{"max_active_runs_per_session":2,"max_queued_runs_per_session":1}},"in_reply_to":"oap-request-1","capability_revision":"reference-memory-v6"}}`,
 	`{"id":3,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"oap-response-3","payload":{"session_id":"golden","accepted":true,"submission_id":"submission-06","requested_delivery":"auto","effective_delivery":"start","delivery_resolution":"session_idle","admission":"started","run_id":"run-01","status":"running","message_ids":["message-05"]},"in_reply_to":"submit-1","session_id":"golden","run_id":"run-01"}}`,
 	`{"id":4,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"oap-response-4","payload":{"interaction_id":"permission-02","session_id":"golden","run_id":"run-01","accepted":true},"in_reply_to":"resolve-p","session_id":"golden","run_id":"run-01"}}`,
 	`{"id":5,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.resolve.response","id":"oap-response-5","payload":{"interaction_id":"input-03","session_id":"golden","run_id":"run-01","accepted":true},"in_reply_to":"resolve-i","session_id":"golden","run_id":"run-01"}}`,
-	`{"id":6,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"oap-response-6","payload":{"session_id":"golden","status":"idle","transcript_cursor":"12","updated_at_ms":16,"sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}]},"in_reply_to":"oap-request-7","session_id":"golden"}}`,
-	`{"id":7,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.tools.list.response","id":"oap-response-8","payload":{"session_id":"golden","sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}],"tools":[{"name":"scripted_tool","description":"The deterministic scripted tool the reference adapter calls.","input_schema":{"type":"object","properties":{"operation":{"type":"string"}}},"execution_owner":"reference-adapter","source":"reference-native","features":{"action.permissions":{"level":"emulated","reason":"the scripted call is gated"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"}}}]},"in_reply_to":"oap-request-9","session_id":"golden","capability_revision":"reference-memory-v5"}}`,
+	`{"id":6,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"oap-response-6","payload":{"session_id":"golden","status":"idle","transcript_cursor":"12","updated_at_ms":16,"sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}],"as_of":{"settled":[{"run_id":"run-01","sequence":12}]}},"in_reply_to":"oap-request-7","session_id":"golden"}}`,
+	`{"id":7,"ok":true,"result":{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.tools.list.response","id":"oap-response-8","payload":{"session_id":"golden","sources":[{"id":"reference-native","kind":"native","display_name":"Reference Adapter Script"},{"id":"reference-mcp","kind":"process","display_name":"Reference Synthetic MCP Source","protocol":"mcp","endpoint":"stdio:reference-tool-source"}],"tools":[{"name":"scripted_tool","description":"The deterministic scripted tool the reference adapter calls.","input_schema":{"type":"object","properties":{"operation":{"type":"string"}}},"execution_owner":"reference-adapter","source":"reference-native","features":{"action.permissions":{"level":"emulated","reason":"the scripted call is gated"},"action.tools.execute":{"level":"emulated","reason":"the reference adapter executes a fixed deterministic script"}}}]},"in_reply_to":"oap-request-9","session_id":"golden","capability_revision":"reference-memory-v6"}}`,
 	`{"id":8,"ok":true,"result":null}`,
 }
 
@@ -1972,12 +1972,23 @@ func TestSubmitRollbackWaitsForSettlement(t *testing.T) {
 	}
 
 	// The report is honest: the run really is still live behind the refusal
-	// the host cannot see the id of, exactly as the message warns.
+	// the host cannot see the id of, exactly as the message warns. The next
+	// submit takes the one queued slot the reference adapter discloses — an
+	// auto submission only resolves to a reservation on a busy session — and
+	// the one after that exceeds the bound and is refused run_active.
 	f.send(`{"id":2,"op":"submit","session_id":"unsettled","request":` + string(requestEnvelope(t, "submit-2", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
 		SessionID: "unsettled", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
 	}, "unsettled", "")) + `}`)
-	requireCode(t, f.expectResponse(2), "run_active")
+	reservation := f.expectResponse(2)
+	if reservation.Error != nil || !strings.Contains(string(reservation.Result), `"admission":"queued"`) {
+		t.Fatalf("second submit did not reserve a queued run: %+v", reservation)
+	}
+	f.send(`{"id":3,"op":"submit","session_id":"unsettled","request":` + string(requestEnvelope(t, "submit-3", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "unsettled", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
+	}, "unsettled", "")) + `}`)
+	requireCode(t, f.expectResponse(3), "run_active")
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
@@ -2018,6 +2029,75 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 	requireCode(t, response, "unsupported_feature")
 	if response.Error.Details["feature"] != protocol.FeatureInstructions {
 		t.Fatalf("control refusal details = %+v", response.Error.Details)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// The stdio frontend mirrors the HTTP daemon one for one, so a queued
+// submission and the state that describes it must survive this codec too: the
+// reservation is relayed, the state op lists both nonterminal runs in
+// admission order, and the sessions listing reports the same set.
+func TestQueuedSubmissionOverStdio(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "queue-stdio")
+	f := startFrontend(t, hub, Options{})
+
+	f.send(`{"id":1,"op":"submit","session_id":"queue-stdio","request":` + string(requestEnvelope(t, "submit-1", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "queue-stdio", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("first")}},
+	}, "queue-stdio", "")) + `}`)
+	first := f.expectResponse(1)
+	requireOK(t, first)
+
+	f.send(`{"id":2,"op":"submit","session_id":"queue-stdio","request":` + string(requestEnvelope(t, "submit-2", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+		SessionID: "queue-stdio", Delivery: protocol.DeliveryQueue,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}},
+	}, "queue-stdio", "")) + `}`)
+	reservation := f.expectResponse(2)
+	requireOK(t, reservation)
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(reservation.Result, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var reserved protocol.MessageSubmitResponse
+	if err := envelope.DecodePayload(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved.Admission != protocol.AdmissionQueued || reserved.RequestedDelivery != protocol.DeliveryQueue ||
+		reserved.EffectiveDelivery != protocol.EffectiveDeliveryQueue {
+		t.Fatalf("reservation = %+v", reserved)
+	}
+
+	f.send(`{"id":3,"op":"state","session_id":"queue-stdio"}`)
+	stateResponse := f.expectResponse(3)
+	requireOK(t, stateResponse)
+	if err := json.Unmarshal(stateResponse.Result, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var state protocol.SessionState
+	if err := envelope.DecodePayload(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 2 || state.ActiveRuns[1].RunID != reserved.RunID {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	if state.ActiveRuns[1].QueuePosition == nil || *state.ActiveRuns[1].QueuePosition != 1 {
+		t.Fatalf("queue position = %+v", state.ActiveRuns[1])
+	}
+
+	f.send(`{"id":4,"op":"sessions"}`)
+	listing := f.expectResponse(4)
+	requireOK(t, listing)
+	var sessions struct {
+		Sessions []sessionInfo `json:"sessions"`
+	}
+	if err := json.Unmarshal(listing.Result, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Sessions) != 1 || len(sessions.Sessions[0].ActiveRuns) != 2 {
+		t.Fatalf("sessions listing = %+v", sessions.Sessions)
 	}
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)

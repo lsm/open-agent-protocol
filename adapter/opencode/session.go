@@ -39,11 +39,30 @@ type session struct {
 	state        protocol.SessionState
 	closed       bool
 	unusable     bool
-	active       *runState
-	runs         map[protocol.RunID]*runState
-	pending      map[native.MessageID]*runState
-	tools        map[string]*toolState
-	reduced      map[int64]bool
+	// suppressed marks a native turn the server is executing that no OAP run
+	// can own — an input this adapter never admitted, or a reservation it
+	// cancelled before promotion. Its events reduce into nothing until the
+	// next prompted event names one that is owned.
+	suppressed bool
+	active     *runState
+	// reserved is the one queued reservation this adapter admits beside a
+	// started run, matching the max_queued_runs_per_session it discloses. It
+	// promotes when the server's prompted event names it and the started run
+	// has settled, so one run domain executes at a time in admission order.
+	reserved *runState
+	// settled is every run this session has published a terminal for, with
+	// the sequence that terminal carries. Rebuilding the projection after the
+	// publication it describes orders the adapter's own two steps; it does
+	// not make the terminal delivered. It leaves through a buffered channel
+	// and a state read is answered synchronously, so a snapshot can still be
+	// on the wire first, and one that drops a run silently reads as erasing a
+	// run the trace still holds. The claim is recorded where the envelope
+	// becomes history, so it says exactly what published() says.
+	settled []protocol.SettledRun
+	runs    map[protocol.RunID]*runState
+	pending map[native.MessageID]*runState
+	tools   map[string]*toolState
+	reduced map[int64]bool
 	// models is the effective catalog this session has evidence for, in the
 	// order the evidence arrived.
 	models       []string
@@ -56,12 +75,55 @@ type session struct {
 	settleCancel context.CancelFunc
 }
 
+// The admission bounds this pin discloses, and the ones Submit enforces: one
+// started run beside one reservation. The descriptor publishes these same
+// constants, because a bound a caller is told about and a bound the endpoint
+// applies have to be the same number.
+const (
+	maxActiveRuns = 2
+	maxQueuedRuns = 1
+)
+
 type runState struct {
-	id              protocol.RunID
-	status          protocol.RunStatus
-	next            uint64
-	terminal        bool
-	prompted        bool
+	id       protocol.RunID
+	status   protocol.RunStatus
+	next     uint64
+	terminal bool
+	prompted bool
+	// promotionSeen records that the server's prompted event for this
+	// reservation has arrived, so the run this session reduces native events
+	// into is now this one. holding says its OAP envelopes are buffered until
+	// the earlier-admitted run's terminal reaches the wire, so a
+	// later-admitted run never interleaves its execution. The two are
+	// separate because routing has to move at the promotion while
+	// publication waits: reducing the promoted turn's steps and text into the
+	// run that is still finishing would attribute one run's output to
+	// another and leave the promoted one unable to settle.
+	promotionSeen bool
+	holding       bool
+	held          []heldEvent
+	// publishedSeq is the highest sequence this run has actually published.
+	// It trails run.next while envelopes are held, and it is what replay is
+	// measured against: an envelope nobody has been shown is not history a
+	// cursor can be behind.
+	publishedSeq uint64
+	// startPublished records that this run's run.started has reached the
+	// trace. It is what the state projection reads, because until then the
+	// trace knows the run only as the reservation it was admitted as — and
+	// the two part company on an idle session, where the run identity exists
+	// from admission but the server decides when the turn begins.
+	startPublished bool
+	// queuedAdmission records that the admission response said queued, which
+	// is what the disclosed queue bound counts. A run admitted started is not
+	// in the queue even before its start reaches the trace.
+	queuedAdmission bool
+	// answered records that Submit has an admission response to return for
+	// this run. Until then the run exists only inside this adapter: it holds
+	// a slot and counts against the disclosed bounds, but nothing has told
+	// anyone it was accepted, so a state read must not name it. The prompt
+	// call that settles the admission is a round trip to the server, which is
+	// as wide as such a window gets.
+	answered        bool
 	cancelRequested bool
 	settling        bool
 	messageID       protocol.MessageID
@@ -73,6 +135,13 @@ type runState struct {
 	openSteps       int
 	admitted        chan struct{}
 	subscribers     []chan base.Result
+}
+
+// heldEvent is one envelope a held run has produced: sequenced and journalled
+// where it happened, delivered when the earlier run's terminal has been.
+type heldEvent struct {
+	envelope protocol.Envelope
+	terminal bool
 }
 
 type toolState struct {
@@ -107,17 +176,40 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunNotFound
 	}
-	if s.active != nil && !s.active.terminal {
+	// The admission bounds are counted, not inferred from which slot happens
+	// to be occupied. A run admitted queued is in the queue until its start
+	// reaches the trace, whatever slot holds it, so a session whose only run
+	// is an unpromoted reservation is at its disclosed queue bound and the
+	// wire's answer for a second submission is run_active.
+	live, queued := 0, 0
+	for _, r := range []*runState{s.active, s.reserved} {
+		// The bounds count what the session holds, which includes a
+		// provisional run no response has reported yet: it took the slot, and
+		// admitting a second one against the same slot is what the bound is
+		// there to stop.
+		if !published(r) {
+			continue
+		}
+		live++
+		if r.queuedAdmission && !r.startPublished {
+			queued++
+		}
+	}
+	if live >= maxActiveRuns || queued >= maxQueuedRuns || published(s.reserved) {
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunActive
 	}
-	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunQueued, next: 1, messageID: protocol.MessageID(s.ids.NewID("message")), admitted: make(chan struct{})}
+	behind := live > 0
+	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunQueued, next: 1, queuedAdmission: true, messageID: protocol.MessageID(s.ids.NewID("message")), admitted: make(chan struct{})}
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
-	s.active = run
+	// Every admission is a reservation until something says otherwise: the
+	// started slot is for the run whose run.started has reached the trace, and
+	// on this pin that is the server's decision, taken at prompted. A run the
+	// prompt response reports scheduled at once takes the slot below.
+	s.reserved = run
 	s.runs[run.id] = run
-	s.state.Status = protocol.SessionRunning
-	s.state.ActiveRunID = run.id
+	s.refreshStateLocked()
 	// The session model was fixed at creation; a per-submit override was
 	// rejected by submitInput, so retain the native model instead of clearing it.
 	model := s.state.CurrentModelID
@@ -135,20 +227,22 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		// The zero-value delivery is the accepted spelling of auto, so the
 		// response must report the canonical value rather than the empty string
 		// (the schema's delivery enum rejects "").
-		RequestedDelivery: protocol.DeliveryAuto,
+		RequestedDelivery: requestedDelivery(req.Delivery),
 		EffectiveDelivery: protocol.EffectiveDeliveryQueue,
 		Admission:         protocol.AdmissionQueued,
 		RunID:             run.id,
 		Status:            protocol.RunQueued,
 		ModelID:           model,
 	}
+	if behind {
+		// auto resolved to a queue because the session was busy, and the
+		// response says so rather than leaving the caller to infer it.
+		reservation.DeliveryResolution = "session_busy"
+	}
 	nativeMessage := native.MessageID(s.ids.NewID("opencode-message"))
 	if !nativeMessage.Valid() {
-		s.mu.Lock()
-		s.unusable = true
-		s.mu.Unlock()
-		close(run.admitted)
-		s.failRun(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message")
+		s.answerRun(run)
+		s.abandon(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message")
 		return reservation, stream, nil
 	}
 	run.nativeMessageID = nativeMessage
@@ -165,32 +259,62 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err != nil {
 		s.mu.Lock()
 		delete(s.pending, nativeMessage)
-		s.unusable = true
 		s.mu.Unlock()
-		close(run.admitted)
-		s.failRun(run, "opencode_admission_ambiguous", err.Error())
+		s.answerRun(run)
+		s.abandon(run, "opencode_admission_ambiguous", err.Error())
 		return reservation, stream, nil
 	}
 	if admitted.ID != nativeMessage {
 		s.mu.Lock()
 		delete(s.pending, nativeMessage)
-		s.unusable = true
 		s.mu.Unlock()
-		close(run.admitted)
-		s.failRun(run, "opencode_foreign_admission", fmt.Sprintf("server admitted %s for request %s", admitted.ID, nativeMessage))
+		s.answerRun(run)
+		s.abandon(run, "opencode_foreign_admission", fmt.Sprintf("server admitted %s for request %s", admitted.ID, nativeMessage))
 		return reservation, stream, nil
 	}
 	reservation.MessageIDs = []protocol.MessageID{protocol.MessageID(admitted.ID)}
-	if admitted.PromotedSeq != nil {
+	if admitted.PromotedSeq != nil && !behind && req.Delivery != protocol.DeliveryQueue {
+		// The server scheduled this input at once, which for an auto request
+		// is the started shape. An explicit queue keeps the reservation shape
+		// whatever the server did with it — "run after current work reaches a
+		// safe boundary" is satisfied trivially on an idle session, and a
+		// queue request answered `started` is an illegal transition — so its
+		// run.started is published separately when prompted arrives.
 		reservation.Admission = protocol.AdmissionStarted
 		reservation.EffectiveDelivery = protocol.DeliveryStart
 		reservation.Status = protocol.RunRunning
 		s.mu.Lock()
-		run.status = protocol.RunRunning
+		if !run.terminal {
+			run.status = protocol.RunRunning
+			run.queuedAdmission = false
+			if s.reserved == run {
+				// This one is the started run: it leaves the reservation slot
+				// now, so a second submission behind it queues rather than
+				// finding the slot taken. Its run.started still waits for the
+				// server's prompted event, and the projection waits with it.
+				s.reserved, s.active = nil, run
+			}
+			s.refreshStateLocked()
+		}
 		s.mu.Unlock()
 	}
-	close(run.admitted)
+	s.answerRun(run)
 	return reservation, stream, nil
+}
+
+// answerRun publishes a run into the session's projection and releases every
+// consumer waiting on its admission. Both happen together because they are one
+// fact: Submit has an answer for this run. They do not make the trace carry it,
+// though — that waits on the frontend building the submit response envelope
+// after this call returns, which no adapter can observe. This is the latest
+// point the adapter can see, not the boundary; decision 0007 records where the
+// rest of that window belongs.
+func (s *session) answerRun(run *runState) {
+	s.mu.Lock()
+	run.answered = true
+	s.refreshStateLocked()
+	s.mu.Unlock()
+	close(run.admitted)
 }
 
 func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native.Delivery, error) {
@@ -217,13 +341,110 @@ func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native
 		// OpenCode has no auto mode; steer starts immediately when the
 		// session is idle, which is the truthful auto projection here.
 		return text, native.DeliverySteer, nil
+	case protocol.DeliveryQueue:
+		// The queue is a native server delivery and this adapter advertises
+		// it, so an explicit request is applied rather than refused.
+		return text, native.DeliveryQueue, nil
 	default:
-		// steer and queue are native server deliveries, and decision 0002
-		// made an auto request resolving to a queued reservation canonical;
-		// but explicit queue/steer delivery requests still exceed the
-		// v0.1 subset (deferred by decisions 0001/0002).
+		// steer stays outside this subset until its own unit graduates, and
+		// btw has no native surface at this pin.
 		return "", "", fmt.Errorf("%w: delivery %q is outside the v0.1 request subset", ErrUnsupported, req.Delivery)
 	}
+}
+
+// requestedDelivery is the canonical spelling of the delivery a submission
+// asked for; the zero value is the accepted spelling of auto, which the
+// schema's enum does not admit.
+func requestedDelivery(delivery protocol.RequestedDeliveryMode) protocol.RequestedDeliveryMode {
+	if delivery == "" {
+		return protocol.DeliveryAuto
+	}
+	return delivery
+}
+
+// refreshStateLocked recomputes the published session state from the runs the
+// session holds. active_runs lists every nonterminal run in admission order,
+// which is what a session carrying a reservation beside a started run needs:
+// active_run_id alone cannot describe two.
+func (s *session) refreshStateLocked() {
+	// Which run is started is read from the trace, not from the slot: a run
+	// admitted queued holds its identity from admission, and on an idle
+	// session the server still decides when its turn begins. Projecting the
+	// slot would name a reservation in active_run_id and list it without the
+	// queue position it is owed — the shape the queue unit's own state rules
+	// reject.
+	var entries []protocol.ActiveRun
+	position := 0
+	started := protocol.RunID("")
+	for _, run := range []*runState{s.active, s.reserved} {
+		if !published(run) || !run.answered {
+			continue
+		}
+		if !reservationOf(run) {
+			entries = append(entries, activeRunEntry(run, 0))
+			started = run.id
+			continue
+		}
+		position++
+		entries = append(entries, activeRunEntry(run, position))
+	}
+	s.state.ActiveRuns = entries
+	// What the listing leaves out has to be stated, not merely left out: the
+	// trace may not have been told about the terminal that removed it.
+	if len(s.settled) > 0 {
+		s.state.AsOf = &protocol.SessionCapture{Settled: s.settled}
+	}
+	switch {
+	case started != "":
+		s.state.Status = protocol.SessionRunning
+		s.state.ActiveRunID = started
+	case len(entries) > 0:
+		s.state.Status = protocol.SessionQueued
+		s.state.ActiveRunID = ""
+	default:
+		s.state.Status = protocol.SessionIdle
+		s.state.ActiveRunID = ""
+	}
+}
+
+// published reports whether a run is one the state projection still lists: a
+// nonterminal run, or one whose terminal is still buffered behind an earlier
+// run's. A snapshot is judged against what the trace has been told, so a run
+// whose settlement no subscriber has seen is still outstanding.
+func published(run *runState) bool { return run != nil && (!run.terminal || run.holding) }
+
+// reservationOf reports whether the trace still knows a run as a reservation:
+// it was admitted queued and its run.started has not been published. That is
+// the same test the queue unit's state rules apply, and it has to be, because
+// the projection is what those rules judge. A run admitted started is not one,
+// even in the window before its start reaches the trace — the admission
+// already said which it was.
+func reservationOf(run *runState) bool { return run.queuedAdmission && !run.startPublished }
+
+// activeRunEntry describes one nonterminal run at the cursor it has reached.
+// This adapter raises no interactions at this pin, so the pending set is
+// always empty and the stated position is always one the trace has reached.
+//
+// A run whose start the trace has not seen is described by what it has
+// published: the reservation it was admitted as, at the position it has
+// reached. That covers a reservation the server has not promoted, one whose
+// envelopes are held behind an earlier run, and one already cancelling before
+// it ever began. Its own status may even be terminal — a promoted reservation
+// can finish natively while the earlier run is still settling — and
+// active_runs is a list of the session's nonterminal runs, so copying that
+// status would put a settled run in it and emit a state this adapter's own
+// validator rejects. It is the same principle as the queue slot and the
+// journal: a snapshot is judged against what the trace has been told.
+func activeRunEntry(run *runState, position int) protocol.ActiveRun {
+	sequence, status := run.next-1, run.status
+	if reservationOf(run) {
+		sequence, status = run.publishedSeq, protocol.RunQueued
+	}
+	entry := protocol.ActiveRun{RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
+	if position > 0 {
+		entry.QueuePosition = &position
+	}
+	return entry
 }
 
 func (s *session) dispatch() {
@@ -256,14 +477,7 @@ func (s *session) dispatch() {
 
 func (s *session) handleEventLocked(event native.Event) {
 	if event.Durable.AggregateID != string(s.nativeID) {
-		s.mu.Lock()
-		run := s.active
-		s.unusable = true
-		s.mu.Unlock()
-		if run != nil {
-			<-run.admitted
-			s.failRun(run, "opencode_foreign_session", "durable event belongs to another session")
-		}
+		s.abandon(nil, "opencode_foreign_session", "durable event belongs to another session")
 		return
 	}
 	s.mu.Lock()
@@ -276,7 +490,7 @@ func (s *session) handleEventLocked(event native.Event) {
 		s.lastSeq = event.Durable.Seq
 		s.state.TranscriptCursor = formatSeq(s.lastSeq)
 	}
-	run := s.active
+	run := s.reductionTargetLocked()
 	s.mu.Unlock()
 	switch event.Type {
 	case native.TypePromptAdmitted:
@@ -297,19 +511,51 @@ func (s *session) handleEventLocked(event native.Event) {
 		s.mu.Lock()
 		pending := s.pending[data.MessageID]
 		delete(s.pending, data.MessageID)
+		var owner *runState
+		switch {
+		case pending == nil || pending.terminal:
+			// This turn belongs to an input no OAP run can own: one this
+			// adapter never admitted, or a reservation whose pre-start
+			// cancellation already settled its run. The pin has no route that
+			// withdraws a queued input, so the server executing one we
+			// abandoned is expected rather than exceptional.
+		case pending == s.reserved:
+			// The server promoted the reservation, so every native event
+			// after this one belongs to it. Its own envelopes are buffered
+			// until the earlier run's terminal reaches the wire — publication
+			// waits, reduction does not. With nothing earlier outstanding
+			// there is nothing to wait for, so the promotion publishes at
+			// once.
+			owner = pending
+			pending.promotionSeen = true
+			pending.holding = s.active != nil && !s.active.terminal
+		case pending == s.active:
+			owner = pending
+		}
+		// A turn with no owner is quarantined rather than left to fall back on
+		// the started run: attributing its steps and text there would give one
+		// run another's output and could keep the started run from settling,
+		// which is the same fault as misrouting a promoted reservation.
+		s.suppressed = owner == nil
+		reservation := owner != nil && owner == s.reserved
 		s.mu.Unlock()
-		if pending == nil || pending != run {
+		if owner == nil {
 			return
 		}
-		<-pending.admitted
-		if err := s.emit(pending, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: pending.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+		<-owner.admitted
+		if err := s.emit(owner, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: owner.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 			return
 		}
 		// Flag only after the started event exists so Cancel can rely on
-		// prompted implying an emitted run.started.
+		// prompted implying an emitted run.started. The status it reports
+		// moved inside that emission, where the projection is rebuilt.
 		s.mu.Lock()
-		pending.prompted = true
+		owner.prompted = true
 		s.mu.Unlock()
+		if reservation {
+			// Already terminal upstream? Then nothing is owed a wait.
+			s.promoteReserved()
+		}
 	case native.TypeStepStarted:
 		var data native.StepStartedData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -575,16 +821,7 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 	}()
 	proceed, err := s.awaitQuiescenceLocked(run)
 	if err != nil {
-		s.mu.Lock()
-		closed := s.closed
-		if !closed {
-			s.unusable = true
-		}
-		s.mu.Unlock()
-		if !closed {
-			<-run.admitted
-			s.failRun(run, "opencode_quiescence_failed", err.Error())
-		}
+		s.abandon(run, "opencode_quiescence_failed", err.Error())
 		return
 	}
 	if !proceed {
@@ -604,16 +841,7 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 		}
 		page, err := s.client.History(s.settleContext(), s.nativeID, after, s.historyLimit)
 		if err != nil {
-			s.mu.Lock()
-			closed := s.closed
-			if !closed {
-				s.unusable = true
-			}
-			s.mu.Unlock()
-			if !closed {
-				<-run.admitted
-				s.failRun(run, "opencode_history_failed", err.Error())
-			}
+			s.abandon(run, "opencode_history_failed", err.Error())
 			return
 		}
 		for _, event := range page.Events {
@@ -786,9 +1014,43 @@ func (s *session) State(ctx context.Context) (protocol.SessionState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.unusable {
-		return s.state, base.ErrSessionClosed
+		return s.cloneStateLocked(), base.ErrSessionClosed
 	}
-	return s.state, nil
+	return s.cloneStateLocked(), nil
+}
+
+// cloneStateLocked detaches the published snapshot from the session's own
+// slices, so a consumer holding one cannot see it change underneath — and
+// cannot change it. Every path that hands a SessionState to a caller goes
+// through here, State and the recovery snapshot alike: a by-value copy shares
+// active_runs' backing array and its pointer fields, so a caller editing what
+// it was given would reach into the session's own state.
+func (s *session) cloneStateLocked() protocol.SessionState {
+	state := s.state
+	state.ActiveRuns = append([]protocol.ActiveRun(nil), s.state.ActiveRuns...)
+	for i := range state.ActiveRuns {
+		entry := state.ActiveRuns[i]
+		if entry.AsOfSequence != nil {
+			value := *entry.AsOfSequence
+			state.ActiveRuns[i].AsOfSequence = &value
+		}
+		if entry.QueuePosition != nil {
+			value := *entry.QueuePosition
+			state.ActiveRuns[i].QueuePosition = &value
+		}
+		if entry.PendingInteractions != nil {
+			state.ActiveRuns[i].PendingInteractions = append([]protocol.InteractionID(nil), entry.PendingInteractions...)
+		}
+		if entry.AdmittedSubmitRequests != nil {
+			state.ActiveRuns[i].AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), entry.AdmittedSubmitRequests...)
+		}
+	}
+	if s.state.AsOf != nil {
+		capture := *s.state.AsOf
+		capture.Settled = append([]protocol.SettledRun(nil), s.state.AsOf.Settled...)
+		state.AsOf = &capture
+	}
+	return state
 }
 
 // observeModel records one effective model this session has evidence for. The
@@ -904,15 +1166,24 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: status}, nil
 	}
 	prompted := run.prompted
+	// A reservation the server has already promoted is executing: interrupt
+	// targets it, and it has a published run.started to settle against.
+	reservation := run == s.reserved && !run.promotionSeen
 	run.cancelRequested = true
 	run.status = protocol.RunCancelling
 	s.mu.Unlock()
-	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
-		s.mu.Lock()
-		s.unusable = true
-		s.mu.Unlock()
+	if reservation {
+		// The pin offers no route that withdraws one queued input:
+		// session interrupt targets the running execution, so sending it
+		// here would cancel the wrong work. The reservation is therefore
+		// dropped adapter-side and settles pre-start, and a later promotion
+		// for it is ignored — the terminal has already absorbed the run.
 		<-run.admitted
-		s.failRun(run, "opencode_cancellation_ambiguous", err.Error())
+		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion"}, true)
+		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
+	}
+	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
+		s.abandon(run, "opencode_cancellation_ambiguous", err.Error())
 		return protocol.RunCancelResponse{}, err
 	}
 	if prompted {
@@ -936,7 +1207,10 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 	if run == nil {
 		return base.Recovery{}, nil, base.ErrRunNotFound
 	}
-	latest := run.next - 1
+	// A held run has allocated sequences nobody has seen: replay is measured
+	// against what it has published, so a cursor at its published position is
+	// current rather than behind, and one beyond it is in the future.
+	latest := run.publishedSeq
 	if request.AfterSequence > latest {
 		return base.Recovery{}, nil, base.ErrReplayCursorFuture
 	}
@@ -953,7 +1227,7 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 			suffix = append(suffix, event)
 		}
 	}
-	recovery := base.Recovery{State: s.state, RunID: run.id, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
+	recovery := base.Recovery{State: s.cloneStateLocked(), RunID: run.id, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
 	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
 	if request.AfterSequence < latest && (oldest == 0 || request.AfterSequence+1 < oldest) {
 		recovery.ReplayGap = &base.ReplayGap{RequestedAfter: request.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
@@ -967,7 +1241,7 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 	for _, event := range suffix {
 		stream <- base.Result{Envelope: event}
 	}
-	if run.terminal {
+	if run.terminal && !run.holding {
 		close(stream)
 	} else {
 		run.subscribers = append(run.subscribers, stream)
@@ -986,7 +1260,13 @@ func (s *session) Close(ctx context.Context) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.active != nil && !s.active.terminal {
+	if published(s.active) || published(s.reserved) {
+		// A reservation is admitted work that owes a terminal, and once the
+		// started run settles it is the session's only nonterminal run — the
+		// interval where the routing and the publication have parted company.
+		// Closing there would drop an accepted submission without publishing
+		// anything for it, so the close refuses exactly as it does for a
+		// started run, and the caller cancels the reservation first.
 		s.mu.Unlock()
 		return base.ErrRunActive
 	}
@@ -1045,19 +1325,53 @@ func (s *session) transportFailed() {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	s.mu.Lock()
-	run := s.active
+	err := s.subscription.Err()
+	s.mu.Unlock()
+	if err == nil {
+		err = io.EOF
+	}
+	s.abandon(nil, "opencode_stream_failed", err.Error())
+}
+
+// abandon settles every admitted run when the session stops being usable.
+//
+// A session that cannot be read from again owes a terminal on everything it
+// accepted, and settling only the started run is what leaves a client stuck:
+// the reservation keeps Close returning run_active while Cancel and State
+// answer session_closed, so the caller can neither settle the run nor close
+// the session, and the child process outlives both. Every path that marks the
+// session unusable goes through here for that reason — a foreign durable
+// event, a failed quiescence or history fence, an ambiguous admission or
+// cancellation — not only the transport.
+//
+// origin, where the caller has one, is the run the failure is actually about;
+// it keeps the code that names it. A reservation the failure only caught in
+// passing lost its queue slot before ever being promoted, which is what
+// queue_dropped names — one already promoted lost whatever the failure was,
+// and saying queue_dropped for that would name the wrong thing.
+func (s *session) abandon(origin *runState, code, message string) {
+	s.mu.Lock()
+	run, reserved := s.active, s.reserved
 	closed := s.closed
 	if !closed {
 		s.unusable = true
 	}
-	err := s.subscription.Err()
 	s.mu.Unlock()
-	if !closed && run != nil {
+	if closed {
+		return
+	}
+	if run != nil && !run.terminal {
 		<-run.admitted
-		if err == nil {
-			err = io.EOF
+		s.failRun(run, code, message)
+	}
+	if reserved != nil && !reserved.terminal {
+		<-reserved.admitted
+		failCode, failMessage := code, message
+		if reserved != origin && !reserved.promotionSeen {
+			failCode = "queue_dropped"
+			failMessage = "the reservation was dropped before promotion: " + message
 		}
-		s.failRun(run, "opencode_stream_failed", err.Error())
+		s.failRun(reserved, failCode, failMessage)
 	}
 }
 
@@ -1073,9 +1387,64 @@ func normalizeModelRef(ref *native.ModelRef) string {
 	return ref.ID
 }
 
+// promoteReserved starts the reservation once the server has promoted it and
+// the started run's terminal is on the wire. Until both hold, the reservation
+// has published nothing, which is what the reserved identity means.
+// reductionTargetLocked is the run native events reduce into: the promoted
+// reservation once the server has started executing it, otherwise the started
+// run. s.mu must be held.
+func (s *session) reductionTargetLocked() *runState {
+	if s.suppressed {
+		// A quarantined turn is running on the server with no OAP run behind
+		// it. Its events reduce into nothing until the next prompted event
+		// names an input this adapter owns.
+		return nil
+	}
+	if s.reserved != nil && s.reserved.promotionSeen && !s.reserved.terminal {
+		return s.reserved
+	}
+	return s.active
+}
+
+// promoteReserved releases a promoted reservation's buffered envelopes once
+// the earlier run's terminal is on the wire, and makes it the started run. It
+// is a no-op until both hold: the reservation has been promoted by the server,
+// and nothing earlier is still running.
+func (s *session) promoteReserved() {
+	s.mu.Lock()
+	reserved := s.reserved
+	if reserved == nil || !reserved.promotionSeen || (s.active != nil && !s.active.terminal) {
+		s.mu.Unlock()
+		return
+	}
+	s.reserved = nil
+	held := reserved.held
+	reserved.held, reserved.holding = nil, false
+	if !reserved.terminal {
+		// A run that settled while it was held keeps the status its terminal
+		// gave it; one still executing is now running, which is what the
+		// run.started about to reach the wire says.
+		s.active = reserved
+		reserved.status = protocol.RunRunning
+	}
+	for _, event := range held {
+		s.publishLocked(reserved, event.envelope, event.terminal)
+	}
+	s.refreshStateLocked()
+	s.mu.Unlock()
+}
+
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {
 	_, err := s.emitEnvelope(run, typ, payload, terminal, "")
-	return err
+	if err != nil {
+		return err
+	}
+	if terminal {
+		// A terminal frees the started slot, so a reservation the server has
+		// already promoted starts now — after the terminal it follows.
+		s.promoteReserved()
+	}
+	return nil
 }
 
 func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID) (protocol.Envelope, error) {
@@ -1108,11 +1477,16 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 		_ = json.Unmarshal(event.Payload, &action)
 		event.ToolCallID = action.ToolCallID
 	}
-	s.journal = append(s.journal, event)
-	if len(s.journal) > s.capacity {
-		s.journal = append([]protocol.Envelope(nil), s.journal[len(s.journal)-s.capacity:]...)
-	}
 	s.state.UpdatedAtMS = now
+	if typ == protocol.TypeRunStarted && !run.holding {
+		// The status moves with the envelope that reports it, inside the same
+		// critical section that rebuilds the projection and delivers it: a
+		// State read between a published run.started and the next envelope
+		// would otherwise describe a run the trace has seen start as still
+		// queued. A held start has told the trace nothing yet, and moves the
+		// status where it is released.
+		run.status = protocol.RunRunning
+	}
 	if terminal {
 		run.terminal = true
 		switch typ {
@@ -1126,9 +1500,58 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 		if s.active == run {
 			s.active = nil
 		}
-		s.state.Status = protocol.SessionIdle
-		s.state.ActiveRunID = ""
+		if s.reserved == run && !run.holding {
+			// A held run keeps its reservation slot until its buffer is
+			// released: the trace has not seen its terminal, so a state read
+			// that dropped it would report a run gone that no subscriber has
+			// been told about.
+			s.reserved = nil
+		}
 	}
+	if run.holding {
+		// Held means held from everyone: a journalled envelope is replayable,
+		// and a caller resuming the reserved run would read its start before
+		// the earlier run's terminal and then be handed it a second time when
+		// the buffer is released. It enters the journal where it is published.
+		run.held = append(run.held, heldEvent{envelope: event, terminal: terminal})
+		s.refreshStateLocked()
+		return event, nil
+	}
+	s.publishLocked(run, event, terminal)
+	// The projection is rebuilt after the publication it describes, because
+	// what it describes is what the trace has now been told.
+	s.refreshStateLocked()
+	return event, nil
+}
+
+// publishLocked makes one envelope history: it enters the replay journal,
+// advances the run's published position, and reaches the run's subscribers.
+// s.mu must be held.
+func (s *session) publishLocked(run *runState, event protocol.Envelope, terminal bool) {
+	if event.Type == protocol.TypeRunStarted {
+		run.startPublished = true
+	}
+	s.journal = append(s.journal, event)
+	if len(s.journal) > s.capacity {
+		s.journal = append([]protocol.Envelope(nil), s.journal[len(s.journal)-s.capacity:]...)
+	}
+	if event.Sequence != nil && *event.Sequence > run.publishedSeq {
+		run.publishedSeq = *event.Sequence
+	}
+	if terminal && event.Sequence != nil {
+		// Here rather than where the run is marked terminal: a held run's
+		// terminal is journalled but unpublished, and the projection keeps
+		// that run. Claiming it settled there would have one snapshot both
+		// list a run and say it had let it go.
+		s.settled = append(s.settled, protocol.SettledRun{RunID: run.id, Sequence: *event.Sequence})
+	}
+	s.deliverLocked(run, event, terminal)
+}
+
+// deliverLocked hands one envelope to the run's subscribers and closes them on
+// a terminal. s.mu must be held; the sends are to buffered channels and the
+// overflow branch is what keeps a slow consumer from blocking the reducer.
+func (s *session) deliverLocked(run *runState, event protocol.Envelope, terminal bool) {
 	var retained []chan base.Result
 	for _, stream := range run.subscribers {
 		if len(stream) < cap(stream)-1 {
@@ -1148,7 +1571,6 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 	} else {
 		run.subscribers = nil
 	}
-	return event, nil
 }
 
 func (s *session) allSubscribersLocked() []chan base.Result {

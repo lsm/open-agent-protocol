@@ -82,6 +82,34 @@ claims the unit by refusing all four correctly.
 alone and `current_model_id` — the model the next control-free submission
 would use — does not move. The reference adapter executes all four.
 
+### Queue delivery (`+queue`)
+
+A session may hold one started run and an advertised number of queued
+reservations. An explicit `delivery: "queue"` is admitted as a reservation —
+`admission: "queued"`, nothing emitted for it yet — and promotes when every
+earlier-admitted run of the session is terminal; on a busy session an `auto`
+submission resolves to the same shape and says so with
+`delivery_resolution: "session_busy"`. One run executes at a time, in admission
+order, with one exception: the pre-start terminal of a reservation that never
+started is published when it happens, because the slot it releases is capacity
+the trace has to show at the moment it changes.
+
+Advertising the queue is a claim that some submission will be queued, so the
+descriptor discloses the bound that makes the claim checkable:
+`capabilities.response.limits` carries `max_queued_runs_per_session` and,
+optionally, `max_active_runs_per_session`. A queue advertised with no reachable
+bound is a defect, not a permissive default. Beyond the bound the wire's answer
+is `run_active`, and that refusal is validated in both directions: a reached
+bound may not hide behind another code, and a bound the window shows was never
+reached may not be reported at all.
+
+`session.state` grows `active_runs` — every nonterminal run in admission order,
+with the reservation's queue position — and `as_of`, the position the snapshot
+was captured at, so a state read that raced a lifecycle event is reconciled
+rather than diagnosed.
+[Decision 0007](decisions/0007-queue-delivery.md) graduates the unit; OpenCode
+advertises it `native` on `SessionInput.Admitted`, and the reference adapter
+emulates one reservation.
 ### Tool sources (`+tool-sources`)
 
 A tool catalog says where each of its tools comes from. `action.tools.list.response`
@@ -426,6 +454,7 @@ Decisions:
 - [0002 — admission before started](decisions/0002-admission-before-start.md)
 - [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (proposed)
 - [0005 — run controls](decisions/0005-run-controls.md) (proposed)
+- [0007 — queue delivery](decisions/0007-queue-delivery.md) (proposed)
 - [0008 — tool sources](decisions/0008-tool-sources.md) (proposed)
 - [0006 — models catalog](decisions/0006-models-catalog.md) (proposed)
 

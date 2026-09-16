@@ -153,6 +153,10 @@ type admittedControls struct {
 // pendingSubmit is what one submit request left for its response to settle.
 type pendingSubmit struct {
 	expectation *controlExpectation
+	// queue is the queue unit's retained window: the bounds that applied to
+	// this submit, what the session held when it was made, and what happened
+	// to both while it was in flight.
+	queue *queueWindow
 	// satisfiable names the control keys the validator judged advertised and
 	// within every constraint the endpoint disclosed. A refusal citing one of
 	// them claims a condition the validator can see does not hold, which is
@@ -178,11 +182,23 @@ type pendingSubmit struct {
 // the endpoint is required to refuse, and a conforming refusal must validate.
 func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.MessageSubmitRequest) {
 	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability}
+	var expectations []*controlExpectation
 	defer func() {
+		// The delivery gate and the queue's state rung are collected whether
+		// or not the submission carries a control: an explicit queue is
+		// judged on its own, and a busy session owes an answer to a plain
+		// auto submit.
+		expectations = append(expectations, s.deliveryExpectations(i, line, e, p, pending)...)
+		sort.SliceStable(expectations, func(a, b int) bool { return expectations[a].less(expectations[b]) })
+		if len(expectations) > 0 {
+			pending.expectation = expectations[0]
+		}
 		if s.pendingControls == nil {
 			s.pendingControls = map[protocol.EnvelopeID]*pendingSubmit{}
 		}
 		s.pendingControls[e.ID] = pending
+		s.openSubmits[p.SessionID] = append(s.openSubmits[p.SessionID], pending)
+		s.refreshQueueWindows(p.SessionID)
 	}()
 	controls := []struct {
 		key     string
@@ -204,7 +220,6 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 	}
 	pending.controls.present = true
 	pending.controls.mode = s.featureDetail(protocol.FeatureModelSelection).Mode
-	var expectations []*controlExpectation
 	for _, control := range controls {
 		if !control.present {
 			continue
@@ -247,25 +262,6 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 		if satisfiable {
 			pending.satisfiable[control.key] = true
 		}
-	}
-	// The delivery an explicit non-auto request elects is gated like a
-	// control. The mandatory auto delivery is exempt: its degraded level is
-	// disclosure a caller reads from the descriptor, not a consent gate, and
-	// a caller refused auto could not submit at all.
-	if p.Delivery != "" && p.Delivery != protocol.DeliveryAuto {
-		key := "session.message.delivery." + string(p.Delivery)
-		if level, judged := s.controlDescriptor(i, line, e, key); judged && level == protocol.SupportDegraded && !p.AllowsDegraded(key) {
-			expectations = append(expectations, &controlExpectation{
-				rung: rungDegradation, key: key, pointer: "/payload/delivery",
-				code: errorCapabilityDegraded, detailName: "feature", detailValue: key,
-				diagnostic: CodeDegradedWithoutOptin,
-				message:    "submission elects a degraded delivery without the caller's opt-in",
-			})
-		}
-	}
-	sort.SliceStable(expectations, func(a, b int) bool { return expectations[a].less(expectations[b]) })
-	if len(expectations) > 0 {
-		pending.expectation = expectations[0]
 	}
 }
 
@@ -576,14 +572,15 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 	// within every disclosed constraint, refused as unsupported. The endpoint
 	// has claimed a condition the validator can see does not hold, and the
 	// caller discards a request that was valid.
-	if payload.Error.Code != errorUnsupportedFeature {
+	if feature, ok := detail("feature"); payload.Error.Code == errorUnsupportedFeature && ok && pending.satisfiable[feature] {
+		s.addExpected(CodeUnsatisfiableControl, i, line, e, "/payload/error", "refusal names a control the endpoint advertises and this request satisfies", "admission or a defect the refusal names", describeRefusal(payload.Error), string(e.InReplyTo))
 		return
 	}
-	feature, ok := detail("feature")
-	if !ok || !pending.satisfiable[feature] {
-		return
-	}
-	s.addExpected(CodeUnsatisfiableControl, i, line, e, "/payload/error", "refusal names a control the endpoint advertises and this request satisfies", "admission or a defect the refusal names", describeRefusal(payload.Error), string(e.InReplyTo))
+	// Nothing ranked above it claimed the response, so the state rung judges
+	// it — against the window as it now stands, since which condition applies
+	// is a fact about the window rather than about the instant the request
+	// arrived.
+	s.settleQueueRefusal(i, line, e, pending, payload)
 }
 
 // conformingRefusal reports whether one error.response says what the retained

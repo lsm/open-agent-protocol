@@ -99,19 +99,22 @@ var attachSupport = protocol.FeatureSupport{
 // emitted envelope repeats it so a consumer can bind an event to the
 // descriptor snapshot it was produced under.
 // v2 published the scripted tool in the catalog; v1 published none. v3
-// advertises models.list and serves the fixed model catalog. v5 declares the
+// advertises models.list and serves the fixed model catalog, v5 declares the
 // tool sources, attributes the scripted tool to one of them, and advertises
-// the catalog and attachment capabilities with their disclosed limits. A
-// revision identifies exactly one descriptor, so a consumer holding an older
-// snapshot must see this one as new rather than validate against a descriptor
-// that says less than the endpoint does.
+// the catalog and attachment capabilities with their disclosed limits, and v6
+// advertises session.message.delivery.queue with the bounds that make the
+// claim checkable. A revision identifies exactly one descriptor, so a consumer
+// holding an older snapshot must see this one as new rather than read a
+// reservation against a descriptor that offered no queue.
 //
-// v4 is skipped rather than reused: the units that graduate in parallel each
-// bump this constant, and two branches that both took the next number would
-// publish two different descriptors under one revision — the exact confusion
-// the revision exists to prevent. v4 belongs to the unit merging beside this
-// one, so this takes v5 whether or not that one lands first.
-const CapabilityRevision = "reference-memory-v5"
+// v4 belongs to no published descriptor. The units that graduate in parallel
+// each bump this constant, and two branches that both took the next number
+// would publish two different descriptors under one revision — the exact
+// confusion the revision exists to prevent — so each reserved its own and the
+// one that merges second takes the number after what it finds. This descriptor
+// is neither of theirs: it says everything both of them say and the queue
+// besides, so it is new again.
+const CapabilityRevision = "reference-memory-v6"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -162,14 +165,20 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"session.state":                 {Level: protocol.SupportNative},
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
-		"run.streaming":                 {Level: protocol.SupportNative},
-		"run.status":                    {Level: protocol.SupportNative},
-		"run.cancel":                    {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
-		"run.resume":                    {Level: protocol.SupportDegraded, Reason: "reattachment and replay use a bounded process-memory journal"},
-		"run.reconciliation":            {Level: protocol.SupportNative},
-		"run.replay":                    {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
-		"action.tools":                  {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
-		"action.tools.execute":          {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
+		// The queue, emulated: a submission while the scripted run is active
+		// reserves a second run and promotes it when the first settles. The
+		// bounds are disclosed because advertising a queue is a claim that
+		// some submission will be queued, and the bound is what makes the
+		// claim checkable.
+		protocol.FeatureDeliveryQueue: {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
+		"run.streaming":               {Level: protocol.SupportNative},
+		"run.status":                  {Level: protocol.SupportNative},
+		"run.cancel":                  {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
+		"run.resume":                  {Level: protocol.SupportDegraded, Reason: "reattachment and replay use a bounded process-memory journal"},
+		"run.reconciliation":          {Level: protocol.SupportNative},
+		"run.replay":                  {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
+		"action.tools":                {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
+		"action.tools.execute":        {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
 		// The catalog and attachment, executed deterministically. Both
 		// disclosures are machine-readable: the mode says attachment happens
 		// at session open and nowhere else, and the limits say exactly which
@@ -212,10 +221,17 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 			// so it is published rather than kept private to the session.
 			Tools:   scriptedCatalog(),
 			Sources: declaredSources(),
+			// One started run beside one reservation: the active bound leaves
+			// room for the queued subset, or the queue it advertises could
+			// never be reached.
+			Limits: &protocol.CapabilityLimits{
+				MaxActiveRunsPerSession: protocol.Limit(2),
+				MaxQueuedRunsPerSession: protocol.Limit(1),
+			},
 		},
 		CapabilityRevision:         CapabilityRevision,
 		Journal:                    JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: m.capacity},
-		MaxActiveRunsPerSession:    1,
+		MaxActiveRunsPerSession:    2,
 		InteractiveGates:           true,
 		CancellationTarget:         "run",
 		CancellationImplementation: "session_emulated",
@@ -334,8 +350,21 @@ type memorySession struct {
 	attached    []protocol.ToolSourceAttachment
 	closed      bool
 	active      *memoryRun
-	runs        map[protocol.RunID]*memoryRun
-	journal     []protocol.Envelope
+	// reserved is the one queued reservation this adapter admits beside a
+	// started run, per its disclosed max_queued_runs_per_session of 1. It
+	// promotes when the started run settles, and can settle pre-start itself.
+	reserved *memoryRun
+	runs     map[protocol.RunID]*memoryRun
+	journal  []protocol.Envelope
+	// settled is every run this session has removed from its projection,
+	// with the sequence its terminal carries. A state read is answered
+	// synchronously while lifecycle reaches a consumer through a buffered
+	// stream, so a snapshot taken at a settlement can be on the wire before
+	// the terminal it reflects. Naming the run and its terminal here says
+	// what the endpoint actually knows — this run is gone, and here is the
+	// event that ended it — instead of leaving the run to vanish from a
+	// listing the trace still reads as holding it.
+	settled []protocol.SettledRun
 }
 
 type scriptStage uint8
@@ -347,18 +376,35 @@ const (
 )
 
 type memoryRun struct {
-	id           protocol.RunID
-	status       protocol.RunStatus
-	stage        scriptStage
-	controls     admittedControls
-	nextSequence uint64
-	terminal     bool
-	permissionID protocol.InteractionID
-	inputID      protocol.InteractionID
-	toolCallID   protocol.ToolCallID
-	requestedBy  protocol.ParticipantID
-	respondedBy  protocol.ParticipantID
-	subscribers  []chan Result
+	id     protocol.RunID
+	status protocol.RunStatus
+	// started marks a run whose run.started has been emitted. A reservation
+	// that settles before promotion emits its terminal and nothing else:
+	// non-terminal run-scoped events before run.started are illegal.
+	started bool
+	// queuedAdmission records that the admission response said queued. With
+	// started it decides how the run is projected: the trace knows a run
+	// admitted queued as a reservation until its run.started reaches it, and
+	// that is the same test the queue unit's state rules apply.
+	queuedAdmission bool
+	// answered records that Submit has an admission response to return for
+	// this run. Until then the run holds a slot and counts against the
+	// bounds, but nothing has told anyone it was accepted, so a concurrent
+	// state read must not name it.
+	answered bool
+	// pendingInteraction is the gate this run has published and not yet
+	// resolved, which is what an active_runs entry reports.
+	pendingInteraction protocol.InteractionID
+	stage              scriptStage
+	controls           admittedControls
+	nextSequence       uint64
+	terminal           bool
+	permissionID       protocol.InteractionID
+	inputID            protocol.InteractionID
+	toolCallID         protocol.ToolCallID
+	requestedBy        protocol.ParticipantID
+	respondedBy        protocol.ParticipantID
+	subscribers        []chan Result
 }
 
 func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, EventStream, error) {
@@ -381,7 +427,9 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	if request.SessionID == "" || len(request.Messages) == 0 {
 		return protocol.MessageSubmitResponse{}, nil, ErrInvalidSubmission
 	}
-	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
+	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto && request.Delivery != protocol.DeliveryQueue {
+		// steer and btw stay outside this subset; the queue is advertised, so
+		// it is applied rather than refused.
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", ErrInvalidSubmission, request.Delivery)
 	}
 
@@ -394,7 +442,11 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, ErrRunNotFound
 	}
-	if s.active != nil && !s.active.terminal {
+	busy := s.active != nil && !s.active.terminal
+	if busy && s.reserved != nil && !s.reserved.terminal {
+		// The disclosed queue bound is one reservation. Beyond it the wire's
+		// answer is run_active, which is what ErrRunActive becomes at every
+		// binding.
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, ErrRunActive
 	}
@@ -414,10 +466,26 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	}
 	stream := make(chan Result, 32)
 	run.subscribers = append(run.subscribers, stream)
-	s.active = run
 	s.runs[run.id] = run
-	s.state.Status = protocol.SessionRunning
-	s.state.ActiveRunID = run.id
+	// A reservation is admitted while the started run holds the session; an
+	// explicit queue on an idle session is admitted as a reservation too and
+	// promotes at once, since "run after current work reaches a safe
+	// boundary" is trivially satisfied when there is no current work.
+	reservation := busy || request.Delivery == protocol.DeliveryQueue
+	run.queuedAdmission = reservation
+	if reservation {
+		// The response says queued, so the projection has to as well until
+		// run.started reaches the trace — including on an idle session, where
+		// the promotion is immediate but is still an event the trace has to
+		// be told about before a snapshot can claim it happened.
+		run.status = protocol.RunQueued
+	}
+	if busy {
+		s.reserved = run
+	} else {
+		s.active = run
+	}
+	s.refreshStateLocked()
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	s.mu.Unlock()
 
@@ -428,18 +496,162 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 			messageIDs[i] = protocol.MessageID(s.ids.NewID("message"))
 		}
 	}
+	requested := request.Delivery
+	if requested == "" {
+		requested = protocol.DeliveryAuto
+	}
 	admission := protocol.MessageSubmitResponse{
 		SessionID: s.state.SessionID, Accepted: true,
 		SubmissionID:      protocol.SubmissionID(s.ids.NewID("submission")),
-		RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart,
+		RequestedDelivery: requested, EffectiveDelivery: protocol.DeliveryStart,
 		DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted,
 		RunID: run.id, Status: protocol.RunRunning, ModelID: controls.model, MessageIDs: messageIDs,
 	}
-
+	if reservation {
+		admission.EffectiveDelivery = protocol.EffectiveDeliveryQueue
+		admission.Admission = protocol.AdmissionQueued
+		admission.Status = protocol.RunQueued
+		if busy {
+			admission.DeliveryResolution = "session_busy"
+		}
+	}
+	// The response is decided here but it is not published here, and it is
+	// not published when this call returns either: both frontends build the
+	// submit response envelope after Submit hands the admission back. Until
+	// that envelope exists the trace carries no admission for this run to have
+	// been anchored to, so a state read taken in the meantime names a run from
+	// nowhere — and an adapter cannot tell when it exists, for the same reason
+	// it cannot supply the anchor: the envelope and its id are the frontend's.
+	// So this is not the boundary; it is the latest point the adapter can see,
+	// and the projection is armed here and flips as the response is handed
+	// back. Closing the rest belongs to the layer that creates the envelope
+	// and is recorded as its own limit in decision 0007.
+	defer s.answerRun(run)
+	if busy {
+		// Nothing is emitted for a reservation: its run identity is reserved
+		// at admission and its first run-scoped event is either its promotion
+		// or its pre-start terminal.
+		return admission, stream, nil
+	}
 	if err := s.emitInitial(run); err != nil {
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	return admission, stream, nil
+}
+
+// answerRun publishes a run into the session's projection. It is deferred from
+// the admission that decided it, so the run is projected as Submit returns
+// rather than while it is still running: separating the two widens the window
+// where a snapshot describes a run nothing has admitted, and this is as narrow
+// as the adapter can make it. It does not close it — the trace carries the
+// admission only once the frontend builds its envelope, which happens after
+// this returns and which nothing here can observe.
+func (s *memorySession) answerRun(run *memoryRun) {
+	s.mu.Lock()
+	run.answered = true
+	s.refreshStateLocked()
+	s.mu.Unlock()
+}
+
+// refreshStateLocked recomputes the session's published state from the runs it
+// holds. active_runs lists every nonterminal run in admission order, which is
+// what a snapshot of a session with a reservation has to carry: active_run_id
+// alone cannot describe two.
+// live reports whether a run still owes a terminal.
+func live(run *memoryRun) bool { return run != nil && !run.terminal }
+
+func (s *memorySession) refreshStateLocked() {
+	// Which run is started is read from the trace, not from the slot it
+	// occupies. An explicit queue on an idle session is admitted queued and
+	// promotes at once, but the promotion is still an event: until it is
+	// emitted, naming that run in active_run_id and listing it without a
+	// queue position would describe a started run the trace has not been told
+	// about — the shape this repository's own state rules reject.
+	var entries []protocol.ActiveRun
+	position := 0
+	var started *memoryRun
+	for _, run := range []*memoryRun{s.active, s.reserved} {
+		if !live(run) || !run.answered {
+			continue
+		}
+		if !reservationOf(run) {
+			entries = append(entries, s.entryLocked(run, 0))
+			started = run
+			continue
+		}
+		position++
+		entries = append(entries, s.entryLocked(run, position))
+	}
+	s.state.ActiveRuns = entries
+	// The capture anchor is what keeps the listing above honest about what is
+	// missing from it. Which run is started is read from the trace; which runs
+	// are gone has to be stated, because the trace may not have been told yet.
+	if len(s.settled) > 0 {
+		s.state.AsOf = &protocol.SessionCapture{Settled: s.settled}
+	}
+	switch {
+	case started != nil:
+		// The session's status follows its started run's, so a refresh
+		// triggered by any later emission cannot quietly move a session
+		// waiting for input back to running.
+		//
+		// It follows the same evidence the entry beside it publishes: the run
+		// status, or an unresolved gate the entry names. The permission gate
+		// blocks the run without a status update of its own — only the input
+		// gate reports one — so reading the status alone described a session
+		// running beside a run it had just said was blocked.
+		s.state.Status = protocol.SessionRunning
+		if started.status == protocol.RunWaitingForInput || started.pendingInteraction != "" {
+			s.state.Status = protocol.SessionWaitingForInput
+		}
+		s.state.ActiveRunID = started.id
+	case len(entries) > 0:
+		// Only reservations remain, so no run is started and active_run_id
+		// names none.
+		s.state.Status = protocol.SessionQueued
+		s.state.ActiveRunID = ""
+	default:
+		s.state.Status = protocol.SessionIdle
+		s.state.ActiveRunID = ""
+	}
+}
+
+// reservationOf reports whether the trace still knows a run as a reservation:
+// it was admitted queued and its run.started has not been emitted.
+func reservationOf(run *memoryRun) bool { return run.queuedAdmission && !run.started }
+
+// entryLocked describes one nonterminal run. The capture position is the run's
+// own cursor, which is what makes the pending set judgeable: this adapter
+// captures state and publishes lifecycle under one mutex, so the position it
+// states is always one the trace has reached.
+func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.ActiveRun {
+	sequence := run.nextSequence - 1
+	status := run.status
+	if reservationOf(run) {
+		// A reservation is reported as one whatever its own bookkeeping says,
+		// for the same reason the position is: the trace has not been told it
+		// began.
+		status = protocol.RunQueued
+	}
+	entry := protocol.ActiveRun{
+		RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary,
+		AsOfSequence: &sequence, PendingInteractions: pendingInteractions(run),
+	}
+	if position > 0 {
+		entry.QueuePosition = &position
+	}
+	return entry
+}
+
+// pendingInteractions is the run's unresolved permission and user-input gates,
+// read from what the run has actually published rather than from where its
+// script has reached. A snapshot taken between the stage moving and the event
+// being emitted would otherwise name an interaction the trace has not seen.
+func pendingInteractions(run *memoryRun) []protocol.InteractionID {
+	if run.pendingInteraction == "" {
+		return nil
+	}
+	return []protocol.InteractionID{run.pendingInteraction}
 }
 
 func (s *memorySession) emitInitial(run *memoryRun) error {
@@ -450,6 +662,10 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	if model == "" {
 		model = s.state.CurrentModelID
 	}
+	s.mu.Lock()
+	run.started = true
+	run.status = protocol.RunRunning
+	s.mu.Unlock()
 	started := protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: model, StartedAtMS: s.clock.Now().UnixMilli()}
 	if err := s.emit(run, protocol.TypeRunStarted, started, false); err != nil {
 		return err
@@ -495,17 +711,17 @@ func (s *memorySession) requestInput(run *memoryRun) error {
 		PendingUserInputID: run.inputID,
 		UpdatedAtMS:        s.clock.Now().UnixMilli(),
 	}
-	if err := s.emit(run, protocol.TypeRunStatusUpdated, status, false); err != nil {
-		return err
-	}
+	// The run's status moves before the event that reports it, not after: the
+	// emission refreshes the published state, and a refresh taken while the
+	// run still called itself running would leave a snapshot describing a
+	// session waiting for input whose only run is listed as running.
 	s.mu.Lock()
 	if !run.terminal {
 		run.status = protocol.RunWaitingForInput
-		s.state.Status = protocol.SessionWaitingForInput
 		s.state.UpdatedAtMS = status.UpdatedAtMS
 	}
 	s.mu.Unlock()
-	return nil
+	return s.emit(run, protocol.TypeRunStatusUpdated, status, false)
 }
 
 // admittedControls is the control set one run was admitted with. It is read
@@ -648,9 +864,43 @@ func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return s.state, ErrSessionClosed
+		return s.cloneStateLocked(), ErrSessionClosed
 	}
-	return s.state, nil
+	return s.cloneStateLocked(), nil
+}
+
+// cloneStateLocked detaches the published snapshot from the session's own
+// slices, so a consumer holding one cannot see it change underneath — and
+// cannot change it. Every path that hands a SessionState to a caller goes
+// through here, State and the recovery snapshot alike: a by-value copy shares
+// active_runs' backing array and its pointer fields, so a caller editing what
+// it was given would reach into the session's own state.
+func (s *memorySession) cloneStateLocked() protocol.SessionState {
+	state := s.state
+	state.ActiveRuns = append([]protocol.ActiveRun(nil), s.state.ActiveRuns...)
+	for i := range state.ActiveRuns {
+		entry := state.ActiveRuns[i]
+		if entry.AsOfSequence != nil {
+			sequence := *entry.AsOfSequence
+			state.ActiveRuns[i].AsOfSequence = &sequence
+		}
+		if entry.QueuePosition != nil {
+			position := *entry.QueuePosition
+			state.ActiveRuns[i].QueuePosition = &position
+		}
+		if entry.PendingInteractions != nil {
+			state.ActiveRuns[i].PendingInteractions = append([]protocol.InteractionID(nil), entry.PendingInteractions...)
+		}
+		if entry.AdmittedSubmitRequests != nil {
+			state.ActiveRuns[i].AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), entry.AdmittedSubmitRequests...)
+		}
+	}
+	if s.state.AsOf != nil {
+		capture := *s.state.AsOf
+		capture.Settled = append([]protocol.SettledRun(nil), s.state.AsOf.Settled...)
+		state.AsOf = &capture
+	}
+	return state
 }
 
 // Tools serves a catalog scoped the way the request asked for it, and the
@@ -872,8 +1122,19 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 		s.mu.Unlock()
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
+	reservation := !run.started
 	run.status = protocol.RunCancelling
 	s.mu.Unlock()
+
+	if reservation {
+		// A reservation settles pre-start: its first and only run-scoped
+		// event is the terminal. A status update or a closing child
+		// lifecycle before it would be a non-terminal event before
+		// run.started, which decision 0002 forbids.
+		cancelled := protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "reservation cancelled before promotion"}
+		_ = s.emit(run, protocol.TypeRunCancelled, cancelled, true)
+		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
+	}
 
 	status := protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}
 	if err := s.emit(run, protocol.TypeRunStatusUpdated, status, false); err != nil && err != errTerminalWon {
@@ -912,7 +1173,7 @@ func (s *memorySession) Resume(ctx context.Context, request ResumeRequest) (Reco
 		s.mu.Unlock()
 		return Recovery{}, nil, ErrRunNotFound
 	}
-	state := s.state
+	state := s.cloneStateLocked()
 	latest := run.nextSequence - 1
 	if request.AfterSequence > latest {
 		s.mu.Unlock()
@@ -978,7 +1239,12 @@ func (s *memorySession) Close(ctx context.Context) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.active != nil && !s.active.terminal {
+	if live(s.active) || live(s.reserved) {
+		// A reservation is admitted work that owes a terminal, so it refuses
+		// a close exactly as a started run does. This adapter promotes
+		// synchronously on the started run's terminal, so the reservation is
+		// never the only nonterminal run for long; the contract is the same
+		// either way, and a caller cancels it first.
 		s.mu.Unlock()
 		return ErrRunActive
 	}
@@ -998,22 +1264,50 @@ func (s *memorySession) Close(ctx context.Context) error {
 	return nil
 }
 
-// emit is the sole sequence allocator and reducer. It appends before publishing,
-// serializes publishers, and never sends while the state mutex is held.
+// emit publishes one envelope and then, when that envelope settled the started
+// run, promotes the reservation waiting behind it. The promotion is after the
+// publish rather than inside it, so the terminal is sent before the promoted
+// run's run.started is.
+//
+// Sent, not delivered. Each run is a stream of its own, and the adapter
+// boundary is one ordered channel per stream: two channels have no order
+// between them, and nothing at this boundary reports what a consumer has
+// published. A consumer draining the two streams independently — which is
+// what serve does, one readRun goroutine each — can therefore put the
+// promoted run's start on the wire ahead of the terminal it was sequenced
+// behind, and no barrier here closes that. Waiting for the settled run's
+// channels to empty only narrows it: empty means received, not published, and
+// it would make the adapter's own liveness depend on a consumer it cannot
+// see. Ordering across run domains belongs to the layer that holds both
+// streams; decision 0007 records it as the serving layer's.
 func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool) error {
+	promoted, err := s.publish(run, typ, payload, terminal)
+	if err != nil {
+		return err
+	}
+	if promoted != nil {
+		return s.emitInitial(promoted)
+	}
+	return nil
+}
+
+// publish is the sole sequence allocator and reducer. It appends before
+// publishing, serializes publishers, and never sends while the state mutex is
+// held. It reports the reservation the envelope promoted, if any.
+func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool) (*memoryRun, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
 
 	s.mu.Lock()
 	if run.terminal {
 		s.mu.Unlock()
-		return errTerminalWon
+		return nil, errTerminalWon
 	}
 	now := s.clock.Now().UnixMilli()
 	envelope, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(s.ids.NewID("event")), payload)
 	if err != nil {
 		s.mu.Unlock()
-		return err
+		return nil, err
 	}
 	sequence := run.nextSequence
 	run.nextSequence++
@@ -1036,8 +1330,18 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 	}
 	s.state.TranscriptCursor = strconv.FormatUint(sequence, 10)
 	s.state.UpdatedAtMS = now
+	switch typ {
+	case protocol.TypeActionPermissionRequested:
+		run.pendingInteraction = run.permissionID
+	case protocol.TypeUserInputRequested:
+		run.pendingInteraction = run.inputID
+	case protocol.TypeActionPermissionResolved, protocol.TypeUserInputResolved:
+		run.pendingInteraction = ""
+	}
+	var promoted *memoryRun
 	if terminal {
 		run.terminal = true
+		run.pendingInteraction = ""
 		switch typ {
 		case protocol.TypeRunCompleted:
 			run.status = protocol.RunCompleted
@@ -1049,9 +1353,16 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 		if s.active == run {
 			s.active = nil
 		}
-		s.state.Status = protocol.SessionIdle
-		s.state.ActiveRunID = ""
+		if s.reserved == run {
+			s.reserved = nil
+		}
+		if s.active == nil && s.reserved != nil && !s.reserved.terminal {
+			promoted, s.reserved = s.reserved, nil
+			s.active = promoted
+		}
+		s.settled = append(s.settled, protocol.SettledRun{RunID: run.id, Sequence: sequence})
 	}
+	s.refreshStateLocked()
 	subscribers := append([]chan Result(nil), run.subscribers...)
 	if terminal {
 		run.subscribers = nil
@@ -1066,7 +1377,7 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 			close(subscriber)
 		}
 	}
-	return nil
+	return promoted, nil
 }
 
 // cloneEnvelope detaches an envelope handed to a consumer from the retained

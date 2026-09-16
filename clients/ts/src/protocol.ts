@@ -330,6 +330,22 @@ export interface CapabilityDescriptor {
   tools?: ToolDefinition[];
   sources?: ToolSourceDescriptor[];
   degradation?: Degradation[];
+  /** The admission bounds the endpoint discloses (queue unit). */
+  limits?: CapabilityLimits;
+}
+
+/**
+ * The admission bounds a descriptor discloses. `max_active_runs_per_session`
+ * bounds the nonterminal set — the started run plus every queued reservation,
+ * which is what `session.state.active_runs` lists — and
+ * `max_queued_runs_per_session` bounds the queued subset. Both are at least 1
+ * on the wire; an endpoint that cannot queue advertises
+ * `session.message.delivery.queue` as `unavailable` rather than disclosing a
+ * bound of zero.
+ */
+export interface CapabilityLimits {
+  max_active_runs_per_session?: number;
+  max_queued_runs_per_session?: number;
 }
 
 export interface CapabilitiesUpdated {
@@ -422,6 +438,8 @@ export interface SessionState {
   session_id: string;
   status: SessionStatus;
   active_run_id?: string;
+  /** Every nonterminal run of the session, in admission order (queue unit). */
+  active_runs?: ActiveRun[];
   current_model_id?: string;
   transcript_cursor?: string;
   updated_at_ms?: number;
@@ -429,6 +447,54 @@ export interface SessionState {
   /** The sanitized projection of the session's attached and declared sources. */
   sources?: ToolSourceDescriptor[];
   recovery?: RecoveryMetadata;
+  /** What the snapshot knew when it was taken, so membership is judged against the endpoint's knowledge rather than the reader's. */
+  as_of?: SessionCapture;
+}
+
+/** The only relationship an `active_runs` entry carries in this phase. */
+export type ActiveRunRelationship = 'primary';
+
+/**
+ * One nonterminal run of a session. A queued reservation carries its 1-based
+ * `queue_position`; the started run carries none.
+ *
+ * `as_of_sequence` is the last sequence of this run the entry reflects, and an
+ * entry carrying `pending_interactions` must carry it: a state read is not
+ * serialized with lifecycle publication, so the position is what makes an
+ * accurate-but-stale pending set judgeable rather than guessed at.
+ */
+export interface ActiveRun {
+  run_id: string;
+  status: RunStatus;
+  relationship: ActiveRunRelationship;
+  queue_position?: number;
+  as_of_sequence?: number;
+  /** The submit request envelope ids on this run the entry reflects as admitted. */
+  admitted_submit_requests?: string[];
+  /** The run's unresolved permission and user-input interactions at `as_of_sequence`. */
+  pending_interactions?: string[];
+}
+
+/** A stated position in a run's sequence domain; `run_id: null` with `sequence: 0` is the genesis position, before the session's first model-affecting event. */
+export interface RunPosition {
+  run_id: string | null;
+  sequence: number;
+}
+
+/** One run a snapshot has already removed, with the sequence its terminal carries. */
+export interface SettledRun {
+  run_id: string;
+  sequence: number;
+}
+
+/** The session-level capture position of a state snapshot (queue unit). */
+export interface SessionCapture {
+  /** The submit requests on the session the snapshot reflects as admitted. */
+  admitted_submit_requests?: string[];
+  /** The runs the snapshot has removed, each with the sequence of its terminal. */
+  settled?: SettledRun[];
+  /** The last model-affecting event the snapshot reflects. */
+  model_run_sequence?: RunPosition;
 }
 
 /**

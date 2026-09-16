@@ -1561,3 +1561,51 @@ func TestClientDrivesRunControls(t *testing.T) {
 		t.Fatalf("refusal details %+v, want the requested id", serverErr.Details)
 	}
 }
+
+// A queued submission reaches the client as the reservation it is, and the
+// state the client reads describes both nonterminal runs: a caller that saw
+// only active_run_id would think the session had one run's work outstanding
+// when it has two.
+func TestClientQueuedSubmission(t *testing.T) {
+	server := newDaemon(t, memoryRegistry(0))
+	c := dial(t, server)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	session := openMemorySession(t, c, "queue-client")
+	first := submitGolden(t, session, "parks at the gate")
+	reservation, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}},
+		Delivery: protocol.DeliveryQueue,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.Admission != protocol.AdmissionQueued || reservation.EffectiveDelivery != protocol.EffectiveDeliveryQueue {
+		t.Fatalf("reservation = %+v", reservation)
+	}
+	state, err := session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 2 || state.ActiveRuns[0].RunID != first || state.ActiveRuns[1].RunID != reservation.RunID {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	if state.ActiveRuns[1].QueuePosition == nil || *state.ActiveRuns[1].QueuePosition != 1 {
+		t.Fatalf("queue position = %+v", state.ActiveRuns[1])
+	}
+	if state.ActiveRunID != first {
+		t.Fatalf("active_run_id = %q, want the started run %q", state.ActiveRunID, first)
+	}
+
+	// The endpoint's disclosed bound reaches the client too, so a caller can
+	// tell a queue it may use from one it may not.
+	capabilities, err := c.Capabilities(ctx, "memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := capabilities.Descriptor.Limits
+	if limits == nil || limits.MaxQueuedRunsPerSession == nil || *limits.MaxQueuedRunsPerSession != 1 {
+		t.Fatalf("limits = %+v", limits)
+	}
+}

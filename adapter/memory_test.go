@@ -499,7 +499,10 @@ func TestResumeGapReturnsAuthoritativeState(t *testing.T) {
 	if recovery.RequestedAfter != 0 || recovery.ReplayedFrom != 0 || recovery.ReplayedThrough != 0 {
 		t.Fatalf("gap claimed replay bounds: %+v", recovery)
 	}
-	if recovery.ReplayGap == nil || recovery.State.ActiveRunID != runID || recovery.State.Status != protocol.SessionRunning {
+	// The script stops at the permission gate, so the authoritative state the
+	// gap hands back is a session waiting on it — which is what the entry
+	// beside it says too.
+	if recovery.ReplayGap == nil || recovery.State.ActiveRunID != runID || recovery.State.Status != protocol.SessionWaitingForInput {
 		t.Fatalf("bad recovery: %+v", recovery)
 	}
 	if events := drainAvailable(replay); len(events) != 0 {
@@ -837,8 +840,15 @@ func TestDescriptorTruthful(t *testing.T) {
 	if descriptor.Journal.Persistence != "process_memory" || descriptor.Journal.Replay != protocol.SupportDegraded || descriptor.Journal.Capacity != 7 {
 		t.Fatalf("journal: %+v", descriptor.Journal)
 	}
-	if descriptor.MaxActiveRunsPerSession != 1 || !descriptor.InteractiveGates || descriptor.CancellationTarget != "run" || descriptor.CancellationImplementation != "session_emulated" {
+	// One started run beside one reservation, and the wire projection of that
+	// bound beside it: a descriptor advertising a queue with no reachable
+	// bound promises nothing.
+	if descriptor.MaxActiveRunsPerSession != 2 || !descriptor.InteractiveGates || descriptor.CancellationTarget != "run" || descriptor.CancellationImplementation != "session_emulated" {
 		t.Fatalf("descriptor: %+v", descriptor)
+	}
+	limits := descriptor.Capabilities.Limits
+	if limits == nil || limits.MaxActiveRunsPerSession == nil || *limits.MaxActiveRunsPerSession != 2 || limits.MaxQueuedRunsPerSession == nil || *limits.MaxQueuedRunsPerSession != 1 {
+		t.Fatalf("limits: %+v", limits)
 	}
 }
 
@@ -1058,4 +1068,398 @@ func runScriptedTool(t *testing.T, session adapter.Session, admission protocol.M
 		t.Fatal(err)
 	}
 	return append(trace, drainAvailable(stream)...)
+}
+
+// A session waiting for input and the run it is waiting on must say the same
+// thing. The entry is the surface a recovering caller reads the interaction id
+// from, and one that reported the run as running beside a session status of
+// waiting_for_input would describe a session that is not the one parked.
+func TestActiveRunEntryFollowsTheRunStatus(t *testing.T) {
+	session := newTestSession(t, 64)
+	run, stream := submit(t, session)
+	events := drainAvailable(stream)
+	requested := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	gate := envelopeOfType(t, drainAvailable(stream), protocol.TypeUserInputRequested)
+	var input protocol.UserInputRequestedPayload
+	if err := gate.DecodePayload(&input); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != protocol.SessionWaitingForInput {
+		t.Fatalf("session status = %s", state.Status)
+	}
+	if len(state.ActiveRuns) != 1 {
+		t.Fatalf("active_runs = %+v", state.ActiveRuns)
+	}
+	entry := state.ActiveRuns[0]
+	if entry.RunID != run || entry.Status != protocol.RunWaitingForInput {
+		t.Fatalf("entry = %+v, want %s waiting_for_input", entry, run)
+	}
+	if len(entry.PendingInteractions) != 1 || entry.PendingInteractions[0] != input.InteractionID {
+		t.Fatalf("pending interactions = %+v, want %s", entry.PendingInteractions, input.InteractionID)
+	}
+}
+
+// A state read taken while a gate is open has to survive the validator like
+// any other snapshot. Nothing else in the kit reads State, so a projection
+// contradicting the very run the same trace carries passed every assertion
+// here: the permission gate blocks the run without moving its status, and the
+// session reported itself running beside an entry naming what it was blocked
+// on — the shape queue-state-running-beside-a-pending-interaction rejects.
+func TestStateDuringAGateValidates(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	run := admission.RunID
+	events := drainAvailable(stream)
+	requested := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
+
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != protocol.SessionWaitingForInput {
+		t.Fatalf("session status during the permission gate = %s, want waiting_for_input", snapshot.Status)
+	}
+	if len(snapshot.ActiveRuns) != 1 || len(snapshot.ActiveRuns[0].PendingInteractions) != 1 {
+		t.Fatalf("active_runs during the permission gate = %+v", snapshot.ActiveRuns)
+	}
+
+	// Resolve the gate and let the run finish, so the trace the snapshot is
+	// spliced into is a complete one.
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, drainAvailable(stream)...)
+	gate := envelopeOfType(t, events, protocol.TypeUserInputRequested)
+	var input protocol.UserInputRequestedPayload
+	if err := gate.DecodePayload(&input); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: input.RespondedBy,
+		Input: &protocol.UserInputResolveRequest{
+			InteractionID: input.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: input.RequestedBy, RespondedBy: input.RespondedBy,
+			Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, drainAvailable(stream)...)
+
+	exchange, err := adaptertest.StateExchange(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), adaptertest.SpliceAfter(t, events, requested.ID, exchange))
+}
+
+// A snapshot handed to a caller owns its own backing array. active_runs is a
+// slice of entries carrying pointers and slices of their own, so a by-value
+// copy shares all of it with the session: a caller editing what it was given
+// would reach into the adapter's own projection. The recovery snapshot is
+// handed out on the same terms as State's.
+func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
+	session := newTestSession(t, 64)
+	run, stream := submit(t, session)
+	drainAvailable(stream)
+
+	recovery, _, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: run, AfterSequence: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, given := range map[string]protocol.SessionState{"State": snapshot, "Resume": recovery.State} {
+		if len(given.ActiveRuns) != 1 {
+			t.Fatalf("%s: active_runs = %+v", name, given.ActiveRuns)
+		}
+		given.ActiveRuns[0].RunID = "tampered"
+		given.ActiveRuns[0].Status = protocol.RunCompleted
+		if sequence := given.ActiveRuns[0].AsOfSequence; sequence != nil {
+			*sequence = 99
+		}
+		for i := range given.ActiveRuns[0].PendingInteractions {
+			given.ActiveRuns[0].PendingInteractions[i] = "tampered"
+		}
+	}
+
+	after, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.ActiveRuns) != 1 || after.ActiveRuns[0].RunID != run {
+		t.Fatalf("the session's own runs were edited through a snapshot: %+v", after.ActiveRuns)
+	}
+	entry := after.ActiveRuns[0]
+	if entry.Status == protocol.RunCompleted {
+		t.Fatalf("run status was edited through a snapshot: %+v", entry)
+	}
+	if entry.AsOfSequence == nil || *entry.AsOfSequence == 99 {
+		t.Fatalf("capture position was edited through a snapshot: %+v", entry)
+	}
+	for _, id := range entry.PendingInteractions {
+		if id == "tampered" {
+			t.Fatalf("pending interactions were edited through a snapshot: %+v", entry)
+		}
+	}
+}
+
+// gatedIDs is fixedIDs with one identifier held open, so a test can stop the
+// adapter at a named point inside a call and look at what the session shows
+// from outside while it is there.
+type gatedIDs struct {
+	mu      sync.Mutex
+	n       int
+	counts  map[string]int
+	trip    func(kind string, nth int) bool
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newGatedIDs(trip func(kind string, nth int) bool) *gatedIDs {
+	return &gatedIDs{counts: map[string]int{}, trip: trip, reached: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (g *gatedIDs) NewID(kind string) string {
+	g.mu.Lock()
+	g.n++
+	g.counts[kind]++
+	id, hold := fmt.Sprintf("%s-%02d", kind, g.n), g.trip(kind, g.counts[kind])
+	g.mu.Unlock()
+	if hold {
+		close(g.reached)
+		<-g.release
+	}
+	return id
+}
+
+func (g *gatedIDs) open() { g.once.Do(func() { close(g.release) }) }
+
+// TestStateOmitsARunUntilItsAdmissionIsHandedBack pins the boundary a
+// projection may cross. A run exists inside the adapter from the moment Submit
+// creates it, and Submit emits its opening events before it returns — but the
+// caller creates the submit response envelope afterwards, and until that
+// envelope exists the trace carries no admission this run could have been
+// anchored to. Nothing Submit publishes reaches the trace ahead of it either,
+// because the caller does not hold the stream yet. So a state read taken while
+// the call is still running must describe a session without the run, and one
+// taken after it must describe the run: the projection flips as the response
+// is handed back and not before.
+func TestStateOmitsARunUntilItsAdmissionIsHandedBack(t *testing.T) {
+	// The second message identifier is the opening delta's, which the adapter
+	// allocates after it has emitted run.started for the run — the deepest
+	// point inside Submit at which a state read could see anything at all.
+	ids := newGatedIDs(func(kind string, nth int) bool { return kind == "message" && nth == 2 })
+	defer ids.open()
+	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: ids, JournalCapacity: 64})
+	session, err := memory.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		admission protocol.MessageSubmitResponse
+		err       error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		admission, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
+		done <- answer{admission, err}
+	}()
+	select {
+	case <-ids.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("submit never reached the opening delta")
+	}
+	held, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held.ActiveRuns) != 0 || held.ActiveRunID != "" || held.Status != protocol.SessionIdle {
+		t.Fatalf("state named a run whose admission has not been handed back: %+v", held)
+	}
+	ids.open()
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	after, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ActiveRunID != got.admission.RunID || len(after.ActiveRuns) != 1 {
+		t.Fatalf("state does not name the admitted run: %+v", after)
+	}
+	if after.ActiveRuns[0].RunID != got.admission.RunID {
+		t.Fatalf("state lists another run: %+v", after.ActiveRuns[0])
+	}
+}
+
+// A state read is answered synchronously while lifecycle reaches a consumer
+// through a buffered stream, so a snapshot taken at a settlement can be handed
+// out — and be on the wire — before the terminal it reflects. Dropping the run
+// and saying nothing made that snapshot read as erasing a live run. The
+// capture anchor is what the endpoint actually knows: this run is gone, and
+// here is the sequence of the event that ended it. The reservation is the
+// clean case to pin, because its terminal is the only envelope its domain
+// ever carries, so a stream holding it undelivered is exactly the window.
+func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
+	session := newTestSession(t, 64)
+	first, firstStream := submitAdmission(t, session)
+	events := drainAvailable(firstStream)
+	gate := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
+
+	queuedRequest := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}}}
+	reservation, reservedStream, err := session.Submit(context.Background(), queuedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.Admission != protocol.AdmissionQueued || reservation.Status != protocol.RunQueued {
+		t.Fatalf("reservation = %+v", reservation)
+	}
+	if _, err := session.Cancel(context.Background(), reservation.RunID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing has read the reservation's stream, so its terminal is admitted
+	// history the trace has not been told about. This is the read the race
+	// produces.
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range snapshot.ActiveRuns {
+		if entry.RunID == reservation.RunID {
+			t.Fatalf("a settled reservation is still listed: %+v", entry)
+		}
+	}
+	if snapshot.AsOf == nil || len(snapshot.AsOf.Settled) != 1 {
+		t.Fatalf("snapshot dropped the reservation without saying so: %+v", snapshot.AsOf)
+	}
+	if snapshot.AsOf.Settled[0].RunID != reservation.RunID || snapshot.AsOf.Settled[0].Sequence != 1 {
+		t.Fatalf("settlement anchor = %+v, want %s at its terminal sequence 1", snapshot.AsOf.Settled[0], reservation.RunID)
+	}
+
+	settled := drainAvailable(reservedStream)
+	if len(settled) != 1 || settled[0].Type != protocol.TypeRunCancelled || settled[0].Sequence == nil || *settled[0].Sequence != 1 {
+		t.Fatalf("reservation domain = %+v, want one run.cancelled at sequence 1", settled)
+	}
+
+	// Finish the started run, so the trace the snapshot is spliced into is a
+	// complete one.
+	rest := resolveScriptedGates(t, session, first.RunID, firstStream, events)
+
+	exchange, err := adaptertest.StateExchange(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The order the race produces: the snapshot reaches the wire, then the
+	// terminal it already reflects, then the started run's remainder.
+	trace := adaptertest.SpliceAfter(t, events, gate.ID, exchange)
+	trace = append(trace, settled[0])
+	trace = append(trace, rest...)
+	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
+		{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}, Admission: first},
+		{Request: queuedRequest, Admission: reservation, Cancelled: true},
+	}, testDescriptor(t), trace)
+}
+
+// The same anchor for the started run: once a run settles, every snapshot the
+// session hands out names it and the sequence its terminal carries.
+func TestStateAnchorsASettledStartedRun(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	events := drainAvailable(stream)
+	events = append(events, resolveScriptedGates(t, session, admission.RunID, stream, events)...)
+	terminal := envelopeOfType(t, events, protocol.TypeRunCompleted)
+
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.ActiveRuns) != 0 || snapshot.ActiveRunID != "" || snapshot.Status != protocol.SessionIdle {
+		t.Fatalf("state after the terminal = %+v", snapshot)
+	}
+	if snapshot.AsOf == nil || len(snapshot.AsOf.Settled) != 1 {
+		t.Fatalf("snapshot dropped the run without saying so: %+v", snapshot.AsOf)
+	}
+	if snapshot.AsOf.Settled[0].RunID != admission.RunID || terminal.Sequence == nil || snapshot.AsOf.Settled[0].Sequence != *terminal.Sequence {
+		t.Fatalf("settlement anchor = %+v, want %s at sequence %v", snapshot.AsOf.Settled[0], admission.RunID, terminal.Sequence)
+	}
+}
+
+// resolveScriptedGates answers the permission and input gates of one run and
+// returns everything it published after the events already drained.
+func resolveScriptedGates(t *testing.T, session adapter.Session, run protocol.RunID, stream adapter.EventStream, drained []protocol.Envelope) []protocol.Envelope {
+	t.Helper()
+	requested := envelopeOfType(t, drained, protocol.TypeActionPermissionRequested)
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	rest := drainAvailable(stream)
+	gate := envelopeOfType(t, rest, protocol.TypeUserInputRequested)
+	var input protocol.UserInputRequestedPayload
+	if err := gate.DecodePayload(&input); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
+		RunID: run, RespondedBy: input.RespondedBy,
+		Input: &protocol.UserInputResolveRequest{
+			InteractionID: input.InteractionID, SessionID: "session-1", RunID: run,
+			RequestedBy: input.RequestedBy, RespondedBy: input.RespondedBy,
+			Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	return append(rest, drainAvailable(stream)...)
+}
+
+func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.EnvelopeType) protocol.Envelope {
+	t.Helper()
+	for _, envelope := range envelopes {
+		if envelope.Type == typ {
+			return envelope
+		}
+	}
+	t.Fatalf("no %s in %d envelopes", typ, len(envelopes))
+	return protocol.Envelope{}
 }

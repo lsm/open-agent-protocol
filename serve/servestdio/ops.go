@@ -225,11 +225,12 @@ func (s *Server) capabilitiesOp(ctx context.Context, name string) (json.RawMessa
 }
 
 type sessionInfo struct {
-	SessionID   string `json:"session_id"`
-	Adapter     string `json:"adapter"`
-	Status      string `json:"status"`
-	ActiveRunID string `json:"active_run_id,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	SessionID   string               `json:"session_id"`
+	Adapter     string               `json:"adapter"`
+	Status      string               `json:"status"`
+	ActiveRunID string               `json:"active_run_id,omitempty"`
+	ActiveRuns  []protocol.ActiveRun `json:"active_runs,omitempty"`
+	CreatedAt   string               `json:"created_at"`
 }
 
 func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
@@ -239,7 +240,8 @@ func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
 		infos = append(infos, sessionInfo{
 			SessionID: string(status.SessionID), Adapter: status.Adapter,
 			Status: string(status.Status), ActiveRunID: string(status.ActiveRunID),
-			CreatedAt: status.CreatedAt.UTC().Format(time.RFC3339),
+			ActiveRuns: status.ActiveRuns,
+			CreatedAt:  status.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	return marshalResult(map[string]any{"sessions": infos})

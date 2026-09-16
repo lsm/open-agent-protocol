@@ -1,0 +1,7 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"capq","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"cap-v1","payload":{"endpoint":{"id":"agent"},"features":{"session.message.delivery.queue":{"level":"native"}},"limits":{"max_active_runs_per_session":2,"max_queued_runs_per_session":1}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"oq","payload":{"session_id":"s1","recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"41"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"orr","in_reply_to":"oq","session_id":"s1","payload":{"session_id":"s1","status":"running","active_run_id":"r1","active_runs":[{"run_id":"r1","status":"running","relationship":"primary"}],"recovery":{"recovered":true,"previous_run_id":"r1","resume_cursor":"41"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"ev1","session_id":"s1","run_id":"r1","sequence":44,"payload":{"session_id":"s1","run_id":"r1","final_response":{"id":"m-ev1","role":"assistant","content":"ok"},"stop_reason":"end_turn"}}
+]
