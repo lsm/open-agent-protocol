@@ -71,15 +71,6 @@ type controlExpectation struct {
 	// refuses under a shape that does not tell the caller what to change.
 	diagnostic string
 	message    string
-	// refusalOnly marks an expectation that only a refusal can betray. The
-	// state rung is one: a session busy when the endpoint looked and idle
-	// when the response lands admits either answer, so an admission
-	// discharges the expectation instead of failing it.
-	refusalOnly bool
-	// stateKind names which state-rung condition this expectation carries,
-	// so the refusal is judged against the window rather than against a value
-	// fixed at the request.
-	stateKind int
 }
 
 // less orders two expectations by the refusal precedence: rung, then
@@ -490,7 +481,7 @@ func (s *state) settleSubmitAdmission(i, line int, e protocol.Envelope, p protoc
 	if pending == nil {
 		return admittedControls{}
 	}
-	if pending.expectation != nil && !pending.expectation.refusalOnly {
+	if pending.expectation != nil {
 		s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/admission", pending.expectation.message, "a typed refusal naming "+pending.expectation.key, string(p.Admission), string(e.InReplyTo))
 		// The admission itself is the defect. Nothing is retained for the
 		// run: judging the execution of a control that should never have been
@@ -520,15 +511,7 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 		text, isText := value.(string)
 		return text, ok && isText
 	}
-	if expectation := pending.expectation; expectation != nil && expectation.rung == rungState {
-		// The state rung is judged across the request/response window rather
-		// than against a value settled at the request: Submit decides at an
-		// instant the trace cannot name, and both edges of that ignorance
-		// produce false verdicts. Whatever the window says, a refusal may
-		// still be the wrong answer to a control this request satisfies, so
-		// the other direction below still runs.
-		s.settleQueueRefusal(i, line, e, pending, payload)
-	} else if expectation := pending.expectation; expectation != nil {
+	if expectation := pending.expectation; expectation != nil {
 		conforming := payload.Error.Code == expectation.code
 		if conforming && expectation.code == errorUnsupportedFeature {
 			// unsupported_feature answers about one capability, so the key is
@@ -557,14 +540,15 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 	// within every disclosed constraint, refused as unsupported. The endpoint
 	// has claimed a condition the validator can see does not hold, and the
 	// caller discards a request that was valid.
-	if payload.Error.Code != errorUnsupportedFeature {
+	if feature, ok := detail("feature"); payload.Error.Code == errorUnsupportedFeature && ok && pending.satisfiable[feature] {
+		s.addExpected(CodeUnsatisfiableControl, i, line, e, "/payload/error", "refusal names a control the endpoint advertises and this request satisfies", "admission or a defect the refusal names", describeRefusal(payload.Error), string(e.InReplyTo))
 		return
 	}
-	feature, ok := detail("feature")
-	if !ok || !pending.satisfiable[feature] {
-		return
-	}
-	s.addExpected(CodeUnsatisfiableControl, i, line, e, "/payload/error", "refusal names a control the endpoint advertises and this request satisfies", "admission or a defect the refusal names", describeRefusal(payload.Error), string(e.InReplyTo))
+	// Nothing ranked above it claimed the response, so the state rung judges
+	// it — against the window as it now stands, since which condition applies
+	// is a fact about the window rather than about the instant the request
+	// arrived.
+	s.settleQueueRefusal(i, line, e, pending, payload)
 }
 
 func (e *controlExpectation) describe() string {

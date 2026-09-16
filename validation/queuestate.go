@@ -45,7 +45,7 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 		s.checkActiveRunsOmitted(i, line, e, required)
 		return
 	}
-	s.checkActiveRunsListing(i, line, e, p, required)
+	s.checkActiveRunsListing(i, line, e, p, required, s.captureWindowStart(i, e))
 }
 
 // requiredActiveRuns is the set of nonterminal runs a snapshot had to list.
@@ -139,7 +139,7 @@ func (s *state) checkActiveRunsOmitted(i, line int, e protocol.Envelope, require
 // checkActiveRunsListing judges a present active_runs: that it lists every run
 // it owed, in admission order, with consistent queue positions, and that each
 // entry's pending set is accurate at the position the entry states.
-func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p protocol.SessionState, required []*runState) {
+func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p protocol.SessionState, required []*runState, window int) {
 	listed := map[protocol.RunID]bool{}
 	lastOrder := -1
 	queuePosition := 0
@@ -153,6 +153,16 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		r := s.runs[entry.RunID]
 		if r == nil || r.session != p.SessionID {
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs names a run the trace does not carry for this session", "a run admitted on "+string(p.SessionID), string(entry.RunID))
+			continue
+		}
+		if r.terminal && r.terminalAt < window {
+			// active_runs is the nonterminal set. A run that settled before
+			// the read was even requested cannot be in it under any capture
+			// position, so this is a stale listing rather than a race. One
+			// that settled inside the window may still be listed: the
+			// snapshot may have been captured before that terminal, which is
+			// the race the capture positions exist to allow.
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs lists a run that had already settled before the read was requested", "a nonterminal run", string(entry.RunID), string(entry.RunID))
 			continue
 		}
 		if r.order <= lastOrder {
@@ -367,11 +377,21 @@ func (s *state) checkCaptureModel(i, line int, e protocol.Envelope, p protocol.S
 		return
 	}
 	r := s.runs[position.RunID]
-	if r == nil {
-		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/model_run_sequence", "capture position names a run the trace does not carry", "an admitted run", string(position.RunID))
+	if r == nil || r.session != p.SessionID {
+		// A position is a position in this session's history. An anchor on
+		// another session's run would let a snapshot borrow a model authority
+		// that says nothing about the session it describes.
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/model_run_sequence", "capture position names a run the trace does not carry for this session", "a run admitted on "+string(p.SessionID), string(position.RunID))
 		return
 	}
-	if !r.started || r.startSequence != position.Sequence {
+	if r.started && r.startSequence != position.Sequence {
+		// The run began somewhere else, and a run begins once: no later
+		// envelope can make this position the promotion it claims to be, so
+		// there is nothing to wait for.
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/model_run_sequence", "capture position names a sequence its run did not start at", fmt.Sprintf("%d", r.startSequence), fmt.Sprintf("%d", position.Sequence), string(r.id))
+		return
+	}
+	if !r.started {
 		// The named promotion has not reached the trace; it is held and
 		// reconciled when it arrives.
 		s.deferred = append(s.deferred, &deferredStateClaim{kind: claimModel, session: p.SessionID, run: position.RunID, sequence: position.Sequence, model: p.CurrentModelID, index: i, line: line, envelope: e})

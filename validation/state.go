@@ -39,8 +39,11 @@ type runState struct {
 	admittedQueued bool
 	// startSequence is the sequence run.started carried, which is the
 	// position a state capture names when it reports the model a promotion
-	// installed.
+	// installed. terminalAt is the trace index the run settled at, which is
+	// what decides whether a snapshot listing it was stale or merely
+	// captured before the terminal it could not have seen.
 	startSequence uint64
+	terminalAt    int
 	// admittedAt and submitRequest are the trace positions of the run's
 	// admission: the index of its submit response, and the envelope id of the
 	// request that admitted it. A state snapshot's membership anchor names the
@@ -1000,6 +1003,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 		r.terminal = true
 		r.terminalType = e.Type
+		r.terminalAt = i
 		switch e.Type {
 		case protocol.TypeRunCompleted:
 			r.status = protocol.RunCompleted

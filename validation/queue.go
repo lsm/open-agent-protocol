@@ -19,17 +19,23 @@ import (
 // required behaviour, so diagnosing the request would fail the conduct the
 // protocol mandates.
 
-// rungState is the fourth rung of the refusal ladder: the transient failures,
-// which a caller may simply retry. It sits below capability, degradation, and
+// The state rung of the refusal ladder is the transient failures, which a
+// caller may simply retry. It sits below capability, degradation, and
 // unsatisfiability, so a busy session never hides a control the caller must
-// stop sending.
-const rungState = rungUnsatisfiable + 1
-
-// The state rung's two conditions. They are mutually exclusive by
-// construction: the busy condition applies where the endpoint does not
-// advertise a queue, and the limit condition where it does.
+// stop sending — which is why it is not a retained expectation like the other
+// three but a judgement made at the response, after the ranked expectations
+// have had their say. It has to be: which state condition applies is a fact
+// about the whole request/response window, and the window is still moving when
+// the request arrives. An auto submission made on an idle session whose queue
+// fills before its response is owed exactly the answer an identical submission
+// made a moment later is owed.
+//
+// The two conditions are mutually exclusive by construction: the busy
+// condition applies where the endpoint advertises no queue, the limit
+// condition where it does.
 const (
-	stateBusySession = iota + 1
+	stateNone = iota
+	stateBusySession
 	stateQueueLimit
 )
 
@@ -80,6 +86,31 @@ type queueWindow struct {
 	// it with run_active even after the bound has cleared, so the stale-limit
 	// check stands down for it.
 	mutation bool
+	// offered records whether the descriptor the submission was made under
+	// advertised the queue. It belongs to that descriptor, like the bounds
+	// beside it, rather than to whatever a refresh installed in the meantime.
+	offered bool
+}
+
+// stateCondition is the state-rung condition this window carries, as of now.
+// It is read at the response rather than fixed at the request, because
+// busyEver and the bound counters keep moving while the submit is in flight.
+func (w *queueWindow) stateCondition() int {
+	if w.delivery != "" && w.delivery != protocol.DeliveryAuto && w.delivery != protocol.DeliveryQueue {
+		return stateNone
+	}
+	switch {
+	case w.offered && (w.delivery == protocol.DeliveryQueue || w.busyEver):
+		// A bound belongs to a queue the endpoint offers, so the limit
+		// condition covers an explicit queue on an advertising endpoint and an
+		// auto on a session that was busy at any point in the window.
+		return stateQueueLimit
+	case !w.offered && w.delivery != protocol.DeliveryQueue && w.busyEver:
+		// The endpoint advertises no busy outcome, so a busy session owes the
+		// wire's run_active and nothing else.
+		return stateBusySession
+	}
+	return stateNone
 }
 
 // advertisedLevel reports a capability key's level without diagnosing
@@ -203,6 +234,7 @@ func (s *state) deliveryExpectations(i, line int, e protocol.Envelope, p protoco
 	if s.limits != nil {
 		window.maxActive, window.maxQueued = s.limits.MaxActiveRunsPerSession, s.limits.MaxQueuedRunsPerSession
 	}
+	window.offered = s.queueOffered()
 	window.reachedStrict = window.exceeds(active, queued, 0)
 	window.reachedLoose = window.exceeds(active, queued, len(s.openSubmits[p.SessionID]))
 	pending.queue = window
@@ -239,53 +271,20 @@ func (s *state) deliveryExpectations(i, line int, e protocol.Envelope, p protoco
 			})
 		}
 	}
-	if state := s.stateExpectation(p, window); state != nil {
-		expectations = append(expectations, state)
-	}
 	return expectations
 }
 
-// stateExpectation is the queue unit's rung-4 retention. Exactly one condition
-// can apply: where the endpoint offers no queue, a busy session owes
-// run_active for an auto submit; where it offers one, the bound does.
-func (s *state) stateExpectation(p protocol.MessageSubmitRequest, window *queueWindow) *controlExpectation {
-	if p.Delivery != "" && p.Delivery != protocol.DeliveryAuto && p.Delivery != protocol.DeliveryQueue {
-		return nil
-	}
-	offered := s.queueOffered()
-	switch {
-	case offered && (p.Delivery == protocol.DeliveryQueue || window.busyEver):
-		// A bound belongs to a queue the endpoint offers, so the limit rule
-		// covers an explicit queue on an advertising endpoint and an auto on
-		// a busy session whose descriptor advertises one.
-		return &controlExpectation{
-			rung: rungState, key: protocol.FeatureDeliveryQueue, pointer: "/payload/delivery",
-			code: errorRunActive, refusalOnly: true, stateKind: stateQueueLimit,
-			diagnostic: CodeQueueLimitExceeded,
-			message:    "submission is refused against a queue bound",
-		}
-	case !offered && p.Delivery != protocol.DeliveryQueue && window.busyEver:
-		// The endpoint advertises no busy outcome, so a busy session owes the
-		// wire's run_active and nothing else: an ordinary busy-session
-		// refusal must not hide behind internal_error.
-		return &controlExpectation{
-			rung: rungState, key: protocol.FeatureDeliveryQueue, pointer: "/payload/delivery",
-			code: errorRunActive, refusalOnly: true, stateKind: stateBusySession,
-			diagnostic: CodeIllegalRunTransition,
-			message:    "submission to a busy session is refused",
-		}
-	}
-	return nil
-}
-
 // settleQueueRefusal judges an error.response against the state rung, across
-// the window rather than at either edge of it.
+// the window rather than at either edge of it. It runs only where no ranked
+// expectation owned the response: the state rung is the lowest, so whatever a
+// capability, a degradation, or an unsatisfiability owed the caller is the
+// answer, and this one is discharged.
 func (s *state) settleQueueRefusal(i, line int, e protocol.Envelope, pending *pendingSubmit, payload protocol.ErrorResponse) {
 	window := pending.queue
 	if window == nil {
 		return
 	}
-	switch pending.expectation.stateKind {
+	switch window.stateCondition() {
 	case stateBusySession:
 		if payload.Error.Code != errorRunActive {
 			s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/error", "a busy session's refusal must be the wire's run_active", errorRunActive, describeRefusal(payload.Error), string(e.InReplyTo))
@@ -367,7 +366,7 @@ func (s *state) queueAdmission(i, line int, e protocol.Envelope, p protocol.Mess
 	// The capability gate on a reservation, whatever the session held. An
 	// explicit queue retained the same judgement at the request and is
 	// settled through the ladder, so it is not diagnosed twice here.
-	gated := pending != nil && pending.expectation != nil && pending.expectation.key == protocol.FeatureDeliveryQueue && pending.expectation.rung != rungState
+	gated := pending != nil && pending.expectation != nil && pending.expectation.key == protocol.FeatureDeliveryQueue
 	if !gated {
 		level, known := s.advertisedLevel(protocol.FeatureDeliveryQueue)
 		switch {
@@ -654,6 +653,12 @@ func (s *state) closeQueue() {
 			s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/as_of/settled", "snapshot dropped a run whose claimed terminal never arrived", fmt.Sprintf("a terminal at sequence %d", claim.sequence), "no terminal", string(claim.run))
 		case claimCapture:
 			s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/active_runs", "active_runs entry states a capture position its run never reaches", fmt.Sprintf("sequence %d", claim.sequence), "the run never reached it", string(claim.run))
+		case claimModel:
+			// A model anchor names a promotion. One that never happens leaves
+			// the model the snapshot reported judged against nothing, which
+			// is how a snapshot would evade the authority check by pointing
+			// at a start that never comes.
+			s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, "/payload/as_of/model_run_sequence", "capture position names a promotion that never arrived", fmt.Sprintf("run.started at sequence %d", claim.sequence), "the run never started", string(claim.run))
 		}
 	}
 }

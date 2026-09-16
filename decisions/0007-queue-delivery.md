@@ -117,6 +117,13 @@ The inverse is checked too, or the rule would only ever tighten. A refusal
 reporting a bound that was never reached tells a caller to wait for capacity it
 never lacked, and is `queue_limit_exceeded` on the `error.response`.
 
+Which state condition applies is itself a fact about the window, not about the
+instant the request arrived, so it is decided at the response rather than
+retained from the request: a submission made on an idle session whose session
+or queue fills before its response is owed the answer an identical submission
+made a moment later is owed. The rung stays the lowest — it judges only a
+response no capability, degradation, or unsatisfiability claimed.
+
 Both directions are judged across the request/response window rather than at
 either edge. `Submit` decides atomically at an instant the trace cannot name,
 and both edges of that ignorance produce false verdicts: a queue full at the
@@ -159,7 +166,11 @@ admitted, the runs it has already removed with the sequence of each one's
 terminal, and the last model-affecting event it reflects.
 
 `active_runs` is a list of the session's nonterminal runs, and each entry is
-held to that. A terminal status there contradicts the membership it is part of:
+held to that. A run that had settled before the read was even requested cannot
+be in it under any capture position, so listing it is a stale snapshot rather
+than a race; one that settles inside the window may still be listed, because
+the snapshot may have been captured before a terminal it could not have seen.
+A terminal status there contradicts the membership it is part of:
 a snapshot that knows a run settled drops it and names it in `as_of.settled`
 rather than listing it as completed. A run the trace has seen start is not
 `queued` at any position from its start onwards, though a capture stated before
@@ -191,7 +202,12 @@ reservation waits.
 
 `premature_session_mutation` is the check that binds it: while a run admitted
 under `session_mutation` is started, a snapshot reports that run's admitted
-model, judged at the position the snapshot states. The marker has a genesis
+model, judged at the position the snapshot states. A position is a position in this session's history, and it names a promotion:
+an anchor on another session's run would let a snapshot borrow a model
+authority that says nothing about the session it describes, and an anchor on a
+sequence its run did not start at, or on a promotion that never arrives, would
+leave the model it reported judged against nothing. All three are
+`session_state_mismatch`. The marker has a genesis
 form, `{"run_id": null, "sequence": 0}`, naming the position before the
 session's first model-affecting event; without it the one case the marker
 exists for — a session opening on model A, captured just before the first
@@ -239,6 +255,11 @@ terminal, and settles a cancelled reservation pre-start.
 - The hub keeps a reservation out of the run a bare replay cursor resolves
   onto: it has published nothing, and a client resumed onto a run that settles
   pre-start would be stranded.
+- A reservation is admitted work, so it refuses a session close exactly as a
+  started run does. Between a started run's terminal and a reservation's
+  promotion the reservation is the session's only nonterminal run, and a close
+  that looked only at the started slot would drop an accepted submission
+  without publishing anything for it.
 
 ## What this unit does not admit
 
