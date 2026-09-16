@@ -845,3 +845,60 @@ func TestDescriptorAdvertisesEmittedOptionalFeatures(t *testing.T) {
 		}
 	}
 }
+
+// A request can fail several controls at once and one error.response carries
+// one code, so the plan ranks the failures rather than conjoining them: within
+// the unsatisfiability rung the lower capability key wins. An endpoint that
+// answered with whichever defect it happened to find first would name a
+// different control than the validator names for the same request, and a
+// caller acting on that answer would fix a control and be refused again for
+// one it was never told about.
+func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
+	unsatisfiableChoice := json.RawMessage(`{"mode":"named","name":"absent_tool"}`)
+	uncompilableSchema := json.RawMessage(`{"type":"object","required":"x"}`)
+	for name, testCase := range map[string]struct {
+		request protocol.MessageSubmitRequest
+		feature string
+	}{
+		// run.structured_output sorts below run.tool_selection.
+		"output schema and tool choice": {
+			request: protocol.MessageSubmitRequest{OutputSchema: uncompilableSchema, ToolChoice: unsatisfiableChoice},
+			feature: protocol.FeatureStructuredOutput,
+		},
+		// run.model_selection sorts below both.
+		"model, output schema, and tool choice": {
+			request: protocol.MessageSubmitRequest{ModelID: protocol.ControlValue("no-such-model"), OutputSchema: uncompilableSchema, ToolChoice: unsatisfiableChoice},
+			feature: protocol.FeatureModelSelection,
+		},
+		"model and tool choice": {
+			request: protocol.MessageSubmitRequest{ModelID: protocol.ControlValue("no-such-model"), ToolChoice: unsatisfiableChoice},
+			feature: protocol.FeatureModelSelection,
+		},
+	} {
+		session := newTestSession(t, 64)
+		request := testCase.request
+		request.SessionID, request.Delivery = "session-1", protocol.DeliveryAuto
+		request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
+		_, _, err := session.Submit(context.Background(), request)
+		switch testCase.feature {
+		case protocol.FeatureModelSelection:
+			// A catalog miss is the one unsatisfiability whose conforming
+			// refusal is model_not_found rather than unsupported_feature.
+			var missing *adapter.ModelNotFoundError
+			if !errors.As(err, &missing) {
+				t.Fatalf("%s: got %v, want the model refusal the lowest key owes", name, err)
+			}
+		default:
+			var refusal *adapter.UnsupportedControlError
+			if !errors.As(err, &refusal) {
+				t.Fatalf("%s: got %v, want a typed unsupported-control refusal", name, err)
+			}
+			if refusal.Feature != testCase.feature {
+				t.Fatalf("%s: refused %q, want the lower key %q", name, refusal.Feature, testCase.feature)
+			}
+		}
+		if state, err := session.State(context.Background()); err != nil || state.ActiveRunID != "" || state.Status != protocol.SessionIdle {
+			t.Fatalf("%s: refused controls allocated identity: %+v err=%v", name, state, err)
+		}
+	}
+}

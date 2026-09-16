@@ -1040,3 +1040,37 @@ func TestSubmitRefusesEmptyModelID(t *testing.T) {
 		t.Fatalf("got %v, want model_not_found naming the empty id", err)
 	}
 }
+
+// The refusal ladder ranks a capability refusal above everything else, so the
+// control gate runs before ordinary submission validation: a request that is
+// malformed *and* carries an unadvertised control is answered with the
+// control. A caller told only "invalid submission" would fix its messages,
+// resubmit, and be refused again for a control it was never told about —
+// which is the round trip the ordering exists to save. The same request is
+// answered the same way by every adapter in this repository.
+func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
+	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
+	for name, request := range map[string]protocol.MessageSubmitRequest{
+		"no messages":      {SessionID: "session-1", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse")},
+		"wrong session":    {SessionID: "other", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
+		"unsupported mode": {SessionID: "session-1", Delivery: protocol.DeliveryQueue, Instructions: protocol.ControlValue("be terse"), Messages: message},
+		"degraded consent": {SessionID: "session-1", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), AllowDegradedFeatures: []string{protocol.FeatureInstructions}, Messages: message},
+	} {
+		_, session, _ := openFake(t)
+		_, _, err := session.Submit(context.Background(), request)
+		var refusal *adapter.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureInstructions || refusal.Reason != adapter.ControlUnadvertised {
+			t.Fatalf("%s: got %v, want the unadvertised control named ahead of the ordinary refusal", name, err)
+		}
+	}
+
+	// A model this pin can apply is not refused by the gate, so the ordinary
+	// refusal still answers a request whose only other fault is its messages.
+	_, session, _ := openFake(t)
+	_, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("glm-per-turn"),
+	})
+	if !errors.Is(err, adapter.ErrInvalidSubmission) {
+		t.Fatalf("got %v, want the ordinary refusal when no control is at fault", err)
+	}
+}

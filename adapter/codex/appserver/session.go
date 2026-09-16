@@ -94,20 +94,16 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	if request.SessionID != session.state.SessionID || len(request.Messages) == 0 {
-		return protocol.MessageSubmitResponse{}, nil, adapter.ErrInvalidSubmission
-	}
-	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
-		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", adapter.ErrInvalidSubmission, request.Delivery)
-	}
 	// Every control this pin cannot apply is refused before admission under
 	// the key the descriptor advertises `unavailable`, naming what the caller
-	// must stop sending rather than dropping it (decision 0005).
+	// must stop sending rather than dropping it (decision 0005). The gate runs
+	// ahead of ordinary submission validation because the ladder ranks a
+	// capability refusal above every other: a caller that fixes its messages
+	// and resubmits is refused for the control anyway, so naming the control
+	// first is the answer that saves the round trip. Every adapter here runs
+	// the gate in this position.
 	if err := adapter.RefuseUnadvertisedControls(request, protocol.FeatureModelSelection); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
-	}
-	if len(request.AllowDegradedFeatures) != 0 || len(request.Metadata) != 0 {
-		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: degraded-feature consent and metadata are not supported", adapter.ErrInvalidSubmission)
 	}
 	// turn/start carries the model per turn, so a requested model is applied
 	// to exactly this run. An empty id is a control the endpoint must refuse,
@@ -119,6 +115,15 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 			return protocol.MessageSubmitResponse{}, nil, &adapter.ModelNotFoundError{}
 		}
 		model = *request.ModelID
+	}
+	if request.SessionID != session.state.SessionID || len(request.Messages) == 0 {
+		return protocol.MessageSubmitResponse{}, nil, adapter.ErrInvalidSubmission
+	}
+	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto {
+		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", adapter.ErrInvalidSubmission, request.Delivery)
+	}
+	if len(request.AllowDegradedFeatures) != 0 || len(request.Metadata) != 0 {
+		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: degraded-feature consent and metadata are not supported", adapter.ErrInvalidSubmission)
 	}
 	input, messageIDs, err := session.nativeInput(request.Messages)
 	if err != nil {

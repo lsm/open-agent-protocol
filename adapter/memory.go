@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -351,6 +353,15 @@ func (s *memorySession) catalog() []string { return []string{scriptedTool} }
 // and the native adapters that exercise it.
 func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (admittedControls, error) {
 	controls := admittedControls{callsTool: true}
+	// Refusals are collected rather than returned where they are found. A
+	// request can fail several controls at once and one error.response
+	// carries one code, so within the unsatisfiability rung the plan ranks
+	// them by the lower capability key: returning the first defect found
+	// would answer by the order this function happens to read the controls
+	// in, and name a different control than the validator names for the same
+	// request.
+	var refusals []keyedRefusal
+	refuse := func(key string, err error) { refusals = append(refusals, keyedRefusal{key: key, err: err}) }
 	if request.Instructions != nil {
 		controls.instructions = *request.Instructions
 	}
@@ -359,36 +370,50 @@ func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (ad
 		// gate, a model id like any other: one no catalog can list.
 		model := *request.ModelID
 		if model != ModelPrimary && model != ModelSecondary {
-			return admittedControls{}, &ModelNotFoundError{ModelID: model}
+			refuse(protocol.FeatureModelSelection, &ModelNotFoundError{ModelID: model})
+		} else {
+			controls.model = model
 		}
-		controls.model = model
 	}
 	policy, err := request.ToolChoicePolicy()
-	if err != nil {
-		return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Detail: err.Error()}
-	}
-	if policy != nil {
+	switch {
+	case err != nil:
+		refuse(protocol.FeatureToolSelection, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Detail: err.Error()})
+	case policy != nil:
 		if defect := policy.Unsatisfiable(s.catalog(), true); defect != nil {
-			return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason}
+			refuse(protocol.FeatureToolSelection, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason})
+		} else {
+			controls.choice = policy
+			controls.callsTool = policy.Permits(scriptedTool, s.catalog(), true)
 		}
-		controls.choice = policy
-		controls.callsTool = policy.Permits(scriptedTool, s.catalog(), true)
 	}
 	if len(request.OutputSchema) > 0 {
 		compiled, err := validation.CompileOutputSchema(request.OutputSchema)
-		if err != nil {
-			return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: err.Error()}
-		}
+		switch {
+		case err != nil:
+			refuse(protocol.FeatureStructuredOutput, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: err.Error()})
 		// The scripted result is fixed and disclosed as fixed_result, so a
 		// schema that object cannot satisfy could only complete
 		// nonconforming. Refusing it before admission is the promise the
 		// constraint makes, checkable in both directions.
-		if err := compiled.Validate(json.RawMessage(fixedResult)); err != nil {
-			return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: "the fixed result does not satisfy the requested schema"}
+		case compiled.Validate(json.RawMessage(fixedResult)) != nil:
+			refuse(protocol.FeatureStructuredOutput, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: "the fixed result does not satisfy the requested schema"})
+		default:
+			controls.outputSchema = append(json.RawMessage(nil), request.OutputSchema...)
 		}
-		controls.outputSchema = append(json.RawMessage(nil), request.OutputSchema...)
+	}
+	if len(refusals) > 0 {
+		slices.SortStableFunc(refusals, func(a, b keyedRefusal) int { return strings.Compare(a.key, b.key) })
+		return admittedControls{}, refusals[0].err
 	}
 	return controls, nil
+}
+
+// keyedRefusal is one control refusal together with the capability key it
+// falls under, which is what ranks it against the others a request earned.
+type keyedRefusal struct {
+	key string
+	err error
 }
 
 func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error) {

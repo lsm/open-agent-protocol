@@ -744,6 +744,23 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 			t.Fatalf("%s: the refusal does not unwrap to the shared sentinel: %v", feature, err)
 		}
 	}
+	// The ladder ranks a capability refusal above ordinary validation, so the
+	// gate runs first: a request that is malformed and carries an unadvertised
+	// control is answered with the control, the same ordering every adapter
+	// here uses. Answering "invalid submission" would send the caller round
+	// again to be refused for a control it was never told about.
+	for name, request := range map[string]protocol.MessageSubmitRequest{
+		"no messages":      {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse")},
+		"no session":       {Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
+		"unsupported mode": {SessionID: "session", Delivery: protocol.DeliveryQueue, Instructions: protocol.ControlValue("be terse"), Messages: message},
+	} {
+		_, _, err := s.Submit(context.Background(), request)
+		var refusal *base.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureInstructions {
+			t.Fatalf("%s: got %v, want the unadvertised control named ahead of the ordinary refusal", name, err)
+		}
+	}
+
 	// Every refusal precedes admission, so no run was reserved: a clean
 	// submission still runs and still validates as a complete protocol trace.
 	admission, stream := submit(t, s)

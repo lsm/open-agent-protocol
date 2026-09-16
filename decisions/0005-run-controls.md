@@ -100,6 +100,17 @@ Pointer. The ladder runs from the most permanent failure to the most transient,
 which is the order in which a caller can act — what it must stop sending
 outranks what it must send differently, which outranks what it may retry.
 
+Ordinary submission validation sits below the whole ladder, so a request that
+is malformed *and* carries a control the endpoint cannot apply is answered
+with the control. The reason is the same one that orders the rungs: a caller
+told only that its submission was invalid fixes the messages, resubmits, and
+is refused again for a control it was never told about. Every endpoint
+therefore runs the control gate before it validates anything else, and before
+it allocates any identity or writes anything native. Among the collected
+failures, the answer is chosen by the ladder rather than by the order the
+endpoint happened to test them in — an endpoint returning its first defect
+would name a different control than the validator names for the same request.
+
 ### The gate is judged on the correlated response
 
 The wire makes refusal the required behaviour, so the validator cannot diagnose
