@@ -318,6 +318,19 @@ advertises the key `native` and applies it. Changes at this pin:
 - the capability revision becomes `opencode-v1.18.29-oap-v2`, since a
   revision identifies exactly one descriptor.
 
+**Recorded assumption: promotion marks the turn boundary.** Once
+`session.next.prompted` names a queued input, every later durable event of the
+session belongs to that input's turn, and the previous turn's step and text
+events are already persisted. The adapter relies on this to route native events
+after a promotion into the promoted run rather than the one still finishing;
+reducing them into the earlier run would attribute one run's output to another
+and leave the promoted run unable to settle. It is the same shape of assumption
+as the settlement fence above — that the last durable event of a turn is
+persisted before the loop goes idle — and rests on the same property, that the
+run coordinator drains one agent loop per turn. The adapter's *publication* of
+the promoted run waits for the earlier run's derived terminal even so, because
+the terminal is derived from quiescence and lags the boundary.
+
 **New mismatch (P1): no route withdraws one queued input.** The pinned
 server's cancellation surface is `POST /api/session/:id/interrupt`, which is
 documented as active-execution-scoped. Sending it to cancel a *reservation*
