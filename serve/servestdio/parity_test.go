@@ -224,6 +224,144 @@ func TestToolsOpMatchesHTTP(t *testing.T) {
 	}
 }
 
+// TestOpenOpMatchesHTTP holds the open op to the route it mirrors. Both
+// frontends run the same admission — one serve.AttachmentGate, one
+// serve.ResolveAttachments — so the session state a successful open publishes
+// is the same document, and an attachment the daemon will not take from the
+// wire is refused under the same code whichever pipe carried it.
+//
+// The attaching case is the one worth pinning. A stdio peer is a separate
+// process on the far side of a pipe, so it is a wire caller: a command it
+// supplies is refused exactly as a webpage's would be over HTTP. An open that
+// names the operator's configured source by id alone is admitted on both, and
+// gets the operator's own fuller descriptor back.
+func TestOpenOpMatchesHTTP(t *testing.T) {
+	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
+	// The operator's own source: command, args and environment come from
+	// here and never from either wire.
+	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
+		if err := hub.Registry().RegisterToolSource("workspace-files", protocol.ToolSourceAttachment{
+			Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
+			DisplayName: "Workspace Files", Endpoint: "stdio:workspace-files",
+			Command: "/usr/local/bin/mcp-filesystem", Args: []string{"--root", "/workspace"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server, err := servehttp.New(httpHub, servehttp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpFrontend := httptest.NewServer(server.Handler())
+	defer httpFrontend.Close()
+	f := startFrontend(t, stdioHub, Options{})
+
+	payload := func(sessionID string, sources []protocol.ToolSourceAttachment) protocol.SessionOpenRequest {
+		return protocol.SessionOpenRequest{SessionID: protocol.SessionID(sessionID), ToolSources: sources}
+	}
+	postOpen := func(t *testing.T, request json.RawMessage) (int, json.RawMessage) {
+		t.Helper()
+		response, err := http.Post(httpFrontend.URL+"/adapters/memory/sessions", "application/json", bytes.NewReader(request))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, body
+	}
+
+	t.Run("a plain open publishes the same state", func(t *testing.T) {
+		request := requestEnvelope(t, "req-parity-open", protocol.TypeSessionOpenRequest, payload("parity-open", nil), "", "")
+		status, body := postOpen(t, request)
+		if status != http.StatusOK {
+			t.Fatalf("POST sessions: %d: %s", status, body)
+		}
+		f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"memory","request":%s}`, request))
+		response := f.expectResponse(1)
+		requireOK(t, response)
+		requireEqualPayloads(t, response.Result, body)
+	})
+
+	t.Run("a wire-supplied command is refused on both", func(t *testing.T) {
+		sources := []protocol.ToolSourceAttachment{{
+			ID: "workspace-files", Kind: protocol.ToolSourceProcess, Command: "/bin/sh", Args: []string{"-c", "true"},
+		}}
+		request := requestEnvelope(t, "req-parity-command", protocol.TypeSessionOpenRequest, payload("parity-command", sources), "", "")
+		status, body := postOpen(t, request)
+		if status == http.StatusOK {
+			t.Fatalf("HTTP accepted a wire-supplied command: %s", body)
+		}
+		f.send(fmt.Sprintf(`{"id":2,"op":"open","adapter":"memory","request":%s}`, request))
+		requireCode(t, f.expectResponse(2), errorCode(t, body))
+	})
+
+	t.Run("a configured source named by id is admitted on both", func(t *testing.T) {
+		sources := []protocol.ToolSourceAttachment{{ID: "workspace-files", Kind: protocol.ToolSourceProcess}}
+		request := requestEnvelope(t, "req-parity-source", protocol.TypeSessionOpenRequest, payload("parity-source", sources), "", "")
+		status, body := postOpen(t, request)
+		if status != http.StatusOK {
+			t.Fatalf("POST sessions with a configured source: %d: %s", status, body)
+		}
+		f.send(fmt.Sprintf(`{"id":3,"op":"open","adapter":"memory","request":%s}`, request))
+		response := f.expectResponse(3)
+		requireOK(t, response)
+		requireEqualPayloads(t, response.Result, body)
+	})
+
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+// requireEqualPayloads compares two response envelopes by everything but the
+// envelope id, which both frontends mint from their own counter and which the
+// mirror claim exempts.
+func requireEqualPayloads(t *testing.T, overStdio, overHTTP json.RawMessage) {
+	t.Helper()
+	var stdioEnvelope, httpEnvelope struct {
+		Type     string          `json:"type"`
+		Session  string          `json:"session_id"`
+		Reply    string          `json:"in_reply_to"`
+		Revision string          `json:"capability_revision"`
+		Payload  json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(overStdio, &stdioEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(overHTTP, &httpEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if stdioEnvelope.Type != httpEnvelope.Type || stdioEnvelope.Session != httpEnvelope.Session ||
+		stdioEnvelope.Reply != httpEnvelope.Reply || stdioEnvelope.Revision != httpEnvelope.Revision {
+		t.Fatalf("envelope headers differ\nstdio: %+v\nhttp:  %+v", stdioEnvelope, httpEnvelope)
+	}
+	if !bytes.Equal(stdioEnvelope.Payload, httpEnvelope.Payload) {
+		t.Fatalf("open payloads differ\nstdio: %s\nhttp:  %s", stdioEnvelope.Payload, httpEnvelope.Payload)
+	}
+}
+
+// errorCode reads the refusal code out of one HTTP error.response body.
+func errorCode(t *testing.T, body []byte) string {
+	t.Helper()
+	var failure struct {
+		Payload struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Payload.Error.Code == "" {
+		t.Fatalf("HTTP body carries no error code: %s", body)
+	}
+	return failure.Payload.Error.Code
+}
+
 // TestRequestBudgetMatchesHTTP carries one schema-valid run-cancel envelope
 // — padded to a chosen size — across both transports: the envelope, not the
 // line, is the budgeted unit (servehttp reads it as the body limit, the op

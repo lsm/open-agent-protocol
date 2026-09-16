@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,11 +18,10 @@ import (
 )
 
 // The op names, one per HTTP route of serve/servehttp; semantics are
-// identical, only the framing differs. The open and events routes join the
-// surface with the registration-ordering slice — until then those ops are
-// refused as unknown, and the session-scoped ops here serve sessions the
-// embedding host opened on the hub directly.
+// identical, only the framing differs.
 const (
+	opOpen         = "open"
+	opEvents       = "events"
 	opAdapters     = "adapters"
 	opCapabilities = "capabilities"
 	opSessions     = "sessions"
@@ -37,6 +38,75 @@ const (
 // Result is the HTTP route's success body verbatim — an OAP response envelope
 // for the envelope exchanges, the plain JSON document for the listings — and
 // the JSON null for the routes HTTP answers without a body (close).
+// The named line kinds a subscription emits. An envelope line carries one
+// event; the rest are the subscription's own endings, each correlated with
+// the events request's id so overlapping subscriptions on one session stay
+// attributable. They mirror the SSE stream's named events one for one.
+const (
+	signalEnvelope      = "envelope"
+	signalOverflow      = "oap-overflow"
+	signalReplayGap     = "oap-replay-gap"
+	signalSessionClosed = "oap-session-closed"
+	signalFrameLimit    = "oap-frame-limit"
+)
+
+// envelopeLine is one event delivered to a subscription. The sequence is
+// repeated outside the envelope so a host can resume without decoding it.
+type envelopeLine struct {
+	Event     string          `json:"event"`
+	ID        int64           `json:"id"`
+	SessionID string          `json:"session_id"`
+	Sequence  *uint64         `json:"sequence,omitempty"`
+	Envelope  json.RawMessage `json:"envelope"`
+}
+
+// overflowLine ends a subscription whose consumer fell behind the hub's
+// bounded fan-out. The last sequence it did carry is where a cursor resumes.
+type overflowLine struct {
+	Event        string `json:"event"`
+	ID           int64  `json:"id"`
+	SessionID    string `json:"session_id"`
+	RunID        string `json:"run_id"`
+	LastSequence uint64 `json:"last_sequence"`
+	Message      string `json:"message"`
+}
+
+// gapLine reports a replay cursor the journal no longer retains. It is not a
+// failed subscription: the op succeeded and this says what cannot be
+// delivered, which is what keeps an expired cursor from becoming fake
+// continuity.
+type gapLine struct {
+	Event           string `json:"event"`
+	ID              int64  `json:"id"`
+	SessionID       string `json:"session_id"`
+	RequestedAfter  uint64 `json:"requested_after"`
+	OldestAvailable uint64 `json:"oldest_available"`
+	LatestAvailable uint64 `json:"latest_available"`
+	Message         string `json:"message"`
+}
+
+// sessionClosedLine ends a subscription whose session closed under it.
+type sessionClosedLine struct {
+	Event     string `json:"event"`
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}
+
+// frameLimitLine ends a subscription this framing cannot carry past. Every
+// member but the sequence is optional, because the adapter-minted identifiers
+// in the full form can themselves push the line past the limit that ended the
+// subscription — the minimal form is what the frame-limit floor guarantees
+// fits, and the sequence is the one fact a host needs to resume.
+type frameLimitLine struct {
+	Event     string `json:"event"`
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	Sequence  uint64 `json:"sequence"`
+	Message   string `json:"message,omitempty"`
+}
+
 type responseLine struct {
 	ID     int64           `json:"id"`
 	OK     bool            `json:"ok"`
@@ -53,7 +123,17 @@ type wireError struct {
 }
 
 // serveRequest executes one op and writes its response.
-func (s *Server) serveRequest(ctx context.Context, request requestLine, lines chan<- outLine) {
+//
+// The events op is served on its own path rather than through dispatch,
+// because it is the only op whose answer is a stream and not a value: it must
+// acknowledge, and then keep writing after this worker has returned its
+// admission slot. Everything dispatch returns is finished by the time it
+// returns it.
+func (s *Server) serveRequest(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
+	if request.Op == opEvents {
+		s.serveEvents(ctx, run, request, lines)
+		return
+	}
 	result, werr := s.dispatch(ctx, request)
 	s.respond(ctx, lines, request, result, werr)
 }
@@ -62,7 +142,10 @@ func (s *Server) serveRequest(ctx context.Context, request requestLine, lines ch
 // encoding exceeds the frame limit is replaced by the bounded
 // response_too_large refusal, so an oversized result still gets a
 // correlated, framable answer.
-func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requestLine, result json.RawMessage, werr *wireError) {
+// It reports whether the host's own answer reached the writer, which the
+// events op needs: a subscription whose acknowledgement was never queued
+// would stream envelopes correlated to a request the host has no answer for.
+func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requestLine, result json.RawMessage, werr *wireError) bool {
 	response := responseLine{ID: *request.ID, OK: werr == nil, Result: result}
 	if werr != nil {
 		response.Result = json.RawMessage("null")
@@ -74,7 +157,7 @@ func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requ
 		// abandoned by the context ended the session, and must not emit a
 		// refusal that blames the response's size.
 		if !errors.Is(err, ErrLineTooLarge) {
-			return
+			return false
 		}
 		fallback := responseLine{ID: *request.ID, OK: false, Result: json.RawMessage("null"), Error: &wireError{
 			Code: "response_too_large", Message: "the encoded response exceeds the frame limit",
@@ -82,11 +165,21 @@ func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requ
 		if fallbackErr := s.send(ctx, lines, fallback); fallbackErr != nil {
 			s.logger.Printf("servestdio: response %d: %v", *request.ID, fallbackErr)
 		}
+		return false
 	}
+	return true
 }
 
 func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
 	switch request.Op {
+	case opOpen:
+		if werr := request.only(paramAdapter, paramRequest); werr != nil {
+			return nil, werr
+		}
+		if request.Adapter == "" {
+			return nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
+		}
+		return s.openOp(ctx, request)
 	case opAdapters:
 		if werr := request.only(); werr != nil {
 			return nil, werr
@@ -248,6 +341,156 @@ func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
 }
 
 // --- OAP operations ---
+
+// openOp opens a session on a named adapter, the stdio form of POST
+// /adapters/{name}/sessions. The admission it performs is the HTTP route's,
+// through the same serve.AttachmentGate and serve.ResolveAttachments, so an
+// attaching open is refused for the same reason over either transport and a
+// stdio peer gets the daemon's credential rule rather than an exemption the
+// pipe never earned.
+//
+// The endpoint's own disclosure is consulted before the daemon's constraints,
+// which is the refusal ladder the HTTP route establishes: telling a caller to
+// name an operator-configured source, when the endpoint cannot attach sources
+// at all, answers a question it never asked and hides the one it did.
+//
+// An oversized response takes submitOp's rule, applied to the fact this op
+// leaves behind. A session the host cannot learn the id of is not an
+// acknowledgement it can act on, so it is rolled back — closed on a context
+// the request's own end cannot cut short. A session whose id the host itself
+// supplied is not unknowable: the generic refusal stays honest, the session
+// stays open, and the host can name it to close or to read its state. The
+// distinction is not a special case for open; it is the line resolve, cancel
+// and close already sit on the other side of.
+func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionOpenRequest)
+	if werr != nil {
+		return nil, werr
+	}
+	var payload protocol.SessionOpenRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+	}
+	if _, found := s.hub.Registry().Lookup(request.Adapter); !found {
+		return nil, &wireError{Code: "unknown_adapter", Message: fmt.Sprintf("no adapter %q", trimMessage(request.Adapter))}
+	}
+	revision, refusal := serve.AttachmentGate(ctx, s.hub, request.Adapter, envelope.CapabilityRevision, payload)
+	if refusal != nil {
+		var stale *serve.StaleRevisionError
+		if errors.As(refusal, &stale) {
+			return nil, &wireError{Code: "stale_capabilities", Message: stale.Error(), Details: map[string]any{
+				"expected_revision": stale.Expected, "current_revision": stale.Current,
+			}}
+		}
+		code, message, details, typed := serve.ControlRefusal(refusal)
+		if !typed {
+			// The descriptor could not be read, so no rung has an answer and
+			// none is invented: the open fails rather than falling through to
+			// a constraint that would answer the wrong question.
+			return nil, &wireError{Code: "probe_failed", Message: adapterMessage(refusal)}
+		}
+		return nil, &wireError{Code: code, Message: message, Details: details}
+	}
+	attachments, unresolvable := serve.ResolveAttachments(s.hub, payload.ToolSources)
+	if unresolvable != nil {
+		return nil, &wireError{Code: "unsupported_feature", Message: unresolvable.Error(), Details: map[string]any{
+			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": unresolvable.Source,
+		}}
+	}
+	open := base.OpenRequest{
+		SessionID:             payload.SessionID,
+		Participant:           protocol.Participant{ID: serve.DefaultParticipant},
+		AllowDegradedFeatures: payload.AllowDegradedFeatures,
+		ToolSources:           attachments,
+	}
+	if payload.Metadata != nil {
+		open.Metadata = make(map[string]any, len(payload.Metadata))
+		for key, raw := range payload.Metadata {
+			var value any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return nil, &wireError{Code: "invalid_payload", Message: fmt.Sprintf("metadata %q: %v", trimMessage(key), trimMessage(err.Error()))}
+			}
+			open.Metadata[key] = value
+		}
+	}
+	entry, state, err := s.hub.Open(ctx, request.Adapter, open)
+	if err != nil {
+		// A capability the open elected and the adapter refused is reported
+		// under its own typed code with the details that say what to change —
+		// the same mapping a refused run control takes — so an open refused
+		// for an attachment tells the caller which source to drop rather than
+		// only that the open failed.
+		if code, message, details, ok := serve.ControlRefusal(err); ok {
+			return nil, &wireError{Code: code, Message: message, Details: details}
+		}
+		code := "open_failed"
+		switch {
+		case errors.Is(err, serve.ErrUnknownAdapter):
+			code = "unknown_adapter"
+		case errors.Is(err, serve.ErrSessionExists):
+			code = "session_exists"
+		}
+		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+	}
+	// The response is built from the state the open itself confirmed:
+	// re-reading state here could fail after registration (an abandoned
+	// request context, a flaky adapter probe) and report a successful open as
+	// a failure while the session stays live in the hub. The state goes on the
+	// wire whole, for the reason the HTTP route names — an adapter that
+	// reports the session's model at open, the first snapshot a control layer
+	// sees, has it discarded by any hand-copied subset.
+	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID(s.nextID("response")), state)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = state.SessionID
+	// The response carries the revision the open was admitted under, which is
+	// what the profile asks for in both directions: a pinned request has its
+	// revision repeated — the gate verified it is the current one, so the
+	// probed value and the caller's are the same string — and an unpinned one
+	// is given the revision used for admission, which is how a control layer
+	// detects that it was admitted under a newer snapshot than the one it last
+	// read. An open that attaches nothing is not probed and keeps the caller's
+	// own value.
+	response.CapabilityRevision = envelope.CapabilityRevision
+	if revision != "" {
+		response.CapabilityRevision = revision
+	}
+	result, werr := envelopeResult(response)
+	if werr != nil {
+		return nil, werr
+	}
+	if !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
+		return nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "")
+	}
+	return result, nil
+}
+
+// refuseOversizedOpen answers an open whose response cannot be framed, and
+// rolls the session back when the host could not name it.
+//
+// The rollback runs detached from the request's own end — custody — but
+// bounded by the shutdown window, so a hung adapter cannot wedge the read loop
+// past every bound the frontend promises. A session opened by this op has no
+// run of its own to settle first, so Close is the whole rollback: what it
+// reports is whether the session is gone, not whether some effect raced it.
+//
+// The refusal messages are fixed-size, so they stay framable even at the frame
+// limit's floor; the underlying error goes to the logger, never the line.
+func (s *Server) refuseOversizedOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool) *wireError {
+	if named {
+		return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session is open under the session_id the request supplied"}
+	}
+	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
+	err := entry.Close(rollback)
+	cancelRollback()
+	if err == nil || errors.Is(err, base.ErrSessionClosed) {
+		return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session was rolled back"}
+	}
+	s.logger.Printf("servestdio: roll back open %d: %v", *request.ID, err)
+	return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; rolling the session back failed and it may still be live"}
+}
 
 // submitOp admits one run and acknowledges it with the admission envelope.
 // The acknowledgement is framability-checked before it is sent: the run is
@@ -629,6 +872,212 @@ func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage
 		return nil, &wireError{Code: code, Message: adapterMessage(err)}
 	}
 	return json.RawMessage("null"), nil
+}
+
+// serveEvents subscribes to a session's events, the stdio form of
+// GET /sessions/{id}/events. The op answers once — null, the acknowledgement
+// the SSE route gives by starting its response with no body — and the
+// envelopes follow as their own lines, each tagged with this request's id so
+// overlapping subscriptions on one session stay attributable.
+//
+// The acknowledgement is queued before the pump starts, so a host never sees
+// an envelope for a subscription it has not been told exists. The single
+// ordered writer makes queueing order the wire order, so this is a guarantee
+// and not a race the host has to tolerate.
+//
+// Everything that can refuse the subscription is decided here, on the worker,
+// so the refusal is the op's own answer rather than a signal arriving after a
+// success. The one exception is the replay gap, which is a successful op that
+// reports what it cannot deliver — the SSE route answers 200 and then emits
+// the gap event, and this is that shape in this framing.
+func (s *Server) serveEvents(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
+	id := *request.ID
+	fail := func(werr *wireError) { s.respond(ctx, lines, request, nil, werr) }
+	if werr := request.only(paramSession, paramAfter); werr != nil {
+		fail(werr)
+		return
+	}
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		fail(werr)
+		return
+	}
+	// A closed session can neither deliver live events nor replay: refusing
+	// up front keeps a subscription from parking forever and reports the
+	// closed state for cursor requests that would otherwise surface the
+	// missing run instead.
+	if entry.IsClosed() {
+		fail(&wireError{Code: "session_closed", Message: "the session is closed"})
+		return
+	}
+	var options []serve.SubscribeOption
+	if len(request.After) > 0 && string(request.After) != "null" {
+		// The wire cursor carries only a sequence: the daemon resolves it
+		// onto the session's current run, exactly as the SSE route resolves
+		// a bare Last-Event-ID.
+		after, err := strconv.ParseUint(string(request.After), 10, 64)
+		if err != nil {
+			fail(&wireError{Code: "invalid_cursor", Message: fmt.Sprintf("cursor %s is not an unsigned sequence", strconv.Quote(trimMessage(string(request.After))))})
+			return
+		}
+		options = append(options, serve.After("", after))
+	}
+	// Attaching before subscribing, rather than after, so the acknowledgement
+	// never promises a subscription teardown would not let start — and so no
+	// subscription is opened on the hub for a pump that cannot run.
+	pumps, attached := run.attach()
+	if !attached {
+		fail(&wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
+		return
+	}
+	// The subscription takes the pump's context and not this worker's. It is
+	// what Subscription.Next blocks on, and its own contract says a blocked
+	// consumer is stopped by cancelling that context and never by racing
+	// Close against it, so this is the handle teardown pulls.
+	subscription, err := s.hub.Subscribe(pumps, entry.ID(), options...)
+	var gap *base.ReplayGap
+	if errors.As(err, &gap) {
+		run.detach()
+		if !s.respond(ctx, lines, request, json.RawMessage("null"), nil) {
+			return
+		}
+		if sendErr := s.send(ctx, lines, gapLine{
+			Event: signalReplayGap, ID: id, SessionID: string(entry.ID()),
+			RequestedAfter: gap.RequestedAfter, OldestAvailable: gap.OldestAvailable, LatestAvailable: gap.LatestAvailable,
+			Message: "requested replay cursor is no longer retained; resume with a cursor at or after oldest_available - 1",
+		}); sendErr != nil {
+			s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+		}
+		return
+	}
+	if err != nil {
+		run.detach()
+		code := "internal"
+		switch {
+		// The hub's closed-session refusal unwraps to the adapter sentinel,
+		// so one case covers both the hub refusal and an adapter Resume that
+		// reports the session closed.
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
+		case errors.Is(err, serve.ErrNoRunToResume):
+			code = "no_run_to_resume"
+		case errors.Is(err, base.ErrReplayCursorFuture):
+			code = "replay_cursor_future"
+		case errors.Is(err, base.ErrRunNotFound):
+			code = "run_not_found"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		}
+		fail(&wireError{Code: code, Message: adapterMessage(err)})
+		return
+	}
+	if !s.respond(ctx, lines, request, json.RawMessage("null"), nil) {
+		// The host has no answer for this request, so it can attribute
+		// nothing that follows. The subscription is detached rather than
+		// pumped into an output that already failed the acknowledgement.
+		run.detach()
+		subscription.Close()
+		return
+	}
+	go func() {
+		defer run.detach()
+		s.pump(pumps, entry, subscription, id, lines)
+	}()
+}
+
+// pump serves one subscription through the shared writer until it ends. The
+// envelope lines preserve the subscription's per-session order and carry the
+// events request's id; the single writer guarantees each line is atomic.
+//
+// Ends mirror the SSE stream's, which is what parity here means: the overflow
+// and replay-gap signals get named lines, a subscription that ends because
+// the session closed under it gets the session-closed line, and the clean end
+// at a run's terminal event produces no line — the terminal envelope
+// (run.completed / run.failed / run.cancelled) is the marker, exactly as the
+// SSE response simply ends after it.
+//
+// Any other end — a failed run stream, the frontend's own teardown — also
+// produces no line, and the documented recovery is a fresh events op with an
+// after cursor. An envelope whose line exceeds the frame limit ends the
+// subscription the same way, but says so: this framing cannot carry it, and
+// skipping it would leave a sequence hole a later cursor would double-count.
+func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *serve.Subscription, id int64, lines chan<- outLine) {
+	defer subscription.Close()
+	for {
+		envelope, err := subscription.Next()
+		if err == nil {
+			data, marshalErr := json.Marshal(envelope)
+			if marshalErr != nil {
+				s.logger.Printf("servestdio: subscription %d: encode envelope: %v", id, marshalErr)
+				return
+			}
+			if sendErr := s.send(ctx, lines, envelopeLine{
+				Event: signalEnvelope, ID: id, SessionID: string(entry.ID()),
+				Sequence: envelope.Sequence, Envelope: data,
+			}); sendErr != nil {
+				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+				if !errors.Is(sendErr, ErrLineTooLarge) {
+					// The session ended under the subscription. There is no
+					// output left to explain that in, and the size is not
+					// what stopped it.
+					return
+				}
+				s.endAtFrameLimit(ctx, entry, envelope, id, lines)
+				return
+			}
+			continue
+		}
+		var overflow *serve.OverflowError
+		if errors.As(err, &overflow) {
+			if sendErr := s.send(ctx, lines, overflowLine{
+				Event: signalOverflow, ID: id, SessionID: string(entry.ID()),
+				RunID:        string(overflow.RunID),
+				LastSequence: overflow.LastSequence,
+				Message:      "event stream consumer fell behind; resume with a cursor after this sequence",
+			}); sendErr != nil {
+				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+			}
+			return
+		}
+		if errors.Is(err, io.EOF) && entry.IsClosed() {
+			if sendErr := s.send(ctx, lines, sessionClosedLine{
+				Event: signalSessionClosed, ID: id, SessionID: string(entry.ID()),
+				Message: "the session is closed",
+			}); sendErr != nil {
+				s.logger.Printf("servestdio: subscription %d: %v", id, sendErr)
+			}
+		}
+		return
+	}
+}
+
+// endAtFrameLimit terminates a subscription this framing cannot carry past,
+// naming the position a cursor resumes after.
+//
+// The full signal carries adapter-minted identifiers, which can themselves
+// push it past the very limit that ended the subscription. The minimal form
+// is what the frame-limit floor guarantees fits, so it is what a failed full
+// form falls back to: the sequence is the one fact a host needs to resume,
+// and losing the terminal signal entirely would leave the host waiting on a
+// subscription that has already stopped.
+func (s *Server) endAtFrameLimit(ctx context.Context, entry *serve.Session, envelope protocol.Envelope, id int64, lines chan<- outLine) {
+	sequence := uint64(0)
+	if envelope.Sequence != nil {
+		sequence = *envelope.Sequence
+	}
+	if err := s.send(ctx, lines, frameLimitLine{
+		Event: signalFrameLimit, ID: id, SessionID: string(entry.ID()),
+		RunID: string(envelope.RunID), Sequence: sequence,
+		Message: "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it",
+	}); err == nil {
+		return
+	} else if !errors.Is(err, ErrLineTooLarge) {
+		s.logger.Printf("servestdio: subscription %d: %v", id, err)
+		return
+	}
+	if err := s.send(ctx, lines, frameLimitLine{Event: signalFrameLimit, ID: id, Sequence: sequence}); err != nil {
+		s.logger.Printf("servestdio: subscription %d: %v", id, err)
+	}
 }
 
 // --- request gate and encoding helpers ---

@@ -18,10 +18,19 @@
 //
 // The operations mirror serve/servehttp one to one with identical semantics
 // — the same verbatim schema/v0.1 envelopes, the same request gate, the same
-// error codes — with the session-registration ops (open, events) joining the
-// surface with their ordering slice. The line-shape refusals
-// (invalid_request, unknown_op) and the frame-limit refusal are this
-// framing's own layer and have no HTTP counterpart.
+// error codes. The line-shape refusals (invalid_request, unknown_op) and the
+// frame-limit refusal are this framing's own layer and have no HTTP
+// counterpart.
+//
+// The events op is the one whose answer is not a value: it acknowledges with
+// null, as the SSE route acknowledges by starting a bodyless response, and
+// the subscription's envelopes follow as their own lines — {"event":...}
+// objects tagged with the events request's id, so overlapping subscriptions
+// on one session stay attributable. A run's terminal envelope is the end of
+// a healthy stream, exactly as the SSE response simply ends after it; the
+// named signals (oap-overflow, oap-replay-gap, oap-session-closed,
+// oap-frame-limit) report the endings that deliver less than was asked for,
+// and each names the cursor a fresh events op resumes from.
 //
 // Framing is strict in both directions, the same discipline the adapters'
 // internal rpc codecs apply to their own child stdio: one LF-terminated
@@ -201,16 +210,34 @@ type runState struct {
 	shuttingDown bool
 	ops          int
 	bytes        int
+
+	// pumps is the context every attached subscription runs under, and
+	// stopPumps ends them all. Closing admission cancels it.
+	//
+	// A worker is waited for rather than cancelled, because waiting is what
+	// settles and flushes the work the host was already answered for. A pump
+	// is not that: the host was answered when its events op acknowledged,
+	// and what remains is interest in a stream, which settles nothing. It
+	// also does not end on its own — it is parked in Subscription.Next,
+	// which unblocks on its Subscribe context and, by that method's own
+	// contract, must not be raced with Close. Waiting for one would mean
+	// spending the whole shutdown window on every session that ends with a
+	// subscription open, which is every ordinary session. So pumps are told
+	// to stop and then waited for, and the wait is short because the telling
+	// is what ends them.
+	pumps     context.Context
+	stopPumps context.CancelFunc
 }
 
-func newRunState(maxOps, maxBytes int) *runState {
+func newRunState(ctx context.Context, maxOps, maxBytes int) *runState {
 	if maxOps <= 0 {
 		maxOps = maxConcurrentOps
 	}
 	if maxBytes <= 0 {
 		maxBytes = admissionBytes
 	}
-	return &runState{maxOps: maxOps, maxBytes: maxBytes}
+	pumps, stopPumps := context.WithCancel(ctx)
+	return &runState{maxOps: maxOps, maxBytes: maxBytes, pumps: pumps, stopPumps: stopPumps}
 }
 
 // admission is what the loop learns when it offers a request to the bounds.
@@ -263,6 +290,33 @@ func (r *runState) offer(size int) (admission, string) {
 	return refused, fmt.Sprintf("the requests already in flight fill the frontend's %d-byte budget", r.maxBytes)
 }
 
+// attach registers long-lived work with the teardown wait without charging
+// the in-flight bound, and reports whether it joined. A subscription pump is
+// not a request being served: it lasts as long as its subscriber wants
+// events, so counting it against the ops ceiling would let a host's
+// sixteenth subscription start refusing its seventeenth request — the bound
+// exists to cap concurrent adapter work, not concurrent interest.
+//
+// The teardown must still wait for it, because an orphaned pump holds the
+// caller's output and can write into it after Run has returned, which is the
+// same corruption an abandoned worker would cause. So it joins the same
+// WaitGroup, and closed admission refuses it for the same reason it refuses
+// a worker: a positive Add after Wait has seen the counter reach zero is
+// what the contract forbids.
+func (r *runState) attach() (context.Context, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.shuttingDown {
+		return nil, false
+	}
+	r.work.Add(1)
+	return r.pumps, true
+}
+
+// detach releases long-lived work registered by attach. It charges no bytes
+// and frees no slot, because attach took neither.
+func (r *runState) detach() { r.work.Done() }
+
 func (r *runState) release(size int) {
 	r.mu.Lock()
 	r.ops--
@@ -272,10 +326,16 @@ func (r *runState) release(size int) {
 }
 
 // closeAdmission ends admission for this invocation, before its teardown
-// waits for the workers already counted.
+// waits for the workers already counted, and ends the pumps already
+// attached. The cancel is inside the lock so it cannot land between an
+// attach's gate check and the context that attach hands back: a pump started
+// under a context this call had already cancelled would exit at once, which
+// is correct, but one that read the gate before this call and the context
+// after it must not come away with a live one.
 func (r *runState) closeAdmission() {
 	r.mu.Lock()
 	r.shuttingDown = true
+	r.stopPumps()
 	r.mu.Unlock()
 }
 
@@ -433,7 +493,7 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	frames := make(chan frameResult, 1)
 	go readFrames(in, s.frameLimit, frames, readerDone)
 
-	run := newRunState(s.maxOps, 0)
+	run := newRunState(ctx, s.maxOps, 0)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- s.serveLoop(ctx, run, frames, lines, writerFailed, refusals) }()
 
@@ -867,7 +927,7 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 			}
 			go func(request requestLine, size int) {
 				defer run.release(size)
-				s.serveRequest(ctx, request, lines)
+				s.serveRequest(ctx, run, request, lines)
 			}(request, size)
 		}
 	}

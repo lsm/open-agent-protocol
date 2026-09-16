@@ -974,7 +974,7 @@ func TestMalformedLineSurvivesASaturatedBound(t *testing.T) {
 // still multiplies into gigabytes. Admission holds the product down, and a
 // release is what lets the next one in.
 func TestAdmissionBudgetsRequestBytes(t *testing.T) {
-	run := newRunState(64, 1024)
+	run := newRunState(context.Background(), 64, 1024)
 	if got, _ := run.offer(900); got != admitted {
 		t.Fatalf("the first offer got %v, want admitted", got)
 	}
@@ -992,7 +992,7 @@ func TestAdmissionBudgetsRequestBytes(t *testing.T) {
 // larger than the whole budget must still be served rather than refused
 // against a bound it can never fit, so an idle registry admits anything.
 func TestAdmissionAdmitsOneOversizeRequest(t *testing.T) {
-	run := newRunState(64, 1024)
+	run := newRunState(context.Background(), 64, 1024)
 	if got, _ := run.offer(4096); got != admitted {
 		t.Fatalf("an idle registry got %v for a request larger than its budget, want admitted", got)
 	}
@@ -1415,7 +1415,7 @@ func TestSlowWorkersBehindTheBoundAreAnswered(t *testing.T) {
 // longer an output to answer on and the session is being given up, not
 // queued behind.
 func TestAdmissionClosesAtTeardown(t *testing.T) {
-	run := newRunState(1, 0)
+	run := newRunState(context.Background(), 1, 0)
 	if got, _ := run.offer(1); got != admitted {
 		t.Fatalf("admission got %v before the session began, want admitted", got)
 	}
@@ -2349,7 +2349,7 @@ func TestQueuedRefusalWithdrawnUnwrittenIsReported(t *testing.T) {
 // have: two large requests can exhaust the budget while the op ceiling is
 // nowhere near, and the count in that message would simply be false.
 func TestRefusalNamesTheBoundThatRefused(t *testing.T) {
-	ops := newRunState(64, 1024)
+	ops := newRunState(context.Background(), 64, 1024)
 	if got, _ := ops.offer(900); got != admitted {
 		t.Fatalf("first offer got %v, want admitted", got)
 	}
@@ -2364,7 +2364,7 @@ func TestRefusalNamesTheBoundThatRefused(t *testing.T) {
 		t.Fatalf("byte-budget refusal cited the op ceiling: %q", why)
 	}
 
-	counted := newRunState(1, 1<<20)
+	counted := newRunState(context.Background(), 1, 1<<20)
 	if got, _ := counted.offer(1); got != admitted {
 		t.Fatalf("first offer got %v, want admitted", got)
 	}
