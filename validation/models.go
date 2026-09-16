@@ -233,11 +233,26 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	}
 	st := s.track(p.SessionID)
 	s.checkCatalogCurrentModel(i, line, e, p, st)
+	// A catalog belongs to the revision its own envelope cited, not to
+	// whatever happens to be active when it arrives. A response is a listing
+	// of the models one descriptor offered, and a delayed one from an earlier
+	// revision is still that earlier revision's listing however late it lands.
 	level := s.features[protocol.FeatureModelsList]
 	binding := level == protocol.SupportNative || level == protocol.SupportEmulated
-	served := &modelCatalog{revision: s.currentCapability, known: true, binding: binding, ids: ids, models: map[string]protocol.ModelDescriptor{}}
+	served := &modelCatalog{revision: string(e.CapabilityRevision), known: true, binding: binding, ids: ids, models: map[string]protocol.ModelDescriptor{}}
 	for _, model := range p.Models {
 		served.models[model.ID] = model
+	}
+	// Only a catalog under the active revision is recorded. One that is not
+	// can bind nothing — binds() requires the active revision — so recording
+	// it would have exactly one effect: displacing a catalog that can. A
+	// delayed listing from an earlier revision would then silence the
+	// catalog-miss rule for every later admission, which is the opposite of
+	// what a stale response should cost. It is fully judged as an envelope
+	// above, and its own gate has already reported the stale revision; what it
+	// does not get is authority it never had.
+	if served.revision == "" || served.revision != s.currentCapability {
+		return
 	}
 	if binding && st.catalog != nil && st.catalog.known && st.catalog.binding && st.catalog.revision == served.revision && !reflect.DeepEqual(st.catalog.models, served.models) {
 		// The wire makes a catalog change a capability invalidation, so

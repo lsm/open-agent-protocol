@@ -79,10 +79,35 @@ catalog may not move — a second response whose descriptors differ in any membe
 is `unannounced_catalog_change` — because availability that changes with
 nothing to announce it is availability no consumer can observe.
 
-Re-fetching capabilities is not what discards it. A revision identifies exactly
-one descriptor, so a `capabilities.response` repeating the active revision
-repeats that descriptor and licenses no different catalog. Discarding on the
-re-fetch instead would hand every endpoint a way out of the stability rule —
+A catalog belongs to the revision its own envelope cited, not to whatever is
+active when it arrives. A delayed response from an earlier revision is still
+that revision's listing, and it is recorded nowhere: a catalog that is not
+current can bind nothing, so storing it would have exactly one effect —
+displacing one that can. That is not a neutral loss. The displaced listing is
+the one the catalog-miss rule needs, so a late arrival would silence
+`model_not_in_catalog` for every later admission and, compared against the
+active catalog it replaced, manufacture an `unannounced_catalog_change` the
+endpoint never committed (`models-stale-catalog-does-not-displace`,
+`models-stale-catalog-raises-no-change`).
+
+Of the two available remedies — returning as soon as the capability gate fails,
+or binding the catalog under the revision it cited — this decision takes the
+second, with the addition that makes it safe: a non-current catalog is not
+stored at all. Returning at the gate would also skip the response's own
+consistency checks — duplicate ids, more than one default, a current model the
+catalog does not list — and those are properties of the listing that hold
+whatever revision it cited, so a stale response would escape them. Binding
+under the cited revision is also how the rest of the unit already reasons:
+`binds()` compares against the active revision, and giving the catalog its true
+revision lets that one comparison decide. What a stale listing loses is
+authority it never had; it is still judged as an envelope, and its gate has
+already reported the stale revision.
+
+Re-fetching capabilities is not what discards a catalog either. A revision
+identifies exactly one descriptor, so a `capabilities.response` repeating the
+active revision repeats that descriptor and licenses no different catalog.
+Discarding on the re-fetch instead would hand every endpoint a way out of the
+stability rule —
 answer `capabilities.request` between two listings and the change is never
 announced and never diagnosed — which is the whole of what the rule exists to
 catch (`models-catalog-mutates-across-refetch`).
