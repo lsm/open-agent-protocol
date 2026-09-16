@@ -454,6 +454,21 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The catalog is part of the capability snapshot, so the response names
+	// the revision whose models.list promise governs it: a consumer binds the
+	// listing to that revision and discards it on a refresh, and a catalog
+	// citing no revision is one the validator's own gate rejects. The
+	// descriptor is read before the adapter is asked, so a catalog is either
+	// labelled correctly or not served at all.
+	descriptor, err := s.hub.Probe(r.Context(), entry.Adapter())
+	if err != nil {
+		status, code := http.StatusInternalServerError, "probe_failed"
+		if errors.Is(err, serve.ErrUnknownAdapter) {
+			status, code = http.StatusNotFound, "unknown_adapter"
+		}
+		s.writeError(w, status, code, adapterMessage(err), protocol.Envelope{SessionID: entry.ID()})
+		return
+	}
 	request := protocol.ModelsRequest{SessionID: entry.ID(), AllowDegradedFeatures: r.URL.Query()["allow_degraded"]}
 	catalog, err := entry.Models(r.Context(), request)
 	if err != nil {
@@ -467,6 +482,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	response.InReplyTo = s.nextID("request")
 	response.SessionID = catalog.SessionID
+	response.CapabilityRevision = descriptor.CapabilityRevision
 	writeEnvelope(w, http.StatusOK, response)
 }
 

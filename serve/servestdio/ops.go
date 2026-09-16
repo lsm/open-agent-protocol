@@ -517,6 +517,18 @@ func (s *Server) modelsOp(ctx context.Context, request requestLine) (json.RawMes
 	if werr != nil {
 		return nil, werr
 	}
+	// The catalog names the capability revision whose models.list promise
+	// governs it, as the HTTP route does: a consumer binds the listing to that
+	// revision, and a catalog citing none is one the validator's own gate
+	// rejects. The descriptor is read before the adapter is asked, so a
+	// catalog is either labelled correctly or not served at all.
+	descriptor, err := s.hub.Probe(ctx, entry.Adapter())
+	if err != nil {
+		if errors.Is(err, serve.ErrUnknownAdapter) {
+			return nil, &wireError{Code: "unknown_adapter", Message: trimMessage(err.Error())}
+		}
+		return nil, &wireError{Code: "probe_failed", Message: trimMessage(err.Error())}
+	}
 	catalog, err := entry.Models(ctx, protocol.ModelsRequest{SessionID: entry.ID(), AllowDegradedFeatures: request.AllowDegradedFeatures})
 	if err != nil {
 		return nil, modelsError(err)
@@ -527,6 +539,7 @@ func (s *Server) modelsOp(ctx context.Context, request requestLine) (json.RawMes
 	}
 	response.InReplyTo = protocol.EnvelopeID(s.nextID("request"))
 	response.SessionID = catalog.SessionID
+	response.CapabilityRevision = descriptor.CapabilityRevision
 	return envelopeResult(response)
 }
 

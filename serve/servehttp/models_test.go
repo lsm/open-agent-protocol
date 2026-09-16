@@ -37,6 +37,13 @@ func TestModelsRoute(t *testing.T) {
 	if envelope.InReplyTo == "" {
 		t.Fatal("models response lacks a correlation id")
 	}
+	// The catalog is part of the capability snapshot, so the response names
+	// the revision whose models.list promise governs it: without it a consumer
+	// cannot bind the listing to a descriptor, and the validator's own gate
+	// reads the catalog as citing a stale revision.
+	if envelope.CapabilityRevision != base.CapabilityRevision {
+		t.Fatalf("models response cites revision %q, want %q", envelope.CapabilityRevision, base.CapabilityRevision)
+	}
 	var catalog protocol.ModelsResponse
 	if err := envelope.DecodePayload(&catalog); err != nil {
 		t.Fatal(err)

@@ -27,6 +27,11 @@ func TestModelsOpServesTheCatalog(t *testing.T) {
 	if envelope.Type != protocol.TypeModelsResponse || envelope.InReplyTo == "" || envelope.SessionID != "models" {
 		t.Fatalf("models envelope: %+v", envelope)
 	}
+	// The same revision the HTTP route stamps: the two transports name one
+	// catalog under one descriptor, or a host reading both sees two.
+	if envelope.CapabilityRevision != base.CapabilityRevision {
+		t.Fatalf("models response cites revision %q, want %q", envelope.CapabilityRevision, base.CapabilityRevision)
+	}
 	var catalog protocol.ModelsResponse
 	if err := envelope.DecodePayload(&catalog); err != nil {
 		t.Fatal(err)
