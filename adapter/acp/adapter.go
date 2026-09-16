@@ -143,7 +143,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		// disclosed because stdio descriptors are the pinned surface and
 		// HTTP/SSE MCP is explicitly deferred at this pin.
 		protocol.FeatureToolSourcesAttach: {
-			Level: protocol.SupportNative, Mode: protocol.ModeSessionOpen,
+			Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen},
 			Limits: map[string]json.RawMessage{protocol.LimitTransports: json.RawMessage(`["process"]`)},
 			Reason: "session/new carries the MCP server array; stdio descriptors only at this pin",
 		},

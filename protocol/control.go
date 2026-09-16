@@ -76,14 +76,22 @@ const (
 )
 
 // MaxSources reports the disclosed attachment ceiling, and false when the
-// endpoint declared none.
+// endpoint declared no usable one.
+//
+// A ceiling must be positive. Zero is not "attach nothing" but a disclosure
+// that defeats itself: an empty `tool_sources` array elects the capability at
+// all, so a ceiling of zero would put every request that exercises attachment
+// outside the limit and make refusing all of them conforming — an endpoint
+// advertising the key and honouring nothing, which is the one outcome the
+// limit mechanism exists to prevent. A non-positive value therefore discloses
+// no ceiling, and the endpoint is held to accepting every well-formed array.
 func (f FeatureSupport) MaxSources() (int, bool) {
 	raw, ok := f.Limits[LimitMaxSources]
 	if !ok {
 		return 0, false
 	}
 	var value int
-	if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+	if err := json.Unmarshal(raw, &value); err != nil || value < 1 {
 		return 0, false
 	}
 	return value, true
@@ -130,12 +138,37 @@ const (
 	FeatureToolSourcesAttach = "action.tool_sources.attach"
 )
 
-// Application modes FeatureSupport.Mode discloses for
-// action.tool_sources.attach.
+// Application modes action.tool_sources.attach discloses, in
+// FeatureSupport.Modes rather than Mode.
+//
+// The plural is what the key needs and what the existing contract already
+// says: Mode is "the single application mode a key has one of", and this key
+// has more than one — every attachment-capable endpoint attaches at session
+// open, and one that also accepts a `remote` source must say so without
+// erasing the first. A scalar could carry only one of the two, which made
+// remote support unrepresentable and let a descriptor claiming `remote` drop
+// `session_open` unnoticed. run.tool_selection already discloses its enforced
+// set this way; this follows that rule rather than inventing a third shape.
+//
+// ModeSessionOpen is therefore required wherever the key is advertised: an
+// attach capability disclosing no session-open mode cannot admit an
+// attachment at session open, and an open it admits anyway is diagnosed on
+// the capability rung.
 const (
 	ModeSessionOpen = "session_open"
 	ModeRemote      = "remote"
 )
+
+// DisclosesMode reports whether the endpoint listed one application mode among
+// the set it enforces.
+func (f FeatureSupport) DisclosesMode(mode string) bool {
+	for _, disclosed := range f.Modes {
+		if disclosed == mode {
+			return true
+		}
+	}
+	return false
+}
 
 // Application modes FeatureSupport.Mode discloses for run.model_selection.
 // ModeRestart is named by the vocabulary but is not offered in this phase.

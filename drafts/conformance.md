@@ -309,16 +309,23 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   session's lifetime, or refuses the open with `unsupported_feature`,
   `details.feature: "action.tool_sources.attach"`, and
   `details.reason: "unadvertised"`;
-- discloses `mode: "session_open"`, and additionally `mode: "remote"` where
-  it accepts a `remote` source; an open attaching one to an endpoint that
-  does not is refused `unsatisfiable` with `details.source`;
+- discloses `modes: ["session_open"]` wherever the key is advertised at all,
+  and additionally `"remote"` in that set where it accepts a `remote` source;
+  the plural is what lets the second be said without erasing the first. An
+  open attaching a `remote` source to an endpoint whose set omits it is
+  refused `unsatisfiable` with `details.source`; an open attaching anything to
+  an endpoint whose set omits `session_open` is refused on the capability
+  rung, because a key that discloses no session-open mode offers nothing an
+  open can elect;
 - refuses an attachment whose `id` collides with another attachment or with a
   source the descriptor already declares, with `details.source` naming it,
   rather than shadowing or renaming one silently;
 - discloses in `limits` the constraints it actually has — `max_sources`, the
   `transports` it accepts — because refusing an array that violates none of
   them and carries no defect any rule above names would make the advertised
-  key promise nothing;
+  key promise nothing. `max_sources` is a positive ceiling: zero would put
+  every attaching request outside the limit and make refusing all of them
+  conforming, so the schema refuses it;
 - publishes the attached sources back through the open response, later
   session snapshots, and every session-scoped catalog, as
   `ToolSourceDescriptor` values. `command`, `args`, and `environment` are

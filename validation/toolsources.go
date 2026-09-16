@@ -304,7 +304,14 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 	if !judged {
 		return
 	}
-	if !affirmative(level) {
+	support := s.featureDetail(protocol.FeatureToolSourcesAttach)
+	// An attach capability that discloses no session-open mode cannot admit an
+	// attachment at session open, whatever its level says: the mode is the
+	// disclosure that makes the key usable, so a descriptor without it is one
+	// no caller can attach against, and the capability rung owns the answer.
+	// This is also what keeps `remote` expressible — the modes are a set, so
+	// disclosing remote never erases session_open.
+	if !affirmative(level) || !support.DisclosesMode(protocol.ModeSessionOpen) {
 		// The capability rung owns the response: a caller told the capability
 		// is missing has no use for a detail about one of its modes, and a
 		// single error.response cannot carry both `unadvertised` and
@@ -327,7 +334,6 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 		}
 		return
 	}
-	support := s.featureDetail(protocol.FeatureToolSourcesAttach)
 	var defects []*controlExpectation
 	seen := map[string]bool{}
 	for index, attachment := range p.ToolSources {
@@ -343,7 +349,7 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 			})
 		}
 		seen[attachment.ID] = true
-		if attachment.Kind == protocol.ToolSourceRemote && support.Mode != protocol.ModeRemote {
+		if attachment.Kind == protocol.ToolSourceRemote && !support.DisclosesMode(protocol.ModeRemote) {
 			// A remote source reaches an endpoint the operator never
 			// configured, so it is gated on its own disclosed mode rather
 			// than on attachment alone.

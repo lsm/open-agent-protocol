@@ -3068,6 +3068,54 @@
       ]
     },
     {
+      "id": "open-attach-without-session-open-mode-refused",
+      "path": "valid/open-attach-without-session-open-mode-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-attach-without-session-open-mode",
+      "path": "semantic-invalid/open-attach-without-session-open-mode.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-attach-limit-zero",
+      "path": "schema-invalid/tool-source-attach-limit-zero.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "open-degraded-attach-optin",
       "path": "valid/open-degraded-attach-optin.json",
       "kind": "positive",

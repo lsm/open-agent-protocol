@@ -19,16 +19,10 @@
       "features": {
         "action.tool_sources.attach": {
           "level": "native",
-          "limits": {
-            "max_sources": 2,
-            "transports": [
-              "process",
-              "local"
-            ]
-          },
           "modes": [
-            "session_open"
-          ]
+            "remote"
+          ],
+          "reason": "sources are attached by a running session, never at open"
         },
         "action.tools.list": {
           "level": "native"
@@ -52,16 +46,6 @@
           "id": "native",
           "kind": "native"
         }
-      ],
-      "tools": [
-        {
-          "execution_owner": "agent",
-          "input_schema": {
-            "type": "object"
-          },
-          "name": "grep",
-          "source": "native"
-        }
       ]
     },
     "profile": "open-agent-protocol.agent-control-core",
@@ -76,9 +60,14 @@
       "session_id": "s1",
       "tool_sources": [
         {
-          "endpoint": "https://tools.example",
-          "id": "remote-tools",
-          "kind": "remote",
+          "command": "/usr/local/bin/mcp-filesystem",
+          "display_name": "Filesystem",
+          "endpoint": "stdio:filesystem-tools",
+          "environment": [
+            "MCP_TOKEN"
+          ],
+          "id": "files",
+          "kind": "process",
           "protocol": "mcp"
         }
       ]
@@ -91,23 +80,30 @@
   },
   {
     "capability_revision": "tools-v1",
-    "id": "open-err",
+    "id": "open-resp",
     "in_reply_to": "open-req",
     "payload": {
-      "error": {
-        "code": "unsupported_feature",
-        "details": {
-          "feature": "action.tool_sources.attach",
-          "reason": "unsatisfiable",
-          "source": "remote-tools"
+      "session_id": "s1",
+      "sources": [
+        {
+          "display_name": "Harness tools",
+          "id": "native",
+          "kind": "native"
         },
-        "message": "fixture refusal"
-      }
+        {
+          "display_name": "Filesystem",
+          "endpoint": "stdio:filesystem-tools",
+          "id": "files",
+          "kind": "process",
+          "protocol": "mcp"
+        }
+      ],
+      "status": "idle"
     },
     "profile": "open-agent-protocol.agent-control-core",
     "protocol": "open-agent-protocol",
     "session_id": "s1",
-    "type": "error.response",
+    "type": "session.open.response",
     "version": "0.1"
   }
 ]

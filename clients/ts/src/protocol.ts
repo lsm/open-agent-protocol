@@ -228,11 +228,11 @@ export interface FeatureSupport {
   reason?: string;
   /** The one application mode a key has one of: `run.model_selection` discloses `per_run` or `session_mutation`. */
   mode?: string;
-  /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it. */
+  /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it, and `action.tool_sources.attach` lists where it attaches — `session_open` wherever attachment is usable at all, plus `remote` when a source the operator never configured is accepted. */
   modes?: string[];
   /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries — an object, because only an object is a structured result. */
   constraints?: { fixed_result?: Record<string, unknown> } & Record<string, unknown>;
-  /** The bounds that make a refusal checkable: `action.tool_sources.attach` discloses `max_sources` and the `transports` it accepts, and refusing an array that violates neither is a conformance failure. */
+  /** The bounds that make a refusal checkable: `action.tool_sources.attach` discloses `max_sources` (a positive ceiling — zero would put every attaching request outside the limit and make refusing all of them conforming, so the schema refuses it) and the `transports` it accepts, and refusing an array that violates neither is a conformance failure. */
   limits?: { max_sources?: number; transports?: string[] } & Record<string, unknown>;
 }
 

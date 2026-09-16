@@ -96,7 +96,7 @@ const samples: PayloadSample[] = [
       'run.structured_output': { level: 'emulated', constraints: { fixed_result: { ok: true } } },
       'action.tool_sources.attach': {
         level: 'emulated',
-        mode: 'session_open',
+        modes: ['session_open', 'remote'],
         limits: { max_sources: 2, transports: ['process', 'local'] },
       },
     },

@@ -19,7 +19,9 @@
       "features": {
         "action.tool_sources.attach": {
           "level": "degraded",
-          "mode": "session_open",
+          "modes": [
+            "session_open"
+          ],
           "reason": "sources are attached but never health-checked"
         },
         "action.tools.list": {

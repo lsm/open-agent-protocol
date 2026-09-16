@@ -2937,7 +2937,10 @@ advertisable).
 [0008](../decisions/0008-tool-sources.md) graduates it and records what it does
 not admit; the sections below stay as the design the decision froze, and where
 an implementation detail had to be chosen that the text left open, the decision
-names the choice. `control-tools` (T3c) stays staged and is not graduated by
+names the choice. One shape below did change: `action.tool_sources.attach`
+discloses its application modes in the plural `modes`, not the scalar `mode` the
+vocabulary table names, because the key has two things to say at once and a
+scalar can carry only one. Decision 0008 records the reasoning. `control-tools` (T3c) stays staged and is not graduated by
 that decision: `session.open.request.tools`, `action.call.resolve.*`, the
 `action.tools.provide` key, and the diagnostics `wrong_tool_owner`,
 `undisclosed_provide_limit`, and `resolution_payload_mismatch` are unregistered

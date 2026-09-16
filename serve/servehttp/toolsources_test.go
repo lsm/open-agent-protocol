@@ -261,6 +261,10 @@ func TestOpenRelaysTheAdaptersAttachmentRefusal(t *testing.T) {
 // degradedAttachAdapter advertises attachment at `degraded` and refuses an
 // open that does not opt in. No in-repo adapter advertises it at that level,
 // so the route's DegradedControlError mapping would otherwise be unpinned.
+// The route now reads the same disclosure and answers first, so the adapter's
+// own refusal is the backstop: the two must agree on the code, which is what
+// makes an embedder calling hub.Open directly see the same answer as a wire
+// caller.
 type degradedAttachAdapter struct{ *base.Memory }
 
 func (a degradedAttachAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
@@ -269,7 +273,7 @@ func (a degradedAttachAdapter) Probe(ctx context.Context) (base.Descriptor, erro
 		return descriptor, err
 	}
 	descriptor.Capabilities.Features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
-		Level: protocol.SupportDegraded, Mode: protocol.ModeSessionOpen,
+		Level: protocol.SupportDegraded, Modes: []string{protocol.ModeSessionOpen},
 		Reason: "sources are attached but never health-checked",
 	}
 	return descriptor, nil
@@ -293,8 +297,8 @@ func TestOpenRelaysADegradedAttachRefusal(t *testing.T) {
 	}
 	_, server := newServer(t, registry, Options{})
 	// A `local` source, so the daemon's own credential rule — which refuses a
-	// `process` attachment naming no configured id — does not answer first and
-	// hide the adapter's refusal behind its own.
+	// `process` attachment naming no configured id — is out of the picture
+	// and the consent question is the only one on the table.
 	attachment := protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceLocal}
 	status, envelope := openSessionWith(t, server, "degraded", protocol.SessionOpenRequest{
 		ToolSources: []protocol.ToolSourceAttachment{attachment},
@@ -351,5 +355,101 @@ func TestReadRequestRefusesBrowserOrigins(t *testing.T) {
 
 	if status, _ := post(t, server, "/adapters/memory/sessions", "text/plain", body); status.StatusCode != http.StatusUnsupportedMediaType {
 		t.Fatalf("text/plain open status %d, want 415", status.StatusCode)
+	}
+}
+
+// reprobedAdapter republishes the reference descriptor with one capability
+// rewritten, which is how a test states what the endpoint disclosed without
+// reimplementing an adapter. A nil support removes the key entirely.
+type reprobedAdapter struct {
+	*base.Memory
+	key     string
+	support *protocol.FeatureSupport
+}
+
+func (a reprobedAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	descriptor, err := a.Memory.Probe(ctx)
+	if err != nil {
+		return descriptor, err
+	}
+	if a.support == nil {
+		delete(descriptor.Capabilities.Features, a.key)
+		return descriptor, nil
+	}
+	descriptor.Capabilities.Features[a.key] = *a.support
+	return descriptor, nil
+}
+
+// TestOpenAnswersTheCapabilityRungBeforeItsOwnConstraint pins the refusal
+// order on the open route. The ladder is capability, then degradation, then
+// unsatisfiability, and the daemon's credential rule — which refuses a process
+// attachment carrying a command, or naming no configured id — is an
+// unsatisfiability of the daemon's own. Applying it first would answer a
+// question the caller never asked: told to name a configured source, a caller
+// would keep reissuing opens against an endpoint that attaches nothing, never
+// learning the capability is missing. Every attachment below would trip the
+// credential rule, so only the ordering can produce the expected refusal.
+func TestOpenAnswersTheCapabilityRungBeforeItsOwnConstraint(t *testing.T) {
+	// A command and an unconfigured id: two separate credential-rule
+	// violations, so neither refusal below can be the daemon's by accident.
+	credentialed := protocol.ToolSourceAttachment{ID: "never-configured", Kind: protocol.ToolSourceProcess, Command: "/bin/sh"}
+	remoteOnly := protocol.FeatureSupport{Level: protocol.SupportNative, Modes: []string{protocol.ModeRemote}}
+	degraded := protocol.FeatureSupport{Level: protocol.SupportDegraded, Modes: []string{protocol.ModeSessionOpen}, Reason: "sources are attached but never health-checked"}
+	for _, testCase := range []struct {
+		name    string
+		support *protocol.FeatureSupport
+		code    string
+		details map[string]any
+	}{
+		{
+			"an unadvertised capability", nil, "unsupported_feature",
+			map[string]any{"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnadvertised},
+		},
+		{
+			// Advertised, but for a mode that is not session open: an
+			// attachment at open elects a capability this endpoint does not
+			// offer there, which is the capability rung, not a constraint on
+			// the source.
+			"a capability disclosing no session-open mode", &remoteOnly, "unsupported_feature",
+			map[string]any{"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnadvertised},
+		},
+		{
+			"a degraded capability without the opt-in", &degraded, "capability_degraded",
+			map[string]any{"feature": protocol.FeatureToolSourcesAttach},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			registry := serve.NewRegistry()
+			if err := registry.Register("memory", reprobedAdapter{base.NewMemory(base.Config{}), protocol.FeatureToolSourcesAttach, testCase.support}); err != nil {
+				t.Fatal(err)
+			}
+			hub, server := newServer(t, registry, Options{})
+			status, envelope := openSessionWith(t, server, "ordered", protocol.SessionOpenRequest{
+				ToolSources: []protocol.ToolSourceAttachment{credentialed},
+			})
+			if status != http.StatusBadRequest {
+				t.Fatalf("open status %d, want 400: %s", status, envelope.Payload)
+			}
+			var failure protocol.ErrorResponse
+			if err := envelope.DecodePayload(&failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.Error.Code != testCase.code {
+				t.Fatalf("refusal code %q, want %q: %+v", failure.Error.Code, testCase.code, failure.Error.Details)
+			}
+			for key, want := range testCase.details {
+				if failure.Error.Details[key] != want {
+					t.Fatalf("refusal details %+v, want %s=%v", failure.Error.Details, key, want)
+				}
+			}
+			// The capability and degradation rungs say nothing about a
+			// particular source; naming one would point at the wrong fix.
+			if _, named := failure.Error.Details["source"]; named {
+				t.Fatalf("a capability-rung refusal named a source: %+v", failure.Error.Details)
+			}
+			if sessions := hub.Sessions(context.Background()); len(sessions) != 0 {
+				t.Fatalf("a refused open left %d sessions behind", len(sessions))
+			}
+		})
 	}
 }

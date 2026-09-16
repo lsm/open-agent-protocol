@@ -156,7 +156,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		// arrays are honoured, so a refusal is checkable in both directions.
 		protocol.FeatureToolsList: {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
 		protocol.FeatureToolSourcesAttach: {
-			Level: protocol.SupportEmulated, Mode: protocol.ModeSessionOpen,
+			Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen},
 			Limits: map[string]json.RawMessage{
 				protocol.LimitMaxSources: json.RawMessage(strconv.Itoa(maxAttachedSources)),
 				protocol.LimitTransports: mustJSON(attachTransports),

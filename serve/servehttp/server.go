@@ -209,6 +209,17 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures}
+	// The refusal ladder runs capability, then degradation, then
+	// unsatisfiability, and the daemon's own attachment constraints are the
+	// third rung: telling a caller to fix its command, when the endpoint
+	// cannot attach sources at all, answers a question it never asked and
+	// hides the one it did. So the endpoint's own disclosure is consulted
+	// first, before any daemon-specific constraint is applied.
+	if refusal := s.attachmentGate(r.Context(), name, request); refusal != nil {
+		code, message, details, _ := serve.ControlRefusal(refusal)
+		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
+		return
+	}
 	attachments, refusal := s.resolveAttachments(request.ToolSources)
 	if refusal != nil {
 		s.writeErrorDetails(w, http.StatusBadRequest, "unsupported_feature", refusal.Error(), map[string]any{
@@ -605,6 +616,40 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- request gate and response helpers ---
+
+// attachmentGate reports the capability or degradation refusal an attaching
+// open owes, and nil when the endpoint's own disclosure admits the request.
+// It returns the adapter's error type rather than a rendered refusal, so the
+// answer this route composes and the one it relays out of Open both go through
+// serve.ControlRefusal and cannot drift.
+//
+// The adapter's own gate reaches the same verdict, but only after the daemon
+// has already refused for its credential rule, which is the wrong actionable
+// answer: a caller told to name an operator-configured source would keep
+// trying against an endpoint that attaches nothing. The descriptor is read
+// rather than assumed, and a probe that fails leaves the pre-check out —
+// nothing here is a security boundary, resolveAttachments below still runs,
+// and the adapter's own gate still answers inside Open.
+func (s *Server) attachmentGate(ctx context.Context, name string, request protocol.SessionOpenRequest) error {
+	if len(request.ToolSources) == 0 {
+		return nil
+	}
+	descriptor, err := s.hub.Probe(ctx, name)
+	if err != nil {
+		return nil
+	}
+	support, advertised := descriptor.Capabilities.Features[protocol.FeatureToolSourcesAttach]
+	affirmative := advertised && support.Level != "" && support.Level != protocol.SupportUnavailable
+	// A key advertised for no session-open mode is one an open cannot elect,
+	// which is the capability rung and not a constraint on any one source.
+	if !affirmative || !support.DisclosesMode(protocol.ModeSessionOpen) {
+		return &base.UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnadvertised}
+	}
+	if support.Level == protocol.SupportDegraded && !request.AllowsDegraded(protocol.FeatureToolSourcesAttach) {
+		return &base.DegradedControlError{Feature: protocol.FeatureToolSourcesAttach}
+	}
+	return nil
+}
 
 // attachmentRefusal names the one tool source an open may not attach over the
 // client-facing wire, and why.

@@ -205,10 +205,47 @@ refusal of an attachment with no defect at all, so an endpoint could advertise
 `FeatureSupport.limits` — `max_sources` and the `transports` it accepts — and
 refusing an array that violates none of them is `undisclosed_attach_limit`. The
 key plus its limits tells a caller exactly which arrays are honoured, and the
-key alone tells it that an unlimited one is. `mode` discloses `session_open`,
-and `remote` where the endpoint accepts a `remote` source; an open attaching
-one to an endpoint that does not is refused `unsatisfiable` with
-`details.source`.
+key alone tells it that an unlimited one is.
+
+`max_sources` is a positive ceiling, and the schema refuses zero. Zero is not
+"attach nothing": an empty `tool_sources` array does not elect the capability
+at all, so the only requests a zero ceiling could describe are the ones that do
+elect it, every one of which would then sit outside the limit. Refusing all of
+them would be conforming, and the endpoint would advertise the key while
+honouring nothing — the exact outcome the limit mechanism exists to prevent. A
+non-positive value therefore discloses no ceiling at all, in the schema and in
+`FeatureSupport.MaxSources`, and such an endpoint is held to accepting every
+well-formed array. `fixtures/schema-invalid/tool-source-attach-limit-zero.json`
+pins the schema's half.
+
+### Attachment discloses a set of modes, not one
+
+`action.tool_sources.attach` discloses where it attaches in
+`FeatureSupport.modes`, the plural, and not in the scalar `mode`.
+
+The scalar was the first shape, and it cannot carry what this key has to say.
+Every attachment-capable endpoint attaches at session open; an endpoint that
+also accepts a `remote` source — one reaching an endpoint the operator never
+configured — has a second thing to disclose, and with one slot saying the
+second erases the first. A descriptor claiming `mode: "remote"` would read as
+an endpoint that cannot attach at open, which is not what it meant and which
+nothing would catch. The existing contract already names the distinction the
+right way round: `mode` is "the single application mode a key has one of", and
+`modes` is "the set a key can enforce more than one of". `run.tool_selection`
+already discloses its enforced `tool_choice` modes as a set for exactly this
+reason, so following it costs no new vocabulary, where a separate boolean
+`remote` flag would have invented a third shape for one key.
+
+`session_open` is therefore required wherever the key is advertised above
+`unavailable`: an attach capability disclosing no session-open mode offers
+nothing an open can elect. An open that attaches anyway is diagnosed on the
+capability rung — `unavailable_capability`, refusal `unsupported_feature` with
+`details.reason: "unadvertised"` — rather than through a diagnostic of its own,
+because from the caller's side there is no difference between a key that is
+missing and one that is unusable where the caller stands. A `remote`
+attachment to an endpoint whose set omits `remote` stays on the unsatisfiable
+rung with `details.source`, because there the capability is usable and one
+member of the request is not.
 
 The two gates are ordered, not concurrent. Where the descriptor omits
 `action.tool_sources.attach` or advertises it `unavailable`, the capability
@@ -216,6 +253,24 @@ rung owns the response and its `unadvertised` refusal is the conforming one:
 one `error.response` cannot carry both `unadvertised` and `unsatisfiable`, and
 a caller told the capability is missing has no use for a detail about one of
 its modes.
+
+The ordering binds a binding's own constraints too. The daemon's credential
+rule below is an unsatisfiability of the daemon's own, and applying it before
+the endpoint's disclosure answers a question the caller never asked: told to
+name an operator-configured source, a caller would keep reissuing opens
+against an endpoint that attaches nothing, never learning the capability is
+missing. So `POST /adapters/{name}/sessions` probes the adapter and settles the
+capability and degradation rungs from its descriptor before it applies any rule
+of its own. That is a reordering, not a second gate — the adapter's own
+`RefuseUnadvertisedToolSources` still answers inside `Open`, which is what an
+in-process embedding of `serve.Hub` sees, and the two cannot drift because the
+route composes the same error types and renders them through the same
+`serve.ControlRefusal` mapping it uses to relay the adapter's. A
+probe that fails leaves the pre-check out rather than inventing a verdict: the
+adapter's gate still runs, and nothing here is a security boundary. The open
+route is the only path into an open — `servestdio` has no open op, and the
+in-process embedding calls `Hub.Open` directly — so one placement covers the
+wire.
 
 ### Attachment is for the session's lifetime
 
@@ -277,26 +332,37 @@ under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 44 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 47 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in, the three resolvability rules on both a list and a descriptor, the
 attachment gate and its typed refusals, the remote mode ordered behind the
 capability rung, the attachment limits in both directions, the union a session
 snapshot publishes, the lifetime catalog an attachment binds, the
 attachment-only member a published source may never carry, a call's
-attribution and its reassignment mid-lifecycle, and a refresh that collides
-with an attachment. Two boundary tests carry what no trace can: every
-registered adapter refusing an attachment it never advertised before a process
-starts (`serve`), and the open route relaying both typed refusals with the
-details that name what to change (`serve/servehttp`).
+attribution and its reassignment mid-lifecycle, a refresh that collides with
+an attachment, an attach capability disclosing no session-open mode in both
+directions, and a schema-invalid `max_sources: 0`. Three boundary tests carry
+what no trace can: every registered adapter refusing an attachment it never
+advertised before a process starts (`serve`), the open route relaying both
+typed refusals with the details that name what to change, and that same route
+settling the capability and degradation rungs ahead of its own credential rule
+(`serve/servehttp`).
 
 Native evidence: Claude Code graduates the catalog at `degraded` on the
 per-turn `system/init` frame, now pinned in
 [the ledger](../research/claude-code-agent-sdk-2.1.263-mapping.md) and executed
 by the corpus case `tools-catalog-sources` through the production reducer. ACP
-graduates attachment at `native` with `mode: "session_open"` and
+graduates attachment at `native` with `modes: ["session_open"]` and
 `limits.transports: ["process"]` on `session/new`'s `mcpServers`, executed by
-the corpus case `open-with-tool-sources`.
+the corpus case `open-with-tool-sources`. Its admission is decided before the
+child is started, because it depends only on the request and the adapter's own
+configuration: a refused open should not pay a process spawn and an initialize
+round trip, nor leave a started child for the refusal path to clean up. And
+because ACP names each MCP server by the attachment's id, without requiring
+those names to be unique, an id colliding with another attachment or with a
+server the operator configured is refused `unsatisfiable` with
+`details.source`: two entries under one id would leave both the catalog's
+attribution and the native routing ambiguous.
 
 Reference execution: `adapter/memory.go` declares two sources, attributes its
 scripted tool to one of them, serves the session's catalog, accepts attachments

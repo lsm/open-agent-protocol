@@ -19,16 +19,10 @@
       "features": {
         "action.tool_sources.attach": {
           "level": "native",
-          "limits": {
-            "max_sources": 2,
-            "transports": [
-              "process",
-              "local"
-            ]
-          },
           "modes": [
-            "session_open"
-          ]
+            "remote"
+          ],
+          "reason": "sources are attached by a running session, never at open"
         },
         "action.tools.list": {
           "level": "native"
@@ -52,16 +46,6 @@
           "id": "native",
           "kind": "native"
         }
-      ],
-      "tools": [
-        {
-          "execution_owner": "agent",
-          "input_schema": {
-            "type": "object"
-          },
-          "name": "grep",
-          "source": "native"
-        }
       ]
     },
     "profile": "open-agent-protocol.agent-control-core",
@@ -76,9 +60,14 @@
       "session_id": "s1",
       "tool_sources": [
         {
-          "endpoint": "https://tools.example",
-          "id": "remote-tools",
-          "kind": "remote",
+          "command": "/usr/local/bin/mcp-filesystem",
+          "display_name": "Filesystem",
+          "endpoint": "stdio:filesystem-tools",
+          "environment": [
+            "MCP_TOKEN"
+          ],
+          "id": "files",
+          "kind": "process",
           "protocol": "mcp"
         }
       ]
@@ -98,8 +87,7 @@
         "code": "unsupported_feature",
         "details": {
           "feature": "action.tool_sources.attach",
-          "reason": "unsatisfiable",
-          "source": "remote-tools"
+          "reason": "unadvertised"
         },
         "message": "fixture refusal"
       }

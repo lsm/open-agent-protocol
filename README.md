@@ -101,9 +101,11 @@ the descriptor's members plus, for a `process` source, `command`, `args`, and
 because an attachment's environment can hold a credential: a published source
 carries none of those three members, and an endpoint that reflected one back
 into its catalog is a schema rejection rather than a convention. The endpoint
-discloses what it accepts in `action.tool_sources.attach` — `mode`
-(`session_open`, and `remote` where offered) and `limits` (`max_sources`, the
-`transports` it takes) — so a refusal is checkable in both directions.
+discloses what it accepts in `action.tool_sources.attach` — `modes` (always
+`session_open`, plus `remote` where offered) and `limits` (`max_sources`, the
+`transports` it takes) — so a refusal is checkable in both directions. The
+modes are a set, following `run.tool_selection`, so disclosing `remote` never
+erases the session-open one.
 
 **The daemon does not take a command from the wire.** "Loopback, single-user"
 describes the transport, not the origin of a request on it: a page in the
