@@ -973,37 +973,26 @@ func TestMalformedLineSurvivesASaturatedBound(t *testing.T) {
 // release is what lets the next one in.
 func TestAdmissionBudgetsRequestBytes(t *testing.T) {
 	run := newRunState(64, 1024)
-	ctx := context.Background()
-	failed := make(chan struct{})
-	if !run.admit(ctx, failed, 900) {
-		t.Fatal("the first admission was refused")
+	if got := run.offer(900); got != admitted {
+		t.Fatalf("the first offer got %v, want admitted", got)
 	}
-	waited := make(chan bool, 1)
-	go func() { waited <- run.admit(ctx, failed, 900) }()
-	select {
-	case <-waited:
-		t.Fatal("admitted past the byte budget with the count ceiling nowhere near")
-	case <-time.After(100 * time.Millisecond):
+	if got := run.offer(900); got != refused {
+		t.Fatalf("offer past the byte budget got %v, want refused with the count ceiling nowhere near", got)
 	}
 	run.release(900)
-	select {
-	case admitted := <-waited:
-		if !admitted {
-			t.Fatal("admission refused after room appeared")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the release did not wake the waiting admission")
+	if got := run.offer(900); got != admitted {
+		t.Fatalf("offer after room appeared got %v, want admitted", got)
 	}
 	run.release(900)
 }
 
 // TestAdmissionAdmitsOneOversizeRequest pins the other edge: a request
-// larger than the whole budget must still be served rather than deadlocked
+// larger than the whole budget must still be served rather than refused
 // against a bound it can never fit, so an idle registry admits anything.
 func TestAdmissionAdmitsOneOversizeRequest(t *testing.T) {
 	run := newRunState(64, 1024)
-	if !run.admit(context.Background(), make(chan struct{}), 4096) {
-		t.Fatal("an idle registry refused a request larger than its budget")
+	if got := run.offer(4096); got != admitted {
+		t.Fatalf("an idle registry got %v for a request larger than its budget, want admitted", got)
 	}
 	run.release(4096)
 }
@@ -1173,12 +1162,11 @@ func TestStalledDrainCarriesNothingLater(t *testing.T) {
 }
 
 // TestStallAndMalformedLineBothSurvive pins that these are not
-// alternatives. A line this framing cannot carry arriving while the loop is
-// parked at the in-flight bound produces three separate conditions, and a
-// caller needs all three: the line number it reports and exits on, the valid
-// requests it read and never served, and the stall that tells it this output
-// must not be reused. Each is a different question errors.Is and errors.As
-// are asked, so none of them may stand in for another.
+// alternatives. A line this framing cannot carry, arriving while a worker is
+// wedged behind the in-flight bound, produces two separate conditions and a
+// caller needs both: the line number it reports and exits on, and the stall
+// that tells it this output must not be reused. Each is a different question
+// errors.Is and errors.As are asked, so neither may stand in for the other.
 func TestStallAndMalformedLineBothSurvive(t *testing.T) {
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) })
@@ -1211,9 +1199,6 @@ func TestStallAndMalformedLineBothSurvive(t *testing.T) {
 		if !errors.Is(err, ErrShutdownStalled) {
 			t.Fatalf("Run returned %v, want the stall to survive alongside it", err)
 		}
-		if !errors.Is(err, ErrRequestsDropped) {
-			t.Fatalf("Run returned %v, want the requests it never served reported too", err)
-		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return")
 	}
@@ -1239,60 +1224,40 @@ func (w *gatedFailWriter) Write(data []byte) (int, error) {
 	return 0, io.ErrClosedPipe
 }
 
-// TestDroppedRequestsDoNotHideTheWriteFailure pins the clean teardown, where
-// nothing is abandoned and nothing stalls. The output dies while a worker
-// still holds the only admission slot, so the request the loop is holding
-// can only be refused and is reported as dropped; that worker then settles
-// well inside its window, so the writer is collected normally. The drop is
-// true, but it is not why the host heard nothing — the output was already
-// broken — and a caller told only that requests were dropped would go
-// looking for an adapter that was never slow.
-func TestDroppedRequestsDoNotHideTheWriteFailure(t *testing.T) {
-	registry := serve.NewRegistry()
-	if err := registry.Register("memory", base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})); err != nil {
-		t.Fatal(err)
+// TestNoteKeepsEveryFactFindable pins the rule the teardown's error
+// reporting rests on, independently of which interleavings happen to reach
+// it. Every error Run returns names something that independently happened to
+// the session, and errors.Is asked about any one of them is a separate
+// question, so none may shadow another. Which pairs are reachable has
+// already changed once as the admission model changed; that this holds for
+// any pair must not.
+func TestNoteKeepsEveryFactFindable(t *testing.T) {
+	if got := note(nil, nil); got != nil {
+		t.Fatalf("note(nil, nil) = %v, want nil", got)
 	}
-	if err := registry.Register("slow", &slowProbe{delay: time.Second}); err != nil {
-		t.Fatal(err)
+	if got := note(nil, ErrShutdownStalled); !errors.Is(got, ErrShutdownStalled) {
+		t.Fatalf("note filled an empty account with %v", got)
 	}
-	hub := serve.New(registry, serve.Options{StreamQueue: 8})
-	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatal(err)
+	if got := note(ErrRequestsDropped, nil); !errors.Is(got, ErrRequestsDropped) {
+		t.Fatalf("note lost the account it was holding: %v", got)
 	}
-	writer := &gatedFailWriter{release: make(chan struct{}), entered: make(chan struct{})}
-	stdinReader, stdinWriter := io.Pipe()
-	t.Cleanup(func() { stdinWriter.Close() })
-	done := make(chan error, 1)
-	go func() { done <- server.Run(context.Background(), stdinReader, writer) }()
-	// One request that answers at once, so there is a line for the writer to
-	// park on; one that answers slowly, so it still holds the only slot when
-	// the output dies; one more for the loop to be holding when it does.
-	for _, line := range []string{
-		`{"id":1,"op":"capabilities","adapter":"memory"}`,
-		`{"id":2,"op":"capabilities","adapter":"slow"}`,
-		`{"id":3,"op":"adapters"}`,
-	} {
-		if _, err := stdinWriter.Write([]byte(line + "\n")); err != nil {
-			t.Fatal(err)
-		}
+	// A fact already carried is stated once, not twice.
+	doubled := note(ErrShutdownStalled, ErrShutdownStalled)
+	if doubled != ErrShutdownStalled {
+		t.Fatalf("note repeated a fact it already carried: %v", doubled)
 	}
-	<-writer.entered                   // the first response reached the output
-	time.Sleep(100 * time.Millisecond) // let the loop park behind the bound
-	close(writer.release)              // and only now does the output die
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrRequestsDropped) {
-			t.Fatalf("Run returned %v, want the request it never served reported", err)
-		}
-		if !errors.Is(err, io.ErrClosedPipe) {
-			t.Fatalf("Run returned %v, want the write failure reported with it", err)
-		}
-		if errors.Is(err, ErrShutdownStalled) {
-			t.Fatalf("Run returned %v, want no stall: the work settled and the writer was collected", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return")
+	// Two independent facts: both findable, and a typed one still unwraps.
+	malformed := &MalformedLineError{Line: 4, Detail: "carriage return is not valid framing"}
+	joined := note(note(error(malformed), io.ErrClosedPipe), ErrShutdownStalled)
+	var found *MalformedLineError
+	if !errors.As(joined, &found) || found.Line != 4 {
+		t.Fatalf("errors.As lost the malformed line in %v", joined)
+	}
+	if !errors.Is(joined, io.ErrClosedPipe) {
+		t.Fatalf("errors.Is lost the write failure in %v", joined)
+	}
+	if !errors.Is(joined, ErrShutdownStalled) {
+		t.Fatalf("errors.Is lost the stall in %v", joined)
 	}
 }
 
@@ -1361,22 +1326,22 @@ func (a *slowProbe) Open(context.Context, base.OpenRequest) (base.Session, error
 	return nil, errors.New("slowProbe opens no session")
 }
 
-// TestSlowWorkersBehindTheBoundReportTheDrop pins two things that are easy
-// to confuse. Missing the grace window is not the same as abandoning work
-// in flight: a loop parked at the in-flight bound cannot return while the
-// bound holds, so the window expires by construction, and if the admitted
-// work then settles and drains, nothing was stalled. But the frames the
-// loop was still holding are dropped when admission closes under it, and
-// that is a loss the caller has to be told about — the serial dispatch this
-// replaced would have served them. So Run reports the drop and does not
-// report a stall.
-func TestSlowWorkersBehindTheBoundReportTheDrop(t *testing.T) {
+// TestSlowWorkersBehindTheBoundAreAnswered pins what a saturated bound owes
+// the host. The loop does not wait for room: a request it cannot admit is
+// answered as busy and the loop reads on, so every request the host sent
+// gets exactly one response, nothing is silently let go, and the session
+// ends cleanly once the admitted work settles. Waiting instead would buy
+// the host nothing it can act on and would stop the loop taking frames,
+// which is how the host's own end becomes invisible.
+func TestSlowWorkersBehindTheBoundAreAnswered(t *testing.T) {
 	registry := serve.NewRegistry()
-	if err := registry.Register("slow", &slowProbe{delay: 250 * time.Millisecond}); err != nil {
+	if err := registry.Register("slow", &slowProbe{delay: 100 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	hub := serve.New(registry, serve.Options{StreamQueue: 8})
-	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 150 * time.Millisecond})
+	// The window comfortably outlasts the admitted op: this test is about
+	// what the refused requests are told, not about a worker that overruns.
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1384,20 +1349,21 @@ func TestSlowWorkersBehindTheBoundReportTheDrop(t *testing.T) {
 	stdoutReader, stdoutWriter := io.Pipe()
 	done := make(chan error, 1)
 	go func() { done <- server.Run(context.Background(), stdinReader, stdoutWriter) }()
-	drained := make(chan int, 1)
+	answers := make(chan []responseLine, 1)
 	go func() {
-		reader := bufio.NewReader(stdoutReader)
-		lines := 0
+		decoder := json.NewDecoder(stdoutReader)
+		var lines []responseLine
 		for {
-			if _, err := reader.ReadString('\n'); err != nil {
-				drained <- lines
+			var line responseLine
+			if err := decoder.Decode(&line); err != nil {
+				answers <- lines
 				return
 			}
-			lines++
+			lines = append(lines, line)
 		}
 	}()
-	// Three ops against a bound of one: the loop parks holding the second
-	// while the third waits, so the grace window cannot be met.
+	// Three ops against a bound of one: the first is admitted and the other
+	// two arrive while it is still running.
 	for id := 1; id <= 3; id++ {
 		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"capabilities","adapter":"slow"}`+"\n", id))); err != nil {
 			t.Fatal(err)
@@ -1408,11 +1374,8 @@ func TestSlowWorkersBehindTheBoundReportTheDrop(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if !errors.Is(err, ErrRequestsDropped) {
-			t.Fatalf("Run returned %v, want the dropped requests reported", err)
-		}
-		if errors.Is(err, ErrShutdownStalled) {
-			t.Fatalf("Run returned %v: the admitted work settled and drained, so nothing stalled", err)
+		if err != nil {
+			t.Fatalf("Run returned %v, want a clean end: every request was answered and the admitted work drained", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return")
@@ -1420,10 +1383,22 @@ func TestSlowWorkersBehindTheBoundReportTheDrop(t *testing.T) {
 	if err := stdoutWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// The admitted op's response reached the host; the ones the loop was
-	// still holding did not, which is exactly what the returned error says.
-	if lines := <-drained; lines < 1 {
-		t.Fatalf("%d responses reached the host, want the admitted op answered", lines)
+	lines := <-answers
+	if len(lines) != 3 {
+		t.Fatalf("%d responses reached the host, want one per request", len(lines))
+	}
+	busy := 0
+	for _, line := range lines {
+		if line.OK {
+			continue
+		}
+		if line.Error == nil || line.Error.Code != "busy" {
+			t.Fatalf("response %d failed with %+v, want the busy refusal", line.ID, line.Error)
+		}
+		busy++
+	}
+	if busy != 2 {
+		t.Fatalf("%d requests were refused, want the two that did not fit", busy)
 	}
 }
 
@@ -1432,17 +1407,23 @@ func TestSlowWorkersBehindTheBoundReportTheDrop(t *testing.T) {
 // loop abandoned mid-op that then dispatches one more frame cannot Add to a
 // WaitGroup whose Wait has already returned — the misuse the race detector
 // would report as a panic rather than a failed assertion.
+//
+// It also pins that a closed gate is not a busy one. The loop answers a
+// refusal and reads on; it must not answer a teardown, because there is no
+// longer an output to answer on and the session is being given up, not
+// queued behind.
 func TestAdmissionClosesAtTeardown(t *testing.T) {
 	run := newRunState(1, 0)
-	ctx := context.Background()
-	failed := make(chan struct{})
-	if !run.admit(ctx, failed, 1) {
-		t.Fatal("admission refused before the session began")
+	if got := run.offer(1); got != admitted {
+		t.Fatalf("admission got %v before the session began, want admitted", got)
+	}
+	if got := run.offer(1); got != refused {
+		t.Fatalf("a full gate got %v, want refused", got)
 	}
 	run.release(1)
 	run.closeAdmission()
-	if run.admit(ctx, failed, 1) {
-		t.Fatal("admission stayed open after teardown")
+	if got := run.offer(1); got != closedToWork {
+		t.Fatalf("admission got %v after teardown, want closedToWork", got)
 	}
 }
 
@@ -2090,5 +2071,114 @@ func TestCollectLoopOnlyAsksWhenNothingReleasedIt(t *testing.T) {
 	}
 	if !errors.Is(loopErr, ErrRequestsDropped) {
 		t.Fatalf("collectLoop returned %v, want the published account", loopErr)
+	}
+}
+
+// TestHostsEndIsObservedAtAnyPipelineDepth pins the property that decides
+// the admission model. A wedged adapter holds the only slot; the host
+// pipelines far more requests than any buffer between the reader and the
+// loop can hold, and then closes stdin.
+//
+// While the loop waited for room it stopped taking frames, so the reader
+// blocked handing the next one on and never read the end behind it — and
+// with no end observed, no shutdown window ever opened and Run hung. No
+// fixed read-ahead fixes that; it only moves the depth at which it happens,
+// which made the trigger "how much the host wrote". A loop that answers
+// what it cannot admit never stops taking frames, so the end is always
+// reached, at any depth.
+func TestHostsEndIsObservedAtAnyPipelineDepth(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, WriteQueue: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input strings.Builder
+	for id := 1; id <= 64; id++ {
+		fmt.Fprintf(&input, `{"id":%d,"op":"capabilities","adapter":"hang"}`+"\n", id)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), strings.NewReader(input.String()), io.Discard) }()
+	select {
+	case err := <-done:
+		// The wedged worker is abandoned, which is the stall this reports;
+		// what matters here is that Run returned at all.
+		if err != nil && !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want a bounded end", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run never observed the host's end behind a saturated bound")
+	}
+}
+
+// TestRefusedRequestNamesItself pins what the refusal is worth. A host that
+// is told only that something was dropped cannot act; one told which id was
+// refused, with a code it can branch on, can send that request again.
+func TestRefusedRequestNamesItself(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out lockedBuffer
+	input := `{"id":1,"op":"capabilities","adapter":"hang"}` + "\n" +
+		`{"id":7,"op":"adapters"}` + "\n"
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), strings.NewReader(input), &out) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	var line responseLine
+	if err := json.NewDecoder(strings.NewReader(out.String())).Decode(&line); err != nil {
+		t.Fatalf("no response reached the host: %v (output %q)", err, out.String())
+	}
+	if line.ID != 7 {
+		t.Fatalf("response names request %d, want the refused one", line.ID)
+	}
+	if line.OK {
+		t.Fatalf("request %d was answered ok, want a refusal", line.ID)
+	}
+	if line.Error == nil || line.Error.Code != "busy" {
+		t.Fatalf("refusal carried %+v, want the busy code", line.Error)
+	}
+}
+
+// TestBufferedDefectIsJudgedBehindASaturatedBound pins that a saturated
+// bound no longer hides a framing defect sitting behind it. A wedged worker
+// holds the only slot, a valid request arrives behind it, and an
+// unparseable line arrives behind that. While the loop waited for room it
+// never reached the bad line, so the reader's account of a clean EOF was all
+// Run had and the defect was never reported. Answering what cannot be
+// admitted means the loop reaches every line the host sent, so the line
+// number and the stall are both reported.
+func TestBufferedDefectIsJudgedBehindASaturatedBound(t *testing.T) {
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	hub := newProbeHub(t, "hang", &probeAdapter{hang: hang})
+	server, err := New(hub, Options{MaxConcurrentOps: 1, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := `{"id":1,"op":"capabilities","adapter":"hang"}` + "\n" +
+		`{"id":2,"op":"adapters"}` + "\n" +
+		`{"id":3,"op":` + "\n"
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), strings.NewReader(input), io.Discard) }()
+	select {
+	case err := <-done:
+		var malformed *MalformedLineError
+		if !errors.As(err, &malformed) {
+			t.Fatalf("Run returned %v, want the defect behind the bound reported", err)
+		}
+		if malformed.Line != 3 {
+			t.Fatalf("malformed line %d, want 3", malformed.Line)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
 	}
 }

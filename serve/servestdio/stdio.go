@@ -164,14 +164,14 @@ type runState struct {
 
 	// mu guards the admission gate. work counts the op workers teardown
 	// waits for; shuttingDown closes admission so no worker joins after
-	// that wait began. released is closed and replaced on every release, so
-	// a waiting loop wakes when room appears.
+	// that wait began. Nothing waits on this gate: a request that does not
+	// fit is answered rather than held, so the loop that offered it keeps
+	// taking frames.
 	mu           sync.Mutex
 	work         sync.WaitGroup
 	shuttingDown bool
 	ops          int
 	bytes        int
-	released     chan struct{}
 }
 
 func newRunState(maxOps, maxBytes int) *runState {
@@ -181,58 +181,57 @@ func newRunState(maxOps, maxBytes int) *runState {
 	if maxBytes <= 0 {
 		maxBytes = admissionBytes
 	}
-	return &runState{maxOps: maxOps, maxBytes: maxBytes, released: make(chan struct{})}
+	return &runState{maxOps: maxOps, maxBytes: maxBytes}
 }
 
-// admit registers one op worker of the given request size with the teardown
-// wait, waiting for room and refusing once shutdown has begun. It refuses
-// then because a late Add would race a Wait that may already have seen the
-// counter reach zero, and the worker it counted would never be waited for;
-// a refused op is simply not served, its host already past the end of the
-// session.
-//
-// The wait for room is what makes the serving loop stop reading at the
-// bound, which is the backpressure the serial dispatch gave for free. A
-// loop parked here has stopped taking frames but has not stopped the
-// session from ending: the reader runs a frame ahead, so it still reaches
-// the end behind the frame the loop has not taken. The wait itself ends
-// when a worker finishes, when the output fails, or with the context.
-func (r *runState) admit(ctx context.Context, writerFailed <-chan struct{}, size int) bool {
-	for {
-		r.mu.Lock()
-		if r.shuttingDown {
-			r.mu.Unlock()
-			return false
-		}
-		// An idle registry admits anything, so a request larger than the
-		// whole budget still runs; otherwise both bounds must hold.
-		if r.ops == 0 || (r.ops < r.maxOps && r.bytes+size <= r.maxBytes) {
-			r.ops++
-			r.bytes += size
-			r.work.Add(1)
-			r.mu.Unlock()
-			return true
-		}
-		room := r.released
-		r.mu.Unlock()
-		select {
-		case <-room:
-		case <-ctx.Done():
-			return false
-		case <-writerFailed:
-			return false
-		}
+// admission is what the loop learns when it offers a request to the bounds.
+// Offering never waits, and the reason is a liveness one rather than a
+// throughput one: waiting for room is what made the serving loop stop
+// taking frames, and a reader blocked handing the next frame on cannot read
+// the host's end behind it. Any fixed amount of slack between them only
+// moves the depth at which that happens, so backpressure here bought a hang
+// whose trigger was how much the host chose to pipeline. Answering costs
+// the host a retry; waiting cost it the session.
+type admission int
+
+const (
+	// admitted: the request has a slot and its bytes are charged.
+	admitted admission = iota
+	// refused: the bounds are full right now. The request is answered and
+	// not held, because a loop that waits here stops taking frames — and a
+	// reader blocked handing the next frame on cannot read the host's end
+	// behind it. Waiting would make the session's own end invisible at
+	// whatever depth the host happened to pipeline to, which is a liveness
+	// bug whose trigger is how much the host wrote.
+	refused
+	// closedToWork: the teardown has shut admission. Nothing more will be
+	// served, and this is the one outcome that is not answered: the output
+	// is being given up, not offered.
+	closedToWork
+)
+
+// offer charges a request against both bounds without ever waiting. An idle
+// registry admits anything, so a request larger than the whole byte budget
+// still runs; otherwise both bounds must hold.
+func (r *runState) offer(size int) admission {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.shuttingDown {
+		return closedToWork
 	}
+	if r.ops == 0 || (r.ops < r.maxOps && r.bytes+size <= r.maxBytes) {
+		r.ops++
+		r.bytes += size
+		r.work.Add(1)
+		return admitted
+	}
+	return refused
 }
 
-// release returns one op's room to the registry and wakes whoever is
-// waiting for it.
 func (r *runState) release(size int) {
 	r.mu.Lock()
 	r.ops--
 	r.bytes -= size
-	close(r.released)
-	r.released = make(chan struct{})
 	r.mu.Unlock()
 	r.work.Done()
 }
@@ -242,8 +241,6 @@ func (r *runState) release(size int) {
 func (r *runState) closeAdmission() {
 	r.mu.Lock()
 	r.shuttingDown = true
-	close(r.released)
-	r.released = make(chan struct{})
 	r.mu.Unlock()
 }
 
@@ -309,14 +306,13 @@ var ErrLineTooLarge = errors.New("servestdio: encoded line exceeds the frame lim
 // frames it had taken — the one it holds and any the reader had handed on —
 // are let go rather than served behind a session the host has ended.
 //
-// This is a real loss and not a tidy one. The serial dispatch this frontend
-// replaced served every frame it had read before it noticed the end, so a
-// host that pipelined three requests and closed stdin was answered three
-// times; here it may be answered once. What the caller is owed is to be
-// told, which is what this error is for, rather than a nil return that
-// reads as "all served". Whether the daemon should instead refuse such a
-// request with a typed response, so a host learns which one went
-// unanswered, is a protocol question this frontend does not settle.
+// This is the narrow case that remains once a saturated bound is answered
+// rather than waited on. A request that does not fit is refused on the wire
+// and the host can send it again; this error is for the frames that were
+// past that point when the teardown closed admission under them, which no
+// response can reach because the output is being given up. What the caller
+// is owed is to be told, rather than a nil return that reads as "all
+// served".
 var ErrRequestsDropped = errors.New("servestdio: requests read before the host's end were dropped unserved")
 
 // ErrShutdownStalled reports that a shutdown stage outlived its bounded
@@ -381,20 +377,19 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	go func() { writerDone <- writeLines(out, lines, stop, abandon, writerFailed, outputFailed) }()
 
 	// The reader reports its terminal outcome on a buffered side channel as
-	// well as in the frame stream, because the loop may never take that
-	// final frame: every op here runs on an admitted worker, so the loop
-	// itself parks at the in-flight bound once the admitted work stops
-	// settling, and a frame waiting behind a parked loop is not a frame the
-	// loop will read the end behind. The host's end of the session must
-	// bound shutdown even then.
+	// well as in the frame stream, so that the end is a fact the teardown
+	// holds rather than one more thing queued behind the loop. The loop no
+	// longer stops at the in-flight bound — it answers what it cannot admit
+	// — but it can still be inside a send to an output the host has stopped
+	// reading, and the host's end of the session must bound shutdown even
+	// then.
 	readerDone := make(chan readEnd, 1)
-	// One frame of slack, so the reader is always a frame ahead of the loop:
-	// a loop that has stopped taking frames — parked at the in-flight bound —
-	// would otherwise leave the reader blocked on the handoff, unable to read
-	// the stdin EOF behind it, and the host's disconnect would never be
-	// observed at all. One frame is the whole of the read-ahead, so the
-	// memory this costs is bounded by the same argument the in-flight bound
-	// makes.
+	// One frame of slack, so a reader and a loop that are both running do
+	// not hand every frame over in lockstep. It is slack and not a remedy:
+	// the loop taking frames without waiting is what keeps the host's end
+	// reachable, and no amount of buffering here would substitute for that.
+	// One frame is the whole of the read-ahead, so the memory this costs is
+	// bounded by the same argument the in-flight bound makes.
 	frames := make(chan frameResult, 1)
 	go readFrames(in, s.frameLimit, frames, readerDone)
 
@@ -520,14 +515,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		err = note(err, ended.terminal())
 	}
 	// The grace window expiring is not itself proof that anything was left
-	// behind. Closing admission releases a loop parked at the in-flight
-	// bound, so a session whose workers were merely slow finishes here
-	// after all — and if its work then settled and its responses drained,
-	// nothing was abandoned and the stall is not this session's story. The
-	// loop is asked rather than the timer. Its return value says nothing
-	// about the input, though: a released loop returns because admission
-	// closed, not because the host ended anything, which is why the
-	// reader's account above is what stands in either way.
+	// behind. Closing admission ends a loop that offers one more frame, so
+	// a session whose loop was mid-frame finishes here after all — and if
+	// its work then settled and its responses drained, nothing was
+	// abandoned and the stall is not this session's story. The loop is
+	// asked rather than the timer. Its return value says nothing about the
+	// input, though: such a loop returns because admission closed, not
+	// because the host ended anything, which is why the reader's account
+	// above is what stands in either way.
 	//
 	// When this teardown is the only thing that can still free the loop and
 	// the writer was collected normally, the loop is waited for and not
@@ -651,7 +646,7 @@ type frameResult struct {
 // context end parks on its send and is reclaimed by process exit, the same
 // discipline as the writer's channel. The terminal outcome is also reported
 // on done — buffered, so the report never blocks, and sent before the final
-// frame — because the consumer may be parked at its in-flight bound and
+// frame — because the consumer may be inside a send to a stopped output and
 // never take that frame, and the host's end of the session must still bound
 // shutdown and still be reported as what it was.
 func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- readEnd) {
@@ -682,10 +677,10 @@ func readFrames(in io.Reader, limit int, frames chan<- frameResult, done chan<- 
 // owns what remains. Each op runs on its own admitted worker, exactly as the
 // HTTP server runs one handler per connection: one slow adapter call neither
 // delays the next line nor outlives the teardown that waits for it. The ops
-// in flight are bounded, and the loop stops reading while that bound is
-// reached, so a host that pipelines faster than the daemon can answer feels
-// the same backpressure the serial dispatch gave it. A
-// framing defect — anything readFrame or decodeRequest refuses — fails the
+// in flight are bounded, and a request that does not fit that bound is
+// answered as busy rather than held, so a host that pipelines faster than
+// the daemon can answer learns which requests to send again and the loop
+// never stops reading. A framing defect — anything readFrame or decodeRequest refuses — fails the
 // frontend closed as *MalformedLineError; op-level refusals are responses
 // the host can correct, and the loop reads on past them.
 func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan frameResult, lines chan<- []byte, writerFailed <-chan struct{}) error {
@@ -722,12 +717,23 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 				return &MalformedLineError{Line: number, Detail: err.Error()}
 			}
 			size := len(result.frame)
-			if !run.admit(ctx, writerFailed, size) {
+			switch run.offer(size) {
+			case closedToWork:
 				// Admission closed under us: the teardown is past waiting
 				// and this frame, decoded and never served, is being let
 				// go. Say so rather than returning as though the input had
 				// simply ended.
 				return ErrRequestsDropped
+			case refused:
+				// Answered here rather than by a worker, because refusing
+				// is precisely the case where no worker was started. The
+				// host learns which request went unserved and may send it
+				// again, which is what waiting could never tell it.
+				s.respond(ctx, lines, request, nil, &wireError{
+					Code:    "busy",
+					Message: fmt.Sprintf("the frontend is already running %d operations; send this request again", s.maxOps),
+				})
+				continue
 			}
 			go func(request requestLine, size int) {
 				defer run.release(size)
