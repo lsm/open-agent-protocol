@@ -88,10 +88,16 @@ type sessionTrack struct {
 }
 
 // toolTrack retains a tool call's lifecycle status and the execution owner that
-// opened it; the owner must not change mid-lifecycle.
+// opened it; the owner must not change mid-lifecycle. source is the attribution
+// the call was requested under, kept for the same reason and needed separately:
+// `name` is optional on the progress and terminal payloads, so without the
+// requested source retained here a later event could omit the name and name
+// another source, and the catalog lookup would miss and accept it merely
+// because that source is declared somewhere.
 type toolTrack struct {
 	status string
 	owner  protocol.ParticipantID
+	source string
 }
 type state struct {
 	fixture           string
@@ -882,26 +888,25 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		s.tool(i, line, e, "requested")
 		s.checkCallAgainstChoice(i, line, e, r)
 		s.checkCallSource(i, line, e)
+	// The catalog resolution runs on the requested event alone, which is where
+	// the attribution is established; every later event of the same call is
+	// bound to it by the mid-lifecycle check in tool(), which needs no name
+	// and so cannot be evaded by omitting one.
 	case protocol.TypeActionCallStarted:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "started")
-		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallProgress:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "progress")
-		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallCompleted:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "completed")
-		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallFailed:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "failed")
-		s.checkCallSource(i, line, e)
 	case protocol.TypeActionCallCancelled:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "cancelled")
-		s.checkCallSource(i, line, e)
 	case protocol.TypeActionPermissionRequested:
 		s.feature(i, line, e, "permissions")
 		s.interactionRequested(i, line, e, "permission")
@@ -998,8 +1003,21 @@ func (s *state) tool(i, line int, e protocol.Envelope, next string) {
 	if ok && track.owner != "" && p.ExecutionOwner != track.owner {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/execution_owner", "tool execution owner changed mid-lifecycle", string(track.owner), string(p.ExecutionOwner))
 	}
+	// The attribution is held the same way, and more strictly: `source` is
+	// optional, so an absent one on a later event carries no attribution and
+	// says nothing, while a present one that differs from the requested
+	// source — including one introduced where the request named none — has
+	// moved the call to another endpoint mid-lifecycle.
+	if ok && p.Source != "" && p.Source != track.source {
+		expected := track.source
+		if expected == "" {
+			expected = "no source"
+		}
+		s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/source", "tool source changed mid-lifecycle", expected, p.Source, string(p.ToolCallID))
+	}
 	if !ok {
 		track.owner = p.ExecutionOwner
+		track.source = p.Source
 	}
 	track.status = next
 	r.tools[p.ToolCallID] = track

@@ -200,6 +200,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// An open attaching tool sources to an endpoint that never advertised
+	// attachment is refused before a process starts: this adapter reads no
+	// ToolSources, so admitting the open would return a session that silently
+	// discarded them.
+	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
+		return nil, err
+	}
 	// Extension dialogs are emitted with the participant as the responder, so an
 	// empty identity would produce schema-invalid events that no valid resolution
 	// could satisfy. Reject before starting a process.

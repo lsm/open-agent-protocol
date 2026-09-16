@@ -179,6 +179,33 @@ func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertise
 	return nil
 }
 
+// RefuseUnadvertisedToolSources reports the typed refusal owed when an open
+// attaches tool sources to an endpoint that has not advertised
+// `action.tool_sources.attach`, and nil when the open attaches none.
+// advertised names the capability keys the endpoint offers above
+// `unavailable`.
+//
+// It exists for the same reason RefuseUnadvertisedControls does, and the
+// reason is sharper here: OpenRequest.ToolSources is a field an adapter
+// written before this unit never reads, so without an explicit gate such an
+// adapter returns a successful session having silently dropped the sources the
+// caller asked for. That is the one outcome the fail-closed contract exists to
+// prevent — a caller cannot tell an endpoint that attached its sources from
+// one that discarded them — and "the adapter ignores the field" is not a
+// refusal a caller can act on.
+//
+// Call it before any native write and before a session identity exists, so a
+// refused open leaves nothing behind.
+func RefuseUnadvertisedToolSources(request OpenRequest, advertised ...string) error {
+	if len(request.ToolSources) == 0 {
+		return nil
+	}
+	if !slices.Contains(advertised, protocol.FeatureToolSourcesAttach) {
+		return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
+	}
+	return nil
+}
+
 // UnsupportedControlError refuses a per-submit control before admission:
 // either the endpoint never advertised the capability (Reason
 // ControlUnadvertised) or it cannot honour this request's value of the control

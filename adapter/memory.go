@@ -239,6 +239,12 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 // validator agree on which entry to change; a refusal that violated no
 // disclosed limit would be the endpoint honouring nothing it advertised.
 func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, error) {
+	// The same gate every other adapter runs, with the key this one
+	// advertises: uniform so one grep finds every endpoint's admission, and a
+	// no-op here only because the advertisement is real.
+	if err := RefuseUnadvertisedToolSources(request, protocol.FeatureToolSourcesAttach); err != nil {
+		return nil, err
+	}
 	if len(request.ToolSources) == 0 {
 		return nil, nil
 	}

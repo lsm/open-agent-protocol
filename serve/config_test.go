@@ -1,12 +1,15 @@
 package serve
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/protocol"
 )
 
 func writeConfig(t *testing.T, document string) string {
@@ -250,5 +253,83 @@ func TestLoadRegistryToolSourceNeedsKind(t *testing.T) {
 	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"bare": {"command": "/bin/true"}}}`)
 	if _, err := LoadRegistry(path, os.LookupEnv); err == nil || !strings.Contains(err.Error(), "kind is required") {
 		t.Fatalf("load error = %v", err)
+	}
+}
+
+// TestEveryAdapterRefusesUnadvertisedToolSources is the fail-closed contract
+// held across the whole registry rather than per adapter. OpenRequest.ToolSources
+// is a field an adapter written before the tool-sources unit never reads, so
+// without an explicit gate such an adapter returns a successful session having
+// silently dropped the sources the caller asked for — and a caller cannot tell
+// that session from one that attached them.
+//
+// Every adapter that does not advertise action.tool_sources.attach must
+// therefore refuse the open with the typed error naming the key, before any
+// process starts: the refusals below are all returned ahead of the adapter's
+// client factory, so a registry of executables that do not exist still answers.
+func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
+	path := writeConfig(t, `{
+		"adapters": {
+			"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp"},
+			"codex": {"type": "codex", "executable": "/bin/codex", "working_directory": "/tmp"},
+			"hermes": {"type": "hermes", "executable": "/bin/python", "working_directory": "/tmp", "model": "glm-5.3"},
+			"pi": {"type": "pi", "executable": "/bin/pi", "working_directory": "/tmp"},
+			"makai": {"type": "makai", "executable": "/bin/makai", "working_directory": "/tmp", "agent_config": {}},
+			"deepseek": {"type": "deepseek", "executable": "/bin/dsh", "working_directory": "/tmp", "provider": "deepseek", "model": "deepseek-chat"},
+			"opencode": {"type": "opencode", "endpoint": "http://127.0.0.1:4096"}
+		}
+	}`)
+	registry, err := LoadRegistry(path, os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := base.OpenRequest{
+		SessionID:   "attached",
+		Participant: protocol.Participant{ID: DefaultParticipant},
+		ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/bin/true"}},
+	}
+	for _, name := range registry.Names() {
+		t.Run(name, func(t *testing.T) {
+			implementation, ok := registry.Lookup(name)
+			if !ok {
+				t.Fatalf("adapter %q missing from the registry it was built from", name)
+			}
+			// Every key this adapter advertises above `unavailable` must be
+			// absent, or the refusal below would be wrong rather than owed.
+			descriptor, err := implementation.Probe(context.Background())
+			if err != nil {
+				t.Fatalf("probe: %v", err)
+			}
+			if support, advertised := descriptor.Capabilities.Features[protocol.FeatureToolSourcesAttach]; advertised && support.Level != protocol.SupportUnavailable {
+				t.Fatalf("%s advertises %s at %q; this test covers the adapters that do not", name, protocol.FeatureToolSourcesAttach, support.Level)
+			}
+			session, err := implementation.Open(context.Background(), request)
+			if err == nil {
+				_ = session.Close(context.Background())
+				t.Fatal("the open was admitted, discarding the attachment it was given")
+			}
+			var refusal *base.UnsupportedControlError
+			if !errors.As(err, &refusal) {
+				t.Fatalf("refusal is %v, want *adapter.UnsupportedControlError", err)
+			}
+			if refusal.Feature != protocol.FeatureToolSourcesAttach || refusal.Reason != base.ControlUnadvertised {
+				t.Fatalf("refusal names %s/%s", refusal.Feature, refusal.Reason)
+			}
+		})
+	}
+}
+
+// TestAdvertisingAdaptersAdmitToolSources is the other direction: the two
+// endpoints that do advertise the key must not be refused by the shared gate,
+// or the gate would make the advertisement unusable.
+func TestAdvertisingAdaptersAdmitToolSources(t *testing.T) {
+	attachment := protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/bin/true"}
+	if err := base.RefuseUnadvertisedToolSources(base.OpenRequest{ToolSources: []protocol.ToolSourceAttachment{attachment}}, protocol.FeatureToolSourcesAttach); err != nil {
+		t.Fatalf("an advertised attachment was refused: %v", err)
+	}
+	// And an open carrying none is never refused, whatever the endpoint
+	// advertises: an open that elects nothing owes nothing.
+	if err := base.RefuseUnadvertisedToolSources(base.OpenRequest{}); err != nil {
+		t.Fatalf("an open attaching nothing was refused: %v", err)
 	}
 }

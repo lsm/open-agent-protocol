@@ -258,6 +258,72 @@ func TestOpenRelaysTheAdaptersAttachmentRefusal(t *testing.T) {
 	}
 }
 
+// degradedAttachAdapter advertises attachment at `degraded` and refuses an
+// open that does not opt in. No in-repo adapter advertises it at that level,
+// so the route's DegradedControlError mapping would otherwise be unpinned.
+type degradedAttachAdapter struct{ *base.Memory }
+
+func (a degradedAttachAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	descriptor, err := a.Memory.Probe(ctx)
+	if err != nil {
+		return descriptor, err
+	}
+	descriptor.Capabilities.Features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
+		Level: protocol.SupportDegraded, Mode: protocol.ModeSessionOpen,
+		Reason: "sources are attached but never health-checked",
+	}
+	return descriptor, nil
+}
+
+func (a degradedAttachAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	if len(request.ToolSources) > 0 && !request.AllowsDegraded(protocol.FeatureToolSourcesAttach) {
+		return nil, &base.DegradedControlError{Feature: protocol.FeatureToolSourcesAttach}
+	}
+	return a.Memory.Open(ctx, request)
+}
+
+// TestOpenRelaysADegradedAttachRefusal is the other typed refusal the open
+// route owes: a degraded capability elected without consent asks the caller
+// for an opt-in it can simply add and reissue, which a generic open_failed
+// would never tell it.
+func TestOpenRelaysADegradedAttachRefusal(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", degradedAttachAdapter{base.NewMemory(base.Config{})}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	// A `local` source, so the daemon's own credential rule — which refuses a
+	// `process` attachment naming no configured id — does not answer first and
+	// hide the adapter's refusal behind its own.
+	attachment := protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceLocal}
+	status, envelope := openSessionWith(t, server, "degraded", protocol.SessionOpenRequest{
+		ToolSources: []protocol.ToolSourceAttachment{attachment},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("open status %d, want 400: %s", status, envelope.Payload)
+	}
+	var failure protocol.ErrorResponse
+	if err := envelope.DecodePayload(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "capability_degraded" {
+		t.Fatalf("refusal code %q, want capability_degraded", failure.Error.Code)
+	}
+	if failure.Error.Details["feature"] != protocol.FeatureToolSourcesAttach {
+		t.Fatalf("refusal details %+v", failure.Error.Details)
+	}
+
+	// The same open carrying the opt-in is admitted, so the refusal really is
+	// asking for consent rather than hiding an unusable capability.
+	status, envelope = openSessionWith(t, server, "consented", protocol.SessionOpenRequest{
+		ToolSources:           []protocol.ToolSourceAttachment{attachment},
+		AllowDegradedFeatures: []string{protocol.FeatureToolSourcesAttach},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("consented open status %d: %s", status, envelope.Payload)
+	}
+}
+
 // TestReadRequestRefusesBrowserOrigins pins the origin boundary that lands
 // beside the registry allowlist: a simple cross-origin POST from a page is
 // refused, and so is a body that does not declare itself JSON, which turns

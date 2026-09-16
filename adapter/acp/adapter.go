@@ -175,7 +175,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	// slice would marshal as null and a conforming agent rejects the request
 	// with -32602 Invalid params, so always send the empty array.
 	mcpServers := append([]native.MCPServer{}, a.config.MCPServers...)
-	attached, err := a.attachToolSources(req.ToolSources)
+	attached, err := a.attachToolSources(req)
 	if err != nil {
 		_ = client.Close()
 		return nil, err
@@ -210,7 +210,14 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 // is dropped when it carries none, so a wire caller cannot read an ambient
 // credential the operator never exposed, and a NAME=value literal passes
 // through as ACP's own env pair.
-func (a *Adapter) attachToolSources(attachments []protocol.ToolSourceAttachment) ([]native.MCPServer, error) {
+func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServer, error) {
+	// The same gate every other adapter runs, with the key this one
+	// advertises: uniform so one grep finds every endpoint's admission, and a
+	// no-op here only because the advertisement is real.
+	if err := base.RefuseUnadvertisedToolSources(request, protocol.FeatureToolSourcesAttach); err != nil {
+		return nil, err
+	}
+	attachments := request.ToolSources
 	if len(attachments) == 0 {
 		return nil, nil
 	}

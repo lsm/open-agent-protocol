@@ -1039,23 +1039,37 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			ok = execution.initializeShape && execution.initializeReply && execution.userWrites > 0 &&
 				advertised && feature.Level == protocol.SupportEmulated
 		case "tools-catalog-sources":
-			// The catalog is the system/init frame's two lists, joined: every
-			// listed tool becomes a catalog entry, every listed MCP server a
-			// declared source, and a tool is attributed to a server only when
-			// its namespaced name matches one the same frame listed.
+			// Two catalogs: the pre-turn one, before any system/init frame has
+			// arrived, and the one projected from the frame's two lists. The
+			// first must be served rather than refused — the descriptor
+			// advertises the key — and the second joins the lists: every
+			// listed tool becomes an entry, every listed server a declared
+			// source, and a namespaced tool reaches the longest server name
+			// the same frame listed.
 			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)
-			ok = len(inits) == 1 && len(execution.catalogs) == 1
+			ok = len(inits) == 1 && len(execution.catalogs) == 2
 			if ok {
-				catalog := execution.catalogs[0]
-				declared, attributed := map[string]bool{}, map[string]int{}
+				before := execution.catalogs[0]
+				ok = len(before.Tools) == 0 && len(before.Sources) == 1 && before.Sources[0].ID == nativeToolSource
+			}
+			if ok {
+				catalog := execution.catalogs[1]
+				declared, attributed := map[string]bool{}, map[string]string{}
 				for _, source := range catalog.Sources {
 					declared[source.ID] = true
 				}
 				for _, tool := range catalog.Tools {
-					attributed[tool.Source]++
+					attributed[tool.Name] = tool.Source
 				}
-				ok = len(catalog.Sources) == 2 && declared[nativeToolSource] && declared[mcpSourcePrefix+"files"] &&
-					attributed[mcpSourcePrefix+"files"] == 1 && attributed[nativeToolSource] > 0
+				ok = len(catalog.Sources) == 3 && declared[nativeToolSource] &&
+					declared[mcpSourcePrefix+"files"] && declared[mcpSourcePrefix+"files__nested"] &&
+					attributed["mcp__files__read_file"] == mcpSourcePrefix+"files" &&
+					// The overlapping pair: the longest match, never the first
+					// a map happened to yield.
+					attributed["mcp__files__nested__read"] == mcpSourcePrefix+"files__nested" &&
+					// A namespaced name whose server the frame never listed.
+					attributed["mcp__absent__ghost"] == nativeToolSource &&
+					attributed["Bash"] == nativeToolSource
 				for _, tool := range catalog.Tools {
 					if !declared[tool.Source] || tool.ExecutionOwner != harnessOwner {
 						ok = false

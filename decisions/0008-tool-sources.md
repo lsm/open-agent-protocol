@@ -45,6 +45,23 @@ open. It is the third unit under Decision 0003's gate.
 
 ## Decisions
 
+### An adapter that does not attach says so
+
+`OpenRequest.ToolSources` is a field every adapter written before this unit
+ignores, which makes silence the default failure: such an adapter returns a
+successful session having dropped the sources the caller asked for, and the
+caller cannot tell that session from one that attached them. That is precisely
+the outcome the fail-closed discipline exists to prevent, and it is not a
+refusal anyone can act on.
+
+`adapter.RefuseUnadvertisedToolSources` is the shared form, on the same
+footing as `adapter.RefuseUnadvertisedControls`: every adapter runs it in
+`Open`, before any native write and before a process starts, and the seven that
+advertise no attachment refuse with `unsupported_feature`, `details.feature:
+"action.tool_sources.attach"`, and `details.reason: "unadvertised"`. The two
+that advertise it run the same call with the key, so one grep finds every
+endpoint's admission and no endpoint is admitting by omission.
+
 ### A source is described, not managed
 
 The unit adds one published shape, `ToolSourceDescriptor` — `{ id, kind,
@@ -123,6 +140,20 @@ checked:
   `source` names the source the session's catalog records for that tool — or a
   declared source when the catalog does not list the tool at all
   (`unmatched_tool_source`).
+
+The catalog judges a call where its attribution is established, on
+`action.call.requested`, and every later event of that call is held to the
+source it was requested under rather than re-judged against the catalog.
+`name` is optional on the progress and terminal payloads, so a call catalogued
+under one source could otherwise omit its name and name another, and the
+catalog lookup would miss and accept the second merely because it is declared
+somewhere. The call's own track carries the requested source for exactly the
+reason it already carries the requested `execution_owner`: neither may be
+reassigned mid-lifecycle. The attribution is held more strictly than the owner,
+because `source` is optional where `execution_owner` is required — an absent
+source on a later event carries no attribution and says nothing, while one
+introduced where the request named none has moved the call to an endpoint the
+request never named.
 
 All three are also judged on every accepted `capabilities.response`, over the
 descriptor's effective catalog and its declared sources normalized across
@@ -246,14 +277,18 @@ under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 43 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 44 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in, the three resolvability rules on both a list and a descriptor, the
 attachment gate and its typed refusals, the remote mode ordered behind the
 capability rung, the attachment limits in both directions, the union a session
 snapshot publishes, the lifetime catalog an attachment binds, the
 attachment-only member a published source may never carry, a call's
-attribution, and a refresh that collides with an attachment.
+attribution and its reassignment mid-lifecycle, and a refresh that collides
+with an attachment. Two boundary tests carry what no trace can: every
+registered adapter refusing an attachment it never advertised before a process
+starts (`serve`), and the open route relaying both typed refusals with the
+details that name what to change (`serve/servehttp`).
 
 Native evidence: Claude Code graduates the catalog at `degraded` on the
 per-turn `system/init` frame, now pinned in
@@ -288,12 +323,33 @@ rediscovered from the code.
   that merely looks namespaced — to the adapter's own native source. The
   frame reports no endpoint for a server, so the descriptor carries none; an
   invented one would put a value on the wire the harness never said.
+- **Overlapping server names resolve to the longest match.** One frame may
+  list both `foo` and `foo__bar`, and `mcp__foo__bar__tool` then carries both
+  prefixes: the separator is the same `__` a server name may itself contain,
+  so the split is genuinely ambiguous and the wire offers nothing to settle
+  it. The longest match is the reading under which every listed server keeps
+  its own tools — `foo` winning would strand `foo__bar` entirely — and, being
+  a total order over distinct names, it answers the same way on every run.
+  Scanning the server set as a Go map would have let identical native
+  evidence produce two different catalogs, which is the failure this rule
+  exists to remove rather than merely to document.
 - **Claude's source ids are namespaced `mcp:<name>`**, so a server called
   `claude-code-native` could never collide with the adapter's own native
   source id.
 - **Claude refuses a catalog request that does not opt in.** The key is
   advertised `degraded`, and serving one anyway would give the caller
   degraded behaviour it never asked for.
+- **Claude serves an empty catalog before the first turn rather than
+  refusing.** The CLI publishes no `system/init` frame until it has been
+  given input, so a session's catalog is genuinely unknown at open. Refusing
+  there was wrong in a way this unit's own validator catches: the descriptor
+  advertises `action.tools.list` affirmatively, so a refusal of a request
+  within every constraint the endpoint disclosed is `unhonoured_capability`
+  — an endpoint advertising a capability and honouring nothing. The session
+  therefore answers with the native source declared and an empty tool list,
+  and `degraded` is the disclosure that makes that readable: the catalog is
+  only as current as the last turn, and there has not been one. An empty
+  answer a caller can reason about beats a refusal that leaves it nothing.
 - **The union check runs only for a session whose open attached sources.**
   Without an attachment a snapshot can hide nothing the descriptor does not
   already publish, and requiring every endpoint that declares a source to

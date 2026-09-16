@@ -397,12 +397,14 @@ func (s *Session) observeIdle(observation *rpc.ObservationMessage) {
 // would put a value on the wire that the harness never said.
 func (s *Session) projectCatalogLocked(init *native.InitFrame) {
 	sources := []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}}
-	servers := make(map[string]bool, len(init.MCPServers))
+	var servers []string
+	seenServers := make(map[string]bool, len(init.MCPServers))
 	for _, server := range init.MCPServers {
-		if server.Name == "" || servers[server.Name] {
+		if server.Name == "" || seenServers[server.Name] {
 			continue
 		}
-		servers[server.Name] = true
+		seenServers[server.Name] = true
+		servers = append(servers, server.Name)
 		sources = append(sources, protocol.ToolSourceDescriptor{
 			ID: mcpSourcePrefix + server.Name, Kind: protocol.ToolSourceProcess,
 			Protocol: protocol.ToolSourceMCP, DisplayName: server.Name,
@@ -430,23 +432,47 @@ func (s *Session) projectCatalogLocked(init *native.InitFrame) {
 // listed. A name whose mcp__<server>__ prefix names no listed server is a
 // built-in tool that merely looks namespaced, and is attributed natively
 // rather than to a source the catalog would not declare.
-func toolSourceFor(name string, servers map[string]bool) string {
+//
+// Overlapping server names are why this takes the longest match rather than
+// the first. One frame may list both `foo` and `foo__bar`, and
+// `mcp__foo__bar__tool` then carries both prefixes: the separator is the same
+// `__` the names may themselves contain, so the split is genuinely ambiguous
+// and the wire offers nothing to disambiguate it. The longest match is the
+// one reading under which every listed server's own tools reach it — `foo`
+// winning would strand `foo__bar` entirely — and, being a total order over a
+// set of distinct names, it is the same answer on every run. Scanning a map
+// instead would let Go's randomized iteration give identical native evidence
+// two different catalogs.
+func toolSourceFor(name string, servers []string) string {
 	rest, namespaced := strings.CutPrefix(name, mcpToolPrefix)
 	if !namespaced {
 		return nativeToolSource
 	}
-	for server := range servers {
-		if strings.HasPrefix(rest, server+"__") {
-			return mcpSourcePrefix + server
+	longest := ""
+	for _, server := range servers {
+		if len(server) > len(longest) && strings.HasPrefix(rest, server+"__") {
+			longest = server
 		}
 	}
-	return nativeToolSource
+	if longest == "" {
+		return nativeToolSource
+	}
+	return mcpSourcePrefix + longest
 }
 
 // Tools serves this session's effective catalog, projected from the newest
-// system/init frame. Before the first turn there is none: the CLI publishes
-// no init frame until it has been given input, and reporting an empty catalog
-// would say the endpoint has no tools rather than that it has not said yet.
+// system/init frame.
+//
+// Before the first turn the CLI has published no init frame, so the session
+// knows of no tools yet. It answers with the native source and an empty tool
+// list rather than refusing: the descriptor advertises action.tools.list
+// affirmatively, and an endpoint that advertises a capability and then refuses
+// a request within every constraint it disclosed honours nothing — which is
+// exactly what unhonoured_capability names, and what this adapter's own
+// validator would say about such a refusal. `degraded` is the disclosure that
+// makes the empty answer readable: it says the catalog is only as current as
+// the last turn and that there has not been one yet, which is a fact a caller
+// can act on, where a refusal would leave it with nothing.
 func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (protocol.ToolsListResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.ToolsListResponse{}, err
@@ -467,7 +493,11 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 		return protocol.ToolsListResponse{}, &base.DegradedControlError{Feature: protocol.FeatureToolsList}
 	}
 	if !s.catalogKnown {
-		return protocol.ToolsListResponse{}, base.ErrToolCatalogUnavailable
+		return protocol.ToolsListResponse{
+			SessionID: request.SessionID,
+			Sources:   []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}},
+			Tools:     []protocol.ToolDefinition{},
+		}, nil
 	}
 	return protocol.ToolsListResponse{
 		SessionID: request.SessionID,

@@ -3239,8 +3239,23 @@
       "valid": false,
       "phase": "semantic",
       "codes": [
-        "unmatched_tool_source",
-        "unmatched_tool_source",
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-call-source-reassigned",
+      "path": "semantic-invalid/tools-call-source-reassigned.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
         "unmatched_tool_source"
       ],
       "units": [

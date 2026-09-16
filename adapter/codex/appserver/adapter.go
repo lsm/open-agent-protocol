@@ -166,6 +166,13 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// An open attaching tool sources to an endpoint that never advertised
+	// attachment is refused before a process starts: this adapter reads no
+	// ToolSources, so admitting the open would return a session that silently
+	// discarded them.
+	if err := adapter.RefuseUnadvertisedToolSources(request); err != nil {
+		return nil, err
+	}
 	// Approval and user-input events copy the participant into responded_by, so
 	// an empty identity would emit schema-invalid events that no valid resolution
 	// could satisfy. Reject before starting a process.

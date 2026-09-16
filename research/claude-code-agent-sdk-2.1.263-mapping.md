@@ -345,7 +345,8 @@ Fixture names are requirements, not claims that captures exist.
 |---|---|---|---|---|
 | subprocess spawn + `initialize` request/response | initialize response and descriptor | synthesized | emulated | `initialize-minimal` |
 | per-turn `system/init` frame | capability truth refresh | normalized | emulated, per-session descriptor | `per-turn-init` |
-| `system/init` `tools` + `mcp_servers` | `action.tools.list.response`: one catalog entry per tool, one `ToolSourceDescriptor` per listed server, a tool attributed to a server only when its `mcp__<server>__` name matches one the same frame listed | normalized | `action.tools.list`: degraded (per-turn refresh; no catalog before the first turn) | `tools-catalog-sources` |
+| `system/init` `tools` + `mcp_servers` | `action.tools.list.response`: one catalog entry per tool, one `ToolSourceDescriptor` per listed server, a tool attributed to a server only when its `mcp__<server>__` name matches one the same frame listed — the **longest** match, since server names may themselves contain `__` and overlap | normalized | `action.tools.list`: degraded (per-turn refresh) | `tools-catalog-sources` |
+| no `system/init` frame yet (before the first turn) | `action.tools.list.response` declaring the native source with an empty `tools` — served, never refused, because the key is advertised and a refusal of a request within every disclosed constraint is an unhonoured capability | synthesized | `action.tools.list`: degraded (this is what the level discloses) | `tools-catalog-sources` |
 | complete user JSONL frame written (host-minted `uuid`, `origin` human) | allocate submission and run | synthesized | emulated | `message-admitted` |
 | `command_lifecycle` transitions (`msg_lifecycle_v1`) | admission corroboration only | observed-only | observed | `command-lifecycle` |
 | first reply frame of the turn (`user_message_uuid` echo — first stream event or first assistant frame) | admission confirmed + `run.started` | synthesized | emulated | `message-admitted`, `completed-text` |
@@ -608,10 +609,11 @@ the artifact hashes above. Required labels:
   `malformed-stdout-line`
 - streaming: `streaming-deltas`, `interleaved-blocks`
 - tools: `tool-roundtrip`, `tool-failed`, `tool-progress`,
-  `auto-approved-tool`, `tools-catalog-sources` (the `system/init` tool and
-  MCP server lists projected into one catalog, with a namespaced tool whose
-  server the frame lists attributed to it and one whose server it does not
-  attributed natively)
+  `auto-approved-tool`, `tools-catalog-sources` (the empty pre-turn catalog;
+  then the `system/init` tool and MCP server lists projected into one catalog,
+  with a namespaced tool whose server the frame lists attributed to it, one
+  whose server it does not attributed natively, and an overlapping pair
+  (`files`, `files__nested`) resolving to the longest match)
 - interactions: `permission-gate`, `permission-deny`
 - children: `subagent-task`, `task-updated-terminal`, `stop-task`
 - hygiene: `keep-alive-ignored`, `unknown-frame-ignored`,

@@ -43,7 +43,7 @@
   "identity_map": {
     "system/init tools": "action.tools.list.response tools; names are the CLI's own",
     "system/init mcp_servers[].name": "ToolSourceDescriptor id, namespaced mcp:<name> so it cannot collide with the native source",
-    "mcp__<server>__<tool> name": "tool attribution, resolved only against a server the same frame listed",
+    "mcp__<server>__<tool> name": "tool attribution, resolved against the longest server name the same frame listed",
     "host-minted turn uuid": "submission identity; converged by the user_message_uuid echo on the first reply frame",
     "adapter-minted run/message/event ids": "OAP identities; native frames carry none"
   }

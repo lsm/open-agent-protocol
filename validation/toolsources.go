@@ -494,11 +494,17 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 	}
 }
 
-// checkCallSource judges one call's attribution. A call carrying `source` must
-// name the source the session's catalog records for that tool, or a declared
-// source when the catalog does not list the tool at all; otherwise the call is
-// attributed to the wrong endpoint, which is exactly what `source` exists to
-// prevent a consumer from having to infer from a name.
+// checkCallSource judges one requested call's attribution against the catalog.
+// A call carrying `source` must name the source the session's catalog records
+// for that tool, or a declared source when the catalog does not list the tool
+// at all; otherwise the call is attributed to the wrong endpoint, which is
+// exactly what `source` exists to prevent a consumer from having to infer from
+// a name.
+//
+// It runs on `action.call.requested` alone. The later events of the same call
+// carry an optional `name`, so a catalog lookup there could be evaded by
+// omitting it; they are held instead to the source this call was requested
+// under, which state.tool() retains in the call's own track.
 func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
 	var p protocol.ActionCallPayload
 	_ = e.DecodePayload(&p)
