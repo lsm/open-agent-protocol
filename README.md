@@ -342,10 +342,13 @@ in-process embedding of `serve.Hub`, so it gets the wire rule. `--stdio` and
 list and every diagnostic go to stderr, so a host may parse stdout strictly.
 
 Host → daemon lines are one JSON object each: `{"id":N,"op":"...", ...}`,
-where `id` is any number the host chooses and correlates the answer. Unknown
-fields, repeated or case-aliased keys, a missing or non-numeric `id`, a line
-over the frame limit, or trailing data after the object are framing defects
-the daemon fails closed on.
+where `id` correlates the answer. It is a **signed 64-bit integer** — the host
+picks the value, and negatives are fine, but a fractional number or one
+outside the int64 range is a framing defect, not a bad request. So is an
+unknown field, a repeated or case-aliased key, a missing `id`, a line over the
+frame limit, or trailing data after the object. The daemon fails closed on all
+of them; a JavaScript host minting ids above 2^53 should keep them inside
+int64 and send them as integers.
 
 | op | params | answers with |
 | --- | --- | --- |
@@ -372,10 +375,19 @@ Daemon → host lines are either responses, `{"id":N,"ok":true,"result":...}`
 or `{"id":N,"ok":false,"error":{"code":...,"message":...}}`, carrying the
 codes the HTTP routes answer with, or subscription lines, which carry
 `"event"` instead of `"ok"`. Exactly one writer goroutine emits them, so every
-line is atomic and no response is ever broken by interleaving. Three refusals
+line is atomic and no response is ever broken by interleaving. Four refusals
 are this framing's own and have no HTTP counterpart: the line-shape pair
-`invalid_request` and `unknown_op`, and `response_too_large` for a result the
-frame limit cannot carry.
+`invalid_request` and `unknown_op`; `response_too_large` for a result the
+frame limit cannot carry; and `busy`.
+
+`busy` is the one a host has to handle rather than fix. Ops are admitted
+against a bound on how many run at once and how many request bytes they hold,
+and a host that pipelines past it gets a correlated refusal instead of a
+stalled pipe — the daemon answers rather than waiting, because waiting is what
+would stop it reading the host's end at all. The message ends with `send this
+request again`, and that is the whole recovery: the request was never served,
+so resending it is safe. A host that pipelines deeply should be ready to
+resend.
 
 `events` acknowledges with `null` — the acknowledgement the SSE route gives by
 starting a bodyless response — and the subscription's envelopes follow as
@@ -419,9 +431,23 @@ drift from the surface it documents.
 
 Shutdown is stdin EOF or SIGINT/SIGTERM: the daemon stops admitting, settles
 the work it already admitted inside a bounded window, closes every session so
-child agent processes are not orphaned, and exits zero. A malformed line is
-the one non-zero exit — the host's framing defect, reported as a single
-bounded diagnostic on stderr.
+child agent processes are not orphaned, and exits zero. The session sweep runs
+on every exit, including the failures below, so a child agent process is never
+orphaned by one.
+
+A non-zero exit means the session did not end cleanly, and stderr carries one
+bounded diagnostic saying which:
+
+| exit reason | means |
+| --- | --- |
+| a malformed line | the host's framing defect, naming the line number |
+| the output could not be written | the host closed its end of stdout, or the write failed |
+| requests were dropped unserved | the host ended the session while work it had sent was still unadmitted or unanswered — those requests were never served and may be sent again |
+| shutdown stalled | a stage outlived its bounded window and was abandoned rather than waited on |
+
+A host that classifies every non-zero exit as bad input will misdiagnose its
+own closed pipe, or an adapter that outlived the shutdown window, as a
+protocol error.
 
 ### Embedding the registry (`serve`)
 

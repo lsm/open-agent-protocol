@@ -88,12 +88,19 @@ type child struct {
 	lines   chan string
 	readErr chan error
 	stderr  *strings.Builder
-	// held keeps responses that arrived before the test asked for them.
-	// Pipelined ops run on their own workers, so the answers come back in
-	// whatever order they finish and the id — not the position — correlates
-	// them. A reader that insisted on position would be asserting something
-	// the frontend explicitly does not promise.
-	held map[int64]responseShape
+	// held and heldSignals keep lines that arrived before the test asked for
+	// them. Pipelined ops run on their own workers and a subscription writes
+	// into the same stream, so what comes back next is whatever finished
+	// first: a response for an id nobody is waiting on yet, or a gate
+	// envelope ahead of the acknowledgement of the submit that caused it. A
+	// reader that insisted on position — or that dropped the kind it was not
+	// looking for — would be asserting an order the frontend explicitly does
+	// not promise.
+	//
+	// So nothing read is ever thrown away. Every reader takes the kind it
+	// wants and holds the other.
+	held        map[int64]responseShape
+	heldSignals []string
 }
 
 func spawn(t *testing.T, args ...string) *child {
@@ -155,7 +162,7 @@ func (c *child) next() (string, bool) {
 
 // response pulls lines until the response correlated to id arrives, handing
 // every signal line that precedes it to onSignal.
-func (c *child) response(id int64, onSignal func(line string)) responseShape {
+func (c *child) response(id int64) responseShape {
 	c.t.Helper()
 	if shape, ok := c.held[id]; ok {
 		delete(c.held, id)
@@ -166,14 +173,9 @@ func (c *child) response(id int64, onSignal func(line string)) responseShape {
 		if !ok {
 			c.t.Fatalf("stdout ended before the response to %d; stderr:\n%s", id, c.stderr)
 		}
-		var shape responseShape
-		if err := json.Unmarshal([]byte(line), &shape); err != nil {
-			c.t.Fatalf("line %q: %v", line, err)
-		}
+		shape := c.decode(line)
 		if shape.Event != "" {
-			if onSignal != nil {
-				onSignal(line)
-			}
+			c.heldSignals = append(c.heldSignals, line)
 			continue
 		}
 		if shape.ID != id {
@@ -184,17 +186,35 @@ func (c *child) response(id int64, onSignal func(line string)) responseShape {
 	}
 }
 
-// hold keeps a response line a reader met while waiting for something else.
-// Any loop that reads the stream can meet one, because every op runs on its
-// own worker; dropping it would make a later response(id) wait forever on an
-// answer that already arrived.
-func (c *child) hold(line string) {
+// signal returns the next subscription line, holding any response it meets.
+func (c *child) signal() string {
+	c.t.Helper()
+	if len(c.heldSignals) > 0 {
+		line := c.heldSignals[0]
+		c.heldSignals = c.heldSignals[1:]
+		return line
+	}
+	for {
+		line, ok := c.next()
+		if !ok {
+			c.t.Fatalf("stdout ended before the next subscription line; stderr:\n%s", c.stderr)
+		}
+		shape := c.decode(line)
+		if shape.Event == "" {
+			c.held[shape.ID] = shape
+			continue
+		}
+		return line
+	}
+}
+
+func (c *child) decode(line string) responseShape {
 	c.t.Helper()
 	var shape responseShape
 	if err := json.Unmarshal([]byte(line), &shape); err != nil {
 		c.t.Fatalf("line %q: %v", line, err)
 	}
-	c.held[shape.ID] = shape
+	return shape
 }
 
 func (c *child) require(id int64, shape responseShape) responseShape {
@@ -237,23 +257,23 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	// answer would never exercise it.
 	c.send(`{"id":1,"op":"adapters"}`)
 	c.send(`{"id":2,"op":"capabilities","adapter":"memory"}`)
-	c.response(1, nil)
-	c.response(2, nil)
+	c.response(1)
+	c.response(2)
 
 	c.send(`{"id":3,"op":"open","adapter":"memory","request":%s}`,
 		envelopeJSON(t, "e2e-open", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: "e2e"}, "", ""))
-	opened := c.response(3, nil)
+	opened := c.response(3)
 	if session := envelopeSessionID(t, opened.Result); session != "e2e" {
 		t.Fatalf("open published session %q, want e2e", session)
 	}
 
 	c.send(`{"id":4,"op":"sessions"}`)
-	if listing := c.response(4, nil); !strings.Contains(string(listing.Result), `"e2e"`) {
+	if listing := c.response(4); !strings.Contains(string(listing.Result), `"e2e"`) {
 		t.Fatalf("sessions listing omits the opened session: %s", listing.Result)
 	}
 
 	c.send(`{"id":5,"op":"events","session_id":"e2e"}`)
-	if ack := c.response(5, nil); string(ack.Result) != "null" {
+	if ack := c.response(5); string(ack.Result) != "null" {
 		t.Fatalf("events acknowledgement %s, want null", ack.Result)
 	}
 
@@ -262,7 +282,7 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 			SessionID: "e2e", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}},
 		}, "e2e", ""))
-	c.response(6, nil)
+	c.response(6)
 
 	// The gates are answered from the subscription's own lines: the stream is
 	// the only thing telling this host a gate is open, which is what a host
@@ -271,22 +291,10 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	nextID := int64(7)
 	terminal := protocol.EnvelopeType("")
 	for terminal == "" {
-		line, ok := c.next()
-		if !ok {
-			t.Fatalf("stdout ended before the run settled; stderr:\n%s", c.stderr)
-		}
+		line := c.signal()
 		var signal signalShape
 		if err := json.Unmarshal([]byte(line), &signal); err != nil {
 			t.Fatal(err)
-		}
-		if signal.Event == "" {
-			// A response, not a stream line — a resolve acknowledgement,
-			// which runs on its own worker and may land anywhere in here. It
-			// is held rather than dropped: this test does not await them, but
-			// a reader that drops a response by position is the same fault in
-			// a different place.
-			c.hold(line)
-			continue
 		}
 		if signal.Event != "envelope" {
 			t.Fatalf("unexpected signal on a healthy stream: %s", line)
@@ -315,26 +323,19 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	}
 
 	c.send(`{"id":20,"op":"state","session_id":"e2e"}`)
-	c.response(20, nil)
+	c.response(20)
 
 	// Cursor replay: a second subscription from an earlier sequence delivers
 	// the suffix the first one already carried, which is what makes a
 	// reconnecting host's resume invisible.
 	replayed := 0
 	c.send(`{"id":21,"op":"events","session_id":"e2e","after":%d}`, lastSequence-2)
-	c.response(21, nil)
+	c.response(21)
 	for replayed < 2 {
-		line, ok := c.next()
-		if !ok {
-			t.Fatalf("stdout ended mid-replay; stderr:\n%s", c.stderr)
-		}
+		line := c.signal()
 		var signal signalShape
 		if err := json.Unmarshal([]byte(line), &signal); err != nil {
 			t.Fatal(err)
-		}
-		if signal.Event == "" {
-			c.hold(line)
-			continue
 		}
 		if signal.Event != "envelope" || signal.ID != 21 {
 			t.Fatalf("unexpected line during replay: %s", line)
@@ -346,7 +347,7 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	}
 
 	c.send(`{"id":22,"op":"close","session_id":"e2e"}`)
-	c.response(22, func(string) {})
+	c.response(22)
 
 	// Stdin EOF is the clean end, and the exit code is what a host reads.
 	if err := c.stdin.Close(); err != nil {
@@ -370,7 +371,7 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 func TestStdioBinaryFailsClosedOnAMalformedLine(t *testing.T) {
 	c := spawn(t)
 	c.send(`{"id":1,"op":"adapters"}`)
-	c.response(1, nil)
+	c.response(1)
 	c.send(`{"id":2,"op":`)
 
 	err := c.cmd.Wait()
@@ -480,32 +481,34 @@ func TestStdioExampleSessionRuns(t *testing.T) {
 	gates := map[string]bool{}
 	completed := false
 
-	// drain reads pending lines, recording gates and the terminal, until the
-	// response to id arrives.
-	drain := func(id int64) {
-		c.response(id, func(line string) {
-			var signal signalShape
-			if err := json.Unmarshal([]byte(line), &signal); err != nil {
-				t.Fatal(err)
-			}
-			if signal.Event != "envelope" {
-				t.Fatalf("unexpected signal: %s", line)
-			}
-			var envelope protocol.Envelope
-			if err := json.Unmarshal(signal.Envelope, &envelope); err != nil {
-				t.Fatal(err)
-			}
-			var payload struct {
-				InteractionID string `json:"interaction_id"`
-			}
-			json.Unmarshal(envelope.Payload, &payload)
-			if payload.InteractionID != "" {
-				gates[payload.InteractionID] = true
-			}
-			if envelope.Type == protocol.TypeRunCompleted {
-				completed = true
-			}
-		})
+	// note records what one subscription line tells this driver. A line that
+	// is not an envelope is one of the documented subscription endings — the
+	// replay subscription is still unwinding when the close lands, so
+	// oap-session-closed can arrive here — and it is information, not a
+	// failure: the file is a script of what a host sends, and the endings are
+	// what the daemon says back.
+	note := func(line string) {
+		var signal signalShape
+		if err := json.Unmarshal([]byte(line), &signal); err != nil {
+			t.Fatal(err)
+		}
+		if signal.Event != "envelope" {
+			return
+		}
+		var envelope protocol.Envelope
+		if err := json.Unmarshal(signal.Envelope, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			InteractionID string `json:"interaction_id"`
+		}
+		json.Unmarshal(envelope.Payload, &payload)
+		if payload.InteractionID != "" {
+			gates[payload.InteractionID] = true
+		}
+		if envelope.Type == protocol.TypeRunCompleted {
+			completed = true
+		}
 	}
 
 	for _, raw := range strings.Split(strings.TrimSpace(string(script)), "\n") {
@@ -529,52 +532,19 @@ func TestStdioExampleSessionRuns(t *testing.T) {
 				t.Fatal(err)
 			}
 			for !gates[envelope.Payload.InteractionID] {
-				line, ok := c.next()
-				if !ok {
-					t.Fatalf("stdout ended before gate %q; stderr:\n%s", envelope.Payload.InteractionID, c.stderr)
-				}
-				var signal signalShape
-				if err := json.Unmarshal([]byte(line), &signal); err != nil {
-					t.Fatal(err)
-				}
-				if signal.Event == "" {
-					c.hold(line)
-					continue
-				}
-				if signal.Event != "envelope" {
-					continue
-				}
-				var gate protocol.Envelope
-				if err := json.Unmarshal(signal.Envelope, &gate); err != nil {
-					t.Fatal(err)
-				}
-				var payload struct {
-					InteractionID string `json:"interaction_id"`
-				}
-				json.Unmarshal(gate.Payload, &payload)
-				if payload.InteractionID != "" {
-					gates[payload.InteractionID] = true
-				}
+				note(c.signal())
 			}
 		}
 		c.send("%s", raw)
-		drain(op.ID)
+		c.response(op.ID)
 	}
-	if !completed {
-		// The terminal may still be queued behind the close acknowledgement.
-		for line, ok := c.next(); ok && !completed; line, ok = c.next() {
-			var signal signalShape
-			if err := json.Unmarshal([]byte(line), &signal); err != nil {
-				continue
-			}
-			if signal.Event != "envelope" {
-				continue
-			}
-			var envelope protocol.Envelope
-			if err := json.Unmarshal(signal.Envelope, &envelope); err == nil && envelope.Type == protocol.TypeRunCompleted {
-				completed = true
-			}
-		}
+	// The run's terminal may have arrived while a response was being awaited,
+	// in which case it is held rather than lost.
+	for !completed && len(c.heldSignals) > 0 {
+		note(c.signal())
+	}
+	for !completed {
+		note(c.signal())
 	}
 	if !completed {
 		t.Fatalf("the example session never completed its run; stderr:\n%s", c.stderr)
