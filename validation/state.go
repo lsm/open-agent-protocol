@@ -359,7 +359,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 				// runEvent is the sole scope checker for a run event; a
 				// second generic check here would report one defect twice.
 				s.runEvent(i, line, e)
-			case !isRequest(e.Type) && !isResponse(e.Type):
+			case !isRequest(e.Type):
+				// An unknown request was held to this above. An unknown
+				// response is held to it here, whether or not it correlated
+				// with a request, as a known response is in its own case.
 				session, run := unknownScope(e)
 				s.checkScope(i, line, e, session, run)
 			}
@@ -438,11 +441,11 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	session, run := responseScope(e)
 	if s.tolerant && !isKnownType(e.Type) {
 		// An unknown response, like an unknown request, is scoped by its
-		// generic payload members and its envelope. The two must agree (a
-		// known response is held to that in its own case) before the
-		// correlation check binds it to the request it answers.
+		// generic payload members and its envelope; the correlation check
+		// binds it to the request it answers. Its own envelope/payload
+		// agreement is judged in apply's generic unknown path, whether or
+		// not it correlated, as a known response's is in its own case.
 		session, run = unknownScope(e)
-		s.checkScope(i, line, e, session, run)
 	}
 	if req.session != "" && session != "" && session != req.session {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "response session does not match the request scope", string(req.session), string(session), string(e.InReplyTo))

@@ -592,6 +592,26 @@ func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
 			t.Fatalf("scope_mismatch reported %d times, want 1: %v", n, tolerant.Diagnostics)
 		}
 	})
+	t.Run("an uncorrelated unknown response is still held to its own envelope", func(t *testing.T) {
+		// No request matches, so correlation reports unmatched_response and
+		// stops; the envelope/payload disagreement is a separate defect and
+		// is still reported once.
+		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
+			return []map[string]any{{
+				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
+				"type": "com.example.run.pause.response", "id": "resp-orphan", "in_reply_to": "req-nope",
+				"session_id": started["session_id"], "run_id": "rA",
+				"payload": map[string]any{"session_id": started["session_id"], "run_id": started["run_id"]},
+			}}
+		})
+		_, tolerant := validateBoth(t, trace, "orphan-rA")
+		if !hasCode(tolerant, CodeUnmatchedResponse) {
+			t.Fatalf("orphan response not reported as unmatched: %v", tolerant.Diagnostics)
+		}
+		if n := count(tolerant, CodeScopeMismatch); n != 1 {
+			t.Fatalf("scope_mismatch reported %d times, want 1: %v", n, tolerant.Diagnostics)
+		}
+	})
 }
 
 func TestTolerantStateOpaqueAdmissionAtClose(t *testing.T) {
