@@ -194,7 +194,28 @@ everything this trace can see. `active_runs` is required only where
 `active_run_id` cannot carry the answer, so a reattach holding one started run
 says so with the pointer alone; that run is introduced by the document exactly
 as an entry would be, or the retained replay that may follow the open response
-directly has no admission behind it and no position to resume from.
+directly has no admission behind it and no position to resume from. So does the
+first `session.state.response` after a reattach, which is the other document a
+recovery can introduce its run through.
+
+Introducing a run means more than putting it in the run table. Every accounting
+and ordering rule in this unit reads the session's admission order, so a run
+recorded only in the table leaves the session looking empty: a second started
+admission beside it overlaps nothing and outruns nothing, and the recovered run
+it is overlapping is nonterminal the whole time. A recovered run therefore
+enters the order, at a position, and the windows of every submission still in
+flight are recomputed around it — everything an admission does except being
+one. The one run this does not apply to is the placeholder made for a run event
+with no admission at all: admission order is exactly what that run does not
+have, and the trace has already been convicted for it.
+
+The model such a document states is the session's opening one. An open response
+is a snapshot taken before anything can have moved the default, and a capture
+marked at genesis is judged against the opening value alone — so without it the
+first snapshot of a session answers to nothing, and the first
+`session_mutation` behind it stops that value from ever being learned. Only a
+model the document states: what an absent member means is a separate question
+and is left where it was.
 
 `session.state` gains `active_runs`: every nonterminal run in admission order,
 each with its status, its 1-based `queue_position` when it is a reservation,
@@ -453,7 +474,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 149 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 152 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the

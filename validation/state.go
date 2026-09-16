@@ -380,6 +380,21 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// snapshot against the empty string.
 		if p.CurrentModelID != "" {
 			st.currentModel, st.currentKnown = p.CurrentModelID, true
+			if !st.mutated && !st.openingKnown {
+				// The open response is a snapshot taken before anything can
+				// have moved the default, so a model it states is the value
+				// the session opened on — which is what a capture marked at
+				// genesis reports, and the only thing such a capture can be
+				// judged against. A promotion inside the first read's window
+				// is one that capture may ignore, so without this the first
+				// snapshot answers to nothing and the mutation behind it
+				// stops the opening value from ever being learned.
+				//
+				// Only a model the response states. What an absent member
+				// means here is the same question the line above leaves
+				// alone, and this leaves it alone too.
+				st.openingModel, st.openingKnown = p.CurrentModelID, true
+			}
 		}
 		s.observeModel(p.SessionID, p.CurrentModelID, "", 0)
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
@@ -395,9 +410,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 				if rec.run != "" && p.ActiveRunID != rec.run {
 					s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "recovered state names a different active run", string(rec.run), string(p.ActiveRunID))
 				}
-				run := s.runs[p.ActiveRunID]
-				if run == nil {
-					s.runs[p.ActiveRunID] = &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
+				if s.runs[p.ActiveRunID] == nil {
+					s.introduceRecoveredRun(i, line, s.track(p.SessionID), &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning})
 				}
 			}
 		}
@@ -903,6 +917,12 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	r := s.runs[e.RunID]
 	if r == nil {
 		s.add(CodeIllegalRunTransition, i, line, e, "/run_id", "run event has no accepted admission")
+		// A placeholder so the rest of this run's events are read rather than
+		// dropped, and the only created run deliberately left out of the
+		// session's admission order: admission order is precisely what this
+		// run does not have, the trace has already been convicted for that,
+		// and counting it against the queue would diagnose the same fault a
+		// second time under another name.
 		r = &runState{id: e.RunID, session: e.SessionID, next: 1, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}}
 		s.runs[e.RunID] = r
 	}
@@ -1156,6 +1176,23 @@ func (s *state) applyStateDocument(i, line int, e protocol.Envelope, p protocol.
 // agrees with the rest of it. An open response that names runs without
 // declaring a recovery declares nothing that could have created them, and its
 // entries are runs from nowhere like any others.
+// introduceRecoveredRun registers a run a recovery names that the trace has
+// never carried. It is what an admission does minus the admission itself: the
+// run table, the session's admission order, and the position the run entered
+// it at, followed by the windows every submission still in flight is judged
+// in. A run entered in the table alone is a run the queue rules cannot see —
+// every accounting and ordering check reads the session's order, so a run
+// missing from it leaves the session looking empty and a second started
+// admission beside it escapes both the overlap rule and execution order.
+func (s *state) introduceRecoveredRun(i, line int, st *sessionTrack, run *runState) {
+	run.order = len(st.order)
+	run.admittedAt = i
+	run.lastIndex, run.lastLine = i, line
+	s.runs[run.id] = run
+	st.order = append(st.order, run.id)
+	s.refreshQueueWindows(run.session)
+}
+
 // resumeSequence is where a run a recovery introduces picks its trace up: the
 // position the entry states, then the cursor the recovery resumed from, then
 // the beginning. Both recovery paths take it from here rather than each
@@ -1194,10 +1231,7 @@ func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st 
 		// trace can see.
 		queued := entry.Status == protocol.RunQueued ||
 			(entry.Status == protocol.RunCancelling && cancellingHoldsItsPlace(entry))
-		run := &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: resumeSequence(rec, entry.RunID, entry.AsOfSequence), admittedAt: i, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status}
-		run.order = len(st.order)
-		s.runs[entry.RunID] = run
-		st.order = append(st.order, entry.RunID)
+		s.introduceRecoveredRun(i, line, st, &runState{id: entry.RunID, session: p.SessionID, admitted: true, admittedQueued: queued, started: !queued, next: resumeSequence(rec, entry.RunID, entry.AsOfSequence), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: entry.Status})
 	}
 	// active_runs is required only where active_run_id cannot carry the
 	// answer, so a reattach whose session holds one started run says so with
@@ -1207,12 +1241,8 @@ func (s *state) bootstrapRecoveredRuns(i, line int, p protocol.SessionState, st 
 	// from — the shape the state-response path has always bootstrapped, and
 	// the one the listing never sees because there is no listing.
 	if p.ActiveRunID != "" && !listed[p.ActiveRunID] && s.runs[p.ActiveRunID] == nil {
-		run := &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), admittedAt: i, lastIndex: i, lastLine: line, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning}
-		run.order = len(st.order)
-		s.runs[p.ActiveRunID] = run
-		st.order = append(st.order, p.ActiveRunID)
+		s.introduceRecoveredRun(i, line, st, &runState{id: p.ActiveRunID, session: p.SessionID, admitted: true, started: true, next: resumeSequence(rec, p.ActiveRunID, nil), tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: protocol.RunRunning})
 	}
-	s.refreshQueueWindows(p.SessionID)
 }
 
 func (s *state) checkScope(i, line int, e protocol.Envelope, session protocol.SessionID, run protocol.RunID) {
