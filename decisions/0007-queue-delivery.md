@@ -199,7 +199,11 @@ rather than from the trace, because an interaction can be raised or resolved
 inside the window and a snapshot is entitled to have caught either edge; the
 entry says so with its own status or by naming what it is blocked on, and
 naming it is not free, since the pending set is judged against the run's own at
-the position the entry states. A session holding only reservations is queued. A reconnecting client reads the three fields at once,
+the position the entry states. Evidence read one way is evidence read the
+other: a session calling itself running beside an entry that names what it is
+blocked on contradicts that entry exactly as much as one calling itself waiting
+beside a run that reports nothing. A session holding only reservations is
+queued. A reconnecting client reads the three fields at once,
 and a snapshot that lists a reservation while calling itself idle, or lists an
 executing run while calling itself queued, hands it a session that never
 existed and lets whichever field it happens to trust decide what it does. A
@@ -238,7 +242,10 @@ answered is a claim of the same kind, and it is retained rather than waved
 through. The response decides it: a refusal means there was never an admission
 to reflect, an admission to another run means the snapshot attributed one
 session's work to the wrong place, and a response that never comes leaves the
-claim resting on nothing. Accepting it at the state response and never
+claim resting on nothing. So does an admission the snapshot showed nowhere: a
+capture saying it already reflects an admission has to account for the run that
+admission created, in the listing or among the runs it says it settled, or the
+anchor buys it an exemption from listing the very run it claims to know about. Accepting it at the state response and never
 returning to it is what lets a snapshot assert an admission that did not
 happen.
 
@@ -270,8 +277,14 @@ leave the model it reported judged against nothing. And it names a
 model-affecting promotion: supplying an anchor is what sets the unanchored
 check aside, so a run that applied no `session_mutation` would let a snapshot
 point at a control-free start and report any model at all. All four are
-`session_state_mismatch`. The marker has a genesis
-form, `{"run_id": null, "sequence": 0}`, naming the position before the
+`session_state_mismatch`. And it names the last
+such event, not merely one of them: with two mutations started, anchoring the
+earlier describes a moment that had already passed and reports the model of
+that moment as the session default. Later means later in the trace, since which
+promotion moved the default last is a question about the order they reached it,
+and the capture window answers what counts — a mutation that began after the
+read was requested is not one the snapshot had to reflect. The marker has a
+genesis form, `{"run_id": null, "sequence": 0}`, naming the position before the
 session's first model-affecting event; without it the one case the marker
 exists for — a session opening on model A, captured just before the first
 promotion whose `run.started` reaches the trace first — would be the one case
@@ -279,7 +292,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 92 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 97 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -352,6 +365,12 @@ terminal, and settles a cancelled reservation pre-start.
   neither settle the run nor close the session. Every path that marks a session
   unusable owes this, not only the transport: a foreign durable event, a failed
   settlement fence, an ambiguous admission or cancellation.
+- A snapshot handed to a caller owns its own backing array. `active_runs` made
+  `SessionState` a value with a slice in it, whose entries carry pointers and
+  slices of their own, so the by-value recovery snapshots shared all of it with
+  the session and a caller editing what it was given reached into the adapter's
+  own projection. Every path that hands one out clones, `State` and the
+  recovery snapshot alike.
 - Shutdown selects the runs it settles from `active_runs`, not from
   `active_run_id`. The two now differ: a reservation is admitted work that owes
   a terminal, so an adapter's Close refuses for it, while `active_run_id` is

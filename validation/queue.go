@@ -523,11 +523,15 @@ func describeLimit(limits *protocol.CapabilityLimits, active bool) string {
 // state is captured inside the endpoint, and the event carrying that position
 // may drain afterwards — but not one that never exists.
 type deferredStateClaim struct {
-	kind        int
-	session     protocol.SessionID
-	run         protocol.RunID
-	request     protocol.EnvelopeID
-	pointer     string
+	kind    int
+	session protocol.SessionID
+	run     protocol.RunID
+	request protocol.EnvelopeID
+	pointer string
+	// accounted is the set of runs a session-level admission claim's snapshot
+	// listed or said it had settled. The admission the claim is waiting on has
+	// to land in it.
+	accounted   map[protocol.RunID]bool
 	sequence    uint64
 	listed      map[protocol.InteractionID]bool
 	model       string
@@ -687,6 +691,8 @@ func (s *state) judgeAdmissionClaim(claim *deferredStateClaim) {
 		}
 	}
 	switch {
+	case admitted != nil && claim.run == "" && !claim.accounted[admitted.id]:
+		s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, claim.pointer, "snapshot claims a submit request it already reflected as admitted, and accounts for its run nowhere", "the run it was admitted to, listed or settled", string(admitted.id), string(claim.request))
 	case admitted != nil && (claim.run == "" || admitted.id == claim.run):
 		return
 	case admitted != nil:

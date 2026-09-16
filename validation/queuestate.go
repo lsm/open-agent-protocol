@@ -27,7 +27,11 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 	s.checkCaptureModel(i, line, e, p, st)
 	anchored := map[protocol.EnvelopeID]bool{}
 	settled := map[protocol.RunID]uint64{}
+	var claimedAdmissions []protocol.EnvelopeID
 	if p.AsOf != nil {
+		for _, entry := range p.AsOf.Settled {
+			settled[entry.RunID] = entry.Sequence
+		}
 		for _, id := range p.AsOf.AdmittedSubmitRequests {
 			switch s.namesSubmitRequest(id, p.SessionID, "") {
 			case admissionWrong:
@@ -38,12 +42,29 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 				// made before its response exists. A refusal answers it and
 				// the claim was false; an admission answers it and the run it
 				// created is one this snapshot then had to account for.
-				s.deferred = append(s.deferred, &deferredStateClaim{kind: claimAdmitted, session: p.SessionID, request: id, pointer: "/payload/as_of/admitted_submit_requests", index: i, line: line, envelope: e})
+				claimedAdmissions = append(claimedAdmissions, id)
 			}
 			anchored[id] = true
 		}
-		for _, entry := range p.AsOf.Settled {
-			settled[entry.RunID] = entry.Sequence
+	}
+	if len(claimedAdmissions) > 0 {
+		// What the snapshot accounted for, kept with the claim: a capture that
+		// says it already reflects an admission has to show where. The run the
+		// response creates must be one this listing names, or one it says it
+		// had already settled — otherwise the anchor buys the snapshot an
+		// exemption from listing the very run it claims to know about.
+		accounted := map[protocol.RunID]bool{}
+		for _, entry := range p.ActiveRuns {
+			accounted[entry.RunID] = true
+		}
+		for id := range settled {
+			accounted[id] = true
+		}
+		if p.ActiveRunID != "" {
+			accounted[p.ActiveRunID] = true
+		}
+		for _, id := range claimedAdmissions {
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimAdmitted, session: p.SessionID, request: id, pointer: "/payload/as_of/admitted_submit_requests", accounted: accounted, index: i, line: line, envelope: e})
 		}
 	}
 	required := s.requiredActiveRuns(i, e, p, st, anchored, settled)
@@ -290,7 +311,12 @@ func (s *state) checkListedStatus(i, line int, e protocol.Envelope, p protocol.S
 		switch {
 		case p.Status == protocol.SessionWaitingForInput && !waiting:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "session waits for input the run it lists reports nothing waiting on", string(protocol.SessionRunning), string(p.Status), string(started))
-		case p.Status == protocol.SessionRunning && entry.Status == protocol.RunWaitingForInput:
+		case p.Status == protocol.SessionRunning && waiting:
+			// The same derivation, the other way round. An entry naming what
+			// its run is blocked on is evidence of the wait wherever it is
+			// read, so a session calling itself running beside it contradicts
+			// the entry exactly as much as one calling itself waiting beside a
+			// run that reports nothing.
 			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "session status denies the wait the entry beside it reports", string(protocol.SessionWaitingForInput), string(p.Status), string(started))
 		case p.Status == protocol.SessionRunning || p.Status == protocol.SessionWaitingForInput:
 		default:
@@ -549,9 +575,41 @@ func (s *state) checkCaptureModel(i, line int, e protocol.Envelope, p protocol.S
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/model_run_sequence", "capture position names a run that applied no session_mutation, so it is not a model-affecting event", "a run admitted with a session_mutation model selection", string(r.id), string(r.id))
 		return
 	}
+	if later := s.latestMutationBefore(st, r, s.captureWindowStart(i, e)); later != nil {
+		// The field names the *last* model-affecting event the snapshot
+		// reflects, so an anchor with a later one already behind it describes
+		// a moment that had passed and reports the model of that moment. The
+		// window is what makes "later" answerable: a promotion that happened
+		// after the read was requested is not one the snapshot had to reflect.
+		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/model_run_sequence", "capture position names a model-affecting event a later one had already superseded", string(later.id), string(r.id), string(r.id))
+		return
+	}
 	if p.CurrentModelID != model {
 		s.addExpected(CodePrematureSessionMutation, i, line, e, "/payload/current_model_id", "snapshot reports a model other than the one in force at the position it states", model, p.CurrentModelID, string(r.id))
 	}
+}
+
+// latestMutationBefore is the session's last model-affecting promotion at or
+// before a capture window that is later than the one anchored, or nil when the
+// anchor is that event. A model-affecting promotion is a started run that
+// applied a session_mutation selection, and later means later in the trace:
+// which promotion moved the default last is a question about the order they
+// reached the trace, not about admission order.
+func (s *state) latestMutationBefore(st *sessionTrack, anchor *runState, window int) *runState {
+	var latest *runState
+	for _, id := range st.order {
+		r := s.runs[id]
+		if r == nil || r == anchor || !r.started || r.startedAt > window {
+			continue
+		}
+		if _, known := mutationModel(r); !known {
+			continue
+		}
+		if r.startedAt > anchor.startedAt && (latest == nil || r.startedAt > latest.startedAt) {
+			latest = r
+		}
+	}
+	return latest
 }
 
 // startedMutationModel is the model the session's started run installed, for a
