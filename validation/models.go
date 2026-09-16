@@ -304,7 +304,10 @@ func (s *state) retainModelSelection(session protocol.SessionID, entry unjudgedM
 // code-and-detail test the immediately judged path applies, because deferring
 // the judgement must not weaken it.
 func (s *state) reconcileUnjudgedModels(st *sessionTrack, served *modelCatalog) {
-	if !served.binds(served.revision) {
+	// Only a native or emulated catalog settles a retained selection: at
+	// degraded the list refreshes out of band, so the one this selection was
+	// judged against may never have been served at all.
+	if !served.binding || served.revision == "" {
 		return
 	}
 	remaining := st.unjudgedModels[:0]
