@@ -17,6 +17,19 @@ import (
 
 const streamCapacity = 64
 
+// The catalog vocabulary. harnessOwner is the participant that executes every
+// tool the CLI publishes — the CLI runs them itself — and is the same id every
+// emitted action.call payload names. nativeToolSource is the source a built-in
+// tool comes from; mcpSourcePrefix namespaces an MCP server's source id so it
+// can never collide with the native one; mcpToolPrefix is the prefix the CLI
+// gives a tool it exposes from an MCP server.
+const (
+	harnessOwner     = "claude-code"
+	nativeToolSource = "claude-code-native"
+	mcpSourcePrefix  = "mcp:"
+	mcpToolPrefix    = "mcp__"
+)
+
 var errTerminalWon = errors.New("claude adapter: terminal already selected")
 var errUnavailable = errors.New("claude adapter: operation unavailable")
 
@@ -36,6 +49,14 @@ type Session struct {
 	state           protocol.SessionState
 	closed          bool
 	unusable        bool
+
+	// catalog is the tool catalog projected from the newest system/init
+	// frame: the CLI republishes its tools and its MCP server list on every
+	// turn, so the newest frame wins and there is none at all before the
+	// first submit. That is what makes action.tools.list degraded here.
+	catalog        []protocol.ToolDefinition
+	catalogSources []protocol.ToolSourceDescriptor
+	catalogKnown   bool
 
 	pending      *runState
 	active       *runState
@@ -360,8 +381,99 @@ func (s *Session) observeIdle(observation *rpc.ObservationMessage) {
 	if init, ok := observation.Value.(*native.InitFrame); ok {
 		s.mu.Lock()
 		s.state.CurrentModelID = init.Model
+		s.projectCatalogLocked(init)
 		s.mu.Unlock()
 	}
+}
+
+// projectCatalogLocked turns one system/init frame into the session's
+// catalog. The frame carries two lists and nothing joining them: the tool
+// names, and the MCP servers by name. A tool is attributed to an MCP source
+// only when its name carries the `mcp__<server>__` prefix of a server the
+// same frame listed — the join is between two members of one pinned frame
+// rather than a convention read out of a name — and every other tool is
+// attributed to the adapter's own native source. The frame reports no
+// endpoint for a server, so the descriptor carries none either; inventing one
+// would put a value on the wire that the harness never said.
+func (s *Session) projectCatalogLocked(init *native.InitFrame) {
+	sources := []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}}
+	servers := make(map[string]bool, len(init.MCPServers))
+	for _, server := range init.MCPServers {
+		if server.Name == "" || servers[server.Name] {
+			continue
+		}
+		servers[server.Name] = true
+		sources = append(sources, protocol.ToolSourceDescriptor{
+			ID: mcpSourcePrefix + server.Name, Kind: protocol.ToolSourceProcess,
+			Protocol: protocol.ToolSourceMCP, DisplayName: server.Name,
+		})
+	}
+	catalog := make([]protocol.ToolDefinition, 0, len(init.Tools))
+	seen := make(map[string]bool, len(init.Tools))
+	for _, name := range init.Tools {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		catalog = append(catalog, protocol.ToolDefinition{
+			Name: name, InputSchema: json.RawMessage(`{"type":"object"}`),
+			ExecutionOwner: harnessOwner, Source: toolSourceFor(name, servers),
+			Features: map[string]protocol.FeatureSupport{
+				"action.tools.execute": {Level: protocol.SupportUnavailable, Reason: "the CLI executes its own tools"},
+			},
+		})
+	}
+	s.catalog, s.catalogSources, s.catalogKnown = catalog, sources, true
+}
+
+// toolSourceFor resolves one tool name against the servers the same frame
+// listed. A name whose mcp__<server>__ prefix names no listed server is a
+// built-in tool that merely looks namespaced, and is attributed natively
+// rather than to a source the catalog would not declare.
+func toolSourceFor(name string, servers map[string]bool) string {
+	rest, namespaced := strings.CutPrefix(name, mcpToolPrefix)
+	if !namespaced {
+		return nativeToolSource
+	}
+	for server := range servers {
+		if strings.HasPrefix(rest, server+"__") {
+			return mcpSourcePrefix + server
+		}
+	}
+	return nativeToolSource
+}
+
+// Tools serves this session's effective catalog, projected from the newest
+// system/init frame. Before the first turn there is none: the CLI publishes
+// no init frame until it has been given input, and reporting an empty catalog
+// would say the endpoint has no tools rather than that it has not said yet.
+func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (protocol.ToolsListResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.ToolsListResponse{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return protocol.ToolsListResponse{}, base.ErrSessionClosed
+	}
+	if request.SessionID != "" && request.SessionID != s.state.SessionID {
+		return protocol.ToolsListResponse{}, base.ErrRunNotFound
+	}
+	if !request.AllowsDegraded(protocol.FeatureToolsList) {
+		// The catalog is advertised degraded, so serving one without the
+		// caller's consent would give it degraded behaviour it never asked
+		// for: the snapshot is only as current as the last turn, and there is
+		// none before the first.
+		return protocol.ToolsListResponse{}, &base.DegradedControlError{Feature: protocol.FeatureToolsList}
+	}
+	if !s.catalogKnown {
+		return protocol.ToolsListResponse{}, base.ErrToolCatalogUnavailable
+	}
+	return protocol.ToolsListResponse{
+		SessionID: request.SessionID,
+		Sources:   append([]protocol.ToolSourceDescriptor(nil), s.catalogSources...),
+		Tools:     append([]protocol.ToolDefinition(nil), s.catalog...),
+	}, nil
 }
 
 func (s *Session) currentRun() *runState {
@@ -490,6 +602,7 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 	case *native.InitFrame:
 		s.mu.Lock()
 		s.state.CurrentModelID = frame.Model
+		s.projectCatalogLocked(frame)
 		s.mu.Unlock()
 	case *native.TaskStartedFrame:
 		s.trackChild(run, frame.TaskID, frame.ToolUseID, frame.TaskType)
@@ -625,7 +738,7 @@ func toolResultText(content json.RawMessage) string {
 }
 
 func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: "claude-code", Name: tool.name, ArgumentsJSON: cloneRaw(tool.args)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, ArgumentsJSON: cloneRaw(tool.args)}
 }
 
 // openGate surfaces one can_use_tool ask as an OAP permission interaction.

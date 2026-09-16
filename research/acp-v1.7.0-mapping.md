@@ -199,6 +199,7 @@ exist.
 |---|---|---|---|---|
 | successful initialize exchange | readiness and effective descriptor | normalized | capabilities: emulated | `initialize-minimal` |
 | `session/new` response | `session.open.response` | normalized | new session: native | `new-prompt-completed` |
+| `session/new` `mcpServers` entry | `session.open.request.tool_sources` attachment, published back as a `ToolSourceDescriptor` | native | `action.tool_sources.attach`: native, `mode: session_open`, `limits.transports: ["process"]` | `session-new-tool-sources` |
 | `session/load` replay then response | transcript reconstruction, never event replay | lossy | capability-dependent/degraded | `load-history-not-replay` |
 | `session/resume` response | native attachment without replay | normalized | capability-dependent/degraded | `resume-no-replay` |
 | prompt accepted by adapter and written | submit admission | synthesized | admission: emulated | `prompt-admitted` |
@@ -457,6 +458,11 @@ Minimum positive cases:
 
 - `initialize-minimal` and `initialize-full`;
 - `session-new-minimal`;
+- `session-new-tool-sources` — an open carrying `tool_sources`, the
+  `mcpServers` entry the adapter wrote for it (a bare `NAME` resolved against
+  the operator's own allowlist, a name the operator never exposed dropped, a
+  `NAME=value` literal passed through), and the sanitized descriptor the
+  session publishes back;
 - `new-prompt-completed`;
 - message chunks with shared, changed, and absent message IDs;
 - `max-tokens`, `max-turn-requests`, and refusal;

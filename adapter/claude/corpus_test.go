@@ -76,6 +76,8 @@ var ccLedgerFixtures = map[string]bool{
 	// hygiene
 	"keep-alive-ignored": true, "unknown-frame-ignored": true,
 	"no-implied-replay": true, "resume-fork": true,
+	// catalog
+	"tools-catalog-sources": true,
 }
 
 type ccCorpusSources struct {
@@ -148,6 +150,10 @@ type ccControl struct {
 	Decision string `json:"decision,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Expect   string `json:"expect,omitempty"`
+	// Catalog is the assert-catalog op's expected projection. A catalog is
+	// not an event, so the case declares it here rather than in the
+	// expected-oap trace.
+	Catalog *protocol.ToolsListResponse `json:"catalog,omitempty"`
 }
 type ccCorpusMapping struct {
 	Index          int    `json:"index"`
@@ -443,6 +449,43 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 				if message.Subtype != native.ControlInterrupt {
 					t.Fatalf("frame %d: cancel wrote %q, want interrupt", i+1, message.Subtype)
 				}
+			case "assert-catalog":
+				// The catalog is not an event, so it cannot ride the
+				// expected-oap trace: the case declares it inline and the
+				// projection is compared against it and then run through the
+				// real validator, which is what proves it resolves.
+				lister, ok := session.(base.ToolLister)
+				if !ok {
+					t.Fatalf("frame %d: the session serves no catalog", i+1)
+				}
+				// A degraded catalog is not served without consent: the
+				// refusal names the key to opt into, and only then is the
+				// catalog projected.
+				var degraded *base.DegradedControlError
+				if _, err := lister.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "session"}); !errors.As(err, &degraded) || degraded.Feature != protocol.FeatureToolsList {
+					t.Fatalf("frame %d: a catalog was served without the degraded opt-in (err = %v)", i+1, err)
+				}
+				request := protocol.ToolsListRequest{SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList}}
+				catalog, err := lister.Tools(context.Background(), request)
+				if err != nil {
+					t.Fatalf("frame %d: tools: %v", i+1, err)
+				}
+				if control.Catalog == nil {
+					t.Fatalf("frame %d: assert-catalog declares no expected catalog", i+1)
+				}
+				got, err := json.Marshal(catalog)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := json.Marshal(*control.Catalog)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("frame %d: projected catalog\n got: %s\nwant: %s", i+1, got, want)
+				}
+				adaptertest.AssertToolCatalog(t, execution.descriptor, nil, request, catalog)
+				execution.catalogs = append(execution.catalogs, catalog)
 			case "assert-state":
 				state, err := session.State(context.Background())
 				if err != nil {
@@ -510,6 +553,7 @@ type ccExecution struct {
 	resumeUnavailable int
 	assertStates      []string
 	modelIDs          []string
+	catalogs          []protocol.ToolsListResponse
 	closed            bool
 }
 
@@ -627,6 +671,10 @@ func ccLoadFrames(t *testing.T, filename string) ([]ccFrame, []ccDecodedFrame) {
 					// The cancel control makes the adapter issue interrupt, so
 					// the next reply answers an interrupt, not initialize.
 					lastRequestSubtype = native.ControlInterrupt
+				case "assert-catalog":
+					if control.Catalog == nil {
+						t.Fatalf("frame %d assert-catalog declares no catalog", i+1)
+					}
 				case "resume", "close":
 				default:
 					t.Fatalf("frame %d invalid oap control op %q", i+1, control.Op)
@@ -990,6 +1038,30 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			feature, advertised := execution.descriptor.Capabilities.Features["protocol.initialize"]
 			ok = execution.initializeShape && execution.initializeReply && execution.userWrites > 0 &&
 				advertised && feature.Level == protocol.SupportEmulated
+		case "tools-catalog-sources":
+			// The catalog is the system/init frame's two lists, joined: every
+			// listed tool becomes a catalog entry, every listed MCP server a
+			// declared source, and a tool is attributed to a server only when
+			// its namespaced name matches one the same frame listed.
+			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)
+			ok = len(inits) == 1 && len(execution.catalogs) == 1
+			if ok {
+				catalog := execution.catalogs[0]
+				declared, attributed := map[string]bool{}, map[string]int{}
+				for _, source := range catalog.Sources {
+					declared[source.ID] = true
+				}
+				for _, tool := range catalog.Tools {
+					attributed[tool.Source]++
+				}
+				ok = len(catalog.Sources) == 2 && declared[nativeToolSource] && declared[mcpSourcePrefix+"files"] &&
+					attributed[mcpSourcePrefix+"files"] == 1 && attributed[nativeToolSource] > 0
+				for _, tool := range catalog.Tools {
+					if !declared[tool.Source] || tool.ExecutionOwner != harnessOwner {
+						ok = false
+					}
+				}
+			}
 		case "per-turn-init":
 			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)
 			submits := 0

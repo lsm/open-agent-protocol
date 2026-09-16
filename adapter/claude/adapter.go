@@ -18,7 +18,7 @@ import (
 
 const (
 	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "claude-code-2.1.263-oap-v1"
+	CapabilityRevision     = "claude-code-2.1.263-oap-v2"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
@@ -185,8 +185,14 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"run.reconciliation":             {Level: protocol.SupportDegraded, Reason: "system/init and session state frames corroborate"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool_use/tool_result projection; started synthesized; tool_progress observed-only"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the CLI executes tools internally"},
-		"action.permissions":             {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
-		"user_input":                     {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
+		// The catalog is the newest system/init frame's tools and MCP server
+		// list. It is degraded because the CLI publishes no init frame until
+		// it has been given input — so there is no catalog at all before the
+		// first turn — and republishes it on every turn afterwards, so a
+		// caller's snapshot can go stale between one turn and the next.
+		protocol.FeatureToolsList: {Level: protocol.SupportDegraded, Reason: "system/init republishes the tool and MCP server lists per turn; there is none before the first"},
+		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
+		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
 	}
 	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "claude-code.cli", Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
 }

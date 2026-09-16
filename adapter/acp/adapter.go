@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 const (
 	ACPVersion             = 1
 	SchemaVersion          = "1.21.0"
-	CapabilityRevision     = "acp-v1.7.0-schema-v1.21.0-oap-v1"
+	CapabilityRevision     = "acp-v1.7.0-schema-v1.21.0-oap-v2"
 	defaultJournalCapacity = 256
 )
 
@@ -132,11 +133,20 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.message.submit":        {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the prompt request is written"},
 		"session.message.delivery.auto": {Level: protocol.SupportEmulated, Reason: "auto is normalized to start"},
 		"run.streaming":                 {Level: protocol.SupportNative}, "run.status": {Level: protocol.SupportEmulated},
-		"run.cancel":           {Level: protocol.SupportDegraded, Reason: "ACP cancellation is an unacknowledged session notification; prompt settlement is authoritative"},
-		"run.resume":           {Level: protocol.SupportDegraded, Reason: "canonical replay is bounded process memory only"},
-		"run.reconciliation":   {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
-		"run.replay":           {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
-		"action.tools":         {Level: protocol.SupportDegraded, Reason: "observed ACP presentation tool calls only; no catalog"},
+		"run.cancel":         {Level: protocol.SupportDegraded, Reason: "ACP cancellation is an unacknowledged session notification; prompt settlement is authoritative"},
+		"run.resume":         {Level: protocol.SupportDegraded, Reason: "canonical replay is bounded process memory only"},
+		"run.reconciliation": {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
+		"run.replay":         {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
+		"action.tools":       {Level: protocol.SupportDegraded, Reason: "observed ACP presentation tool calls only; no catalog"},
+		// session/new takes the MCP server array natively, so attachment at
+		// open is what ACP already does; the transports it accepts are
+		// disclosed because stdio descriptors are the pinned surface and
+		// HTTP/SSE MCP is explicitly deferred at this pin.
+		protocol.FeatureToolSourcesAttach: {
+			Level: protocol.SupportNative, Mode: protocol.ModeSessionOpen,
+			Limits: map[string]json.RawMessage{protocol.LimitTransports: json.RawMessage(`["process"]`)},
+			Reason: "session/new carries the MCP server array; stdio descriptors only at this pin",
+		},
 		"action.tools.execute": {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle is normalized"},
 		"action.permissions":   {Level: protocol.SupportNative, Reason: "ACP permission choice semantics with synthesized portable identity"},
 	}
@@ -165,6 +175,12 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	// slice would marshal as null and a conforming agent rejects the request
 	// with -32602 Invalid params, so always send the empty array.
 	mcpServers := append([]native.MCPServer{}, a.config.MCPServers...)
+	attached, err := a.attachToolSources(req.ToolSources)
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	mcpServers = append(mcpServers, attached...)
 	var opened native.SessionNewResult
 	if err := client.Call(ctx, native.MethodSessionNew, native.SessionNewParams{Cwd: a.config.WorkingDirectory, MCPServers: mcpServers}, &opened); err != nil {
 		_ = client.Close()
@@ -179,9 +195,73 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
+	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: attachedSources(req.ToolSources)}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
+}
+
+// attachToolSources turns the open's attachments into ACP's own MCP server
+// array. The wire's `process` kind is ACP's stdio descriptor; every other kind
+// is refused under the transports the descriptor discloses, because HTTP/SSE
+// MCP is not part of this pin.
+//
+// An `environment` entry resolves only against the operator's own allowlist:
+// a bare NAME takes the value the adapter's configured environment carries and
+// is dropped when it carries none, so a wire caller cannot read an ambient
+// credential the operator never exposed, and a NAME=value literal passes
+// through as ACP's own env pair.
+func (a *Adapter) attachToolSources(attachments []protocol.ToolSourceAttachment) ([]native.MCPServer, error) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	allowlist := make(map[string]string, len(a.config.Environment))
+	for _, entry := range a.config.Environment {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			allowlist[name] = value
+		}
+	}
+	servers := make([]native.MCPServer, 0, len(attachments))
+	for _, attachment := range attachments {
+		if attachment.Kind != protocol.ToolSourceProcess {
+			return nil, &base.UnsupportedControlError{
+				Feature: protocol.FeatureToolSourcesAttach, Reason: base.ControlUnsatisfiable,
+				Source: attachment.ID, Detail: "ACP v1 accepts stdio MCP descriptors only at this pin",
+			}
+		}
+		if attachment.Command == "" {
+			// Not a capability refusal: over the daemon the command comes
+			// from the operator's registry and is never empty, so a
+			// commandless attachment is an embedder's invalid argument.
+			return nil, fmt.Errorf("%w: tool source %q declares a process source with no command", base.ErrInvalidResolution, attachment.ID)
+		}
+		server := native.MCPServer{Name: attachment.ID, Command: attachment.Command, Args: attachment.Args}
+		for _, entry := range attachment.Environment {
+			name, value, literal := strings.Cut(entry, "=")
+			if literal {
+				server.Env = append(server.Env, native.EnvVariable{Name: name, Value: value})
+				continue
+			}
+			if resolved, ok := allowlist[name]; ok {
+				server.Env = append(server.Env, native.EnvVariable{Name: name, Value: resolved})
+			}
+		}
+		servers = append(servers, server)
+	}
+	return servers, nil
+}
+
+// attachedSources is the sanitized projection the session publishes: the
+// attachment's descriptor members and none of the attachment-only ones, so a
+// command or an environment value can never reach a client through state.
+func attachedSources(attachments []protocol.ToolSourceAttachment) []protocol.ToolSourceDescriptor {
+	if len(attachments) == 0 {
+		return nil
+	}
+	sources := make([]protocol.ToolSourceDescriptor, 0, len(attachments))
+	for _, attachment := range attachments {
+		sources = append(sources, attachment.Descriptor())
+	}
+	return sources
 }
 
 type systemClock struct{}

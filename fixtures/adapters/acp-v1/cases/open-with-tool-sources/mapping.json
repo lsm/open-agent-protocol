@@ -1,0 +1,30 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 1,
+    "method": "response:result",
+    "oap": "initialize negotiation"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "native",
+    "index": 2,
+    "method": "response:result",
+    "oap": "session.open with tool_sources (mcpServers carried natively)"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 3,
+    "method": "session/update",
+    "oap": "content.delta"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 4,
+    "method": "response:result",
+    "oap": "run.completed"
+  }
+]
