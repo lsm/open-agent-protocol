@@ -763,7 +763,18 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		if r.admittedModel != "" {
 			var p protocol.RunStartedPayload
 			_ = e.DecodePayload(&p)
-			if p.ModelID != "" && p.ModelID != r.admittedModel {
+			switch {
+			case p.ModelID == "" && r.controls.modelPresent:
+				// An admitted model_id is authoritative for the run and
+				// run.started repeats it. Omitting it is not silence about a
+				// model nobody chose: the caller chose one, and a consumer
+				// reading the start boundary cannot see that the control was
+				// applied — which is the whole of what the repeat is for.
+				// A run whose submission carried no model_id keeps the
+				// present-only comparison: there the id is attribution the
+				// endpoint volunteers, not a control it owes.
+				s.addExpected(CodeUnappliedControl, i, line, e, "/payload/model_id", "run.started omits the model the run was admitted under", string(r.admittedModel), "absent", string(r.id))
+			case p.ModelID != "" && p.ModelID != r.admittedModel:
 				// The run was admitted under one model and started under
 				// another: the control was admitted and not applied.
 				s.addExpected(CodeUnappliedControl, i, line, e, "/payload/model_id", "run.started model disagrees with the admitted model", string(r.admittedModel), string(p.ModelID), string(r.id))

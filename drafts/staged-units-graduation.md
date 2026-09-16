@@ -1122,13 +1122,25 @@ No new envelope types. Changes to
 - New diagnostic `unapplied_control`: the submit response's `model_id` (when
   the request carried one) differs from the request; `run.started.model_id`
   differs from the admitted model (today's `illegal_run_transition` case
-  moves to this code); `run.completed` under an admitted `output_schema`
+  moves to this code), or is absent where the submission carried a `model_id`
+  — an admitted model is authoritative and `run.started` repeats it, so a
+  start that omits it leaves a consumer reading the start boundary unable to
+  see the control applied, and the present-only comparison would let any
+  endpoint opt out of the rule by saying nothing. A run whose submission
+  carried no `model_id` keeps the present-only comparison, since there the id
+  is attribution the endpoint volunteers rather than a control it owes, and
+  `run.completed` keeps it throughout for the reason given above. Also:
+  `run.completed` under an admitted `output_schema`
   lacks `result`, or carries a `result` that does not validate against the
   admitted schema (the validator compiles the schema with the same
   `jsonschema` engine it already uses for the bundle); an
   `action.call.requested` in a run whose admitted `tool_choice` excludes
-  that tool (`mode: "none"`, filtered out by `allowed` or `disallowed`, or
-  `named` naming another tool), whichever participant owns the call; and,
+  that tool (`mode: "none"`, filtered out by `allowed` or `disallowed`,
+  `named` naming another tool, or outside the effective catalog the policy is
+  judged against — the filter runs over the catalog and the mode over the
+  filtered set, so the permitted set never reaches past the catalog and a
+  plain `auto` or `required` policy would otherwise govern nothing),
+  whichever participant owns the call; and,
   at `run.completed`, a run admitted with `mode: "required"` that emitted
   no `action.call.requested`, or with `mode: "named"` that emitted none
   naming that tool (a run that fails or is cancelled first is not judged,
@@ -1431,7 +1443,10 @@ check requires), `controls-structured-satisfiable-refused`
 object-rooted, self-contained `output_schema` refused as unsatisfiable;
 the `honour` fixture for `run.structured_output`),
 `controls-tool-choice-ignored` (`unapplied_control`; `action.call.requested`
-under `mode: "none"`),
+under `mode: "none"`), `controls-tool-choice-uncatalogued-call`
+(`unapplied_control`; `action.call.requested` naming a tool outside the
+catalog under a plain `auto` policy), `controls-started-omits-model`
+(`unapplied_control`; a `model_id` submission whose `run.started` omits it),
 `controls-structured-non-object-schema` (`unsatisfiable_control` on the
 admission; a root-array `output_schema`), `controls-structured-external-ref`
 (`unsatisfiable_control` on the admission; an `output_schema` with an

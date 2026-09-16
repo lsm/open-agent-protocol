@@ -369,10 +369,21 @@ func (c ToolChoice) Filter(catalog []string) []string {
 	return filtered
 }
 
-// Permits reports whether a policy admits a call to one tool: the filter
-// first, then the mode.
-func (c ToolChoice) Permits(name string, catalog []string) bool {
+// Permits reports whether a policy admits a call to one tool: the catalog
+// first, then the filter, then the mode.
+//
+// The policy is defined over the effective catalog — allowed/disallowed filter
+// it and the mode applies to what is left — so the permitted set is always a
+// subset of the catalog and no mode admits a tool the catalog does not carry.
+// Without that first step a plain auto or required policy would admit any name
+// at all, which is the one reading that lets an admitted policy govern nothing.
+// known says whether catalog is the effective one; a caller that cannot see a
+// catalog judges the filter and the mode alone.
+func (c ToolChoice) Permits(name string, catalog []string, known bool) bool {
 	if c.Mode == ToolChoiceNone {
+		return false
+	}
+	if known && !slices.Contains(catalog, name) {
 		return false
 	}
 	if len(c.Allowed) > 0 && !slices.Contains(c.Allowed, name) {

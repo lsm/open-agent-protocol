@@ -372,7 +372,7 @@ func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (ad
 			return admittedControls{}, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason}
 		}
 		controls.choice = policy
-		controls.callsTool = policy.Permits(scriptedTool, s.catalog())
+		controls.callsTool = policy.Permits(scriptedTool, s.catalog(), true)
 	}
 	if len(request.OutputSchema) > 0 {
 		compiled, err := validation.CompileOutputSchema(request.OutputSchema)

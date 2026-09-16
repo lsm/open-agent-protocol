@@ -593,7 +593,7 @@ func (s *state) checkCallAgainstChoice(i, line int, e protocol.Envelope, r *runS
 		r.controls.calls = map[string]bool{}
 	}
 	r.controls.calls[p.Name] = true
-	if choice := r.controls.choice; choice != nil && !choice.Permits(p.Name, r.controls.catalog) {
+	if choice := r.controls.choice; choice != nil && !choice.Permits(p.Name, r.controls.catalog, r.controls.catalogKnown) {
 		s.addExpected(CodeUnappliedControl, i, line, e, "/payload/name", "run requested a tool its admitted tool_choice excludes", "a tool the policy permits", p.Name, string(r.id))
 	}
 }

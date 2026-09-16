@@ -281,3 +281,84 @@ func TestFixedResultComparisonKeepsIntegerPrecision(t *testing.T) {
 		}
 	}
 }
+
+// A tool_choice is a policy over the effective catalog: allowed and disallowed
+// filter the catalog, then the mode applies to what is left, so the permitted
+// set never reaches past the catalog. Without that first step a plain auto or
+// required policy admits any name at all and an admitted policy governs
+// nothing. The gate already binds the catalog in both directions; the honour
+// side must bind it the same way.
+func TestPolicyPermitsOnlyCataloguedTools(t *testing.T) {
+	catalog := []string{"scripted_tool", "other_tool"}
+	for name, policy := range map[string]protocol.ToolChoice{
+		"auto":                 {Mode: protocol.ToolChoiceAuto},
+		"required":             {Mode: protocol.ToolChoiceRequired},
+		"auto with allowed":    {Mode: protocol.ToolChoiceAuto, Allowed: []string{"scripted_tool"}},
+		"auto with disallowed": {Mode: protocol.ToolChoiceAuto, Disallowed: []string{"other_tool"}},
+	} {
+		if policy.Permits("unlisted_tool", catalog, true) {
+			t.Fatalf("%s: a tool the catalog does not carry was permitted", name)
+		}
+		if !policy.Permits("scripted_tool", catalog, true) {
+			t.Fatalf("%s: a catalogued tool the policy admits was refused", name)
+		}
+		// An empty catalog is a catalog and permits nothing, the same reading
+		// that makes `required` against an empty filtered set unsatisfiable.
+		if policy.Permits("scripted_tool", nil, true) {
+			t.Fatalf("%s: an empty catalog permitted a tool", name)
+		}
+		// A trace carrying no catalog cannot decide membership, so the filter
+		// and the mode judge alone rather than refusing everything.
+		if !policy.Permits("scripted_tool", nil, false) {
+			t.Fatalf("%s: an unknown catalog was read as an empty one", name)
+		}
+	}
+	// Within the catalog the filter and the mode still decide.
+	for name, policy := range map[string]protocol.ToolChoice{
+		"disallowed":      {Mode: protocol.ToolChoiceAuto, Disallowed: []string{"other_tool"}},
+		"outside allowed": {Mode: protocol.ToolChoiceAuto, Allowed: []string{"scripted_tool"}},
+		"named elsewhere": {Mode: protocol.ToolChoiceNamed, Name: "scripted_tool"},
+		"none":            {Mode: protocol.ToolChoiceNone},
+	} {
+		if policy.Permits("other_tool", catalog, true) {
+			t.Fatalf("%s: the policy permitted a tool it excludes", name)
+		}
+	}
+}
+
+// modelAdmission renders an admission reporting one model, a run.started that
+// names the given model or omits it, and a completion.
+func modelAdmission(admitted, started string) string {
+	start := `"session_id":"s1","run_id":"r1","status":"running"`
+	if started != "" {
+		start += `,"model_id":"` + started + `"`
+	}
+	return `{` + controlsCore + `,"type":"session.message.submit.response","id":"submit-resp","in_reply_to":"submit-req","session_id":"s1","run_id":"r1","capability_revision":"rev-1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"r1","status":"running","model_id":"` + admitted + `"}},
+	{` + controlsCore + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{` + start + `}},
+	{` + controlsCore + `,"type":"run.completed","id":"ev-done","session_id":"s1","run_id":"r1","sequence":2,"payload":{"session_id":"s1","run_id":"r1","final_response":{"role":"assistant","content":"ok"},"stop_reason":"end_turn"}}`
+}
+
+// An admitted model_id is authoritative for the run: the submit response
+// repeats it and run.started repeats it. Omitting it there is not silence
+// about a model nobody chose — the caller chose one, and a consumer reading
+// the start boundary cannot see the control was applied, which is what the
+// repeat exists for. A run whose submission carried no model_id keeps the
+// present-only comparison, since there the id is attribution the endpoint
+// volunteers rather than a control it owes.
+func TestStartedRepeatsTheAdmittedModel(t *testing.T) {
+	v := MustNew()
+	features := `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`
+	omitted := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "")), "started-omits-model")
+	if !omitted.HasCode(CodeUnappliedControl) {
+		t.Fatalf("want %s when run.started omits the admitted model: %+v", CodeUnappliedControl, omitted.Diagnostics)
+	}
+	repeated := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "started-repeats-model")
+	if !repeated.Valid() {
+		t.Fatalf("a run.started repeating the admitted model was rejected: %+v", repeated.Diagnostics)
+	}
+	// No control, so no control to apply: the reported model is attribution.
+	attribution := v.ValidateBytes(controlsTrace(features, "", modelAdmission("m1", "")), "started-omits-attribution")
+	if !attribution.Valid() {
+		t.Fatalf("an uncontrolled run was judged against a volunteered model: %+v", attribution.Diagnostics)
+	}
+}
