@@ -1505,9 +1505,10 @@ func TestInFlightOpsAreBounded(t *testing.T) {
 
 // --- the operations surface ---
 
-// openSession opens one tracked session on the hub directly — the stand-in
-// for the open op until the registration slice lands it: the ops under test
-// address sessions by id, and only the registration path is deferred.
+// openSession opens one tracked session on the hub directly. The open op
+// exists now, but these tests are not about it: going through the wire would
+// make every session-scoped test depend on the open op's own behaviour, and
+// the embedding host this hub serves opens sessions exactly this way.
 func openSession(t *testing.T, hub *serve.Hub, id string) {
 	t.Helper()
 	_, _, err := hub.Open(context.Background(), "memory", base.OpenRequest{

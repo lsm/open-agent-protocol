@@ -39,11 +39,16 @@ const (
 // the events request's id so overlapping subscriptions on one session stay
 // attributable.
 //
-// The first three mirror the SSE stream's named events. The last two are this
-// framing's own, and exist because this framing has no end for a host to
-// observe: SSE closes the response body, while the pipe here stays open and
-// carries every other subscription, so an ending SSE can leave implicit has
-// to be said out loud.
+// One of the six is not an ending: an envelope line is the SSE stream's data
+// line under another name. Of the five endings, two mirror SSE's own named
+// events — oap-overflow and oap-replay-gap are the only two servehttp emits —
+// and the other three are this framing's own.
+//
+// They exist because this framing has no end for a host to observe. SSE
+// closes the response body, which is how an SSE client learns a session
+// closed under it, that a line was undeliverable, or that the run's stream
+// died. The pipe here stays open and carries every other subscription, so
+// each of those has to be said out loud.
 const (
 	signalEnvelope      = "envelope"
 	signalOverflow      = "oap-overflow"
@@ -505,6 +510,20 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 	// sees, has it discarded by any hand-copied subset.
 	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID(s.nextID("response")), state)
 	if err != nil {
+		// The session is already registered on the hub, so this is the same
+		// two-facts problem an unframable response has, reached one step
+		// earlier: an adapter that reports a state this frontend cannot
+		// encode — an invalid raw value in its metadata is enough — leaves a
+		// live session behind an answer that says the open failed. With a
+		// minted id the host cannot even name it to close it, and retrying
+		// its own id earns session_exists.
+		//
+		// So it takes the same rollback policy, and the same exemption: a
+		// session the host named is one it can still close itself.
+		s.logger.Printf("servestdio: open %d: encode response: %v", *request.ID, err)
+		if werr := s.rollbackOpen(ctx, request, entry, payload.SessionID != ""); werr != nil {
+			return nil, werr
+		}
 		return nil, internalError(err)
 	}
 	response.InReplyTo = envelope.ID
@@ -529,6 +548,27 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		return nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "")
 	}
 	return result, nil
+}
+
+// rollbackOpen closes a session the host will never be told the id of, and
+// reports nil when there is nothing to roll back — because the host named the
+// session itself, or because the close succeeded.
+//
+// It returns a wireError only when the rollback failed, so the caller can say
+// the session may still be live rather than claim an outcome it did not
+// observe.
+func (s *Server) rollbackOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool) *wireError {
+	if named {
+		return nil
+	}
+	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
+	err := entry.Close(rollback)
+	cancelRollback()
+	if err == nil || errors.Is(err, base.ErrSessionClosed) {
+		return nil
+	}
+	s.logger.Printf("servestdio: roll back open %d: %v", *request.ID, err)
+	return &wireError{Code: "internal", Message: "the open response could not be encoded; rolling the session back failed and it may still be live"}
 }
 
 // refuseOversizedOpen answers an open whose response cannot be framed, and
@@ -1170,9 +1210,17 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 			// already delivered above: the host has its marker.
 			return
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if ctx.Err() != nil {
 			// The frontend is tearing down. The host observes the session
 			// ending, and the output this would go to is already closing.
+			//
+			// The test is this pump's own context, not the sentinel the error
+			// carries. An adapter's stream can fail with something that wraps
+			// context.Canceled — its own request context, its child's — while
+			// this subscription is perfectly alive, and that is an ending the
+			// host cannot see and must be told about like any other. Matching
+			// the sentinel answered "was a context cancelled somewhere" when
+			// the question is "was it mine".
 			return
 		}
 		// The run's event stream failed. Nothing else will name this ending.

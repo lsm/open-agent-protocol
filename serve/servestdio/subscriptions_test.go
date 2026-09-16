@@ -937,3 +937,167 @@ func TestATypedRefusalShedsItsDetailsRatherThanItsCode(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestAnAdapterContextFailureIsStillAnnounced separates two questions the
+// pump used to confuse: was a context cancelled, and was it mine.
+//
+// An adapter's stream can fail with an error wrapping context.Canceled — its
+// own request context, or a child process's — while this subscription is
+// perfectly alive. Matching the sentinel answered the first question and
+// silently ended the pump, which is exactly the ending a host cannot see.
+func TestAnAdapterContextFailureIsStillAnnounced(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &streamAdapter{}
+	if err := registry.Register("stream", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	entry, _, err := hub.Open(context.Background(), "stream", base.OpenRequest{
+		SessionID: "borrowed", Participant: protocol.Participant{ID: serve.DefaultParticipant},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":1,"op":"events","session_id":"borrowed"}`)
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "borrowed", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The adapter's context ended, not this subscription's.
+	adapter.active(t).fail(fmt.Errorf("adapter transport: %w", context.Canceled))
+
+	line := f.line()
+	var failure struct {
+		Event string `json:"event"`
+		ID    int64  `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(line), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Event != signalStreamFailed || failure.ID != 1 {
+		t.Fatalf("line %q is not a correlated stream-failed ending", line)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// unencodableStateAdapter opens successfully and then reports a session state
+// this frontend cannot encode, which is the window where the hub has already
+// registered the session and the open has no answer to give.
+type unencodableStateAdapter struct {
+	mu      sync.Mutex
+	session *unencodableStateSession
+}
+
+func (a *unencodableStateAdapter) opened(t *testing.T) *unencodableStateSession {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.session == nil {
+		t.Fatal("the adapter opened no session")
+	}
+	return a.session
+}
+
+func (*unencodableStateAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{
+		Capabilities:       protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "reference.unencodable"}},
+		CapabilityRevision: "unencodable-v1",
+	}, nil
+}
+
+func (a *unencodableStateAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+	session := &unencodableStateSession{id: request.SessionID}
+	a.mu.Lock()
+	a.session = session
+	a.mu.Unlock()
+	return session, nil
+}
+
+type unencodableStateSession struct {
+	id     protocol.SessionID
+	mu     sync.Mutex
+	closed bool
+}
+
+var _ base.Session = (*unencodableStateSession)(nil)
+
+func (s *unencodableStateSession) State(context.Context) (protocol.SessionState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := protocol.SessionIdle
+	if s.closed {
+		status = protocol.SessionClosed
+	}
+	return protocol.SessionState{
+		SessionID: s.id, Status: status,
+		Metadata: map[string]json.RawMessage{"broken": json.RawMessage("{not json")},
+	}, nil
+}
+
+// isClosed reports whether the frontend rolled this session back. It is the
+// ground truth the listing cannot give: a closed session stays listed.
+func (s *unencodableStateSession) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+func (s *unencodableStateSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+}
+func (s *unencodableStateSession) Resolve(context.Context, base.InteractionResolution) error {
+	return nil
+}
+func (s *unencodableStateSession) Cancel(_ context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
+	return protocol.RunCancelResponse{SessionID: s.id, RunID: runID}, nil
+}
+func (s *unencodableStateSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, base.ErrRunNotFound
+}
+func (s *unencodableStateSession) Close(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
+
+// TestAnOpenThatCannotEncodeIsRolledBack reaches the two-facts problem one
+// step earlier than an unframable response does: the hub has registered the
+// session, and the answer says the open failed. A host given a minted id it
+// never saw cannot close what it does not know exists.
+func TestAnOpenThatCannotEncodeIsRolledBack(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &unencodableStateAdapter{}
+	if err := registry.Register("broken", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	f := startFrontend(t, hub, Options{})
+
+	// No session_id: the daemon mints one, so the host could not name it.
+	request := requestEnvelope(t, "req-unencodable", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")
+	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"broken","request":%s}`, request))
+	response := f.expectResponse(1)
+	if response.OK {
+		t.Fatal("an open whose state cannot be encoded reported success")
+	}
+	if response.Error.Code != "internal" {
+		t.Fatalf("code %q, want internal: %s", response.Error.Code, response.Error.Message)
+	}
+	// The adapter's own session is the ground truth. A closed session stays
+	// in the hub's listing, so the listing cannot answer this.
+	if !adapter.opened(t).isClosed() {
+		t.Fatal("the failed open left a live session behind; the host was told it failed and cannot name what to close")
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
