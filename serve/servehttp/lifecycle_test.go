@@ -139,7 +139,9 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	rejected := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "lifecycle-rejected", protocol.MessageSubmitRequest{
 		SessionID: protocol.SessionID(sessionID), Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("model-the-catalog-lacks"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
-	}, sessionID, "", "")
+		// A submission exercising an optional control cites the descriptor
+		// revision it was written against, like every optional envelope.
+	}, sessionID, "", revision)
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/"+sessionID+"/submit", rejected)
 	if status != 400 {
 		t.Fatalf("rejected submit status %d", status)

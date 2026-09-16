@@ -24,8 +24,11 @@ type runState struct {
 	// so the admission-dependent check — the pre-start rule — is suspended,
 	// while sequence, terminality, and scope bookkeeping stay.
 	opaqueAdmission bool
-	tools           map[protocol.ToolCallID]toolTrack
-	interactions    map[protocol.InteractionID]*interactionState
+	// controls is the control set the run was admitted with, so the checks
+	// that follow are keyed off the request rather than the response.
+	controls     admittedControls
+	tools        map[protocol.ToolCallID]toolTrack
+	interactions map[protocol.InteractionID]*interactionState
 }
 type interactionState struct {
 	kind                     string
@@ -60,6 +63,16 @@ type requestState struct {
 type sessionTrack struct {
 	status protocol.SessionStatus
 	active protocol.RunID
+	// currentModel is the model a control-free submission would use, as the
+	// last snapshot reported it. expectedDefault is what it must still be
+	// after a per_run selection: that application binds its own run and
+	// leaves the session default alone, for good rather than for the run's
+	// lifetime, so the comparison survives the terminal and any later
+	// capability refresh. Only an application the validator credits moves it.
+	currentModel    string
+	currentKnown    bool
+	expectedDefault string
+	guardDefault    bool
 }
 
 // toolTrack retains a tool call's lifecycle status and the execution owner that
@@ -80,7 +93,16 @@ type state struct {
 	capabilitiesStale bool
 	initialized       bool
 	features          map[string]protocol.SupportLevel
-	recoveries        map[protocol.SessionID]*recoveryExpectation
+	// featureSupports keeps each key's full disclosure — its mode, the modes
+	// it enforces, the constraints it declares — beside the level the gate
+	// reads, so a refusal can be checked against what the endpoint promised.
+	featureSupports map[string]protocol.FeatureSupport
+	catalog         []string
+	catalogKnown    bool
+	// pendingControls retains what each control-carrying submit request owes
+	// its correlated response, keyed by the request's envelope id.
+	pendingControls map[protocol.EnvelopeID]*pendingSubmit
+	recoveries      map[protocol.SessionID]*recoveryExpectation
 	// tolerant lets an envelope of unknown type take part in the
 	// type-independent bookkeeping its wire scope implies, instead of being
 	// skipped. Without it a tolerated unknown run event at sequence N would be
@@ -89,7 +111,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -174,10 +196,13 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = false
 		s.features = map[string]protocol.SupportLevel{}
-		collectFeatures(s.features, p.Features)
+		s.featureSupports = map[string]protocol.FeatureSupport{}
+		collectFeatures(s.features, s.featureSupports, p.Features)
 		for _, layer := range p.Layers {
-			collectFeatures(s.features, layer.Features)
+			collectFeatures(s.features, s.featureSupports, layer.Features)
 		}
+		s.catalog, s.catalogKnown = collectCatalog(p), true
+		s.checkSelectionModes(i, line, e, p)
 	case protocol.TypeCapabilitiesUpdated:
 		var p protocol.CapabilitiesUpdated
 		_ = e.DecodePayload(&p)
@@ -189,6 +214,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = true
+		// The descriptor and the catalog served under the old revision are
+		// invalidated; a session's expected default model is not, or an
+		// unrelated refresh would excuse a per_run selection that moved it.
+		s.catalog, s.catalogKnown = nil, false
 	case protocol.TypeSessionOpenResponse:
 		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)
@@ -263,6 +292,13 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if !contradiction {
 			st.active = p.ActiveRunID
 		}
+		// A per_run application binds its own run and leaves the session
+		// default untouched; a snapshot reporting anything else — the run's
+		// model or a third one — says the endpoint moved it.
+		if st.guardDefault && p.CurrentModelID != st.expectedDefault {
+			s.addExpected(CodeUnappliedControl, i, line, e, "/payload/current_model_id", "a per_run model selection moved the session default", st.expectedDefault, p.CurrentModelID)
+		}
+		st.currentModel, st.currentKnown = p.CurrentModelID, true
 	case protocol.TypeSessionMessageSubmitRequest:
 		var p protocol.MessageSubmitRequest
 		_ = e.DecodePayload(&p)
@@ -270,6 +306,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if s.capabilitiesStale {
 			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "submission occurred before refreshed capabilities")
 		}
+		s.submitControls(i, line, e, p)
 		if p.Delivery != protocol.DeliveryAuto && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
 			// A requested delivery outside this revision's vocabulary is
 			// opaque in tolerant mode: which capability key it needs is a
@@ -319,6 +356,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		_ = e.DecodePayload(&p)
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
 		s.feature(i, line, e, "user_input")
+	case protocol.TypeErrorResponse:
+		// A refusal is the required behaviour for a control the endpoint
+		// cannot honour, so the refusal itself is what the gate judges.
+		s.settleControlRefusal(i, line, e)
 	case protocol.TypeRunCancelResponse:
 		var p protocol.RunCancelResponse
 		_ = e.DecodePayload(&p)
@@ -360,9 +401,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 func isKnownType(t protocol.EnvelopeType) bool {
 	return payloadTarget(t) != nil
 }
-func collectFeatures(dst map[string]protocol.SupportLevel, src map[string]protocol.FeatureSupport) {
+func collectFeatures(dst map[string]protocol.SupportLevel, detail map[string]protocol.FeatureSupport, src map[string]protocol.FeatureSupport) {
 	for name, support := range src {
 		dst[name] = support.Level
+		detail[name] = support
 	}
 }
 
@@ -581,6 +623,21 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		s.sessions[p.SessionID] = st
 	}
 	st.active = p.RunID
+	controls := s.settleSubmitAdmission(i, line, e, p)
+	if controls.present && controls.modelPresent {
+		switch controls.mode {
+		case protocol.ModePerRun:
+			// The default the run was admitted against is what every later
+			// snapshot is judged against, and only an application the
+			// validator credits moves it.
+			st.expectedDefault, st.guardDefault = st.currentModel, st.currentKnown
+		case protocol.ModeSessionMutation:
+			// A session mutation runs immediately before the run it was
+			// requested for starts and changes the session default, so the
+			// admitted model becomes the expected default.
+			st.expectedDefault, st.guardDefault = controls.model, true
+		}
+	}
 	status, opaque := protocol.RunQueued, s.tolerant && foreignAdmission(p.Admission)
 	if opaque {
 		// The run's status is what the response declared, not the queued
@@ -588,7 +645,7 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 		// opaque until a known status is reached (see run.status.updated).
 		status = p.Status
 	}
-	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
+	s.runs[p.RunID] = &runState{id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, admittedModel: p.ModelID, opaqueAdmission: opaque, controls: controls, tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{}, status: status}
 }
 func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	var scope struct {
@@ -654,7 +711,9 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 			var p protocol.RunStartedPayload
 			_ = e.DecodePayload(&p)
 			if p.ModelID != "" && p.ModelID != r.admittedModel {
-				s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/model_id", "run.started model disagrees with the admitted model", string(r.admittedModel), string(p.ModelID), string(r.id))
+				// The run was admitted under one model and started under
+				// another: the control was admitted and not applied.
+				s.addExpected(CodeUnappliedControl, i, line, e, "/payload/model_id", "run.started model disagrees with the admitted model", string(r.admittedModel), string(p.ModelID), string(r.id))
 			}
 		}
 		return
@@ -688,6 +747,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	case protocol.TypeActionCallRequested:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "requested")
+		s.checkCallAgainstChoice(i, line, e, r)
 	case protocol.TypeActionCallStarted:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "started")
@@ -719,6 +779,11 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	if isTerminal(e.Type) {
 		if e.Type == protocol.TypeRunCancelled && !r.cancelAccepted {
 			s.add(CodeIllegalRunTransition, i, line, e, "/type", "run.cancelled requires accepted cancellation")
+		}
+		if e.Type == protocol.TypeRunCompleted {
+			// A tool_choice's positive requirements bind a completed
+			// response; a run that fails or is cancelled first is not judged.
+			s.checkCompletedControls(i, line, e, r)
 		}
 		for id, st := range r.tools {
 			if !toolTerminal(st.status) {
