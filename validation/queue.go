@@ -520,6 +520,8 @@ type deferredStateClaim struct {
 	kind        int
 	session     protocol.SessionID
 	run         protocol.RunID
+	request     protocol.EnvelopeID
+	pointer     string
 	sequence    uint64
 	listed      map[protocol.InteractionID]bool
 	model       string
@@ -533,6 +535,7 @@ const (
 	claimCapture
 	claimModel
 	claimQueued
+	claimAdmitted
 )
 
 // reconcileDeferred settles every claim this run envelope answers.
@@ -658,6 +661,37 @@ func describeIDs(set map[protocol.InteractionID]bool) string {
 	return strings.Join(ids, ",")
 }
 
+// judgeAdmissionClaim settles one claim that a submit request had already been
+// admitted. The trace has ended, so its response either arrived and said which
+// run it created, arrived and refused, or never arrived at all — and a claim
+// resting on the last of those rests on nothing, the same evasion as anchoring
+// on a promotion that never comes. A claim naming a run is answered by that
+// run's admission; a session-level one by any admission, because that is all
+// it asserted.
+func (s *state) judgeAdmissionClaim(claim *deferredStateClaim) {
+	want := "an admission on " + string(claim.session)
+	if claim.run != "" {
+		want = "an admission on " + string(claim.run)
+	}
+	var admitted *runState
+	for _, candidate := range s.runs {
+		if candidate.submitRequest == claim.request {
+			admitted = candidate
+			break
+		}
+	}
+	switch {
+	case admitted != nil && (claim.run == "" || admitted.id == claim.run):
+		return
+	case admitted != nil:
+		s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, claim.pointer, "snapshot claims a submit request was admitted to a run its response admitted elsewhere", want, "admitted to "+string(admitted.id), string(claim.request))
+	case s.requests[claim.request] != nil && s.requests[claim.request].responded:
+		s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, claim.pointer, "snapshot claims a submit request was admitted that its response refused", want, "the request was refused", string(claim.request))
+	default:
+		s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, claim.pointer, "snapshot claims a submit request was admitted whose response never arrived", want, "no response", string(claim.request))
+	}
+}
+
 // closeQueue settles every claim the trace ended without answering. A position
 // a run never reaches, and a terminal that never arrives, are both the case
 // the deferral exists to allow being abused.
@@ -682,6 +716,8 @@ func (s *state) closeQueue() {
 			// The run never started, so queued is what it stayed. A stated
 			// position the run never reaches is the capture claim's business,
 			// and it is raised there rather than twice.
+		case claimAdmitted:
+			s.judgeAdmissionClaim(claim)
 		}
 	}
 }

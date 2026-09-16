@@ -174,7 +174,16 @@ A terminal status there contradicts the membership it is part of:
 a snapshot that knows a run settled drops it and names it in `as_of.settled`
 rather than listing it as completed. A run the trace has seen start is not
 `queued` at any position from its start onwards, though a capture stated before
-that position may still call it queued and is judged there. Where the start has
+that position may still call it queued and is judged there. Its queue position
+is judged there too, and so is `active_run_id`: an entry's status, its position
+and the field that names the started run are one description of one moment, and
+reading the position off the trace's current idea of which run has started
+judges a single snapshot against two moments at once. That shows on both edges
+of a promotion inside the window — a snapshot taken before it reports the
+reservation, with the place it held and no started run to name, and one taken
+after it reports a started run holding no position — and both are accurate.
+What an entry cannot do is invent a queue: a run admitted started was never in
+one. Where the start has
 not arrived yet, the claim is deferred rather than accepted: the position the
 entry states may be one the run turns out to be running at, and only its start
 decides that. Deciding it at the response instead would let a snapshot name a
@@ -193,6 +202,15 @@ listing such a run as started leave `active_run_id` empty — the same run named
 `running` in one field and absent from the other. So a listing that shows a
 started run and names none disagrees with itself and is
 `session_state_mismatch`.
+
+`admitted_submit_requests` naming a submission the endpoint has not yet
+answered is a claim of the same kind, and it is retained rather than waved
+through. The response decides it: a refusal means there was never an admission
+to reflect, an admission to another run means the snapshot attributed one
+session's work to the wrong place, and a response that never comes leaves the
+claim resting on nothing. Accepting it at the state response and never
+returning to it is what lets a snapshot assert an admission that did not
+happen.
 
 A stated position the trace has not reached is held and reconciled when it
 arrives. A position that never exists is not: a snapshot may describe a
@@ -231,7 +249,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 72 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 79 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -285,6 +303,25 @@ terminal, and settles a cancelled reservation pre-start.
   accounting, and settle it on a boundary it never reached. Any other unowned
   turn — a foreign input among them — takes the same path, and suppression
   lifts at the next `prompted` an OAP run does own.
+- A run admitted queued is projected as a reservation until its `run.started`
+  reaches the trace, on every endpoint here. The identity exists from
+  admission, but the turn begins when the endpoint says it does — and on an
+  idle session those are not the same instant, because an explicit `queue` is
+  admitted as a reservation there too. Projecting the slot instead of the trace
+  named a reservation in `active_run_id` and listed it without the queue
+  position it held, which is precisely the shape this unit's own state rules
+  reject.
+- The admission bounds are counted, not inferred from which slot is occupied.
+  A session whose only run is an unpromoted reservation is at a queue bound of
+  one, and a second submission there is `run_active`; reading the started slot
+  instead admitted it and put the queued subset above what the descriptor
+  discloses.
+- A session that stops being usable settles every run it admitted, not only the
+  started one. Otherwise the reservation keeps `Close` returning `run_active`
+  while `Cancel` and `State` answer `session_closed`, and the caller can
+  neither settle the run nor close the session. Every path that marks a session
+  unusable owes this, not only the transport: a foreign durable event, a failed
+  settlement fence, an ambiguous admission or cancellation.
 - Shutdown selects the runs it settles from `active_runs`, not from
   `active_run_id`. The two now differ: a reservation is admitted work that owes
   a terminal, so an adapter's Close refuses for it, while `active_run_id` is

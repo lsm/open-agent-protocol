@@ -29,9 +29,16 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 	settled := map[protocol.RunID]uint64{}
 	if p.AsOf != nil {
 		for _, id := range p.AsOf.AdmittedSubmitRequests {
-			if !s.namesSubmitRequest(id, p.SessionID, "") {
+			switch s.namesSubmitRequest(id, p.SessionID, "") {
+			case admissionWrong:
 				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/admitted_submit_requests", "capture anchor names an envelope that is not a submit request the trace carries for this session", "a submit request on "+string(p.SessionID), string(id))
 				continue
+			case admissionPending:
+				// A claim that the endpoint had already admitted a submission,
+				// made before its response exists. A refusal answers it and
+				// the claim was false; an admission answers it and the run it
+				// created is one this snapshot then had to account for.
+				s.deferred = append(s.deferred, &deferredStateClaim{kind: claimAdmitted, session: p.SessionID, request: id, pointer: "/payload/as_of/admitted_submit_requests", index: i, line: line, envelope: e})
 			}
 			anchored[id] = true
 		}
@@ -141,11 +148,12 @@ func (s *state) checkActiveRunsOmitted(i, line int, e protocol.Envelope, require
 // entry's pending set is accurate at the position the entry states.
 func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p protocol.SessionState, required []*runState, window int) {
 	listed := map[protocol.RunID]bool{}
-	// listedStarted is a started run the snapshot itself lists but that the
-	// required set excludes because it settled inside the window. The snapshot
-	// says it was started when the capture was taken, so it is what
-	// active_run_id has to name — deriving that only from the required set
-	// would let a listing disagree with itself.
+	// listedStarted is the run the snapshot itself describes as started: the
+	// entry that is not a reservation at the position it states. It is what
+	// active_run_id has to name, because the alternative — deriving it from
+	// the trace's own idea of which run has started — judges one snapshot
+	// against two different moments at once, and lets a listing disagree with
+	// itself about the same run.
 	listedStarted := protocol.RunID("")
 	lastOrder := -1
 	queuePosition := 0
@@ -175,8 +183,24 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs is not in admission order", "admission order", string(entry.RunID))
 		}
 		lastOrder = r.order
-		reservation := r.admittedQueued && !r.started
+		// A queue position and a queued status are one description of one
+		// moment, so the entry's own status decides which this is — checked
+		// against the position it states, a few lines below. Judging the
+		// position against r.started instead rejects the position of an entry
+		// whose status the same snapshot is allowed to keep, and then demands
+		// that run in active_run_id as well; and the reverse, where a
+		// promotion inside the endpoint lets an accurate entry lead the trace,
+		// would have a running entry demand a queue position. Both readings
+		// judge one snapshot against two different moments at once. What the
+		// entry cannot do is invent a queue: a run admitted started was never
+		// in one.
+		reservation, settled := r.admittedQueued && entry.Status == protocol.RunQueued, terminalStatus(entry.Status)
 		switch {
+		case settled:
+			// checkEntryStatus says what is wrong with a terminal entry. It
+			// describes neither a reservation nor a started run, so it takes
+			// no queue position and claims none, and a second complaint here
+			// would only restate the first.
 		case reservation:
 			queuePosition++
 			if entry.QueuePosition == nil || *entry.QueuePosition != queuePosition {
@@ -185,7 +209,7 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		case entry.QueuePosition != nil:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/queue_position", "a started run holds no queue position", "absent", fmt.Sprintf("%d", *entry.QueuePosition), string(entry.RunID))
 		}
-		if !reservation {
+		if !reservation && !settled {
 			listedStarted = r.id
 		}
 		s.checkEntryStatus(i, line, e, pointer, entry, r)
@@ -198,20 +222,14 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		}
 	}
 	// active_run_id keeps naming the started run, or is absent when only
-	// reservations remain.
-	started := protocol.RunID("")
-	for _, r := range required {
-		if r.started || !r.admittedQueued {
-			started = r.id
-		}
-	}
-	if started == "" {
-		started = listedStarted
-	}
+	// reservations remain — both read off the entries this snapshot carries,
+	// at the positions those entries state, so the two fields cannot disagree
+	// about the same run.
+	started := listedStarted
 	switch {
 	case started != "" && p.ActiveRunID != started:
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_run_id", "active_run_id must name the started run of the session", string(started), string(p.ActiveRunID), string(started))
-	case started == "" && len(required) > 0 && p.ActiveRunID != "":
+	case started == "" && len(p.ActiveRuns) > 0 && p.ActiveRunID != "":
 		// Only reservations remain, and a reservation is not a started run:
 		// the field names one or it names none. A client reading it as the
 		// run to follow would follow a run that has published nothing.
@@ -237,9 +255,17 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 // diagnosed. A promotion happens inside the endpoint and its run.started may
 // drain after the snapshot, so an accurate entry can lead the trace, which is
 // the race the capture positions exist to allow.
-func (s *state) checkEntryStatus(i, line int, e protocol.Envelope, pointer string, entry protocol.ActiveRun, r *runState) {
-	switch entry.Status {
+// terminalStatus reports a run status that says the run is over.
+func terminalStatus(status protocol.RunStatus) bool {
+	switch status {
 	case protocol.RunCompleted, protocol.RunFailed, protocol.RunCancelled:
+		return true
+	}
+	return false
+}
+
+func (s *state) checkEntryStatus(i, line int, e protocol.Envelope, pointer string, entry protocol.ActiveRun, r *runState) {
+	if terminalStatus(entry.Status) {
 		s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/status", "active_runs lists a run with a terminal status; a settled run is dropped and named in as_of.settled", "a nonterminal status", string(entry.Status), string(r.id))
 		return
 	}
@@ -273,8 +299,14 @@ func describeQueuePosition(position *int) string {
 // endpoint has seen is by construction already in the trace.
 func (s *state) checkEntryAnchor(i, line int, e protocol.Envelope, pointer string, session protocol.SessionID, entry protocol.ActiveRun, r *runState) {
 	for _, id := range entry.AdmittedSubmitRequests {
-		if !s.namesSubmitRequest(id, session, r.id) {
+		switch s.namesSubmitRequest(id, session, r.id) {
+		case admissionWrong:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/admitted_submit_requests", "entry anchor names an envelope that is not a submit request the trace carries for this run", "a submit request on "+string(r.id), string(id), string(r.id))
+		case admissionPending:
+			// The request is on the session but unanswered, so it cannot
+			// contradict the run it is claimed for yet. It can later: the
+			// response may refuse it, or admit it to a different run.
+			s.deferred = append(s.deferred, &deferredStateClaim{kind: claimAdmitted, session: session, run: r.id, request: id, pointer: pointer + "/admitted_submit_requests", index: i, line: line, envelope: e})
 		}
 	}
 }
@@ -352,24 +384,40 @@ func (s *state) recordSettledClaims(i, line int, e protocol.Envelope, p protocol
 	}
 }
 
-// namesSubmitRequest reports whether an envelope id names a submit request the
+// The three answers namesSubmitRequest can give about an anchor.
+const (
+	// admissionGood: the trace carries the request and the admission claimed
+	// for it.
+	admissionGood = iota
+	// admissionWrong: the trace does not carry it as a submit request for this
+	// session, or carries it admitted somewhere else, or refused.
+	admissionWrong
+	// admissionPending: the request is on the session but its response has not
+	// arrived, so the claim is about something the trace has not reached.
+	admissionPending
+)
+
+// namesSubmitRequest judges whether an envelope id names a submit request the
 // trace carries for the session, and — when a run is named — for that run.
-func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.SessionID, run protocol.RunID) bool {
+func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.SessionID, run protocol.RunID) int {
 	req := s.requests[id]
 	if req == nil || req.typ != protocol.TypeSessionMessageSubmitRequest || req.session != session {
-		return false
-	}
-	if run == "" {
-		return true
+		return admissionWrong
 	}
 	for _, candidate := range s.runs {
 		if candidate.submitRequest == id {
-			return candidate.id == run
+			if run == "" || candidate.id == run {
+				return admissionGood
+			}
+			return admissionWrong
 		}
 	}
-	// The request is on the session but has not been answered yet, so it
-	// cannot contradict the run it is claimed for.
-	return true
+	if req.responded {
+		// The request was answered and produced no run, so the endpoint
+		// refused it and there was never an admission to claim.
+		return admissionWrong
+	}
+	return admissionPending
 }
 
 // checkCaptureModel judges the session default a snapshot reports against the
