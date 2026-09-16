@@ -853,3 +853,87 @@ func TestOpenRefusalsAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestSubscriptionsAreBounded pins the ceiling on interest. A pump charges no
+// ops slot by design, and the events op releases the slot it held the moment
+// it acknowledges, so without a bound of its own a host looping on events
+// against an idle session accumulates pumps without limit — each one a
+// goroutine, a hub subscriber queue, and a share of every envelope the hub
+// fans out.
+//
+// The refusal is the one an op over the in-flight bound already gets, so a
+// host needs no new vocabulary to handle it, and ordinary ops keep working
+// behind a frontend whose subscriptions are full.
+func TestSubscriptionsAreBounded(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "bounded")
+	f := startFrontend(t, hub, Options{MaxSubscriptions: 2})
+
+	for id := int64(1); id <= 2; id++ {
+		f.send(fmt.Sprintf(`{"id":%d,"op":"events","session_id":"bounded"}`, id))
+		if response := f.expectResponse(id); !response.OK {
+			t.Fatalf("subscription %d was refused below the bound: %+v", id, response.Error)
+		}
+	}
+	f.send(`{"id":3,"op":"events","session_id":"bounded"}`)
+	refused := f.expectResponse(3)
+	if refused.OK {
+		t.Fatal("a third subscription was admitted past the bound of two")
+	}
+	if refused.Error.Code != "busy" {
+		t.Fatalf("code %q, want busy: %s", refused.Error.Code, refused.Error.Message)
+	}
+	if !strings.Contains(refused.Error.Message, "send this request again") {
+		t.Fatalf("the refusal does not say it may be retried: %s", refused.Error.Message)
+	}
+	// Interest being full is not work being full: ordinary ops still run.
+	f.send(`{"id":4,"op":"state","session_id":"bounded"}`)
+	if response := f.expectResponse(4); !response.OK {
+		t.Fatalf("an ordinary op was refused behind full subscriptions: %+v", response.Error)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestATypedRefusalShedsItsDetailsRatherThanItsCode is the response-side form
+// of the rule every subscription ending already follows: the answer must be
+// deliverable. A refusal naming a tool source repeats a caller-supplied id in
+// its details, and an id long enough to overflow the line turned a typed
+// refusal into response_too_large — discarding the actionable code for a
+// request the frame limit had accepted.
+//
+// The details are the largest thing on the line and the least load-bearing:
+// the caller already knows the id it sent. So they are shed first, and the
+// code survives.
+func TestATypedRefusalShedsItsDetailsRatherThanItsCode(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	id := strings.Repeat("d", 200)
+	request := requestEnvelope(t, "r", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
+		SessionID:   "shed",
+		ToolSources: []protocol.ToolSourceAttachment{{ID: id, Kind: protocol.ToolSourceProcess, Command: "/bin/sh"}},
+	}, "", "")
+	line := fmt.Sprintf(`{"id":1,"op":"open","adapter":"memory","request":%s}`, request)
+	// The limit is sized from the request, which is the window the finding
+	// names: the frame limit accepted the request, so it must carry an answer
+	// to it. The full refusal cannot fit, because it repeats the id twice —
+	// once in the message and once in the details — where the request carries
+	// it once.
+	limit := len(line) + 16
+	f := startFrontend(t, hub, Options{FrameLimit: limit})
+	f.send(line)
+	response := f.expectResponse(1)
+	if response.OK {
+		t.Fatal("an open naming a wire-supplied command succeeded")
+	}
+	if response.Error.Code != "unsupported_feature" {
+		t.Fatalf("code %q, want unsupported_feature — the typed refusal was shed instead of its details: %s",
+			response.Error.Code, response.Error.Message)
+	}
+	if len(response.Error.Details) != 0 {
+		t.Fatalf("the reduced refusal kept details that did not fit: %v", response.Error.Details)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
