@@ -1114,6 +1114,59 @@ func TestActiveRunEntryFollowsTheRunStatus(t *testing.T) {
 	}
 }
 
+// A snapshot handed to a caller owns its own backing array. active_runs is a
+// slice of entries carrying pointers and slices of their own, so a by-value
+// copy shares all of it with the session: a caller editing what it was given
+// would reach into the adapter's own projection. The recovery snapshot is
+// handed out on the same terms as State's.
+func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
+	session := newTestSession(t, 64)
+	run, stream := submit(t, session)
+	drainAvailable(stream)
+
+	recovery, _, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: run, AfterSequence: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, given := range map[string]protocol.SessionState{"State": snapshot, "Resume": recovery.State} {
+		if len(given.ActiveRuns) != 1 {
+			t.Fatalf("%s: active_runs = %+v", name, given.ActiveRuns)
+		}
+		given.ActiveRuns[0].RunID = "tampered"
+		given.ActiveRuns[0].Status = protocol.RunCompleted
+		if sequence := given.ActiveRuns[0].AsOfSequence; sequence != nil {
+			*sequence = 99
+		}
+		for i := range given.ActiveRuns[0].PendingInteractions {
+			given.ActiveRuns[0].PendingInteractions[i] = "tampered"
+		}
+	}
+
+	after, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.ActiveRuns) != 1 || after.ActiveRuns[0].RunID != run {
+		t.Fatalf("the session's own runs were edited through a snapshot: %+v", after.ActiveRuns)
+	}
+	entry := after.ActiveRuns[0]
+	if entry.Status == protocol.RunCompleted {
+		t.Fatalf("run status was edited through a snapshot: %+v", entry)
+	}
+	if entry.AsOfSequence == nil || *entry.AsOfSequence == 99 {
+		t.Fatalf("capture position was edited through a snapshot: %+v", entry)
+	}
+	for _, id := range entry.PendingInteractions {
+		if id == "tampered" {
+			t.Fatalf("pending interactions were edited through a snapshot: %+v", entry)
+		}
+	}
+}
+
 func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.EnvelopeType) protocol.Envelope {
 	t.Helper()
 	for _, envelope := range envelopes {

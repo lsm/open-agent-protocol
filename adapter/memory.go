@@ -628,7 +628,11 @@ func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error
 }
 
 // cloneStateLocked detaches the published snapshot from the session's own
-// slices, so a consumer holding one cannot see it change underneath.
+// slices, so a consumer holding one cannot see it change underneath — and
+// cannot change it. Every path that hands a SessionState to a caller goes
+// through here, State and the recovery snapshot alike: a by-value copy shares
+// active_runs' backing array and its pointer fields, so a caller editing what
+// it was given would reach into the session's own state.
 func (s *memorySession) cloneStateLocked() protocol.SessionState {
 	state := s.state
 	state.ActiveRuns = append([]protocol.ActiveRun(nil), s.state.ActiveRuns...)
@@ -642,7 +646,12 @@ func (s *memorySession) cloneStateLocked() protocol.SessionState {
 			position := *entry.QueuePosition
 			state.ActiveRuns[i].QueuePosition = &position
 		}
-		state.ActiveRuns[i].PendingInteractions = append([]protocol.InteractionID(nil), entry.PendingInteractions...)
+		if entry.PendingInteractions != nil {
+			state.ActiveRuns[i].PendingInteractions = append([]protocol.InteractionID(nil), entry.PendingInteractions...)
+		}
+		if entry.AdmittedSubmitRequests != nil {
+			state.ActiveRuns[i].AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), entry.AdmittedSubmitRequests...)
+		}
 	}
 	return state
 }
@@ -870,7 +879,7 @@ func (s *memorySession) Resume(ctx context.Context, request ResumeRequest) (Reco
 		s.mu.Unlock()
 		return Recovery{}, nil, ErrRunNotFound
 	}
-	state := s.state
+	state := s.cloneStateLocked()
 	latest := run.nextSequence - 1
 	if request.AfterSequence > latest {
 		s.mu.Unlock()

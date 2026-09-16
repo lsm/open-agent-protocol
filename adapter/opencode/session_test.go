@@ -1109,6 +1109,66 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	}
 }
 
+// A snapshot handed to a caller owns its own backing array. active_runs is a
+// slice of entries carrying pointers, so a by-value copy of the session state
+// shares both with the session: a caller editing what it was given would reach
+// into the reducer's own projection, and the recovery snapshot is handed out
+// the same way State's is.
+func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	if started := adaptertest.Next(t, firstStream, 2*time.Second); started.Type != protocol.TypeRunStarted {
+		t.Fatalf("first envelope = %s", started.Type)
+	}
+	queued, _, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recovery, _, err := session.Resume(context.Background(), base.ResumeRequest{RunID: first.RunID, AfterSequence: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, given := range map[string]protocol.SessionState{"State": snapshot, "Resume": recovery.State} {
+		if len(given.ActiveRuns) != 2 {
+			t.Fatalf("%s: active_runs = %+v", name, given.ActiveRuns)
+		}
+		given.ActiveRuns[0].RunID = "tampered"
+		given.ActiveRuns[1].Status = protocol.RunCompleted
+		if position := given.ActiveRuns[1].QueuePosition; position != nil {
+			*position = 99
+		}
+		if sequence := given.ActiveRuns[0].AsOfSequence; sequence != nil {
+			*sequence = 99
+		}
+	}
+
+	after, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.ActiveRuns) != 2 || after.ActiveRuns[0].RunID != first.RunID || after.ActiveRuns[1].RunID != queued.RunID {
+		t.Fatalf("the session's own runs were edited through a snapshot: %+v", after.ActiveRuns)
+	}
+	if after.ActiveRuns[1].Status != protocol.RunQueued {
+		t.Fatalf("reservation status = %s, edited through a snapshot", after.ActiveRuns[1].Status)
+	}
+	if position := after.ActiveRuns[1].QueuePosition; position == nil || *position != 1 {
+		t.Fatalf("queue position = %s, edited through a snapshot", describeSequence(nil))
+	}
+	if sequence := after.ActiveRuns[0].AsOfSequence; sequence == nil || *sequence != 1 {
+		t.Fatalf("capture position = %s, edited through a snapshot", describeSequence(sequence))
+	}
+}
+
 // An explicit queue on an idle session is a reservation, and the session state
 // has to say so until the server's prompted event begins the turn. Naming it in
 // active_run_id and listing it without a queue position would describe a

@@ -971,18 +971,29 @@ func (s *session) State(ctx context.Context) (protocol.SessionState, error) {
 }
 
 // cloneStateLocked detaches the published snapshot from the session's own
-// slices, so a consumer holding one cannot see it change underneath.
+// slices, so a consumer holding one cannot see it change underneath — and
+// cannot change it. Every path that hands a SessionState to a caller goes
+// through here, State and the recovery snapshot alike: a by-value copy shares
+// active_runs' backing array and its pointer fields, so a caller editing what
+// it was given would reach into the session's own state.
 func (s *session) cloneStateLocked() protocol.SessionState {
 	state := s.state
 	state.ActiveRuns = append([]protocol.ActiveRun(nil), s.state.ActiveRuns...)
 	for i := range state.ActiveRuns {
-		if sequence := state.ActiveRuns[i].AsOfSequence; sequence != nil {
-			value := *sequence
+		entry := state.ActiveRuns[i]
+		if entry.AsOfSequence != nil {
+			value := *entry.AsOfSequence
 			state.ActiveRuns[i].AsOfSequence = &value
 		}
-		if position := state.ActiveRuns[i].QueuePosition; position != nil {
-			value := *position
+		if entry.QueuePosition != nil {
+			value := *entry.QueuePosition
 			state.ActiveRuns[i].QueuePosition = &value
+		}
+		if entry.PendingInteractions != nil {
+			state.ActiveRuns[i].PendingInteractions = append([]protocol.InteractionID(nil), entry.PendingInteractions...)
+		}
+		if entry.AdmittedSubmitRequests != nil {
+			state.ActiveRuns[i].AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), entry.AdmittedSubmitRequests...)
 		}
 	}
 	return state
@@ -1093,7 +1104,7 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 			suffix = append(suffix, event)
 		}
 	}
-	recovery := base.Recovery{State: s.state, RunID: run.id, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
+	recovery := base.Recovery{State: s.cloneStateLocked(), RunID: run.id, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
 	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
 	if request.AfterSequence < latest && (oldest == 0 || request.AfterSequence+1 < oldest) {
 		recovery.ReplayGap = &base.ReplayGap{RequestedAfter: request.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
