@@ -143,7 +143,12 @@ two members beside `mode`:
 
 `run.model_selection`'s `mode` discloses how a selection is applied: `per_run`
 leaves the session default untouched, `session_mutation` changes it and the
-session state afterwards reports the native truth.
+session state afterwards reports the native truth. It is required wherever the
+key is advertised, under the same argument and the same diagnostic: both rules
+key on the mode, so a descriptor without one is a descriptor under which a
+session default may move, or fail to, with nothing to say so. A
+`run.model_selection` advertised with no `mode`, or with `restart`, which this
+phase gives no rules, is `undisclosed_selection_modes` too.
 
 ### A per-run selection does not move the session default
 

@@ -67,9 +67,12 @@ const (
 	// CodeDuplicateToolName: the catalog a tool_choice is judged against
 	// lists two tools with one name, so no entry in it can be unambiguous.
 	//
-	// CodeUndisclosedSelectionModes: run.tool_selection is advertised without
-	// saying which tool_choice modes the endpoint enforces, which would let
-	// the key promise nothing.
+	// CodeUndisclosedSelectionModes: a selection capability is advertised
+	// without the disclosure that makes it checkable — run.tool_selection
+	// without the tool_choice modes the endpoint enforces, or
+	// run.model_selection without how a selection is applied. Either would
+	// let the key promise nothing: every rule that binds the capability keys
+	// on the disclosure.
 	CodeUnappliedControl          = "unapplied_control"
 	CodeUnsatisfiableControl      = "unsatisfiable_control"
 	CodeDegradedWithoutOptin      = "degraded_without_optin"

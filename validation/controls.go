@@ -667,12 +667,26 @@ func canonical(value any) any {
 // with no enforceable modes promises nothing, since every policy could be
 // refused as unsatisfiable and pass.
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	support, ok := effectiveSupport(p, protocol.FeatureToolSelection)
+	if support, ok := effectiveSupport(p, protocol.FeatureToolSelection); ok && affirmative(support.Level) && len(support.Modes) == 0 {
+		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/modes", "run.tool_selection is advertised without disclosing the tool_choice modes the endpoint enforces", "at least one enforced mode", "none")
+	}
+	// The same rule for how a model selection is applied. Without it the key
+	// promises nothing a validator can check: the per_run rule and the
+	// session_mutation rule both key on the mode, so with neither in force a
+	// session default could move under a per-run selection, or stay put under
+	// a mutation, and nothing would say so. The defect is the descriptor's, so
+	// it is diagnosed where it is published rather than on every admission the
+	// descriptor governs — one fault, one diagnosis.
+	//
+	// `restart` is a defined mode this phase gives no rules, so advertising it
+	// here leaves the same hole; it discloses something checkable when the
+	// unit that rules on it graduates.
+	support, ok := effectiveSupport(p, protocol.FeatureModelSelection)
 	if !ok || !affirmative(support.Level) {
 		return
 	}
-	if len(support.Modes) == 0 {
-		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/modes", "run.tool_selection is advertised without disclosing the tool_choice modes the endpoint enforces", "at least one enforced mode", "none")
+	if support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
+		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.model_selection/mode", "run.model_selection is advertised without disclosing how a selection is applied", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
 	}
 }
 

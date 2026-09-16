@@ -806,7 +806,12 @@ No new envelope types. Changes to
   `disallowed` must name a tool in the advertised catalog (an unknown entry
   is unsatisfiable, not ignored, so a misspelled `disallowed` entry fails
   closed instead of silently blocking nothing), `named` must name a tool
-  in the filtered set, and `required` needs a non-empty filtered set;
+  in the filtered set, and `required` needs a non-empty filtered set. The
+  filter is applied by presence: an `allowed` the caller sent empty permits
+  no tool at all, so `auto` over it calls nothing and `required` over it is
+  unsatisfiable. Reading an empty list as an absent one would turn the most
+  restrictive allowlist expressible into the most permissive, handing the
+  whole catalog to a caller that allowed none of it;
   otherwise the policy is unsatisfiable and is rejected before admission
   (`unsupported_feature`, `details.reason: "unsatisfiable"`), never
   resolved by choosing one member over another. Every `unsupported_feature`
@@ -943,7 +948,16 @@ No new envelope types. Changes to
   applied: `per_run` (native per-run parameter), `session_mutation` (a
   serialized native config change applied immediately before the run it
   was requested for starts, which changes the session default), or
-  `restart` (not offered in this phase).
+  `restart` (not offered in this phase). The disclosure is required, not
+  optional, wherever the key is advertised above `unavailable`: the
+  `per_run` rule and the `session_mutation` rule below both key on it, so a
+  descriptor that omits it, or names a mode this phase gives no rules, is
+  one under which a session default may move or stay put with nothing to
+  diagnose either way. Such a descriptor is `undisclosed_selection_modes`
+  on the `capabilities.response`, the same diagnostic and the same argument
+  as `run.tool_selection` advertised with no `modes`. It is the
+  descriptor's defect, so it is diagnosed where the descriptor is published
+  rather than on every admission that descriptor governs.
 - Typed error codes on `error.response`: `unsupported_feature` with
   `details.feature` naming the key and `details.reason` distinguishing the
   two conditions it covers: `unadvertised` (control present, capability
@@ -1465,7 +1479,14 @@ no diagnostic; the same policy refused with `unsupported_feature`,
 under the right code and reason with `details.feature` absent, and naming
 another capability), `controls-tool-choice-empty-filters`
 (`unsatisfiable_control` on the admission; `allowed` and `disallowed` both
-present as empty lists),
+present as empty lists), `controls-tool-choice-empty-allowlist-required`
+(`unsatisfiable_control` on the admission; `required` over an `allowed`
+the caller sent empty), `controls-tool-choice-empty-allowlist-call`
+(`unapplied_control`; `auto` over the same empty `allowed`, then a tool
+call), `controls-model-mode-missing` and `controls-model-mode-unknown`
+(`undisclosed_selection_modes` on the `capabilities.response`;
+`run.model_selection` advertised with no `mode`, and with one this phase
+gives no rules),
 `controls-instructions-refused` (`unsatisfiable_control` on the
 `error.response`; `instructions` refused on an endpoint advertising
 `run.instructions` — the control has no unsatisfiability condition, so

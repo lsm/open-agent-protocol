@@ -432,3 +432,87 @@ func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 		t.Fatalf("want %s when both filters are present: %+v", CodeUnsatisfiableControl, admitted.Diagnostics)
 	}
 }
+
+// An `allowed` the caller sent empty permits no tool at all. Length cannot say
+// that — an empty list and an absent one are both zero-length — so reading the
+// filter by length turns the most restrictive allowlist expressible into the
+// most permissive one: `required` would be admitted against the whole catalog
+// and `auto` would permit every tool in it, which is the opposite of what the
+// caller wrote. Presence is what the filter is defined by, here as in the
+// shape rules.
+func TestEmptyAllowlistPermitsNothing(t *testing.T) {
+	catalog := []string{"scripted_tool", "other_tool"}
+	empty := protocol.ToolChoice{Mode: protocol.ToolChoiceAuto, Allowed: []string{}}
+	if filtered := empty.Filter(catalog); len(filtered) != 0 {
+		t.Fatalf("an empty allowlist filtered to %v, want nothing", filtered)
+	}
+	for _, name := range catalog {
+		if empty.Permits(name, catalog, true) {
+			t.Fatalf("an empty allowlist permitted %q", name)
+		}
+	}
+	// An absent allowlist is not an empty one: it filters nothing.
+	absent := protocol.ToolChoice{Mode: protocol.ToolChoiceAuto}
+	if filtered := absent.Filter(catalog); len(filtered) != len(catalog) {
+		t.Fatalf("an absent allowlist filtered to %v, want the catalog", filtered)
+	}
+	if !absent.Permits("scripted_tool", catalog, true) {
+		t.Fatalf("an absent allowlist refused a catalogued tool")
+	}
+	// `required` over an empty filtered set can never be honoured, so it is
+	// unsatisfiable rather than admitted and run against the whole catalog.
+	required := protocol.ToolChoice{Mode: protocol.ToolChoiceRequired, Allowed: []string{}}
+	defect := required.Unsatisfiable(catalog, true)
+	if defect == nil || defect.Pointer != "/payload/tool_choice/mode" {
+		t.Fatalf("required over an empty allowlist: defect %+v, want the empty filtered set", defect)
+	}
+	// `named` against an empty allowlist names a tool its own list excludes.
+	named := protocol.ToolChoice{Mode: protocol.ToolChoiceNamed, Name: "scripted_tool", Allowed: []string{}}
+	if defect := named.Unsatisfiable(catalog, true); defect == nil {
+		t.Fatal("named over an empty allowlist was satisfiable")
+	}
+	// `auto` over an empty allowlist is empty, not unsatisfiable: the run is
+	// admitted and simply calls nothing.
+	if defect := empty.Unsatisfiable(catalog, true); defect != nil {
+		t.Fatalf("auto over an empty allowlist was refused: %+v", defect)
+	}
+}
+
+// A descriptor advertising run.model_selection without saying how a selection
+// is applied leaves the key promising nothing a validator can check: the
+// per_run rule and the session_mutation rule both key on the mode, so with
+// neither in force a session default could move under a per-run selection, or
+// stay put under a mutation, with nothing to diagnose. Disclosure is
+// machine-readable for this key as it is for the tool_choice modes beside it.
+func TestModelSelectionMustDiscloseItsApplicationMode(t *testing.T) {
+	v := MustNew()
+	for name, support := range map[string]string{
+		"missing":       `{"level":"emulated"}`,
+		"empty":         `{"level":"emulated","mode":""}`,
+		"unknown":       `{"level":"emulated","mode":"whenever"}`,
+		"not yet ruled": `{"level":"emulated","mode":"restart"}`,
+		"degraded":      `{"level":"degraded","mode":"","reason":"attribution is unconfirmed"}`,
+	} {
+		features := `{"run.model_selection":` + support + `}`
+		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "mode-"+name)
+		if !result.HasCode(CodeUndisclosedSelectionModes) {
+			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionModes, result.Diagnostics)
+		}
+	}
+	// Both modes this phase defines are disclosure enough, and a key the
+	// endpoint does not advertise owes no mode at all.
+	for name, features := range map[string]string{
+		"per_run":          `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`,
+		"session_mutation": `{"run.model_selection":{"level":"native","mode":"session_mutation"}}`,
+	} {
+		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "mode-"+name)
+		if !result.Valid() {
+			t.Fatalf("%s: a disclosed mode was rejected: %+v", name, result.Diagnostics)
+		}
+	}
+	unadvertised := `{"run.model_selection":{"level":"unavailable","reason":"no per-run surface"}}`
+	refusal := refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.model_selection", "reason": "unadvertised"})
+	if result := v.ValidateBytes(controlsTrace(unadvertised, `,"model_id":"m1"`, refusal), "mode-unavailable"); !result.Valid() {
+		t.Fatalf("an unavailable key was held to a mode: %+v", result.Diagnostics)
+	}
+}
