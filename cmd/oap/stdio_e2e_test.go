@@ -88,6 +88,12 @@ type child struct {
 	lines   chan string
 	readErr chan error
 	stderr  *strings.Builder
+	// held keeps responses that arrived before the test asked for them.
+	// Pipelined ops run on their own workers, so the answers come back in
+	// whatever order they finish and the id — not the position — correlates
+	// them. A reader that insisted on position would be asserting something
+	// the frontend explicitly does not promise.
+	held map[int64]responseShape
 }
 
 func spawn(t *testing.T, args ...string) *child {
@@ -106,7 +112,7 @@ func spawn(t *testing.T, args ...string) *child {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	c := &child{t: t, cmd: cmd, stdin: stdin, lines: make(chan string, 64), readErr: make(chan error, 1), stderr: stderr}
+	c := &child{t: t, cmd: cmd, stdin: stdin, lines: make(chan string, 64), readErr: make(chan error, 1), stderr: stderr, held: map[int64]responseShape{}}
 	// Stdout is drained continuously. A host that stops reading parks the
 	// daemon's writer inside a pipe write, which would make every later
 	// assertion a timeout rather than a result.
@@ -151,6 +157,10 @@ func (c *child) next() (string, bool) {
 // every signal line that precedes it to onSignal.
 func (c *child) response(id int64, onSignal func(line string)) responseShape {
 	c.t.Helper()
+	if shape, ok := c.held[id]; ok {
+		delete(c.held, id)
+		return c.require(id, shape)
+	}
 	for {
 		line, ok := c.next()
 		if !ok {
@@ -167,13 +177,19 @@ func (c *child) response(id int64, onSignal func(line string)) responseShape {
 			continue
 		}
 		if shape.ID != id {
-			c.t.Fatalf("response id %d, want %d: %s", shape.ID, id, line)
+			c.held[shape.ID] = shape
+			continue
 		}
-		if !shape.OK {
-			c.t.Fatalf("op %d failed: %s: %s", id, shape.Error.Code, shape.Error.Message)
-		}
-		return shape
+		return c.require(id, shape)
 	}
+}
+
+func (c *child) require(id int64, shape responseShape) responseShape {
+	c.t.Helper()
+	if !shape.OK {
+		c.t.Fatalf("op %d failed: %s: %s", id, shape.Error.Code, shape.Error.Message)
+	}
+	return shape
 }
 
 // responseShape reads either line kind: a response carries id and ok, a

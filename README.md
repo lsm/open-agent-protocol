@@ -390,10 +390,16 @@ written before the first envelope.
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available`/`latest_available` bound what is |
 | `"event":"oap-session-closed"` | the session closed under the subscription |
 | `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it |
+| `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
 
-A healthy stream ends at the run's terminal envelope — `run.completed`,
-`run.failed` or `run.cancelled` — with no further line, exactly as the SSE
-response simply ends after it.
+Every ending a host could not otherwise observe gets one of these, because
+this framing has no end to observe: the SSE response body stops and the client
+sees a closed connection, while the pipe here stays open and carries every
+other subscription. Two endings need no line. A healthy stream ends at the
+run's terminal envelope — `run.completed`, `run.failed` or `run.cancelled` —
+which is delivered as an ordinary envelope line and is the marker, exactly as
+the SSE response simply ends after it; and the daemon's own shutdown ends the
+session the host is watching, which the host observes directly.
 
 Ops are pipelined and each runs on its own worker, so responses to overlapping
 requests may arrive in any order and the `id`, not the position, is what
