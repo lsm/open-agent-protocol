@@ -1067,3 +1067,44 @@ func deltaText(t *testing.T, envelope protocol.Envelope) string {
 	}
 	return payload.Part.Text
 }
+
+// Between the started run's terminal and the server's promotion of the
+// reservation, the reservation is the session's only nonterminal run and the
+// started slot is empty. A close that looked only at that slot would succeed
+// and take the reservation's stream down with it, dropping an accepted
+// submission without publishing anything for it. It is admitted work, so it
+// refuses the close exactly as a started run does.
+func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 64)
+	first, firstStream := submitTest(t, session)
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+
+	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first run settles and nothing has promoted the reservation yet.
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
+	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("first run = %v", types(firstEvents))
+	}
+
+	if err := session.Close(context.Background()); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("close with a live reservation = %v, want ErrRunActive", err)
+	}
+	// Cancelling it settles it pre-start, and the close then succeeds.
+	if _, err := session.Cancel(context.Background(), queued.RunID); err != nil {
+		t.Fatal(err)
+	}
+	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	if len(queuedEvents) != 1 || queuedEvents[0].Type != protocol.TypeRunCancelled {
+		t.Fatalf("cancelled reservation = %v", types(queuedEvents))
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("close after the reservation settled: %v", err)
+	}
+}

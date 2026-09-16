@@ -1054,7 +1054,13 @@ func (s *session) Close(ctx context.Context) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.active != nil && !s.active.terminal {
+	if published(s.active) || published(s.reserved) {
+		// A reservation is admitted work that owes a terminal, and once the
+		// started run settles it is the session's only nonterminal run — the
+		// interval where the routing and the publication have parted company.
+		// Closing there would drop an accepted submission without publishing
+		// anything for it, so the close refuses exactly as it does for a
+		// started run, and the caller cancels the reservation first.
 		s.mu.Unlock()
 		return base.ErrRunActive
 	}

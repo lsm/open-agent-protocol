@@ -357,6 +357,9 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 // holds. active_runs lists every nonterminal run in admission order, which is
 // what a snapshot of a session with a reservation has to carry: active_run_id
 // alone cannot describe two.
+// live reports whether a run still owes a terminal.
+func live(run *memoryRun) bool { return run != nil && !run.terminal }
+
 func (s *memorySession) refreshStateLocked() {
 	var entries []protocol.ActiveRun
 	if s.active != nil && !s.active.terminal {
@@ -896,7 +899,12 @@ func (s *memorySession) Close(ctx context.Context) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.active != nil && !s.active.terminal {
+	if live(s.active) || live(s.reserved) {
+		// A reservation is admitted work that owes a terminal, so it refuses
+		// a close exactly as a started run does. This adapter promotes
+		// synchronously on the started run's terminal, so the reservation is
+		// never the only nonterminal run for long; the contract is the same
+		// either way, and a caller cancels it first.
 		s.mu.Unlock()
 		return ErrRunActive
 	}
