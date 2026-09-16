@@ -312,7 +312,12 @@ For the catalog (`action.tools.list`), an implementation:
 - attributes a call it emits with `source` to the source its own catalog
   records for that tool — the session's served catalog where it has served one,
   and otherwise the descriptor's, which is the published attribution until a
-  session-scoped list supersedes it.
+  session-scoped list supersedes it. A call that omits `source` for a tool one
+  of those catalogs attributes is `unattributed_call`: the member is optional
+  on the wire, but an endpoint advertising this key has the answer and is
+  publishing it everywhere except where a consumer needs it. A tool neither
+  catalog lists is one the endpoint has published no attribution for, and a
+  call for it may name none.
 
 For attachment at open (`action.tool_sources.attach`), an implementation:
 

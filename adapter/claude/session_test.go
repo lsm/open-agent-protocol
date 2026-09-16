@@ -1246,3 +1246,95 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 		})
 	}
 }
+
+// catalogFrame decodes one system/init frame from the wire shape, because the
+// frame's MCP server list is an anonymous struct a test cannot name.
+func catalogFrame(t *testing.T) *native.InitFrame {
+	t.Helper()
+	var frame native.InitFrame
+	if err := json.Unmarshal([]byte(`{"tools":["Bash","mcp__files__read_file"],"mcp_servers":[{"name":"files","status":"connected"}]}`), &frame); err != nil {
+		t.Fatal(err)
+	}
+	return &frame
+}
+
+// TestUnscopedCatalogPublishesNoSessionMCPServers is the Claude half of the
+// rule the reference adapter took first: a request naming no session asks for
+// the endpoint's own catalog, and this endpoint's is its built-in tools and
+// nothing else. Everything else it knows was learned from one session's
+// system/init frame — which tools that turn offered, which MCP servers that
+// operator configured — and answering an unscoped request with it would
+// present one caller's servers as endpoint-wide. Because such a response
+// carries no session, the validator's lifetime rule never runs over it, so
+// nothing downstream would catch the substitution either.
+func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
+	session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
+	session.projectCatalogLocked(catalogFrame(t))
+	request := protocol.ToolsListRequest{AllowDegradedFeatures: []string{protocol.FeatureToolsList}}
+	catalog, err := session.Tools(context.Background(), request)
+	if err != nil {
+		t.Fatalf("tools: %v", err)
+	}
+	if catalog.SessionID != "" {
+		t.Fatalf("an unscoped request was answered under session %q", catalog.SessionID)
+	}
+	for _, source := range catalog.Sources {
+		if strings.HasPrefix(source.ID, mcpSourcePrefix) {
+			t.Fatalf("the endpoint catalog publishes a session's MCP server: %+v", catalog.Sources)
+		}
+	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].ID != nativeToolSource {
+		t.Fatalf("endpoint catalog sources %+v", catalog.Sources)
+	}
+	if len(catalog.Tools) != 0 {
+		t.Fatalf("the endpoint catalog publishes %d of a session's tools", len(catalog.Tools))
+	}
+	// The same session asked in its own scope still answers with everything
+	// the turn taught it: the unscoped answer narrowed the question, not the
+	// session.
+	scoped, err := session.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList}})
+	if err != nil {
+		t.Fatalf("scoped tools: %v", err)
+	}
+	attributed := false
+	for _, tool := range scoped.Tools {
+		if tool.Name == "mcp__files__read_file" && tool.Source == mcpSourcePrefix+"files" {
+			attributed = true
+		}
+	}
+	if !attributed {
+		t.Fatalf("the session catalog lost its MCP attribution: %+v", scoped.Tools)
+	}
+}
+
+// TestCallCarriesTheCatalogSource is the other half of the same attribution.
+// This adapter advertises action.tools.list, so a consumer should be able to
+// relate an observed call to the catalog entry without parsing the tool name
+// again — which is what `source` exists for. The value is read out of the
+// projected catalog rather than derived a second time from the name, so the
+// call and the catalog cannot disagree.
+func TestCallCarriesTheCatalogSource(t *testing.T) {
+	session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
+	session.projectCatalogLocked(catalogFrame(t))
+	for _, testCase := range []struct{ tool, source string }{
+		{"mcp__files__read_file", mcpSourcePrefix + "files"},
+		{"Bash", nativeToolSource},
+		// A tool no published catalog lists is one the endpoint has said
+		// nothing about; inventing an attribution for it would be the guess
+		// the member exists to replace.
+		{"NotInTheCatalog", ""},
+	} {
+		t.Run(testCase.tool, func(t *testing.T) {
+			if got := session.catalogSourceLocked(testCase.tool); got != testCase.source {
+				t.Fatalf("catalog source for %q = %q, want %q", testCase.tool, got, testCase.source)
+			}
+		})
+	}
+
+	// Before the first turn there is no catalog at all, so there is nothing to
+	// attribute against and the adapter says so rather than guessing native.
+	fresh := &Session{state: protocol.SessionState{SessionID: "session"}}
+	if got := fresh.catalogSourceLocked("Bash"); got != "" {
+		t.Fatalf("a session with no catalog attributed a call to %q", got)
+	}
+}

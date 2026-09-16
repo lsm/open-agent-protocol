@@ -663,6 +663,35 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 	}
 }
 
+// checkCallAttributed judges a call that names no source at all.
+//
+// The member stays optional on the wire, and the rule is scoped to where the
+// obligation comes from rather than to the member's presence: an endpoint that
+// does not advertise action.tools.list publishes no catalog to attribute
+// against, and demanding an attribution from it would be demanding an
+// invention. An endpoint that does advertise one, and whose own published
+// catalog records where this tool comes from, has the answer already — and
+// omitting it leaves a consumer parsing the tool name, which is the inference
+// `source` exists to remove. That is why the check requires a mapping rather
+// than the capability alone: a tool no published catalog lists is one the
+// endpoint has said nothing about, and silence there is honest.
+func (s *state) checkCallAttributed(i, line int, e protocol.Envelope, p protocol.ActionCallPayload, track *sessionTrack) {
+	if !affirmative(s.features[protocol.FeatureToolsList]) {
+		return
+	}
+	listed, ok := "", false
+	if track != nil && track.toolCatalog != nil && track.toolCatalog.revision == s.currentCapability {
+		listed, ok = track.toolCatalog.tools[p.Name]
+	}
+	if !ok {
+		listed, ok = s.descriptorAttribution[p.Name]
+	}
+	if !ok || listed == "" {
+		return
+	}
+	s.addExpected(CodeUnattributedCall, i, line, e, "/payload/source", "a call names no source although the endpoint publishes a catalog that attributes the tool", listed, "none", p.Name)
+}
+
 // checkCallSource judges one requested call's attribution against the catalog.
 // A call carrying `source` must name the source the session's catalog records
 // for that tool, or a declared source when no catalog lists the tool at all;
@@ -684,10 +713,11 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
 	var p protocol.ActionCallPayload
 	_ = e.DecodePayload(&p)
+	track := s.sessions[p.SessionID]
 	if p.Source == "" {
+		s.checkCallAttributed(i, line, e, p, track)
 		return
 	}
-	track := s.sessions[p.SessionID]
 	if track != nil && track.toolCatalog != nil && track.toolCatalog.revision == s.currentCapability {
 		if listed, ok := track.toolCatalog.tools[p.Name]; ok {
 			if listed != p.Source {

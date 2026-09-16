@@ -18,10 +18,28 @@ import (
 
 const (
 	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "claude-code-2.1.263-oap-v2"
+	CapabilityRevision     = "claude-code-2.1.263-oap-v3"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
+
+// endpointSources is what this endpoint declares about its tool sources
+// without a session: it executes its own built-in tools, and that is a
+// standing fact rather than something a turn teaches it. The MCP servers a
+// session's operator configured are learned from that session's system/init
+// frame and belong to the session, so they are published through its catalog
+// and never here.
+//
+// Declaring it is what lets a call attributed natively resolve in a trace that
+// never lists tools. The catalog is advertised degraded and served only on
+// request, so a consumer may observe a whole run without asking for one; the
+// attribution on those calls has to resolve against something, and the
+// descriptor is the only thing published before the first list.
+func endpointSources() []protocol.ToolSourceDescriptor {
+	return []protocol.ToolSourceDescriptor{
+		{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"},
+	}
+}
 
 var ErrNativeProtocol = errors.New("claude adapter: invalid native protocol observation")
 
@@ -194,7 +212,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
 		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "claude-code.cli", Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "claude-code.cli", Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {

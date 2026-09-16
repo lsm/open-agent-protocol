@@ -103,10 +103,16 @@ type runState struct {
 }
 
 type toolState struct {
-	nativeID  string
-	id        protocol.ToolCallID
-	run       *runState
-	name      string
+	nativeID string
+	id       protocol.ToolCallID
+	run      *runState
+	name     string
+	// source is the tool source this session's published catalog records for
+	// this tool, captured once when the call is created. Capturing rather than
+	// re-deriving is what makes the call and the catalog agree by construction:
+	// a call's attribution may not move mid-lifecycle, and the catalog it was
+	// attributed against is the one that was current when the call began.
+	source    string
 	args      json.RawMessage
 	requested protocol.EnvelopeID
 	started   protocol.EnvelopeID
@@ -492,7 +498,21 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 		// none before the first.
 		return protocol.ToolsListResponse{}, &base.DegradedControlError{Feature: protocol.FeatureToolsList}
 	}
-	if !s.catalogKnown {
+	// A request naming no session asks for the endpoint's own catalog, and this
+	// endpoint has one thing to say at that scope: it executes its own built-in
+	// tools. Everything else it knows — which tools this turn offered, which MCP
+	// servers this session's operator configured — was learned from one
+	// session's `system/init` frame and belongs to that session. Answering with
+	// it would present one caller's MCP servers as endpoint-wide, and because
+	// such a response carries no session the validator's lifetime rule would
+	// never run over it.
+	//
+	// The same answer serves a scoped request before the first turn, for the
+	// same reason: the CLI publishes no init frame until it has been given
+	// input, so a session's catalog is genuinely unknown at open. `degraded` is
+	// the disclosure that makes the empty answer readable — the catalog is only
+	// as current as the last turn, and there has not been one.
+	if request.SessionID == "" || !s.catalogKnown {
 		return protocol.ToolsListResponse{
 			SessionID: request.SessionID,
 			Sources:   []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}},
@@ -713,7 +733,10 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 		return
 	}
 	args, _ := json.Marshal(input)
-	tool := &toolState{nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: name, args: args}
+	tool := &toolState{
+		nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run,
+		name: name, source: s.catalogSourceLocked(name), args: args,
+	}
 	s.tools[nativeID] = tool
 	payload := s.toolPayload(tool)
 	requested, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, payload, false, "")
@@ -774,7 +797,34 @@ func toolResultText(content json.RawMessage) string {
 }
 
 func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, ArgumentsJSON: cloneRaw(tool.args)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
+}
+
+// catalogSourceLocked reports the source this session's published catalog
+// records for one tool name, and "" when there is no catalog yet or it does
+// not list the tool.
+//
+// This adapter advertises action.tools.list, so a consumer should be able to
+// relate an observed call to the catalog entry without re-parsing the tool
+// name — which is the inference `source` exists to remove. The value is read
+// out of the projected catalog rather than derived again from the name: a
+// second derivation is a second chance to disagree with the catalog, and the
+// catalog is what a consumer resolves the id against.
+//
+// An empty answer is an honest one. Before the first `system/init` frame this
+// session has no catalog, and a tool the catalog does not list is one the
+// endpoint has published no attribution for; inventing `claude-code-native`
+// for either would be the guess the member exists to replace.
+func (s *Session) catalogSourceLocked(name string) string {
+	if !s.catalogKnown {
+		return ""
+	}
+	for _, tool := range s.catalog {
+		if tool.Name == name {
+			return tool.Source
+		}
+	}
+	return ""
 }
 
 // openGate surfaces one can_use_tool ask as an OAP permission interaction.

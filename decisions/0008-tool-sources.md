@@ -162,6 +162,20 @@ checked:
   declared source when no published catalog lists the tool at all
   (`unmatched_tool_source`).
 
+A call from a catalog-capable endpoint owes an attribution it can give. An
+endpoint that advertises `action.tools.list` and whose own published catalog
+records where a tool comes from has the answer already; a call that omits
+`source` there leaves a consumer parsing the tool name, which is the inference
+the member exists to remove, and is `unattributed_call`. The member stays
+optional on the wire, because an endpoint outside this unit publishes no
+catalog to attribute against and demanding an attribution from it would be
+demanding an invention. For the same reason the rule requires a published
+mapping rather than the capability alone: a tool no catalog lists is one the
+endpoint has said nothing about, and silence there is honest. The code is its
+own rather than `unmatched_tool_source`, because the two say different things
+to an implementer — one that the attribution resolves somewhere wrong, the
+other that an endpoint which could attribute did not.
+
 There are two published catalogs and they are consulted in order, because one
 supersedes the other. A session's own served catalog is the effective one where
 it has one under the active revision. Otherwise the descriptor's catalog
@@ -523,7 +537,7 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 59 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 60 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
@@ -537,7 +551,8 @@ member it stated, the lifetime catalog an attachment binds, a served catalog
 that attributes no source at all, the attachment-only member a published source
 may never carry — in a list and in a descriptor, top level and under a layer —
 a call's attribution against a session catalog and against the descriptor's own,
-its reassignment mid-lifecycle, a refresh that collides with an attachment,
+a call that names none where one of them attributes the tool, its reassignment
+mid-lifecycle, a refresh that collides with an attachment,
 an attach capability disclosing no session-open mode in both directions, one
 published under a layer alone, and the two schema-invalid disclosures no
 request can satisfy — `max_sources: 0` and a transport outside the source-kind
@@ -612,6 +627,26 @@ rediscovered from the code.
 - **Claude refuses a catalog request that does not opt in.** The key is
   advertised `degraded`, and serving one anyway would give the caller
   degraded behaviour it never asked for.
+- **Claude attributes its own calls from its own catalog, and declares its
+  native source in the descriptor.** The adapter advertises
+  `action.tools.list`, so a consumer should be able to relate an observed call
+  to a catalog entry without re-parsing `mcp__<server>__<tool>`. The source is
+  read out of the projected catalog rather than derived again from the name —
+  a second derivation is a second chance to disagree with the catalog — and it
+  is captured when the call is created, so a call's attribution cannot move
+  mid-lifecycle. A tool no catalog lists, and a call before the first
+  `system/init` frame, carry no source at all rather than a guessed one.
+  Because the catalog is `degraded` and served only on request, a consumer may
+  observe a whole run without asking for one, so the descriptor declares
+  `claude-code-native`: without it a natively attributed call would resolve
+  against nothing in such a trace. The MCP servers a session's operator
+  configured stay out of the descriptor, because they are that session's.
+- **Claude answers an unscoped catalog request with its endpoint-level
+  catalog.** Everything else it knows was learned from one session's
+  `system/init` frame, so answering with it would present one caller's MCP
+  servers as endpoint-wide — and because such a response carries no session,
+  the lifetime rule above would never run over it. This is the rule the
+  reference adapter took first, held here too.
 - **Claude serves an empty catalog before the first turn rather than
   refusing.** The CLI publishes no `system/init` frame until it has been
   given input, so a session's catalog is genuinely unknown at open. Refusing
@@ -636,7 +671,8 @@ rediscovered from the code.
   argument rather than as a capability refusal, because over the daemon the
   command comes from the operator's registry and is never empty, so only an
   embedder can produce one.
-- **Both native revisions are bumped** (`claude-code-2.1.263-oap-v2`,
+- **Both native revisions are bumped** (`claude-code-2.1.263-oap-v3`, which
+  also declares the endpoint's native source,
   `acp-v1.7.0-schema-v1.21.0-oap-v2`) and the reference adapter's with them
   (`reference-memory-v5`, superseding the `v3` Decision 0006 introduced),
   because a revision identifies exactly one descriptor and each of the three

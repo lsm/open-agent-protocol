@@ -106,11 +106,22 @@ const (
 	// names, and violating no limit the endpoint disclosed, was refused. The
 	// refusal is itself the evidence that a constraint exists which the caller
 	// was never told about.
+	//
+	// CodeUnattributedCall: an endpoint that advertises action.tools.list
+	// emitted a call naming no source for a tool its own published catalog
+	// attributes. `source` is optional on the wire for every endpoint, because
+	// one outside this unit has no catalog to attribute against — but an
+	// endpoint that publishes the mapping and then omits it on the call leaves a
+	// consumer parsing the tool name again, which is the inference the member
+	// exists to remove. It is distinct from unmatched_tool_source: that one says
+	// the attribution resolves somewhere wrong, this one that an endpoint which
+	// could attribute did not.
 	CodeUnmatchedToolSource      = "unmatched_tool_source"
 	CodeDuplicateToolSource      = "duplicate_tool_source"
 	CodeCatalogMismatch          = "catalog_mismatch"
 	CodeAttachmentFieldInCatalog = "attachment_field_in_catalog"
 	CodeUndisclosedAttachLimit   = "undisclosed_attach_limit"
+	CodeUnattributedCall         = "unattributed_call"
 	// The models unit. A catalog is a promise that its ids are selectable and
 	// that nothing else is, so each of these names one way the published
 	// catalog and the endpoint's own behaviour disagree.

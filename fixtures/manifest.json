@@ -3491,6 +3491,23 @@
       ]
     },
     {
+      "id": "call-omits-published-source",
+      "path": "semantic-invalid/call-omits-published-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unattributed_call"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "tools-call-source-reassigned",
       "path": "semantic-invalid/tools-call-source-reassigned.json",
       "kind": "semantic-invalid",
