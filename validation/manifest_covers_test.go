@@ -135,10 +135,12 @@ func TestManifestLoadInvalidKind(t *testing.T) {
 	if _, err := LoadManifest(writeManifest(t, []FixtureEntry{crossed})); err == nil || !strings.Contains(err.Error(), "unknown diagnostic code") {
 		t.Fatalf("diagnostic fixture accepted a load-error code: %v", err)
 	}
-	// Running one needs the pack loader this build does not carry.
+	// Running one goes through the pack loader: the entry's path names a pack
+	// directory, and an entry whose pack is not there is a broken fixture
+	// rather than a silently skipped one.
 	v := MustNew()
-	if _, err := v.ValidateManifest(writeManifest(t, []FixtureEntry{good})); err == nil || !strings.Contains(err.Error(), "no pack loader") {
-		t.Fatalf("ValidateManifest ran a load-invalid fixture without a loader: %v", err)
+	if _, err := v.ValidateManifest(writeManifest(t, []FixtureEntry{good})); err == nil || !strings.Contains(err.Error(), "pack-bad") {
+		t.Fatalf("ValidateManifest did not run the load-invalid fixture: %v", err)
 	}
 }
 

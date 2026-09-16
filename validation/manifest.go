@@ -2,6 +2,7 @@ package validation
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -25,6 +26,16 @@ type FixtureEntry struct {
 	Units      []string   `json:"units"`
 	Provenance []string   `json:"provenance"`
 	Covers     []Coverage `json:"covers,omitempty"`
+	// Mode is the validation mode the fixture is judged in, strict by
+	// default, so every entry written before the tolerance step keeps its
+	// meaning. Which vocabulary is in force is the entry's stated choice,
+	// never inferred from the trace.
+	Mode Mode `json:"mode,omitempty"`
+	// Packs are the extension packs loaded for this fixture, as paths
+	// relative to the manifest. For a load-invalid entry they are the packs
+	// loaded beside the one Path names, which is how a refusal that no single
+	// pack is at fault for — two ids that are not prefix-free — is stated.
+	Packs []string `json:"packs,omitempty"`
 }
 
 // Coverage declares which capability promise a fixture falsifies, so the
@@ -128,7 +139,7 @@ func diagnosticCodes() map[string]bool {
 		CodePendingToolAtTerminal, CodePendingInteractionAtTerminal,
 		CodeUnmatchedTool, CodeIllegalToolTransition, CodeDuplicateInteraction,
 		CodeUnmatchedInteraction, CodeWrongInteractionResponder,
-		CodeUnavailableCapability, CodeStaleCapabilityRevision,
+		CodeUnavailableCapability, CodeUnhonouredCapability, CodeStaleCapabilityRevision,
 		CodeCancelNotSettled, CodeUndeclaredReplayGap, CodeUnknownParticipant,
 		CodeSessionStateMismatch,
 	}
@@ -139,7 +150,29 @@ func diagnosticCodes() map[string]bool {
 	return result
 }
 
+// ManifestOptions scopes a manifest to the extension vocabulary in force.
+//
+// Packs are the packs loaded for the run: an `ext:<pack id>/<version>` unit
+// term is accepted exactly when one of them matches, so the unit list is
+// derived from the packs actually loaded rather than added to the hard-coded
+// map, and a stale or misspelled pack claim still fails closed. Owner is set
+// when the manifest is a pack's own: the two directions are kept apart
+// deliberately, because a pack that could contribute evidence toward a core
+// unit would widen a core claim.
+type ManifestOptions struct {
+	Packs []*Pack
+	Owner *Pack
+}
+
+// LoadManifest reads a core fixture manifest with no extension vocabulary in
+// force. It is what every existing caller gets.
 func LoadManifest(filename string) (FixtureManifest, error) {
+	return LoadManifestWith(filename, ManifestOptions{})
+}
+
+// LoadManifestWith reads a fixture manifest under the extension vocabulary the
+// options name.
+func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return FixtureManifest{}, err
@@ -155,7 +188,11 @@ func LoadManifest(filename string) (FixtureManifest, error) {
 	paths := map[string]bool{}
 	knownCodes := diagnosticCodes()
 	knownLoadErrors := loadErrorCodes()
-	knownUnits := map[string]bool{"core": true, "tools": true, "permissions": true, "user-input": true, "recovery": true, "capabilities": true}
+	knownUnits := map[string]bool{"core": true, "tools": true, "permissions": true, "user-input": true, "recovery": true, "capabilities": true, "extensions": true}
+	extensionUnits := map[string]bool{}
+	for _, pack := range opts.Packs {
+		extensionUnits[pack.Unit()] = true
+	}
 	// A unit that registers capability keys is known by that registration,
 	// and so is any unit a key's honour fixture is deferred to: one place to
 	// declare a graduated unit, not two that can disagree.
@@ -217,10 +254,42 @@ func LoadManifest(filename string) (FixtureManifest, error) {
 				return FixtureManifest{}, fmt.Errorf("fixture %q covers %q but is %s; coverage is asserted by semantic-invalid fixtures", e.ID, c.Capability, e.Kind)
 			}
 		}
+		if e.Mode != "" && e.Mode != ModeStrict && e.Mode != ModeTolerant {
+			return FixtureManifest{}, fmt.Errorf("fixture %q has unsupported validation mode %q", e.ID, e.Mode)
+		}
+		for _, pack := range e.Packs {
+			if filepath.IsAbs(pack) || filepath.Clean(pack) == ".." || strings.HasPrefix(filepath.Clean(pack), ".."+string(filepath.Separator)) {
+				return FixtureManifest{}, fmt.Errorf("fixture %q names a pack outside the fixture root: %q", e.ID, pack)
+			}
+		}
+		if opts.Owner != nil && len(e.Packs) > 0 {
+			return FixtureManifest{}, fmt.Errorf("fixture %q is a pack fixture and cannot load further packs", e.ID)
+		}
 		if len(e.Units) == 0 {
 			return FixtureManifest{}, fmt.Errorf("fixture %q has no conformance units", e.ID)
 		}
 		for _, unit := range e.Units {
+			if strings.HasPrefix(unit, extensionUnitPrefix) {
+				if !extensionUnits[unit] {
+					return FixtureManifest{}, &PackLoadError{Refusals: []PackRefusal{{
+						Code:    LoadExtClaimWithoutPack,
+						Pack:    ownerID(opts.Owner),
+						Message: fmt.Sprintf("fixture %q claims %q, and no pack of that id and version is loaded", e.ID, unit),
+					}}}
+				}
+				continue
+			}
+			if opts.Owner != nil {
+				// A pack's fixture may not claim a core unit: without that a
+				// pack could contribute evidence toward a core claim, which is
+				// the one thing "a pack can never widen a core claim" has to
+				// mean.
+				return FixtureManifest{}, &PackLoadError{Refusals: []PackRefusal{{
+					Code:    LoadPackFixtureClaimsCore,
+					Pack:    opts.Owner.ID(),
+					Message: fmt.Sprintf("fixture %q claims the core unit %q; a pack's corpus proves its own term only", e.ID, unit),
+				}}}
+			}
 			if !knownUnits[unit] {
 				return FixtureManifest{}, fmt.Errorf("fixture %q has unknown conformance unit %q", e.ID, unit)
 			}
@@ -239,10 +308,25 @@ func LoadManifest(filename string) (FixtureManifest, error) {
 		ids[e.ID] = true
 		paths[e.Path] = true
 	}
-	if err := checkCorpusCompleteness(m); err != nil {
+	if err := checkCorpusCompleteness(m, nil); err != nil {
 		return FixtureManifest{}, err
 	}
 	return m, nil
+}
+
+// extensionUnitPrefix marks a conformance term belonging to a pack rather than
+// to the spec. The executable claim is unchanged for core and gains one
+// independent term per pack, so "conformant to a vendor's extension" is a claim
+// with the same executable meaning as a core unit, stated by the vendor,
+// checked by the same tool, and carrying no authority over the core claim
+// beside it.
+const extensionUnitPrefix = "ext:"
+
+func ownerID(owner *Pack) string {
+	if owner == nil {
+		return ""
+	}
+	return owner.ID()
 }
 
 // checkCorpusCompleteness requires, for every capability key a claimed unit
@@ -250,7 +334,20 @@ func LoadManifest(filename string) (FixtureManifest, error) {
 // honour aspect. A key whose honour aspect is deferred to another unit must
 // have that fixture under the deferring unit instead. The check runs where the
 // corpus is loaded, so CI fails on the first key added without its pair.
-func checkCorpusCompleteness(m FixtureManifest) error {
+func checkCorpusCompleteness(m FixtureManifest, extra map[string][]string) error {
+	keys := unitCapabilities
+	if len(extra) > 0 {
+		// A pack's keys are the same rule over a unit the hard-coded map
+		// cannot name: a vendor cannot claim conformance for a key nothing
+		// could show it dishonouring, which is the protection core gets.
+		keys = make(map[string][]string, len(unitCapabilities)+len(extra))
+		for unit, owned := range unitCapabilities {
+			keys[unit] = owned
+		}
+		for unit, owned := range extra {
+			keys[unit] = append(append([]string(nil), keys[unit]...), owned...)
+		}
+	}
 	claimed := map[string]bool{}
 	covered := map[Coverage][]string{}
 	for _, e := range m.Fixtures {
@@ -279,7 +376,7 @@ func checkCorpusCompleteness(m FixtureManifest) error {
 		return false
 	}
 	for _, unit := range units {
-		for _, key := range unitCapabilities[unit] {
+		for _, key := range keys[unit] {
 			// Both aspects must be covered under the unit that owns the key
 			// (or, for honour, the unit it is deferred to): a fixture under
 			// an unrelated unit naming the same pair does not stand in for
@@ -303,56 +400,174 @@ func checkCorpusCompleteness(m FixtureManifest) error {
 }
 
 func (v *Validator) ValidateManifest(filename string) ([]FixtureOutcome, error) {
-	m, err := LoadManifest(filename)
+	return v.validateManifest(filename, ManifestOptions{}, true)
+}
+
+// validateManifest runs one manifest. A core manifest runs its entries and then
+// the corpus of every pack those entries load, so a pack's fixtures run under
+// the same runner as the spec's. A pack's own manifest runs its entries under
+// the pack that owns it and loads nothing further.
+func (v *Validator) validateManifest(filename string, opts ManifestOptions, corpora bool) ([]FixtureOutcome, error) {
+	m, err := LoadManifestWith(filename, opts)
 	if err != nil {
 		return nil, err
 	}
 	root := filepath.Dir(filename)
 	listed := map[string]bool{}
 	out := make([]FixtureOutcome, 0, len(m.Fixtures))
+	validators := map[string]*Validator{}
+	loaded := map[string][]*Pack{}
 	for _, entry := range m.Fixtures {
 		listed[filepath.Clean(entry.Path)] = true
 		if entry.Kind == KindLoadInvalid {
-			// The manifest shape admits load-invalid fixtures so a pack's
-			// corpus can be declared; running one needs the extension-pack
-			// loader, which this build does not carry.
-			return out, fmt.Errorf("fixture %s is load-invalid but no pack loader is available in this build", entry.ID)
+			outcome, err := runLoadFixture(root, entry)
+			out = append(out, outcome)
+			if err != nil {
+				return out, err
+			}
+			continue
 		}
-		f, err := os.Open(filepath.Join(root, entry.Path))
+		validator := v
+		if entry.Mode != "" || len(entry.Packs) > 0 || opts.Owner != nil {
+			key := string(entry.Mode) + "\x00" + strings.Join(entry.Packs, "\x00")
+			if validators[key] == nil {
+				packs := opts.Packs
+				if opts.Owner == nil {
+					packs, err = loadEntryPacks(root, entry)
+					if err != nil {
+						return out, fmt.Errorf("fixture %s: %w", entry.ID, err)
+					}
+					loaded[key] = packs
+				}
+				built, err := NewWith(Options{Mode: entry.Mode, Packs: packs})
+				if err != nil {
+					return out, fmt.Errorf("fixture %s: %w", entry.ID, err)
+				}
+				validators[key] = built
+			}
+			validator = validators[key]
+		}
+		outcome, err := runTraceFixture(validator, root, entry)
+		out = append(out, outcome)
 		if err != nil {
-			return nil, fmt.Errorf("open fixture %s: %w", entry.ID, err)
+			return out, err
 		}
-		result := v.Validate(f, entry.Path)
-		_ = f.Close()
-		out = append(out, FixtureOutcome{Entry: entry, Result: result})
-		if result.Valid() != entry.Valid {
-			return out, fmt.Errorf("fixture %s validity: got %v want %v", entry.ID, result.Valid(), entry.Valid)
-		}
-		if !entry.Valid {
-			if result.PrimaryPhase() != entry.Phase {
-				return out, fmt.Errorf("fixture %s phase: got %s want %s", entry.ID, result.PrimaryPhase(), entry.Phase)
+	}
+	if err := checkUnlisted(root, filename, listed); err != nil {
+		return out, err
+	}
+	if !corpora {
+		return out, nil
+	}
+	for _, packs := range loaded {
+		for _, pack := range packs {
+			if pack.fixtures == "" {
+				continue
 			}
-			want := append([]string(nil), entry.Codes...)
-			got := make([]string, 0, len(result.Diagnostics))
-			for _, diagnostic := range result.Diagnostics {
-				got = append(got, diagnostic.Code)
+			corpus, err := NewWith(Options{Packs: packs})
+			if err != nil {
+				return out, fmt.Errorf("pack %s corpus: %w", pack.ID(), err)
 			}
-			sort.Strings(want)
-			sort.Strings(got)
-			if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-				return out, fmt.Errorf("fixture %s diagnostic codes: got %v want %v", entry.ID, got, want)
+			outcomes, err := corpus.validateManifest(pack.fixtures, ManifestOptions{Packs: packs, Owner: pack}, false)
+			out = append(out, outcomes...)
+			if err != nil {
+				return out, fmt.Errorf("pack %s corpus: %w", pack.ID(), err)
 			}
 		}
 	}
+	return out, nil
+}
+
+// loadEntryPacks loads the packs one fixture names, as paths relative to the
+// manifest. Packs are opt-in per entry for the same reason the mode is: which
+// vocabulary is in force must be a stated choice, not inferred from the trace.
+func loadEntryPacks(root string, entry FixtureEntry) ([]*Pack, error) {
+	if len(entry.Packs) == 0 {
+		return nil, nil
+	}
+	dirs := make([]string, 0, len(entry.Packs))
+	for _, pack := range entry.Packs {
+		dirs = append(dirs, filepath.Join(root, pack))
+	}
+	return LoadPacks(dirs)
+}
+
+// runLoadFixture asserts that loading the named packs fails with exactly the
+// declared load-error codes. An entry that loads cleanly, or fails with
+// different codes, fails the fixture: a refusal nobody can reproduce is not a
+// rule.
+func runLoadFixture(root string, entry FixtureEntry) (FixtureOutcome, error) {
+	dirs := make([]string, 0, len(entry.Packs)+1)
+	dirs = append(dirs, filepath.Join(root, entry.Path))
+	for _, pack := range entry.Packs {
+		dirs = append(dirs, filepath.Join(root, pack))
+	}
+	outcome := FixtureOutcome{Entry: entry}
+	_, err := LoadPacks(dirs)
+	if err == nil {
+		return outcome, fmt.Errorf("fixture %s: pack loaded cleanly, want load errors %v", entry.ID, entry.Codes)
+	}
+	var refusal *PackLoadError
+	if !errors.As(err, &refusal) {
+		return outcome, fmt.Errorf("fixture %s: pack refused without a load-error code: %w", entry.ID, err)
+	}
+	got := refusal.Codes()
+	for _, code := range got {
+		outcome.Result.Diagnostics = append(outcome.Result.Diagnostics, Diagnostic{Fixture: entry.Path, Phase: PhaseLoad, Code: code, Message: refusal.Error()})
+	}
+	want := append([]string(nil), entry.Codes...)
+	sort.Strings(want)
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		return outcome, fmt.Errorf("fixture %s load errors: got %v want %v (%s)", entry.ID, got, want, refusal.Error())
+	}
+	return outcome, nil
+}
+
+func runTraceFixture(v *Validator, root string, entry FixtureEntry) (FixtureOutcome, error) {
+	f, err := os.Open(filepath.Join(root, entry.Path))
+	if err != nil {
+		return FixtureOutcome{Entry: entry}, fmt.Errorf("open fixture %s: %w", entry.ID, err)
+	}
+	result := v.Validate(f, entry.Path)
+	_ = f.Close()
+	outcome := FixtureOutcome{Entry: entry, Result: result}
+	if result.Valid() != entry.Valid {
+		return outcome, fmt.Errorf("fixture %s validity: got %v want %v (%v)", entry.ID, result.Valid(), entry.Valid, result.Diagnostics)
+	}
+	if !entry.Valid {
+		if result.PrimaryPhase() != entry.Phase {
+			return outcome, fmt.Errorf("fixture %s phase: got %s want %s", entry.ID, result.PrimaryPhase(), entry.Phase)
+		}
+		want := append([]string(nil), entry.Codes...)
+		got := make([]string, 0, len(result.Diagnostics))
+		for _, diagnostic := range result.Diagnostics {
+			got = append(got, diagnostic.Code)
+		}
+		sort.Strings(want)
+		sort.Strings(got)
+		if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+			return outcome, fmt.Errorf("fixture %s diagnostic codes: got %v want %v", entry.ID, got, want)
+		}
+	}
+	return outcome, nil
+}
+
+// checkUnlisted refuses a corpus carrying a trace nothing declares. Pack
+// directories are skipped the way the adapter corpora are: their contents are
+// declared by the pack descriptor and the pack's own manifest, not by this one.
+func checkUnlisted(root, filename string, listed map[string]bool) error {
 	var unlisted []string
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() && p == filepath.Join(root, "adapters") {
+		if d.IsDir() && (p == filepath.Join(root, "adapters") || p == filepath.Join(root, "packs")) {
 			return fs.SkipDir
 		}
 		if d.IsDir() || filepath.Ext(p) != ".json" || p == filename {
+			return nil
+		}
+		if base := filepath.Base(p); base == "pack.json" || strings.HasSuffix(base, ".schema.json") {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
@@ -362,11 +577,11 @@ func (v *Validator) ValidateManifest(filename string) ([]FixtureOutcome, error) 
 		return nil
 	})
 	if err != nil {
-		return out, err
+		return err
 	}
 	sort.Strings(unlisted)
 	if len(unlisted) > 0 {
-		return out, fmt.Errorf("unlisted fixtures: %v", unlisted)
+		return fmt.Errorf("unlisted fixtures: %v", unlisted)
 	}
-	return out, nil
+	return nil
 }

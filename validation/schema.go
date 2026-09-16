@@ -46,9 +46,22 @@ func ParseMode(s string) (Mode, error) {
 }
 
 // CompileOptions configures CompileSchemasWith.
+//
+// Packs are the second seam: zero or more loaded extension packs are registered
+// as additional resources under their own base URI and contribute branches to
+// the envelope union, so their envelope types are validated against their own
+// schemas instead of taking the tolerant unknown path. The core bundle is never
+// modified to get there — a pack adds vocabulary, it does not amend the
+// protocol.
 type CompileOptions struct {
-	Mode Mode
+	Mode  Mode
+	Packs []*Pack
 }
+
+// metaSchemas describe the bundle and its extensions rather than an envelope,
+// so they stay exact in every mode: tolerating a descriptor's vocabulary would
+// make a malformed pack declaration load.
+var metaSchemas = map[string]bool{"manifest.schema.json": true, "pack.schema.json": true}
 
 // CompileSchemas compiles the embedded v0.1 bundle strictly. It is unchanged
 // from before the tolerance step: existing callers keep the exact bundle.
@@ -56,10 +69,39 @@ func CompileSchemas() (*jsonschema.Schema, error) {
 	return CompileSchemasWith(CompileOptions{Mode: ModeStrict})
 }
 
-// CompileSchemasWith compiles the embedded v0.1 bundle in the requested mode.
-// The tolerant mode transforms each schema document in memory before it is
-// registered; the files on disk and the strict compile are untouched.
+// CompileSchemasWith compiles the embedded v0.1 bundle in the requested mode,
+// with any loaded packs composed in. The tolerant mode transforms each schema
+// document in memory before it is registered; the files on disk and the strict
+// compile are untouched.
 func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
+	bundle, err := compileBundle(opts)
+	if err != nil {
+		return nil, err
+	}
+	return bundle.root, nil
+}
+
+// compiledBundle is the compiled envelope schema plus, keyed by core payload
+// type and member name, the subschema each loaded pack declared for a member it
+// adds. The member schemas are separate because composition never patches a
+// core branch: validation is two passes over the same envelope instead.
+type compiledBundle struct {
+	root    *jsonschema.Schema
+	members map[string]map[string]*jsonschema.Schema
+}
+
+// refusingLoader answers every reference the registered resources do not
+// already satisfy with a refusal. A third-party pack is a document a user loads
+// from someone else, so compiling it with the engine's default file loader
+// would let a `$ref` reach paths outside the pack on the loading machine.
+type refusingLoader struct{ attempted []string }
+
+func (l *refusingLoader) Load(url string) (any, error) {
+	l.attempted = append(l.attempted, url)
+	return nil, fmt.Errorf("reference %q is outside the registered resources", url)
+}
+
+func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 	mode := opts.Mode
 	if mode == "" {
 		mode = ModeStrict
@@ -69,6 +111,8 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
+	loader := &refusingLoader{}
+	compiler.UseLoader(loader)
 	entries, err := fs.ReadDir(bundled.V01, "v0.1")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded schemas: %w", err)
@@ -85,13 +129,44 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 		if err := json.Unmarshal(data, &document); err != nil {
 			return nil, fmt.Errorf("decode embedded schema %s: %w", entry.Name(), err)
 		}
-		// The manifest schema describes the bundle inventory, not an envelope;
-		// it stays exact in every mode.
-		if mode == ModeTolerant && entry.Name() != "manifest.schema.json" {
+		if mode == ModeTolerant && !metaSchemas[entry.Name()] {
 			document = tolerate(document)
+		}
+		if entry.Name() == "envelope.schema.json" {
+			document = composeEnvelope(document, opts.Packs)
 		}
 		if err := compiler.AddResource(schemaBase+entry.Name(), document); err != nil {
 			return nil, fmt.Errorf("register embedded schema %s: %w", entry.Name(), err)
+		}
+	}
+	memberURIs := map[string]map[string]string{}
+	for _, pack := range opts.Packs {
+		for uri, document := range pack.documents {
+			if mode == ModeTolerant {
+				document = tolerate(document)
+			}
+			if err := compiler.AddResource(uri, document); err != nil {
+				return nil, fmt.Errorf("register pack schema %s: %w", uri, err)
+			}
+		}
+		for payloadType, members := range pack.members {
+			for name, member := range members {
+				declared := pack.declaredMember(payloadType, name)
+				var document any
+				if err := json.Unmarshal(declared.Schema, &document); err != nil {
+					return nil, fmt.Errorf("decode payload member %s: %w", name, err)
+				}
+				if mode == ModeTolerant {
+					document = tolerate(document)
+				}
+				if err := compiler.AddResource(member.URI, document); err != nil {
+					return nil, fmt.Errorf("register payload member %s: %w", name, err)
+				}
+				if memberURIs[payloadType] == nil {
+					memberURIs[payloadType] = map[string]string{}
+				}
+				memberURIs[payloadType][name] = member.URI
+			}
 		}
 	}
 	var root *jsonschema.Schema
@@ -101,7 +176,7 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 		}
 		compiled, err := compiler.Compile(schemaBase + entry.Name())
 		if err != nil {
-			return nil, fmt.Errorf("compile embedded schema %s: %w", entry.Name(), err)
+			return nil, packCompileError(opts.Packs, loader, err)
 		}
 		if entry.Name() == "envelope.schema.json" {
 			root = compiled
@@ -110,7 +185,130 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 	if root == nil {
 		return nil, fmt.Errorf("compile schema bundle: envelope schema not found")
 	}
-	return root, nil
+	bundle := &compiledBundle{root: root, members: map[string]map[string]*jsonschema.Schema{}}
+	for payloadType, members := range memberURIs {
+		bundle.members[payloadType] = map[string]*jsonschema.Schema{}
+		for name, uri := range members {
+			compiled, err := compiler.Compile(uri)
+			if err != nil {
+				return nil, packCompileError(opts.Packs, loader, err)
+			}
+			bundle.members[payloadType][name] = compiled
+		}
+	}
+	return bundle, nil
+}
+
+// packCompileError reports a compile failure that a pack caused. A reference
+// the refusing loader was asked for is an external reference, which is a load
+// refusal rather than a compile error surfaced later.
+func packCompileError(packs []*Pack, loader *refusingLoader, err error) error {
+	if len(packs) == 0 {
+		return fmt.Errorf("compile schema bundle: %w", err)
+	}
+	if len(loader.attempted) > 0 {
+		return &PackLoadError{Refusals: []PackRefusal{{
+			Code:    LoadPackExternalRef,
+			Pack:    packIDs(packs),
+			Message: fmt.Sprintf("reference %q is outside the pack's own resources, the core bundle, and its declared dependencies", loader.attempted[0]),
+		}}}
+	}
+	return fmt.Errorf("compile schema bundle with packs: %w", err)
+}
+
+// declaredMember returns the descriptor entry behind an indexed member.
+func (p *Pack) declaredMember(payloadType, name string) PackPayloadMember {
+	for _, member := range p.Descriptor.PayloadMembers {
+		if member.PayloadType == payloadType && member.Member == name {
+			return member
+		}
+	}
+	return PackPayloadMember{}
+}
+
+// composeEnvelope adds each loaded pack's branches to the envelope union. In
+// strict mode they join the `oneOf`, where the verified `type` const makes
+// branch selection a dispatch: a core envelope can never reach a pack branch,
+// so no core envelope becomes invalid because a pack was loaded. In tolerant
+// mode the union is already an `anyOf` with a fallback for unknown types, and
+// the packed types are removed from what that fallback accepts — otherwise a
+// malformed packed envelope would be caught by its own branch and then excused
+// by the fallback, and loading the pack would change nothing.
+func composeEnvelope(document any, packs []*Pack) any {
+	if len(packs) == 0 {
+		return document
+	}
+	root, ok := document.(map[string]any)
+	if !ok {
+		return document
+	}
+	var branches []any
+	var types []any
+	for _, pack := range packs {
+		for name, uri := range pack.branches {
+			branches = append(branches, map[string]any{"$ref": uri})
+			types = append(types, name)
+		}
+	}
+	if len(branches) == 0 {
+		return document
+	}
+	sort.Slice(branches, func(i, j int) bool {
+		return branches[i].(map[string]any)["$ref"].(string) < branches[j].(map[string]any)["$ref"].(string)
+	})
+	out := make(map[string]any, len(root))
+	for k, v := range root {
+		out[k] = v
+	}
+	for _, key := range []string{"oneOf", "anyOf"} {
+		members, ok := out[key].([]any)
+		if !ok {
+			continue
+		}
+		composed := make([]any, 0, len(members)+len(branches))
+		for _, member := range members {
+			composed = append(composed, excludeFromFallback(member, types))
+		}
+		out[key] = append(composed, branches...)
+		return out
+	}
+	return out
+}
+
+// excludeFromFallback narrows the tolerant union's fallback branch so it no
+// longer accepts a type a loaded pack claims. Any other member is returned as
+// is.
+func excludeFromFallback(member any, types []any) any {
+	branch, ok := member.(map[string]any)
+	if !ok {
+		return member
+	}
+	properties, ok := branch["properties"].(map[string]any)
+	if !ok {
+		return member
+	}
+	discriminator, ok := properties["type"].(map[string]any)
+	if !ok {
+		return member
+	}
+	not, ok := discriminator["not"].(map[string]any)
+	if !ok {
+		return member
+	}
+	known, ok := not["enum"].([]any)
+	if !ok {
+		return member
+	}
+	widened := make([]any, 0, len(known)+len(types))
+	widened = append(widened, known...)
+	widened = append(widened, types...)
+	return map[string]any{
+		"type":     branch["type"],
+		"required": branch["required"],
+		"properties": map[string]any{
+			"type": map[string]any{"type": "string", "not": map[string]any{"enum": widened}},
+		},
+	}
 }
 
 // tolerate rewrites one decoded schema document into its tolerant form. The

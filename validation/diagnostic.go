@@ -43,6 +43,7 @@ const (
 	CodeUnmatchedInteraction         = "unmatched_interaction"
 	CodeWrongInteractionResponder    = "wrong_interaction_responder"
 	CodeUnavailableCapability        = "unavailable_capability"
+	CodeUnhonouredCapability         = "unhonoured_capability"
 	CodeStaleCapabilityRevision      = "stale_capability_revision"
 	CodeCancelNotSettled             = "cancel_not_settled"
 	CodeUndeclaredReplayGap          = "undeclared_replay_gap"

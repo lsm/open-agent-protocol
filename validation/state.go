@@ -86,6 +86,10 @@ type state struct {
 	// skipped. Without it a tolerated unknown run event at sequence N would be
 	// ignored and the next known event at N+1 diagnosed as sequence_gap.
 	tolerant bool
+	// packs is the loaded extension vocabulary. A packed type resolves its
+	// role and its feature key through the pack that declared it; the rules
+	// themselves are the core ones, in packstate.go.
+	packs *PackSet
 }
 
 func newState(f string) *state {
@@ -108,7 +112,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		return
 	}
 	s.ids[e.ID] = i
-	if isRequest(e.Type) {
+	if s.isRequestType(e.Type) {
 		session, run := requestScope(e)
 		if s.tolerant && !isKnownType(e.Type) {
 			// An unknown request has no payload decoder to read scope from,
@@ -124,7 +128,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.requests[e.ID] = &requestState{typ: e.Type, index: i, line: line, envelope: e, capabilityRevision: string(e.CapabilityRevision), session: session, run: run, interaction: envelopeInteraction(e)}
 	}
 	duplicateResponse := false
-	if isResponse(e.Type) {
+	if s.isResponseType(e.Type) {
 		duplicateResponse = !s.response(i, line, e)
 	}
 	// capabilities.updated is the one operation that legitimately carries a
@@ -140,6 +144,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		// payload again would only pile cascading diagnostics onto it.
 		return
 	}
+	s.packEnvelope(i, line, e)
 	switch e.Type {
 	case protocol.TypeProtocolInitializeRequest:
 		var p protocol.InitializeRequest
@@ -375,7 +380,7 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 		s.add(CodeUnmatchedResponse, i, line, e, "/in_reply_to", "response does not match an earlier request")
 		return true
 	}
-	if expected := expectedResponse(req.typ); e.Type != expected && e.Type != protocol.TypeErrorResponse {
+	if expected := s.expectedResponse(req.typ); e.Type != expected && e.Type != protocol.TypeErrorResponse {
 		s.addExpected(CodeUnmatchedResponse, i, line, e, "/type", "response type does not match request", string(expected), string(e.Type), string(e.InReplyTo))
 		return true
 	}

@@ -9,6 +9,7 @@ import (
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -17,14 +18,17 @@ import (
 )
 
 type Validator struct {
-	schema *jsonschema.Schema
-	mode   Mode
+	schema  *jsonschema.Schema
+	mode    Mode
+	packs   *PackSet
+	members map[string]map[string]*jsonschema.Schema
 }
 
-// Options configures a Validator. The zero value is strict validation, which is
-// what every existing caller gets.
+// Options configures a Validator. The zero value is strict validation with no
+// extension packs, which is what every existing caller gets.
 type Options struct {
-	Mode Mode
+	Mode  Mode
+	Packs []*Pack
 }
 
 type rawEnvelope struct {
@@ -46,15 +50,18 @@ func NewWith(opts Options) (*Validator, error) {
 	if mode == "" {
 		mode = ModeStrict
 	}
-	s, err := CompileSchemasWith(CompileOptions{Mode: mode})
+	bundle, err := compileBundle(CompileOptions{Mode: mode, Packs: opts.Packs})
 	if err != nil {
 		return nil, err
 	}
-	return &Validator{schema: s, mode: mode}, nil
+	return &Validator{schema: bundle.root, mode: mode, packs: NewPackSet(opts.Packs), members: bundle.members}, nil
 }
 
 // Mode reports the mode the validator was built in.
 func (v *Validator) Mode() Mode { return v.mode }
+
+// Packs reports the extension packs the validator was built with.
+func (v *Validator) Packs() []*Pack { return v.packs.Packs() }
 
 func MustNew() *Validator {
 	v, err := New()
@@ -88,8 +95,13 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeDuplicateKey, Index: i, Line: item.line, Message: fmt.Sprintf("duplicate object key %q", key)})
 			continue
 		}
-		if err := v.schema.Validate(value); err != nil {
-			diagnostics = append(diagnostics, schemaDiagnostics(err, fixture, i, item.line)...)
+		if err := v.validateSchema(value); err != nil {
+			prefix := ""
+			var member *memberSchemaError
+			if errors.As(err, &member) {
+				prefix = member.pointer
+			}
+			diagnostics = append(diagnostics, schemaDiagnosticsAt(err, fixture, i, item.line, prefix)...)
 			continue
 		}
 		env, err := protocol.ParseEnvelope(item.raw)
@@ -109,6 +121,7 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 	if len(diagnostics) == 0 {
 		s := newState(fixture)
 		s.tolerant = v.mode == ModeTolerant
+		s.packs = v.packs
 		for i := range envelopes {
 			s.apply(i, lines[i], envelopes[i])
 		}
@@ -121,6 +134,97 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 
 func (v *Validator) ValidateBytes(data []byte, fixture string) Result {
 	return v.Validate(bytes.NewReader(data), fixture)
+}
+
+// memberSchemaError marks a failure raised by the pack pass rather than the
+// core pass, so the diagnostic can point at the member inside the payload
+// instead of at the root of the member's own subschema.
+type memberSchemaError struct {
+	pointer string
+	err     error
+}
+
+func (e *memberSchemaError) Error() string { return e.err.Error() }
+func (e *memberSchemaError) Unwrap() error { return e.err }
+
+// memberInstance is one declared pack member present on an envelope.
+type memberInstance struct {
+	pointer string
+	schema  *jsonschema.Schema
+	value   any
+}
+
+// validateSchema judges one envelope in two passes when packs are loaded, which
+// is what keeps a pack from amending the protocol.
+//
+// The core pass judges the envelope's core projection — the envelope with every
+// loaded pack's declared members removed — against the untouched core bundle in
+// the mode in force, so a strict core payload still rejects an undeclared
+// member exactly as it does today, and no core rule on a core member is
+// relaxed or tightened by a pack. The pack pass then validates each declared
+// member that is present against the subschema its pack declared for it.
+// Patching the core branch instead would make an envelope the core bundle
+// rejects valid the moment a pack is loaded.
+func (v *Validator) validateSchema(value any) error {
+	projection, members := v.project(value)
+	if err := v.schema.Validate(projection); err != nil {
+		return err
+	}
+	for _, member := range members {
+		if err := member.schema.Validate(member.value); err != nil {
+			return &memberSchemaError{pointer: member.pointer, err: err}
+		}
+	}
+	return nil
+}
+
+// project splits one envelope into its core projection and the declared pack
+// members it carries. An envelope carrying none is returned untouched, so the
+// unpacked path is the exact path it was before.
+func (v *Validator) project(value any) (any, []memberInstance) {
+	if v.packs == nil {
+		return value, nil
+	}
+	envelope, ok := value.(map[string]any)
+	if !ok {
+		return value, nil
+	}
+	envelopeType, _ := envelope["type"].(string)
+	declared := v.packs.Members(envelopeType)
+	if len(declared) == 0 {
+		return value, nil
+	}
+	payload, ok := envelope["payload"].(map[string]any)
+	if !ok {
+		return value, nil
+	}
+	var members []memberInstance
+	projected := make(map[string]any, len(payload))
+	for name, member := range payload {
+		if _, isPacked := declared[name]; !isPacked {
+			projected[name] = member
+			continue
+		}
+		schema := v.members[envelopeType][name]
+		if schema == nil {
+			// A member with no compiled subschema cannot be judged; leaving it
+			// in the projection has the core pass refuse it rather than
+			// silently accepting an unchecked packed control.
+			projected[name] = member
+			continue
+		}
+		members = append(members, memberInstance{pointer: "/payload/" + jsonPointerToken(name), schema: schema, value: member})
+	}
+	if len(members) == 0 {
+		return value, nil
+	}
+	out := make(map[string]any, len(envelope))
+	for k, item := range envelope {
+		out[k] = item
+	}
+	out["payload"] = projected
+	sort.Slice(members, func(i, j int) bool { return members[i].pointer < members[j].pointer })
+	return out, members
 }
 
 // duplicateKey returns the first repeated object key in one raw frame, if any.
@@ -261,9 +365,17 @@ func malformed(fixture string, err error) Diagnostic {
 }
 
 func schemaDiagnostics(err error, fixture string, index, line int) []Diagnostic {
+	return schemaDiagnosticsAt(err, fixture, index, line, "")
+}
+
+// schemaDiagnosticsAt reports a schema failure, rooting its pointer at prefix.
+// The pack pass validates a member against its own subschema, whose instance
+// locations are relative to that member; the prefix puts them back where the
+// reader will look for them.
+func schemaDiagnosticsAt(err error, fixture string, index, line int, prefix string) []Diagnostic {
 	var validationErr *jsonschema.ValidationError
 	if !errors.As(err, &validationErr) {
-		return []Diagnostic{{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: index, Line: line, Message: err.Error()}}
+		return []Diagnostic{{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: index, Line: line, Pointer: prefix, Message: err.Error()}}
 	}
 	var leaves []*jsonschema.ValidationError
 	var walk func(*jsonschema.ValidationError)
@@ -280,7 +392,7 @@ func schemaDiagnostics(err error, fixture string, index, line int) []Diagnostic 
 	result := make([]Diagnostic, 0, len(leaves))
 	seen := map[string]bool{}
 	for _, leaf := range leaves {
-		pointer := jsonPointer(leaf.InstanceLocation)
+		pointer := prefix + jsonPointer(leaf.InstanceLocation)
 		message := leaf.ErrorKind.LocalizedString(message.NewPrinter(language.English))
 		key := pointer + "\x00" + message
 		if seen[key] {
@@ -290,7 +402,7 @@ func schemaDiagnostics(err error, fixture string, index, line int) []Diagnostic 
 		result = append(result, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: index, Line: line, Pointer: pointer, Message: message})
 	}
 	if len(result) == 0 {
-		result = append(result, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: index, Line: line, Message: err.Error()})
+		result = append(result, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: index, Line: line, Pointer: prefix, Message: err.Error()})
 	}
 	// A oneOf dispatch failure can expose every rejected event branch. Report one
 	// stable structural diagnostic per envelope rather than leaking an engine-
@@ -302,9 +414,13 @@ func jsonPointer(parts []string) string {
 	var b strings.Builder
 	for _, p := range parts {
 		b.WriteByte('/')
-		b.WriteString(strings.ReplaceAll(strings.ReplaceAll(p, "~", "~0"), "/", "~1"))
+		b.WriteString(jsonPointerToken(p))
 	}
 	return b.String()
+}
+
+func jsonPointerToken(part string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(part, "~", "~0"), "/", "~1")
 }
 func baseDiagnostic(f string, phase Phase, code string, i, line int, e protocol.Envelope, ptr, msg string) Diagnostic {
 	return Diagnostic{Fixture: f, Phase: phase, Code: code, Index: i, Line: line, EnvelopeID: string(e.ID), Type: string(e.Type), Pointer: ptr, Message: msg}
