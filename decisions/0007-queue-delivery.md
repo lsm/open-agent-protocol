@@ -260,7 +260,24 @@ session's work to the wrong place, and a response that never comes leaves the
 claim resting on nothing. So does an admission the snapshot showed nowhere: a
 capture saying it already reflects an admission has to account for the run that
 admission created, in the listing or among the runs it says it settled, or the
-anchor buys it an exemption from listing the very run it claims to know about. Accepting it at the state response and never
+anchor buys it an exemption from listing the very run it claims to know about.
+
+Accounting for it is what an entry naming that run does, even before the trace
+carries the run at all. A snapshot may lead an admission it made: the endpoint
+knows the run, the response that will tell the trace about it is still in
+flight, and the entry names the submission it came from. That anchor is what
+licenses the claim, so such an entry is held and reconciled against the
+response — the request must have been admitted, to that run, on that session —
+rather than rejected before its own anchor can be read. An entry naming a run
+from nowhere, anchoring nothing, is still a run from nowhere.
+
+What is not reconciled is the rest of that entry. Its status, position and
+pending set describe a moment before its run's admission reached the trace, and
+the per-entry rules have nothing to judge them against there; nor are
+`active_run_id` and `status` judged against a listing carrying such an entry,
+because which run is started is exactly what the listing cannot yet say. That
+is the price of allowing the lead, and it is paid only by the snapshot that
+takes it. Accepting it at the state response and never
 returning to it is what lets a snapshot assert an admission that did not
 happen.
 
@@ -315,7 +332,7 @@ it could not express.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `queue`): 105 traces covering both
+Fixtures (`fixtures/manifest.json`, unit `queue`): 108 traces covering both
 admission shapes and their negatives, the capability gate and its conforming
 refusal, the degraded opt-in in all three directions, both disclosure failures
 and the wire's refusal of a nonpositive bound, the admission bounds and the
@@ -332,7 +349,9 @@ Native evidence: OpenCode graduates the key at `native` on
 its promotion after the started run's derived settlement, and its pre-start
 cancellation exercised through the production reducer.
 
-Reference execution: `adapter/memory.go` advertises the key `emulated` with
+Reference execution: `adapter/memory.go` moves to `reference-memory-v4` — T5a
+took v3 for the models catalog, and a revision identifies exactly one
+descriptor — and advertises the key `emulated` with
 `max_active_runs_per_session: 2` and `max_queued_runs_per_session: 1`, reserves
 one run beside the started one, lists both in `active_runs`, promotes on the
 terminal, and settles a cancelled reservation pre-start.
@@ -404,6 +423,14 @@ terminal, and settles a cancelled reservation pre-start.
   validates. Without that an adapter's projection never faced the rules it is
   written against — every assertion in the kit is about the event stream, and a
   state read that contradicted the run beside it passed all of them.
+- A run is projected once its admission response exists, not once it takes its
+  slot. The two are the same instant on an endpoint that admits locally and a
+  round trip apart on one that does not, and in between the run exists only
+  inside the adapter: it holds its slot and counts against the disclosed
+  bounds, because that is what the bound is for, but a state read must not name
+  a run nobody has been told was accepted. The alternative — projecting it with
+  an anchor naming the submit request — is not open to an adapter, which never
+  sees the envelope id the anchor is made of.
 - A snapshot handed to a caller owns its own backing array. `active_runs` made
   `SessionState` a value with a slice in it, whose entries carry pointers and
   slices of their own, so the by-value recovery snapshots shared all of it with

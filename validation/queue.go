@@ -691,6 +691,8 @@ func (s *state) judgeAdmissionClaim(claim *deferredStateClaim) {
 		}
 	}
 	switch {
+	case admitted != nil && admitted.session != claim.session:
+		s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, claim.pointer, "snapshot claims a submit request its response admitted on another session", want, "admitted on "+string(admitted.session), string(claim.request))
 	case admitted != nil && claim.run == "" && !claim.accounted[admitted.id]:
 		s.addExpected(CodeSessionStateMismatch, claim.index, claim.line, claim.envelope, claim.pointer, "snapshot claims a submit request it already reflected as admitted, and accounts for its run nowhere", "the run it was admitted to, listed or settled", string(admitted.id), string(claim.request))
 	case admitted != nil && (claim.run == "" || admitted.id == claim.run):

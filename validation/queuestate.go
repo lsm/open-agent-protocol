@@ -185,6 +185,11 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 	// as queued, which is what makes "only reservations remain" a thing the
 	// listing says rather than a thing inferred from its emptiness.
 	listedReservation := false
+	// unresolved marks a listing carrying an entry for a run the trace has
+	// not carried yet. Such an entry cannot be classified — the admission that
+	// says whether it is a reservation has not arrived — so the fields read
+	// off the classification are not judged against this listing at all.
+	unresolved := false
 	lastOrder := -1
 	queuePosition := 0
 	for index, entry := range p.ActiveRuns {
@@ -196,6 +201,26 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 		listed[entry.RunID] = true
 		r := s.runs[entry.RunID]
 		if r == nil || r.session != p.SessionID {
+			if anchors := pendingAnchors(s, entry, p.SessionID); len(anchors) > 0 {
+				// A snapshot may lead an admission it made: the endpoint knows
+				// the run, the response that will tell the trace about it is
+				// still in flight, and the entry says which submission it came
+				// from. That anchor is what licenses the claim, so the entry
+				// is held and reconciled against the response like every other
+				// claim made ahead of the trace, rather than rejected before
+				// its own anchor can be read.
+				//
+				// Only the entry's identity is reconciled — that the request
+				// was admitted, to this run, on this session. Its status,
+				// position and pending set describe a moment before the run's
+				// admission reached the trace, and the per-entry rules have
+				// nothing to judge them against there.
+				for _, id := range anchors {
+					s.deferred = append(s.deferred, &deferredStateClaim{kind: claimAdmitted, session: p.SessionID, run: entry.RunID, request: id, pointer: pointer + "/run_id", index: i, line: line, envelope: e})
+				}
+				unresolved = true
+				continue
+			}
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs names a run the trace does not carry for this session", "a run admitted on "+string(p.SessionID), string(entry.RunID))
 			continue
 		}
@@ -288,6 +313,13 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 	// reservations remain — both read off the entries this snapshot carries,
 	// at the positions those entries state, so the two fields cannot disagree
 	// about the same run.
+	if unresolved {
+		// One entry names a run the trace has not reached, so what the listing
+		// says about started and queued runs is incomplete. Judging
+		// active_run_id or the session status against it would convict a
+		// snapshot for the one thing it was allowed to lead the trace on.
+		return
+	}
 	started := listedStarted
 	switch {
 	case started != "" && p.ActiveRunID != started:
@@ -351,6 +383,23 @@ func (s *state) checkListedStatus(i, line int, e protocol.Envelope, p protocol.S
 		}
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/status", "a session holding only reservations is queued", string(protocol.SessionQueued), string(p.Status))
 	}
+}
+
+// pendingAnchors is an entry's admitted_submit_requests where every one of
+// them is a submit request on this session whose response has not arrived.
+// Every one, because an anchor the trace has already answered resolves to some
+// run, and an entry naming a different one contradicts it rather than leading
+// it.
+func pendingAnchors(s *state, entry protocol.ActiveRun, session protocol.SessionID) []protocol.EnvelopeID {
+	if len(entry.AdmittedSubmitRequests) == 0 {
+		return nil
+	}
+	for _, id := range entry.AdmittedSubmitRequests {
+		if s.namesSubmitRequest(id, session, "") != admissionPending {
+			return nil
+		}
+	}
+	return entry.AdmittedSubmitRequests
 }
 
 // checkEntryStatus holds an entry's status to what active_runs is a list of.
