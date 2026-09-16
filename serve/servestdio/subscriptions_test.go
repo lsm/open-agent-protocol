@@ -357,14 +357,38 @@ func TestSubscriptionsAreNotChargedAgainstTheInFlightBound(t *testing.T) {
 	if response := f.expectResponse(1); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	f.send(`{"id":2,"op":"state","session_id":"interest"}`)
-	response := f.expectResponse(2)
+	// The events worker releases its ops slot after serveRequest returns,
+	// while the acknowledgement is queued inside it, so at MaxConcurrentOps:1
+	// an op sent the instant the ack arrives can still meet the slot the
+	// events request itself was holding. That is a busy refusal about the
+	// request, not about the subscription, and busy means exactly "send this
+	// request again".
+	//
+	// Retrying is not a way around the claim: if a pump did charge the bound,
+	// the slot would never free and every attempt would be refused.
+	response := f.opUntilAdmitted(2, `{"id":2,"op":"state","session_id":"interest"}`)
 	if !response.OK {
 		t.Fatalf("an op behind a live subscription was refused %q: %s", response.Error.Code, response.Error.Message)
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// opUntilAdmitted sends one op, resending while the frontend answers busy.
+// Ops are correlated by id, not by position, so the same id is resent.
+func (f *frontend) opUntilAdmitted(id int64, line string) responseLine {
+	f.t.Helper()
+	for attempt := 0; attempt < 20; attempt++ {
+		f.send(line)
+		response := f.expectResponse(id)
+		if response.OK || response.Error == nil || response.Error.Code != "busy" {
+			return response
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	f.t.Fatalf("op %d was refused busy on every attempt; the bound is not freeing", id)
+	return responseLine{}
 }
 
 // TestALiveSubscriptionDoesNotStallShutdown is the liveness claim. A pump
@@ -935,5 +959,246 @@ func TestATypedRefusalShedsItsDetailsRatherThanItsCode(t *testing.T) {
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestAnAdapterContextFailureIsStillAnnounced separates two questions the
+// pump used to confuse: was a context cancelled, and was it mine.
+//
+// An adapter's stream can fail with an error wrapping context.Canceled — its
+// own request context, or a child process's — while this subscription is
+// perfectly alive. Matching the sentinel answered the first question and
+// silently ended the pump, which is exactly the ending a host cannot see.
+func TestAnAdapterContextFailureIsStillAnnounced(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &streamAdapter{}
+	if err := registry.Register("stream", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 64})
+	entry, _, err := hub.Open(context.Background(), "stream", base.OpenRequest{
+		SessionID: "borrowed", Participant: protocol.Participant{ID: serve.DefaultParticipant},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":1,"op":"events","session_id":"borrowed"}`)
+	if response := f.expectResponse(1); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID: "borrowed", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The adapter's context ended, not this subscription's.
+	adapter.active(t).fail(fmt.Errorf("adapter transport: %w", context.Canceled))
+
+	line := f.line()
+	var failure struct {
+		Event string `json:"event"`
+		ID    int64  `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(line), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Event != signalStreamFailed || failure.ID != 1 {
+		t.Fatalf("line %q is not a correlated stream-failed ending", line)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// unencodableStateAdapter opens successfully and then reports a session state
+// this frontend cannot encode, which is the window where the hub has already
+// registered the session and the open has no answer to give.
+type unencodableStateAdapter struct {
+	mu      sync.Mutex
+	session *unencodableStateSession
+}
+
+func (a *unencodableStateAdapter) opened(t *testing.T) *unencodableStateSession {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.session == nil {
+		t.Fatal("the adapter opened no session")
+	}
+	return a.session
+}
+
+func (*unencodableStateAdapter) Probe(context.Context) (base.Descriptor, error) {
+	return base.Descriptor{
+		Capabilities:       protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "reference.unencodable"}},
+		CapabilityRevision: "unencodable-v1",
+	}, nil
+}
+
+func (a *unencodableStateAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+	session := &unencodableStateSession{id: request.SessionID}
+	a.mu.Lock()
+	a.session = session
+	a.mu.Unlock()
+	return session, nil
+}
+
+type unencodableStateSession struct {
+	id     protocol.SessionID
+	mu     sync.Mutex
+	closed bool
+}
+
+var _ base.Session = (*unencodableStateSession)(nil)
+
+func (s *unencodableStateSession) State(context.Context) (protocol.SessionState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := protocol.SessionIdle
+	if s.closed {
+		status = protocol.SessionClosed
+	}
+	return protocol.SessionState{
+		SessionID: s.id, Status: status,
+		Metadata: map[string]json.RawMessage{"broken": json.RawMessage("{not json")},
+	}, nil
+}
+
+// isClosed reports whether the frontend rolled this session back. It is the
+// ground truth the listing cannot give: a closed session stays listed.
+func (s *unencodableStateSession) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+func (s *unencodableStateSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+}
+func (s *unencodableStateSession) Resolve(context.Context, base.InteractionResolution) error {
+	return nil
+}
+func (s *unencodableStateSession) Cancel(_ context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
+	return protocol.RunCancelResponse{SessionID: s.id, RunID: runID}, nil
+}
+func (s *unencodableStateSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+	return base.Recovery{}, nil, base.ErrRunNotFound
+}
+func (s *unencodableStateSession) Close(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
+
+// TestAnOpenThatCannotEncodeIsRolledBack reaches the two-facts problem one
+// step earlier than an unframable response does: the hub has registered the
+// session, and the answer says the open failed. A host given a minted id it
+// never saw cannot close what it does not know exists.
+func TestAnOpenThatCannotEncodeIsRolledBack(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &unencodableStateAdapter{}
+	if err := registry.Register("broken", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	f := startFrontend(t, hub, Options{})
+
+	// No session_id: the daemon mints one, so the host could not name it.
+	request := requestEnvelope(t, "req-unencodable", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")
+	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"broken","request":%s}`, request))
+	response := f.expectResponse(1)
+	if response.OK {
+		t.Fatal("an open whose state cannot be encoded reported success")
+	}
+	if response.Error.Code != "internal" {
+		t.Fatalf("code %q, want internal: %s", response.Error.Code, response.Error.Message)
+	}
+	if !strings.Contains(response.Error.Message, "rolled back") {
+		t.Fatalf("the refusal does not say what it left behind: %s", response.Error.Message)
+	}
+	// The adapter's own session is the ground truth. A closed session stays
+	// in the hub's listing, so the listing cannot answer this.
+	if !adapter.opened(t).isClosed() {
+		t.Fatal("the failed open left a live session behind; the host was told it failed and cannot name what to close")
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAnOpenTheHostNamedIsKeptAndSaidSo is the other half of the same rule.
+// A session the host named is not unknowable, so it is kept — but a refusal
+// that only reported the encode failure would tell the host the open failed,
+// which is half true and the wrong half. It has to say the session is there,
+// exactly as the oversized path does for the same three outcomes.
+func TestAnOpenTheHostNamedIsKeptAndSaidSo(t *testing.T) {
+	registry := serve.NewRegistry()
+	adapter := &unencodableStateAdapter{}
+	if err := registry.Register("broken", adapter); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	f := startFrontend(t, hub, Options{})
+
+	request := requestEnvelope(t, "req-named", protocol.TypeSessionOpenRequest,
+		protocol.SessionOpenRequest{SessionID: "named-by-host"}, "", "")
+	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"broken","request":%s}`, request))
+	response := f.expectResponse(1)
+	if response.OK {
+		t.Fatal("an open whose state cannot be encoded reported success")
+	}
+	if !strings.Contains(response.Error.Message, "the session is open under the session_id the request supplied") {
+		t.Fatalf("the refusal hides the kept session: %s", response.Error.Message)
+	}
+	if adapter.opened(t).isClosed() {
+		t.Fatal("a session the host named was rolled back; it is the one thing the host could still close itself")
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAdvanceCursorHoldsItsHighWaterMark pins the rule the delivered position
+// follows, which is not "the last sequence seen".
+//
+// Within a run it is a high-water mark, because the hub says replay may
+// redeliver positions at or behind the cursor and guards its own position the
+// same way. A cursor dragged backwards by a redelivery would make a
+// stream-failed ending send the host over events it had already consumed.
+//
+// Across runs it is not a maximum: a new run restarts at sequence 1, so the
+// largest number seen stops meaning anything once the run changes.
+func TestAdvanceCursorHoldsItsHighWaterMark(t *testing.T) {
+	at := func(run string, sequence uint64) protocol.Envelope {
+		value := sequence
+		return protocol.Envelope{RunID: protocol.RunID(run), Sequence: &value}
+	}
+	unsequenced := func(run string) protocol.Envelope {
+		return protocol.Envelope{RunID: protocol.RunID(run)}
+	}
+	for _, testCase := range []struct {
+		name         string
+		run          string
+		sequence     uint64
+		envelope     protocol.Envelope
+		wantRun      string
+		wantSequence uint64
+	}{
+		{"advances within a run", "run-1", 4, at("run-1", 5), "run-1", 5},
+		{"a redelivery behind the cursor does not drag it back", "run-1", 9, at("run-1", 3), "run-1", 9},
+		{"a redelivery at the cursor holds", "run-1", 9, at("run-1", 9), "run-1", 9},
+		{"a new run takes its own lower sequence", "run-1", 12, at("run-2", 1), "run-2", 1},
+		{"an unsequenced envelope does not advance", "run-1", 7, unsequenced("run-1"), "run-1", 7},
+		{"the first envelope sets both", "", 0, at("run-1", 1), "run-1", 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			run, sequence := advanceCursor(protocol.RunID(testCase.run), testCase.sequence, testCase.envelope)
+			if string(run) != testCase.wantRun || sequence != testCase.wantSequence {
+				t.Fatalf("cursor (%s, %d), want (%s, %d)", run, sequence, testCase.wantRun, testCase.wantSequence)
+			}
+		})
 	}
 }

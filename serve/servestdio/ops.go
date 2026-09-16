@@ -39,11 +39,16 @@ const (
 // the events request's id so overlapping subscriptions on one session stay
 // attributable.
 //
-// The first three mirror the SSE stream's named events. The last two are this
-// framing's own, and exist because this framing has no end for a host to
-// observe: SSE closes the response body, while the pipe here stays open and
-// carries every other subscription, so an ending SSE can leave implicit has
-// to be said out loud.
+// One of the six is not an ending: an envelope line is the SSE stream's data
+// line under another name. Of the five endings, two mirror SSE's own named
+// events — oap-overflow and oap-replay-gap are the only two servehttp emits —
+// and the other three are this framing's own.
+//
+// They exist because this framing has no end for a host to observe. SSE
+// closes the response body, which is how an SSE client learns a session
+// closed under it, that a line was undeliverable, or that the run's stream
+// died. The pipe here stays open and carries every other subscription, so
+// each of those has to be said out loud.
 const (
 	signalEnvelope      = "envelope"
 	signalOverflow      = "oap-overflow"
@@ -505,7 +510,18 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 	// sees, has it discarded by any hand-copied subset.
 	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID(s.nextID("response")), state)
 	if err != nil {
-		return nil, internalError(err)
+		// The session is already registered on the hub, so this is the same
+		// two-facts problem an unframable response has, reached one step
+		// earlier: an adapter that reports a state this frontend cannot
+		// encode — an invalid raw value in its metadata is enough — leaves a
+		// live session behind an answer that says the open failed. With a
+		// minted id the host cannot even name it to close it, and retrying
+		// its own id earns session_exists.
+		//
+		// So it takes the same rollback policy, and the same exemption: a
+		// session the host named is one it can still close itself.
+		s.logger.Printf("servestdio: open %d: encode response: %v", *request.ID, err)
+		return nil, s.refuseUnencodableOpen(ctx, request, entry, payload.SessionID != "")
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
@@ -529,6 +545,32 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		return nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "")
 	}
 	return result, nil
+}
+
+// refuseUnencodableOpen answers an open whose response cannot be encoded, and
+// rolls the session back when the host could not name it.
+//
+// Every branch says what it left behind, because that is the only thing the
+// host can act on: an encode failure alone tells it the open failed, which is
+// half true and the wrong half — the session exists. Its sibling
+// refuseOversizedOpen says the same three things for the same three outcomes,
+// and a host that had to tell them apart by code would be reading the same
+// situation two ways.
+//
+// The messages are fixed-size and the encode error goes to the logger, which
+// is this package's rule for every refusal that has to stay framable.
+func (s *Server) refuseUnencodableOpen(ctx context.Context, request requestLine, entry *serve.Session, named bool) *wireError {
+	if named {
+		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session is open under the session_id the request supplied"}
+	}
+	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
+	err := entry.Close(rollback)
+	cancelRollback()
+	if err == nil || errors.Is(err, base.ErrSessionClosed) {
+		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session was rolled back"}
+	}
+	s.logger.Printf("servestdio: roll back open %d: %v", *request.ID, err)
+	return &wireError{Code: "internal", Message: "the open response could not be encoded; rolling the session back failed and it may still be live"}
 }
 
 // refuseOversizedOpen answers an open whose response cannot be framed, and
@@ -1003,9 +1045,16 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 	case refused:
 		// The same refusal an op over the in-flight bound gets, and for the
 		// same reason: the frontend answers rather than waits, and the
-		// request was never served, so sending it again is safe. It succeeds
-		// once a subscription ends.
-		fail(&wireError{Code: "busy", Message: why + "; send this request again"})
+		// request was never served, so sending it again is safe.
+		//
+		// The message names how a slot frees, because this framing gives a
+		// host no way to hang up one subscription the way an SSE client drops
+		// one connection. Saying only "send this request again" would promise
+		// something the host cannot bring about: a pump ends at its run's
+		// terminal, at an overflow or stream failure, or when its session
+		// closes — and nothing else. Whether it should also end on request is
+		// issue #53.
+		fail(&wireError{Code: "busy", Message: why + "; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has"})
 		return
 	}
 	// The subscription takes the pump's context and not this worker's. It is
@@ -1139,10 +1188,7 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 					frameLimitLine{Event: signalFrameLimit, ID: id, Sequence: sequence})
 				return
 			}
-			deliveredRun = envelope.RunID
-			if envelope.Sequence != nil {
-				deliveredSequence = *envelope.Sequence
-			}
+			deliveredRun, deliveredSequence = advanceCursor(deliveredRun, deliveredSequence, envelope)
 			continue
 		}
 		var overflow *serve.OverflowError
@@ -1170,9 +1216,17 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 			// already delivered above: the host has its marker.
 			return
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if ctx.Err() != nil {
 			// The frontend is tearing down. The host observes the session
 			// ending, and the output this would go to is already closing.
+			//
+			// The test is this pump's own context, not the sentinel the error
+			// carries. An adapter's stream can fail with something that wraps
+			// context.Canceled — its own request context, its child's — while
+			// this subscription is perfectly alive, and that is an ending the
+			// host cannot see and must be told about like any other. Matching
+			// the sentinel answered "was a context cancelled somewhere" when
+			// the question is "was it mine".
 			return
 		}
 		// The run's event stream failed. Nothing else will name this ending.
@@ -1180,6 +1234,35 @@ func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *s
 		s.failSubscription(ctx, lines, entry, id, deliveredRun, deliveredSequence)
 		return
 	}
+}
+
+// advanceCursor moves the pump's delivered position to an envelope, and is
+// the reason that position is not simply the last sequence seen.
+//
+// Within one run it is a high-water mark, because replay may redeliver
+// positions at or behind the cursor — the hub says so and guards its own
+// position the same way, in observedSequence. Overwriting instead would let a
+// redelivered envelope drag the cursor backwards, and an ending that reported
+// it would send the host back over events it had already consumed.
+//
+// Across runs it is not a maximum at all: a new run starts its own sequence
+// space at 1, so the largest number seen is meaningless once the run changes.
+// The cursor follows the newer run, because that is the run a fresh events op
+// resolves into — which is also the limit issue #52 is about, and the reason
+// the cursor carries its run in the ending even though the request cannot
+// name one.
+func advanceCursor(run protocol.RunID, sequence uint64, envelope protocol.Envelope) (protocol.RunID, uint64) {
+	next := uint64(0)
+	if envelope.Sequence != nil {
+		next = *envelope.Sequence
+	}
+	if envelope.RunID != run {
+		return envelope.RunID, next
+	}
+	if next > sequence {
+		return run, next
+	}
+	return run, sequence
 }
 
 // failSubscription ends a subscription that died of something the host

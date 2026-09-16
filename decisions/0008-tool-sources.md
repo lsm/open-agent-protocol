@@ -351,9 +351,26 @@ of its own. That is a reordering, not a second gate — the adapter's own
 `RefuseUnadvertisedToolSources` still answers inside `Open`, which is what an
 in-process embedding of `serve.Hub` sees, and the two cannot drift because the
 route composes the same error types and renders them through the same
-`serve.ControlRefusal` mapping it uses to relay the adapter's. The open route is
-the only path into an open — `servestdio` has no open op, and the in-process
-embedding calls `Hub.Open` directly — so one placement covers the wire.
+`serve.ControlRefusal` mapping it uses to relay the adapter's.
+
+This record first said one placement covers the wire because the HTTP route was
+the only path into an open. That premise expired when `servestdio` gained an
+open op of its own. The conclusion did not: the gate moved out of the route
+into `serve.AttachmentGate`, which both frontends call, so there is still one
+verdict rather than one route. A copy per frontend would have been the second
+normalization this unit already refuses everywhere else — one reading in a
+route and another in the validator is how a frontend starts refusing what a
+trace validates.
+
+The parity tests carry part of that weight and not all of it.
+`TestOpenOpMatchesHTTP` compares the admission itself over equal hubs: a
+wire-supplied `command` refused under the same code on both pipes, and a
+configured source named by id admitted on both with the operator's own
+descriptor returned. What they do not reach is the capability ladder — a stale
+revision, a degraded key without consent, a probe that fails — because each
+needs a descriptor whose disclosure varies, and the reference adapter's is
+fixed. Those rungs are guaranteed by there being one gate rather than by a test
+watching two.
 
 A probe that fails is reported rather than skipped. Skipping it looked like the
 conservative choice — the adapter's own gate still runs, and nothing in the
@@ -500,10 +517,20 @@ already rewritten; `TestOpenExchangeValidatesAsATrace` is the test that puts the
 request and the response side by side and asks.
 
 This is a binding rule rather than a protocol rule — the validator cannot tell
-a daemon from an embedding — so it is pinned by `servehttp` tests rather than by
+a daemon from an embedding — so it is pinned by frontend tests rather than by
 corpus fixtures, and `command`, `args`, and a literal `environment` stay legal
-exactly where the sender is the daemon itself or the in-process embedding of
-`serve.Hub`, which has no network boundary to cross.
+exactly where the sender is the daemon itself or an embedding of `serve.Hub` in
+the same process, which has no wire to cross and already runs with the daemon's
+own authority.
+
+The exemption is in-process, not non-HTTP. Read the other way it would have
+made the stdio open exempt, and a stdio peer is a separate process on the far
+side of a pipe: the daemon cannot tell which process opened that pipe or on
+whose behalf it speaks, so it is a wire caller and gets the wire rule. The
+spoofing half never depended on the network at all — a caller that sets
+`display_name` or `endpoint` on an operator-configured source mislabels the
+operator's MCP server in the catalog a user reads, whatever carried the
+request.
 
 Alongside it, and not instead of it, the daemon gains the origin boundary a
 loopback service should have had: every route refuses a request bearing an

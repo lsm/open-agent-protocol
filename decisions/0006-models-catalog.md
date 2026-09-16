@@ -340,8 +340,14 @@ and the handler puts the state on the wire whole. Copying the missing three
 members would have fixed the symptom and left the next member added to drift
 the same way; there is now no enumeration to fall out of step with. Both
 `session.state.response` routes already passed the state whole, so open was the
-only route that enumerated, and stdio has no open op at all — `Hub.Open` has
-exactly one caller. `ActiveRunID`, `TranscriptCursor`, and `UpdatedAtMS` now
+only route that enumerated.
+
+That was written when `Hub.Open` had one caller and `servestdio` had no open
+op. It has both now, and the rule is what carried over rather than the count:
+the stdio open puts the state on the wire whole for the reason this record
+gives — an enumeration drifts from the next member added, and a frontend that
+hand-copies a subset drops whatever it was not told about, which is how an
+adapter's session model went missing here in the first place. `ActiveRunID`, `TranscriptCursor`, and `UpdatedAtMS` now
 travel on an open response too, each `omitempty`, so they appear only when the
 adapter actually reports them.
 

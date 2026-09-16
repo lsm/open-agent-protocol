@@ -29,8 +29,9 @@
 // on one session stay attributable. A run's terminal envelope is the end of
 // a healthy stream, exactly as the SSE response simply ends after it; the
 // named signals (oap-overflow, oap-replay-gap, oap-session-closed,
-// oap-frame-limit) report the endings that deliver less than was asked for,
-// and each names the cursor a fresh events op resumes from.
+// oap-frame-limit, oap-stream-failed) report the endings that deliver less
+// than was asked for, and each names the cursor a fresh events op resumes
+// from.
 //
 // Framing is strict in both directions, the same discipline the adapters'
 // internal rpc codecs apply to their own child stdio: one LF-terminated
