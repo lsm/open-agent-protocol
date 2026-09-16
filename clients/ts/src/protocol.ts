@@ -19,6 +19,8 @@ export const EnvelopeType = {
   CapabilitiesRequest: 'capabilities.request',
   CapabilitiesResponse: 'capabilities.response',
   CapabilitiesUpdated: 'capabilities.updated',
+  ModelsRequest: 'models.request',
+  ModelsResponse: 'models.response',
   SessionOpenRequest: 'session.open.request',
   SessionOpenResponse: 'session.open.response',
   SessionStateRequest: 'session.state.request',
@@ -305,6 +307,44 @@ export interface CapabilityDescriptor {
 export interface CapabilitiesUpdated {
   previous_revision: string;
   reason?: string;
+}
+
+/**
+ * Asks one session for its effective model catalog.
+ *
+ * `allow_degraded_features` is the same per-request opt-in the submit request
+ * carries: an endpoint exposing `models.list` as `degraded` would otherwise
+ * have to refuse every query or serve degraded behaviour without consent.
+ */
+export interface ModelsRequest {
+  session_id: string;
+  allow_degraded_features?: string[];
+}
+
+/** One model a session can run. `id` is the value `model_id` accepts and is unique within a response. */
+export interface ModelDescriptor {
+  id: string;
+  display_name?: string;
+  provider_id?: string;
+  context_window?: number;
+  features?: Record<string, FeatureSupport>;
+  /** At most one descriptor per response carries it. */
+  default?: boolean;
+}
+
+/** One run-scoped event, named by its run and sequence because sequences restart per run. */
+export interface ModelEventPosition {
+  run_id: string;
+  sequence: number;
+}
+
+/** The effective catalog for one session. */
+export interface ModelsResponse {
+  session_id: string;
+  current_model_id?: string;
+  models: ModelDescriptor[];
+  /** The last model-affecting event this catalog reflects; absent when it reflects none. */
+  as_of_model_event?: ModelEventPosition;
 }
 
 // --- session.schema.json ---

@@ -314,7 +314,51 @@ this adapter:
 - reconciliation (reconnect with after): `native` candidate
 - compaction/retry control: observed-only
 - revert: `unavailable` pending extension decision
-- model/agent catalogs: `native` (`model.list`, `agent.list`)
+- model/agent catalogs: `native` (`model.list`, `agent.list`) as *routes*;
+  see the models finding below for what the adapter may actually serve
+
+## Models finding (2026-09-16)
+
+The `model` and `provider` groups are part of the pinned route inventory —
+they are listed in "Wire protocol" above and their existence is pinned by
+`packages/protocol/src/groups/*.ts` — but **no response shape for either
+route is pinned at this revision**. The blobs this ledger and the corpus
+pin cover the session group, the session events, the input and delivery
+types, the server handler, and the core session service; none of them
+covers `model.list` or `provider.list`. A decoder written against those
+routes would therefore be an adapter decoding a shape nothing here
+records, which is the one thing the ledger exists to prevent.
+
+What *is* pinned about which model a session runs:
+
+- `SessionInfo.model` (`ModelRef`: `{ id, providerID, variant? }`) on the
+  session record returned by create and get, pinned through
+  `session_group_blob` and `core_session_blob`;
+- `session.next.step.started.model`, the same `ModelRef` on every durable
+  step, pinned through `session_event_blob` and exercised by the existing
+  corpus cases;
+- `session.next.model.switched`, which is durable but carries only
+  `{ timestamp, sessionID, messageID }` — it announces that a switch
+  happened and names no model, so it cannot advance a catalog.
+
+The adapter therefore serves, for the `models` unit, the effective models
+this session has evidence for: the session record's model first, then each
+distinct model a durable step named, projected onto OAP identity as
+`provider/id`. That is a truthful catalog of what the session runs and not
+the server's own list, and it grows as steps are observed, so
+`models.list` is advertised **`degraded`** with that disclosure rather
+than `native`. The consequence is the one `degraded` carries everywhere: a
+caller must consent through `allow_degraded_features`, or the query is
+refused with `capability_degraded`.
+
+Raising this to `native` needs one thing and nothing else: a pin for the
+`model.list` (and, for `provider_id` without string-splitting,
+`provider.list`) response shape, added to this ledger with its source
+blob, plus a corpus case decoding it through the production HTTP client.
+
+Corpus evidence at this pin: `multi-step/catalog.json`, the catalog the
+production reducer projects from that case's durable `step.started`
+frames.
 
 ## Evidence corpus plan
 
