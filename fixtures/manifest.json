@@ -3091,6 +3091,40 @@
       ]
     },
     {
+      "id": "tool-source-over-limit-untyped-refusal",
+      "path": "semantic-invalid/tool-source-over-limit-untyped-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0005-run-controls.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tool-source-over-limit-unnamed-source",
+      "path": "semantic-invalid/tool-source-over-limit-unnamed-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0005-run-controls.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "tool-source-attach-refused-within-limits",
       "path": "semantic-invalid/tool-source-attach-refused-within-limits.json",
       "kind": "semantic-invalid",

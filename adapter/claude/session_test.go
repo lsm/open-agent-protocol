@@ -14,6 +14,7 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/adapter/adaptertest"
+	"github.com/lsm/open-agent-protocol/adapter/claude/internal/native"
 	"github.com/lsm/open-agent-protocol/adapter/claude/internal/rpc"
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -1186,5 +1187,62 @@ func TestUnknownResultSubtypeFailsRunNotTransport(t *testing.T) {
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestToollessInitFrameServesAnEmptyCatalogArray pins the wire shape of a
+// catalog with nothing in it. `tools` is a required array, and appending
+// nothing onto a nil slice yields nil, which marshals as `null` and fails the
+// schema — at the one place with no validator in front of it. The projection
+// allocates an empty slice for a frame that lists no tools; the copy served to
+// a caller has to carry that non-nilness out, and only an assertion over the
+// encoded bytes can tell the two apart.
+//
+// The pin at this CLI version always lists its built-ins, so a toolless frame
+// is not something the corpus can reach today. That is a fact about one
+// harness release, not a guarantee the wire makes: the frame's `tools` is an
+// array, an empty one is well-formed, and a session run with every tool
+// disallowed is the obvious way to get one.
+func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		frame native.InitFrame
+	}{
+		{"no tools at all", native.InitFrame{}},
+		{"an empty tool list", native.InitFrame{Tools: []string{}}},
+		{"only unusable names", native.InitFrame{Tools: []string{"", ""}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
+			frame := testCase.frame
+			session.projectCatalogLocked(&frame)
+			request := protocol.ToolsListRequest{SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList}}
+			catalog, err := session.Tools(context.Background(), request)
+			if err != nil {
+				t.Fatalf("tools: %v", err)
+			}
+			if len(catalog.Tools) != 0 {
+				t.Fatalf("a toolless frame projected %d tools", len(catalog.Tools))
+			}
+			encoded, err := json.Marshal(catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), `"tools":null`) {
+				t.Fatalf("the served catalog encodes tools as null: %s", encoded)
+			}
+			// The schema is the arbiter, not the string above: run the served
+			// catalog through the real validator the way every other adapter
+			// catalog test does.
+			implementation, err := New(Config{Executable: "/bin/claude", WorkingDirectory: "/tmp"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor, err := implementation.Probe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			adaptertest.AssertToolCatalog(t, descriptor, nil, request, catalog)
+		})
 	}
 }

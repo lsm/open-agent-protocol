@@ -239,6 +239,20 @@ refusing an array that violates none of them is `undisclosed_attach_limit`. The
 key plus its limits tells a caller exactly which arrays are honoured, and the
 key alone tells it that an unlimited one is.
 
+Exceeding a disclosed limit permits a refusal; it does not require one. A
+limit is the endpoint's own promise about what it accepts, and admitting more
+than it promised breaks nothing a caller relied on. But a refusal is still held
+to a shape: being outside a limit is an unsatisfiability — the capability is
+advertised and usable, and this request's value is what cannot be honoured — so
+the refusal is `unsupported_feature` with `details.feature` naming the attach
+key, `details.reason: "unsatisfiable"`, and `details.source` naming the entry
+to drop, exactly as every other unsatisfiable attachment defect. Two violations
+in one array are ordered by the refusal precedence, which on one rung and one
+key is the lower JSON Pointer. Without this, being over the limit was the one
+branch where an endpoint could refuse with `internal_error`, or with no
+offending source at all, and still pass — which is the outcome disclosing a
+limit exists to prevent, arrived at from the other side.
+
 `max_sources` is a positive ceiling, and the schema refuses zero. Zero is not
 "attach nothing": an empty `tool_sources` array does not elect the capability
 at all, so the only requests a zero ceiling could describe are the ones that do
@@ -442,12 +456,14 @@ daemon should run under any boundary check.
 
 ## Evidence
 
-Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 53 traces covering the
+Fixtures (`fixtures/manifest.json`, unit `tool-sources`): 55 traces covering the
 catalog gate in every direction, the scope a session-scoped catalog must answer
 in — named in the payload, on the envelope, and by a request that names it on
 the envelope alone — the three resolvability rules on both a list and a
 descriptor, the attachment gate and its typed refusals, the remote mode ordered
-behind the capability rung, the attachment limits in both directions, the union
+behind the capability rung, the attachment limits in three directions — a
+refusal within them, a conforming refusal outside them, and two refusals
+outside them that name neither the capability nor the source — the union
 a session snapshot publishes and the one id per source it is held to, the
 lifetime catalog an attachment binds, the attachment-only member a published
 source may never carry — in a list and in a descriptor, top level and under a

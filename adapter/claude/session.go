@@ -499,11 +499,17 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 			Tools:     []protocol.ToolDefinition{},
 		}, nil
 	}
-	return protocol.ToolsListResponse{
-		SessionID: request.SessionID,
-		Sources:   append([]protocol.ToolSourceDescriptor(nil), s.catalogSources...),
-		Tools:     append([]protocol.ToolDefinition(nil), s.catalog...),
-	}, nil
+	// make and copy, not append onto a nil slice: appending nothing to nil
+	// yields nil, and `tools` is a required array, so a turn whose init frame
+	// listed no tools would serve `"tools": null` and fail the schema at the
+	// one endpoint that has no validator in front of it. The projection above
+	// already allocates an empty slice for that case; this is what carries the
+	// non-nilness out through the copy.
+	tools := make([]protocol.ToolDefinition, len(s.catalog))
+	copy(tools, s.catalog)
+	sources := make([]protocol.ToolSourceDescriptor, len(s.catalogSources))
+	copy(sources, s.catalogSources)
+	return protocol.ToolsListResponse{SessionID: request.SessionID, Sources: sources, Tools: tools}, nil
 }
 
 func (s *Session) currentRun() *runState {

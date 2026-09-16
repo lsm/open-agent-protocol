@@ -327,9 +327,13 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
 - discloses in `limits` the constraints it actually has — `max_sources`, the
   `transports` it accepts — because refusing an array that violates none of
   them and carries no defect any rule above names would make the advertised
-  key promise nothing. `max_sources` is a positive ceiling: zero would put
-  every attaching request outside the limit and make refusing all of them
-  conforming, so the schema refuses it;
+  key promise nothing. `max_sources` is a positive ceiling and each transport
+  names a source kind: a limit no request can satisfy would make refusing every
+  request conforming, so the schema refuses both shapes. An array outside a
+  disclosed limit may be admitted or refused, but a refusal is
+  `unsupported_feature` with `details.reason: "unsatisfiable"` and
+  `details.source` naming the entry to drop — "over the limit" is actionable
+  only when the caller is told which entry put it there;
 - publishes the attached sources back through the open response, later
   session snapshots, and every session-scoped catalog, as
   `ToolSourceDescriptor` values, one descriptor per `id` in each of them.

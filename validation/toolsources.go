@@ -3,6 +3,7 @@ package validation
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -48,6 +49,13 @@ type pendingOpen struct {
 	// withinLimits marks an attachment array that violates no limit the
 	// endpoint disclosed, so refusing it is undisclosed_attach_limit.
 	withinLimits bool
+	// limitRefusal is the shape a refusal must take when the array does
+	// violate a disclosed limit. It is not an expectation: exceeding a limit
+	// permits a refusal without requiring one, since a limit is the endpoint's
+	// own disclosure and admitting more than it promised breaks nothing a
+	// caller relied on. So an admitted open owes nothing here, while a refused
+	// one still owes a refusal that says which source to drop.
+	limitRefusal *controlExpectation
 }
 
 // sessionCatalog is the last catalog one session was served under the active
@@ -405,33 +413,65 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 		pending.expectation = defects[0]
 		return
 	}
-	pending.withinLimits = attachmentWithinLimits(support, p.ToolSources)
+	if violation := limitViolation(support, p.ToolSources); violation != nil {
+		pending.limitRefusal = violation
+		return
+	}
+	pending.withinLimits = true
 }
 
-// attachmentWithinLimits reports whether an array violates none of the limits
-// the endpoint disclosed. Refusing such an array is the evidence that a
-// constraint exists which the caller was never told about, so the endpoint
-// that discloses nothing is held to accepting every well-formed array.
-func attachmentWithinLimits(support protocol.FeatureSupport, attachments []protocol.ToolSourceAttachment) bool {
+// limitViolation names the first limit an attachment array puts outside what
+// the endpoint disclosed, and nil when it violates none. An endpoint that
+// discloses nothing is held to accepting every well-formed array, because a
+// refusal is then the evidence that a constraint exists which the caller was
+// never told about.
+//
+// It returns the refusal such an array is owed rather than a bare bool. Being
+// outside a disclosed limit is an unsatisfiability — the capability is
+// advertised and usable, and this request's value is the thing that cannot be
+// honoured — so the refusal takes the same shape every other unsatisfiable
+// attachment defect takes: `unsupported_feature`, `details.feature` naming the
+// attach key, `details.reason: "unsatisfiable"`, and `details.source` naming
+// the entry to drop. Without that, being over the limit was the one branch
+// where an endpoint could refuse with any code at all and pass, which is
+// exactly the outcome disclosing a limit is supposed to prevent.
+//
+// Two violations in one array are ordered by the refusal precedence, which on
+// one rung and one key is the lower JSON Pointer, so two encodings of one
+// request owe the same refusal.
+func limitViolation(support protocol.FeatureSupport, attachments []protocol.ToolSourceAttachment) *controlExpectation {
+	refusal := func(pointer, source, message string) *controlExpectation {
+		return &controlExpectation{
+			rung: rungUnsatisfiable, key: protocol.FeatureToolSourcesAttach, pointer: pointer,
+			code: errorUnsupportedFeature, reason: reasonUnsatisfiable,
+			detailName: "source", detailValue: source,
+			diagnostic: CodeUnavailableCapability, message: message,
+		}
+	}
+	var violations []*controlExpectation
 	if max, ok := support.MaxSources(); ok && len(attachments) > max {
-		return false
+		// The entry that carries the array past the ceiling is the one a
+		// caller drops to get under it.
+		violations = append(violations, refusal(
+			fmt.Sprintf("/payload/tool_sources/%d", max), attachments[max].ID,
+			"an open attaches more sources than the endpoint disclosed it accepts",
+		))
 	}
-	transports, ok := support.Transports()
-	if !ok {
-		return true
-	}
-	for _, attachment := range attachments {
-		listed := false
-		for _, transport := range transports {
-			if transport == attachment.Kind {
-				listed = true
+	if transports, ok := support.Transports(); ok {
+		for index, attachment := range attachments {
+			if !slices.Contains(transports, attachment.Kind) {
+				violations = append(violations, refusal(
+					fmt.Sprintf("/payload/tool_sources/%d/kind", index), attachment.ID,
+					"an open attaches a source whose kind is outside the transports the endpoint disclosed",
+				))
 			}
 		}
-		if !listed {
-			return false
-		}
 	}
-	return true
+	if len(violations) == 0 {
+		return nil
+	}
+	sort.SliceStable(violations, func(a, b int) bool { return violations[a].less(violations[b]) })
+	return violations[0]
 }
 
 // sessionOpenResponse settles the attachment gate and records the session's
@@ -537,6 +577,13 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 		case pending.expectation != nil:
 			if !refusalConforms(payload.Error, pending.expectation) {
 				s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
+			}
+		case pending.limitRefusal != nil:
+			// Refusing is permitted here and admitting is too, but a refusal
+			// still has to say which source to drop: "over the limit" is only
+			// actionable when the caller is told which entry put it there.
+			if !refusalConforms(payload.Error, pending.limitRefusal) {
+				s.addExpected(pending.limitRefusal.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.limitRefusal.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
 		case pending.withinLimits:
 			s.addExpected(CodeUndisclosedAttachLimit, i, line, e, "/payload/error", "an attachment carrying no defect and violating no disclosed limit was refused", "an admitted open or a disclosed limit", describeRefusal(payload.Error), string(e.InReplyTo))
