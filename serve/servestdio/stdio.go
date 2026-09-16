@@ -272,16 +272,29 @@ var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded w
 // exit path. Run itself never writes to stderr; it returns the failure for
 // the caller to report.
 //
-// Shutdown is bounded from the moment the host ends the session — stdin
+// Shutdown is bounded from the moment the input's end is read — stdin
 // closed, the read failed, or the context cancelled — not from when the
-// serving loop notices, because the loop can be stuck: the reader reports
-// its own end on a side channel so that end is observed either way.
-// Options.ShutdownTimeout then bounds each stage independently, and every
-// window opens at the host's end rather than at Run's start, so a daemon
+// serving loop notices it, because the loop can be stuck: the reader
+// reports its own end on a side channel so that end is observed either
+// way. Options.ShutdownTimeout then bounds each stage independently, and
+// every window opens at that end rather than at Run's start, so a daemon
 // that served for hours still grants a full one. A stage that outlives its
 // window is abandoned and Run returns ErrShutdownStalled, so the caller's
-// bounded session sweep and the process exit still happen; nothing ever
-// waits indefinitely on the host's pipe or a stuck adapter.
+// bounded session sweep and the process exit still happen; nothing waits
+// indefinitely on the host's pipe or a stuck adapter.
+//
+// "Read" is the load-bearing word, and the limit it marks is worth stating
+// rather than discovering. The end of the input sits behind whatever the
+// host sent before it, and those frames are read in order: the reader runs
+// one frame ahead of the loop, so an end that the loop's own backlog does
+// not exceed is observed while the loop is parked, but a host that sent
+// more frames than that before closing has an end nobody can see until
+// those frames are taken. With every worker stuck, they are not, and the
+// context is what ends such a session — the same escape the serial
+// dispatch offered, since reading further would mean buffering a stream
+// the host controls. Making the daemon answer rather than wait there needs
+// a refusal it does not have yet, which is a protocol question and not
+// this frontend's to settle.
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
