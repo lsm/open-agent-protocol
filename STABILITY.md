@@ -161,6 +161,11 @@ the stdio binding. An endpoint reached over another transport is still served
 by `oap validate` on traces you collect yourself, and defining a binding for
 that transport is work this repository has not done.
 
+The harness walks the requirements above that a scripted session can reach,
+and a passing report is not a proof that every one of them holds — it is the
+absence of the failures the script can produce. A check it reports as skipped
+is an obligation your endpoint does not carry, not one it failed.
+
 Running the harness is not certification. You run it, you read the result, and
 nothing here records that you passed, so conformance remains self-attested
 against a shared validator. No corpus case in this repository was generated

@@ -229,6 +229,17 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		e.CapabilityRevision = request.CapabilityRevision
 	}
 	switch request.Type {
+	case protocol.TypeProtocolInitializeRequest:
+		emit(protocol.TypeProtocolInitializeResponse, protocol.InitializeResponse{
+			ProtocolVersion: protocol.Version, Profile: protocol.Profile,
+			Endpoint: protocol.EndpointDescriptor{ID: "helper.double-settle", Name: "Double-settling helper endpoint"},
+		}, func(e *protocol.Envelope) { reply(e); e.CapabilityRevision = revision })
+	case protocol.TypeRunCancelRequest:
+		// This helper declares no run.cancel capability, so the conformant
+		// answer is the typed refusal rather than an acknowledgement.
+		emit(protocol.TypeErrorResponse, protocol.ErrorResponse{
+			Error: protocol.ProtocolError{Code: "unsupported_feature", Message: "this helper cannot cancel"},
+		}, reply)
 	case protocol.TypeCapabilitiesRequest:
 		emit(protocol.TypeCapabilitiesResponse, protocol.CapabilityDescriptor{
 			Endpoint: protocol.EndpointDescriptor{ID: "helper.double-settle", Name: "Double-settling helper endpoint"},

@@ -230,3 +230,20 @@ different code, and the validator is the one the adapters are already held to.
 The runner drives a **process**, not an in-process adapter, so it works against
 any binary regardless of implementation language. `oap endpoint` is the
 known-good target it is developed against.
+
+A check can also be **skipped**, which is not the same as failing. Cursor
+replay is not among the Core Profile Requirements, and this binding says an
+endpoint that does not recognise a control answers `unsupported_control` and
+keeps going — so an endpoint that answers that way has done what it was told
+to, and the runner records the obligation as one this endpoint does not carry.
+Failing it would put a requirement in the harness that is in no document.
+
+What the runner drives, and what it does not. It walks discovery
+(`protocol.initialize` and `capabilities`), a session, an admitted run with
+both scripted gates answered from the stream, a terminal, a cursor replay,
+reconciliation, the stale-revision rule, the cancellation disjunction, and the
+exit contract. Two of those are driven with deliberately wrong requests — a
+revision the endpoint never issued, and a cancel for a run that has already
+settled — and those exchanges are kept out of the assembled trace, because the
+endpoint's answer is what is under test and the request is a fault the runner
+committed on purpose.

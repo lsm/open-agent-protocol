@@ -37,6 +37,13 @@ const (
 	// to a name a consumer has to parse.
 	scriptedSource     = "reference-native"
 	syntheticMCPSource = "reference-mcp"
+	// endpointID is this endpoint's identity, and therefore the agent
+	// participant every interaction it raises is requested by. The two are
+	// one value because protocol.initialize.response declares the endpoint
+	// and nothing else declares the agent side: an adapter naming a different
+	// requester raises gates addressed to a participant the trace never saw
+	// declared, which a host that initializes reads as unknown_participant.
+	endpointID = "reference.memory"
 )
 
 // The provisioning limits the descriptor discloses for
@@ -245,7 +252,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 			Reason:      "the scripted result is fixed, so only a schema that object satisfies is admitted",
 		},
 	}
-	endpoint := protocol.EndpointDescriptor{ID: "reference.memory", Name: "Deterministic In-Memory Reference Adapter", Version: protocol.Version, Adapter: "process-memory-script"}
+	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "Deterministic In-Memory Reference Adapter", Version: protocol.Version, Adapter: "process-memory-script"}
 	return Descriptor{
 		Capabilities: protocol.CapabilityDescriptor{
 			Endpoint:         endpoint,
@@ -599,7 +606,7 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		permissionID: protocol.InteractionID(s.ids.NewID("permission")),
 		inputID:      protocol.InteractionID(s.ids.NewID("input")),
 		toolCallID:   protocol.ToolCallID(s.ids.NewID("tool-call")),
-		requestedBy:  "agent", respondedBy: s.participant,
+		requestedBy:  endpointID, respondedBy: s.participant,
 	}
 	if !controls.callsTool {
 		// The policy excludes the scripted tool, so the run never opens a

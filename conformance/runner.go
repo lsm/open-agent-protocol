@@ -19,6 +19,13 @@ type Check struct {
 	Name   string `json:"name"`
 	Passed bool   `json:"passed"`
 	Detail string `json:"detail,omitempty"`
+	// Skipped marks an obligation this endpoint does not carry, as opposed to
+	// one it failed. The distinction is the difference between a report that
+	// is actionable and one that reads as a failure for declining something
+	// optional — cursor replay is not among the Core Profile Requirements,
+	// and an endpoint that answers unsupported_control is doing what the
+	// binding tells it to.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // Report is the outcome of one conformance run.
@@ -46,6 +53,10 @@ type runner struct {
 	revision string
 	runID    protocol.RunID
 	ids      int
+	// descriptor is what the endpoint said about itself. The script reads it
+	// rather than assuming: an obligation that is conditional on a declared
+	// capability cannot be judged without one.
+	descriptor protocol.CapabilityDescriptor
 }
 
 func (r *runner) next(kind string) protocol.EnvelopeID {
@@ -59,6 +70,13 @@ func (r *runner) pass(name string) {
 func (r *runner) fail(name, detail string) {
 	r.report.Checks = append(r.report.Checks, Check{Name: name, Detail: detail})
 }
+
+// skip records an obligation this endpoint does not carry. A skipped check
+// never fails the report, and the detail says why it was not asked.
+func (r *runner) skip(name, detail string) {
+	r.report.Checks = append(r.report.Checks, Check{Name: name, Passed: true, Skipped: true, Detail: detail})
+}
+
 func (r *runner) record(name string, err error) bool {
 	if err != nil {
 		r.fail(name, err.Error())
@@ -147,8 +165,30 @@ func Run(ctx context.Context, options Options) (*Report, error) {
 // rest meaningless — there is nothing to learn from submitting to a session
 // that never opened.
 func (r *runner) drive() {
+	// Core requirement 2. It is first because it is the first thing a host
+	// sends, and because an endpoint that cannot answer it has told a host
+	// nothing about which version it speaks.
+	if initialized, err := r.request(protocol.TypeProtocolInitializeRequest, protocol.InitializeRequest{
+		Participant:      &protocol.Participant{ID: "conformance", Name: "OAP conformance runner"},
+		ProtocolVersions: []string{protocol.Version},
+		Profiles:         []string{protocol.Profile},
+	}, "", ""); err != nil {
+		r.fail("protocol.initialize.request is answered", err.Error())
+	} else {
+		var answer protocol.InitializeResponse
+		if err := initialized.DecodePayload(&answer); err != nil {
+			r.fail("protocol.initialize.response decodes", err.Error())
+		} else {
+			r.pass("protocol.initialize.request is answered")
+		}
+	}
+
 	capabilities, err := r.request(protocol.TypeCapabilitiesRequest, protocol.CapabilitiesRequest{}, "", "")
 	if !r.record("capabilities.request is answered", err) {
+		return
+	}
+	if err := capabilities.DecodePayload(&r.descriptor); err != nil {
+		r.fail("capabilities.response decodes as a descriptor", err.Error())
 		return
 	}
 	r.revision = capabilities.CapabilityRevision
@@ -202,6 +242,117 @@ func (r *runner) drive() {
 	} else {
 		r.pass("session.state.request is answered after the run settles")
 	}
+
+	r.refuseStaleRevision()
+	r.answerCancel()
+}
+
+// refuseStaleRevision drives core requirement 13. A revision the endpoint
+// never issued must be refused with the typed stale_capabilities code, because
+// a host that reads a success there has bound its request to a descriptor
+// snapshot the endpoint has moved past — the exact confusion the revision
+// exists to prevent.
+//
+// The request is one every conformant endpoint answers when the revision is
+// current, so a refusal here can only be about the revision.
+func (r *runner) refuseStaleRevision() {
+	const name = "a stale capability_revision is refused with stale_capabilities"
+	if r.revision == "" {
+		r.skip(name, "the endpoint issued no revision, so none can be stale")
+		return
+	}
+	envelope, err := protocol.NewEnvelope(protocol.TypeSessionStateRequest, r.next("request"), protocol.SessionStateRequest{SessionID: r.session})
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	envelope.SessionID = r.session
+	envelope.CapabilityRevision = r.revision + "-stale"
+	if err := r.client.Probe(envelope); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	answer, err := r.client.Response(envelope.ID)
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	if answer.Type != protocol.TypeErrorResponse {
+		r.fail(name, fmt.Sprintf("a request citing a revision this endpoint never issued was answered %s", answer.Type))
+		return
+	}
+	var failure protocol.ErrorResponse
+	if err := answer.DecodePayload(&failure); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	if failure.Error.Code != "stale_capabilities" {
+		r.fail(name, fmt.Sprintf("refused %q, want %q", failure.Error.Code, "stale_capabilities"))
+		return
+	}
+	r.pass(name)
+}
+
+// answerCancel drives core requirement 10, which is a disjunction rather than
+// a single obligation: an endpoint either supports run.cancel.request or
+// declares cancellation unavailable and refuses the call with a typed
+// unsupported-feature error. Which one applies is read from the descriptor,
+// so an endpoint is judged against what it claimed rather than against what
+// this runner would prefer.
+//
+// The run has already settled, so a supporting endpoint may legitimately
+// refuse this particular cancel as too late. What is being checked is that
+// the call is answered at all and that a declared-unavailable endpoint refuses
+// it for the declared reason — silence is the failure either way.
+func (r *runner) answerCancel() {
+	const name = "run.cancel.request is supported, or refused as unavailable"
+	if r.runID == "" {
+		r.skip(name, "no run was admitted, so there is nothing to cancel")
+		return
+	}
+	declared := r.descriptor.Features["run.cancel"]
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunCancelRequest, r.next("request"), protocol.RunCancelRequest{
+		SessionID: r.session, RunID: r.runID,
+	})
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	envelope.SessionID = r.session
+	envelope.RunID = r.runID
+	envelope.CapabilityRevision = r.revision
+	if err := r.client.Probe(envelope); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	answer, err := r.client.Response(envelope.ID)
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	unavailable := declared.Level == "" || declared.Level == protocol.SupportUnavailable
+	if !unavailable {
+		if answer.Type != protocol.TypeRunCancelResponse && answer.Type != protocol.TypeErrorResponse {
+			r.fail(name, fmt.Sprintf("an endpoint declaring run.cancel %q answered %s", declared.Level, answer.Type))
+			return
+		}
+		r.pass(name)
+		return
+	}
+	if answer.Type != protocol.TypeErrorResponse {
+		r.fail(name, "an endpoint declaring cancellation unavailable answered the call instead of refusing it")
+		return
+	}
+	var failure protocol.ErrorResponse
+	if err := answer.DecodePayload(&failure); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	if failure.Error.Code != "unsupported_feature" {
+		r.fail(name, fmt.Sprintf("refused %q, want the typed %q", failure.Error.Code, "unsupported_feature"))
+		return
+	}
+	r.pass(name)
 }
 
 // consumeRun reads the run's events, answering each scripted gate from what
@@ -366,6 +517,16 @@ func (r *runner) replayRun() {
 			answer.RequestedAfter, answer.OldestAvailable, answer.LatestAvailable))
 		return
 	default:
+		if answer.Code == "unsupported_control" {
+			// The binding says an endpoint that does not recognise a control
+			// answers it and keeps going, and cursor replay is not among the
+			// Core Profile Requirements. Failing here would convict an
+			// endpoint for doing exactly what the binding tells it to, and
+			// would put a requirement in the harness that is in no document.
+			// The answer itself is the thing worth checking, and it arrived.
+			r.skip(accepted, "the endpoint does not implement the replay control, which the binding permits")
+			return
+		}
 		r.fail(accepted, fmt.Sprintf("%s: %s", answer.Code, answer.Message))
 		return
 	}

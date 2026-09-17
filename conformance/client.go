@@ -79,7 +79,10 @@ type Client struct {
 	controls  []ControlFrame
 
 	transcript []protocol.Envelope
-	deadline   time.Duration
+	// probes are the ids of deliberately-wrong requests. Neither they nor
+	// their answers reach the trace: see Probe.
+	probes   map[protocol.EnvelopeID]bool
+	deadline time.Duration
 	// dead is sticky. Once the endpoint has stopped producing lines, every
 	// later wait would pay the full deadline again for the same answer.
 	dead error
@@ -187,13 +190,38 @@ func (c *Client) read(stdout io.Reader) {
 
 // Send writes one request envelope and records it in the transcript.
 func (c *Client) Send(envelope protocol.Envelope) error {
+	return c.send(envelope, true)
+}
+
+// Probe writes one request that is deliberately wrong and keeps it, and its
+// answer, out of the trace.
+//
+// Some obligations can only be checked by sending something no conformant host
+// would send — a stale capability revision, a cancel for a settled run. The
+// endpoint's answer is the thing under test, and it is an answer a conformant
+// endpoint must give. But the exchange itself is not conformant traffic, and
+// folding it into the assembled trace would have the validator convict the
+// endpoint of the fault the runner committed on purpose.
+func (c *Client) Probe(envelope protocol.Envelope) error {
+	c.mu.Lock()
+	if c.probes == nil {
+		c.probes = map[protocol.EnvelopeID]bool{}
+	}
+	c.probes[envelope.ID] = true
+	c.mu.Unlock()
+	return c.send(envelope, false)
+}
+
+func (c *Client) send(envelope protocol.Envelope, record bool) error {
 	data, err := json.Marshal(envelope)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	c.transcript = append(c.transcript, envelope)
-	c.mu.Unlock()
+	if record {
+		c.mu.Lock()
+		c.transcript = append(c.transcript, envelope)
+		c.mu.Unlock()
+	}
 	if _, err := c.stdin.Write(append(data, '\n')); err != nil {
 		return err
 	}
@@ -224,7 +252,9 @@ func (c *Client) pull() error {
 			c.mu.Unlock()
 			return nil
 		}
-		c.transcript = append(c.transcript, l.envelope)
+		if !c.probes[l.envelope.InReplyTo] {
+			c.transcript = append(c.transcript, l.envelope)
+		}
 		if l.envelope.InReplyTo != "" {
 			c.responses = append(c.responses, l.envelope)
 		} else {

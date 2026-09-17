@@ -67,6 +67,9 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 	plain := func(answer protocol.Envelope, err error) (protocol.Envelope, func(), error) {
 		return answer, nil, err
 	}
+	if err := s.refuseStaleRevision(ctx, e); err != nil {
+		return protocol.Envelope{}, nil, err
+	}
 	switch e.Type {
 	case protocol.TypeProtocolInitializeRequest:
 		return plain(s.initialize(ctx, e))
@@ -95,6 +98,19 @@ func (s *Server) initialize(ctx context.Context, e protocol.Envelope) (protocol.
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
+	// The declared control participant is remembered here and used by every
+	// later open. An endpoint that ignored it would raise gates addressed to
+	// a participant the trace never saw declared, and the interaction rules
+	// are written against the declared one.
+	var request protocol.InitializeRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	if request.Participant != nil && request.Participant.ID != "" {
+		s.participantMu.Lock()
+		s.participant = request.Participant.ID
+		s.participantMu.Unlock()
+	}
 	answer, err := protocol.NewEnvelope(protocol.TypeProtocolInitializeResponse, s.nextID("response"), protocol.InitializeResponse{
 		ProtocolVersion: protocol.Version,
 		Profile:         protocol.Profile,
@@ -106,6 +122,50 @@ func (s *Server) initialize(ctx context.Context, e protocol.Envelope) (protocol.
 	answer.InReplyTo = e.ID
 	answer.CapabilityRevision = descriptor.CapabilityRevision
 	return answer, nil
+}
+
+// refuseStaleRevision enforces the rule that a request citing a capability
+// revision must cite the current one. A host that reads a success from a
+// request bound to a descriptor this endpoint has moved past has bound its
+// decision to a snapshot that no longer holds — which is the whole reason the
+// revision is on the wire.
+//
+// Discovery is exempt, because a stale revision must never be able to block
+// the two requests that would tell the host what the current one is. That
+// exemption is the validator's too, so the rule enforced here and the rule a
+// trace is judged by are the same rule.
+func (s *Server) refuseStaleRevision(ctx context.Context, e protocol.Envelope) error {
+	if e.CapabilityRevision == "" {
+		return nil
+	}
+	switch e.Type {
+	case protocol.TypeProtocolInitializeRequest, protocol.TypeCapabilitiesRequest:
+		return nil
+	}
+	descriptor, err := s.hub.Probe(ctx, s.adapter)
+	if err != nil {
+		return err
+	}
+	if descriptor.CapabilityRevision == "" || e.CapabilityRevision == descriptor.CapabilityRevision {
+		return nil
+	}
+	return &refusal{
+		code:    "stale_capabilities",
+		message: fmt.Sprintf("capability revision %q is not the current %q", e.CapabilityRevision, descriptor.CapabilityRevision),
+		details: map[string]any{"expected_revision": e.CapabilityRevision, "current_revision": descriptor.CapabilityRevision},
+	}
+}
+
+// controlParticipant is the identity initialize declared, or the daemon's
+// default when a host opened without initializing. The default keeps a host
+// that skips discovery working, exactly as it did before initialize was read.
+func (s *Server) controlParticipant() protocol.ParticipantID {
+	s.participantMu.Lock()
+	defer s.participantMu.Unlock()
+	if s.participant == "" {
+		return serve.DefaultParticipant
+	}
+	return s.participant
 }
 
 func (s *Server) capabilities(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
@@ -129,7 +189,7 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 	}
 	open := base.OpenRequest{
 		SessionID:             request.SessionID,
-		Participant:           protocol.Participant{ID: serve.DefaultParticipant},
+		Participant:           protocol.Participant{ID: s.controlParticipant()},
 		AllowDegradedFeatures: request.AllowDegradedFeatures,
 		Tools:                 request.Tools,
 	}
