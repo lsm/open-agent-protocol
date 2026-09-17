@@ -43,6 +43,8 @@ one side of this line or the other. None is left unstated:
 | `+models` | yes | [Decision 0006](decisions/0006-models-catalog.md), accepted. |
 | `+queue` | yes | [Decision 0007](decisions/0007-queue-delivery.md), accepted. |
 | `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
+| `+compound-open` | yes | [Decision 0009](decisions/0009-compound-open.md), accepted. |
+| `+control-tools` | **no** | [Decision 0011](decisions/0011-control-layer-provided-tools.md) carries it and is still proposed. Its schema, validator rules and fixtures are on `main`, but no adapter executes the unit, so it may still change. |
 | `+persistence` | **no** | Its envelope types — `session.list.*`, `transcript.load.*`, `transcript.delta` — exist in no schema file and no Go type. The conformance draft describes a unit that has never been built. |
 | `+steer`, `+btw` | **no** | Staged, not graduated. No decision has taken either through the gate. |
 
@@ -59,7 +61,10 @@ A rule is binding when the decision record carrying it is `accepted`.
 [Decision 0003](decisions/0003-staged-unit-graduation.md) defines what
 `accepted` means and what evidence it requires: the rule is executable on
 `main`, nothing inside the record is still pending, nothing proposed
-contradicts it, and it is merged. Decisions 0001 through 0008 are accepted.
+contradicts it, and it is merged. Decisions 0001 through 0010 are accepted. Decision 0011 is not: it is assessed
+and held, because the unit it carries has its validator rules and fixtures but
+no reference execution and no pinned corpus case, so nothing executes what it
+describes.
 
 A `proposed` record binds nothing. If you are reading one, you are reading a
 position this project may still change.

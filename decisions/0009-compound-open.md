@@ -1,6 +1,11 @@
 # Decision 0009: Compound Open
 
-Status: proposed
+Status: accepted 2026-09-17 (16 `compound-open` fixtures; the reference
+adapter advertises `session.open.subscribe` natively and both frontends
+compose the open. Step 3 of the gate is satisfied vacuously, as it was for
+Decision 0004: the composition happens in the hub, so no harness emits a frame
+to pin. Every deferral is handed to a named owner — #61, #52, #53 — rather
+than left as a claim no code answers)
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

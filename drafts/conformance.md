@@ -421,8 +421,13 @@ this unit; control-layer-provided tools are `+control-tools`, below.
 ### `+control-tools`
 
 An implementation conforms to `+control-tools` if the control layer can supply
-tools at session open and execute their calls. Executable since
-[Decision 0011](../decisions/0011-control-layer-provided-tools.md).
+tools at session open and execute their calls. The unit is staged, not
+executable. [Decision 0011](../decisions/0011-control-layer-provided-tools.md)
+carries its wire shape, validator rules and fixtures and is still proposed,
+because no adapter executes the unit; under
+[Decision 0003](../decisions/0003-staged-unit-graduation.md) no draft claims a
+unit executable until a native adapter proves one. What follows is therefore
+the shape an implementation will be held to, not a claim one may make today.
 
 An implementation:
 

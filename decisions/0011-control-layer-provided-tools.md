@@ -1,6 +1,14 @@
 # Decision 0011: Control-Layer-Provided Tools
 
-Status: proposed
+Status: proposed — assessed 2026-09-17 against Decision 0003 and held. Steps
+2 and 4 of the gate have landed: 58 `control-tools` fixtures, the validator
+rules, and this record. Steps 1 and 3 have not. The reference adapter does not
+implement the unit, and the `tool-bridge-roundtrip` corpus case this decision
+names as required is absent, so the wire shape is prose and authored files
+rather than something executed. This decision says as much itself: "the
+adapter graduates the unit by adding the `tool-bridge-roundtrip` corpus case
+and advertising `action.tools.provide`." A unit that stalls at step 3 stays
+staged
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
