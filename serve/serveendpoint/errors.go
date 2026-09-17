@@ -30,6 +30,7 @@ func (r *refusal) Error() string { return r.message }
 func (s *Server) errorEnvelope(request protocol.Envelope, err error) protocol.Envelope {
 	code, message, details := "internal", err.Error(), map[string]any(nil)
 
+	var terminal *base.RunTerminalError
 	var own *refusal
 	if errors.As(err, &own) {
 		code, message, details = own.code, own.message, own.details
@@ -43,8 +44,12 @@ func (s *Server) errorEnvelope(request protocol.Envelope, err error) protocol.En
 			code = "session_exists"
 		case errors.Is(err, serve.ErrUnknownSession):
 			code = "unknown_session"
+		case errors.Is(err, serve.ErrScopeMismatch):
+			code = "scope_mismatch"
 		case errors.Is(err, base.ErrSessionClosed):
 			code = "session_closed"
+		case errors.As(err, &terminal):
+			code = "run_terminal"
 		case errors.Is(err, base.ErrRunNotFound):
 			code = "run_not_found"
 		case errors.Is(err, base.ErrRunActive):

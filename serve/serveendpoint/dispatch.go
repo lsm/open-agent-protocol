@@ -267,13 +267,16 @@ func (s *Server) reportLostStream(ctx context.Context, run protocol.RunID, deliv
 	switch {
 	case errors.As(err, &overflow):
 		code = "overflow"
-		if overflow.RunID != "" {
-			run = overflow.RunID
-		}
-		delivered = overflow.LastSequence
 	case errors.Is(err, ErrFrameTooLarge):
 		code = "frame_limit"
 	}
+	// The frame names this pump's own run and its own delivered position,
+	// never the overflow's. A subscription is session-wide, so the run that
+	// filled the mailbox is often not the run this pump serves — and a
+	// second submit's pump, which has delivered nothing yet, would otherwise
+	// report the first run as lost and leave its own run unmentioned. The
+	// host would then replay a run it already had and never learn that the
+	// other one had stopped arriving.
 	after := delivered
 	s.logger.Printf("serveendpoint: run stream ended early (%s): %v", code, err)
 	if writeErr := s.writeControl(ctx, controlFrame{
@@ -292,6 +295,16 @@ func (s *Server) cancel(ctx context.Context, e protocol.Envelope) (protocol.Enve
 	var request protocol.RunCancelRequest
 	if err := e.DecodePayload(&request); err != nil {
 		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	// Session.Cancel takes only a run id, so the payload's own session claim
+	// is unchecked unless the codec checks it. Both other codecs do, and
+	// without it a cancel addressed to one session while naming another is
+	// answered "accepted" for a run the caller did not mean.
+	if request.SessionID != entry.ID() {
+		return protocol.Envelope{}, &refusal{
+			code:    "scope_mismatch",
+			message: fmt.Sprintf("payload session_id %q does not match the addressed session %q", request.SessionID, entry.ID()),
+		}
 	}
 	ack, err := entry.Cancel(ctx, request.RunID)
 	if err != nil {

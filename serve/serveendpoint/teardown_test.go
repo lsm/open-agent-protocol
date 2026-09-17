@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"strings"
 	"sync"
 	"testing"
@@ -298,5 +300,111 @@ func TestHungUpHostExitsWithoutASignal(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("Run never returned: end of input went unobserved behind a parked handler, so only SIGKILL would exit")
+	}
+}
+
+// refusalFor returns the typed code of the error.response answering one
+// request in the captured output.
+func refusalFor(t *testing.T, out string, request protocol.EnvelopeID) string {
+	t.Helper()
+	for _, raw := range strings.Split(out, "\n") {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		var envelope protocol.Envelope
+		if json.Unmarshal([]byte(raw), &envelope) != nil {
+			continue
+		}
+		if envelope.InReplyTo != request || envelope.Type != protocol.TypeErrorResponse {
+			continue
+		}
+		var failure protocol.ErrorResponse
+		if err := envelope.DecodePayload(&failure); err != nil {
+			t.Fatal(err)
+		}
+		return failure.Error.Code
+	}
+	t.Fatalf("no error.response answering %s", request)
+	return ""
+}
+
+// TestPayloadScopeIsRefusedUnderItsOwnCode covers what a caller keys on.
+//
+// A payload naming a different session than the envelope addresses is a fault
+// the caller can correct, and both other codecs say so with scope_mismatch. An
+// endpoint answering "internal" tells a host its own request was fine and the
+// server broke, which is the opposite of actionable — and for cancel the hub
+// checks nothing at all, since Session.Cancel takes only a run id, so an
+// unchecked codec accepts a cancel for a session the caller did not name.
+func TestPayloadScopeIsRefusedUnderItsOwnCode(t *testing.T) {
+	registry, err := serve.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	server, err := New(hub, Options{Adapter: "memory", Shutdown: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		requestLine(t, protocol.TypeSessionOpenRequest, "open-1", protocol.SessionOpenRequest{SessionID: "scoped"}, "scoped"),
+		requestLine(t, protocol.TypeSessionMessageSubmitRequest, "submit-elsewhere",
+			protocol.MessageSubmitRequest{
+				SessionID: "somewhere-else", Delivery: protocol.DeliveryAuto,
+				Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+			}, "scoped"),
+		requestLine(t, protocol.TypeRunCancelRequest, "cancel-elsewhere",
+			protocol.RunCancelRequest{SessionID: "somewhere-else", RunID: "run-1"}, "scoped"),
+	}, "\n") + "\n"
+
+	out := &syncBuffer{}
+	_ = server.Run(context.Background(), strings.NewReader(input), out)
+
+	if code := refusalFor(t, out.String(), "submit-elsewhere"); code != "scope_mismatch" {
+		t.Errorf("a submit naming another session was refused %q, want scope_mismatch", code)
+	}
+	if code := refusalFor(t, out.String(), "cancel-elsewhere"); code != "scope_mismatch" {
+		t.Errorf("a cancel naming another session was refused %q, want scope_mismatch", code)
+	}
+}
+
+// TestALostStreamNamesItsOwnRun pins which run a dead stream reports.
+//
+// A hub subscription is session-wide, so the run that filled a pump's mailbox
+// is routinely not the run that pump serves. A second submit's pump has
+// delivered nothing of its own run yet, so reporting the overflow's run would
+// tell the host to replay a run it already has while never mentioning the one
+// that stopped arriving — and this binding has no subscribe request, so that
+// run would reach nobody with nothing said about it.
+//
+// Driving a real overflow needs the mailbox backed up by more envelopes than
+// the reference adapter's scripted run produces, so the reporting is checked
+// directly.
+func TestALostStreamNamesItsOwnRun(t *testing.T) {
+	server := &Server{
+		lines:      make(chan []byte, 4),
+		frameLimit: DefaultFrameLimit,
+		writeStall: time.Second,
+		logger:     log.New(io.Discard, "", 0),
+	}
+	server.reportLostStream(context.Background(), "run-2", 0,
+		&serve.OverflowError{RunID: "run-1", LastSequence: 9})
+
+	var frame controlFrame
+	if err := json.Unmarshal(<-server.lines, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame.Control != controlStreamLost {
+		t.Fatalf("control %q, want %q", frame.Control, controlStreamLost)
+	}
+	if frame.RunID != "run-2" {
+		t.Errorf("the lost frame names run %q, want the run this pump served", frame.RunID)
+	}
+	if frame.After == nil || *frame.After != 0 {
+		t.Errorf("the resume cursor is %v, want this pump's own delivered position", frame.After)
+	}
+	if frame.Code != "overflow" {
+		t.Errorf("code %q, want overflow", frame.Code)
 	}
 }
