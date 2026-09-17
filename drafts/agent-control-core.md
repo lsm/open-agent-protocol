@@ -99,6 +99,21 @@ domain for its `run_id`. Request and response envelopes do not consume that
 sequence. Deltas append; snapshots replace the state they identify; terminal
 values are final.
 
+Contiguity is an ordering guarantee at the OAP boundary, and nothing more. It is
+not a loss detector. The endpoint generates the numbers itself, from the order in
+which it emits events, so an unbroken run of them proves only that a consumer
+holds every event the endpoint emitted, in emission order. It proves nothing
+about production order or completeness below that boundary: when the agent loop
+drops, coalesces, reorders, or never surfaces something, the endpoint never
+numbers it, and the sequence stays contiguous anyway. A gap therefore does not
+appear when the source lost something — a gap means the *transport* lost
+something, and that is the only loss the numbering can witness. Consumers must
+not read contiguity as evidence that nothing was lost upstream, and must not
+wait for a gap that will not come. Fidelity below the boundary is reported
+through capabilities (`native`, `emulated`, `degraded`, `unavailable`) and
+through the endpoint's own typed diagnostics; it is never inferred from the
+numbering.
+
 ## Transport
 
 The core is transport agnostic. The same envelopes can move over in-process
@@ -338,11 +353,34 @@ Core tool definitions use JSON Schema input:
 - `name`
 - `description`
 - `input_schema`
+- `execution_owner`, the participant that executes this tool
 - `annotations`
 - `source`, the id of the `ToolSourceDescriptor` the tool comes from
   (`+tool-sources`, Decision 0008) — never an inline copy of the descriptor,
   so a consumer attributes a tool to an MCP server without parsing its name
 - `features`, this one tool's effective support map
+
+`execution_owner` is required on every catalog entry and repeated on every
+`action.call.*` payload. It names the participant that runs the call, which is
+a different question from the three identities beside it: `requested_by` is who
+asked for the call, `responded_by` is who resolved the interaction gating it,
+and `source` is where the tool came from. Owner and source in particular do not
+collapse into each other — a tool an endpoint bridges from an MCP server has
+that server's descriptor as its `source` and the endpoint as its
+`execution_owner`, because the endpoint is what the control layer calls and what
+answers for the result.
+
+In core the endpoint hosts every tool, so every entry and every call names the
+endpoint's own participant id, and a control layer can read the field without
+special-casing: one value across the catalog means one party executes
+everything. It is still carried rather than implied, because the field is what
+makes the mixed case expressible at all, and because a consumer should not have
+to know which profile produced a trace to know who ran a call. The mixed case —
+tools the control layer supplies and executes itself, so a catalog holds more
+than one owner and a call routes by it — is the staged `+control-tools` unit and
+is not part of core. A call's `execution_owner` names the owner of the catalog
+entry it resolves to; a call claiming an owner the catalog does not give that
+tool is not a call the endpoint should honor.
 
 A catalog that carries sources declares them beside its tools, in
 `action.tools.list.response.sources` and in the capability descriptor. A source
