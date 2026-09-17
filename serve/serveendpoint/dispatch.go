@@ -46,7 +46,7 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 	if err != nil {
 		answer, after = s.errorEnvelope(envelope, err), nil
 	}
-	if writeErr := s.write(answer); writeErr != nil {
+	if writeErr := s.write(ctx, answer); writeErr != nil {
 		return writeErr
 	}
 	// Whatever the request set in motion starts after its answer is on the
@@ -206,7 +206,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 		s.pumps.Add(1)
 		go func() {
 			defer s.pumps.Done()
-			s.pump(subscription)
+			s.pump(streams, subscription)
 		}()
 	}
 	return answer, start, nil
@@ -223,21 +223,21 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 // stream.lost control frame carrying the position the host actually reached,
 // which is a cursor it can replay from — the recovery this binding already
 // defines.
-func (s *Server) pump(subscription *serve.Subscription) {
+func (s *Server) pump(ctx context.Context, subscription *serve.Subscription) {
 	defer subscription.Close()
 	var run protocol.RunID
 	var delivered uint64
 	for {
 		envelope, err := subscription.Next()
 		if err != nil {
-			s.reportLostStream(run, delivered, err)
+			s.reportLostStream(ctx, run, delivered, err)
 			return
 		}
 		if envelope.RunID != "" {
 			run = envelope.RunID
 		}
-		if writeErr := s.write(envelope); writeErr != nil {
-			s.reportLostStream(run, delivered, writeErr)
+		if writeErr := s.write(ctx, envelope); writeErr != nil {
+			s.reportLostStream(ctx, run, delivered, writeErr)
 			return
 		}
 		if envelope.Sequence != nil {
@@ -249,7 +249,7 @@ func (s *Server) pump(subscription *serve.Subscription) {
 // reportLostStream names an ending the host could not otherwise observe. A
 // clean end and a teardown are not endings of this kind: the first carries
 // its own terminal envelope, and the second ends the whole process.
-func (s *Server) reportLostStream(run protocol.RunID, delivered uint64, err error) {
+func (s *Server) reportLostStream(ctx context.Context, run protocol.RunID, delivered uint64, err error) {
 	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
 		return
 	}
@@ -267,7 +267,7 @@ func (s *Server) reportLostStream(run protocol.RunID, delivered uint64, err erro
 	}
 	after := delivered
 	s.logger.Printf("serveendpoint: run stream ended early (%s): %v", code, err)
-	if writeErr := s.writeControl(controlFrame{
+	if writeErr := s.writeControl(ctx, controlFrame{
 		Control: controlStreamLost, RunID: run, After: &after, Code: code,
 		Message: "this run's events stopped reaching the host; replay from after to continue",
 	}); writeErr != nil {

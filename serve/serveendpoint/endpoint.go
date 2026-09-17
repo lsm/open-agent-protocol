@@ -34,6 +34,11 @@ import (
 // so the endpoint reports it and stops instead of truncating.
 const DefaultFrameLimit = 1 << 20
 
+// writeQueue bounds how far the endpoint runs ahead of a host that is reading
+// slowly. Past it, producers wait — which is backpressure rather than a
+// fault, and is cancellable.
+const writeQueue = 64
+
 // ErrFrameTooLarge reports a host line over the frame limit. It ends Run, so
 // the process exits non-zero and the host learns its framing is at fault.
 var ErrFrameTooLarge = errors.New("serveendpoint: line exceeds the frame limit")
@@ -67,8 +72,13 @@ type Server struct {
 
 	ids atomic.Uint64
 
-	mu  sync.Mutex
-	out *bufio.Writer
+	// lines is the only path to stdout. Producers hand a framed line over
+	// and one goroutine owns the write, so a peer that has stopped reading
+	// parks that goroutine alone instead of whoever happened to be holding a
+	// lock. Every earlier deadlock here — a teardown flush, a request
+	// handler, a second pump — was the same mutex held across a write to a
+	// pipe nobody was draining.
+	lines chan []byte
 
 	pumps sync.WaitGroup
 }
@@ -112,9 +122,9 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	if in == nil || out == nil {
 		return errors.New("serveendpoint: both stdin and stdout are required")
 	}
-	s.mu.Lock()
-	s.out = bufio.NewWriter(out)
-	s.mu.Unlock()
+	s.lines = make(chan []byte, writeQueue)
+	writerDone := make(chan error, 1)
+	go func() { writerDone <- s.runWriter(out) }()
 
 	streams, stopStreams := context.WithCancel(ctx)
 	defer stopStreams()
@@ -160,21 +170,64 @@ reading:
 		if runErr == nil {
 			runErr = ErrShutdownStalled
 		}
-		// No final flush, and in particular no attempt to take the writer
-		// lock. The pump this teardown just abandoned is parked inside write
-		// holding that lock, and it is parked precisely because the pipe will
-		// not drain — so waiting for it here would hang the exit that the
-		// bounded wait exists to guarantee. Whatever is still buffered cannot
-		// be written anyway; the non-zero return is the report.
+		// The abandoned pump may still hold a line it never handed over, so
+		// the channel is left open rather than closed under it, and the
+		// writer is abandoned with it. Nothing more can reach a pipe that is
+		// not draining; the non-zero return is the report.
 		return runErr
 	}
-	s.mu.Lock()
-	flushErr := s.out.Flush()
-	s.mu.Unlock()
+	// Every producer is finished, so closing the channel is safe and is what
+	// tells the writer to flush and stop. The wait is bounded for the same
+	// reason the pump wait is: the last flush goes to the same pipe.
+	close(s.lines)
+	var flushErr error
+	select {
+	case flushErr = <-writerDone:
+	case <-time.After(s.shutdown):
+		flushErr = ErrShutdownStalled
+	}
 	if runErr != nil {
 		return runErr
 	}
 	return flushErr
+}
+
+// runWriter owns stdout. It keeps draining after a write fails so a producer
+// can never block on a channel nobody reads — the failure is reported once,
+// and the lines that follow are discarded rather than deadlocking the loop
+// that produced them.
+func (s *Server) runWriter(out io.Writer) error {
+	writer := bufio.NewWriter(out)
+	var failure error
+	for data := range s.lines {
+		if failure != nil {
+			continue
+		}
+		if _, err := writer.Write(data); err != nil {
+			failure = err
+			continue
+		}
+		if err := writer.Flush(); err != nil {
+			failure = err
+		}
+	}
+	if failure != nil {
+		return failure
+	}
+	return writer.Flush()
+}
+
+// send hands one framed line to the writer, or gives up when the context
+// ends. Giving up is the point: a peer that has stopped reading must not be
+// able to wedge the read loop, which is what keeps signals and stdin EOF
+// observable while the pipe is full.
+func (s *Server) send(ctx context.Context, data []byte) error {
+	select {
+	case s.lines <- data:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // readResult is one frame or the error that ended the input.
@@ -258,10 +311,10 @@ func (s *Server) readLine(reader *bufio.Reader) ([]byte, error) {
 	}
 }
 
-// write serialises one envelope onto stdout. One writer holds the lock, so a
-// line is atomic even while a pump and a request handler both have something
+// write queues one envelope for stdout. A line reaches the writer whole, so
+// it stays atomic even while a pump and a request handler both have something
 // to say.
-func (s *Server) write(envelope protocol.Envelope) error {
+func (s *Server) write(ctx context.Context, envelope protocol.Envelope) error {
 	data, err := json.Marshal(envelope)
 	if err != nil {
 		return err
@@ -269,12 +322,7 @@ func (s *Server) write(envelope protocol.Envelope) error {
 	if len(data)+1 > s.frameLimit {
 		return fmt.Errorf("%w: response is %d bytes", ErrFrameTooLarge, len(data))
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.out.Write(append(data, '\n')); err != nil {
-		return err
-	}
-	return s.out.Flush()
+	return s.send(ctx, append(data, '\n'))
 }
 
 func (s *Server) nextID(kind string) protocol.EnvelopeID {

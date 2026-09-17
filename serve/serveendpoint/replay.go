@@ -42,17 +42,12 @@ type controlFrame struct {
 
 // writeControl serialises one control frame through the same single writer the
 // envelopes use, so a frame and an envelope cannot interleave mid-line.
-func (s *Server) writeControl(frame controlFrame) error {
+func (s *Server) writeControl(ctx context.Context, frame controlFrame) error {
 	data, err := json.Marshal(frame)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.out.Write(append(data, '\n')); err != nil {
-		return err
-	}
-	return s.out.Flush()
+	return s.send(ctx, append(data, '\n'))
 }
 
 // handleControl serves one control frame. Unlike an envelope request, a
@@ -60,7 +55,7 @@ func (s *Server) writeControl(frame controlFrame) error {
 // separate so a host can route a line on its shape alone.
 func (s *Server) handleControl(streams context.Context, frame controlFrame) error {
 	if frame.Control != controlReplay {
-		return s.writeControl(controlFrame{
+		return s.writeControl(streams, controlFrame{
 			Control: controlReplayError, ID: frame.ID, Code: "unsupported_control",
 			Message: fmt.Sprintf("this endpoint serves no %q control", frame.Control),
 		})
@@ -77,7 +72,7 @@ func (s *Server) handleControl(streams context.Context, frame controlFrame) erro
 // detect.
 func (s *Server) replay(streams context.Context, frame controlFrame) error {
 	if frame.SessionID == "" {
-		return s.writeControl(controlFrame{
+		return s.writeControl(streams, controlFrame{
 			Control: controlReplayError, ID: frame.ID, Code: "invalid_request",
 			Message: "a replay must name its session",
 		})
@@ -88,11 +83,11 @@ func (s *Server) replay(streams context.Context, frame controlFrame) error {
 	}
 	entry, err := s.hub.Session(frame.SessionID)
 	if err != nil {
-		return s.writeControl(s.replayFailure(frame, err))
+		return s.writeControl(streams, s.replayFailure(frame, err))
 	}
 	subscription, err := s.hub.Subscribe(streams, entry.ID(), serve.After(frame.RunID, after))
 	if err != nil {
-		return s.writeControl(s.replayFailure(frame, err))
+		return s.writeControl(streams, s.replayFailure(frame, err))
 	}
 	// The acknowledgement names the run the subscription actually resolved
 	// onto, not the session's active run. They differ exactly when replay
@@ -102,7 +97,7 @@ func (s *Server) replay(streams context.Context, frame controlFrame) error {
 	if runID == "" {
 		runID = frame.RunID
 	}
-	if err := s.writeControl(controlFrame{
+	if err := s.writeControl(streams, controlFrame{
 		Control: controlReplayAccepted, ID: frame.ID, SessionID: entry.ID(), RunID: runID, After: &after,
 	}); err != nil {
 		subscription.Close()
@@ -111,7 +106,7 @@ func (s *Server) replay(streams context.Context, frame controlFrame) error {
 	s.pumps.Add(1)
 	go func() {
 		defer s.pumps.Done()
-		s.pump(subscription)
+		s.pump(streams, subscription)
 	}()
 	return nil
 }
