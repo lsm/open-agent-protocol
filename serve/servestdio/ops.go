@@ -844,6 +844,12 @@ func (s *Server) resolveCallOp(ctx context.Context, entry *serve.Session, envelo
 	}
 	answer, err := entry.ResolveCall(ctx, base.CallResolution{RequestID: envelope.ID, Request: payload})
 	if err != nil {
+		// Same-code parity with the HTTP route, details included: a caller
+		// that switches transports should not have to relearn which key it
+		// was refused for.
+		if code, message, details, typed := serve.ControlRefusal(err); typed {
+			return nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
+		}
 		code := "internal"
 		switch {
 		case errors.Is(err, serve.ErrScopeMismatch):

@@ -564,6 +564,16 @@ func (s *Server) resolveCall(w http.ResponseWriter, r *http.Request, entry *serv
 	}
 	answer, err := entry.ResolveCall(r.Context(), base.CallResolution{RequestID: envelope.ID, Request: request})
 	if err != nil {
+		envelope.RunID = request.RunID
+		// A typed control refusal keeps its code and its details, as every
+		// neighbouring path here does. An endpoint that does not execute
+		// control-owned tools is refused for that capability by name, so the
+		// caller learns which key to stop electing rather than only that the
+		// resolution failed.
+		if code, message, details, typed := serve.ControlRefusal(err); typed {
+			s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
+			return
+		}
 		status, code := http.StatusInternalServerError, "internal"
 		switch {
 		case errors.Is(err, serve.ErrScopeMismatch):
@@ -575,7 +585,6 @@ func (s *Server) resolveCall(w http.ResponseWriter, r *http.Request, entry *serv
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			status, code = http.StatusBadRequest, "request_cancelled"
 		}
-		envelope.RunID = request.RunID
 		s.writeError(w, status, code, adapterMessage(err), envelope)
 		return
 	}

@@ -63,6 +63,14 @@ type runState struct {
 	// arriving while one is pending is a lifecycle fault rather than a
 	// second interaction.
 	call *callState
+	// calls is every control-owned call this run has opened, including the
+	// settled ones. A settled call keeps its identity because a resolver
+	// whose response was lost retries, and the ladder owes that retry
+	// already_resolved with the settlement rather than unknown_interaction.
+	// Reading only the pending call would turn the answer into a lie as soon
+	// as the next tool_execute arrived, and sequential calls are the ordinary
+	// multi-tool flow rather than an edge case.
+	calls map[protocol.InteractionID]*callState
 }
 
 // callState is one control-owned call: the interaction the harness opened by
@@ -551,6 +559,10 @@ func (s *session) openControlCall(run *runState, payload native.ToolExecute) {
 		return
 	}
 	run.call = call
+	if run.calls == nil {
+		run.calls = map[protocol.InteractionID]*callState{}
+	}
+	run.calls[call.interaction] = call
 	owner := definition.ExecutionOwner
 	s.mu.Unlock()
 	requested := s.callPayload(run, call, "")
@@ -592,12 +604,20 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 		return protocol.ActionCallResolveResponse{}, base.ErrSessionClosed
 	}
 	run := s.runs[request.RunID]
-	if run == nil || run.call == nil || request.InteractionID != run.call.interaction || request.SessionID != s.state.SessionID {
+	if run == nil || request.SessionID != s.state.SessionID {
 		s.mu.Unlock()
 		return refuse(protocol.ReasonUnknownInteraction, "")
 	}
-	call := run.call
-	if request.RespondedBy != s.participant || request.RequestedBy != "agent" || request.ToolCallID != call.toolCallID {
+	// Every call this run opened, not just the one it is waiting on: a
+	// settled call must still be able to answer a retry with the settlement
+	// it owes, and a later tool_execute must not turn that answer into
+	// unknown_interaction.
+	call := run.calls[request.InteractionID]
+	if call == nil {
+		s.mu.Unlock()
+		return refuse(protocol.ReasonUnknownInteraction, "")
+	}
+	if request.RespondedBy != s.participant || request.RequestedBy != endpointID || request.ToolCallID != call.toolCallID {
 		s.mu.Unlock()
 		return refuse(protocol.ReasonWrongResponder, "")
 	}
@@ -618,7 +638,10 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 		s.mu.Unlock()
 		return refuse(protocol.ReasonAlreadyResolved, settlement)
 	}
-	if run.terminal {
+	if run.terminal || run.call != call {
+		// The run has ended, or a later call superseded this one, and either
+		// way this call is no longer accepting a resolution. Its settlement
+		// is what the trace carries for it.
 		s.mu.Unlock()
 		return refuse(protocol.ReasonAlreadyResolved, call.settlementID)
 	}
@@ -647,9 +670,35 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	sequence := s.nativeSequence + 1
 	s.mu.Unlock()
 
+	// Accepting, writing back and publishing the derived terminal is one
+	// transition, so it is taken against the same mutex every other terminal
+	// arbiter here takes. Without it the dispatch goroutine's agent_end can
+	// settle the run inside this window, the terminal is dropped as
+	// errTerminalWon, and the run ends carrying an interaction the trace
+	// still reads as pending. The lock order is the one Cancel already uses —
+	// opMu, held by this call, then transitionMu — so it cannot invert
+	// against handleEnvelope, which takes transitionMu alone.
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+
 	if err := s.writeToolResult(ctx, call, sequence); err != nil {
+		// The harness never got the answer, so this endpoint did not accept
+		// the resolution and must not keep a record saying it did: the caller
+		// is returned an error, and a call left marked settled would be one
+		// no later close could reopen and no retry could re-resolve.
+		s.mu.Lock()
+		call.settledArm, call.settledRequestID = "", ""
+		call.settledResult, call.settledError = nil, nil
+		s.mu.Unlock()
 		return protocol.ActionCallResolveResponse{}, err
 	}
+	// The native frame is on the wire, so the sequence it consumed is spent.
+	// Submit and Cancel record theirs the same way and for the same reason:
+	// the pin allocates per frame, and a number reused by the next submit or
+	// resolution is a duplicate on the client-to-agent wire.
+	s.mu.Lock()
+	s.nativeSequence = sequence
+	s.mu.Unlock()
 	s.settleControlCall(run, call, acknowledged)
 	return answer, nil
 }
@@ -716,7 +765,7 @@ func (s *session) callPayload(run *runState, call *callState, requestID protocol
 	return protocol.ActionCallPayload{
 		InteractionID: call.interaction, RequestID: requestID,
 		SessionID: s.state.SessionID, RunID: run.id, ToolCallID: call.toolCallID,
-		RequestedBy: "agent", RespondedBy: s.participant,
+		RequestedBy: endpointID, RespondedBy: s.participant,
 		ExecutionOwner: s.participant, Name: call.name,
 	}
 }
@@ -726,7 +775,7 @@ func toolKey(run *runState, nativeID string) string {
 }
 
 func (s *session) toolPayload(tool *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: "makai-agent", Name: tool.name, ArgumentsJSON: cloneRaw(tool.args), Progress: cloneRaw(tool.progress), Result: cloneRaw(tool.result)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: endpointID, ExecutionOwner: "makai-agent", Name: tool.name, ArgumentsJSON: cloneRaw(tool.args), Progress: cloneRaw(tool.progress), Result: cloneRaw(tool.result)}
 }
 
 func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
@@ -1023,7 +1072,11 @@ func (s *session) settleTools(run *runState, cancel bool) {
 func (s *session) closeControlCall(run *runState, cancel bool) {
 	s.mu.Lock()
 	call := run.call
-	if call == nil || call.settledArm != "" || call.settlementID != "" {
+	// The test is whether the trace carries a settlement, not whether this
+	// endpoint has decided on one. A call marked settled whose terminal was
+	// never published is exactly the case that must still be closed, or the
+	// run ends with an interaction the validator reads as pending.
+	if call == nil || call.settlementID != "" {
 		s.mu.Unlock()
 		return
 	}

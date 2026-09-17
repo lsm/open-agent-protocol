@@ -304,7 +304,7 @@ func resolveMakaiCorpusCall(t *testing.T, open base.Session, client *fakeClient,
 	}
 	request := protocol.ActionCallResolveRequest{
 		InteractionID: call.interaction, SessionID: "session", RunID: runID,
-		ToolCallID: call.toolCallID, RequestedBy: "agent", RespondedBy: "user",
+		ToolCallID: call.toolCallID, RequestedBy: "makai.agent", RespondedBy: "user",
 	}
 	switch frame.Resolve.Arm {
 	case protocol.ResolveArmAcknowledge:

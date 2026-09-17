@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +108,7 @@ func pendingCall(t *testing.T, open base.Session, runID protocol.RunID) *callSta
 func callRequest(call *callState, runID protocol.RunID) protocol.ActionCallResolveRequest {
 	return protocol.ActionCallResolveRequest{
 		InteractionID: call.interaction, SessionID: "session", RunID: runID,
-		ToolCallID: call.toolCallID, RequestedBy: "agent", RespondedBy: "user",
+		ToolCallID: call.toolCallID, RequestedBy: "makai.agent", RespondedBy: "user",
 		Result: json.RawMessage(`{"hits":2}`),
 	}
 }
@@ -444,5 +445,135 @@ func TestProvidedCatalogReachesEveryMessage(t *testing.T) {
 	}
 	if len(decoded.Tools) != 1 || decoded.Tools[0].Name != "lookup" {
 		t.Fatalf("agent_message carries %+v, want the provided catalog", decoded.Tools)
+	}
+}
+
+// TestSettledCallStaysAnswerableAfterTheNextOne pins that a resolver whose
+// response was lost still gets the answer the ladder owes it. Sequential
+// tool_execute frames are the ordinary multi-tool flow, and a retry for the
+// first call must not become unknown_interaction the moment the second opens:
+// that reason says the call never existed, which would have the resolver
+// re-send a resolution the endpoint has already carried out.
+func TestSettledCallStaysAnswerableAfterTheNextOne(t *testing.T) {
+	session, client := openProviding(t, providedTool())
+	admission, _ := submitTest(t, session)
+	toolExecute(t, client, "lookup")
+	first := pendingCall(t, session, admission.RunID)
+	firstRequest := callRequest(first, admission.RunID)
+	if answer := resolveCall(t, session, "resolve-1", firstRequest); !answer.Accepted {
+		t.Fatalf("first resolution refused %q", answer.Reason)
+	}
+
+	toolExecuteWith(t, client, "lookup", "native-call-2", 3)
+	waitForCall(t, session, admission.RunID, first.interaction)
+
+	answer := resolveCall(t, session, "resolve-1-retry", firstRequest)
+	if answer.Accepted || answer.Reason != protocol.ReasonAlreadyResolved {
+		t.Fatalf("a retry of the settled call got accepted=%v reason=%q", answer.Accepted, answer.Reason)
+	}
+	if answer.Details == nil || answer.Details.SettlementID != first.settlementID {
+		t.Fatalf("details = %+v, want the first call's settlement", answer.Details)
+	}
+}
+
+// TestResolutionAdvancesTheNativeSequence pins that the tool_result consumes
+// the frame number it was allocated. The pin allocates per frame on the
+// client-to-agent wire, so a number this write did not record is one the next
+// submit or resolution hands out again.
+func TestResolutionAdvancesTheNativeSequence(t *testing.T) {
+	session, client := openProviding(t, providedTool())
+	admission, _ := submitTest(t, session)
+	toolExecute(t, client, "lookup")
+	call := pendingCall(t, session, admission.RunID)
+	if answer := resolveCall(t, session, "resolve-1", callRequest(call, admission.RunID)); !answer.Accepted {
+		t.Fatalf("resolution refused %q", answer.Reason)
+	}
+	toolExecuteWith(t, client, "lookup", "native-call-2", 3)
+	second := waitForNewCall(t, session, admission.RunID, call.interaction)
+	if answer := resolveCall(t, session, "resolve-2", callRequest(second, admission.RunID)); !answer.Accepted {
+		t.Fatalf("second resolution refused %q", answer.Reason)
+	}
+
+	client.mu.Lock()
+	sent := append([]native.Envelope(nil), client.sends...)
+	client.mu.Unlock()
+	seen := map[uint64]bool{}
+	for _, envelope := range sent {
+		if seen[envelope.Sequence] {
+			t.Fatalf("native sequence %d was written twice: %+v", envelope.Sequence, sent)
+		}
+		seen[envelope.Sequence] = true
+	}
+}
+
+// TestFailedWriteBackLeavesTheCallResolvable pins the rollback. If the harness
+// never received the answer then this endpoint did not accept the resolution,
+// and a record saying otherwise would be a call no close could reopen and no
+// retry could re-resolve — the run would end carrying an interaction the trace
+// still reads as pending.
+func TestFailedWriteBackLeavesTheCallResolvable(t *testing.T) {
+	session, client := openProviding(t, providedTool())
+	admission, stream := submitTest(t, session)
+	toolExecute(t, client, "lookup")
+	call := pendingCall(t, session, admission.RunID)
+
+	client.mu.Lock()
+	client.sendErr = errors.New("the pipe is gone")
+	client.mu.Unlock()
+	if _, err := session.(base.CallResolver).ResolveCall(context.Background(), base.CallResolution{
+		RequestID: "resolve-1", Request: callRequest(call, admission.RunID),
+	}); err == nil {
+		t.Fatal("a resolution whose write back failed was reported as accepted")
+	}
+
+	client.mu.Lock()
+	client.sendErr = nil
+	client.mu.Unlock()
+	if answer := resolveCall(t, session, "resolve-2", callRequest(call, admission.RunID)); !answer.Accepted {
+		t.Fatalf("the retry after a failed write was refused %q", answer.Reason)
+	}
+	endRun(t, client)
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, probe(t), events)
+}
+
+// toolExecuteWith is toolExecute with an explicit native call id and frame
+// sequence, for the cases that need two.
+func toolExecuteWith(t *testing.T, client *fakeClient, name, nativeID string, sequence uint64) {
+	t.Helper()
+	id := native.MessageID(fmt.Sprintf("00000000000000000000%06d", sequence+200))
+	env, err := native.NewEnvelope(native.TypeToolExecute, "Abcdefghijklmnopqrstu", id, sequence, int64(sequence),
+		native.ToolExecute{ToolCallID: nativeID, ToolName: name, ArgsJSON: `{"q":"oap"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.inbound <- stdio.Inbound{Envelope: &env}
+}
+
+// waitForCall waits until the run's pending call is no longer the named one,
+// which is how a test knows the next tool_execute has been reduced.
+func waitForCall(t *testing.T, session base.Session, runID protocol.RunID, previous protocol.InteractionID) {
+	t.Helper()
+	waitForNewCall(t, session, runID, previous)
+}
+
+func waitForNewCall(t *testing.T, open base.Session, runID protocol.RunID, previous protocol.InteractionID) *callState {
+	t.Helper()
+	inner := open.(*session)
+	deadline := time.Now().Add(time.Second)
+	for {
+		inner.mu.Lock()
+		var call *callState
+		if run := inner.runs[runID]; run != nil {
+			call = run.call
+		}
+		inner.mu.Unlock()
+		if call != nil && call.interaction != previous {
+			return call
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the next control-owned call was never published")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

@@ -18,7 +18,14 @@ import (
 )
 
 const (
-	PinnedCommit           = "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5"
+	PinnedCommit = "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5"
+	// endpointID is this endpoint's identity, and therefore the agent
+	// participant every interaction it raises is requested by. The two are
+	// one value because protocol.initialize.response declares the endpoint
+	// and nothing else declares the agent side: an adapter naming a different
+	// requester raises gates addressed to a participant the trace never saw
+	// declared.
+	endpointID             = "makai.agent"
 	CapabilityRevision     = "makai-agent-67ad514-oap-v2"
 	defaultJournalCapacity = 256
 )
@@ -227,7 +234,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		protocol.FeatureToolsProvide: provideSupport,
 		"action.permissions":         {Level: protocol.SupportUnavailable, Reason: "Makai agent protocol exposes no permission interaction"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "makai.agent", Name: "Makai Agent Adapter", Version: PinnedCommit[:7], Adapter: "makai-agent-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "native_session_teardown"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Makai Agent Adapter", Version: PinnedCommit[:7], Adapter: "makai-agent-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "native_session_teardown"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {

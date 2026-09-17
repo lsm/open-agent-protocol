@@ -28,7 +28,7 @@
       "session_id": "session",
       "run_id": "run-4",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "makai.agent",
       "execution_owner": "makai-agent",
       "name": "search",
       "arguments_json": {
@@ -52,7 +52,7 @@
       "session_id": "session",
       "run_id": "run-4",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "makai.agent",
       "execution_owner": "makai-agent",
       "name": "search"
     },
@@ -74,7 +74,7 @@
       "session_id": "session",
       "run_id": "run-4",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "makai.agent",
       "execution_owner": "makai-agent",
       "name": "search",
       "progress": {
@@ -99,7 +99,7 @@
       "session_id": "session",
       "run_id": "run-4",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "makai.agent",
       "execution_owner": "makai-agent",
       "name": "search",
       "result": {
