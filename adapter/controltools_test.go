@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -438,5 +439,57 @@ func TestUnprovidedSessionIsUnchanged(t *testing.T) {
 	}
 	if payload.InteractionID != "" {
 		t.Fatal("a harness-owned call is not an interaction")
+	}
+}
+
+func secondProvidedTool() protocol.ToolDefinition {
+	return protocol.ToolDefinition{
+		Name: "annotate", Description: "A second tool the control layer executes.",
+		InputSchema:    json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string"}}}`),
+		ExecutionOwner: "user",
+	}
+}
+
+func TestEveryListedToolIsSelectableAndReachable(t *testing.T) {
+	lister, ok := openProviding(t, providedTool(), secondProvidedTool()).(adapter.ToolLister)
+	if !ok {
+		t.Fatal("the reference session lists tools")
+	}
+	listed, err := lister.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "control-tools"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var provided []string
+	for _, tool := range listed.Tools.Tools {
+		if tool.ExecutionOwner == "user" {
+			provided = append(provided, tool.Name)
+		}
+	}
+	if !slices.Equal(provided, []string{providedTool().Name, secondProvidedTool().Name}) {
+		t.Fatalf("the session lists %v as control-owned, want both provided tools", provided)
+	}
+	for _, name := range provided {
+		session := openProviding(t, providedTool(), secondProvidedTool())
+		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+			SessionID:  "control-tools",
+			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+			ToolChoice: json.RawMessage(`{"mode":"named","name":"` + name + `"}`),
+		})
+		if err != nil {
+			t.Fatalf("tool_choice naming the listed tool %q was refused: %v", name, err)
+		}
+		adaptertest.Next(t, stream, time.Second)
+		adaptertest.Next(t, stream, time.Second)
+		call := adaptertest.Next(t, stream, time.Second)
+		if call.Type != protocol.TypeActionCallRequested {
+			t.Fatalf("got %s, want a call for %q", call.Type, name)
+		}
+		var payload protocol.ActionCallPayload
+		if err := call.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Name != name {
+			t.Fatalf("the run called %q, but the policy named %q", payload.Name, name)
+		}
 	}
 }

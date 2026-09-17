@@ -620,7 +620,7 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		// answers with the outcome.
 		run.stage = stageCall
 		run.callID = protocol.InteractionID(s.ids.NewID("call"))
-		run.providedTool = s.provided[0]
+		run.providedTool = controls.elected
 	}
 	stream := make(chan Result, 32)
 	run.subscribers = append(run.subscribers, stream)
@@ -923,6 +923,7 @@ type admittedControls struct {
 	instructions string
 	choice       *protocol.ToolChoice
 	outputSchema json.RawMessage
+	elected      protocol.ToolDefinition
 	callsTool    bool
 }
 
@@ -969,13 +970,46 @@ func (s *memorySession) Models(ctx context.Context, request protocol.ModelsReque
 }
 
 // catalog names the effective tool catalog this session's policies are judged
-// against, read from the one the descriptor publishes.
+// against. It is the catalog this session lists, which is the descriptor's own
+// plus whatever the open provided: a tool_choice is judged against what a
+// caller can see, and `tools.list` is where a caller sees it. Judging against
+// the descriptor alone refused every policy naming a provided tool as "outside
+// the catalog" while the same session listed that tool, which is the endpoint
+// contradicting its own listing.
 func (s *memorySession) catalog() []string {
-	names := make([]string, 0, 1)
-	for _, tool := range scriptedCatalog() {
+	names := make([]string, 0, 1+len(s.provided))
+	for _, tool := range s.callable() {
 		names = append(names, tool.Name)
 	}
 	return names
+}
+
+// callable is the session's catalog in the order a run elects from it. A
+// session opened with a control-owned catalog calls one of those tools rather
+// than the scripted one, so the provided entries come first: electing by
+// policy over this order is what makes a provided tool past the first
+// reachable at all.
+func (s *memorySession) callable() []protocol.ToolDefinition {
+	tools := make([]protocol.ToolDefinition, 0, 1+len(s.provided))
+	tools = append(tools, scriptedCatalog()...)
+	return append(tools, s.provided...)
+}
+
+// elect picks the tool this run will call: the first one the policy permits,
+// preferring a provided tool when the session has any, because that is the one
+// the script substitutes. It reports false when the policy permits none, which
+// is the run that opens no call at all.
+func (s *memorySession) elect(policy *protocol.ToolChoice) (protocol.ToolDefinition, bool) {
+	candidates := s.callable()
+	if len(s.provided) > 0 {
+		candidates = s.provided
+	}
+	for _, tool := range candidates {
+		if policy == nil || policy.Permits(tool.Name, s.catalog(), true) {
+			return tool, true
+		}
+	}
+	return protocol.ToolDefinition{}, false
 }
 
 // admitControls judges every per-submit control against what Probe advertises
@@ -1016,9 +1050,13 @@ func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (ad
 			refuse(protocol.FeatureToolSelection, &UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason})
 		} else {
 			controls.choice = policy
-			controls.callsTool = policy.Permits(scriptedTool, s.catalog(), true)
 		}
 	}
+	// The election answers the policy against the tool the run will actually
+	// call, not against the scripted one it would have called with no catalog
+	// provided. Judging the scripted tool while substituting a provided one
+	// answered a question about a tool the run was never going to reach.
+	controls.elected, controls.callsTool = s.elect(controls.choice)
 	if len(request.OutputSchema) > 0 {
 		compiled, err := validation.CompileOutputSchema(request.OutputSchema)
 		switch {
