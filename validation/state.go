@@ -1017,8 +1017,6 @@ func (s *state) admitSubmission(i, line int, e protocol.Envelope, p protocol.Mes
 	s.admitLedEntries(run)
 }
 
-// applyModelControl moves the session's expected default for one admitted
-// model selection, in the way the disclosed mode says it moves.
 // requestedSubmission is the submission a request carried, whichever carrier
 // carried it: a submit request is one, and an open carrying a message projects
 // to one. A request that carried no submission yields the zero value, which is
@@ -1040,6 +1038,8 @@ func requestedSubmission(req *requestState) protocol.MessageSubmitRequest {
 	return protocol.MessageSubmitRequest{}
 }
 
+// applyModelControl moves the session's expected default for one admitted
+// model selection, in the way the disclosed mode says it moves.
 func (s *state) applyModelControl(st *sessionTrack, controls admittedControls) {
 	switch controls.mode {
 	case protocol.ModePerRun:

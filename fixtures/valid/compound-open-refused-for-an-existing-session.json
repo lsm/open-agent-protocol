@@ -1,0 +1,66 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Compound-open fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "oc",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "message": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "go"
+          }
+        ],
+        "delivery": "auto",
+        "model_id": "m1"
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "errr",
+    "in_reply_to": "oc",
+    "session_id": "s1",
+    "payload": {
+      "error": {
+        "code": "session_exists",
+        "message": "session \"s1\" is already open on this endpoint"
+      }
+    }
+  }
+]

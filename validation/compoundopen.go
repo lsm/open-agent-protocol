@@ -16,6 +16,9 @@ func (s *state) compoundOpenRequest(i, line int, e protocol.Envelope, p protocol
 	submission := p.Message.Submit(p.SessionID)
 
 	s.submitControls(i, line, e, submission)
+	if pending := s.pendingControls[e.ID]; pending != nil {
+		pending.fromOpen = true
+	}
 	if submission.Delivery != protocol.DeliveryAuto && submission.Delivery != protocol.DeliveryQueue &&
 		!(s.tolerant && foreignRequestedDelivery(submission.Delivery)) {
 
@@ -27,10 +30,20 @@ func (s *state) subscribeGate(i, line int, e protocol.Envelope, p protocol.Sessi
 	if !p.Subscribe {
 		return
 	}
-	s.featureKeys(i, line, e, []string{protocol.FeatureOpenSubscribe})
-	level := s.features[protocol.FeatureOpenSubscribe]
+	level, judged := s.controlDescriptor(i, line, e, protocol.FeatureOpenSubscribe)
+	if !judged {
+		return
+	}
 	if !affirmative(level) {
-
+		s.pendingSubscribes[e.ID] = &pendingSubscribe{
+			expectation: &controlExpectation{
+				rung: rungCapability, key: protocol.FeatureOpenSubscribe, pointer: "/payload/subscribe",
+				code: errorUnsupportedFeature, reason: reasonUnadvertised,
+				detailName: "feature", detailValue: protocol.FeatureOpenSubscribe,
+				diagnostic: CodeUnavailableCapability,
+				message:    "an open elects subscribe against an endpoint that has not affirmatively advertised it",
+			},
+		}
 		return
 	}
 	if level == protocol.SupportDegraded && !p.AllowsDegraded(protocol.FeatureOpenSubscribe) {

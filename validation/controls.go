@@ -153,6 +153,9 @@ type admittedControls struct {
 // pendingSubmit is what one submit request left for its response to settle.
 type pendingSubmit struct {
 	expectation *controlExpectation
+	// fromOpen marks controls a compound open's message carried, whose
+	// request envelope is also the one an open-level refusal answers.
+	fromOpen bool
 	// queue is the queue unit's retained window: the bounds that applied to
 	// this submit, what the session held when it was made, and what happened
 	// to both while it was in flight.
@@ -552,9 +555,18 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 		return text, ok && isText
 	}
 	if expectation := pending.expectation; expectation != nil {
-		if !conformingRefusal(payload.Error, expectation) {
-			s.addExpected(expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
+		if conformingRefusal(payload.Error, expectation) {
+			return
 		}
+		// An open is refused as a whole before its message is considered, so
+		// a refusal that answers the open itself — a session that already
+		// exists, an adapter that does not — says nothing about a control the
+		// message never reached. Only a refusal that speaks to this
+		// expectation's key is judged against it.
+		if pending.fromOpen && answersTheCarrier(payload.Error, expectation) {
+			return
+		}
+		s.addExpected(expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 		return
 	}
 	// A selection the trace cannot judge yet — no catalog under the active
@@ -581,6 +593,16 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 	// is a fact about the window rather than about the instant the request
 	// arrived.
 	s.settleQueueRefusal(i, line, e, pending, payload)
+}
+
+// answersTheCarrier reports whether a refusal speaks to the open rather than
+// to the expectation's control: one naming another feature answers that
+// feature, and one naming none under another code answers the open itself.
+func answersTheCarrier(err protocol.ProtocolError, expectation *controlExpectation) bool {
+	if named, ok := err.Details["feature"].(string); ok {
+		return named != expectation.key
+	}
+	return err.Code != expectation.code
 }
 
 // conformingRefusal reports whether one error.response says what the retained
