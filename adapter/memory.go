@@ -114,7 +114,7 @@ var attachSupport = protocol.FeatureSupport{
 // one that merges second takes the number after what it finds. This descriptor
 // is neither of theirs: it says everything both of them say and the queue
 // besides, so it is new again.
-const CapabilityRevision = "reference-memory-v6"
+const CapabilityRevision = "reference-memory-v7"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -162,6 +162,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"protocol.initialize":           {Level: protocol.SupportNative},
 		"capabilities":                  {Level: protocol.SupportNative},
 		"session.open":                  {Level: protocol.SupportNative},
+		protocol.FeatureOpenSubscribe:   {Level: protocol.SupportNative, Reason: "the journal exists from the open, so a subscription registered there misses nothing"},
 		"session.state":                 {Level: protocol.SupportNative},
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
