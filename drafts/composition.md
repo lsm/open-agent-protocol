@@ -128,10 +128,17 @@ a provider must be resolved against a registry for its wire format and a
 catalog for its endpoint, both of which the endpoint built before the session
 existed.
 
-> **Does the attached thing require resolution against state the endpoint built
-> before the session existed?** If not, attachment is free. If so, the endpoint
-> either gives each session its own view of that state, or must not advertise
-> the unit.
+Resolution alone is not the line, though. `submit.model_id` resolves against
+those same two things and is free, as it has been since Decision 0005. The
+separating clause is read against write: naming an existing entry is a read, so
+two sessions naming the same provider get the same answer and neither changes
+what the other sees. An attachment *adds* an entry, and that is what forces
+first-wins, clobber or refuse.
+
+> **Does the attachment introduce or modify an entry in state the endpoint
+> built before the session existed, rather than merely naming one?** Naming is
+> free at any scope. Introducing needs a per-session view, and an endpoint that
+> cannot provide one must not advertise the unit.
 
 [Decision 0017](../decisions/0017-provider-provisioning.md) adopts this and
 makes the failing case a refusal rather than a merge, because the merges are
@@ -140,13 +147,15 @@ caller's prompts to the other caller's endpoint with nothing on the wire saying
 so.
 
 The predicate is worth stating here rather than only there, because it sorts
-things this draft has not written yet. Purely declarative attachments — a
-prompt fragment, an output schema, sampling defaults — are free. An attached
-MCP *source* is not: it names a server the endpoint must connect to and hold,
-which puts it on the provider side of the line despite living in the tools
-column of the table above. The pass-through arm in the third bullet above is
-therefore the same class of gap as the provider one, one layer out — not a
-milder version of it.
+things this draft has not written yet, and because it keeps the selection row
+of the table above out of the argument entirely — carrying a model identifier
+names, it does not introduce. Purely declarative attachments — a prompt
+fragment, an output schema, sampling defaults — are free for the same reason.
+An attached MCP *source* is not: it names a server the endpoint must connect to
+and hold, which is a new entry rather than a lookup, and that puts it on the
+provider side of the line despite living in the tools column of the table
+above. The pass-through arm in the third bullet above is therefore the same
+class of gap as the provider one, one layer out — not a milder version of it.
 
 ## Why this is one shape and not four decisions
 

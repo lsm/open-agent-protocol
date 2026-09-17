@@ -103,13 +103,27 @@ anything. A provider must be resolved — against a registry for the wire format
 and a catalog for the endpoint — and the endpoint built both before the session
 existed.
 
+Resolution alone is not the line, though, and stopping there flags something
+obviously fine. A caller-supplied model identifier arrives per session and
+resolves against exactly the same two pieces of pre-session state — a registry
+for the wire, a catalog for the endpoint. Every OAP submit carries one.
+`submit.model_id` has been free since Decision 0005 and should stay free.
+
+What separates them is read from write. Naming an existing provider *reads*
+shared state: two sessions naming the same one get the same answer, and neither
+changes what the other sees. Attaching a provider *adds an entry* to it, and
+that is what forces first-wins, clobber or refuse. Makai's maintainers point at
+their own split as the check — provider lookup happens per request, while
+registration happens once at startup and nowhere else outside tests.
+
 So the predicate this record adopts, stated generally because it is not about
 providers:
 
-> **Does the attached thing require resolution against state the endpoint built
-> before the session existed?** If it does not, attachment is free and needs no
-> scoping argument. If it does, the endpoint either gives each session its own
-> view of that state, or must not advertise the unit.
+> **Does the attachment introduce or modify an entry in state the endpoint
+> built before the session existed, rather than merely naming one?** Naming is
+> free at any scope. Introducing is what needs a per-session view — and an
+> endpoint that cannot give each session its own view must not advertise the
+> unit.
 
 **Two sessions attaching different endpoints under one provider id must not be
 representable as one.** An endpoint whose provider resolution predates its
@@ -129,14 +143,15 @@ That puts the cost where it belongs: an endpoint with a process-global registry
 is conformant as it stands, and a per-session overlay buys a capability rather
 than paying off a debt.
 
-The predicate earns its generality twice over. It says an attachment of purely
-declarative data — a prompt fragment, an output schema, sampling defaults —
-is free and needs no scope section at all, so this is not a tax on attachments
-generally. And it classifies the one gap this record leaves open: an attached
-MCP *source* names a server the endpoint must connect to and hold, which is
-resolution, so it sits on the provider side of the predicate rather than the
-tool side. The pass-through arm below is the same class of hole one layer out,
-not a milder version of it.
+The predicate earns its generality three times over. Tools resolve against
+nothing, so they are free. Purely declarative attachments — a prompt fragment,
+an output schema, sampling defaults — introduce nothing the endpoint must
+resolve, so they are free too, and this is not a tax on attachments generally.
+And it classifies the one gap this record leaves open: an attached MCP *source*
+names a server the endpoint must connect to and hold, which is a new entry
+rather than a lookup, so it sits on the provider side of the line rather than
+the tool side. The pass-through arm below is the same class of hole one layer
+out, not a milder version of it.
 
 ### `id` names a vendor endpoint, not a wire implementation
 
