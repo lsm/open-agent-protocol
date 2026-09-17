@@ -1,6 +1,10 @@
 # Decision 0010: Terminal Provenance
 
-Status: proposed
+Status: accepted 2026-09-17 (an amendment rather than a unit, so the unit
+gate does not apply; its evidence is pinned corpus cases that run in CI —
+`confirmed-destructive-cancel` and `post-stop-stale-publication` — and
+`settled_by` now appears in expectations across several adapters. Nothing in
+the record is left pending)
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

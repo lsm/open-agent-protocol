@@ -1,10 +1,15 @@
 # Decision 0011: Control-Layer-Provided Tools
 
-Status: accepted 2026-09-17 (the memory reference adapter provisions and
-executes the unit, the Makai adapter executes it through its production codec
-and reducer with the `tool-bridge-roundtrip` corpus case pinned to its ledger
-commit, `fixtures/manifest.json` carries the ladder in both directions, and
-nothing pending remains inside this record)
+Status: accepted 2026-09-17. Assessed against Decision 0003 earlier the same
+day and **held**, correctly: steps 2 and 4 had landed — 58 `control-tools`
+fixtures, the validator rules, this record — and steps 1 and 3 had not, so the
+wire shape was prose and authored files agreeing with each other. That hold is
+discharged by the work that carries this status. Step 1: the memory reference
+adapter provisions at open and executes a control-owned call. Step 3: the Makai
+adapter executes the unit through its production codec and reducer, with the
+`tool-bridge-roundtrip` corpus case — the one this record names as required and
+the corpus never contained — pinned to its ledger commit. Nothing pending
+remains inside this record
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
