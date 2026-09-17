@@ -280,6 +280,13 @@ observations describe one logical invocation. The adapter correlates both using
 the namespaced portable `tool_call_id` and never emits duplicate OAP actions.
 A parent terminal closes any unfinished tool before settlement.
 
+Before this unit the bridge was not merely refused but unreachable: the adapter
+marshalled `"tools": []any{}` onto every `agent_message`, so the harness was
+offered no tool, never emitted `tool_execute`, and the refusal behind it was a
+path no run took. Makai's own native OAP mode declares empty in both payloads
+for the same reason. Both sides suppressed the capability at the source
+because OAP had nowhere to put a caller-executed tool.
+
 The bridge is executed rather than refused as of the `+control-tools` unit
 ([Decision 0011](../decisions/0011-control-layer-provided-tools.md)). A
 `tool_execute` naming a tool the control layer provided at session open opens
@@ -298,7 +305,8 @@ submit can neither add a tool nor drop one. And makai admits one outstanding
 is a lifecycle fault rather than a second interaction: the native correlation
 is the `tool_call_id` the frame is about to reuse.
 
-`makai_tool_executor_unavailable` survives, narrowed to what it now names: a
+`makai_tool_executor_unavailable` — an identifier this repository mints, not
+one Makai sends — survives, narrowed to what it now names: a
 `tool_execute` for a tool this session never provided. Such a frame has no
 owner to route to, and the protocol gained a place for the frames the adapter
 can route rather than for every frame.
@@ -608,6 +616,24 @@ Native-sequence fault coverage follows §13.1 at this pin: duplicate frames are
 rejected by `message_id`, zero is reserved for correlated validation errors,
 and allocated-sequence gaps/reordering are legal wire shapes (pinned by the
 transport tests) rather than corpus faults.
+
+## Pin staleness: main implements natively
+
+This ledger is pinned to `67ad514` and describes the adapter's translation of
+it. Makai's `main` has moved: PR #310 adds a native OAP mode —
+`zig/src/protocol/oap/{types,envelope,server,bridge}.zig` behind `makai --oap`,
+translating onto the same agent loop through `bridge.zig` — which the
+maintainers report implements all five P0 behaviours this ledger records as
+absent: a run-scoped cancellation terminal, `run.failed` for provider errors,
+a submission/run split with an explicit admission response, server-allocated
+contiguous per-run sequences, and a capability revision with a
+`stale_capabilities` refusal.
+
+That report is a source reading, not a conformance result, and it is recorded
+here as such. `oap conformance --command` against a built `makai --oap` is what
+would settle it, and until that runs neither side can falsify a conformance
+claim about #310. The pinned adapter above is unaffected either way: it adapts
+`67ad514` and keeps doing so.
 
 ## v1.1 deviations and re-pin gate
 

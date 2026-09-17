@@ -233,6 +233,21 @@ func (r *runner) drive() {
 	r.pass("the submission is admitted and names its run")
 	r.runID = admission.RunID
 
+	// Core requirement 6's second half, which the first half's check cannot
+	// see: an accepted auto submission repeats requested_delivery: auto and
+	// reports a concrete effective_delivery. Reporting auto back, or omitting
+	// the field, leaves the host unable to tell whether its message started or
+	// was queued — the one thing the response exists to say.
+	const delivery = "the admission repeats requested_delivery and reports a concrete effective_delivery"
+	switch {
+	case admission.RequestedDelivery != protocol.DeliveryAuto:
+		r.fail(delivery, fmt.Sprintf("requested_delivery came back %q, want %q", admission.RequestedDelivery, protocol.DeliveryAuto))
+	case admission.EffectiveDelivery == "" || string(admission.EffectiveDelivery) == string(protocol.DeliveryAuto):
+		r.fail(delivery, fmt.Sprintf("effective_delivery is %q; auto must resolve to a concrete mode", admission.EffectiveDelivery))
+	default:
+		r.pass(delivery)
+	}
+
 	r.consumeRun()
 
 	r.replayRun()

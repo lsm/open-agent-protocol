@@ -28,15 +28,31 @@ can do neither. There is no envelope on which to say "I will run this", no
 envelope on which to say "here is the result", and nowhere for an adapter to
 put the result if it had one.
 
-That is not a gap in a capability nobody reaches. The Makai adapter reaches it
-on every run: `adapter/makai/session.go:288` fails the run with
-`makai_tool_executor_unavailable` the moment the harness emits `tool_execute`,
-because the frame asks the client to execute a tool and OAP has nowhere to
-carry the answer back. The adapter is not cutting a corner — it is reporting
-honestly that the protocol cannot express what the harness asked for. Anything
-a Makai consumer hosts itself is therefore unavailable over OAP today, whatever
-else the adapter supports, and that is the last blocker on an external
+That is not a gap in a capability nobody reaches, but the way it is unreachable
+is the point. This repository's Makai adapter declares an empty `tools` array
+on every `agent_message`, so the harness is offered nothing to hand back and
+never emits `tool_execute`; the refusal waiting behind it —
+`adapter/makai/session.go` failing the run with the adapter-minted reason
+`makai_tool_executor_unavailable` — is a path no run takes. Makai's own native
+OAP mode declares empty in both payloads for the same reason.
+
+Both integrations suppress the capability at the source rather than meeting it
+in flight, and they suppress it *because* OAP has nowhere to put a
+caller-executed tool. That is stronger evidence than a refusal in a live trace
+would be: a refusal proves an endpoint hit a wall once, while two independent
+integrations declining to offer the feature at all shows the wall is load-
+bearing enough to design around. Anything a Makai consumer hosts itself is
+unavailable over OAP today, and that is the last blocker on an external
 maintainer's decision about implementing OAP natively.
+
+**Correction, 2026-09-17.** This paragraph first said the adapter "reaches it
+on every run" and cited the failure as observed behaviour. It reaches it on no
+run, for the reason now stated: `"tools": []any{}` was marshalled onto every
+message before this unit landed, so the frame that would trigger the refusal
+never arrived. The gap the unit closes is real and the evidence for it was
+wrong. `makai_tool_executor_unavailable` is also this repository's identifier
+rather than Makai's, and appears nowhere in the Makai tree — a reader grepping
+for it there finds nothing.
 
 Decision 0008 graduated the other two thirds of the tool-sources work: a
 catalog that says where its tools come from (T3a), and attachment of sources at
@@ -397,10 +413,16 @@ halves: the ranked response the resolver reads and the native frame the
 harness receives. Pinning only the OAP side would pass an adapter that emitted
 a conforming terminal and told makai nothing.
 
-`makai_tool_executor_unavailable` survives, narrowed to what it now names: a
+`makai_tool_executor_unavailable` — this repository's identifier for the
+refusal, not one Makai mints — survives, narrowed to what it now names: a
 `tool_execute` for a tool the session never provided. That frame still has no
 owner to route to, and this unit gave the adapter a place for the frames it
 can route rather than for every frame.
+
+It is also reachable for the first time. The adapter now writes the provided
+catalog onto every `agent_message` instead of an empty array, so the harness
+can ask, which means the refusal and the round trip are both paths a run can
+actually take.
 
 The reference execution is the memory adapter, which provisions under three
 disclosed limits — a ceiling, a name pattern and a schema dialect — and calls
