@@ -151,6 +151,13 @@ func helperCommand(t *testing.T, mode string) []string {
 // wrong.
 func runHelperEndpoint(mode string) int {
 	const revision = "helper-v1"
+	if mode == "mute" {
+		// Starts, says nothing, and never leaves — not even on EOF. A sleep
+		// rather than a bare block, so the runtime does not notice every
+		// goroutine is parked and exit on its own.
+		time.Sleep(time.Hour)
+		return 0
+	}
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 	ids := 0
@@ -417,5 +424,39 @@ func TestRunnerAcceptsAnEndpointThatStreamsBeforeAcknowledging(t *testing.T) {
 		if !check.Passed && check.Name == "the exchange validates as an OAP trace" {
 			t.Fatalf("the assembled trace was rejected: %s", check.Detail)
 		}
+	}
+}
+
+// TestClientKillsAnEndpointThatNeitherSpeaksNorExits pins what happens to a
+// binary the runner gives up on.
+//
+// Judging arbitrary third-party binaries is this tool's purpose, so one that
+// starts and then neither speaks nor exits is a primary input. Left alone it
+// would be waited on once per operation — the drive, the drain, and the
+// framing check's second process — and then left running, unreaped, after the
+// runner had already decided against it.
+func TestClientKillsAnEndpointThatNeitherSpeaksNorExits(t *testing.T) {
+	const deadline = 300 * time.Millisecond
+	client, err := SpawnWithDeadline(context.Background(), helperCommand(t, "mute")[0], nil, io.Discard, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if _, err := client.Response("never-answered"); err == nil {
+		t.Fatal("waiting on a mute endpoint returned no error")
+	}
+	if client.cmd.ProcessState == nil {
+		t.Fatal("the endpoint was left running after the runner gave up on it")
+	}
+
+	// The death is sticky: every later wait answers at once rather than
+	// paying the deadline again for the same conclusion.
+	start := time.Now()
+	if _, err := client.Response("never-answered-either"); err == nil {
+		t.Fatal("a second wait on a dead endpoint returned no error")
+	}
+	if elapsed := time.Since(start); elapsed > deadline/2 {
+		t.Fatalf("a second wait took %s, so it paid the deadline again", elapsed)
 	}
 }

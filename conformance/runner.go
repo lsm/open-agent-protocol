@@ -112,6 +112,7 @@ func Run(ctx context.Context, options Options) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer client.Close()
 	r := &runner{client: client, report: &Report{}, session: session}
 
 	r.drive()
@@ -316,6 +317,7 @@ func framingContract(ctx context.Context, options Options) Check {
 	if err != nil {
 		return Check{Name: name, Detail: err.Error()}
 	}
+	defer client.Close()
 	// A write failure here is not a test failure: an endpoint may already
 	// have refused the frame and exited, which is the behaviour being
 	// checked. The exit code is what decides.

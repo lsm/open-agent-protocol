@@ -48,9 +48,13 @@ var ErrEndpointGone = errors.New("conformance: the endpoint produced no more lin
 // intermittently — which is the failure this shape exists to prevent.
 type Client struct {
 	cmd    *exec.Cmd
+	cancel context.CancelFunc
 	stdin  io.WriteCloser
 	lines  chan line
 	closed bool
+
+	reap    sync.Once
+	waitErr error
 
 	mu        sync.Mutex
 	responses []protocol.Envelope
@@ -59,6 +63,9 @@ type Client struct {
 
 	transcript []protocol.Envelope
 	deadline   time.Duration
+	// dead is sticky. Once the endpoint has stopped producing lines, every
+	// later wait would pay the full deadline again for the same answer.
+	dead error
 }
 
 type line struct {
@@ -94,23 +101,32 @@ func Spawn(ctx context.Context, name string, args []string, stderr io.Writer) (*
 
 // SpawnWithDeadline is Spawn with an explicit per-line bound.
 func SpawnWithDeadline(ctx context.Context, name string, args []string, stderr io.Writer, deadline time.Duration) (*Client, error) {
+	// The command gets its own cancellable context rather than the caller's.
+	// The caller's is typically never cancelled, which would leave a spawned
+	// binary running after the runner gave up on it — and judging arbitrary
+	// third-party binaries is what this tool is for, so one that starts and
+	// then neither speaks nor exits is a primary input, not an edge case.
+	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, err
 	}
 	if deadline <= 0 {
 		deadline = DefaultLineDeadline
 	}
-	c := &Client{cmd: cmd, stdin: stdin, lines: make(chan line, 64), deadline: deadline}
+	c := &Client{cmd: cmd, cancel: cancel, stdin: stdin, lines: make(chan line, 64), deadline: deadline}
 	go c.read(stdout)
 	return c, nil
 }
@@ -171,6 +187,12 @@ func (c *Client) Send(envelope protocol.Envelope) error {
 // its kind. A response is any envelope correlated to a request; everything
 // else is an event.
 func (c *Client) pull() error {
+	c.mu.Lock()
+	dead := c.dead
+	c.mu.Unlock()
+	if dead != nil {
+		return dead
+	}
 	select {
 	case l, ok := <-c.lines:
 		if !ok {
@@ -194,7 +216,15 @@ func (c *Client) pull() error {
 		c.mu.Unlock()
 		return nil
 	case <-time.After(c.deadline):
-		return fmt.Errorf("conformance: the endpoint produced no line within %s", c.deadline)
+		err := fmt.Errorf("conformance: the endpoint produced no line within %s", c.deadline)
+		c.mu.Lock()
+		c.dead = err
+		c.mu.Unlock()
+		// It is neither talking nor leaving, so it is killed here rather
+		// than left for a later wait to discover at the cost of another
+		// full deadline — and rather than left running at all.
+		c.Close()
+		return err
 	}
 }
 
@@ -275,20 +305,41 @@ func (c *Client) CloseInput() error {
 	return c.stdin.Close()
 }
 
+// Close kills the endpoint if it is still running and reaps it. It is
+// idempotent and safe to defer alongside Wait.
+func (c *Client) Close() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	_ = c.reapProcess()
+}
+
+// reapProcess waits for the child exactly once, since os/exec forbids a
+// second Wait and both Close and Wait can reach it.
+func (c *Client) reapProcess() error {
+	c.reap.Do(func() { c.waitErr = c.cmd.Wait() })
+	return c.waitErr
+}
+
 // Wait drains whatever the endpoint still had to say and returns its exit
 // code. Draining first is required rather than tidy: the endpoint flushes its
 // last lines before exiting, and reading them after Wait is the ordering the
 // os/exec documentation calls incorrect.
+//
+// An endpoint that stops producing lines without exiting is killed rather
+// than waited on: there is no exit code coming, and leaving it running is
+// how a conformance run over several binaries accumulates orphans.
 func (c *Client) Wait() (int, error) {
 	for {
 		if err := c.pull(); err != nil {
 			if errors.Is(err, ErrEndpointGone) {
 				break
 			}
+			c.Close()
 			return -1, err
 		}
 	}
-	err := c.cmd.Wait()
+	err := c.reapProcess()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return exit.ExitCode(), nil
