@@ -117,7 +117,7 @@ process in section 5:
   about;
 - tightening validation so that a trace valid today becomes invalid.
 
-## 2. Conformance is defined in writing, and an artifact answers it
+## 2. Conformance is defined in writing, and artifacts answer it
 
 **Binding: now.**
 
@@ -127,12 +127,22 @@ traces pass both validation layers described there: structural validation
 against the schema bundle, and stateful validation of the relationships across
 an ordered trace.
 
-The artifact that answers the question is in this repository and you can run it
-against your own output:
+The artifacts that answer the question are in this repository and you can run
+them against your own endpoint:
 
 ```sh
-go run ./cmd/oap validate --format=json your-trace.json
+go run ./cmd/oap validate --format=json your-trace.json    # judge a trace you supply
+go run ./cmd/oap conformance --command "your-endpoint"     # drive your endpoint, then judge what it produced
 ```
+
+`oap conformance` spawns your binary as a process, drives a scripted session
+over the stdio binding in [drafts/endpoint-stdio.md](drafts/endpoint-stdio.md),
+assembles what crossed the pipe into a trace, and hands that trace to the same
+validator `oap validate` uses. Because it spawns a process rather than linking
+a library, it does not care what language you wrote your endpoint in. `oap
+endpoint` is a reference endpoint in this repository that it is developed
+against, so the harness has a known-good target and you can see what one
+conformant implementation looks like.
 
 `fixtures/manifest.json` is the normative inventory. It declares for every
 fixture whether it is valid, the phase it fails in if not, and the exact
@@ -143,13 +153,15 @@ accepts today will be accepted by every later v0.1 validator.** Validation will
 not be tightened within `0.1`. New rules land with new units, gated on
 capabilities you do not have to advertise.
 
-**The limit, stated rather than left to be discovered.** This artifact
-validates traces you supply. There is no harness in this repository that drives
-a third-party endpoint through the lifecycle and collects those traces for you,
-so conformance today is self-attested against a shared validator rather than
-certified by us. That gap is real, it is why no corpus case in this repository
-was generated from a third-party endpoint, and closing it does not change any
-rule above.
+**The limits, stated rather than left to be discovered.** The harness drives
+the stdio binding. An endpoint reached over another transport is still served
+by `oap validate` on traces you collect yourself, and defining a binding for
+that transport is work this repository has not done.
+
+Running the harness is not certification. You run it, you read the result, and
+nothing here records that you passed, so conformance remains self-attested
+against a shared validator. No corpus case in this repository was generated
+from a third-party endpoint. Neither of these changes any rule above.
 
 ## 3. Capability keys are additive, and an unknown key is ignored
 

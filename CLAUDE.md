@@ -26,7 +26,17 @@ go test ./adapter/hermes -run TestApprovalGateRoundTrip
 go test ./adapter/codex/appserver -run EvidenceCorpus -v   # the hermetic corpus for one adapter
 ```
 
-CLI subcommands (`go run ./cmd/oap <cmd>`): `check`, `validate [--format=json] <trace.json>...`, `fixtures [manifest]`, `demo`, `serve [--config path] [--addr host:port]`, `providers zai-cn`.
+CLI subcommands (`go run ./cmd/oap <cmd>`): `check`, `validate [--format=json] <trace.json>...`, `fixtures [manifest]`, `demo`, `serve [--config path] [--addr host:port] [--stdio]`, `endpoint [--adapter name]`, `conformance [--command "<cmd>"] [--format json]`, `providers zai-cn`.
+
+`endpoint` and `conformance` are the endpoint-role pair, and are not the same
+layer as `serve --stdio`. `serve --stdio` exposes the **hub** (twelve ops, an
+adapter dimension, cursor replay, multiplexed subscriptions), each line
+wrapping an envelope in a transport object. `endpoint` exposes **one agent
+loop** carrying raw OAP envelopes, one per line — the shape a harness
+implementing OAP natively takes, specified in `drafts/endpoint-stdio.md`.
+`conformance` spawns an endpoint binary, drives a scripted session, assembles
+the exchange into a trace, and runs it through the real validator; with no
+`--command` it drives this binary's own reference endpoint.
 
 TypeScript client (`clients/ts`, zero runtime deps, Node 18+):
 

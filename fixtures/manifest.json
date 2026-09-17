@@ -4640,6 +4640,26 @@
     {"id":"queue-state-lead-executes-a-run-whose-start-follows","path":"valid/queue-state-lead-executes-a-run-whose-start-follows.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {"id":"queue-refusal-after-an-answered-sibling","path":"semantic-invalid/queue-refusal-after-an-answered-sibling.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {"id":"queue-refusal-among-unanswered-siblings","path":"valid/queue-refusal-among-unanswered-siblings.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
+    {
+      "id": "endpoint-two-settlement-paths-settle-one-run",
+      "path": "semantic-invalid/endpoint-two-settlement-paths-settle-one-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["duplicate_run_terminal"],
+      "units": ["core"],
+      "provenance": ["drafts/endpoint-stdio.md"]
+    },
+    {
+      "id": "endpoint-cancel-race-settles-twice",
+      "path": "semantic-invalid/endpoint-cancel-race-settles-twice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["duplicate_run_terminal"],
+      "units": ["core"],
+      "provenance": ["drafts/endpoint-stdio.md"]
+    },
     {"id":"control-tool-roundtrip","path":"valid/control-tool-roundtrip.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
     {"id":"control-tool-resolved-without-ack","path":"valid/control-tool-resolved-without-ack.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
     {"id":"control-tool-cancelled-with-run","path":"valid/control-tool-cancelled-with-run.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
