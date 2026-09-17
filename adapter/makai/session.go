@@ -115,7 +115,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.unusable = true
 		s.mu.Unlock()
 		close(run.admitted)
-		s.failRun(run, "makai_admission_failed", err.Error())
+		// The submission is a bare Send with no answer awaited, so a failure
+		// here means nothing was ever reported back about this run — not that
+		// Makai refused it. Whether the bytes reached the wire is unknowable
+		// from the error alone.
+		s.failRunSettled(run, "makai_admission_failed", err.Error(), protocol.SettledByInferred)
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	s.mu.Lock()
@@ -123,7 +127,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.mu.Unlock()
 	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
-		s.failRun(run, "makai_admission_projection_failed", err.Error())
+		// The Send succeeded, so Makai holds the message and may well be
+		// executing the turn right now. This terminal is the adapter failing
+		// to project a run it never saw end, which is the strongest form of
+		// inference here, not the weakest.
+		s.failRunSettled(run, "makai_admission_projection_failed", err.Error(), protocol.SettledByInferred)
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	response := protocol.MessageSubmitResponse{SessionID: s.state.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), MessageIDs: messageIDs}
