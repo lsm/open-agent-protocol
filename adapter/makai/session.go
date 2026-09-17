@@ -602,7 +602,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		s.failRun(run, "makai_cancellation_ambiguous", err.Error())
+		s.failRunSettled(run, "makai_cancellation_ambiguous", err.Error(), protocol.SettledByInferred)
 		return protocol.RunCancelResponse{}, err
 	}
 	if response.Type == native.TypeAgentError {
@@ -737,8 +737,17 @@ func (s *session) settleTools(run *runState, cancel bool) {
 	}
 }
 func (s *session) failRun(run *runState, code, message string) {
+	s.failRunSettled(run, code, message, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right wherever
+// Makai's own frames carried the failure; the transport-death and
+// ambiguous-cancellation paths pass protocol.SettledByInferred, having
+// observed no terminal for the run.
+func (s *session) failRunSettled(run *runState, code, message, settledBy string) {
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
 }
 func (s *session) transportFailed() {
 	s.transitionMu.Lock()
@@ -752,7 +761,7 @@ func (s *session) transportFailed() {
 	s.mu.Unlock()
 	if !closed && run != nil {
 		<-run.admitted
-		s.failRun(run, "makai_transport_failure", fmt.Sprint(s.client.Err()))
+		s.failRunSettled(run, "makai_transport_failure", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)
 	}
 }
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {

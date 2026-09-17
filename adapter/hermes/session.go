@@ -1043,6 +1043,14 @@ func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 }
 
 func (s *Session) failRun(run *runState, code, msg string) {
+	s.failRunSettled(run, code, msg, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right wherever
+// the gateway's own frames carried the failure; the transport-death path
+// passes protocol.SettledByInferred, having observed no terminal for the run.
+func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 	if run == nil {
 		return
 	}
@@ -1050,7 +1058,7 @@ func (s *Session) failRun(run *runState, code, msg string) {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: %s", ErrNativeProtocol, msg))
 		return
 	}
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}, SettledBy: settledBy}, true)
 }
 
 func (s *Session) transportFailed() {
@@ -1083,7 +1091,7 @@ func (s *Session) transportFailed() {
 // fails as a process exit, an unstarted reservation aborts with the error.
 func (s *Session) failTransport(run *runState) {
 	if run.started {
-		s.failRun(run, "hermes_process_exit", fmt.Sprint(s.client.Err()))
+		s.failRunSettled(run, "hermes_process_exit", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)
 		return
 	}
 	s.abortPreStartUnlocked(run, fmt.Errorf("%w: %v", ErrNativeProtocol, s.client.Err()))

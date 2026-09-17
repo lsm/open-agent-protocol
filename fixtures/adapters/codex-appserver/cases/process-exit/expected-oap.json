@@ -30,7 +30,8 @@
       "error": {
         "code": "native_transport_closed",
         "message": "fixture transport closed"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 2,
     "timestamp_ms": 6,

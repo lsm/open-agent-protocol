@@ -7,7 +7,7 @@ Profile: `open-agent-protocol.agent-control-core`
 Amends: [Decision 0001](0001-agent-control-v0.1-executable-core.md) ("One
 foreground invocation is one run") in the one respect named below; it adds no
 terminal and changes no terminal's meaning
-Evidence: four pinned corpus cases across two adapters, listed under Evidence
+Evidence: pinned corpus cases across all eight adapters, listed under Evidence
 
 ## Context
 
@@ -177,9 +177,13 @@ Three patterns, each re-checkable against a pinned corpus case that runs in CI.
   `fixtures/schema-invalid/terminal-provenance-bad-enum.json`.
 - Consumers gain a parseable answer to "did the endpoint see this end?" and lose
   the ability to read it out of prose, which they never had.
-- Adapters that infer terminals should say so. Makai's session-stop path and
-  Claude's transport-loss path do; every other adapter in this repository
-  observes its terminals and correctly stays silent.
+- Adapters that infer terminals say so. Every adapter in this repository has at
+  least one: each settles a started run when its transport dies, and Makai and
+  OpenCode additionally settle runs from a session-scoped stop and from an
+  ambiguous cancellation or admission. All of those paths now stamp `inferred`.
+  What correctly stays silent is the other kind of failure — a step the harness
+  reported failed, a tool lifecycle the adapter watched go wrong — where the
+  endpoint observed the evidence it acted on in readable frames.
 - A reason string is no longer where provenance goes, and the two Makai reasons
   that encoded epistemics now describe cause.
 - No terminal was added, no terminal's meaning changed, and the one-terminal

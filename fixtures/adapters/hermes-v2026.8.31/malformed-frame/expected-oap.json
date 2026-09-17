@@ -51,7 +51,8 @@
       "error": {
         "code": "hermes_process_exit",
         "message": "hermes rpc: invalid JSON-RPC message: frame must be exactly one JSON object"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 3,
     "timestamp_ms": 5,

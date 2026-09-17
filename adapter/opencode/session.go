@@ -1317,8 +1317,17 @@ func (s *session) settleTools(run *runState, cancel bool) {
 }
 
 func (s *session) failRun(run *runState, code, message string) {
+	s.failRunSettled(run, code, message, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right for a
+// failure the server's own durable events carried — a failed step, an invalid
+// tool lifecycle. Every settlement abandon synthesizes passes
+// protocol.SettledByInferred instead, having observed no terminal for the run.
+func (s *session) failRunSettled(run *runState, code, message, settledBy string) {
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
 }
 
 func (s *session) transportFailed() {
@@ -1360,9 +1369,12 @@ func (s *session) abandon(origin *runState, code, message string) {
 	if closed {
 		return
 	}
+	// Every terminal abandon writes is one the adapter concluded rather than
+	// observed: the session stopped being usable and owes a terminal on
+	// everything it accepted, whatever the cause that got here.
 	if run != nil && !run.terminal {
 		<-run.admitted
-		s.failRun(run, code, message)
+		s.failRunSettled(run, code, message, protocol.SettledByInferred)
 	}
 	if reserved != nil && !reserved.terminal {
 		<-reserved.admitted
@@ -1371,7 +1383,7 @@ func (s *session) abandon(origin *runState, code, message string) {
 			failCode = "queue_dropped"
 			failMessage = "the reservation was dropped before promotion: " + message
 		}
-		s.failRun(reserved, failCode, failMessage)
+		s.failRunSettled(reserved, failCode, failMessage, protocol.SettledByInferred)
 	}
 }
 

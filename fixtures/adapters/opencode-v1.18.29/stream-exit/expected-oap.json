@@ -29,7 +29,8 @@
       "error": {
         "code": "opencode_stream_failed",
         "message": "corpus stream failure"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 2,
     "timestamp_ms": 5,

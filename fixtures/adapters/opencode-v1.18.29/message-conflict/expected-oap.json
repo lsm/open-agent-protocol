@@ -11,7 +11,8 @@
       "error": {
         "code": "opencode_admission_ambiguous",
         "message": "HTTP 409 ConflictError"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 1,
     "timestamp_ms": 3,

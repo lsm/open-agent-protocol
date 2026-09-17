@@ -846,7 +846,9 @@ func (s *session) transportFailed() {
 	if !closed && r != nil {
 		s.opMu.Lock()
 		s.settleChildren(r, true)
-		_ = s.emit(r, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: r.id, Error: protocol.ProtocolError{Code: "acp_transport_failure", Message: fmt.Sprint(s.client.Err())}}, true)
+		// The transport died with the run open: this terminal is concluded
+		// from the loss, never observed on the wire.
+		_ = s.emit(r, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: r.id, Error: protocol.ProtocolError{Code: "acp_transport_failure", Message: fmt.Sprint(s.client.Err())}, SettledBy: protocol.SettledByInferred}, true)
 		s.opMu.Unlock()
 	}
 }

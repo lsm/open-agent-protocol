@@ -523,7 +523,7 @@ func (session *session) dispatch() {
 			}
 		case <-session.client.Done():
 			session.opMu.Lock()
-			session.failActive("native_transport_closed", errorString(session.client.Err()))
+			session.failActiveSettled("native_transport_closed", errorString(session.client.Err()), protocol.SettledByInferred)
 			session.opMu.Unlock()
 			return
 		case <-session.stop:
@@ -957,21 +957,33 @@ func (session *session) closePendingActions(run *runState, status native.TurnSta
 }
 
 func (session *session) failActive(code, message string) {
+	session.failActiveSettled(code, message, "")
+}
+
+// failActiveSettled fails the active run with explicit terminal provenance.
+// An empty settledBy omits the member, which asserts observation and is right
+// for a violation the app-server's own frames carried; the transport-close
+// path passes protocol.SettledByInferred, having observed no terminal at all.
+func (session *session) failActiveSettled(code, message, settledBy string) {
 	session.mu.Lock()
 	run := session.active
 	session.mu.Unlock()
 	if run != nil {
-		session.failRun(run, code, message)
+		session.failRunSettled(run, code, message, settledBy)
 	}
 }
 
 func (session *session) failRun(run *runState, code, message string) {
+	session.failRunSettled(run, code, message, "")
+}
+
+func (session *session) failRunSettled(run *runState, code, message, settledBy string) {
 	if message == "" {
 		message = code
 	}
 	session.closePendingInteractions(run, native.TurnFailed)
 	session.closePendingActions(run, native.TurnFailed)
-	_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
+	_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
 }
 
 func errorString(err error) string {

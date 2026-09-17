@@ -51,7 +51,8 @@
       "error": {
         "code": "deepseek_process_exit",
         "message": "fixture process exit"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 3,
     "timestamp_ms": 5,
