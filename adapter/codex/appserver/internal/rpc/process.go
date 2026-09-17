@@ -79,8 +79,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	args = append(args, "app-server", "--listen", "stdio://")
 	command := exec.Command(config.Path, args...)
 	command.Dir = config.Dir
-	// slices.Clone preserves non-nilness: an explicitly empty allowlist stays
-	// empty instead of collapsing to nil and inheriting the parent.
+
 	command.Env = slices.Clone(config.Env)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -166,10 +165,7 @@ func (process *Process) WaitError() error {
 }
 
 func (process *Process) wait() {
-	// Drain stdout before reaping. Cmd.Wait closes the stdout pipe, so the
-	// reader must finish delivering every frame already buffered there before
-	// shutdown fails the pending calls; otherwise a response the child wrote
-	// immediately before exiting is reported as a process-exit error.
+
 	<-process.Client.ReadDone()
 	process.drainStderr()
 	err := process.command.Wait()
@@ -190,29 +186,15 @@ func processExitError(err error) error {
 
 func (process *Process) abort() error {
 	_ = process.command.Process.Kill()
-	// Collect the dead child's stderr before releasing the pipes: this is the
-	// diagnostic the caller composes into the handshake error, and
-	// killAndRelease closes the read end. Bounded by abortStderrGrace so a
-	// descendant holding stderr cannot stall a failed Start.
+
 	process.drainStderrWithin(abortStderrGrace)
 	process.killAndRelease()
 	<-process.waitDone
 	return process.WaitError()
 }
 
-// drainStderr waits for the stderr copier to finish before the child is reaped.
-// Cmd.Wait closes the pipes it created as soon as the child exits, and
-// StderrPipe's contract is that every read must complete first: a copier that
-// has not yet consumed the buffered bytes fails on a closed file and the bytes
-// are lost, which is how a handshake failure ended up composing an empty
-// stderr. A descendant that inherited stderr can keep the read end from
-// reaching EOF, so bound the drain and close our side to release the copier,
-// exactly as the shutdown paths bound the stdout drain.
 func (process *Process) drainStderr() { process.drainStderrWithin(process.timeout) }
 
-// drainStderrWithin waits up to limit for the copier, then closes the read end
-// to release it. Releasing costs whatever a still-writing descendant had left
-// to say; blocking instead would cost the caller its bound.
 func (process *Process) drainStderrWithin(limit time.Duration) {
 	timer := time.NewTimer(limit)
 	defer timer.Stop()
@@ -224,12 +206,6 @@ func (process *Process) drainStderrWithin(limit time.Duration) {
 	}
 }
 
-// killAndRelease kills the child and closes the read pipes before reaping.
-// wait() drains both stdout and stderr before Cmd.Wait, but a
-// descendant that inherited either pipe keeps its write end open after the
-// direct child exits, so neither drain would return and Close would block on
-// waitDone past its configured timeout. Closing the read ends forces both
-// drains to finish so the timeout still bounds teardown.
 func (process *Process) killAndRelease() {
 	_ = process.command.Process.Kill()
 	if process.stdout != nil {
@@ -284,10 +260,4 @@ func redact(value string) string {
 	return strings.TrimSpace(value)
 }
 
-// abortStderrGrace bounds the stderr drain on the handshake-abort paths. The
-// child is already killed there, so the diagnostic stderr composed into the
-// failure is whatever it wrote before dying and is sitting in the pipe buffer
-// already: the copier needs a scheduling slice, not a shutdown budget. Bounding
-// it here keeps a descendant that inherited stderr from adding a full
-// ShutdownTimeout to a Start that has already failed or been cancelled.
 const abortStderrGrace = 250 * time.Millisecond

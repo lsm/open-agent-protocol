@@ -28,30 +28,12 @@ type FixtureEntry struct {
 	Units      []string   `json:"units"`
 	Provenance []string   `json:"provenance"`
 	Covers     []Coverage `json:"covers,omitempty"`
-	// Mode is the validation mode the fixture is judged in, strict by
-	// default, so every entry written before the tolerance step keeps its
-	// meaning. Which vocabulary is in force is the entry's stated choice,
-	// never inferred from the trace.
+
 	Mode Mode `json:"mode,omitempty"`
-	// Packs are the extension packs loaded for this fixture, as paths
-	// relative to the manifest. For a load-invalid entry they are the packs
-	// loaded beside the one Path names, which is how a refusal that no single
-	// pack is at fault for — two ids that are not prefix-free — is stated.
+
 	Packs []string `json:"packs,omitempty"`
 }
 
-// Coverage declares which capability promise a fixture falsifies, so the
-// corpus-completeness check can find it. Every capability key a unit owns
-// needs a negative fixture for each aspect:
-//
-//   - "gate": the key unadvertised, its operation admitted anyway, and the
-//     admission diagnosed.
-//   - "honour": the key advertised, a request within every constraint the
-//     endpoint disclosed and carrying no defect any rule names, refused, and
-//     the refusal diagnosed.
-//
-// The second is the class an endpoint can otherwise pass conformance without
-// ever honouring: advertise the key, refuse everything, pass.
 type Coverage struct {
 	Capability string `json:"capability"`
 	Aspect     string `json:"aspect"`
@@ -62,11 +44,6 @@ const (
 	AspectHonour = "honour"
 )
 
-// Fixture kinds. A load-invalid fixture asserts that loading a resource — an
-// extension pack — fails before any trace is read; its path names the pack
-// and its codes come from the load-error vocabulary, not from the validator's
-// diagnostics, because a load error is what the loader says about a pack and a
-// diagnostic is what the validator says about a trace.
 const (
 	KindPositive        = "positive"
 	KindSchemaInvalid   = "schema-invalid"
@@ -74,9 +51,6 @@ const (
 	KindLoadInvalid     = "load-invalid"
 )
 
-// Load-error codes, one per refusal the extension-pack loader can make. The
-// vocabulary lands with the manifest shape so a pack's fixtures can be
-// declared before the loader exists; nothing produces these codes yet.
 const (
 	LoadPackUnprefixedName       = "pack_unprefixed_name"
 	LoadPackForeignPrefix        = "pack_foreign_prefix"
@@ -116,62 +90,28 @@ func loadErrorCodes() map[string]bool {
 	return result
 }
 
-// unitCapabilities lists the capability keys each conformance unit owns. A
-// unit registers its keys when it graduates, and from that moment the corpus
-// must carry a negative gate fixture and a negative honour fixture for each,
-// or the manifest fails to load.
 var unitCapabilities = map[string][]string{
-	// The run controls. The unit claims two things: the fail-closed
-	// discipline, common to all four and implemented by every endpoint
-	// whether or not it supports a single control, and execution, claimed per
-	// control by the endpoints that advertise one above `unavailable`.
+
 	"run-controls": {
 		protocol.FeatureModelSelection,
 		protocol.FeatureInstructions,
 		protocol.FeatureToolSelection,
 		protocol.FeatureStructuredOutput,
 	},
-	// The queue delivery unit owns one key. Its gate is the reservation an
-	// unadvertising endpoint must refuse; its honour is the refusal an
-	// advertising endpoint owes no caller — a run_active naming a bound the
-	// window shows was never reached.
+
 	"queue": {protocol.FeatureDeliveryQueue},
-	// Tool sources: the catalog that carries them (T3a) and attachment at
-	// session open (T3b). Control-layer-provided tools are the separate
-	// `control-tools` unit below.
+
 	"tool-sources": {
 		protocol.FeatureToolsList,
 		protocol.FeatureToolSourcesAttach,
 	},
-	// Control-layer-provided tools (T3c, Decision 0011). One key. Its gate is
-	// the `tools` array an unadvertising endpoint must refuse; its honour is
-	// the refusal of an array that carries no defect and violates no
-	// disclosed limit.
+
 	"control-tools": {protocol.FeatureToolsProvide},
-	// The session-scoped model catalog. One key, and the two aspects every key
-	// owes: a catalog served without the key advertised, and a catalog query
-	// refused on an endpoint that advertises it.
+
 	"models":        {protocol.FeatureModelsList},
 	"compound-open": {protocol.FeatureOpenSubscribe},
 }
 
-// honourDeferred names the unit whose corpus carries a key's honour fixture
-// when the key's own unit cannot falsify it yet — a stated deferral rather
-// than a silent gap. Empty: every key registered above is falsifiable in its
-// own unit.
-//
-// run.model_selection was planned as the one deferral, to the models unit,
-// because whether a refused model id was one the endpoint serves is decidable
-// only against a catalog. Its honour fixture did not need to wait for that:
-// the wire assigns every catalog miss to model_not_found, so a refusal of an
-// advertised model_id under unsupported_feature is wrong whatever the id was —
-// either it was servable and owed an admission, or it was not and owed
-// model_not_found. The catalog-dependent half the models unit still owed has
-// since landed with that unit — a model_not_found refusal of an id the
-// endpoint's own catalog lists is model_not_in_catalog
-// (`models-listed-selection-false-miss`, claimed by both units) — so the
-// deferral is discharged with the map still empty, which is what it should
-// mean: no key is left unfalsifiable in its own unit.
 var honourDeferred = map[string]string{}
 
 type FixtureOutcome struct {
@@ -208,28 +148,15 @@ func diagnosticCodes() map[string]bool {
 	return result
 }
 
-// ManifestOptions scopes a manifest to the extension vocabulary in force.
-//
-// Packs are the packs loaded for the run: an `ext:<pack id>/<version>` unit
-// term is accepted exactly when one of them matches, so the unit list is
-// derived from the packs actually loaded rather than added to the hard-coded
-// map, and a stale or misspelled pack claim still fails closed. Owner is set
-// when the manifest is a pack's own: the two directions are kept apart
-// deliberately, because a pack that could contribute evidence toward a core
-// unit would widen a core claim.
 type ManifestOptions struct {
 	Packs []*Pack
 	Owner *Pack
 }
 
-// LoadManifest reads a core fixture manifest with no extension vocabulary in
-// force. It is what every existing caller gets.
 func LoadManifest(filename string) (FixtureManifest, error) {
 	return LoadManifestWith(filename, ManifestOptions{})
 }
 
-// LoadManifestWith reads a fixture manifest under the extension vocabulary the
-// options name.
 func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -251,9 +178,7 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 	for _, pack := range opts.Packs {
 		extensionUnits[pack.Unit()] = true
 	}
-	// A unit that registers capability keys is known by that registration,
-	// and so is any unit a key's honour fixture is deferred to: one place to
-	// declare a graduated unit, not two that can disagree.
+
 	for unit := range unitCapabilities {
 		knownUnits[unit] = true
 	}
@@ -277,8 +202,7 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 				return FixtureManifest{}, fmt.Errorf("valid fixture %q has inconsistent expectation", e.ID)
 			}
 		} else if e.Kind == KindLoadInvalid {
-			// A load refusal happens before any trace is read, so its phase
-			// is `load` and its codes are load errors, never diagnostics.
+
 			if e.Phase != PhaseLoad || len(e.Codes) == 0 {
 				return FixtureManifest{}, fmt.Errorf("load-invalid fixture %q must have phase %q and load-error codes", e.ID, PhaseLoad)
 			}
@@ -304,10 +228,7 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 			if c.Aspect != AspectGate && c.Aspect != AspectHonour {
 				return FixtureManifest{}, fmt.Errorf("fixture %q covers %q with unknown aspect %q", e.ID, c.Capability, c.Aspect)
 			}
-			// Only a semantic-invalid fixture exercises the gate or honour
-			// behaviour and its refusal diagnostic; a schema- or load-invalid
-			// one fails before that behaviour is reached and proves nothing
-			// about it.
+
 			if e.Kind != KindSemanticInvalid {
 				return FixtureManifest{}, fmt.Errorf("fixture %q covers %q but is %s; coverage is asserted by semantic-invalid fixtures", e.ID, c.Capability, e.Kind)
 			}
@@ -336,11 +257,7 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 					}}}
 				}
 				if opts.Owner != nil && unit != opts.Owner.Unit() {
-					// A pack's corpus proves its own term only. A fixture
-					// claiming a sibling pack's term would let the pack leave
-					// its own term unclaimed — and with it every capability
-					// key uncovered, since completeness is judged over claimed
-					// units — while still loading.
+
 					return FixtureManifest{}, &PackLoadError{Refusals: []PackRefusal{{
 						Pack:    opts.Owner.ID(),
 						Message: fmt.Sprintf("fixture %q claims %q; a pack's corpus proves its own term %q only", e.ID, unit, opts.Owner.Unit()),
@@ -349,10 +266,7 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 				continue
 			}
 			if opts.Owner != nil {
-				// A pack's fixture may not claim a core unit: without that a
-				// pack could contribute evidence toward a core claim, which is
-				// the one thing "a pack can never widen a core claim" has to
-				// mean.
+
 				return FixtureManifest{}, &PackLoadError{Refusals: []PackRefusal{{
 					Code:    LoadPackFixtureClaimsCore,
 					Pack:    opts.Owner.ID(),
@@ -383,12 +297,6 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 	return m, nil
 }
 
-// extensionUnitPrefix marks a conformance term belonging to a pack rather than
-// to the spec. The executable claim is unchanged for core and gains one
-// independent term per pack, so "conformant to a vendor's extension" is a claim
-// with the same executable meaning as a core unit, stated by the vendor,
-// checked by the same tool, and carrying no authority over the core claim
-// beside it.
 const extensionUnitPrefix = "ext:"
 
 func ownerID(owner *Pack) string {
@@ -398,17 +306,10 @@ func ownerID(owner *Pack) string {
 	return owner.ID()
 }
 
-// checkCorpusCompleteness requires, for every capability key a claimed unit
-// owns, a negative fixture covering its gate aspect and one covering its
-// honour aspect. A key whose honour aspect is deferred to another unit must
-// have that fixture under the deferring unit instead. The check runs where the
-// corpus is loaded, so CI fails on the first key added without its pair.
 func checkCorpusCompleteness(m FixtureManifest, extra map[string][]string) error {
 	keys := unitCapabilities
 	if len(extra) > 0 {
-		// A pack's keys are the same rule over a unit the hard-coded map
-		// cannot name: a vendor cannot claim conformance for a key nothing
-		// could show it dishonouring, which is the protection core gets.
+
 		keys = make(map[string][]string, len(unitCapabilities)+len(extra))
 		for unit, owned := range unitCapabilities {
 			keys[unit] = owned
@@ -431,9 +332,7 @@ func checkCorpusCompleteness(m FixtureManifest, extra map[string][]string) error
 		}
 	}
 	for unit := range extra {
-		// A pack's own unit is checked whether or not any fixture claims it:
-		// an empty corpus claims nothing and would otherwise owe nothing,
-		// which is exactly the pack this rule exists to refuse.
+
 		claimed[unit] = true
 	}
 	units := make([]string, 0, len(claimed))
@@ -452,10 +351,7 @@ func checkCorpusCompleteness(m FixtureManifest, extra map[string][]string) error
 	}
 	for _, unit := range units {
 		for _, key := range keys[unit] {
-			// Both aspects must be covered under the unit that owns the key
-			// (or, for honour, the unit it is deferred to): a fixture under
-			// an unrelated unit naming the same pair does not stand in for
-			// the owning unit's own corpus.
+
 			if !coveredUnder(Coverage{Capability: key, Aspect: AspectGate}, unit) {
 				missing = append(missing, fmt.Sprintf("%s: %s has no negative %s fixture under unit %s", unit, key, AspectGate, unit))
 			}
@@ -478,10 +374,6 @@ func (v *Validator) ValidateManifest(filename string) ([]FixtureOutcome, error) 
 	return v.validateManifest(filename, ManifestOptions{}, true)
 }
 
-// validateManifest runs one manifest. A core manifest runs its entries and then
-// the corpus of every pack those entries load, so a pack's fixtures run under
-// the same runner as the spec's. A pack's own manifest runs its entries under
-// the pack that owns it and loads nothing further.
 func (v *Validator) validateManifest(filename string, opts ManifestOptions, corpora bool) ([]FixtureOutcome, error) {
 	m, err := LoadManifestWith(filename, opts)
 	if err != nil {
@@ -553,9 +445,6 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 	return out, nil
 }
 
-// loadEntryPacks loads the packs one fixture names, as paths relative to the
-// manifest. Packs are opt-in per entry for the same reason the mode is: which
-// vocabulary is in force must be a stated choice, not inferred from the trace.
 func loadEntryPacks(root string, entry FixtureEntry) ([]*Pack, error) {
 	if len(entry.Packs) == 0 {
 		return nil, nil
@@ -567,10 +456,6 @@ func loadEntryPacks(root string, entry FixtureEntry) ([]*Pack, error) {
 	return LoadPacks(dirs)
 }
 
-// runLoadFixture asserts that loading the named packs fails with exactly the
-// declared load-error codes. An entry that loads cleanly, or fails with
-// different codes, fails the fixture: a refusal nobody can reproduce is not a
-// rule.
 func runLoadFixture(root string, entry FixtureEntry) (FixtureOutcome, error) {
 	dirs := make([]string, 0, len(entry.Packs)+1)
 	dirs = append(dirs, filepath.Join(root, entry.Path))
@@ -598,8 +483,6 @@ func runLoadFixture(root string, entry FixtureEntry) (FixtureOutcome, error) {
 	return outcome, nil
 }
 
-// ownerRoot is the pack root an owned manifest's fixtures must stay beneath,
-// or "" for the core corpus.
 func ownerRoot(owner *Pack) string {
 	if owner == nil {
 		return ""
@@ -610,11 +493,7 @@ func ownerRoot(owner *Pack) string {
 func runTraceFixture(v *Validator, root, packRoot string, entry FixtureEntry) (FixtureOutcome, error) {
 	path := filepath.Join(root, entry.Path)
 	if packRoot != "" {
-		// A pack's fixtures are third-party documents. The lexical check at
-		// load keeps the path beneath the manifest, but a symlink can still
-		// lead anywhere and a FIFO would block the run, so the path is
-		// resolved and verified before it is opened, as the loader does for
-		// the schemas and the manifest itself.
+
 		rel, err := filepath.Rel(packRoot, path)
 		if err != nil {
 			return FixtureOutcome{Entry: entry}, fmt.Errorf("fixture %s: path %q: %w", entry.ID, entry.Path, err)
@@ -660,9 +539,6 @@ func runTraceFixture(v *Validator, root, packRoot string, entry FixtureEntry) (F
 	return outcome, nil
 }
 
-// checkUnlisted refuses a corpus carrying a trace nothing declares. Pack
-// directories are skipped the way the adapter corpora are: their contents are
-// declared by the pack descriptor and the pack's own manifest, not by this one.
 func checkUnlisted(root, filename string, listed map[string]bool) error {
 	var unlisted []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {

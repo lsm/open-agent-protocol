@@ -14,7 +14,6 @@ var (
 	ErrInvalidID      = errors.New("codex app-server rpc: id must be a string or integer")
 )
 
-// RequestID preserves the two identity domains accepted by Codex on the wire.
 type RequestID struct {
 	text    string
 	integer int64
@@ -130,8 +129,7 @@ func ErrorResponse(id RequestID, rpcError ErrorObject) Message {
 }
 
 func ParseMessage(data []byte) (Message, error) {
-	// Decoding into a map would silently collapse a repeated id/result/method
-	// with last-value-wins, so reject duplicates on the raw frame first.
+
 	if err := rejectDuplicateKeys(data); err != nil {
 		return Message{}, fmt.Errorf("%w: %v", ErrInvalidMessage, err)
 	}
@@ -257,8 +255,6 @@ func extraJSON(decoder *json.Decoder) bool {
 	return decoder.Decode(&value) == nil
 }
 
-// rejectDuplicateKeys walks every object in the frame and fails on a repeated
-// key, which encoding/json would otherwise collapse with last-value-wins.
 func rejectDuplicateKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var walk func() error

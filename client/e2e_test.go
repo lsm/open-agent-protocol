@@ -20,7 +20,6 @@ import (
 
 const testTimeout = 5 * time.Second
 
-// newDaemon serves one registry over the real daemon handler on loopback.
 func newDaemon(t *testing.T, registry *serve.Registry) *httptest.Server {
 	t.Helper()
 	hub := serve.New(registry, serve.Options{})
@@ -57,8 +56,6 @@ func openMemorySession(t *testing.T, c *Client, sessionID string) *Session {
 	return session
 }
 
-// readUntil reads envelopes through the first one matching stop, failing on
-// any stream error.
 func readUntil(t *testing.T, stream *EventStream, stop func(protocol.Envelope) bool) []protocol.Envelope {
 	t.Helper()
 	var seen []protocol.Envelope
@@ -90,8 +87,6 @@ func requireSequences(t *testing.T, envelopes []protocol.Envelope, runID protoco
 	}
 }
 
-// submitGolden starts one scripted memory run that parks at the permission
-// gate after four envelopes.
 func submitGolden(t *testing.T, session *Session, prompt string) protocol.RunID {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -109,8 +104,6 @@ func submitGolden(t *testing.T, session *Session, prompt string) protocol.RunID 
 	return admission.RunID
 }
 
-// resolveGate resolves the pending permission or input gate using the
-// interaction envelope the run parked on.
 func resolveGate(t *testing.T, session *Session, requested protocol.Envelope) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -147,11 +140,6 @@ func resolveGate(t *testing.T, session *Session, requested protocol.Envelope) {
 	}
 }
 
-// --- daemon-side scripted defects ---
-
-// overflowAdapter wraps the memory adapter so its run streams report an
-// event-stream overflow at a fixed 1-based result index, exercising the
-// daemon's overflow signal without a child process.
 type overflowAdapter struct {
 	memory   base.Adapter
 	overflow int
@@ -206,11 +194,6 @@ func overflowRegistry(overflowAt int) *serve.Registry {
 	return registry
 }
 
-// --- client-side scripted disconnects ---
-
-// droppingTransport kills the first N event-stream connections after they
-// deliver a fixed number of complete SSE frames, simulating a mid-stream
-// connection drop; every other request passes through untouched.
 type droppingTransport struct {
 	inner  http.RoundTripper
 	drops  int
@@ -253,8 +236,6 @@ func (d *droppingTransport) streamConnections() int {
 	return d.connections
 }
 
-// frameLimitedBody reads through the frames-th complete frame boundary, then
-// fails: the bytes after the boundary are data lost in transit.
 type frameLimitedBody struct {
 	io.ReadCloser
 	frames int
@@ -284,8 +265,6 @@ func (b *frameLimitedBody) Read(p []byte) (int, error) {
 	}
 	return n, nil
 }
-
-// --- discovery and lifecycle ---
 
 func TestClientDiscovery(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
@@ -340,10 +319,6 @@ func TestClientOpenGeneratesSessionID(t *testing.T) {
 	}
 }
 
-// TestClientAttachesSourcesAndReadsTheCatalog drives the tool-sources unit
-// end to end over the real daemon wire: an open that attaches a source, the
-// state and the catalog that publish it back, and every listed tool resolving
-// to a declared source.
 func TestClientAttachesSourcesAndReadsTheCatalog(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	c := dial(t, server, WithEnvelopeValidation())
@@ -368,11 +343,7 @@ func TestClientAttachesSourcesAndReadsTheCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalog := listing.Tools
-	// The listing comes back bound to the descriptor snapshot that governs it,
-	// end to end over the real wire: the adapter serves the revision with the
-	// catalog, the daemon stamps it on the response, and the client hands the
-	// pair back. A caller caches the listing against this revision and drops it
-	// when capabilities.updated reports another.
+
 	capabilities, err := c.Capabilities(ctx, "memory")
 	if err != nil {
 		t.Fatal(err)
@@ -395,9 +366,6 @@ func TestClientAttachesSourcesAndReadsTheCatalog(t *testing.T) {
 		}
 	}
 
-	// The degraded opt-in rides the query and is accepted by an endpoint that
-	// does not need it, so a caller consenting in advance is never refused
-	// for consenting.
 	if _, err := session.Tools(ctx, AllowDegradedTools(protocol.FeatureToolsList)); err != nil {
 		t.Fatalf("catalog with an opt-in: %v", err)
 	}
@@ -412,9 +380,6 @@ func namesSource(sources []protocol.ToolSourceDescriptor, id string) bool {
 	return false
 }
 
-// TestClientLifecycleGolden drives the full scripted lifecycle end to end:
-// open, subscribe, submit, permission gate, input gate, terminal settlement,
-// state, close — with dev-mode envelope validation on.
 func TestClientLifecycleGolden(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	c := dial(t, server, WithEnvelopeValidation())
@@ -441,18 +406,15 @@ func TestClientLifecycleGolden(t *testing.T) {
 	all := append(append([]protocol.Envelope(nil), initial...), append(middle, final...)...)
 	requireSequences(t, all, runID)
 
-	// The stream ends cleanly at the terminal event.
 	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("post-terminal Next error %v, want io.EOF", err)
 	}
 
-	// The convenience accessor decodes the final response.
 	completed := final[len(final)-1]
 	if text, ok := FinalText(completed); !ok || text != "The golden script completed." {
 		t.Fatalf("final text %q, %v", text, ok)
 	}
 
-	// Authoritative state after settlement, then close.
 	state, err := session.State(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -495,8 +457,7 @@ func TestClientCancelPath(t *testing.T) {
 		t.Fatalf("cancel ack %+v", ack)
 	}
 	settled := readUntil(t, stream, typeStop(protocol.TypeRunCancelled))
-	// The cancel settlement is the suffix after the initial burst: the
-	// cancelling status update, the closed gates, and the terminal event.
+
 	if len(settled) != 4 {
 		t.Fatalf("cancel settlement delivered %d envelopes, want 4", len(settled))
 	}
@@ -510,8 +471,6 @@ func TestClientCancelPath(t *testing.T) {
 		t.Fatalf("post-terminal error %v, want io.EOF", err)
 	}
 
-	// Re-cancelling a cancelled run is idempotent: the acknowledgement
-	// reports the settled status without an error.
 	again, err := session.Cancel(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
@@ -539,8 +498,6 @@ func TestClientCloseRefusesActiveRun(t *testing.T) {
 		t.Fatalf("close with active run: %v (code %q, %v)", err, code, ok)
 	}
 
-	// Settle, then close, then confirm the closed session still reports its
-	// final state.
 	if _, err := session.Cancel(ctx, mustStateRun(t, session)); err != nil {
 		t.Fatal(err)
 	}
@@ -570,11 +527,6 @@ func mustStateRun(t *testing.T, session *Session) protocol.RunID {
 	return state.ActiveRunID
 }
 
-// --- cursor resume ---
-
-// TestClientInvisibleResumeAfterDrop is the headline guarantee: a mid-stream
-// connection drop is resumed with the last observed sequence, the suffix
-// replays exactly, and the consumer never sees a duplicate or an error.
 func TestClientInvisibleResumeAfterDrop(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	transport := newDroppingTransport(1, 4)
@@ -586,7 +538,6 @@ func TestClientInvisibleResumeAfterDrop(t *testing.T) {
 	stream := session.Events(ctx)
 	runID := submitGolden(t, session, "resume me")
 
-	// Four envelopes arrive on the first connection before it dies.
 	initial := readUntil(t, stream, typeStop(protocol.TypeActionPermissionRequested))
 	if len(initial) != 4 {
 		t.Fatalf("initial burst %d envelopes, want 4", len(initial))
@@ -606,8 +557,6 @@ func TestClientInvisibleResumeAfterDrop(t *testing.T) {
 	}
 }
 
-// TestClientStrictResumeReportsDrop pins strict mode: the same drop surfaces
-// as a DisconnectError carrying the cursor, and EventsAfter resumes by hand.
 func TestClientStrictResumeReportsDrop(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	transport := newDroppingTransport(1, 4)
@@ -622,8 +571,6 @@ func TestClientStrictResumeReportsDrop(t *testing.T) {
 	initial := readUntil(t, stream, typeStop(protocol.TypeActionPermissionRequested))
 	resolveGate(t, session, initial[len(initial)-1])
 
-	// The parked connection then dies; strict mode reports instead of
-	// resuming, with the position the consumer last saw.
 	_, err := stream.Next()
 	var disconnect *DisconnectError
 	if !errors.As(err, &disconnect) {
@@ -632,12 +579,11 @@ func TestClientStrictResumeReportsDrop(t *testing.T) {
 	if disconnect.RunID != runID || disconnect.LastSequence != 4 {
 		t.Fatalf("disconnect cursor %+v, want run %s sequence 4", disconnect, runID)
 	}
-	// The error is terminal for the stream.
+
 	if _, err := stream.Next(); !errors.Is(err, disconnect) && err.Error() != disconnect.Error() {
 		t.Fatalf("repeated Next error %v, want the same disconnect", err)
 	}
 
-	// Manual resume replays the suffix and finishes the run.
 	resumed := session.EventsAfter(ctx, runID, 4)
 	middle := readUntil(t, resumed, typeStop(protocol.TypeRunStatusUpdated))
 	resolveGate(t, session, envelopeOfType(t, middle, protocol.TypeUserInputRequested))
@@ -649,9 +595,6 @@ func TestClientStrictResumeReportsDrop(t *testing.T) {
 	}
 }
 
-// TestClientResumeAfterRunSettled covers reconnecting after the tracked run
-// already finished while the client was away: the daemon replays the unseen
-// suffix and ends the stream at the terminal event.
 func TestClientResumeAfterRunSettled(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	transport := newDroppingTransport(1, 4)
@@ -664,8 +607,6 @@ func TestClientResumeAfterRunSettled(t *testing.T) {
 	runID := submitGolden(t, session, "finish without me")
 	initial := readUntil(t, stream, typeStop(protocol.TypeActionPermissionRequested))
 
-	// The connection is dead; settle the run through a second stream that
-	// subscribes before the resolves.
 	settleRun(t, session, initial[len(initial)-1])
 
 	suffix := readUntil(t, stream, typeStop(protocol.TypeRunCompleted))
@@ -677,8 +618,6 @@ func TestClientResumeAfterRunSettled(t *testing.T) {
 	}
 }
 
-// settleRun drives one parked run to completion through a short-lived helper
-// stream subscribed before the resolves, leaving the journal terminal.
 func settleRun(t *testing.T, session *Session, permission protocol.Envelope) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -693,9 +632,6 @@ func settleRun(t *testing.T, session *Session, permission protocol.Envelope) {
 	}
 }
 
-// TestClientSpeculativeReconnectLosesNothing covers a drop before the first
-// envelope: the reconnect replays the current run from its start, so nothing
-// published during the gap is lost.
 func TestClientSpeculativeReconnectLosesNothing(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	transport := newDroppingTransport(1, 0)
@@ -706,8 +642,6 @@ func TestClientSpeculativeReconnectLosesNothing(t *testing.T) {
 	session := openMemorySession(t, c, "speculative")
 	runID := submitGolden(t, session, "starts without a subscriber")
 
-	// The run is already parked at its gate; the first connection dies
-	// immediately, and the reconnect must replay from sequence 1.
 	stream := session.Events(ctx)
 	initial := readUntil(t, stream, typeStop(protocol.TypeActionPermissionRequested))
 	if len(initial) != 4 {
@@ -722,8 +656,6 @@ func TestClientSpeculativeReconnectLosesNothing(t *testing.T) {
 	requireSequences(t, all, runID)
 }
 
-// TestClientEventsAfterSuffix pins the manual replay surface: a cursor
-// replays exactly the suffix, then ends at the terminal event.
 func TestClientEventsAfterSuffix(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	c := dial(t, server)
@@ -751,8 +683,6 @@ func TestClientEventsAfterSuffix(t *testing.T) {
 	}
 }
 
-// driveToCompletion runs the scripted gates to completion synchronously,
-// using one event stream consumed to its end.
 func driveToCompletion(t *testing.T, session *Session, prompt string) protocol.RunID {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -769,8 +699,6 @@ func driveToCompletion(t *testing.T, session *Session, prompt string) protocol.R
 	}
 	return runID
 }
-
-// --- daemon signals as typed errors ---
 
 func TestClientOverflowSignal(t *testing.T) {
 	server := newDaemon(t, overflowRegistry(2))
@@ -797,15 +725,14 @@ func TestClientOverflowSignal(t *testing.T) {
 	if overflow.LastSequence != 1 || overflow.RunID != runID {
 		t.Fatalf("overflow signal %+v, want sequence 1 run %s", overflow, runID)
 	}
-	// The signal is terminal for the stream; the documented recovery is a
-	// cursor resume from the last delivered sequence.
+
 	if _, err := stream.Next(); err == nil || errors.Is(err, io.EOF) {
 		t.Fatalf("post-signal Next returned %v, want the sticky overflow", err)
 	}
 }
 
 func TestClientReplayGapSignal(t *testing.T) {
-	// Journal capacity 2 retains only the run's last two sequences.
+
 	server := newDaemon(t, memoryRegistry(2))
 	c := dial(t, server)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -827,8 +754,6 @@ func TestClientReplayGapSignal(t *testing.T) {
 		t.Fatalf("gap signal run %q, want %q", gap.RunID, gapRun)
 	}
 
-	// A consumer that accepts the loss resumes at oldest_available - 1 and
-	// still sees the retained suffix.
 	recovered := session.EventsAfter(ctx, gapRun, gap.OldestAvailable-1)
 	replayed := readUntil(t, recovered, typeStop(protocol.TypeRunCompleted))
 	if len(replayed) != 2 {
@@ -836,10 +761,6 @@ func TestClientReplayGapSignal(t *testing.T) {
 	}
 }
 
-// --- stream-defect detection against a hand-rolled wire ---
-
-// defectServer serves one canned SSE body, for stream frames the real daemon
-// would never emit.
 func defectServer(t *testing.T, body string, opts ...Option) *Client {
 	t.Helper()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -917,10 +838,7 @@ func TestClientRejectsDuplicateSequence(t *testing.T) {
 }
 
 func TestClientRejectsBadResumeSuffix(t *testing.T) {
-	// A cursor at 4 must be continued at 5 exactly; a suffix that starts at
-	// 9 skipped five envelopes and is surfaced, not accepted. The envelope
-	// carries its run id: the first replayed envelope establishes the run the
-	// cursor belongs to without relaxing the sequence expectation.
+
 	envelope := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 9)
 	c := defectServer(t, fmt.Sprintf("id: 9\ndata: %s\n\n", envelope))
 	stream := openDefectSession(t, c).EventsAfter(context.Background(), "wire-run", 4)
@@ -935,9 +853,7 @@ func TestClientRejectsBadResumeSuffix(t *testing.T) {
 }
 
 func TestClientRejectsGapAfterZeroCursor(t *testing.T) {
-	// A cursor of zero requests the run from its beginning — unlike a fresh
-	// live subscription that may join mid-run — so the first replayed
-	// envelope must be sequence 1.
+
 	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "wire-run", 2)
 	c := defectServer(t, fmt.Sprintf("id: 2\ndata: %s\n\n", envelope))
 	stream := openDefectSession(t, c).EventsAfter(context.Background(), "wire-run", 0)
@@ -952,9 +868,7 @@ func TestClientRejectsGapAfterZeroCursor(t *testing.T) {
 }
 
 func TestClientRejectsRunMismatchOnManualResume(t *testing.T) {
-	// A manual resume bound to a run must not silently adopt whichever run
-	// the daemon applied the cursor to: a first envelope from another run
-	// surfaces a mismatch instead of mixing two runs into one recovery.
+
 	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "other-run", 5)
 	c := defectServer(t, fmt.Sprintf("id: 5\ndata: %s\n\n", envelope))
 	stream := openDefectSession(t, c).EventsAfter(context.Background(), "bound-run", 4)
@@ -972,11 +886,7 @@ func TestClientRejectsRunMismatchOnManualResume(t *testing.T) {
 }
 
 func TestClientOverflowCursorTrustsSignal(t *testing.T) {
-	// The hub's overflow signal carries the full recovery cursor: the run
-	// whose delivery was lost and the consumer's last position in it —
-	// possibly a run this connection never reached. The client trusts it
-	// as given; overwriting it with the connection's own last position
-	// would strand whichever run the signal names.
+
 	envelope := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "consumed-run", 1)
 	body := fmt.Sprintf("id: 1\ndata: %s\n\nevent: oap-overflow\ndata: {\"run_id\":\"dropped-run\",\"last_sequence\":7,\"message\":\"fell behind\"}\n\n", envelope)
 	c := defectServer(t, body)
@@ -995,9 +905,7 @@ func TestClientOverflowCursorTrustsSignal(t *testing.T) {
 }
 
 func TestClientRejectsForeignSessionEvents(t *testing.T) {
-	// An envelope naming another session never belongs on this stream: a
-	// misrouted stream must not deliver another session's content as this
-	// one's, whatever its sequence numbers say.
+
 	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-foreign"), protocol.RunStatusUpdatedPayload{})
 	if err != nil {
 		t.Fatal(err)
@@ -1022,9 +930,7 @@ func TestClientRejectsForeignSessionEvents(t *testing.T) {
 }
 
 func TestClientRejectsOutOfScopeResponse(t *testing.T) {
-	// A correlated response scoped to another session is another operation's
-	// answer: the protocol validator rejects such pairs, and so must the
-	// client.
+
 	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID("scoped-response"), protocol.SessionOpenResponse{
@@ -1050,9 +956,7 @@ func TestClientRejectsOutOfScopeResponse(t *testing.T) {
 }
 
 func TestClientRequestIDsUniqueAcrossClients(t *testing.T) {
-	// OAP envelope ids are trace-unique: two clients in one process must not
-	// mint the same request id, or a combined trace reports duplicates and
-	// in_reply_to values become ambiguous.
+
 	var mu sync.Mutex
 	var ids []string
 	submit := func(c *Client, sessionID string) {
@@ -1083,10 +987,7 @@ func TestClientRequestIDsUniqueAcrossClients(t *testing.T) {
 }
 
 func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
-	// A message frame with neither an id field nor an envelope sequence
-	// cannot be positioned: delivering it would leave the cursor behind it,
-	// so a reconnect would replay it. The stream contract is sequenced run
-	// events; anything else is malformed.
+
 	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-noseq"), protocol.RunStatusUpdatedPayload{})
 	if err != nil {
 		t.Fatal(err)
@@ -1109,8 +1010,7 @@ func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
 }
 
 func TestClientRejectsZeroSequence(t *testing.T) {
-	// Sequences start at one: a present-but-zero sequence is schema-invalid
-	// and would leave the cursor disabled, admitting further defects.
+
 	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-zero"), protocol.RunStatusUpdatedPayload{})
 	if err != nil {
 		t.Fatal(err)
@@ -1132,9 +1032,7 @@ func TestClientRejectsZeroSequence(t *testing.T) {
 }
 
 func TestClientValidationAppliesToEveryErrorResponse(t *testing.T) {
-	// The validation option promises every inbound envelope; the listing and
-	// stream-opening paths read error responses directly and must validate
-	// them too, not only request exchanges.
+
 	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","payload":{"error":{"code":"unknown_session","message":"nope"}}}`
 	validate := WithEnvelopeValidation()
 
@@ -1169,8 +1067,7 @@ func TestClientValidationAppliesToEveryErrorResponse(t *testing.T) {
 }
 
 func TestClientRejectsNon200StreamStatus(t *testing.T) {
-	// A 2xx that is not a stream (a proxy's 204) must surface as an error,
-	// not be dereferenced as a response with a stream body.
+
 	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -1190,9 +1087,7 @@ func TestClientRejectsNon200StreamStatus(t *testing.T) {
 }
 
 func TestClientRejectsNonEventStreamContentType(t *testing.T) {
-	// A 200 with an HTML or JSON body is not an event stream; parsing it as
-	// one would masquerade as drops or park forever. The endpoint must
-	// declare text/event-stream.
+
 	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
@@ -1211,8 +1106,7 @@ func TestClientRejectsNonEventStreamContentType(t *testing.T) {
 }
 
 func TestClientMidRunJoinAccepted(t *testing.T) {
-	// The stream's first observed envelope may join a run in progress: a
-	// subscription opened mid-run legitimately starts at the join position.
+
 	c := defectServer(t, fmt.Sprintf("id: 5\ndata: %s\n\n", validRunEnvelope(t, protocol.TypeRunStatusUpdated, "joined-run", 5)))
 	stream := openDefectSession(t, c).Events(context.Background())
 	envelope, err := stream.Next()
@@ -1225,9 +1119,7 @@ func TestClientMidRunJoinAccepted(t *testing.T) {
 }
 
 func TestClientRejectsLateRunStart(t *testing.T) {
-	// A live transition to a new run must begin at sequence 1: the stream
-	// was attached throughout, so a first envelope later than the run's
-	// opening means events were lost.
+
 	joined := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "first-run", 5)
 	late := validRunEnvelope(t, protocol.TypeRunStatusUpdated, "second-run", 3)
 	c := defectServer(t, fmt.Sprintf("id: 5\ndata: %s\n\nid: 3\ndata: %s\n\n", joined, late))
@@ -1246,9 +1138,7 @@ func TestClientRejectsLateRunStart(t *testing.T) {
 }
 
 func TestClientValidationRejectsIdlessErrorEnvelope(t *testing.T) {
-	// Parses and is typed error.response, but omits the required top-level
-	// id: the presence test must not key on the id, or this invalid envelope
-	// skips validation entirely.
+
 	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","payload":{"error":{"code":"unknown_session","message":"nope"}}}`
 	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1293,9 +1183,7 @@ func TestClientRejectsUncorrelatedErrorEnvelope(t *testing.T) {
 }
 
 func TestClientValidationRejectsInvalidErrorEnvelope(t *testing.T) {
-	// Parses as an envelope, typed error.response, but the payload violates
-	// the schema (no error member): dev-mode validation must flag it instead
-	// of typing it as this operation's refusal.
+
 	const raw = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"err-2","payload":{}}`
 	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1313,9 +1201,7 @@ func TestClientValidationRejectsInvalidErrorEnvelope(t *testing.T) {
 }
 
 func TestClientRejectsLiveSequenceGap(t *testing.T) {
-	// A gap within a run on a live connection means an envelope was lost in
-	// flight or never published; the client surfaces it instead of silently
-	// advancing its cursor past the hole.
+
 	first := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 1)
 	third := validEventEnvelope(t, protocol.TypeRunStatusUpdated, 3)
 	c := defectServer(t, fmt.Sprintf("id: 1\ndata: %s\n\nid: 3\ndata: %s\n\n", first, third))
@@ -1333,11 +1219,6 @@ func TestClientRejectsLiveSequenceGap(t *testing.T) {
 	}
 }
 
-// TestClientRunChangedUnderCursor covers the cross-run reconnect: the cursor
-// belongs to a run that finished while disconnected, and a newer run is the
-// daemon's current one; the replayed suffix cannot continue the stream the
-// consumer was reading, so the mismatch is surfaced rather than silently
-// mixing two sequence spaces.
 func TestClientRunChangedUnderCursor(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	transport := newDroppingTransport(1, 4)
@@ -1353,16 +1234,12 @@ func TestClientRunChangedUnderCursor(t *testing.T) {
 		t.Fatalf("initial burst %d envelopes, want 4", len(initial))
 	}
 
-	// The connection is dead. Settle run one, start run two, and push it
-	// past its permission gate so its journal holds sequence 5 onward.
 	settleRun(t, session, initial[len(initial)-1])
 	second := submitGolden(t, session, "second run")
 	secondEvents := session.EventsAfter(ctx, second, 0)
 	secondInitial := readUntil(t, secondEvents, typeStop(protocol.TypeActionPermissionRequested))
 	resolveGate(t, session, secondInitial[len(secondInitial)-1])
 
-	// The reconnect's cursor (run one, sequence 4) is applied to run two;
-	// run two's suffix at 5 exposes the mismatch.
 	_, err := stream.Next()
 	var mismatch *ResumeMismatchError
 	if !errors.As(err, &mismatch) {
@@ -1372,8 +1249,6 @@ func TestClientRunChangedUnderCursor(t *testing.T) {
 		t.Fatalf("mismatch runs %q -> %q, want %q -> %q", mismatch.ExpectedRunID, mismatch.ObservedRunID, first, second)
 	}
 }
-
-// --- request validation ---
 
 func TestClientSubmitScopeMismatch(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
@@ -1420,7 +1295,7 @@ func TestClientOpenUnknownAdapter(t *testing.T) {
 }
 
 func TestClientValidationRejectsInvalidEnvelope(t *testing.T) {
-	// An envelope missing every required member but the type.
+
 	c := defectServer(t, "data: {\"type\":\"run.started\"}\n\n", WithEnvelopeValidation())
 	session := openDefectSession(t, c)
 	stream := session.Events(context.Background())
@@ -1429,8 +1304,6 @@ func TestClientValidationRejectsInvalidEnvelope(t *testing.T) {
 	}
 }
 
-// requestStub serves one canned response for every request, for daemon
-// misbehavior the real server never exhibits on the request surface.
 func requestStub(t *testing.T, respond func(w http.ResponseWriter, r *http.Request), opts ...Option) *Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1506,10 +1379,6 @@ func TestClientErrorCodeAbsentForPlainFailures(t *testing.T) {
 	}
 }
 
-// A per-submit run control crosses the daemon wire end to end: the admitted
-// model is echoed on the admission and on run.started, and a model outside the
-// endpoint's catalog comes back as a typed refusal naming the id it could not
-// serve rather than as a generic invalid submission (decision 0005).
 func TestClientDrivesRunControls(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(64))
 	c := dial(t, server)
@@ -1538,8 +1407,7 @@ func TestClientDrivesRunControls(t *testing.T) {
 	if payload.ModelID != base.ModelSecondary {
 		t.Fatalf("run.started model %q, want %q", payload.ModelID, base.ModelSecondary)
 	}
-	// The application is per_run, so the model the next control-free
-	// submission would use has not moved.
+
 	state, err := session.State(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1562,10 +1430,6 @@ func TestClientDrivesRunControls(t *testing.T) {
 	}
 }
 
-// A queued submission reaches the client as the reservation it is, and the
-// state the client reads describes both nonterminal runs: a caller that saw
-// only active_run_id would think the session had one run's work outstanding
-// when it has two.
 func TestClientQueuedSubmission(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	c := dial(t, server)
@@ -1598,8 +1462,6 @@ func TestClientQueuedSubmission(t *testing.T) {
 		t.Fatalf("active_run_id = %q, want the started run %q", state.ActiveRunID, first)
 	}
 
-	// The endpoint's disclosed bound reaches the client too, so a caller can
-	// tell a queue it may use from one it may not.
 	capabilities, err := c.Capabilities(ctx, "memory")
 	if err != nil {
 		t.Fatal(err)

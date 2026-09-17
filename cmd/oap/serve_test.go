@@ -62,8 +62,6 @@ func writeServeConfig(t *testing.T) string {
 	return path
 }
 
-// syncBuffer is a mutex-guarded buffer: the serve goroutine writes startup
-// output while the test polls for the listener line.
 type syncBuffer struct {
 	mu     sync.Mutex
 	buffer bytes.Buffer
@@ -81,9 +79,6 @@ func (s *syncBuffer) String() string {
 	return s.buffer.String()
 }
 
-// startServe runs the serve command on an ephemeral loopback port and returns
-// its base URL once the listener is ready, plus the cancel that begins a
-// graceful shutdown.
 func startServe(t *testing.T, args []string) (string, func(), <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -128,7 +123,6 @@ func expectServeExit(t *testing.T, done <-chan error) {
 func TestServeLifecycleOverRealListener(t *testing.T) {
 	address, cancel, done := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
 
-	// Adapter listing over the real listener.
 	response, err := http.Get(address + "/adapters")
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +133,6 @@ func TestServeLifecycleOverRealListener(t *testing.T) {
 		t.Fatalf("adapters listing: %d %s", response.StatusCode, data)
 	}
 
-	// One session open and one parked SSE stream, then graceful shutdown.
 	open, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "serve-open", protocol.SessionOpenRequest{SessionID: "serve-session"})
 	if err != nil {
 		t.Fatal(err)
@@ -186,9 +179,6 @@ func TestServeLifecycleOverRealListener(t *testing.T) {
 func TestServeSessionsClosedOnShutdown(t *testing.T) {
 	address, cancel, done := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
 
-	// An open session exists on the still-running daemon; the shutdown
-	// sweep itself (cancel-then-close) is covered by the internal
-	// TestCloseSessionsSettlesActiveRuns.
 	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "serve-close-open", protocol.SessionOpenRequest{SessionID: "serve-close"})
 	if err != nil {
 		t.Fatal(err)
@@ -224,9 +214,7 @@ func TestLoopbackHosts(t *testing.T) {
 			t.Fatalf("loopback addr %q did not enable the host allowlist", addr)
 		}
 	}
-	// A wildcard or external bind opts out: a Host allowlist is worthless
-	// when any interface is reachable and non-browser clients choose their
-	// own Host header.
+
 	for _, addr := range []string{":6270", "0.0.0.0:6270", "example.org:80", "[::]:6270"} {
 		if got := loopbackHosts(addr); got != nil {
 			t.Fatalf("non-loopback addr %q kept an allowlist: %v", addr, got)

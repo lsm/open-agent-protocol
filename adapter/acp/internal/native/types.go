@@ -1,5 +1,3 @@
-// Package native contains the reduced stable ACP v1 wire types used by the adapter.
-// It intentionally excludes ACP v2 and optional filesystem, terminal, and elicitation APIs.
 package native
 
 import "encoding/json"

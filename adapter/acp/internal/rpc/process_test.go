@@ -14,14 +14,12 @@ import (
 )
 
 func TestACPHelperProcess(t *testing.T) {
-	// The descendant that inherits the pipes and outlives the direct child only
-	// needs to hold them open for longer than the test's guard.
+
 	if os.Getenv("OAP_ACP_RPC_HOLDER") == "1" {
 		time.Sleep(5 * time.Second)
 		os.Exit(0)
 	}
-	// Activated either by environment or by an explicit argument, so the
-	// empty-allowlist fixture can be spawned with no environment at all.
+
 	mode := os.Getenv("OAP_ACP_RPC_HELPER")
 	if strings.Contains(strings.Join(os.Args, "\x00"), "--acp-emptyenv") {
 		if os.Getenv("ACP_ENV_PROBE") != "" {
@@ -55,8 +53,7 @@ func TestACPHelperProcess(t *testing.T) {
 		version = 2
 	}
 	if mode == "wrong-version-hold" {
-		// Spawn a descendant that inherits stdout/stderr and outlives this
-		// process, so the pipes stay open after the direct child exits.
+
 		descendant := exec.Command(os.Args[0], "-test.run=TestACPHelperProcess", "--")
 		descendant.Env = append(os.Environ(), "OAP_ACP_RPC_HOLDER=1")
 		descendant.Stdout = os.Stdout
@@ -80,8 +77,7 @@ func TestACPHelperProcess(t *testing.T) {
 		}
 		if message.Kind == MessageRequest {
 			if mode == "large-response" {
-				// A frame far larger than the pipe buffer keeps the reader busy
-				// past the child's exit, which is the window this exercises.
+
 				blob := strings.Repeat("x", 1<<20)
 				_ = writer.Encode(Response(message.ID, json.RawMessage(`{"ok":true,"blob":"`+blob+`"}`)))
 				return
@@ -103,8 +99,6 @@ func helperConfig(mode string) ProcessConfig {
 	}
 }
 
-// envlessHelperConfig spawns the helper with an explicitly empty allowlist, so
-// the child sees no parent variables at all.
 func envlessHelperConfig() ProcessConfig {
 	return ProcessConfig{
 		Path: os.Args[0], Args: []string{"-test.run=TestACPHelperProcess", "--", "--acp-emptyenv"},
@@ -114,8 +108,6 @@ func envlessHelperConfig() ProcessConfig {
 	}
 }
 
-// An explicitly empty allowlist must reach the child as an empty environment,
-// not collapse to nil and inherit the parent's variables.
 func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
 	t.Setenv("ACP_ENV_PROBE", "ambient-value")
 	process, err := Start(context.Background(), envlessHelperConfig())
@@ -127,9 +119,6 @@ func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
 	}
 }
 
-// A handshake validation failure aborts the process. If a descendant inherited
-// stdout, the reader's drain never observes EOF, so abort must release the
-// pipes before waiting rather than hang Start indefinitely.
 func TestHandshakeAbortBoundsWhenDescendantHoldsPipes(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
@@ -195,10 +184,6 @@ func TestStartReportsRedactedBoundedStderr(t *testing.T) {
 	}
 }
 
-// The helper writes its response and then exits immediately. The process owner
-// must let the reader drain the buffered frame before closing the pipes and
-// failing pending calls, or a response that was already written becomes a
-// closed-pipe error on the pending call.
 func TestCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	for iteration := range 10 {
 		process, err := Start(context.Background(), helperConfig("large-response"))
@@ -260,8 +245,7 @@ func TestLimitedBufferBoundsAndRedacts(t *testing.T) {
 	for input, want := range map[string]string{
 		"x-api-key=secret": "x-api-key=[REDACTED]", "Authorization: Bearer": "Authorization: [REDACTED]", "Authorization: Bearer secret-value": "Authorization: [REDACTED]", "auth_token = abc": "auth_token = [REDACTED]",
 		"password=secret-value": "password=[REDACTED]", "secret: value": "secret: [REDACTED]", "token=value": "token=[REDACTED]",
-		// Structured error records quote the key and value; the quote after the
-		// key must not defeat redaction.
+
 		`{"api_key":"secret-value"}`:           `{"api_key":"[REDACTED]"}`,
 		`{"Authorization":"Bearer secret"}`:    `{"Authorization":"[REDACTED]"}`,
 		`{"error":{"auth_token":"abc","x":1}}`: `{"error":{"auth_token":"[REDACTED]","x":1}}`,

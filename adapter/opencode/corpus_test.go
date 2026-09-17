@@ -70,9 +70,7 @@ type opencodeCorpusCase struct {
 	ReplayAfter       *uint64            `json:"replay_after,omitempty"`
 	Cancel            bool               `json:"cancel,omitempty"`
 	AdmissionRejected bool               `json:"admission_rejected,omitempty"`
-	// Catalog names the file holding the models.response payload the adapter
-	// serves after this case's frames. It is optional: only a case whose
-	// native evidence names a model has a catalog to assert.
+
 	Catalog string `json:"catalog,omitempty"`
 }
 type opencodeProvenance struct {
@@ -154,8 +152,6 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	omissions := opencodeLoadJSON[[]opencodeCorpusOmission](t, filepath.Join(dir, definition.Omissions))
 	assertOpenCodeClassifications(t, frames, decoded, mappings, omissions)
 
-	// Preset the history page before any frame is fed: settlement can fire
-	// on the dispatcher goroutine as soon as a terminal candidate arrives.
 	var presetHistory []native.Event
 	for index, frame := range frames {
 		if frame.Source != "history" || frame.Action != "" {
@@ -169,21 +165,14 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		capacity = 64
 	}
 	client := newFakeClient()
-	// Report the session as natively active until every frame has been
-	// delivered, so settlement at an intermediate step boundary cannot race the
-	// producer and complete the run with only the steps seen so far. The gate is
-	// released after the feed loop.
+
 	fed := make(chan struct{})
 	client.mu.Lock()
 	client.historyPage = native.HistoryPage{Events: presetHistory}
 	client.idleGate = fed
 	client.mu.Unlock()
 	if definition.AdmissionRejected {
-		// The rejection this case is named for is a definite HTTP answer the
-		// server chose to send, so deliver the *native.APIError the production
-		// client decodes from it rather than a bare error. Since Decision 0010
-		// the two are no longer equivalent: only a bare one means the prompt
-		// got no answer at all.
+
 		client.promptErr = &native.APIError{Status: 409, Tag: "ConflictError", Fields: map[string]json.RawMessage{}}
 		client.promoted = true
 	} else {
@@ -204,9 +193,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		t.Fatal(submitErr)
 	}
 	if definition.AdmissionRejected {
-		// Decision 0002: the harness rejected the prompt, the reserved run
-		// settles pre-start on the stream, and the response reports the
-		// accepted queued reservation.
+
 		if !response.Accepted || response.Admission != protocol.AdmissionQueued || response.EffectiveDelivery != protocol.EffectiveDeliveryQueue || response.RunID == "" {
 			t.Fatalf("conflict reservation = %+v", response)
 		}
@@ -224,8 +211,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		case "", "observe":
 			event := decoded[i]
 			if event.Type == native.TypePrompted {
-				// Bind the fixture's prompted turn to the identity the
-				// adapter actually admitted, mirroring the live contract.
+
 				var data native.PromptedData
 				if err := native.DecodeData(event, &data); err != nil {
 					t.Fatal(err)
@@ -242,8 +228,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 			}
 			client.events <- event
 		case "cancel":
-			// Ensure run.started has been emitted so the cancelling status
-			// ordering is deterministic.
+
 			started := false
 			for _, event := range collected {
 				if event.Type == protocol.TypeRunStarted {
@@ -261,7 +246,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 				t.Fatal(err)
 			}
 		case "cancel-idle":
-			// Cancel before the prompted turn: intent only, no status event.
+
 			if _, err := session.Cancel(context.Background(), admission.RunID); err != nil {
 				t.Fatal(err)
 			}
@@ -271,14 +256,10 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 			t.Fatalf("unsupported action %q", frame.Action)
 		}
 	}
-	// Every frame is delivered; report the loop idle so settlement can drain
-	// the ordered prefix and derive the terminal from the full run.
+
 	close(fed)
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
-	// Decision 0002 made both former mismatch shapes canonical: a queued
-	// reservation that promotes via run.started, and an accepted run whose
-	// first and only event is a pre-start terminal. Non-terminal events
-	// before run.started remain invalid.
+
 	canonical := len(events) > 0 && (events[0].Type == protocol.TypeRunStarted || events[0].Type == protocol.TypeRunFailed || events[0].Type == protocol.TypeRunCancelled)
 	if !canonical {
 		t.Fatalf("case %s: trace has no canonical first event", entry.ID)
@@ -315,10 +296,6 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	}
 }
 
-// opencodeLoadFrames returns each fixture wrapper alongside the native event the
-// production path yields for it, so the corpus exercises transport framing and
-// event decoding rather than only the reducer. Frames that carry a harness
-// action instead of a payload decode to the zero event.
 func opencodeLoadFrames(t *testing.T, filename string) ([]opencodeCorpusFrame, []native.Event) {
 	t.Helper()
 	data, err := os.ReadFile(filename)
@@ -343,14 +320,6 @@ func opencodeLoadFrames(t *testing.T, filename string) ([]opencodeCorpusFrame, [
 	return frames, decoded
 }
 
-// opencodeDecodeFrame turns one fixture payload into the native event the
-// adapter would see on the live path. A stream frame is rewritten as the SSE
-// wire text the pinned server writes and read back with the production SSE
-// decoder at the production frame limit, so a change to field parsing, the
-// event terminator, or the frame bound regresses the corpus and not only the
-// httpapi tests. A history frame is an element of the HTTP history endpoint's
-// JSON array, never an SSE event, so it stays on the payload path the
-// production client uses for that endpoint.
 func opencodeDecodeFrame(t *testing.T, filename string, index int, frame opencodeCorpusFrame) native.Event {
 	t.Helper()
 	if frame.Action != "" && frame.Action != "observe" {
@@ -419,19 +388,13 @@ func assertOpenCodeClassifications(t *testing.T, frames []opencodeCorpusFrame, d
 	}
 }
 
-// assertOpenCodeCatalog compares the catalog the adapter serves after the
-// case's frames with the stored expectation. The catalog is projected from the
-// same durable step events the reducer consumed, decoded through the
-// production SSE decoder, so it is native evidence rather than a value the
-// test supplies.
 func assertOpenCodeCatalog(t *testing.T, session base.Session, filename string) {
 	t.Helper()
 	lister, ok := session.(base.ModelLister)
 	if !ok {
 		t.Fatal("the OpenCode session serves no catalog")
 	}
-	// models.list is advertised degraded, so the query carries the opt-in the
-	// wire requires; without it the adapter refuses, which its unit tests pin.
+
 	catalog, err := lister.Models(context.Background(), protocol.ModelsRequest{
 		SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureModelsList},
 	})

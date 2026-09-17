@@ -103,32 +103,31 @@ func TestDecodeStrictRejectsNestedDuplicate(t *testing.T) {
 }
 
 func TestEventContentBoundaryStrictness(t *testing.T) {
-	// Every case must fail closed against the pinned content/source contracts.
+
 	raw := []string{
-		// text/reasoning blocks require their text member and reject
-		// cross-variant fields.
+
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text"}],"source":{"kind":"user"}}}}`,
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"ok","arguments":"{}"}],"source":{"kind":"user"}}}}`,
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"reasoning","text":"r","attachment":{"attachmentId":"a","mediaType":"image/png"}}],"source":{"kind":"user"}}}}`,
-		// image attachment must be a structured reference.
+
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":"https://example.invalid/token"}],"source":{"kind":"user"}}}}`,
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":{"mediaType":"image/png"}}],"source":{"kind":"user"}}}}`,
-		// sources must not carry contradictory provenance.
+
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"user","plugin":"p"}}}}`,
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"plugin","plugin":"p","model":"m"}}}}`,
-		// inbox insertions validate their message content too.
+
 		`{"sessionId":"s","event":{"type":"agent/inbox/spliced","seq":1,"time":1,"data":{"target":"next-turn","start":0,"inserted":[{"id":"m","role":"user","content":[{"type":"text"}],"source":{"kind":"user"}}]}}}`,
-		// assistant message content is validated from raw, not just typed.
+
 		`{"sessionId":"s","event":{"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"a","role":"assistant","content":[{"type":"text"}],"source":{"kind":"model","provider":"p","model":"m"}}}}}`,
-		// tool/result content is exactly one matching tool-result block.
+
 		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"user","content":[],"source":{"kind":"tool","callId":"c"}}}}}`,
 		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"}}}}}`,
 		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"other","content":[{"type":"text","text":"x"}]}],"source":{"kind":"tool","callId":"c"}}}}}`,
-		// request/header must carry the pinned EpochHeader shape.
+
 		`{"sessionId":"s","event":{"type":"request/header","seq":1,"time":1,"data":{"header":null,"reason":"initial"}}}`,
 		`{"sessionId":"s","event":{"type":"request/header","seq":1,"time":1,"data":{"header":{"apiKey":"secret"},"reason":"initial"}}}`,
 		`{"sessionId":"s","event":{"type":"request/header","seq":1,"time":1,"data":{"header":{"config":{"provider":"","model":"m"}},"reason":"initial"}}}`,
-		// subagent output content is validated.
+
 		`{"provider":"deepseek","agentId":"c","parentSessionId":"p","childSessionId":"c","status":"ok","stopReason":"completed","lastAssistantMessage":[{"type":"text"}]}`,
 	}
 	for _, data := range raw {
@@ -142,14 +141,10 @@ func TestEventContentBoundaryStrictness(t *testing.T) {
 	}
 }
 
-// assistantAttempt wraps a raw stream-record array in an assistant/attempt
-// envelope, the evidence-only home of the retired assistant/chunk vocabulary.
 func assistantAttempt(stream string) string {
 	return `{"sessionId":"s","event":{"type":"assistant/attempt","seq":1,"time":1,"data":{"turn":1,"step":1,"stream":` + stream + `}}}`
 }
 
-// assistantMessage wraps a raw stream-record array in a full assistant/message
-// envelope: the settled surface message carries assembled content and usage.
 func assistantMessage(stream string) string {
 	return `{"sessionId":"s","event":{"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"stream":` + stream +
 		`,"message":{"id":"a","role":"assistant","content":[{"type":"text","text":"hi"}],"source":{"kind":"model","provider":"p","model":"m"}}}}}`
@@ -157,25 +152,22 @@ func assistantMessage(stream string) string {
 
 func TestEventChunkAndReasonStrictness(t *testing.T) {
 	raw := []string{
-		// unknown or incomplete stream chunk variants inside a raw chunk record.
+
 		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"future-chunk"}}]`),
 		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"text-delta"}}]`),
 		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"block-end","index":0,"block":{"type":"text"}}}]`),
 		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"usage"}}]`),
 		assistantAttempt(`[{"type":"chunk","time":1,"chunk":{"type":"finish","reason":{"kind":"stop","failure":{"message":"x","code":"y"}}}}]`),
-		// compact records stay strict: bad run lengths, unknown variants,
-		// negative indices, empty tool-call identity, and unknown members.
-		// A run of one text carries no inter-chunk gaps, so any dt entry is a
-		// bad run length.
+
 		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[0,1],"texts":["hi"]}]`),
 		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[],"texts":[]}]`),
 		assistantAttempt(`[{"type":"bogus-record"}]`),
 		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":-1,"dt":[0],"texts":["hi"]}]`),
 		assistantAttempt(`[{"type":"tool-call-chunks","time0":0,"index":0,"dt":[0],"id":"","args":["{}"]}]`),
 		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[0],"texts":["hi"],"extra":true}]`),
-		// assistant/message requires its compact stream.
+
 		`{"sessionId":"s","event":{"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"a","role":"assistant","content":[{"type":"text","text":"hi"}],"source":{"kind":"model","provider":"p","model":"m"}}}}}`,
-		// turn/end reasons must be structurally complete.
+
 		`{"sessionId":"s","event":{"type":"turn/end","seq":1,"time":1,"data":{"turn":1,"reason":{"kind":"aborted","reason":"anything"}}}}`,
 		`{"sessionId":"s","event":{"type":"turn/end","seq":1,"time":1,"data":{"turn":1,"reason":{"kind":"aborted","reason":{"kind":"hook"}}}}}`,
 		`{"sessionId":"s","event":{"type":"turn/end","seq":1,"time":1,"data":{"turn":1,"reason":{"kind":"error","error":{"apiKey":"secret"}}}}}`,
@@ -187,7 +179,7 @@ func TestEventChunkAndReasonStrictness(t *testing.T) {
 			t.Fatalf("accepted %q: %v", data, err)
 		}
 	}
-	// Every pinned record variant still decodes, in both envelope homes.
+
 	valid := []string{
 		assistantAttempt(`[{"type":"text-chunks","time0":0,"index":0,"dt":[],"texts":["hi"]}]`),
 		assistantAttempt(`[{"type":"reasoning-chunks","time0":0,"index":0,"dt":[0],"texts":["a","b"]}]`),

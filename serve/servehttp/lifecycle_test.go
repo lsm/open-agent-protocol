@@ -41,12 +41,6 @@ func staticEnviron(values map[string]string) func(string) (string, bool) {
 	}
 }
 
-// The full-lifecycle tests drive one complete session over HTTP per adapter
-// path and run the executable OAP schema and semantic state machine over every
-// envelope the daemon emitted (POST responses and SSE events alike): the
-// daemon must relay envelopes, not reshape them. GET-generated responses cite
-// a daemon-minted correlation id; the test pairs each with a synthesized
-// request envelope, exactly as a client would.
 func TestValidationGatedLifecycleMemory(t *testing.T) {
 	registry := memoryRegistry(64)
 	testValidationGatedLifecycle(t, registry, "memory")
@@ -62,13 +56,11 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	sessionID := "lifecycle-" + adapterName
 	var trace []protocol.Envelope
 
-	// Capability exchange: the daemon's response plus a paired request.
 	capsResponse := getCapabilities(t, server, adapterName)
 	capsRequest := requestEnvelope(t, protocol.TypeCapabilitiesRequest, string(capsResponse.InReplyTo), protocol.CapabilitiesRequest{}, "", "", "")
 	trace = append(trace, capsRequest, capsResponse)
 	revision := capsResponse.CapabilityRevision
 
-	// Session open: verbatim request and response envelopes.
 	openRequest := requestEnvelope(t, protocol.TypeSessionOpenRequest, "lifecycle-open", protocol.SessionOpenRequest{SessionID: protocol.SessionID(sessionID)}, sessionID, "", "")
 	status, openResponse := postEnvelope(t, server, "/adapters/"+adapterName+"/sessions", openRequest)
 	if status != 200 {
@@ -76,7 +68,6 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	}
 	trace = append(trace, openRequest, openResponse)
 
-	// Submit cites the active capability revision; the admission must echo it.
 	submitRequest := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "lifecycle-submit", protocol.MessageSubmitRequest{
 		SessionID: protocol.SessionID(sessionID), Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("drive the lifecycle")}},
@@ -95,7 +86,6 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	}
 	trace = append(trace, submitRequest, admissionEnvelope)
 
-	// Scripted permission gate.
 	initial := stream.drainUntil(protocol.TypeActionPermissionRequested)
 	trace = append(trace, initial...)
 	permission := permissionRequestAt(t, initial)
@@ -109,7 +99,6 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	}
 	trace = append(trace, permissionRequest, permissionResponse)
 
-	// Scripted user-input gate and terminal settlement.
 	middle := stream.drainUntil(protocol.TypeRunStatusUpdated)
 	trace = append(trace, middle...)
 	input := inputRequestAt(t, middle)
@@ -126,21 +115,13 @@ func testValidationGatedLifecycle(t *testing.T, registry *serve.Registry, adapte
 	trace = append(trace, stream.drainUntil(protocol.TypeRunCompleted)...)
 	stream.expectEnd()
 
-	// Authoritative state exchange after settlement.
 	stateResponse := getState(t, server, sessionID)
 	stateRequest := requestEnvelope(t, protocol.TypeSessionStateRequest, string(stateResponse.InReplyTo), protocol.SessionStateRequest{SessionID: protocol.SessionID(sessionID)}, sessionID, "", "")
 	trace = append(trace, stateRequest, stateResponse)
 
-	// A submission the adapter refuses answers with a correlated
-	// error.response, which is itself a legal terminal for a request. A model
-	// outside the advertised catalog is refused with the typed
-	// model_not_found and the id it could not serve, so the caller learns
-	// which control to change.
 	rejected := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "lifecycle-rejected", protocol.MessageSubmitRequest{
 		SessionID: protocol.SessionID(sessionID), Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("model-the-catalog-lacks"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
-		// A submission exercising an optional control cites the descriptor
-		// revision it was written against, like every optional envelope.
 	}, sessionID, "", revision)
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/"+sessionID+"/submit", rejected)
 	if status != 400 {
@@ -193,9 +174,6 @@ func getState(t *testing.T, server *httptest.Server, sessionID string) protocol.
 	return envelope
 }
 
-// TestCloseSessionsSettlesActiveRuns covers the daemon's graceful-shutdown
-// session sweep: active runs that refuse Close are cancelled first, and every
-// session ends closed.
 func TestCloseSessionsSettlesActiveRuns(t *testing.T) {
 	daemon, server := newServer(t, memoryRegistry(64), Options{})
 	openSession(t, server, "memory", "shutdown-idle")
@@ -205,7 +183,6 @@ func TestCloseSessionsSettlesActiveRuns(t *testing.T) {
 
 	daemon.CloseSessions(context.Background())
 
-	// The cancelled run settles before the stream ends.
 	envelopes := stream.drainUntil(protocol.TypeRunCancelled)
 	if len(envelopes) == 0 {
 		t.Fatal("active run produced no events before cancellation")
@@ -224,9 +201,6 @@ func TestCloseSessionsSettlesActiveRuns(t *testing.T) {
 	}
 }
 
-// TestDaemonOutputNeverCarriesEnvironmentValues pins the security invariant
-// that resolved environment values never reach daemon output: the adapter
-// listing and load errors carry names only.
 func TestDaemonOutputNeverCarriesEnvironmentValues(t *testing.T) {
 	const secret = "super-secret-value"
 	registry, err := serve.LoadRegistry(writeConfig(t,
@@ -259,6 +233,4 @@ func TestDaemonOutputNeverCarriesEnvironmentValues(t *testing.T) {
 	}
 }
 
-// Compile-time assertion that the fake adapter satisfies the registry's
-// adapter boundary.
 var _ base.Adapter = (*fakeAdapter)(nil)

@@ -70,11 +70,7 @@ func TestClientCorrelatesAndOrdersResponse(t *testing.T) {
 }
 
 func TestClientToleratesAllocatedSequenceGapsAndReorder(t *testing.T) {
-	// v0.2.0 §13.1: allocated frames draw a per-registration counter that
-	// describes allocation order, not observed wire order — a retried
-	// publication may burn a counter value (gap) and synchronous replies
-	// overtake outbox-queued frames (reorder). None of this is transport
-	// loss; receive order is the only ordering authority.
+
 	frames := []string{
 		strings.Replace(strings.Replace(strings.Replace(testLine, `"type":"ping"`, `"type":"agent_event"`, 1), `"sequence":1`, `"sequence":2`, 1), `"payload":{}`, `"payload":{"event_json":"{}"}`, 1),
 		strings.Replace(strings.Replace(strings.Replace(strings.Replace(testLine, `"type":"ping"`, `"type":"agent_event"`, 1), `"sequence":1`, `"sequence":4`, 1), `01ARZ3NDEKTSV4RRFFQ69G5FAV`, `01ARZ3NDEKTSV4RRFFQ69G5FAX`, 1), `"payload":{}`, `"payload":{"event_json":"{}"}`, 1),

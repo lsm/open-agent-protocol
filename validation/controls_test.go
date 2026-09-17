@@ -8,14 +8,8 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The run-controls rules the fixture corpus cannot state on its own: the
-// refusal precedence, the pointer ordering within one rule, and the boundary
-// between a refusal the validator judges and one it leaves alone.
-
 const controlsCore = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
 
-// controlsTrace assembles a capability exchange, one submit carrying the given
-// controls, and one response, so a test states only what it is about.
 func controlsTrace(features, controls, response string) []byte {
 	catalog := `,"tools":[{"name":"scripted_tool","input_schema":{"type":"object"},"execution_owner":"agent"}]`
 	descriptor := `{` + controlsCore + `,"type":"capabilities.response","id":"caps-resp","in_reply_to":"caps-req","capability_revision":"rev-1","payload":{"endpoint":{"id":"fixture"},"features":` + features + catalog + `}}`
@@ -27,7 +21,6 @@ const controlsAdmission = `{` + controlsCore + `,"type":"session.message.submit.
 	{` + controlsCore + `,"type":"run.started","id":"ev-start","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","status":"running"}},
 	{` + controlsCore + `,"type":"run.completed","id":"ev-done","session_id":"s1","run_id":"r1","sequence":2,"payload":{"session_id":"s1","run_id":"r1","final_response":{"role":"assistant","content":"ok"},"stop_reason":"end_turn"}}`
 
-// refusalEnvelope renders one correlated error.response.
 func refusalEnvelope(code string, details map[string]any) string {
 	encoded, _ := json.Marshal(details)
 	payload := `{"error":{"code":"` + code + `","message":"refused"`
@@ -38,23 +31,16 @@ func refusalEnvelope(code string, details map[string]any) string {
 	return `{` + controlsCore + `,"type":"error.response","id":"err","in_reply_to":"submit-req","session_id":"s1","payload":` + payload + `}`
 }
 
-// A request can fail several fail-closed tests at once and one error.response
-// carries one code, so the expectations are ranked rather than conjoined: the
-// capability rung outranks the degradation rung whichever field carries it,
-// and a caller told to stop sending something learns more than one handed an
-// opt-in it could have supplied.
 func TestRefusalPrecedencePrefersTheCapabilityRung(t *testing.T) {
 	v := MustNew()
 	features := `{"run.model_selection":{"level":"degraded","mode":"per_run","reason":"attribution is unconfirmed"},"run.instructions":{"level":"unavailable","reason":"no per-run surface"}}`
 	controls := `,"model_id":"m1","instructions":"be terse"`
-	// The conforming refusal names the unadvertised control, not the
-	// degraded one.
+
 	conforming := controlsTrace(features, controls, refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.instructions", "reason": "unadvertised"}))
 	if got := v.ValidateBytes(conforming, "precedence-conforming"); !got.Valid() {
 		t.Fatalf("a refusal on the capability rung was rejected: %+v", got.Diagnostics)
 	}
-	// Refusing under the lower rung leaves the caller sending something the
-	// endpoint will never accept.
+
 	wrongRung := controlsTrace(features, controls, refusalEnvelope("capability_degraded", map[string]any{"feature": "run.model_selection"}))
 	got := v.ValidateBytes(wrongRung, "precedence-wrong-rung")
 	if !got.HasCode(CodeUnavailableCapability) {
@@ -62,13 +48,11 @@ func TestRefusalPrecedencePrefersTheCapabilityRung(t *testing.T) {
 	}
 }
 
-// Within one rung the expectation whose capability key sorts first wins, so a
-// request failing two capability gates owes one determinate refusal.
 func TestRefusalPrecedenceOrdersPeersByKey(t *testing.T) {
 	v := MustNew()
 	features := `{"run.instructions":{"level":"unavailable","reason":"none"},"run.structured_output":{"level":"unavailable","reason":"none"}}`
 	controls := `,"instructions":"be terse","output_schema":{"type":"object"}`
-	// run.instructions sorts before run.structured_output.
+
 	if got := v.ValidateBytes(controlsTrace(features, controls, refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.instructions", "reason": "unadvertised"})), "peers-first"); !got.Valid() {
 		t.Fatalf("the lower key's refusal was rejected: %+v", got.Diagnostics)
 	}
@@ -77,9 +61,6 @@ func TestRefusalPrecedenceOrdersPeersByKey(t *testing.T) {
 	}
 }
 
-// One rule can fail twice over, so the ordering is carried down to the
-// offending value: the winner is the entry with the lowest JSON Pointer, which
-// inside an array is the caller's own order.
 func TestUnsatisfiableToolChoiceNamesTheFirstOffendingEntry(t *testing.T) {
 	v := MustNew()
 	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
@@ -95,9 +76,6 @@ func TestUnsatisfiableToolChoiceNamesTheFirstOffendingEntry(t *testing.T) {
 	}
 }
 
-// The gate judges the response, never the request, because the wire requires
-// the endpoint to refuse and diagnosing the request would fail the behaviour
-// it mandates. A refusal that is not about a control at all is left alone.
 func TestControlGateLeavesUnrelatedRefusalsAlone(t *testing.T) {
 	v := MustNew()
 	features := `{"run.instructions":{"level":"emulated"}}`
@@ -107,9 +85,6 @@ func TestControlGateLeavesUnrelatedRefusalsAlone(t *testing.T) {
 	}
 }
 
-// A tool_choice mode the endpoint never said it enforces is one it may refuse.
-// Without that, run.tool_selection would promise nothing: an endpoint could
-// advertise it, refuse every required and named policy, and pass.
 func TestUndisclosedToolChoiceModeMayBeRefused(t *testing.T) {
 	v := MustNew()
 	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
@@ -122,9 +97,6 @@ func TestUndisclosedToolChoiceModeMayBeRefused(t *testing.T) {
 	}
 }
 
-// An output_schema is compiled with a loader that refuses every reference
-// outside the registered resources, so an untrusted schema can never make the validator
-// read a local path or fetch a URL.
 func TestOutputSchemaCompilationIsSelfContained(t *testing.T) {
 	for name, document := range map[string]string{
 		"absolute reference": `{"type":"object","properties":{"a":{"$ref":"https://example.test/s.json"}}}`,
@@ -155,7 +127,6 @@ func TestOutputSchemaCompilationIsSelfContained(t *testing.T) {
 	}
 }
 
-// A compiled schema judges the result a run completed with.
 func TestOutputSchemaValidatesResults(t *testing.T) {
 	compiled, err := CompileOutputSchema(json.RawMessage(`{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}`))
 	if err != nil {
@@ -172,8 +143,6 @@ func TestOutputSchemaValidatesResults(t *testing.T) {
 	}
 }
 
-// Pointer order compares segment by segment, numerically inside an array, so
-// two encodings of one request owe the same refusal.
 func TestPointerOrderIsSegmentWise(t *testing.T) {
 	ordered := []string{
 		"/payload/tool_choice/allowed/0",
@@ -193,8 +162,6 @@ func TestPointerOrderIsSegmentWise(t *testing.T) {
 	}
 }
 
-// Every diagnostic the unit introduces is registered, or a fixture asserting
-// it could not be declared.
 func TestRunControlDiagnosticsAreRegistered(t *testing.T) {
 	known := diagnosticCodes()
 	for _, code := range []string{
@@ -207,8 +174,6 @@ func TestRunControlDiagnosticsAreRegistered(t *testing.T) {
 	}
 }
 
-// The unit's capability keys are registered, so the corpus-completeness check
-// holds this unit to both aspects of each.
 func TestRunControlCapabilitiesAreRegistered(t *testing.T) {
 	keys := strings.Join(unitCapabilities["run-controls"], " ")
 	for _, key := range []string{"run.model_selection", "run.instructions", "run.tool_selection", "run.structured_output"} {
@@ -218,10 +183,6 @@ func TestRunControlCapabilitiesAreRegistered(t *testing.T) {
 	}
 }
 
-// The schema admits any JSON value for tool_choice, so the validator must
-// classify every one of them rather than assume a decoded policy. A present
-// null is a control that is not the typed policy: presence is what the gate
-// judges, the same rule that makes an empty model_id a control.
 func TestNullToolChoiceIsUnsatisfiable(t *testing.T) {
 	v := MustNew()
 	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
@@ -246,7 +207,6 @@ func TestNullToolChoiceIsUnsatisfiable(t *testing.T) {
 	}
 }
 
-// An absent tool_choice is not a control at all, so nothing is judged.
 func TestAbsentToolChoiceIsNotAControl(t *testing.T) {
 	policy, err := protocol.MessageSubmitRequest{}.ToolChoicePolicy()
 	if policy != nil || err != nil {
@@ -257,9 +217,6 @@ func TestAbsentToolChoiceIsNotAControl(t *testing.T) {
 	}
 }
 
-// A declared fixed_result is an exact promise, so the comparison must not pass
-// numbers through float64: the two integers below differ by one and are the
-// same float64.
 func TestFixedResultComparisonKeepsIntegerPrecision(t *testing.T) {
 	for name, pair := range map[string][2]string{
 		"integers past 2^53": {`{"n":9007199254740992}`, `{"n":9007199254740993}`},
@@ -270,7 +227,7 @@ func TestFixedResultComparisonKeepsIntegerPrecision(t *testing.T) {
 			t.Fatalf("%s: %s and %s compared equal", name, pair[0], pair[1])
 		}
 	}
-	// Member order and whitespace still do not decide it.
+
 	for name, pair := range map[string][2]string{
 		"member order": {`{"a":1,"b":2}`, `{"b":2, "a":1}`},
 		"whitespace":   {`{"ok":true}`, "{\n  \"ok\": true\n}"},
@@ -282,12 +239,6 @@ func TestFixedResultComparisonKeepsIntegerPrecision(t *testing.T) {
 	}
 }
 
-// A tool_choice is a policy over the effective catalog: allowed and disallowed
-// filter the catalog, then the mode applies to what is left, so the permitted
-// set never reaches past the catalog. Without that first step a plain auto or
-// required policy admits any name at all and an admitted policy governs
-// nothing. The gate already binds the catalog in both directions; the honour
-// side must bind it the same way.
 func TestPolicyPermitsOnlyCataloguedTools(t *testing.T) {
 	catalog := []string{"scripted_tool", "other_tool"}
 	for name, policy := range map[string]protocol.ToolChoice{
@@ -302,18 +253,16 @@ func TestPolicyPermitsOnlyCataloguedTools(t *testing.T) {
 		if !policy.Permits("scripted_tool", catalog, true) {
 			t.Fatalf("%s: a catalogued tool the policy admits was refused", name)
 		}
-		// An empty catalog is a catalog and permits nothing, the same reading
-		// that makes `required` against an empty filtered set unsatisfiable.
+
 		if policy.Permits("scripted_tool", nil, true) {
 			t.Fatalf("%s: an empty catalog permitted a tool", name)
 		}
-		// A trace carrying no catalog cannot decide membership, so the filter
-		// and the mode judge alone rather than refusing everything.
+
 		if !policy.Permits("scripted_tool", nil, false) {
 			t.Fatalf("%s: an unknown catalog was read as an empty one", name)
 		}
 	}
-	// Within the catalog the filter and the mode still decide.
+
 	for name, policy := range map[string]protocol.ToolChoice{
 		"disallowed":      {Mode: protocol.ToolChoiceAuto, Disallowed: []string{"other_tool"}},
 		"outside allowed": {Mode: protocol.ToolChoiceAuto, Allowed: []string{"scripted_tool"}},
@@ -326,8 +275,6 @@ func TestPolicyPermitsOnlyCataloguedTools(t *testing.T) {
 	}
 }
 
-// modelAdmission renders an admission reporting one model, a run.started that
-// names the given model or omits it, and a completion.
 func modelAdmission(admitted, started string) string {
 	start := `"session_id":"s1","run_id":"r1","status":"running"`
 	if started != "" {
@@ -338,13 +285,6 @@ func modelAdmission(admitted, started string) string {
 	{` + controlsCore + `,"type":"run.completed","id":"ev-done","session_id":"s1","run_id":"r1","sequence":2,"payload":{"session_id":"s1","run_id":"r1","final_response":{"role":"assistant","content":"ok"},"stop_reason":"end_turn"}}`
 }
 
-// An admitted model_id is authoritative for the run: the submit response
-// repeats it and run.started repeats it. Omitting it there is not silence
-// about a model nobody chose — the caller chose one, and a consumer reading
-// the start boundary cannot see the control was applied, which is what the
-// repeat exists for. A run whose submission carried no model_id keeps the
-// present-only comparison, since there the id is attribution the endpoint
-// volunteers rather than a control it owes.
 func TestStartedRepeatsTheAdmittedModel(t *testing.T) {
 	v := MustNew()
 	features := `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`
@@ -356,19 +296,13 @@ func TestStartedRepeatsTheAdmittedModel(t *testing.T) {
 	if !repeated.Valid() {
 		t.Fatalf("a run.started repeating the admitted model was rejected: %+v", repeated.Diagnostics)
 	}
-	// No control, so no control to apply: the reported model is attribution.
+
 	attribution := v.ValidateBytes(controlsTrace(features, "", modelAdmission("m1", "")), "started-omits-attribution")
 	if !attribution.Valid() {
 		t.Fatalf("an uncontrolled run was judged against a volunteered model: %+v", attribution.Diagnostics)
 	}
 }
 
-// unsupported_feature answers about one capability, so the key is the
-// refusal's subject: a refusal that omits it, or names another key, tells the
-// caller no more than that something was unsupported — and the caller's next
-// move is to stop sending a control it now cannot identify. The
-// unsatisfiability rung carries the offending member in details.tool or
-// details.field, so the feature there is checked by nothing else.
 func TestRefusalMustNameTheFeatureItAnswersFor(t *testing.T) {
 	v := MustNew()
 	features := `{"run.tool_selection":{"level":"emulated","modes":["auto","none","required","named"]}}`
@@ -389,12 +323,6 @@ func TestRefusalMustNameTheFeatureItAnswersFor(t *testing.T) {
 	}
 }
 
-// The typed policy is stated in terms of member presence: `name` when and only
-// when the mode is `named`, `allowed` and `disallowed` mutually exclusive. A
-// decode into value fields cannot see presence — `"name": ""` and `"name":
-// null` both land as the empty string, two empty lists as two empty slices —
-// so a policy whose shape is wrong would read as one whose members were simply
-// absent, and the endpoint would run under a policy nobody wrote.
 func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 	for name, encoded := range map[string]string{
 		"empty name off named mode": `{"mode":"auto","name":""}`,
@@ -411,8 +339,7 @@ func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 			t.Fatalf("%s: %s decoded as the typed policy %+v", name, encoded, policy)
 		}
 	}
-	// One filter, empty or not, is still the typed shape: an empty allowed
-	// list filters every tool out, which is empty rather than contradictory.
+
 	for name, encoded := range map[string]string{
 		"empty allowed":    `{"mode":"auto","allowed":[]}`,
 		"empty disallowed": `{"mode":"auto","disallowed":[]}`,
@@ -423,8 +350,7 @@ func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 			t.Fatalf("%s: %s was refused as untyped: %v", name, encoded, err)
 		}
 	}
-	// Every shape above is a control the endpoint must refuse as
-	// unsatisfiable, not one it may read past.
+
 	v := MustNew()
 	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
 	admitted := v.ValidateBytes(controlsTrace(features, `,"tool_choice":{"mode":"auto","allowed":[],"disallowed":[]}`, controlsAdmission), "empty-filters")
@@ -433,13 +359,6 @@ func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 	}
 }
 
-// An `allowed` the caller sent empty permits no tool at all. Length cannot say
-// that — an empty list and an absent one are both zero-length — so reading the
-// filter by length turns the most restrictive allowlist expressible into the
-// most permissive one: `required` would be admitted against the whole catalog
-// and `auto` would permit every tool in it, which is the opposite of what the
-// caller wrote. Presence is what the filter is defined by, here as in the
-// shape rules.
 func TestEmptyAllowlistPermitsNothing(t *testing.T) {
 	catalog := []string{"scripted_tool", "other_tool"}
 	empty := protocol.ToolChoice{Mode: protocol.ToolChoiceAuto, Allowed: []string{}}
@@ -451,7 +370,7 @@ func TestEmptyAllowlistPermitsNothing(t *testing.T) {
 			t.Fatalf("an empty allowlist permitted %q", name)
 		}
 	}
-	// An absent allowlist is not an empty one: it filters nothing.
+
 	absent := protocol.ToolChoice{Mode: protocol.ToolChoiceAuto}
 	if filtered := absent.Filter(catalog); len(filtered) != len(catalog) {
 		t.Fatalf("an absent allowlist filtered to %v, want the catalog", filtered)
@@ -459,31 +378,23 @@ func TestEmptyAllowlistPermitsNothing(t *testing.T) {
 	if !absent.Permits("scripted_tool", catalog, true) {
 		t.Fatalf("an absent allowlist refused a catalogued tool")
 	}
-	// `required` over an empty filtered set can never be honoured, so it is
-	// unsatisfiable rather than admitted and run against the whole catalog.
+
 	required := protocol.ToolChoice{Mode: protocol.ToolChoiceRequired, Allowed: []string{}}
 	defect := required.Unsatisfiable(catalog, true)
 	if defect == nil || defect.Pointer != "/payload/tool_choice/mode" {
 		t.Fatalf("required over an empty allowlist: defect %+v, want the empty filtered set", defect)
 	}
-	// `named` against an empty allowlist names a tool its own list excludes.
+
 	named := protocol.ToolChoice{Mode: protocol.ToolChoiceNamed, Name: "scripted_tool", Allowed: []string{}}
 	if defect := named.Unsatisfiable(catalog, true); defect == nil {
 		t.Fatal("named over an empty allowlist was satisfiable")
 	}
-	// `auto` over an empty allowlist is empty, not unsatisfiable: the run is
-	// admitted and simply calls nothing.
+
 	if defect := empty.Unsatisfiable(catalog, true); defect != nil {
 		t.Fatalf("auto over an empty allowlist was refused: %+v", defect)
 	}
 }
 
-// A descriptor advertising run.model_selection without saying how a selection
-// is applied leaves the key promising nothing a validator can check: the
-// per_run rule and the session_mutation rule both key on the mode, so with
-// neither in force a session default could move under a per-run selection, or
-// stay put under a mutation, with nothing to diagnose. Disclosure is
-// machine-readable for this key as it is for the tool_choice modes beside it.
 func TestModelSelectionMustDiscloseItsApplicationMode(t *testing.T) {
 	v := MustNew()
 	for name, support := range map[string]string{
@@ -499,8 +410,7 @@ func TestModelSelectionMustDiscloseItsApplicationMode(t *testing.T) {
 			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionModes, result.Diagnostics)
 		}
 	}
-	// Both modes this phase defines are disclosure enough, and a key the
-	// endpoint does not advertise owes no mode at all.
+
 	for name, features := range map[string]string{
 		"per_run":          `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`,
 		"session_mutation": `{"run.model_selection":{"level":"native","mode":"session_mutation"}}`,
@@ -517,13 +427,6 @@ func TestModelSelectionMustDiscloseItsApplicationMode(t *testing.T) {
 	}
 }
 
-// A `modes` list naming nothing a caller can send is the empty list in a
-// costume: every policy the typed shape admits carries one of the four modes,
-// so a descriptor listing none of them refuses every policy as unsatisfiable
-// and passes — the empty advertisement the disclosure exists to prevent.
-// Unknown names beside a recognised one are additive vocabulary: the
-// descriptor still enforces the one it names here, and a mode a later unit
-// defines must not make today's disclosure a defect.
 func TestToolSelectionMustEnforceAModeCallersCanSend(t *testing.T) {
 	v := MustNew()
 	policy := `,"tool_choice":{"mode":"auto"}`
@@ -551,12 +454,6 @@ func TestToolSelectionMustEnforceAModeCallersCanSend(t *testing.T) {
 	}
 }
 
-// Only an object is a structured result, so only an object is a fixed_result.
-// The schema requires one, so a trace carrying anything else never reaches the
-// semantic phase; if it ever did, the constraint is ignored rather than
-// enforced, because a null or a scalar satisfies no object-rooted schema and
-// reading it as a promise would make every structured-output request
-// unsatisfiable at an endpoint whose descriptor looked conformant.
 func TestFixedResultIsAnObjectOrNoConstraintAtAll(t *testing.T) {
 	v := MustNew()
 	schema := `,"output_schema":{"type":"object","properties":{"ok":{"type":"boolean"}}}`
@@ -568,13 +465,12 @@ func TestFixedResultIsAnObjectOrNoConstraintAtAll(t *testing.T) {
 	} {
 		features := `{"run.structured_output":{"level":"emulated","constraints":{"fixed_result":` + fixed + `}}}`
 		result := v.ValidateBytes(controlsTrace(features, schema, controlsAdmission), "fixed-"+name)
-		// The admission is not refused for a constraint the descriptor did not
-		// state in the one shape a fixed result has.
+
 		if result.HasCode(CodeUnsatisfiableControl) {
 			t.Fatalf("%s: a fixed_result that is not an object refused a satisfiable schema: %+v", name, result.Diagnostics)
 		}
 	}
-	// A declared object still binds, in both directions.
+
 	features := `{"run.structured_output":{"level":"emulated","constraints":{"fixed_result":{"ok":true}}}}`
 	unsatisfiable := v.ValidateBytes(controlsTrace(features, `,"output_schema":{"type":"object","required":["answer"]}`, controlsAdmission), "fixed-unsatisfiable")
 	if !unsatisfiable.HasCode(CodeUnsatisfiableControl) {
@@ -582,11 +478,6 @@ func TestFixedResultIsAnObjectOrNoConstraintAtAll(t *testing.T) {
 	}
 }
 
-// A declared fixed_result is an exact promise about a value, not about the
-// token that spelled it: 1, 1.0, and 1e0 are one number, and an endpoint that
-// emitted any of them kept a promise made with any other. Precision is the
-// other half — the comparison must stay exact past 2^53, where float64 stops
-// telling consecutive integers apart.
 func TestFixedResultComparesNumbersByValue(t *testing.T) {
 	for name, pair := range map[string][2]string{
 		"integer and decimal":    {`{"n":1}`, `{"n":1.0}`},

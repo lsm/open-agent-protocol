@@ -52,8 +52,7 @@ type fakeClient struct {
 	closeOnce     sync.Once
 	err           error
 	turnStartErr  error
-	// turnStart records the parameters of the last turn/start, so a test can
-	// assert what the adapter actually sent rather than only what it echoed.
+
 	turnStart native.TurnStartParams
 }
 
@@ -116,18 +115,14 @@ func (client *fakeClient) send(t *testing.T, method string, payload any) {
 	client.notify(method, data)
 }
 
-// notify queues one notification frame behind everything already queued.
 func (client *fakeClient) notify(method string, params json.RawMessage) {
 	client.inbound <- rpc.InboundMessage{Notification: &rpc.NotificationMessage{Method: method, Params: params}}
 }
 
-// enqueue queues one reverse request frame behind everything already queued.
 func (client *fakeClient) enqueue(request *rpc.IncomingRequest) {
 	client.inbound <- rpc.InboundMessage{Request: request}
 }
 
-// request decodes a reverse request through a real rpc client, queues it, and
-// returns the channel that yields the adapter's native response frame.
 func (client *fakeClient) request(t *testing.T, id int64, method string, payload any) (*rpc.IncomingRequest, <-chan rpc.Message) {
 	t.Helper()
 	request, response := client.newRequest(t, id, method, payload)
@@ -135,8 +130,6 @@ func (client *fakeClient) request(t *testing.T, id int64, method string, payload
 	return request, response
 }
 
-// newRequest builds the reverse request without queueing it, so a test can
-// decide exactly where it lands relative to surrounding notifications.
 func (client *fakeClient) newRequest(t *testing.T, id int64, method string, payload any) (*rpc.IncomingRequest, <-chan rpc.Message) {
 	t.Helper()
 	serverToClientReader, serverToClientWriter := io.Pipe()
@@ -167,9 +160,6 @@ func (client *fakeClient) newRequest(t *testing.T, id int64, method string, payl
 	return inbound.Request, response
 }
 
-// Approval and user-input events copy the participant into responded_by; an
-// empty identity would emit schema-invalid events that no valid resolution could
-// satisfy, so the open must be refused before any process is started.
 func TestOpenRejectsEmptyParticipant(t *testing.T) {
 	started := 0
 	implementation, err := New(Config{
@@ -233,10 +223,6 @@ func drainClosed(t *testing.T, stream adapter.EventStream) []protocol.Envelope {
 	return adaptertest.Drain(t, stream, time.Second)
 }
 
-// A turn/start whose caller context expires after the request was written leaves
-// the outcome ambiguous: the client is retired, Codex may already be running the
-// turn, and no native settlement can arrive. The session must retire rather than
-// advertise an idle that invites another submit.
 func TestAmbiguousTurnStartRetiresSession(t *testing.T) {
 	client, session, _ := openFake(t)
 	ambiguous := errors.New("start Codex turn: context deadline exceeded")
@@ -255,8 +241,6 @@ func TestAmbiguousTurnStartRetiresSession(t *testing.T) {
 	}
 }
 
-// A definite rejection (the client is still live, the turn was never sent) must
-// release the reservation and leave the session usable.
 func TestDefiniteTurnStartRejectionLeavesSessionUsable(t *testing.T) {
 	client, session, _ := openFake(t)
 	client.mu.Lock()
@@ -326,8 +310,6 @@ func TestOpenResumesExplicitNativeThread(t *testing.T) {
 	}
 }
 
-// A consumer editing a published or replayed envelope must not corrupt the
-// retained journal that a later Resume observes.
 func TestPublishedAndReplayedEnvelopesAreDetached(t *testing.T) {
 	client, session, _ := openFake(t)
 	admission, stream := submitFake(t, session)
@@ -433,8 +415,6 @@ func TestTurnStartResponseIsAdmissionOnly(t *testing.T) {
 	}
 }
 
-// A successful turn/start that names no turn may already have started a native
-// turn; the session must be retired rather than released for another submit.
 func TestTurnStartWithoutTurnIDRetiresSession(t *testing.T) {
 	client, session, _ := openFake(t)
 	client.turnID = ""
@@ -751,14 +731,6 @@ func TestUserInputRoundTrip(t *testing.T) {
 	_ = drainClosed(t, stream)
 }
 
-// A reverse request that follows a notification on the wire must be reduced
-// after it. The rpc client used to split the two kinds onto separate queues
-// and dispatch selected across both, so a turn's requestUserInput could be
-// handled before its turn/started and the run emitted user.input.requested
-// and run.status.updated before run.started (issue #10, the
-// TestCodexEvidenceCorpus/user-input flake). Both frames are queued while the
-// dispatch loop is parked inside a handler, so it finds both ready at once;
-// the old select reordered them about half the time.
 func TestDispatchReducesRequestAfterPrecedingNotification(t *testing.T) {
 	client, sess, descriptor := openFake(t)
 	admission, stream := submitFake(t, sess)
@@ -767,11 +739,7 @@ func TestDispatchReducesRequestAfterPrecedingNotification(t *testing.T) {
 		ThreadID: client.threadID, TurnID: client.turnID, ItemID: "tool-item", IsBlocking: true,
 		Questions: []native.UserInputQuestion{{ID: "mode", Header: "Mode", Question: "Choose mode", Options: &options}},
 	})
-	// Hold the reducer lock so the dispatch loop blocks inside the handler of
-	// a notification it ignores while turn/started and the request queue up
-	// behind it. Without the absorber a parked dispatch loop would receive
-	// turn/started by direct handoff and the two frames would never be
-	// buffered together.
+
 	reducer := sess.(*session)
 	reducer.opMu.Lock()
 	client.send(t, "thread/status/changed", map[string]any{"threadId": client.threadID})
@@ -805,8 +773,7 @@ func TestDispatchReducesRequestAfterPrecedingNotification(t *testing.T) {
 }
 
 func TestUserInputEmptyOptionsSurfacesAsText(t *testing.T) {
-	// OAP choice questions require at least one option; a non-nil but empty
-	// Codex options array must be treated as a text question.
+
 	client, session, _ := openFake(t)
 	_, stream := submitFake(t, session)
 	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
@@ -830,10 +797,7 @@ func TestUserInputEmptyOptionsSurfacesAsText(t *testing.T) {
 }
 
 func TestUserInputIsOtherDoesNotAdvertiseUnsatisfiableOption(t *testing.T) {
-	// OAP's answer oneOf allows either selected options or text, never both, so
-	// Codex's isOther custom-answer capability cannot be represented. It must not
-	// advertise a synthetic "other" option, and an option paired with text must
-	// be refused rather than projected as a schema-invalid resolution.
+
 	client, session, _ := openFake(t)
 	admission, stream := submitFake(t, session)
 	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
@@ -862,12 +826,12 @@ func TestUserInputIsOtherDoesNotAdvertiseUnsatisfiableOption(t *testing.T) {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
-	// Every required question must be answered.
+
 	missing := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}}}
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &missing}); !errors.Is(err, adapter.ErrInvalidResolution) {
 		t.Fatalf("missing required answer: %v", err)
 	}
-	// The offered option resolves the gate.
+
 	valid := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}, {QuestionID: "note", Text: "complete"}}}
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &valid}); err != nil {
 		t.Fatal(err)
@@ -942,10 +906,6 @@ func TestDescriptorClaimsTestedInteractions(t *testing.T) {
 	}
 }
 
-// turn/start carries the model per turn, so an admitted model_id binds exactly
-// its own run: the response and run.started report it, and current_model_id —
-// the model the next control-free submission would use — stays the configured
-// thread model (decision 0005).
 func TestSubmitAppliesModelPerTurn(t *testing.T) {
 	client, session, descriptor := openFake(t)
 	request := protocol.MessageSubmitRequest{
@@ -989,9 +949,6 @@ func TestSubmitAppliesModelPerTurn(t *testing.T) {
 	}
 }
 
-// A control this pin cannot apply is refused before admission under the key
-// the descriptor advertises unavailable, so a caller learns what to stop
-// sending instead of running with a control it believes was applied.
 func TestSubmitRefusesUnadvertisedControls(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		request protocol.MessageSubmitRequest
@@ -1025,9 +982,6 @@ func TestSubmitRefusesUnadvertisedControls(t *testing.T) {
 	}
 }
 
-// A present-but-empty model_id is a control the endpoint must refuse, not an
-// absent one: no catalog can list it, and turn/start would read it as the
-// configured default.
 func TestSubmitRefusesEmptyModelID(t *testing.T) {
 	_, session, _ := openFake(t)
 	_, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
@@ -1041,13 +995,6 @@ func TestSubmitRefusesEmptyModelID(t *testing.T) {
 	}
 }
 
-// The refusal ladder ranks a capability refusal above everything else, so the
-// control gate runs before ordinary submission validation: a request that is
-// malformed *and* carries an unadvertised control is answered with the
-// control. A caller told only "invalid submission" would fix its messages,
-// resubmit, and be refused again for a control it was never told about —
-// which is the round trip the ordering exists to save. The same request is
-// answered the same way by every adapter in this repository.
 func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
 	for name, request := range map[string]protocol.MessageSubmitRequest{
@@ -1064,8 +1011,6 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 		}
 	}
 
-	// A model this pin can apply is not refused by the gate, so the ordinary
-	// refusal still answers a request whose only other fault is its messages.
 	_, session, _ := openFake(t)
 	_, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("glm-per-turn"),

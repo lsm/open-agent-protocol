@@ -60,7 +60,7 @@ func TestAssistantEchoAndBlocks(t *testing.T) {
 	if len(assistant.Message.Content) != 1 || assistant.Message.Content[0].Name != "Bash" {
 		t.Fatalf("blocks = %+v", assistant.Message.Content)
 	}
-	// The synthetic auth-failure shape decodes with its model marker.
+
 	frame = mustDecode(t, TypeAssistant, "", `{"type":"assistant","message":{"id":"m","model":"<synthetic>","content":[{"type":"text","text":"Not logged in"}]},"parent_tool_use_id":null,"session_id":"`+sessionID+`","uuid":"a2","error":"authentication_failed","is_api_error_message":true,"user_message_uuid":"`+turnUUID+`"}`)
 	assistant = frame.(*AssistantFrame)
 	if assistant.Message.Model != "<synthetic>" || !assistant.IsAPIErrorMessage {
@@ -93,7 +93,6 @@ func TestUserToolResultAndSyntheticInterrupt(t *testing.T) {
 		t.Fatalf("text = %q", text)
 	}
 
-	// Injected turns carry origin; the reducer discriminates on it.
 	frame = mustDecode(t, TypeUser, "", `{"type":"user","message":{"role":"user","content":"task done"},"parent_tool_use_id":null,"session_id":"`+sessionID+`","uuid":"u3","origin":{"kind":"task-notification"}}`)
 	user = frame.(*UserFrame)
 	if user.Origin == nil || user.Origin.Kind != "task-notification" {

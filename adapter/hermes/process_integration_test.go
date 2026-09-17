@@ -22,17 +22,10 @@ import (
 
 const (
 	hermesMockSecret = "fixture-hermes-key"
-	// hermesLoopbackModel is the pinned catalog model name; the gate serves it
-	// from a custom loopback provider configured in the isolated Hermes home,
-	// because the pinned gateway deliberately ignores OPENAI_BASE_URL for
-	// named providers (agent/auxiliary_client.py:6200-6219).
+
 	hermesLoopbackModel = "gpt-5.6-sol"
 )
 
-// verifiedHermesPython resolves and authenticates the interpreter that runs
-// the pinned gateway. The repository checkout supplies the module and cwd;
-// binding the interpreter digest (optional) makes the evidence
-// exact-artifact, otherwise the run is runtime evidence only.
 func verifiedHermesPython(t *testing.T) string {
 	t.Helper()
 	binary := os.Getenv("OAP_HERMES_BIN")
@@ -71,9 +64,6 @@ func verifiedHermesPython(t *testing.T) string {
 	return binary
 }
 
-// verifiedHermesRoot resolves the pinned checkout that provides the
-// tui_gateway package; the gateway runs with the checkout as cwd, exactly as
-// the TUI spawns it.
 func verifiedHermesRoot(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv("OAP_HERMES_ROOT")
@@ -87,10 +77,6 @@ func verifiedHermesRoot(t *testing.T) string {
 	return root
 }
 
-// newPinnedHermes builds the adapter around the pinned interpreter and
-// checkout. The process factory restates the handshake identity in the gate
-// evidence itself: rpc.Start already rejects anything but a valid
-// gateway.ready, and the wrapper additionally pins the release tag.
 func newPinnedHermes(t *testing.T, root string, environment []string, model string) *Adapter {
 	t.Helper()
 	implementation, err := New(Config{
@@ -115,12 +101,6 @@ func newPinnedHermes(t *testing.T, root string, environment []string, model stri
 	return implementation
 }
 
-// TestHermesProcessSmoke is credential-free runtime evidence that the pinned
-// gateway starts over stdio, completes the gateway.ready handshake with a
-// fresh replay epoch before any input, mints a dual-identity session through
-// session.create, and exits cleanly on stdin EOF. No prompt is submitted, so
-// no provider traffic is possible; the child environment contains no
-// credentials at all.
 func TestHermesProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_HERMES_SMOKE") != "1" {
 		t.Skip("set OAP_HERMES_SMOKE=1 with absolute OAP_HERMES_BIN (python interpreter) and OAP_HERMES_ROOT (pinned hermes-agent checkout) to run; optionally set OAP_HERMES_SHA256 (64 hex characters) for exact-artifact evidence")
@@ -148,21 +128,13 @@ func TestHermesProcessSmoke(t *testing.T) {
 	if state.SessionID != "hermes-smoke-session" || state.Status != protocol.SessionIdle {
 		t.Fatalf("state=%+v", state)
 	}
-	// Teardown is stdin EOF by the pin: Close returns nil only after the
-	// process exited within the bounded grace. A shutdown RPC on the wire
-	// would contradict the pin — the corpus process cases already assert the
-	// wire log contains none.
+
 	if err := session.Close(ctx); err != nil {
 		t.Fatalf("close hermes smoke session: %v", err)
 	}
 	closed = true
 }
 
-// TestHermesProcessAgainstChatMock is the hermetic behavioral gate. The only
-// configured provider endpoint is an in-process loopback speaking streaming
-// OpenAI chat completions; the child receives a fixed allowlisted environment
-// whose single credential is the test-owned fixture key. Credential presence
-// alone never enables this gate — the explicit env var does.
 func TestHermesProcessAgainstChatMock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping opt-in Hermes process integration in short mode")
@@ -200,8 +172,7 @@ func TestHermesProcessAgainstChatMock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Admission is only "started" once the streaming response and the turn's
-	// message.start converged — ownership by construction.
+
 	if admission.Admission != protocol.AdmissionStarted {
 		t.Fatalf("admission=%+v", admission)
 	}
@@ -256,19 +227,6 @@ func TestHermesProcessAgainstChatMock(t *testing.T) {
 	closed = true
 }
 
-// hermesEnvironment fully replaces the child environment: isolated HOME and
-// XDG directories under the test-owned root so the gateway's state DB and
-// caches never touch the operator's, dead-loopback proxies with loopback-only
-// NO_PROXY so nothing but the loopback mock is reachable, unbuffered stdio,
-// and no ambient credentials. The loopback gate injects only the test-owned
-// fixture key and base URL.
-// writeHermesLoopbackConfig points the pinned gateway at the loopback mock
-// through Hermes's own provider configuration. The gateway ignores
-// OPENAI_BASE_URL whenever model.provider names a catalog provider
-// (agent/auxiliary_client.py:6200-6219 treats it as stale env poisoning), so
-// the only faithful redirect is a custom_providers entry selecting the
-// pinned model name against the loopback base URL. The config lives in the
-// isolated home; nothing outside the test's temporary directory is touched.
 func writeHermesLoopbackConfig(t *testing.T, root, baseURL string) {
 	t.Helper()
 	directory := filepath.Join(root, "home", ".hermes")

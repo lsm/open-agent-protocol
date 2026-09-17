@@ -17,7 +17,6 @@ const (
 	FormatJSONL Format = "jsonl"
 )
 
-// Decode accepts one envelope, an envelope array, or a JSONL stream.
 func Decode(r io.Reader) ([]Envelope, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {

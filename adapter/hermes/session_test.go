@@ -46,11 +46,6 @@ type reply struct {
 	before func()
 }
 
-// fakeClient scripts native responses per method and mirrors the production
-// client's ordered inbound stream. The started channel signals each native
-// call's entry so tests can sequence event deliveries after the reducer has
-// reserved the submission (delivering earlier races the reservation and reads
-// as an unsolicited turn).
 type fakeClient struct {
 	in      chan rpc.InboundMessage
 	done    chan struct{}
@@ -78,7 +73,6 @@ func (f *fakeClient) queue(method string, r reply) {
 	f.replies[method] = append(f.replies[method], r)
 }
 
-// awaitCall blocks until the reducer issued the given native call.
 func (f *fakeClient) awaitCall(t *testing.T, method string) {
 	t.Helper()
 	for {
@@ -192,9 +186,6 @@ func request() protocol.MessageSubmitRequest {
 	return protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
 }
 
-// prompt.submit carries only the session id and text, so a per-submit model
-// cannot be applied; it must be refused rather than silently running the
-// preconfigured model.
 func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	s, _ := openTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -249,15 +240,10 @@ func settleFrame(status string, extra string) string {
 	return payload
 }
 
-// admit submits and drives the run to its opened state in the chosen wire
-// order. Both orders must reduce identically: response-then-open and
-// open-then-response converge on the same run.started emission.
 func admit(t *testing.T, s base.Session, f *fakeClient, responseFirst bool) <-chan outcome {
 	t.Helper()
 	open := func() { f.event(native.EventMessageStart, 1, "") }
-	// Script the reply before the submission goroutine can issue the call. The
-	// fake has no reply until one is queued, so queueing after submitAsync races
-	// the reducer and intermittently fails with "no scripted reply".
+
 	if responseFirst {
 		f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}})
 	} else {
@@ -268,10 +254,7 @@ func admit(t *testing.T, s base.Session, f *fakeClient, responseFirst bool) <-ch
 	if responseFirst {
 		open()
 	}
-	// Return only once the run has started. Otherwise a gate or tool frame the
-	// caller sends next can be buffered by reserveObservation instead of
-	// reduced against the started run, and tests that read the registration
-	// (e.g. lastInteraction) race the promotion.
+
 	waitStarted(t, s)
 	return ch
 }
@@ -317,8 +300,6 @@ func TestAdmissionBothWireOrdersReduceIdentically(t *testing.T) {
 	}
 }
 
-// The pinned tool.complete shape allows result to be omitted; the completion
-// event must still carry the schema-required result, normalized to JSON null.
 func TestToolCompletionWithoutResultCarriesNull(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
@@ -519,8 +500,6 @@ func TestApprovalGateRoundTrip(t *testing.T) {
 	validateWithCapabilities(t, got.response, events)
 }
 
-// A caller that knows the interaction id must still match the declared
-// responder and scope, and a rejected resolution must not reach the native gate.
 func TestResolveRejectsForeignOwnership(t *testing.T) {
 	s, f := openTest(t)
 	_ = admit(t, s, f, true)
@@ -551,9 +530,7 @@ func TestResolveRejectsForeignOwnership(t *testing.T) {
 func lastInteraction(t *testing.T, s base.Session) protocol.InteractionID {
 	t.Helper()
 	session := s.(*Session)
-	// The reducer owns the interaction table under reduceMu, the same lock
-	// Resolve uses. Reading it under mu both races and can observe the table
-	// before a reducer write is visible, yielding an empty id.
+
 	session.reduceMu.Lock()
 	defer session.reduceMu.Unlock()
 	var last protocol.InteractionID
@@ -610,17 +587,11 @@ func TestCancelIssuesInterruptAndSettlesFailed(t *testing.T) {
 	}
 }
 
-// After the gateway accepts a prompt (status streaming) the native turn is
-// authoritative: a caller cancellation is ambiguous, so the reservation must
-// stay alive rather than reverting to idle while the accepted turn may still
-// execute (which would let a retry overlap it and make its events foreign).
 func TestSubmitCancellationAfterAcceptanceKeepsReservation(t *testing.T) {
 	s, f := openTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Script the reply before launching the submission: the reducer may issue
-	// prompt.submit as soon as the goroutine runs, and a reply queued after
-	// that races the fake into "no scripted reply".
+
 	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}})
 	ch := make(chan outcome, 1)
 	go func() {
@@ -639,12 +610,11 @@ func TestSubmitCancellationAfterAcceptanceKeepsReservation(t *testing.T) {
 			}
 		}()
 	}
-	// A retry must be refused: the accepted native turn still owns the session.
+
 	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("overlapping submit: err=%v, want ErrRunActive", err)
 	}
-	// The reservation is still reducible: opening the turn promotes it and the
-	// run settles normally, so the session is not wedged.
+
 	f.event(native.EventMessageStart, 1, "")
 	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	if err := s.Close(context.Background()); err != nil {
@@ -667,10 +637,6 @@ func TestOverlapRejectedBeforeNativeWrite(t *testing.T) {
 	drain(t, got.stream)
 }
 
-// validateWithCapabilities runs the shared protocol assertion over an
-// optional-feature trace (tools, interactions) with the adapter's live
-// descriptor prefixed: the validator requires a current capability descriptor
-// before optional-feature events.
 func validateWithCapabilities(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return nil, "", errors.New("probe only") })})
@@ -685,12 +651,9 @@ func validateWithCapabilities(t *testing.T, admission protocol.MessageSubmitResp
 }
 
 func TestEventsBeforeConvergenceBufferAndReplay(t *testing.T) {
-	// A piped burst can deliver the whole turn around the prompt.submit
-	// response: the response barrier orders only wire-earlier events, so
-	// run-scoped observations arriving before the convergence point buffer
-	// and replay in wire order once the run starts.
+
 	s, f := openTest(t)
-	// Wire order: message.start, a delta, then the streaming response.
+
 	open := func() {
 		f.event(native.EventMessageStart, 1, "")
 		f.event(native.EventMessageDelta, 2, `{"text":"Hi"}`)
@@ -721,9 +684,7 @@ func TestEventsBeforeConvergenceBufferAndReplay(t *testing.T) {
 }
 
 func TestPostSettlementCorroborationKeepsSessionUsable(t *testing.T) {
-	// The pin guarantees settled session.info after message.complete; the
-	// terminal cleanup releases the run, so an idle session must accept the
-	// corroboration frame instead of failing closed as foreign activity.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
@@ -740,8 +701,7 @@ func TestPostSettlementCorroborationKeepsSessionUsable(t *testing.T) {
 }
 
 func TestResolveValidatesAnswerShapes(t *testing.T) {
-	// The schema's answer oneOf allows the text form; an approval answer
-	// without a selected option must be rejected, not panic.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
@@ -754,7 +714,7 @@ func TestResolveValidatesAnswerShapes(t *testing.T) {
 	if !errors.Is(noAnswers, base.ErrInvalidResolution) {
 		t.Fatalf("empty answers err = %v", noAnswers)
 	}
-	// The gate is still resolvable after the rejections.
+
 	f.queue(native.MethodApprovalRespond, reply{result: native.ApprovalRespondResult{Resolved: true}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
 		t.Fatal(err)
@@ -768,7 +728,7 @@ func TestBatchClarifyResolvesEveryQuestion(t *testing.T) {
 	ch := admit(t, s, f, true)
 	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"first?","choices":["a","b"]},{"qid":"q2","question":"second?","choices":["c","d"]}]}`)
 	binding := lastInteraction(t, s)
-	// A partial answer set is invalid before any native write.
+
 	partial := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q1", SelectedOptionIDs: []string{"a"}}}}})
 	if !errors.Is(partial, base.ErrInvalidResolution) {
 		t.Fatalf("partial batch err = %v", partial)
@@ -802,9 +762,7 @@ func TestBatchClarifyResolvesEveryQuestion(t *testing.T) {
 }
 
 func TestResolveRejectsUnofferedApprovalAnswer(t *testing.T) {
-	// An approval gate offers question "choice" with the advertised options. An
-	// answer naming another question or an option the gate never offered must be
-	// rejected before it reaches approval.respond.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
@@ -821,7 +779,7 @@ func TestResolveRejectsUnofferedApprovalAnswer(t *testing.T) {
 	if f.callCount(native.MethodApprovalRespond) != 0 {
 		t.Fatal("rejected answer reached approval.respond")
 	}
-	// The gate stays resolvable with an offered option.
+
 	f.queue(native.MethodApprovalRespond, reply{result: native.ApprovalRespondResult{Resolved: true}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
 		t.Fatal(err)
@@ -831,12 +789,7 @@ func TestResolveRejectsUnofferedApprovalAnswer(t *testing.T) {
 }
 
 func TestResolveParksSettlementUntilGateResolved(t *testing.T) {
-	// The gateway can emit message.complete around the successful gate response:
-	// the response barrier orders it before the response reaches Resolve. If the
-	// terminal settles while Resolve is inside the native call, the canonical
-	// user.input.resolved event becomes unemittable and the trace ends with a
-	// pending interaction. The settlement must be parked until the resolution
-	// is published.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
@@ -873,9 +826,7 @@ func TestResolveParksSettlementUntilGateResolved(t *testing.T) {
 }
 
 func TestSudoSecretAnswersMustNameTheSurfacedQuestion(t *testing.T) {
-	// The secret gate surfaces one required text question ("value"); an answer
-	// naming another question or mixing in selected options must be rejected
-	// before the secret is delivered natively.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventSecretRequest, 2, `{"request_id":"aaaa1111","prompt":"token?","env_var":"TOKEN"}`)
@@ -900,9 +851,7 @@ func TestSudoSecretAnswersMustNameTheSurfacedQuestion(t *testing.T) {
 }
 
 func TestChoiceLessClarifySurfacesAsText(t *testing.T) {
-	// A clarify with no choices is open-ended; OAP choice questions require at
-	// least one option, so it must surface as a text question and accept a text
-	// answer rather than emit a schema-invalid single_choice with no options.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"why?","choices":[]}`)
@@ -945,8 +894,7 @@ func TestChoiceLessClarifySurfacesAsText(t *testing.T) {
 }
 
 func TestClarifyRejectsUnofferedSelection(t *testing.T) {
-	// A clarify resolution may only select choices the surfaced question offered,
-	// for both single- and multi-choice questions.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"pick","choices":["a","b"]},{"qid":"q2","question":"many","choices":["x","y"],"multi_select":true}]}`)
@@ -983,10 +931,7 @@ func TestClarifyRejectsUnofferedSelection(t *testing.T) {
 }
 
 func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
-	// A multi_select clarify advertises multi_choice; the native answer field
-	// is one string, and the pinned tool decodes a JSON array back into the
-	// full selection set. Every selected option must reach the native gate,
-	// not just the first.
+
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"which?","choices":["a","b","c"],"multi_select":true}`)
@@ -1051,9 +996,6 @@ func TestRespondFailureDoesNotProjectSubmitted(t *testing.T) {
 	}
 }
 
-// transportClose simulates the transport dying underneath the session: Done
-// fires and, as the production relay does once every already-routed
-// observation is forwarded, the inbound stream closes.
 func (f *fakeClient) transportClose() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1068,9 +1010,6 @@ func (f *fakeClient) transportClose() {
 	close(f.in)
 }
 
-// waitUnusable blocks until the reducer settled a transport failure (it marks
-// the session unusable under reduceMu, so once observed, anything that next
-// acquires reduceMu runs after the failure path decided).
 func waitUnusable(t *testing.T, s base.Session) {
 	t.Helper()
 	session := s.(*Session)
@@ -1087,14 +1026,6 @@ func waitUnusable(t *testing.T, s base.Session) {
 	t.Fatal("session did not become unusable after the transport closed")
 }
 
-// The transport can die right after native acceptance: the gateway answered
-// prompt.submit with status streaming and opened the turn, then the process
-// exited. The projection must not depend on whether the reducer settles the
-// transport failure before or after the Submit goroutine learns of the reply:
-// both interleavings yield run.started, the buffered delta, and run.failed
-// hermes_process_exit (the malformed-frame corpus trace). Before the in-flight
-// call was tracked, the reducer-first order aborted the reservation and Submit
-// returned an error with no stream at all (issue #10).
 func TestTransportDeathAfterAcceptanceProjectsTheOpenedTurn(t *testing.T) {
 	run := func(t *testing.T, closeBeforeReply bool) {
 		s, f := openTest(t)
@@ -1102,8 +1033,7 @@ func TestTransportDeathAfterAcceptanceProjectsTheOpenedTurn(t *testing.T) {
 		f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}, before: func() { <-release }})
 		ch := submitAsync(s)
 		f.awaitCall(t, native.MethodPromptSubmit)
-		// The turn opens and streams while the reply is still gated: both
-		// observations reduce against the unaccepted reservation and buffer.
+
 		f.event(native.EventMessageStart, 1, "")
 		f.event(native.EventMessageDelta, 2, `{"text":"Hi"}`)
 		if closeBeforeReply {
@@ -1140,7 +1070,7 @@ func TestTransportDeathAfterAcceptanceProjectsTheOpenedTurn(t *testing.T) {
 			t.Fatalf("terminal %+v err=%v, want hermes_process_exit carrying the transport error", failed.Error, err)
 		}
 		validateWithCapabilities(t, got.response, events)
-		// The dead transport leaves the session unusable in both orders.
+
 		if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
 			t.Fatalf("session usable after transport death: %v", err)
 		}

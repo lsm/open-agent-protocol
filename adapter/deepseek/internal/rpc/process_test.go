@@ -14,11 +14,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/deepseek/internal/native"
 )
 
-// TestDeepseekProcessHelper is the spawned child for the drain regression: it
-// answers initialize, then answers one probe with an oversized frame and exits
-// immediately, leaving the response buffered while the reader is still busy.
-// The client assigns deterministic integer ids, so initialize is id 1 and the
-// probe is id 2.
 func TestDeepseekProcessHelper(t *testing.T) {
 	if os.Getenv("OAP_DSH_RPC_HELPER") == "" {
 		return
@@ -90,8 +85,7 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session.status","params":{"sessionId":
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}'
 sleep 10
 `)
-	// The runtime owns no sessions before initialize returns, so any earlier
-	// observation is foreign activity and must fail the handshake closed.
+
 	_, err := Start(context.Background(), ProcessConfig{Path: script, Initialize: native.InitializeParams{Cwd: dir, Provider: "p", Model: "m"}})
 	if !errors.Is(err, ErrHandshake) || !strings.Contains(err.Error(), "preceded initialize response") {
 		t.Fatalf("got %v", err)
@@ -142,9 +136,7 @@ sleep 10
 }
 
 func TestProcessCloseDeliversShutdownResponse(t *testing.T) {
-	// A runtime that answers shutdown and then waits for stdin EOF must close
-	// cleanly: the response settles the call through the teardown drain, stdin
-	// closes, and the child exits — no timeout kill.
+
 	dir := t.TempDir()
 	script := writeScript(t, dir, `IFS= read -r init
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}'
@@ -170,18 +162,13 @@ IFS= read -r eof || exit 0
 	}
 }
 
-// The helper writes its response and then exits immediately. The reader must be
-// allowed to drain the buffered frame before the process owner reaps the child,
-// otherwise this call races the exit and reports a process-exit error for a
-// response that was already written.
 func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	for iteration := range 10 {
 		p, err := Start(context.Background(), deepseekHelperConfig(t.TempDir()))
 		if err != nil {
 			t.Fatalf("iteration %d: start: %v", iteration, err)
 		}
-		// A matched response is ordered behind an inbound barrier the consumer
-		// must acknowledge, so model the adapter's own draining loop.
+
 		go func() {
 			for {
 				select {
@@ -208,8 +195,6 @@ func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	}
 }
 
-// An explicitly empty allowlist must reach the child as an empty environment,
-// not collapse to nil and inherit the parent's variables.
 func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")

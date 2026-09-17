@@ -29,8 +29,7 @@ func TestEnvironmentAllowlistNilness(t *testing.T) {
 	if captured := run([]string{"A=1"}); len(captured.Env) != 1 {
 		t.Fatalf("explicit allowlist lost: %#v", captured.Env)
 	}
-	// An explicit empty allowlist must stay an empty environment; inheriting
-	// the ambient one would forward credentials to the child.
+
 	if captured := run([]string{}); captured.Env == nil || len(captured.Env) != 0 {
 		t.Fatalf("explicit empty allowlist must stay empty, got %#v", captured.Env)
 	}

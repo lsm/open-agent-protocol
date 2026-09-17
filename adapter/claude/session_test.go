@@ -44,9 +44,6 @@ func (i *testIDs) NewID(k string) string {
 	return fmt.Sprintf("%s-%d", k, i.n)
 }
 
-// wirePeer is a scripted CLI counterpart driving the production rpc client
-// over real pipes. io.Pipe writes block until consumed, so a drain goroutine
-// buffers the adapter's writes into a channel the test receives from.
 type wirePeer struct {
 	t         *testing.T
 	client    *rpc.Client
@@ -55,8 +52,6 @@ type wirePeer struct {
 	userTurns int
 }
 
-// pipePair retires both directions of the scripted transport, so client Close
-// unblocks a parked reader the way a dying process closes its pipes.
 type pipePair struct {
 	read, write io.Closer
 	once        sync.Once
@@ -104,7 +99,6 @@ func (w *wirePeer) send(line string) {
 	}
 }
 
-// written returns the next frame the adapter wrote (user turn or control).
 func (w *wirePeer) written() (rpc.Message, json.RawMessage) {
 	w.t.Helper()
 	select {
@@ -135,15 +129,11 @@ func (w *wirePeer) writtenUser() map[string]any {
 	return frame
 }
 
-// answerControl answers a control_request the adapter issued.
 func (w *wirePeer) answerControl(id, payload string) {
 	w.t.Helper()
 	w.send(`{"type":"control_response","response":{"subtype":"success","request_id":"` + id + `","response":` + payload + `}}`)
 }
 
-// awaitDrain blocks until the reducer has consumed every frame sent so far:
-// a control call's response barriers behind all wire-earlier observations,
-// so its return proves the scripted frames reduced.
 func (w *wirePeer) awaitDrain() {
 	w.t.Helper()
 	done := make(chan error, 1)
@@ -173,8 +163,6 @@ func openWire(t *testing.T) (base.Adapter, base.Session, *wirePeer) {
 	return implementation, session, peer
 }
 
-// gateWriter blocks the adapter's next write once armed until unblocked, so a
-// test can hold the native answer mid-write while it injects a racing frame.
 type gateWriter struct {
 	inner   io.Writer
 	mu      sync.Mutex
@@ -241,8 +229,6 @@ func openWireBlocking(t *testing.T) (base.Session, *wirePeer, *gateWriter) {
 	return session, peer, gated
 }
 
-// The native user frame carries no model override, so a per-submit model cannot
-// be applied; it must be refused rather than silently running the session model.
 func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	_, session, _ := openWire(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -256,8 +242,6 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	}
 }
 
-// submit starts a submit in the background; the caller scripts the wire and
-// then awaits the outcome.
 func submit(session base.Session) chan submitOutcome {
 	channel := make(chan submitOutcome, 1)
 	go func() {
@@ -288,7 +272,6 @@ const peerSession = "3b926aac-d113-4b86-9dc1-0c36b2013f93"
 
 const initFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Task","Bash"],"mcp_servers":[],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
 
-// turnUUIDOf extracts the submitted uuid from a written user turn.
 func turnUUIDOf(t *testing.T, frame map[string]any) string {
 	t.Helper()
 	uuid, _ := frame["uuid"].(string)
@@ -334,9 +317,6 @@ func eventTypes(events []protocol.Envelope) []string {
 	return out
 }
 
-// assertValidTrace runs the shared protocol assertion with the adapter's live
-// descriptor. assertCancelledTrace is the variant for runs the test itself
-// cancelled: it splices the harness-side exchange the cancellation implies.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
@@ -420,8 +400,7 @@ func TestEchoOnAssistantFrameConverges(t *testing.T) {
 	_, session, peer := openWire(t)
 	outcome := submit(session)
 	uuid := turnUUIDOf(t, peer.writtenUser())
-	// Without stream events the first complete assistant frame carries the
-	// echo.
+
 	peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hi"}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a1","user_message_uuid":"` + uuid + `"}`)
 	result := awaitSubmit(t, outcome)
 	if result.err != nil {
@@ -442,9 +421,7 @@ func TestBufferedObservationsReplayInWireOrder(t *testing.T) {
 	_, session, peer := openWire(t)
 	outcome := submit(session)
 	uuid := turnUUIDOf(t, peer.writtenUser())
-	// Wire-earlier frames arrive before the echo and buffer; the echo rides
-	// the first complete assistant frame, whose tool_use content must reduce
-	// AFTER run.started.
+
 	peer.send(`{"type":"command_lifecycle","command_uuid":"` + uuid + `","state":"queued","session_id":"` + peerSession + `","uuid":"c1"}`)
 	peer.send(`{"type":"system","subtype":"status","status":"requesting","session_id":"` + peerSession + `","uuid":"s1"}`)
 	peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"toolu_00","name":"Read","input":{"file_path":"/tmp/x"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a0","user_message_uuid":"` + uuid + `"}`)
@@ -464,8 +441,6 @@ func TestBufferedObservationsReplayInWireOrder(t *testing.T) {
 	}
 }
 
-// admit submits, converges admission on the stream echo, and returns the
-// submitted uuid plus the submit outcome.
 func admit(t *testing.T, session base.Session, peer *wirePeer) (string, submitOutcome) {
 	t.Helper()
 	outcome := submit(session)
@@ -558,7 +533,7 @@ func TestPermissionGateDenyFailsTool(t *testing.T) {
 	if _, raw := peer.written(); !strings.Contains(string(raw), `"deny"`) {
 		t.Fatalf("deny decision = %s", raw)
 	}
-	// A denial returns an error tool_result and the turn still settles.
+
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_02","type":"tool_result","content":"User denied the operation","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u2"}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "denied", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
@@ -595,15 +570,14 @@ func TestResolveValidatesAnswerShapes(t *testing.T) {
 			t.Fatalf("%s: accepted", name)
 		}
 	}
-	// The gate stays resolvable after rejections.
+
 	if err := session.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "decision", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
 		t.Fatalf("valid answer rejected after invalid ones: %v", err)
 	}
 	if _, raw := peer.written(); !strings.Contains(string(raw), `"deny"`) {
 		t.Fatalf("final decision = %s", raw)
 	}
-	// The denial returns an error tool_result and the turn settles before the
-	// session may close.
+
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_03","type":"tool_result","content":"User denied the operation","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u4"}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "denied", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
@@ -623,8 +597,7 @@ func TestResolveRejectsForeignOwnership(t *testing.T) {
 	allow := func() []protocol.InputAnswer {
 		return []protocol.InputAnswer{{QuestionID: "decision", SelectedOptionIDs: []string{"allow"}}}
 	}
-	// A caller who knows the gate id must not be able to approve as another
-	// participant or against a foreign scope.
+
 	for name, resolution := range map[string]base.InteractionResolution{
 		"foreign top-level run":   {RunID: "other-run", Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, Answers: allow()}},
 		"foreign top responder":   {RespondedBy: "intruder", Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, Answers: allow()}},
@@ -637,7 +610,7 @@ func TestResolveRejectsForeignOwnership(t *testing.T) {
 			t.Fatalf("%s: got %v, want ErrInvalidResolution", name, err)
 		}
 	}
-	// The gate stays resolvable for the declared participant and scope.
+
 	if err := session.Resolve(context.Background(), base.InteractionResolution{RunID: gate.run.id, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: impl.state.SessionID, RunID: gate.run.id, RespondedBy: "user", Answers: allow()}}); err != nil {
 		t.Fatalf("valid resolution rejected after foreign ones: %v", err)
 	}
@@ -666,7 +639,7 @@ func TestCancelSettlesOnlyOnAbortedTerminalReason(t *testing.T) {
 	if message.Kind != rpc.KindControlRequest || message.Subtype != "interrupt" {
 		t.Fatalf("expected an interrupt request, got %+v", message)
 	}
-	// The receipt acknowledges intent and never settles.
+
 	peer.answerControl(message.RequestID, `{"still_queued":[]}`)
 	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u3"}`)
 	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r2"}`)
@@ -745,7 +718,7 @@ func TestInjectedTurnCreatesNoPhantomRun(t *testing.T) {
 	if runs != 0 {
 		t.Fatalf("injected turn created %d runs", runs)
 	}
-	// The session stays usable for a real submission afterwards.
+
 	uuid, outcome := admit(t, session, peer)
 	peer.send(resultFrame(uuid, "success", false, "completed", "ok", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
@@ -874,7 +847,7 @@ func TestTransportDeathFailsActiveRun(t *testing.T) {
 	uuid, outcome := admit(t, session, peer)
 	_ = uuid
 	peer.send(textDelta(uuid, "partial"))
-	// The transport retires: the client closes and the inbound stream ends.
+
 	peer.client.Close()
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
 	last := terminalOf(events)
@@ -898,8 +871,7 @@ func TestOverlapSubmitRejectedBeforeWrite(t *testing.T) {
 	if stream != nil {
 		t.Fatal("rejected overlap exposed an event stream")
 	}
-	// No second user turn reached the wire: the rejection happened before
-	// any write, and the drain barrier proves nothing else is in flight.
+
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	adaptertest.Drain(t, outcome.stream, 5*time.Second)
 	peer.awaitDrain()
@@ -956,8 +928,6 @@ func TestSubmitRejectsInvalidSurfaces(t *testing.T) {
 	_ = peer
 }
 
-// ---- review regression tests (fail-before evidence) -------------------------
-
 func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 	_, session, peer := openWire(t)
 	uuid, outcome := admit(t, session, peer)
@@ -980,7 +950,7 @@ func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 	if terminalOf(events).Type != protocol.TypeRunCancelled {
 		t.Fatalf("terminal = %s", terminalOf(events).Type)
 	}
-	// The abandoned ask is answered so the CLI is never left blocked.
+
 	if _, raw := peer.written(); !strings.Contains(string(raw), `"error"`) {
 		t.Fatalf("gate answer = %s", raw)
 	}
@@ -990,12 +960,7 @@ func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 }
 
 func TestResolveSerializesGateBeforeTerminal(t *testing.T) {
-	// The CLI can emit its terminal result immediately after reading the control
-	// response. If Resolve releases the reducer between marking the gate resolved
-	// and emitting user.input.resolved, the terminal settles the run and the
-	// resolved event is dropped, leaving an unresolved interaction at
-	// terminality. Hold the native answer mid-write across a terminal to prove
-	// the resolution is serialized first.
+
 	session, peer, writer := openWireBlocking(t)
 	uuid, outcome := admit(t, session, peer)
 	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_g","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"ag"}`)
@@ -1012,11 +977,7 @@ func TestResolveSerializesGateBeforeTerminal(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("native answer was never written")
 	}
-	// The answer is mid-write; race the terminal against it. Delivery happens
-	// on a separate goroutine and the pause gives the reader time to route the
-	// terminal into the reducer's queue before the answer is released, so the
-	// terminal is genuinely contending for the reducer when the bug would let
-	// it settle first.
+
 	sent := make(chan struct{})
 	go func() {
 		peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
@@ -1072,8 +1033,7 @@ func TestSubmitCancellationAfterWriteRetiresSession(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("submit did not return")
 	}
-	// The user turn is already on the wire and its outcome is ambiguous: the
-	// session must refuse further submissions rather than overlap them.
+
 	if _, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) || stream != nil {
 		t.Fatalf("post-cancellation submit err = %v", err)
 	}
@@ -1132,7 +1092,7 @@ func TestStaleChildDoesNotDeferLaterRuns(t *testing.T) {
 		t.Fatalf("run 1 terminal = %s", terminalOf(events1).Type)
 	}
 	_ = uuid1
-	// Run 1's unsettled child must not hold run 2's terminal.
+
 	uuid2, outcome2 := admit(t, session, peer)
 	peer.send(resultFrame(uuid2, "success", false, "completed", "second", 0))
 	events2 := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
@@ -1152,7 +1112,7 @@ func TestLateToolResultForPriorRunIgnored(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_30","type":"tool_result","content":"data","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u30"}`)
 	peer.send(resultFrame(uuid1, "success", false, "completed", "one", 0))
 	adaptertest.Drain(t, outcome1.stream, 5*time.Second)
-	// A late tool_result for run 1's tool must not fail run 2.
+
 	uuid2, outcome2 := admit(t, session, peer)
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_30","type":"tool_result","content":"late","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u31"}`)
 	peer.send(resultFrame(uuid2, "success", false, "completed", "two", 0))
@@ -1179,7 +1139,7 @@ func TestUnknownResultSubtypeFailsRunNotTransport(t *testing.T) {
 	if err := terminal.DecodePayload(&payload); err != nil || payload.Error.Code != "claude_error_new_future" {
 		t.Fatalf("payload = %+v err=%v", payload, err)
 	}
-	// The transport survived: the session stays usable for another turn.
+
 	uuid2, outcome2 := admit(t, session, peer)
 	peer.send(resultFrame(uuid2, "success", false, "completed", "next", 0))
 	events2 := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
@@ -1191,19 +1151,6 @@ func TestUnknownResultSubtypeFailsRunNotTransport(t *testing.T) {
 	}
 }
 
-// TestToollessInitFrameServesAnEmptyCatalogArray pins the wire shape of a
-// catalog with nothing in it. `tools` is a required array, and appending
-// nothing onto a nil slice yields nil, which marshals as `null` and fails the
-// schema — at the one place with no validator in front of it. The projection
-// allocates an empty slice for a frame that lists no tools; the copy served to
-// a caller has to carry that non-nilness out, and only an assertion over the
-// encoded bytes can tell the two apart.
-//
-// The pin at this CLI version always lists its built-ins, so a toolless frame
-// is not something the corpus can reach today. That is a fact about one
-// harness release, not a guarantee the wire makes: the frame's `tools` is an
-// array, an empty one is well-formed, and a session run with every tool
-// disallowed is the obvious way to get one.
 func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 	for _, testCase := range []struct {
 		name  string
@@ -1232,9 +1179,7 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 			if strings.Contains(string(encoded), `"tools":null`) {
 				t.Fatalf("the served catalog encodes tools as null: %s", encoded)
 			}
-			// The schema is the arbiter, not the string above: run the served
-			// catalog through the real validator the way every other adapter
-			// catalog test does.
+
 			implementation, err := New(Config{Executable: "/bin/claude", WorkingDirectory: "/tmp"})
 			if err != nil {
 				t.Fatal(err)
@@ -1248,32 +1193,13 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 	}
 }
 
-// catalogFrame decodes one system/init frame from the wire shape, because the
-// frame's MCP server list is an anonymous struct a test cannot name.
-// mcpInitFrame is the wire form of catalogFrame: a turn that publishes both a
-// tool list and an MCP server list, so the session has a catalog to project and
-// a catalog to serve.
 const mcpInitFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Bash","mcp__files__read_file"],"mcp_servers":[{"name":"files","status":"connected"}],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
 
-// TestServingACatalogRacesNoToolCall interleaves the two goroutines that reach
-// the session's catalog from opposite sides: a caller asking for the catalog,
-// and the dispatch loop starting a tool call that has to attribute itself from
-// it.
-//
-// It exists because nothing else in this package puts them in flight together,
-// so `go test -race` certified a genuine race as clean — twice, once for the
-// catalog slice and once for the served map that turned the same defect fatal
-// (`concurrent map read and map write` takes the daemon down rather than
-// returning a torn value). A rule the suite cannot catch is a rule nothing
-// defends, so this test is the defence rather than the fix.
-//
-// It asserts nothing beyond "the run settled": the detector is the assertion.
 func TestServingACatalogRacesNoToolCall(t *testing.T) {
 	_, session, peer := openWire(t)
 	outcome := submit(session)
 	uuid := turnUUIDOf(t, peer.writtenUser())
-	// The MCP-bearing frame is what gives both sides something to publish: a
-	// projection with an MCP attribution, and a serve that supersedes it.
+
 	peer.send(mcpInitFrame)
 	peer.send(streamEcho(uuid))
 	admitted := awaitSubmit(t, outcome)
@@ -1283,26 +1209,7 @@ func TestServingACatalogRacesNoToolCall(t *testing.T) {
 		t.Fatal("the session serves no catalog")
 	}
 	const rounds = 64
-	// The stream is drained while the frames are fed, and each reduced call is
-	// announced, because the feeder waits for it. That handshake is what keeps
-	// the test inside the transport's own bounds: rpc.Client.enqueue is
-	// non-blocking and retires the transport with ErrObservationQueue the moment
-	// its inbound queue is full — fail-closed by design, since an adapter that
-	// buffered without limit would hide a consumer falling behind. Feeding as
-	// fast as an io.Pipe accepts, while the reducer is slowed by contention on
-	// the very mutex this test contends, overran that queue: the transport
-	// retired mid-test, the next peer write hit a closed pipe, and the subscriber
-	// got a partial stream with no terminal. Both were the same overrun, and how
-	// soon it happened was a property of the machine — which is why yielding made
-	// it rarer here and CI hit it in ten milliseconds.
-	//
-	// With the handshake at most one call is in flight, so the queue cannot fill
-	// however contended the machine is. This is not the bounded loop that
-	// certified nothing: that one bounded the *catalog* calls, which could then
-	// all finish before the first frame was reduced. Here only the frames are
-	// paced, and the pacing makes the overlap certain rather than likely —
-	// every round the reducer is inside startTool while the catalog goroutine
-	// runs.
+
 	type drainResult struct {
 		events []protocol.Envelope
 		err    error
@@ -1321,14 +1228,11 @@ func TestServingACatalogRacesNoToolCall(t *testing.T) {
 				reduced <- struct{}{}
 			}
 		}
-		// Unblocks a feeder waiting on a round the stream will never deliver, so
-		// an overrun is reported as the transport error it is rather than as a
-		// timeout with no cause.
+
 		close(reduced)
 		drained <- result
 	}()
-	// The catalog goroutine runs until the frames are exhausted rather than for
-	// a fixed count, so the two are guaranteed to be in flight together.
+
 	feeding := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -1340,11 +1244,9 @@ func TestServingACatalogRacesNoToolCall(t *testing.T) {
 				return
 			default:
 			}
-			// Yield each round: the point is to overlap the two goroutines, not
-			// to starve the writer pump the peer feeds frames through.
+
 			runtime.Gosched()
-			// A scoped request: the one that records what this session served,
-			// and so the one that writes the state the reducer reads.
+
 			if _, err := lister.Tools(context.Background(), protocol.ToolsListRequest{
 				SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList},
 			}); err != nil {
@@ -1397,15 +1299,6 @@ func catalogFrame(t *testing.T) *native.InitFrame {
 	return &frame
 }
 
-// TestUnscopedCatalogPublishesNoSessionMCPServers is the Claude half of the
-// rule the reference adapter took first: a request naming no session asks for
-// the endpoint's own catalog, and this endpoint's is its built-in tools and
-// nothing else. Everything else it knows was learned from one session's
-// system/init frame — which tools that turn offered, which MCP servers that
-// operator configured — and answering an unscoped request with it would
-// present one caller's servers as endpoint-wide. Because such a response
-// carries no session, the validator's lifetime rule never runs over it, so
-// nothing downstream would catch the substitution either.
 func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
 	session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
 	session.projectCatalogLocked(catalogFrame(t))
@@ -1428,9 +1321,7 @@ func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
 	if len(catalog.Tools.Tools) != 0 {
 		t.Fatalf("the endpoint catalog publishes %d of a session's tools", len(catalog.Tools.Tools))
 	}
-	// The same session asked in its own scope still answers with everything
-	// the turn taught it: the unscoped answer narrowed the question, not the
-	// session.
+
 	scoped, err := session.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList}})
 	if err != nil {
 		t.Fatalf("scoped tools: %v", err)
@@ -1446,36 +1337,15 @@ func TestUnscopedCatalogPublishesNoSessionMCPServers(t *testing.T) {
 	}
 }
 
-// TestCallCarriesTheCatalogSource is the other half of the same attribution,
-// and the half bounded by what the endpoint has published. This adapter
-// advertises action.tools.list, so a consumer should be able to relate an
-// observed call to the catalog entry without parsing the tool name again —
-// which is what `source` exists for. The value is read out of the projected
-// catalog rather than derived a second time from the name, so the call and the
-// catalog cannot disagree.
-//
-// It is then filtered to the sources the descriptor declares, because `source`
-// is a cross-reference and an event stream carries only the descriptor and the
-// events. A session's catalog reaches that stream only if somebody asks, and
-// this one is degraded and served on request by design, so a call naming
-// `mcp:<server>` in a stream that never listed tools names an id nothing in it
-// declares — which this unit's own validator reports as unmatched_tool_source.
-// The per-server attribution is not lost; it stays in the catalog, which is
-// where a consumer that wants it asks.
 func TestCallCarriesTheCatalogSource(t *testing.T) {
 	session := &Session{state: protocol.SessionState{SessionID: "session", Status: protocol.SessionIdle}}
 	session.projectCatalogLocked(catalogFrame(t))
 	for _, testCase := range []struct{ tool, source string }{
-		// The descriptor declares the native source, so a natively attributed
-		// call resolves in any trace.
+
 		{"Bash", nativeToolSource},
-		// It declares no MCP server — they are this session's, learned from its
-		// own system/init frame — so a call names none, although the catalog
-		// below still attributes the tool exactly.
+
 		{"mcp__files__read_file", ""},
-		// A tool no published catalog lists is one the endpoint has said
-		// nothing about; inventing an attribution for it would be the guess
-		// the member exists to replace.
+
 		{"NotInTheCatalog", ""},
 	} {
 		t.Run(testCase.tool, func(t *testing.T) {
@@ -1485,16 +1355,11 @@ func TestCallCarriesTheCatalogSource(t *testing.T) {
 		})
 	}
 
-	// Before the first turn there is no catalog at all, so there is nothing to
-	// attribute against and the adapter says so rather than guessing native.
 	fresh := &Session{state: protocol.SessionState{SessionID: "session"}}
 	if got := fresh.attributionFor("Bash"); got != "" {
 		t.Fatalf("a session with no catalog attributed a call to %q", got)
 	}
 
-	// The catalog keeps the attribution the call cannot carry, so the two say
-	// the same thing about the same tool at different resolutions: the call
-	// names what any reader can resolve, the catalog names the server exactly.
 	catalog, err := session.Tools(context.Background(), protocol.ToolsListRequest{
 		SessionID: "session", AllowDegradedFeatures: []string{protocol.FeatureToolsList},
 	})

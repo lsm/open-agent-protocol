@@ -9,7 +9,6 @@ import (
 	"strings"
 )
 
-// DefaultFrameLimit bounds one SSE event (accumulated data plus framing).
 const DefaultFrameLimit = 8 << 20
 
 var (
@@ -17,19 +16,12 @@ var (
 	ErrInvalidFrame  = errors.New("opencode httpapi: invalid SSE frame")
 )
 
-// SSEEvent is one decoded server-sent event. Comments and keep-alives
-// dispatch no event.
 type SSEEvent struct {
 	Name string
 	ID   string
 	Data []byte
 }
 
-// SSEDecoder reads one SSE stream. The pinned server emits LF-terminated
-// lines with an "event: message" name, "data:" payloads, and ": heartbeat"
-// comments; the decoder follows the SSE spec for field parsing (unknown
-// field names are ignored) but rejects bare-CR line endings the pinned
-// producer never emits.
 type SSEDecoder struct {
 	reader *bufio.Reader
 	limit  int
@@ -42,8 +34,6 @@ func NewSSEDecoder(reader io.Reader, limit int) *SSEDecoder {
 	return &SSEDecoder{reader: bufio.NewReaderSize(reader, 64<<10), limit: limit}
 }
 
-// Decode returns the next event, io.EOF at clean stream end, or an error for
-// malformed framing.
 func (d *SSEDecoder) Decode() (SSEEvent, error) {
 	var data bytes.Buffer
 	event := SSEEvent{}
@@ -94,15 +84,13 @@ func (d *SSEDecoder) Decode() (SSEEvent, error) {
 			}
 			event.ID = value
 		case "retry":
-			// Accepted and ignored; reconnection timing is caller policy.
+
 		default:
-			// The SSE spec requires unknown field names to be ignored.
+
 		}
 	}
 }
 
-// readLine returns one line without its terminator. LF and CRLF are
-// accepted; a bare CR is rejected.
 func (d *SSEDecoder) readLine() ([]byte, error) {
 	line := make([]byte, 0, 1024)
 	for {

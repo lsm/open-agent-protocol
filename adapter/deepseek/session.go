@@ -40,9 +40,7 @@ type Session struct {
 	tools    map[string]*toolState
 	children map[string]*childState
 	journal  []protocol.Envelope
-	// lastSeq is the highest native session seq observed; seqSeen separates
-	// "nothing observed" from a legitimate seq of zero, which is the pinned
-	// runtime's first event of every session.
+
 	lastSeq  int64
 	seqSeen  bool
 	stop     chan struct{}
@@ -98,7 +96,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// promptMu and reduceMu make reservation, response settlement, and reducer ownership proof one serialization domain.
+
 	s.promptMu.Lock()
 	s.reduceMu.Lock()
 	s.mu.Lock()
@@ -141,9 +139,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.reduceMu.Lock()
 	if err != nil || result.MessageID == "" {
 		if err == nil {
-			// The prompt RPC succeeded but named no message, so the harness may
-			// still execute it: native admission is ambiguous. Retire the session
-			// so a retry cannot overlap, then settle the reservation.
+
 			s.mu.Lock()
 			s.unusable = true
 			s.mu.Unlock()
@@ -166,16 +162,12 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	case <-ctx.Done():
 		s.reduceMu.Lock()
 		if !run.started && !run.terminal {
-			// The prompt response already carried a messageId, so native
-			// acceptance is confirmed and the run is authoritative. Cancellation
-			// is now ambiguous to this caller; keep the reservation alive for the
-			// reducer to settle rather than reverting to idle while the accepted
-			// native turn may still execute.
+
 			s.reduceMu.Unlock()
 			return protocol.MessageSubmitResponse{}, stream, ctx.Err()
 		}
 		s.reduceMu.Unlock()
-		// Resolved under reduceMu implies signalStart already fired.
+
 		startErr := <-run.startResult
 		if startErr != nil {
 			return protocol.MessageSubmitResponse{}, stream, startErr
@@ -185,11 +177,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) ([]native.ContentBlock, []protocol.MessageID, error) {
-	// The native prompt carries only content: DeepSeek applies a model when the
-	// runtime is initialized, and no instructions, tool policy, or output
-	// schema has a per-run native surface.
-	// Each is refused under its own capability key before admission, so a
-	// caller learns which control to stop sending (decision 0005).
+
 	if err := base.RefuseUnadvertisedControls(req); err != nil {
 		return nil, nil, err
 	}
@@ -271,10 +259,8 @@ func (s *Session) applyNotification(n rpc.NotificationMessage) {
 	}
 	unusable := s.unusable
 	s.mu.Unlock()
-	if run == nil { // Any unsolicited native activity violates dedicated-session ownership.
-		// A whole-agent status for this own session is quiescence evidence,
-		// not work: a failed pre-start admission leaves the native agent to
-		// report idle after its turn ends, and the next submission may follow.
+	if run == nil {
+
 		if !unusable {
 			if status, isStatus := n.Value.(*native.SessionStatusNotification); isStatus && status.SessionID == s.nativeID {
 				return
@@ -343,8 +329,7 @@ func (s *Session) applyNative(run *runState, n rpc.NotificationMessage) {
 			return
 		}
 		if !run.started {
-			// Buffered like its started; the admission replay reconciles the
-			// pair so a pre-receipt finish cannot fail or resurrect a run.
+
 			return
 		}
 		child := s.children[v.ChildSessionID]
@@ -386,11 +371,9 @@ func (s *Session) observeCandidate(run *runState, e native.Event) {
 			return
 		}
 		if run.turn != 0 {
-			return // proof already found; later boundaries stay in the candidate
+			return
 		}
-		// The entered message may be forwarded in any step of the candidate
-		// turn, so a later step/start re-opens the step window instead of
-		// discarding the candidate.
+
 		run.candidateStep = v.Step
 		run.candidateEvents = []native.Event{run.candidateEvents[0], e}
 	case "user/message":
@@ -428,8 +411,7 @@ func (s *Session) evaluateAdmission(run *runState) {
 	if run.started || run.terminal || run.receipt == "" {
 		return
 	}
-	// Reconstruct from the buffered wire order because the response barrier may
-	// deliver messageId only after all of these notifications were reduced.
+
 	var matches, turn, step int64
 	var turnStart native.Event
 	var candidate []native.Event
@@ -467,8 +449,7 @@ func (s *Session) evaluateAdmission(run *runState) {
 				candidate = append(candidate, ev.Event)
 				continue
 			}
-			// The entered message may be forwarded in any step of the turn; the
-			// proof records the step that actually contains it.
+
 			step = v.Step
 			candidate = []native.Event{turnStart, ev.Event}
 		case "user/message":
@@ -508,9 +489,7 @@ func (s *Session) evaluateAdmission(run *runState) {
 	if closed {
 		run.candidateEvents = candidate
 	} else if turn == run.turn && len(candidate) > len(run.candidateEvents) {
-		// Events already reduced between the matching entered message and this
-		// evaluation belong to the owned turn; without this they would never
-		// be replayed and their content or terminal evidence would be lost.
+
 		run.candidateEvents = candidate
 	}
 	run.id = protocol.RunID(s.ids.NewID("run"))
@@ -533,8 +512,7 @@ func (s *Session) evaluateAdmission(run *runState) {
 			s.applyOwnedEvent(run, e)
 		}
 	}
-	// Replay non-event observations too. They were deliberately withheld until
-	// ownership was proven, but may carry required quiescence or child evidence.
+
 	for _, n := range run.pendingNotifications {
 		switch v := n.Value.(type) {
 		case *native.SessionStatusNotification:
@@ -595,16 +573,14 @@ func (s *Session) applyOwnedEvent(run *runState, e native.Event) {
 		if !s.sameStep(run, v.Turn, v.Step) {
 			return
 		}
-		// A settled attempt committed no surface message: its compact stream
-		// is evidence only and must not project as model-visible content.
+
 	case "assistant/message":
 		var v native.AssistantMessageEvent
 		_ = e.DataAs(&v)
 		if !s.sameStep(run, v.Turn, v.Step) {
 			return
 		}
-		// The settled message carries the compact stream; project its deltas
-		// before the message becomes the assembled content authority.
+
 		s.emitStreamRecords(run, v.Stream)
 		run.final = &v
 	case "tool/call":
@@ -638,10 +614,7 @@ func (s *Session) applyOwnedEvent(run *runState, e native.Event) {
 	case "user/message", "agent/inbox/spliced", "todo/write", "request/header", "request/context", "session/end-seed":
 		return
 	default:
-		// Events the pin recognises but this adapter does not project are
-		// observed-only evidence mid-run, exactly like an `ignorable` omission:
-		// runtime-context system messages and similar bookkeeping are durable
-		// and non-ignorable at the pin and must not fail a live turn.
+
 		if native.ObservedOnly(e.Type) || (e.Ignorable != nil && *e.Ignorable) {
 			return
 		}
@@ -656,10 +629,6 @@ func (s *Session) sameStep(run *runState, t, st int64) bool {
 	return true
 }
 
-// emitStreamRecords expands one settled attempt's compact stream records into
-// content deltas. Packed text/reasoning runs expand in order; a raw chunk
-// projects through the same StreamChunk vocabulary as before. Tool-call runs
-// carry no portable content (tool calls arrive as their own events).
 func (s *Session) emitStreamRecords(run *runState, records []native.AssistantStreamRecord) {
 	for _, record := range records {
 		switch record.Type {
@@ -683,9 +652,6 @@ func (s *Session) emitDelta(run *runState, part protocol.ContentPart) {
 	_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: part}, false)
 }
 
-// chunkPart projects the pinned StreamChunk union. Only the two delta
-// variants carry streaming content; block boundaries, usage, finish, and
-// tool-argument deltas are bookkeeping with no portable delta projection.
 func chunkPart(raw json.RawMessage) (protocol.ContentPart, bool) {
 	var v struct {
 		Type  string `json:"type"`
@@ -804,8 +770,7 @@ func (s *Session) blocksContent(blocks []native.ContentBlock, run *runState) (pr
 		return protocol.TextContent(parts[0].Text), nil
 	}
 	if len(parts) == 0 {
-		// Structured content requires at least one part; an empty message is
-		// represented as empty text.
+
 		return protocol.TextContent(""), nil
 	}
 	return protocol.PartsContent(parts), nil
@@ -863,9 +828,7 @@ func (s *Session) Close(ctx context.Context) error {
 	subs := s.allSubscribersLocked()
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
-	// Keep dispatch alive through the shutdown handshake: the shutdown
-	// response is delivered only after its ordering barrier is acknowledged,
-	// and dispatch is the semantic consumer that acknowledges barriers.
+
 	err := s.client.Close()
 	s.stopOnce.Do(func() { close(s.stop) })
 	for _, c := range subs {
@@ -910,10 +873,6 @@ func (s *Session) failRun(run *runState, code, msg string) {
 	s.failRunSettled(run, code, msg, "")
 }
 
-// failRunSettled fails a run with explicit terminal provenance. An empty
-// settledBy omits the member, which asserts observation and is right wherever
-// the harness's own frames carried the failure; the transport-death path
-// passes protocol.SettledByInferred, having observed no terminal for the run.
 func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 	if run == nil {
 		return
@@ -1003,8 +962,7 @@ func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, te
 		if s.active == run {
 			s.active = nil
 		}
-		// Settled runs keep no subscribers or journal slot; drop the registry
-		// entry so a long-lived session does not retain one runState per run.
+
 		delete(s.runs, run.id)
 		s.state.Status = protocol.SessionIdle
 		s.state.ActiveRunID = ""

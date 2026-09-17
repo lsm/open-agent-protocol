@@ -1,4 +1,3 @@
-// Package adaptertest provides black-box assertions for OAP adapters.
 package adaptertest
 
 import (
@@ -16,7 +15,6 @@ import (
 
 const DefaultTimeout = time.Second
 
-// Next receives one successful event or fails the test after the timeout.
 func Next(t testing.TB, stream adapter.EventStream, timeout time.Duration) protocol.Envelope {
 	t.Helper()
 	if timeout <= 0 {
@@ -37,7 +35,6 @@ func Next(t testing.TB, stream adapter.EventStream, timeout time.Duration) proto
 	}
 }
 
-// Drain receives a stream through normal closure or fails on timeout or error.
 func Drain(t testing.TB, stream adapter.EventStream, timeout time.Duration) []protocol.Envelope {
 	t.Helper()
 	if timeout <= 0 {
@@ -63,41 +60,21 @@ func Drain(t testing.TB, stream adapter.EventStream, timeout time.Duration) []pr
 	}
 }
 
-// AssertRunTrace checks scope, sequence, capability revision, terminality, and
-// the executable OAP schema/state machine for an admitted run. The trace
-// carries no capability descriptor, so it certifies only runs whose envelopes
-// use no optional features.
 func AssertRunTrace(t testing.TB, admission protocol.MessageSubmitResponse, revision string, envelopes []protocol.Envelope) {
 	t.Helper()
 	assertProtocolValid(t, admission, adapter.Descriptor{}, revision, envelopes, false)
 }
 
-// AssertProtocolValid runs the executable OAP schema and state machine over the
-// canonical trace of an admitted run without a capability descriptor, so the
-// envelopes must use no optional features. Traces with tools, interactions, or
-// non-auto delivery need AssertProtocolValidWithDescriptor.
 func AssertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	assertProtocolValid(t, admission, adapter.Descriptor{}, "", events, false)
 }
 
-// AssertProtocolValidWithDescriptor prefixes the canonical trace with the
-// adapter's live capability descriptor exchange so optional-feature envelopes
-// (tools, permissions, user input, non-auto delivery) are certified against
-// what the adapter actually advertises. The trace carries no cancellation
-// exchange: a run.cancelled terminal without caller evidence is reported as
-// the unsolicited cancellation it is.
 func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, false)
 }
 
-// AssertProtocolValidWithSubmit certifies a run against the submission that
-// actually admitted it, rather than the neutral one the other assertions
-// synthesize. A per-submit run control is judged on the correlated response,
-// so a trace whose submit request does not carry the controls the caller sent
-// exercises none of those rules: this is what an adapter test uses when the
-// point is that a control was applied, refused, or gated.
 func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
@@ -110,27 +87,11 @@ func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitR
 	}
 }
 
-// AssertProtocolValidWithCancellation additionally splices the harness-side
-// cancel exchange for a cancellation the caller actually issued and the
-// adapter accepted, so a legitimately cancelled run validates while an
-// unsolicited run.cancelled still fails the state machine.
 func AssertProtocolValidWithCancellation(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, true)
 }
 
-// AssertProtocolValidWithCatalog certifies a run against the catalog the
-// session had already served when the run happened, by splicing that exchange
-// into the trace ahead of the submission.
-//
-// A call's `source` is a cross-reference, and what it may reference is the
-// catalog in force: the session's own where one has been served under the
-// active revision, and otherwise the descriptor's. A trace that drops the
-// serve therefore judges the run against the wrong catalog — it would report a
-// correctly attributed call as naming a source nothing declares, and would
-// excuse an omitted attribution the served catalog obliged. Use this wherever
-// the endpoint served a session catalog before the run; the plain assertion
-// covers the other ordering, where only the descriptor has published anything.
 func AssertProtocolValidWithCatalog(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, request protocol.ToolsListRequest, catalog adapter.ToolCatalog, events []protocol.Envelope) {
 	t.Helper()
 	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
@@ -155,25 +116,12 @@ func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse,
 	}
 }
 
-// QueuedSubmission is one submission in a session that admits more than one
-// nonterminal run: the request the caller made and the admission it received.
-// Cancelled marks a run the caller cancelled and the adapter accepted, so the
-// harness-side cancel exchange is spliced for it.
 type QueuedSubmission struct {
 	Request   protocol.MessageSubmitRequest
 	Admission protocol.MessageSubmitResponse
 	Cancelled bool
 }
 
-// AssertProtocolValidQueued certifies a session whose trace carries more than
-// one run. The single-run assertions cannot: they synthesize one submission
-// and check one contiguous sequence domain, while a queued session has a
-// reservation admitted beside a started run and two domains interleaved only
-// by the one exception the ordering rule makes.
-//
-// Every submission's request and response is spliced ahead of the events in
-// admission order, since the reservation is admitted while the started run is
-// still nonterminal, and each run's own sequence is checked inside its domain.
 func AssertProtocolValidQueued(t testing.TB, submissions []QueuedSubmission, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertQueuedInvariants(t, submissions, descriptor.CapabilityRevision, events)
@@ -186,8 +134,6 @@ func AssertProtocolValidQueued(t testing.TB, submissions []QueuedSubmission, des
 	}
 }
 
-// assertQueuedInvariants checks per-run scope, contiguity, revision, and
-// terminality across a multi-run trace.
 func assertQueuedInvariants(t testing.TB, submissions []QueuedSubmission, revision string, events []protocol.Envelope) {
 	t.Helper()
 	next := map[protocol.RunID]uint64{}
@@ -264,8 +210,7 @@ func queuedTrace(submissions []QueuedSubmission, descriptor adapter.Descriptor, 
 		}
 		trace = append(trace, submit, response)
 	}
-	// A cancel exchange is run-scoped and exempt from the ordering rule, so
-	// it sits directly ahead of the terminal it settles.
+
 	for index, submission := range submissions {
 		if !submission.Cancelled {
 			continue
@@ -289,9 +234,6 @@ func queuedTrace(submissions []QueuedSubmission, descriptor adapter.Descriptor, 
 	return json.Marshal(trace)
 }
 
-// runCancelCut reports where a cancel exchange for one run belongs: directly
-// ahead of that run's first cancelling status update, otherwise ahead of its
-// terminal, otherwise at the end.
 func runCancelCut(events []protocol.Envelope, run protocol.RunID) int {
 	for index, event := range events {
 		if event.RunID != run || event.Type != protocol.TypeRunStatusUpdated {
@@ -310,8 +252,6 @@ func runCancelCut(events []protocol.Envelope, run protocol.RunID) int {
 	return len(events)
 }
 
-// AssertRunEvents checks adapter-owned invariants without constructing control
-// requests. Use it when a caller supplies its own complete canonical trace.
 func AssertRunEvents(t testing.TB, admission protocol.MessageSubmitResponse, revision string, envelopes []protocol.Envelope) {
 	t.Helper()
 	assertRunInvariants(t, admission, revision, envelopes)
@@ -322,9 +262,7 @@ func assertRunInvariants(t testing.TB, admission protocol.MessageSubmitResponse,
 	if !admission.Accepted || admission.RunID == "" {
 		t.Fatalf("invalid admission: %+v", admission)
 	}
-	// Harness-fabricated control exchanges (interaction resolves a caller
-	// spliced into the stream) carry no adapter sequence and no adapter-owned
-	// identity; only the validator judges those.
+
 	last := -1
 	for index, envelope := range envelopes {
 		if !isControlExchange(envelope.Type) {
@@ -360,10 +298,6 @@ func assertRunInvariants(t testing.TB, admission protocol.MessageSubmitResponse,
 	}
 }
 
-// isControlExchange reports whether an envelope type belongs to a harness-side
-// request/response exchange rather than the adapter's event stream. Adapters
-// publish events only, so a control envelope in a validated stream was
-// fabricated by the test harness.
 func isControlExchange(typ protocol.EnvelopeType) bool {
 	switch typ {
 	case protocol.TypeCapabilitiesRequest, protocol.TypeCapabilitiesResponse,
@@ -378,15 +312,6 @@ func isControlExchange(typ protocol.EnvelopeType) bool {
 	return false
 }
 
-// StateExchange is a session.state request and response carrying one snapshot
-// an adapter handed out, ready to be spliced into the event stream at the point
-// it was taken.
-//
-// Nothing else in this kit reads State, and that is a real hole rather than an
-// omission of convenience: an adapter's projection can contradict the very run
-// the same trace carries and still pass every assertion here, because the
-// snapshot never enters the trace the validator sees. Splicing one in is what
-// holds an adapter's own state to the rules a fixture is held to.
 func StateExchange(state protocol.SessionState) ([]protocol.Envelope, error) {
 	request, err := protocol.NewEnvelope(protocol.TypeSessionStateRequest, "state-request", protocol.SessionStateRequest{SessionID: state.SessionID})
 	if err != nil {
@@ -402,10 +327,6 @@ func StateExchange(state protocol.SessionState) ([]protocol.Envelope, error) {
 	return []protocol.Envelope{request, response}, nil
 }
 
-// SpliceAfter puts a state exchange into an event stream directly after the
-// envelope it was taken at, which is where the capture window rules judge it:
-// the request opens the window, and anything the endpoint published in between
-// is a race the snapshot is allowed to have missed or led.
 func SpliceAfter(t testing.TB, events []protocol.Envelope, after protocol.EnvelopeID, exchange []protocol.Envelope) []protocol.Envelope {
 	t.Helper()
 	for index, envelope := range events {
@@ -419,8 +340,6 @@ func SpliceAfter(t testing.TB, events []protocol.Envelope, after protocol.Envelo
 	return nil
 }
 
-// AssertInitialState verifies that opening a session preserves the requested ID
-// and creates no active run.
 func AssertInitialState(t testing.TB, implementation adapter.Adapter, request adapter.OpenRequest) adapter.Session {
 	t.Helper()
 	session, err := implementation.Open(context.Background(), request)
@@ -437,20 +356,10 @@ func AssertInitialState(t testing.TB, implementation adapter.Adapter, request ad
 	return session
 }
 
-// ProtocolTrace serializes the canonical wire trace for an adapter-observed
-// run: the capability exchange when the descriptor names a revision, the
-// submit/admission exchange that admitted the run, and the adapter's
-// envelopes. The bytes are valid input for
-// validation.Validator.ValidateBytes, so test assertions and non-test
-// binaries (oap check's demo) assemble exactly one trace shape. The trace
-// carries no cancellation exchange: a run.cancelled terminal without caller
-// evidence is left for the state machine to report.
 func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
 	return protocolTrace(admission, descriptor, events, false)
 }
 
-// ProtocolTraceWithCancellation additionally splices the harness-side cancel
-// exchange for a cancellation the caller issued and the adapter accepted.
 func ProtocolTraceWithCancellation(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
 	return protocolTrace(admission, descriptor, events, true)
 }
@@ -459,15 +368,6 @@ func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.
 	return protocolTraceWith(nil, admission, descriptor, nil, events, cancelled)
 }
 
-// protocolTraceWith assembles the canonical trace. When submitted is nil the
-// submission is synthesized as a neutral one carrying no controls; when it is
-// given, the caller's own request is what the admission answers, so the
-// validator judges the controls it actually carried.
-// servedCatalog is one catalog exchange that actually happened: the request as
-// the caller sent it, and the catalog the endpoint answered with. The request
-// is kept rather than synthesized because it carries the caller's own degraded
-// opt-in, and a catalog requested without consent is its own diagnostic — a
-// trace that dropped it would fail for a defect the endpoint never had.
 type servedCatalog struct {
 	request protocol.ToolsListRequest
 	catalog adapter.ToolCatalog
@@ -489,9 +389,7 @@ func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission proto
 		trace = append(trace, request, response)
 	}
 	if served != nil {
-		// The serve sits between the descriptor and the submission, which is
-		// where it happened: the catalog it published is the one in force for
-		// every call the run below emits.
+
 		listRequest, err := protocol.NewEnvelope(protocol.TypeActionToolsListRequest, "tools-request", served.request)
 		if err != nil {
 			return nil, err
@@ -524,9 +422,7 @@ func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission proto
 	response.SessionID = admission.SessionID
 	response.InReplyTo = submit.ID
 	if descriptor.CapabilityRevision != "" {
-		// A non-auto delivery or a per-submit run control makes the submit
-		// request itself an optional-feature envelope: it must cite the
-		// active descriptor revision, and the response must repeat it.
+
 		submit.CapabilityRevision = descriptor.CapabilityRevision
 		response.CapabilityRevision = descriptor.CapabilityRevision
 	}
@@ -552,13 +448,6 @@ func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission proto
 	return json.Marshal(trace)
 }
 
-// cancelExchangeCut reports where a caller-issued cancel exchange belongs:
-// ahead of the first cancelling status update when the adapter reported one,
-// otherwise directly before the terminal event, and otherwise at the end of
-// the stream. The state machine requires an accepted cancellation before a
-// run.cancelled terminal; run.cancel.response also sets the cancelling
-// status, and cancelling-to-cancelling is a legal identity transition, so
-// either side of the adapter's own update is valid.
 func cancelExchangeCut(events []protocol.Envelope) int {
 	for index, event := range events {
 		if event.Type != protocol.TypeRunStatusUpdated {
@@ -578,16 +467,6 @@ func cancelExchangeCut(events []protocol.Envelope) int {
 	return len(events)
 }
 
-// AssertToolCatalog runs one served catalog through the real validator: the
-// descriptor that advertises the capability, the caller's own request, and the
-// correlated response. It is what proves a catalog resolves — one source per
-// id, one tool per name, every tool's source declared, and every attachment
-// the open made still listed — rather than asserting those rules a second time
-// in each adapter's tests.
-//
-// attached are the sources one session.open attached, spliced in as the open
-// exchange the catalog is judged against; pass none for an endpoint-level
-// catalog or a session that attached nothing.
 func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, open protocol.SessionOpenRequest, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) {
 	t.Helper()
 	trace, err := ToolCatalogTrace(descriptor, open, request, catalog)
@@ -600,17 +479,6 @@ func AssertToolCatalog(t testing.TB, descriptor adapter.Descriptor, open protoco
 	}
 }
 
-// ToolCatalogTrace assembles the canonical catalog trace: the capabilities
-// exchange, the open that attached the sources when there was one, and the
-// list exchange.
-//
-// It takes the open request the caller actually made, not a list of
-// attachments, because an open carries more than its attachments and every
-// missing part convicted a conforming adapter. The synthesized open could not
-// carry `allow_degraded_features`, so an endpoint advertising attachment as
-// `degraded` failed here for `degraded_without_optin` however correctly its
-// caller had consented — the helper reporting a defect the endpoint did not
-// have, which is the worst thing a certifier can do.
 func ToolCatalogTrace(descriptor adapter.Descriptor, open protocol.SessionOpenRequest, request protocol.ToolsListRequest, catalog adapter.ToolCatalog) ([]byte, error) {
 	revision := descriptor.CapabilityRevision
 	var trace []protocol.Envelope
@@ -635,21 +503,10 @@ func ToolCatalogTrace(descriptor adapter.Descriptor, open protocol.SessionOpenRe
 			return nil, err
 		}
 		openRequest.SessionID, openRequest.CapabilityRevision = session, revision
-		// The descriptor's declared sources are read across its layers, because
-		// a valid descriptor may declare them under one alone and the validator
-		// reads them that way. Reading the top level alone made this helper
-		// expect a union it had itself truncated, and report the trace it
-		// generated as invalid for an adapter using a shape the protocol
-		// explicitly supports.
+
 		declared := descriptor.Capabilities.EffectiveSources()
 		sources := append([]protocol.ToolSourceDescriptor(nil), declared...)
-		// An open response publishes what the session publishes, and an endpoint
-		// may fill a member the attachment left blank. The served catalog is that
-		// session's own description of the source, and every later snapshot and
-		// catalog is held to what the open response published — exactly — so the
-		// reconstructed response adopts the catalog's descriptor where it has
-		// one. Publishing the bare attachment instead would convict an endpoint
-		// that filled a display name at open, which is behaviour the unit invites.
+
 		served, _ := indexSources(catalog.Tools.Sources)
 		for _, attachment := range open.ToolSources {
 			if published, ok := served[attachment.ID]; ok {
@@ -674,17 +531,11 @@ func ToolCatalogTrace(descriptor adapter.Descriptor, open protocol.SessionOpenRe
 	if err != nil {
 		return nil, err
 	}
-	// The revision on the envelope is the one the catalog came back with, not
-	// the descriptor's, so a listing served under a revision the adapter no
-	// longer advertises is visible here rather than laundered into agreement.
+
 	listResponse.SessionID, listResponse.InReplyTo, listResponse.CapabilityRevision = catalog.Tools.SessionID, listRequest.ID, catalog.Revision
 	return json.Marshal(append(trace, listRequest, listResponse))
 }
 
-// indexSources indexes published descriptors by id, reporting the first
-// duplicate. One id resolving to two descriptors is a defect the validator
-// diagnoses on the catalog itself, so this keeps the first and leaves the
-// diagnosis where it belongs.
 func indexSources(sources []protocol.ToolSourceDescriptor) (map[string]protocol.ToolSourceDescriptor, string) {
 	indexed := make(map[string]protocol.ToolSourceDescriptor, len(sources))
 	duplicate := ""

@@ -94,21 +94,11 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// Every control this pin cannot apply is refused before admission under
-	// the key the descriptor advertises `unavailable`, naming what the caller
-	// must stop sending rather than dropping it (decision 0005). The gate runs
-	// ahead of ordinary submission validation because the ladder ranks a
-	// capability refusal above every other: a caller that fixes its messages
-	// and resubmits is refused for the control anyway, so naming the control
-	// first is the answer that saves the round trip. Every adapter here runs
-	// the gate in this position.
+
 	if err := adapter.RefuseUnadvertisedControls(request, protocol.FeatureModelSelection); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// turn/start carries the model per turn, so a requested model is applied
-	// to exactly this run. An empty id is a control the endpoint must refuse,
-	// not an absent one: no catalog can list it, and the native codec would
-	// read it as the configured default.
+
 	model := session.model
 	if request.ModelID != nil {
 		if *request.ModelID == "" {
@@ -148,15 +138,12 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 	}
 	stream := make(chan adapter.Result, liveStreamCapacity+1)
 	run.subscribers = append(run.subscribers, &subscriber{stream: stream})
-	// Reserve the one active-run slot before calling Codex. The dispatch loop uses
-	// opMu too, so notifications cannot overtake response admission and mapping.
+
 	session.mu.Lock()
 	session.active = run
 	session.state.Status = protocol.SessionQueued
 	session.state.ActiveRunID = run.id
-	// The model is a per-turn native parameter: it is authoritative for this
-	// run and leaves current_model_id, the model the next control-free
-	// submission would use, at the configured thread model (decision 0005).
+
 	session.state.UpdatedAtMS = session.clock.Now().UnixMilli()
 	session.mu.Unlock()
 	var nativeResponse native.TurnStartResponse
@@ -165,26 +152,19 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 		session.active = nil
 		session.state.ActiveRunID = ""
 		if session.client.Err() != nil {
-			// The transport was retired while the request may already have been
-			// written (a caller context that expires after the write retires the
-			// client). Codex may be executing the turn, and no native settlement
-			// can arrive on the dead transport, so reporting a clean idle would
-			// invite another submit onto a session that can never settle it.
-			// Retire the session instead.
+
 			session.closed = true
 			session.state.Status = protocol.SessionClosed
 			close(session.stop)
 		} else {
-			// The request never reached Codex; the reservation is released.
+
 			session.state.Status = protocol.SessionIdle
 		}
 		session.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("start Codex turn: %w", err)
 	}
 	if nativeResponse.Turn.ID == "" {
-		// turn/start succeeded but named no turn, so Codex may already be
-		// executing a turn that could never be correlated through session.turns.
-		// Retire the session rather than release it for another submission.
+
 		session.mu.Lock()
 		session.active = nil
 		session.closed = true
@@ -205,8 +185,7 @@ func (session *session) Submit(ctx context.Context, request protocol.MessageSubm
 		SubmissionID:      protocol.SubmissionID(session.ids.NewID("submission")),
 		RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart,
 		DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted,
-		// A started admission reports the running status (decision 0002);
-		// the run's internal state still promotes at run.started.
+
 		RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, MessageIDs: messageIDs,
 	}, stream, nil
 }
@@ -343,7 +322,7 @@ func nativeAnswers(binding *interactionBinding, input []protocol.InputAnswer) (m
 	if err != nil {
 		return nil, adapter.ErrInvalidResolution
 	}
-	// Codex requires every surfaced question to be answered.
+
 	if len(indexed) != len(binding.questions) {
 		return nil, adapter.ErrInvalidResolution
 	}
@@ -511,10 +490,7 @@ func (session *session) dispatch() {
 	for {
 		select {
 		case message := <-session.client.Inbound():
-			// One ordered queue carries both kinds, so a reverse request is
-			// reduced after every notification that preceded it on the wire:
-			// a turn's requestUserInput cannot be handled before its
-			// turn/started.
+
 			switch {
 			case message.Notification != nil:
 				session.handleNotification(*message.Notification)
@@ -604,11 +580,7 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 					options = append(options, protocol.InputOption{ID: optionID, Label: option.Label, Description: option.Description})
 					labels[optionID] = option.Label
 				}
-				// Codex's isOther permits an option plus custom text, but the OAP
-				// answer oneOf allows either selected options or text, never both.
-				// The custom-answer capability cannot be represented, so no synthetic
-				// option is advertised; a text-bearing option answer is refused
-				// rather than projected schema-invalid.
+
 				optionLabels[question.ID] = labels
 			}
 			questions = append(questions, protocol.InputQuestion{ID: question.ID, Prompt: question.Question, Kind: kind, Required: true, Options: options})
@@ -960,10 +932,6 @@ func (session *session) failActive(code, message string) {
 	session.failActiveSettled(code, message, "")
 }
 
-// failActiveSettled fails the active run with explicit terminal provenance.
-// An empty settledBy omits the member, which asserts observation and is right
-// for a violation the app-server's own frames carried; the transport-close
-// path passes protocol.SettledByInferred, having observed no terminal at all.
 func (session *session) failActiveSettled(code, message, settledBy string) {
 	session.mu.Lock()
 	run := session.active
@@ -993,9 +961,6 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-// cloneEnvelope detaches an envelope handed to a consumer from the retained
-// journal: the payload slice and the sequence/timestamp pointers must not be
-// shared, or a consumer's edit would corrupt replayed history.
 func cloneEnvelope(envelope protocol.Envelope) protocol.Envelope {
 	cloned := envelope
 	if envelope.Payload != nil {
@@ -1074,9 +1039,7 @@ func (session *session) emit(run *runState, typ protocol.EnvelopeType, payload a
 			}
 			continue
 		}
-		// Every stream reserves one slot for this ordered detach signal. The
-		// consumer receives a contiguous prefix, then an explicit instruction to
-		// resume rather than a silent sequence gap or false normal close.
+
 		subscriber.stream <- adapter.Result{Error: adapter.ErrEventStreamOverflow}
 		subscriber.detached = true
 		close(subscriber.stream)

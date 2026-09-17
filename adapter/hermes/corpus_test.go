@@ -24,8 +24,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The Hermes evidence corpus pins the exact repository, release, commit, tree,
-// and source blobs frozen in research/hermes-v2026.8.31-mapping.md.
 const (
 	hmCorpusRepository = "https://github.com/NousResearch/hermes-agent"
 	hmCorpusTag        = "v2026.8.31"
@@ -42,37 +40,36 @@ const (
 	hmBlobMethodsSession = "485456a87f61918c3c53891bb4c05cebddff0a40"
 )
 
-// Every label required by the ledger's "Required evidence corpus" section.
 var hmLedgerFixtures = map[string]bool{
-	// handshake
+
 	"ready-epoch": true, "ready-before-input": true, "malformed-frame": true,
-	// admission
+
 	"submit-streaming": true, "busy-steered": true, "busy-queued": true, "submit-error-codes": true,
-	// run lifecycle
+
 	"turn-open": true, "completed-turn": true, "interrupted-turn": true,
 	"error-turn": true, "error-surface": true, "partial-error": true,
-	// streaming
+
 	"text-deltas": true, "reasoning-deltas": true, "interim": true, "scrubbed-provenance": true,
-	// tools
+
 	"tool-lifecycle": true, "tool-failure-in-result": true,
-	// interactions
+
 	"approval-gate": true, "approval-choices": true, "clarify-gate": true,
 	"sudo-gate": true, "secret-gate": true, "expire-sibling": true,
-	// side channels
+
 	"btw-delivery": true, "background-prompt": true,
-	// steering
+
 	"steer-run": true, "steer-rejected": true, "subagent-steer": true, "subagent-interrupt": true,
-	// children
+
 	"subagent-lifecycle": true, "subagent-complete-failed": true, "child-mirror-not-terminal": true,
-	// replay
+
 	"replay-in-window": true, "replay-truncated": true, "replay-unknown-session": true, "epoch-restart": true,
-	// recovery
+
 	"resume-live": true, "branch": true, "undo": true,
-	// reconciliation
+
 	"settled-session-info": true, "usage-ticker": true,
-	// teardown/failure
+
 	"stdin-eof-exit": true, "process-exit": true, "pre-ready-observation": true, "no-turn-lifecycle-events": true,
-	// hygiene
+
 	"global-events-unsequenced": true, "session-reclaimed": true,
 }
 
@@ -151,13 +148,12 @@ type hmCorpusOmission struct {
 	Reason string `json:"reason"`
 }
 
-// hmDecodedFrame carries the production-codec result for one native frame.
 type hmDecodedFrame struct {
 	Message       *rpc.Message
-	Notification  any // typed value from native.DecodeNotification
+	Notification  any
 	Event         *native.Event
 	Control       *hmControl
-	Invalid       error // production rejection, for decode-error frames
+	Invalid       error
 	RequestMethod string
 }
 
@@ -227,10 +223,6 @@ func runHermesCorpusCase(t *testing.T, root string, entry hmCorpusManifestCase) 
 	assertHermesExpected(t, filepath.Join(dir, definition.ExpectedOAP), execution.envelopes)
 }
 
-// runHermesFakeCase drives the production reducer through the public adapter
-// with a deterministic in-process client, replaying fixture frames in wire
-// order. Every observation is barrier-acknowledged so the execution is
-// deterministic without sleeps.
 func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, decoded []hmDecodedFrame) hmExecution {
 	t.Helper()
 	execution := hmExecution{nativeWrites: map[string]int{}}
@@ -256,9 +248,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	var pending chan hmSubmit
 	var settled []hmSubmit
 	var pendingResolve chan error
-	// waitReap waits for the in-flight submission to return WITHOUT draining
-	// its stream: draining waits for run terminality, which would deadlock a
-	// mid-run wait-submit barrier because later frames are yet to be delivered.
+
 	waitReap := func() {
 		if pending == nil {
 			return
@@ -383,8 +373,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 			}
 		case "process-exit":
 			client.transportClose(errors.New(decoded[i].Control.Error))
-			// Deterministic barrier: the dispatch goroutine settles the started
-			// run through the failure path before Close can observe idle.
+
 			deadline := time.Now().Add(5 * time.Second)
 			for {
 				state, stateErr := session.State(context.Background())
@@ -417,9 +406,6 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	return execution
 }
 
-// runHermesProcessCase exercises the production process transport: the adapter
-// spawns a re-exec of the test binary as a pinned-protocol gateway fixture, and
-// the case transcript records both wire directions.
 func runHermesProcessCase(t *testing.T, dir string, definition hmCorpusCase, frames []hmFrame, decoded []hmDecodedFrame) hmExecution {
 	t.Helper()
 	execution := hmExecution{nativeWrites: map[string]int{}}
@@ -505,8 +491,7 @@ func runHermesProcessCase(t *testing.T, dir string, definition hmCorpusCase, fra
 			execution.closed = true
 			session = nil
 		case "auto", "decode-error":
-			// Emitted by the fixture gateway and already validated through the
-			// production codec at load time.
+
 		default:
 			t.Fatalf("frame %d: action %q is not valid for the process harness", i+1, frame.Action)
 		}
@@ -516,9 +501,6 @@ func runHermesProcessCase(t *testing.T, dir string, definition hmCorpusCase, fra
 		t.Fatal("process case ended without a close frame")
 	}
 
-	// The gateway's wire log must be exactly the host transcript, and every
-	// host frame must be one of the adapter's supported methods: teardown is
-	// stdin EOF, so a shutdown RPC on the wire would contradict the pin.
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -561,7 +543,6 @@ func runHermesProcessCase(t *testing.T, dir string, definition hmCorpusCase, fra
 	return execution
 }
 
-// hmExecution records what the behavioral run actually proved.
 type hmExecution struct {
 	descriptor        base.Descriptor
 	admissions        []protocol.MessageSubmitResponse
@@ -600,17 +581,11 @@ func (e *hmExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	e.envelopes = append(e.envelopes, events...)
 }
 
-// validate runs the shared protocol assertion over one admitted run with the
-// adapter's live descriptor prefixed.
 func (e *hmExecution) validate(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, e.descriptor, events)
 }
 
-// hmCorpusClient is the deterministic in-process Hermes client used by the
-// corpus. It records every native call, answers through an explicit reply
-// queue in call order, and rejects any method outside the adapter's supported
-// surface — so a steer, replay, or recovery write fails the case outright.
 type hmCorpusClient struct {
 	in      chan rpc.InboundMessage
 	done    chan struct{}
@@ -734,7 +709,6 @@ func (c *hmCorpusClient) lastCall(t *testing.T) hmRecordedCall {
 	return c.calls[len(c.calls)-1]
 }
 
-// awaitCall blocks until the adapter issued the given native call.
 func (c *hmCorpusClient) awaitCall(t *testing.T, method string) {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
@@ -783,21 +757,17 @@ func (c *hmCorpusClient) transportClose(err error) {
 		close(c.done)
 		c.closed = true
 	}
-	// The reducer's dispatch drains the inbound stream to this close before
-	// settling the failure, mirroring the production relay's close.
+
 	close(c.in)
 }
 
-// hmFindInteraction locates the open gate of the given kind on the reducer's
-// interaction table.
 func hmFindInteraction(t *testing.T, session base.Session, kind string) *inputState {
 	t.Helper()
 	impl, ok := session.(*Session)
 	if !ok {
 		t.Fatal("session is not the Hermes reducer")
 	}
-	// The reducer owns the interaction table under reduceMu (see Resolve);
-	// reading it under mu races with reducer writes.
+
 	impl.reduceMu.Lock()
 	defer impl.reduceMu.Unlock()
 	var found *inputState
@@ -878,8 +848,7 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 				entry.Message = &message
 			}
 		case "host-to-gateway":
-			// A null raw marks an "open" frame whose request is never written
-			// (the handshake fails first): trigger only, no wire expectation.
+
 			if len(frame.Raw) == 0 || bytes.Equal(frame.Raw, []byte("null")) {
 				if frame.Action != "open" {
 					t.Fatalf("frame %d: host frame without raw bytes", i+1)
@@ -952,7 +921,7 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 		frames = append(frames, frame)
 		decoded = append(decoded, entry)
 	}
-	// Response frames are typed by the method of the request they answer.
+
 	for i := range decoded {
 		if frames[i].Direction != "gateway-to-host" || decoded[i].Message == nil || decoded[i].Notification != nil {
 			continue
@@ -969,9 +938,6 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 	return frames, decoded
 }
 
-// hmWireBytes returns the exact native wire bytes for a fixture raw value.
-// String raws carry byte-exact frames (leading whitespace, corrupt tails);
-// object raws are used verbatim.
 func hmWireBytes(t *testing.T, raw json.RawMessage, filename string, index int) []byte {
 	t.Helper()
 	trimmed := bytes.TrimSpace(raw)
@@ -1097,8 +1063,6 @@ func assertHermesClassifications(t *testing.T, frames []hmFrame, decoded []hmDec
 	}
 }
 
-// ---- ledger evidence rules -------------------------------------------------
-
 func hmEventIndexes(decoded []hmDecodedFrame, typ string) []int {
 	var out []int
 	for i := range decoded {
@@ -1160,7 +1124,6 @@ func hmRunTerminal(events []protocol.Envelope) (protocol.EnvelopeType, string) {
 	return "", ""
 }
 
-// hmSettlements decodes every message.complete payload in the transcript.
 func hmSettlements(t *testing.T, decoded []hmDecodedFrame) []native.MessageCompletePayload {
 	t.Helper()
 	var out []native.MessageCompletePayload
@@ -1193,7 +1156,6 @@ func hmDescriptorLevel(execution hmExecution, feature string) (protocol.SupportL
 
 func hmWrote(execution hmExecution, method string) bool { return execution.nativeWrites[method] > 0 }
 
-// hmReadyPayload extracts the epoch-bearing handshake payload from a frame.
 func hmReadyPayload(t *testing.T, decoded []hmDecodedFrame) (native.ReadyPayload, bool) {
 	t.Helper()
 	for i := range decoded {
@@ -1209,8 +1171,6 @@ func hmReadyPayload(t *testing.T, decoded []hmDecodedFrame) (native.ReadyPayload
 	return native.ReadyPayload{}, false
 }
 
-// assertHermesLedgerEvidence requires each ledger label to have executable
-// evidence in the fixture transcript and the behavioral execution record.
 func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame, decoded []hmDecodedFrame, execution *hmExecution) {
 	t.Helper()
 	settlements := hmSettlements(t, decoded)
@@ -1252,9 +1212,7 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			var payload protocol.RunFailedPayload
 			live := failed && terminal.DecodePayload(&payload) == nil &&
 				strings.Contains(payload.Error.Message, "invalid JSON-RPC message")
-			// The corrupt bytes must have traversed the production decoder on
-			// the live transport: the surfaced cause is the reader's codec
-			// error, not a coincidental process exit.
+
 			ok = rejected && failed && code == "hermes_process_exit" && live
 		case "submit-streaming":
 			streaming := 0
@@ -1509,10 +1467,7 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 				advertised && level == protocol.SupportUnavailable &&
 				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "steer-rejected":
-			// The pinned native surface (steer result statuses queued|rejected)
-			// is typed and tested in the native package; this rule pins the
-			// behavioral side only: v1 never steers, and overlap is rejected
-			// locally before any native write.
+
 			ok = execution.overlapRejected && !hmWrote(*execution, native.MethodSessionSteer) &&
 				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "subagent-steer":
@@ -1611,19 +1566,13 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			}
 			ok = hasTick && usage && len(hmEventIndexes(decoded, native.EventSessionUsage)) == 1
 		case "replay-in-window", "replay-truncated", "replay-unknown-session":
-			// The pinned replay shapes (window, explicit truncation,
-			// unknown-session empty result) are typed and tested in the
-			// native package; these rules pin the behavioral side only: v1
-			// never issues session.events.since and advertises replay
-			// unavailable, so no gap contract is ever implied.
+
 			level, advertised := hmDescriptorLevel(*execution, "run.replay")
 			ok = !hmWrote(*execution, native.MethodSessionEventsSinc) && !hmWrote(*execution, native.MethodSessionEventsStat) &&
 				advertised && level == protocol.SupportUnavailable &&
 				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "epoch-restart":
-			// A silent seq reset (restart) breaks the contiguous fencing and
-			// fails the session closed; epoch identity itself is validated by
-			// the handshake pin and typed in the native package.
+
 			restart := false
 			maxSeq := int64(0)
 			for i := range decoded {
@@ -1708,8 +1657,6 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 	}
 }
 
-// ---- expected-trace comparison ----------------------------------------------
-
 func assertHermesExpected(t *testing.T, filename string, events []protocol.Envelope) {
 	t.Helper()
 	data, err := os.ReadFile(filename)
@@ -1736,9 +1683,6 @@ func assertHermesExpected(t *testing.T, filename string, events []protocol.Envel
 	}
 }
 
-// hmEqualEvents compares two traces after dropping wall-clock stamps: the
-// corpus harness is barrier-deterministic, so every other member — ids,
-// sequences, correlations — must match exactly.
 func hmEqualEvents(a, b []protocol.Envelope) bool {
 	return bytes.Equal(hmNormalizeTrace(a), hmNormalizeTrace(b))
 }
@@ -1774,8 +1718,6 @@ func hmJSONEqual(a, b json.RawMessage) bool {
 	nb, _ := json.Marshal(vb)
 	return bytes.Equal(na, nb)
 }
-
-// ---- corpus plumbing ---------------------------------------------------------
 
 func hmLoadJSON[T any](t *testing.T, filename string) T {
 	t.Helper()
@@ -1857,9 +1799,6 @@ func TestHermesCorpusPinConstants(t *testing.T) {
 	}
 }
 
-// TestMain lets the corpus re-exec the test binary as a pinned-protocol Hermes
-// gateway fixture over stdio, so the ready handshake and stdin-EOF teardown
-// drive the production process transport without any download.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "--hermes-fixture-server" {
 		hmServeFixture()
@@ -1874,19 +1813,12 @@ const (
 	hmServerModeMalformed  = "malformed"
 )
 
-// hmServerParts is the replay program extracted from a case transcript.
 type hmServerParts struct {
 	ready     string
-	responses map[string]string // raw id bytes → full response frame
-	script    []string          // verbatim lines after the first prompt response
+	responses map[string]string
+	script    []string
 }
 
-// hmServeFixture speaks the pinned tui_gateway surface for corpus process
-// cases. It logs every received host frame verbatim, writes gateway.ready
-// before reading any input, answers session.create from the transcript, and
-// replays the scripted event frames around the first prompt response. In
-// pre-observe mode it emits a session observation before the handshake and
-// never becomes ready; in malformed mode it finishes with a corrupt line.
 func hmServeFixture() {
 	mode := os.Getenv("OAP_HM_FIXTURE_MODE")
 	logPath := os.Getenv("OAP_HM_FIXTURE_LOG")
@@ -1906,8 +1838,7 @@ func hmServeFixture() {
 		_ = stdout.Flush()
 	}
 	if mode == hmServerModePreObserve {
-		// Foreign activity before the handshake completes: the gateway owns no
-		// sessions before gateway.ready.
+
 		if len(parts.script) > 0 {
 			writeLine(parts.script[0])
 		}
@@ -1945,11 +1876,6 @@ func hmServeFixture() {
 	}
 }
 
-// hmServerScript extracts the byte-exact program the fixture gateway must run
-// from a case transcript: the ready frame, id-keyed responses, and the event
-// script replayed after the first prompt response. decode-error frames carry
-// corrupt wire bytes as string raws and are replayed verbatim, so malformed
-// input actually traverses the production decoder.
 func hmServerScript(script string) hmServerParts {
 	data, err := os.ReadFile(script)
 	if err != nil {
@@ -1970,7 +1896,7 @@ func hmServerScript(script string) hmServerParts {
 		}
 		trimmed := bytes.TrimSpace(frame.Raw)
 		if len(trimmed) > 0 && trimmed[0] == '"' {
-			// A string raw is a corrupt wire line replayed verbatim.
+
 			var literal string
 			if json.Unmarshal(trimmed, &literal) == nil {
 				parts.script = append(parts.script, literal)

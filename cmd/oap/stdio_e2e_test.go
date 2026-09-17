@@ -17,17 +17,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The acceptance story for the subprocess embedding: a host that is not this
-// process — and need not be Go at all — spawns the compiled binary, speaks
-// newline-delimited JSON on its pipes, and drives the whole op surface. Every
-// other stdio test drives Server.Run in process; only this one proves the
-// flag parsing, the stream discipline and the exit codes of the real binary.
-//
-// Two properties here have no in-process counterpart. Stdout carries protocol
-// lines and nothing else — the banner and every diagnostic go to stderr — so
-// a host may parse stdout strictly. And the process exit code is the host's
-// signal: clean at stdin EOF, non-zero for a framing defect.
-
 var (
 	buildOnce   sync.Once
 	builtBinary string
@@ -43,9 +32,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// oapBinary builds ./cmd/oap once for the package. A toolchain that is not on
-// PATH skips rather than fails: the suite must stay runnable from a
-// pre-built test binary, which is the one case where go is genuinely absent.
 func oapBinary(t *testing.T) string {
 	t.Helper()
 	buildOnce.Do(func() {
@@ -80,7 +66,6 @@ func oapBinary(t *testing.T) string {
 	return builtBinary
 }
 
-// child is one spawned daemon and its three pipes.
 type child struct {
 	t       *testing.T
 	cmd     *exec.Cmd
@@ -88,17 +73,7 @@ type child struct {
 	lines   chan string
 	readErr chan error
 	stderr  *strings.Builder
-	// held and heldSignals keep lines that arrived before the test asked for
-	// them. Pipelined ops run on their own workers and a subscription writes
-	// into the same stream, so what comes back next is whatever finished
-	// first: a response for an id nobody is waiting on yet, or a gate
-	// envelope ahead of the acknowledgement of the submit that caused it. A
-	// reader that insisted on position — or that dropped the kind it was not
-	// looking for — would be asserting an order the frontend explicitly does
-	// not promise.
-	//
-	// So nothing read is ever thrown away. Every reader takes the kind it
-	// wants and holds the other.
+
 	held        map[int64]responseShape
 	heldSignals []string
 }
@@ -120,9 +95,7 @@ func spawn(t *testing.T, args ...string) *child {
 		t.Fatal(err)
 	}
 	c := &child{t: t, cmd: cmd, stdin: stdin, lines: make(chan string, 64), readErr: make(chan error, 1), stderr: stderr, held: map[int64]responseShape{}}
-	// Stdout is drained continuously. A host that stops reading parks the
-	// daemon's writer inside a pipe write, which would make every later
-	// assertion a timeout rather than a result.
+
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -147,8 +120,6 @@ func (c *child) send(format string, args ...any) {
 	}
 }
 
-// next returns one line, failing rather than blocking forever on a daemon
-// that has stopped answering.
 func (c *child) next() (string, bool) {
 	c.t.Helper()
 	select {
@@ -160,8 +131,6 @@ func (c *child) next() (string, bool) {
 	}
 }
 
-// response pulls lines until the response correlated to id arrives, handing
-// every signal line that precedes it to onSignal.
 func (c *child) response(id int64) responseShape {
 	c.t.Helper()
 	if shape, ok := c.held[id]; ok {
@@ -186,7 +155,6 @@ func (c *child) response(id int64) responseShape {
 	}
 }
 
-// signal returns the next subscription line, holding any response it meets.
 func (c *child) signal() string {
 	c.t.Helper()
 	if len(c.heldSignals) > 0 {
@@ -208,20 +176,10 @@ func (c *child) signal() string {
 	}
 }
 
-// wait ends the child and returns its exit error, draining stdout to EOF
-// first.
-//
-// os/exec closes the StdoutPipe inside Wait, and its own documentation calls
-// it incorrect to Wait before every read from that pipe has finished: the
-// drain goroutine can still be parked in Scan when the close lands, and then
-// the scan ends with "file already closed" rather than a clean EOF. Draining
-// first cannot hang — the pipe reaches EOF when the child exits, which is the
-// same event Wait is waiting for.
 func (c *child) wait() error {
 	c.t.Helper()
 	for range c.lines {
-		// Whatever is still queued is read to EOF; tests that care about the
-		// content have already taken it.
+
 	}
 	if err := <-c.readErr; err != nil {
 		c.t.Fatalf("stdout scan: %v", err)
@@ -246,9 +204,6 @@ func (c *child) require(id int64, shape responseShape) responseShape {
 	return shape
 }
 
-// responseShape reads either line kind: a response carries id and ok, a
-// signal carries event. Reading both through one struct is how a host with a
-// single stdout reader tells them apart.
 type responseShape struct {
 	ID     int64           `json:"id"`
 	OK     bool            `json:"ok"`
@@ -267,15 +222,9 @@ type signalShape struct {
 	Envelope json.RawMessage `json:"envelope"`
 }
 
-// TestStdioBinaryDrivesAFullSession is the acceptance test named by the
-// slice: one scripted session over the real binary's pipes, from the
-// listings through an interactive run to a cursor replay and a clean exit.
 func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	c := spawn(t)
 
-	// Both listings are sent before either is read: the ops are pipelined,
-	// which is the framing's own claim, and a host that waited for each
-	// answer would never exercise it.
 	c.send(`{"id":1,"op":"adapters"}`)
 	c.send(`{"id":2,"op":"capabilities","adapter":"memory"}`)
 	c.response(1)
@@ -305,9 +254,6 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 		}, "e2e", ""))
 	c.response(6)
 
-	// The gates are answered from the subscription's own lines: the stream is
-	// the only thing telling this host a gate is open, which is what a host
-	// that spawned the binary has to rely on.
 	var lastSequence uint64
 	nextID := int64(7)
 	terminal := protocol.EnvelopeType("")
@@ -346,9 +292,6 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	c.send(`{"id":20,"op":"state","session_id":"e2e"}`)
 	c.response(20)
 
-	// Cursor replay: a second subscription from an earlier sequence delivers
-	// the suffix the first one already carried, which is what makes a
-	// reconnecting host's resume invisible.
 	replayed := 0
 	c.send(`{"id":21,"op":"events","session_id":"e2e","after":%d}`, lastSequence-2)
 	c.response(21)
@@ -370,7 +313,6 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	c.send(`{"id":22,"op":"close","session_id":"e2e"}`)
 	c.response(22)
 
-	// Stdin EOF is the clean end, and the exit code is what a host reads.
 	if err := c.stdin.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -382,18 +324,12 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	}
 }
 
-// TestStdioBinaryFailsClosedOnAMalformedLine pins the other half of the exit
-// contract. A framing defect is the host's, and it must not look like a clean
-// end: the process exits non-zero with one bounded diagnostic on stderr, and
-// stdout stays free of it.
 func TestStdioBinaryFailsClosedOnAMalformedLine(t *testing.T) {
 	c := spawn(t)
 	c.send(`{"id":1,"op":"adapters"}`)
 	c.response(1)
 	c.send(`{"id":2,"op":`)
 
-	// The stdout lines are collected before Wait, for the same reason: they
-	// are read from the pipe Wait closes.
 	var emitted []string
 	for line := range c.lines {
 		emitted = append(emitted, line)
@@ -423,9 +359,6 @@ func TestStdioBinaryFailsClosedOnAMalformedLine(t *testing.T) {
 	}
 }
 
-// TestStdioRefusesAListenAddress pins the flag exclusivity: --stdio and
-// --addr name two different transports, and taking both would leave the
-// operator unsure which one is serving.
 func TestStdioRefusesAListenAddress(t *testing.T) {
 	binary := oapBinary(t)
 	output, err := exec.Command(binary, "serve", "--stdio", "--addr", "127.0.0.1:0").CombinedOutput()
@@ -489,16 +422,6 @@ func resolveJSON(t *testing.T, gate protocol.Envelope) []byte {
 	}
 }
 
-// TestStdioExampleSessionRuns drives examples/oap-stdio-session.ndjson
-// against the real binary, so the shipped example cannot rot: every op in it
-// must still be accepted, and the run it scripts must still complete.
-//
-// The file is the host's half of a session, in order. A host sends each line
-// after the previous line's response — the ops are pipelined, but a
-// session-scoped op still needs the session its predecessor opened — and
-// sends a resolve only once the gate it answers has appeared on the stream,
-// which is the one ordering no line number can express. That is exactly the
-// constraint drafts/compound-open.md proposes to remove.
 func TestStdioExampleSessionRuns(t *testing.T) {
 	script, err := os.ReadFile(filepath.Join(repositoryRoot(), "examples", "oap-stdio-session.ndjson"))
 	if err != nil {
@@ -508,12 +431,6 @@ func TestStdioExampleSessionRuns(t *testing.T) {
 	gates := map[string]bool{}
 	completed := false
 
-	// note records what one subscription line tells this driver. A line that
-	// is not an envelope is one of the documented subscription endings — the
-	// replay subscription is still unwinding when the close lands, so
-	// oap-session-closed can arrive here — and it is information, not a
-	// failure: the file is a script of what a host sends, and the endings are
-	// what the daemon says back.
 	note := func(line string) {
 		var signal signalShape
 		if err := json.Unmarshal([]byte(line), &signal); err != nil {
@@ -548,8 +465,7 @@ func TestStdioExampleSessionRuns(t *testing.T) {
 			t.Fatalf("example line %q: %v", raw, err)
 		}
 		if op.Op == "resolve" {
-			// A resolve answers a gate the adapter minted, so it waits for
-			// that gate rather than for a line number.
+
 			var envelope struct {
 				Payload struct {
 					InteractionID string `json:"interaction_id"`
@@ -565,8 +481,7 @@ func TestStdioExampleSessionRuns(t *testing.T) {
 		c.send("%s", raw)
 		c.response(op.ID)
 	}
-	// The run's terminal may have arrived while a response was being awaited,
-	// in which case it is held rather than lost.
+
 	for !completed && len(c.heldSignals) > 0 {
 		note(c.signal())
 	}

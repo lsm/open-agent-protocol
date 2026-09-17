@@ -62,8 +62,7 @@ type corpusCase struct {
 	ExpectedOAP string `json:"expected_oap"`
 	Mapping     string `json:"mapping"`
 	Omissions   string `json:"omissions"`
-	// ModelID is the per-submit model control the case drives, so a case can
-	// state the control it exercises instead of the runner naming it.
+
 	ModelID string `json:"model_id,omitempty"`
 }
 
@@ -174,9 +173,7 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 		t.Fatal(err)
 	}
 	if definition.ModelID != "" {
-		// The model is a per-turn native parameter: it reaches turn/start and
-		// binds this run alone, leaving the thread's configured model as the
-		// session default.
+
 		client.mu.Lock()
 		sent := client.turnStart
 		client.mu.Unlock()
@@ -222,8 +219,7 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	if entry.ID == "interrupted-turn" {
 		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
 	} else {
-		// The submission the case actually made is what the admission
-		// answers, so a case driving a control is judged against it.
+
 		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
 	}
 	expected := loadJSON[[]protocol.Envelope](t, paths.expectedOAP)
@@ -251,8 +247,7 @@ func runCorpusRequest(t *testing.T, client *fakeClient, session adapter.Session,
 	if frame.ID == 0 || frame.Method == "" {
 		t.Fatalf("invalid reverse request fixture: %+v", frame)
 	}
-	// The reverse request is replayed from the codec-decoded message, not the
-	// wrapper, so the fixture reaches the adapter only by way of the codec.
+
 	id, ok := message.ID.IntegerValue()
 	if !ok {
 		t.Fatalf("decoded reverse request id %s is not an integer", message.ID)
@@ -397,9 +392,6 @@ func assertClassifications(t *testing.T, frames []corpusFrame, mappings []corpus
 	}
 }
 
-// loadFrames returns each fixture wrapper alongside the JSON-RPC message the
-// production codec yields for it, so the corpus exercises framing and message
-// parsing rather than only the reducer.
 func loadFrames(t *testing.T, filename string) ([]corpusFrame, []rpc.Message) {
 	t.Helper()
 	file, err := os.Open(filename)
@@ -428,12 +420,6 @@ func loadFrames(t *testing.T, filename string) ([]corpusFrame, []rpc.Message) {
 	return frames, decoded
 }
 
-// decodeCorpusFrame rebuilds the JSON-RPC line the wrapper describes, writes it
-// with the production encoder, and reads it back with the production decoder.
-// The corpus therefore fails when framing or message parsing changes, instead
-// of leaving that to the internal/rpc tests alone. A frame that carries no
-// server-to-client line, such as the synthesized transport failure, decodes to
-// the zero message, which the replay switch never reads.
 func decodeCorpusFrame(t *testing.T, filename string, index int, frame corpusFrame) rpc.Message {
 	t.Helper()
 	var outbound rpc.Message

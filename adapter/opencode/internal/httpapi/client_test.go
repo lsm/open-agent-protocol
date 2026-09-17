@@ -103,12 +103,6 @@ func TestPromptRejectsForeignAdmissionReceipt(t *testing.T) {
 	}
 }
 
-// The pinned server does not implement the wait route: its handler resolves
-// the session and then always fails with ServiceUnavailableError, so a live
-// session answers 503 and a missing one 404. Nothing may read that as idle.
-// This is why settlement corroborates with the active set instead, and the
-// test exists so a future reader does not mistake the route's declared
-// success contract below for observed behaviour.
 func TestWaitIdleSurfacesPinnedUnavailable(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -128,8 +122,6 @@ func TestWaitIdleSurfacesPinnedUnavailable(t *testing.T) {
 	}
 }
 
-// The route's declared contract is 204; the handler above is what the pinned
-// server actually returns. Both are pinned so the gap stays visible.
 func TestInterruptAndWaitAcceptNoContent(t *testing.T) {
 	paths := map[string]bool{}
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -258,9 +250,6 @@ func TestSubscribeSurfacesHTTPErrors(t *testing.T) {
 	}
 }
 
-// TestCreateSessionRejectsDuplicateKeys pins strict decoding: encoding/json
-// silently keeps the last duplicate key, so the duplicate walker must reject
-// the body. Before the fix the duplicate top-level "data" key was accepted.
 func TestCreateSessionRejectsDuplicateKeys(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"data":` + sessionInfo + `,"data":` + sessionInfo + `}`))
@@ -271,9 +260,6 @@ func TestCreateSessionRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
-// TestCreateSessionRejectsOversizedBody pins that a body longer than the frame
-// limit is rejected, not truncated: LimitReader's artificial EOF would
-// otherwise let a valid JSON prefix pass with its trailing bytes discarded.
 func TestCreateSessionRejectsOversizedBody(t *testing.T) {
 	valid := `{"data":` + sessionInfo + `}`
 	body := valid + strings.Repeat(" ", 32) + `{"tail":true}`
@@ -286,17 +272,11 @@ func TestCreateSessionRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// TestSubscriptionCloseInterruptsBlockedRead pins that Close tears down an idle
-// SSE stream instead of leaking the pump goroutine and connection. The server
-// flushes headers then sends nothing; Close must cancel the request so the
-// blocked Decode returns and the server observes the disconnect. Before the
-// fix Close only closed done, the pump stayed blocked in Decode, and the
-// server's request context was never cancelled.
 func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseNow) // never leave the handler blocking server Close
+	t.Cleanup(releaseNow)
 	handlerDone := make(chan struct{})
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -310,19 +290,14 @@ func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
 		}
 		close(handlerDone)
 	}), Options{})
-	// The stream context lets cleanup force teardown even when Close fails to
-	// (before the fix), so a leaked connection cannot hang httptest.Server.
+
 	streamCtx, cancelStream := context.WithCancel(context.Background())
 	t.Cleanup(cancelStream)
 	subscription, err := client.Subscribe(streamCtx, "ses_a", -1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Subscribe returns once the headers are flushed; let the pump goroutine
-	// reach and park in Decode so Close must interrupt the read rather than
-	// racing the done check. Without this the pump can observe done before its
-	// first Decode and its deferred Body.Close() would tear the connection
-	// down even without the fix.
+
 	time.Sleep(100 * time.Millisecond)
 	start := time.Now()
 	if err := subscription.Close(); err != nil {
@@ -331,11 +306,7 @@ func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("Close blocked for %v", elapsed)
 	}
-	// The server only observes its request context end (or a client
-	// disconnect) once the HTTP request carrying the idle stream is torn
-	// down. That teardown is what closes the response body the pump is
-	// blocked reading, so its firing proves the blocked Decode was
-	// interrupted and the goroutine can exit.
+
 	select {
 	case <-handlerDone:
 	case <-time.After(2 * time.Second):
@@ -343,21 +314,16 @@ func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
 	}
 }
 
-// TestSubscribeReturnsWhenHeadersAreDeferred pins the live server behavior:
-// the pinned session-scoped SSE endpoint withholds response headers until the
-// stream carries an event. Subscribe must not block the caller waiting for
-// them; the subscription becomes usable and events arrive once the stream
-// starts. Before the fix this blocked until the caller context expired.
 func TestSubscribeReturnsWhenHeadersAreDeferred(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseNow) // never leave the deferred handler blocking server Close
+	t.Cleanup(releaseNow)
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/session/ses_a/event" {
 			t.Errorf("path %s", r.URL.Path)
 		}
-		<-release // defer response headers until an event is ready
+		<-release
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
@@ -376,8 +342,7 @@ func TestSubscribeReturnsWhenHeadersAreDeferred(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("Subscribe blocked for %v awaiting deferred headers", elapsed)
 	}
-	// The deferred stream is still live: once the server flushes, the event
-	// must arrive through the subscription.
+
 	releaseNow()
 	select {
 	case event := <-subscription.Events():

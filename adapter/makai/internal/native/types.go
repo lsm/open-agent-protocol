@@ -1,5 +1,3 @@
-// Package native contains the reduced, pinned Makai agent-protocol wire types.
-// It intentionally does not contain OAP semantics.
 package native
 
 import (
@@ -88,20 +86,6 @@ func NewEnvelope(typ Type, sessionID SessionID, messageID MessageID, sequence ui
 	return env, nil
 }
 
-// Validate checks the common envelope. allowErrorSequence permits the pinned
-// server's request-validation agent_error sequence zero.
-//
-// Sequence discipline at the v0.2.0 pin (makai spec §13.1): outbound server
-// frames split into allocated frames (agent_started, agent_event,
-// agent_result, agent_stopped, settlement agent_error, tool_execute, ack,
-// nack) drawing one monotonic per-registration counter that describes
-// allocation order — not observed wire order, since synchronous replies are
-// written before the outbox flushes queued frames — and echo replies
-// (session_info, pong, tool_list_response) copying the request's inbound
-// sequence verbatim. Correlated request-validation agent_error frames carry
-// sequence 0, outside the ordering domain. Consumers must not detect loss or
-// reorder from observed sequences; receive order is the only ordering
-// authority, which is why nothing here enforces sequence continuity.
 func (e Envelope) Validate(allowErrorSequence bool) error {
 	if !e.Type.Supported() {
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
@@ -170,13 +154,6 @@ func DecodePayload[T any](e Envelope) (T, error) {
 	return value, nil
 }
 
-// AgentStart carries the session association key. At the v0.2.0 pin (#198)
-// the canonical payload key is session_id; resume_session_id survives as a
-// permanent server-side parse alias for the same value, and makai's own
-// emitters send both keys transitionally so pre-rename servers keep binding
-// the caller's id. This adapter mirrors that: set both fields to one value
-// when emitting, and EffectiveSessionID resolves whichever key carried an id
-// on decode (canonical wins when both appear, as the makai deserializer does).
 type AgentStart struct {
 	ConfigJSON      string     `json:"config_json"`
 	SystemPrompt    string     `json:"system_prompt,omitempty"`
@@ -184,8 +161,6 @@ type AgentStart struct {
 	ResumeSessionID *SessionID `json:"resume_session_id,omitempty"`
 }
 
-// EffectiveSessionID returns the payload id whichever key carried it, or nil
-// when the start omits both keys (the server then generates the container id).
 func (p AgentStart) EffectiveSessionID() *SessionID {
 	if p.SessionID != nil {
 		return p.SessionID

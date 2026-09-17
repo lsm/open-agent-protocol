@@ -88,9 +88,7 @@ func TestEnvelopeRejectsInvalidShapes(t *testing.T) {
 }
 
 func TestAgentStartDualKeyTransition(t *testing.T) {
-	// v0.2.0 (#198): emitters send the canonical session_id key plus the
-	// permanent resume_session_id alias with the same value; the decoder
-	// accepts either key and the canonical one wins when both appear.
+
 	association := testSession
 	start := AgentStart{ConfigJSON: `{}`, SessionID: &association, ResumeSessionID: &association}
 	env, err := NewEnvelope(TypeAgentStart, testSession, testMessage, 1, 1, start)

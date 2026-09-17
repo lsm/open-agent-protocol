@@ -6,28 +6,15 @@ import (
 	"io"
 )
 
-// frame is one dispatched text/event-stream event: a blank line's worth of
-// accumulated field lines.
 type frame struct {
-	// event is the dispatch name, "message" when no event field was set.
 	event string
-	// data is the joined data lines (no trailing newline).
+
 	data []byte
-	// lastID is the id field's value; hasID reports whether one was set.
+
 	lastID string
 	hasID  bool
 }
 
-// scanSSE reads one text/event-stream document from r and invokes handle once
-// per dispatched frame. It follows the WHATWG parsing rules that matter on
-// this wire: CR, LF, and CRLF all terminate lines; a leading UTF-8 BOM is
-// stripped; comment lines (leading ':') and unknown fields such as retry are
-// ignored; one optional space after the field colon is dropped; multiple data
-// lines join with newlines; an id containing NUL is discarded; a frame is
-// dispatched only at its blank line, so an unterminated trailing frame is
-// discarded. handle returning false stops the scan without reading further.
-// The returned error is the read error that ended the stream; io.EOF means
-// the document ended cleanly.
 func scanSSE(r *bufio.Reader, handle func(frame) bool) error {
 	scanner := &sseScanner{r: r}
 	for {
@@ -55,9 +42,6 @@ type sseScanner struct {
 	hasID   bool
 }
 
-// readLine returns the next line without its CR, LF, or CRLF terminator. A
-// final line at io.EOF carries the error out undelivered, so an unterminated
-// trailing frame never dispatches.
 func (s *sseScanner) readLine() ([]byte, error) {
 	var line []byte
 	for {
@@ -71,7 +55,7 @@ func (s *sseScanner) readLine() ([]byte, error) {
 		case '\r':
 			next, err := s.r.ReadByte()
 			if err == io.EOF {
-				// A CR at end of file still terminates its line.
+
 				return s.open(line), nil
 			}
 			if err != nil {
@@ -87,8 +71,6 @@ func (s *sseScanner) readLine() ([]byte, error) {
 	}
 }
 
-// open finalizes a line, stripping a UTF-8 byte-order mark from the stream's
-// first line only.
 func (s *sseScanner) open(line []byte) []byte {
 	if !s.started {
 		s.started = true
@@ -97,10 +79,9 @@ func (s *sseScanner) open(line []byte) []byte {
 	return line
 }
 
-// field applies one field line to the frame under construction.
 func (s *sseScanner) field(line []byte) {
 	if line[0] == ':' {
-		return // comment or keepalive
+		return
 	}
 	name, value, found := bytes.Cut(line, []byte{':'})
 	if found && len(value) > 0 && value[0] == ' ' {
@@ -121,12 +102,10 @@ func (s *sseScanner) field(line []byte) {
 			s.hasID = true
 		}
 	default:
-		// "retry" and any unknown field are ignored.
+
 	}
 }
 
-// dispatch emits the accumulated frame, if any, resets the accumulator, and
-// reports whether scanning should continue.
 func (s *sseScanner) dispatch(handle func(frame) bool) bool {
 	if s.nData == 0 {
 		s.reset()

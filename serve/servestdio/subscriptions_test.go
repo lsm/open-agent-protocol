@@ -15,17 +15,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve"
 )
 
-// The open and events ops complete the stdio op mirror. Open is an ordinary
-// request/response op and is tested as one. Events is not: it answers once
-// and then writes for as long as the subscription lives, so what these tests
-// pin is the part that has no HTTP counterpart — that the acknowledgement
-// precedes the stream, that interest is not charged against the bound meant
-// for work, and that a live subscription does not turn every shutdown into a
-// full window.
-
-// signalLine is the decoded form of any non-response line: every line kind a
-// subscription emits carries the event name and the events request's id, and
-// the rest are read per kind where a test needs them.
 type signalLine struct {
 	Event     string          `json:"event"`
 	ID        int64           `json:"id"`
@@ -50,7 +39,6 @@ func (f *frontend) expectSignal(id int64, want string) signalLine {
 	return signal
 }
 
-// openLine builds an open request line for the memory adapter.
 func openLine(t *testing.T, id int64, sessionID string) string {
 	t.Helper()
 	envelope := requestEnvelope(t, "req-open", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
@@ -59,9 +47,6 @@ func openLine(t *testing.T, id int64, sessionID string) string {
 	return fmt.Sprintf(`{"id":%d,"op":"open","adapter":"memory","request":%s}`, id, envelope)
 }
 
-// TestOpenOpOpensASession drives the op end to end: the response is the
-// session.open.response envelope the HTTP route returns, and the session it
-// reports is live on the hub afterwards.
 func TestOpenOpOpensASession(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	f := startFrontend(t, hub, Options{})
@@ -92,8 +77,6 @@ func TestOpenOpOpensASession(t *testing.T) {
 	}
 }
 
-// TestOpenOpRefusals pins the refusals that are the op's own, each under the
-// code the HTTP route answers with.
 func TestOpenOpRefusals(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	openSession(t, hub, "taken")
@@ -147,10 +130,6 @@ func TestOpenOpRefusals(t *testing.T) {
 	}
 }
 
-// TestEventsOpDeliversTheRunStream is the op's whole purpose: a subscription
-// started over stdio carries the run's envelopes as their own lines, in
-// sequence, ending at the terminal envelope with no further signal — the
-// terminal is the marker, exactly as the SSE response simply ends after it.
 func TestEventsOpDeliversTheRunStream(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	f := startFrontend(t, hub, Options{})
@@ -174,13 +153,6 @@ func TestEventsOpDeliversTheRunStream(t *testing.T) {
 	}, "stream", "")
 	f.send(fmt.Sprintf(`{"id":3,"op":"submit","session_id":"stream","request":%s}`, submit))
 
-	// The submit acknowledgement and the subscription's envelopes share one
-	// writer, so the only ordering claimed here is per-subscription: the
-	// envelope lines arrive in sequence order and end at the terminal.
-	// The reference adapter's run waits on two scripted gates, which are
-	// answered here from the subscription's own lines: the stream is the only
-	// thing telling this host a gate is open, which is what an events op is
-	// for.
 	var lastSequence uint64
 	var terminal protocol.EnvelopeType
 	nextID := int64(4)
@@ -234,12 +206,6 @@ func TestEventsOpDeliversTheRunStream(t *testing.T) {
 	}
 }
 
-// TestEventsAcknowledgementPrecedesTheStream pins the ordering the op
-// promises: a host never sees an envelope line for a subscription it has not
-// been told exists. The subscription is started on a session whose run is
-// already complete and replayed from the very beginning, so the hub has a
-// full journal to deliver the instant the pump starts — the case where an
-// acknowledgement sent after the pump would lose the race.
 func TestEventsAcknowledgementPrecedesTheStream(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	session := openSessionEntry(t, hub, "ordered")
@@ -262,17 +228,13 @@ func TestEventsAcknowledgementPrecedesTheStream(t *testing.T) {
 	if envelope.RunID != runID {
 		t.Fatalf("replay starts on run %q, want %q", envelope.RunID, runID)
 	}
-	// The rest of the replay is read before finishing. The writer parks
-	// inside a write to a pipe no one is reading, so a test that walks away
-	// mid-stream stalls the drain rather than the frontend.
+
 	f.drainSubscription(7)
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// drainSubscription reads one subscription's lines up to and including the
-// run's terminal envelope.
 func (f *frontend) drainSubscription(id int64) {
 	f.t.Helper()
 	for {
@@ -288,8 +250,6 @@ func (f *frontend) drainSubscription(id int64) {
 	}
 }
 
-// TestEventsOpRefusals pins the refusals decided on the worker, which are the
-// op's own answer rather than a signal arriving after a success.
 func TestEventsOpRefusals(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	openSession(t, hub, "live")
@@ -326,10 +286,6 @@ func TestEventsOpRefusals(t *testing.T) {
 	}
 }
 
-// TestEventsOpReportsAReplayGap holds the one refusal that is not a failed
-// op: an expired cursor answers ok and then says what cannot be delivered,
-// which is what keeps a gap from becoming fake continuity. The journal is
-// sized so the run overruns it.
 func TestEventsOpReportsAReplayGap(t *testing.T) {
 	hub := newTestHub(t, 2, 64)
 	session := openSessionEntry(t, hub, "expired")
@@ -346,11 +302,6 @@ func TestEventsOpReportsAReplayGap(t *testing.T) {
 	}
 }
 
-// TestSubscriptionsAreNotChargedAgainstTheInFlightBound pins what attach
-// exists for. The bound caps concurrent adapter work; a pump is interest in a
-// stream and performs none, so a frontend admitting one op at a time still
-// serves ops while a subscription is live. Charged against the bound, the
-// state op below would be refused busy.
 func TestSubscriptionsAreNotChargedAgainstTheInFlightBound(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	openSession(t, hub, "interest")
@@ -360,15 +311,7 @@ func TestSubscriptionsAreNotChargedAgainstTheInFlightBound(t *testing.T) {
 	if response := f.expectResponse(1); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	// The events worker releases its ops slot after serveRequest returns,
-	// while the acknowledgement is queued inside it, so at MaxConcurrentOps:1
-	// an op sent the instant the ack arrives can still meet the slot the
-	// events request itself was holding. That is a busy refusal about the
-	// request, not about the subscription, and busy means exactly "send this
-	// request again".
-	//
-	// Retrying is not a way around the claim: if a pump did charge the bound,
-	// the slot would never free and every attempt would be refused.
+
 	response := f.opUntilAdmitted(2, `{"id":2,"op":"state","session_id":"interest"}`)
 	if !response.OK {
 		t.Fatalf("an op behind a live subscription was refused %q: %s", response.Error.Code, response.Error.Message)
@@ -378,8 +321,6 @@ func TestSubscriptionsAreNotChargedAgainstTheInFlightBound(t *testing.T) {
 	}
 }
 
-// opUntilAdmitted sends one op, resending while the frontend answers busy.
-// Ops are correlated by id, not by position, so the same id is resent.
 func (f *frontend) opUntilAdmitted(id int64, line string) responseLine {
 	f.t.Helper()
 	for attempt := 0; attempt < 20; attempt++ {
@@ -394,15 +335,6 @@ func (f *frontend) opUntilAdmitted(id int64, line string) responseLine {
 	return responseLine{}
 }
 
-// TestALiveSubscriptionDoesNotStallShutdown is the liveness claim. A pump
-// parks in Subscription.Next, which no worker wait can end: waiting for one
-// the way teardown waits for a worker would spend the whole shutdown window
-// on every session that ends with a subscription open, which is every
-// ordinary session. Closing admission cancels them instead.
-//
-// The window is set far above the time a correct teardown needs, so the test
-// fails on the behaviour and not on a timing margin: a stalled shutdown takes
-// the whole 30 seconds and this allows two.
 func TestALiveSubscriptionDoesNotStallShutdown(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	openSession(t, hub, "parked")
@@ -421,8 +353,6 @@ func TestALiveSubscriptionDoesNotStallShutdown(t *testing.T) {
 	}
 }
 
-// openSessionEntry opens a session and hands back the hub entry, for the
-// tests that need to drive a run before the frontend starts.
 func openSessionEntry(t *testing.T, hub *serve.Hub, id string) *serve.Session {
 	t.Helper()
 	entry, _, err := hub.Open(context.Background(), "memory", base.OpenRequest{
@@ -434,10 +364,6 @@ func openSessionEntry(t *testing.T, hub *serve.Hub, id string) *serve.Session {
 	return entry
 }
 
-// runToCompletion submits one message and drains the run to its terminal
-// envelope on a hub-side subscription, answering the reference adapter's two
-// scripted gates on the way, so the journal the events op later replays is
-// complete before the frontend starts.
 func runToCompletion(t *testing.T, hub *serve.Hub, entry *serve.Session) protocol.RunID {
 	t.Helper()
 	subscription, err := hub.Subscribe(context.Background(), entry.ID())
@@ -497,8 +423,6 @@ func resolve(t *testing.T, entry *serve.Session, resolution base.InteractionReso
 	}
 }
 
-// streamAdapter hands the test direct control of one run's event stream, so
-// the ending a real adapter reaches by failing can be produced on demand.
 type streamAdapter struct {
 	mu      sync.Mutex
 	session *streamSession
@@ -564,8 +488,6 @@ func (s *streamSession) Cancel(_ context.Context, runID protocol.RunID) (protoco
 	return protocol.RunCancelResponse{SessionID: s.id, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 
-// Resume hands back a stream that fails before delivering anything, which is
-// the case where the pump has no delivered position of its own.
 func (s *streamSession) Resume(context.Context, base.ResumeRequest) (base.Recovery, base.EventStream, error) {
 	if !s.resumeFails {
 		return base.Recovery{}, nil, base.ErrRunNotFound
@@ -596,7 +518,6 @@ func (s *streamSession) emit(t *testing.T, sequence uint64) {
 	s.stream <- base.Result{Envelope: envelope}
 }
 
-// emitBroken publishes an envelope whose payload cannot be re-encoded.
 func (s *streamSession) emitBroken(t *testing.T, sequence uint64) {
 	t.Helper()
 	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, "broken", protocol.RunStatusUpdatedPayload{})
@@ -618,14 +539,6 @@ func (s *streamSession) fail(err error) {
 	s.stream = nil
 }
 
-// TestAFailedRunStreamEndsTheSubscriptionOutLoud is the ending this framing
-// has to name and SSE does not. There, the response body stops and the client
-// sees a closed connection; here the pipe stays open and carries every other
-// subscription, so a host given no line cannot tell a dead subscription from
-// an idle one and waits on events that are never coming.
-//
-// The signal names the last position the host actually received, so a fresh
-// events op resumes from what it got rather than from what the hub sent.
 func TestAFailedRunStreamEndsTheSubscriptionOutLoud(t *testing.T) {
 	registry := serve.NewRegistry()
 	adapter := &streamAdapter{}
@@ -683,8 +596,7 @@ func TestAFailedRunStreamEndsTheSubscriptionOutLoud(t *testing.T) {
 	if failure.Sequence != 1 {
 		t.Fatalf("signal resumes after %d, want the last delivered sequence 1", failure.Sequence)
 	}
-	// The adapter's own diagnostic stays out of the line: it is unbounded and
-	// the frame limit's floor has to hold.
+
 	if strings.Contains(failure.Message, "native transport died") {
 		t.Fatalf("the adapter diagnostic reached the wire: %s", failure.Message)
 	}
@@ -693,15 +605,6 @@ func TestAFailedRunStreamEndsTheSubscriptionOutLoud(t *testing.T) {
 	}
 }
 
-// TestEveryEndingFitsTheFrameLimitFloor is the invariant behind the minimal
-// forms: a subscription's last line is the one line that must always be
-// deliverable, because the op was already acknowledged and nothing else will
-// tell the host it has stopped. The full forms carry identifiers a host
-// supplied or an adapter minted and can exceed any limit; the fallbacks carry
-// the cursor and nothing else, and must fit the smallest limit New accepts.
-//
-// The values are the largest each field can hold, so the check is the floor
-// and not a sample.
 func TestEveryEndingFitsTheFrameLimitFloor(t *testing.T) {
 	const wide = int64(1) << 62
 	const far = uint64(1) << 63
@@ -727,12 +630,6 @@ func TestEveryEndingFitsTheFrameLimitFloor(t *testing.T) {
 	}
 }
 
-// TestAnEndingTooLargeToFrameStillArrives drives the fallback through the
-// real frontend rather than trusting the encoding check above. The session id
-// is long enough that the full replay-gap line cannot be framed, and short
-// enough that the request naming it can — the exact window where an ending
-// was previously logged and dropped, leaving the host waiting on a
-// subscription that never started.
 func TestAnEndingTooLargeToFrameStillArrives(t *testing.T) {
 	sessionID := strings.Repeat("s", 150)
 	hub := newTestHub(t, 2, 64)
@@ -753,10 +650,6 @@ func TestAnEndingTooLargeToFrameStillArrives(t *testing.T) {
 	}
 }
 
-// TestAFailedResumeReportsTheRequestedCursor pins where a subscription that
-// never delivered anything tells the host to resume from. Zero would send a
-// host that asked from sequence 6 back to the beginning, redelivering
-// everything it had already consumed — or into a replay gap.
 func TestAFailedResumeReportsTheRequestedCursor(t *testing.T) {
 	registry := serve.NewRegistry()
 	adapter := &streamAdapter{}
@@ -808,10 +701,6 @@ func TestAFailedResumeReportsTheRequestedCursor(t *testing.T) {
 	}
 }
 
-// TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud covers the other way a
-// pump can die with nothing to show for it. An envelope this frontend cannot
-// encode stops the subscription exactly as a failed stream does, and leaves
-// the host exactly as unable to tell.
 func TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud(t *testing.T) {
 	registry := serve.NewRegistry()
 	adapter := &streamAdapter{}
@@ -854,12 +743,6 @@ func TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud(t *testing.T) {
 	}
 }
 
-// TestOpenRefusalsAreBounded holds the open op to the bound its mirrored
-// route applies. A tool source id is caller-supplied and has no schema length
-// of its own, so a refusal that echoes one verbatim is as long as the caller
-// wants — where the HTTP route sends 300 runes, and where under a small frame
-// limit the typed refusal would degrade to response_too_large and lose the
-// same-code parity the op claims.
 func TestOpenRefusalsAreBounded(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	f := startFrontend(t, hub, Options{})
@@ -881,16 +764,6 @@ func TestOpenRefusalsAreBounded(t *testing.T) {
 	}
 }
 
-// TestSubscriptionsAreBounded pins the ceiling on interest. A pump charges no
-// ops slot by design, and the events op releases the slot it held the moment
-// it acknowledges, so without a bound of its own a host looping on events
-// against an idle session accumulates pumps without limit — each one a
-// goroutine, a hub subscriber queue, and a share of every envelope the hub
-// fans out.
-//
-// The refusal is the one an op over the in-flight bound already gets, so a
-// host needs no new vocabulary to handle it, and ordinary ops keep working
-// behind a frontend whose subscriptions are full.
 func TestSubscriptionsAreBounded(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	openSession(t, hub, "bounded")
@@ -913,7 +786,7 @@ func TestSubscriptionsAreBounded(t *testing.T) {
 	if !strings.Contains(refused.Error.Message, "send this request again") {
 		t.Fatalf("the refusal does not say it may be retried: %s", refused.Error.Message)
 	}
-	// Interest being full is not work being full: ordinary ops still run.
+
 	f.send(`{"id":4,"op":"state","session_id":"bounded"}`)
 	if response := f.expectResponse(4); !response.OK {
 		t.Fatalf("an ordinary op was refused behind full subscriptions: %+v", response.Error)
@@ -923,16 +796,6 @@ func TestSubscriptionsAreBounded(t *testing.T) {
 	}
 }
 
-// TestATypedRefusalShedsItsDetailsRatherThanItsCode is the response-side form
-// of the rule every subscription ending already follows: the answer must be
-// deliverable. A refusal naming a tool source repeats a caller-supplied id in
-// its details, and an id long enough to overflow the line turned a typed
-// refusal into response_too_large — discarding the actionable code for a
-// request the frame limit had accepted.
-//
-// The details are the largest thing on the line and the least load-bearing:
-// the caller already knows the id it sent. So they are shed first, and the
-// code survives.
 func TestATypedRefusalShedsItsDetailsRatherThanItsCode(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	id := strings.Repeat("d", 200)
@@ -941,11 +804,7 @@ func TestATypedRefusalShedsItsDetailsRatherThanItsCode(t *testing.T) {
 		ToolSources: []protocol.ToolSourceAttachment{{ID: id, Kind: protocol.ToolSourceProcess, Command: "/bin/sh"}},
 	}, "", "")
 	line := fmt.Sprintf(`{"id":1,"op":"open","adapter":"memory","request":%s}`, request)
-	// The limit is sized from the request, which is the window the finding
-	// names: the frame limit accepted the request, so it must carry an answer
-	// to it. The full refusal cannot fit, because it repeats the id twice —
-	// once in the message and once in the details — where the request carries
-	// it once.
+
 	limit := len(line) + 16
 	f := startFrontend(t, hub, Options{FrameLimit: limit})
 	f.send(line)
@@ -965,13 +824,6 @@ func TestATypedRefusalShedsItsDetailsRatherThanItsCode(t *testing.T) {
 	}
 }
 
-// TestAnAdapterContextFailureIsStillAnnounced separates two questions the
-// pump used to confuse: was a context cancelled, and was it mine.
-//
-// An adapter's stream can fail with an error wrapping context.Canceled — its
-// own request context, or a child process's — while this subscription is
-// perfectly alive. Matching the sentinel answered the first question and
-// silently ended the pump, which is exactly the ending a host cannot see.
 func TestAnAdapterContextFailureIsStillAnnounced(t *testing.T) {
 	registry := serve.NewRegistry()
 	adapter := &streamAdapter{}
@@ -996,7 +848,7 @@ func TestAnAdapterContextFailureIsStillAnnounced(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The adapter's context ended, not this subscription's.
+
 	adapter.active(t).fail(fmt.Errorf("adapter transport: %w", context.Canceled))
 
 	line := f.line()
@@ -1015,9 +867,6 @@ func TestAnAdapterContextFailureIsStillAnnounced(t *testing.T) {
 	}
 }
 
-// unencodableStateAdapter opens successfully and then reports a session state
-// this frontend cannot encode, which is the window where the hub has already
-// registered the session and the open has no answer to give.
 type unencodableStateAdapter struct {
 	mu      sync.Mutex
 	session *unencodableStateSession
@@ -1069,8 +918,6 @@ func (s *unencodableStateSession) State(context.Context) (protocol.SessionState,
 	}, nil
 }
 
-// isClosed reports whether the frontend rolled this session back. It is the
-// ground truth the listing cannot give: a closed session stays listed.
 func (s *unencodableStateSession) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1096,10 +943,6 @@ func (s *unencodableStateSession) Close(context.Context) error {
 	return nil
 }
 
-// TestAnOpenThatCannotEncodeIsRolledBack reaches the two-facts problem one
-// step earlier than an unframable response does: the hub has registered the
-// session, and the answer says the open failed. A host given a minted id it
-// never saw cannot close what it does not know exists.
 func TestAnOpenThatCannotEncodeIsRolledBack(t *testing.T) {
 	registry := serve.NewRegistry()
 	adapter := &unencodableStateAdapter{}
@@ -1109,7 +952,6 @@ func TestAnOpenThatCannotEncodeIsRolledBack(t *testing.T) {
 	hub := serve.New(registry, serve.Options{})
 	f := startFrontend(t, hub, Options{})
 
-	// No session_id: the daemon mints one, so the host could not name it.
 	request := requestEnvelope(t, "req-unencodable", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{}, "", "")
 	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"broken","request":%s}`, request))
 	response := f.expectResponse(1)
@@ -1122,8 +964,7 @@ func TestAnOpenThatCannotEncodeIsRolledBack(t *testing.T) {
 	if !strings.Contains(response.Error.Message, "rolled back") {
 		t.Fatalf("the refusal does not say what it left behind: %s", response.Error.Message)
 	}
-	// The adapter's own session is the ground truth. A closed session stays
-	// in the hub's listing, so the listing cannot answer this.
+
 	if !adapter.opened(t).isClosed() {
 		t.Fatal("the failed open left a live session behind; the host was told it failed and cannot name what to close")
 	}
@@ -1132,11 +973,6 @@ func TestAnOpenThatCannotEncodeIsRolledBack(t *testing.T) {
 	}
 }
 
-// TestAnOpenTheHostNamedIsKeptAndSaidSo is the other half of the same rule.
-// A session the host named is not unknowable, so it is kept — but a refusal
-// that only reported the encode failure would tell the host the open failed,
-// which is half true and the wrong half. It has to say the session is there,
-// exactly as the oversized path does for the same three outcomes.
 func TestAnOpenTheHostNamedIsKeptAndSaidSo(t *testing.T) {
 	registry := serve.NewRegistry()
 	adapter := &unencodableStateAdapter{}
@@ -1164,16 +1000,6 @@ func TestAnOpenTheHostNamedIsKeptAndSaidSo(t *testing.T) {
 	}
 }
 
-// TestAdvanceCursorHoldsItsHighWaterMark pins the rule the delivered position
-// follows, which is not "the last sequence seen".
-//
-// Within a run it is a high-water mark, because the hub says replay may
-// redeliver positions at or behind the cursor and guards its own position the
-// same way. A cursor dragged backwards by a redelivery would make a
-// stream-failed ending send the host over events it had already consumed.
-//
-// Across runs it is not a maximum: a new run restarts at sequence 1, so the
-// largest number seen stops meaning anything once the run changes.
 func TestAdvanceCursorHoldsItsHighWaterMark(t *testing.T) {
 	at := func(run string, sequence uint64) protocol.Envelope {
 		value := sequence

@@ -15,8 +15,6 @@ var (
 	ErrInvalidID      = errors.New("hermes rpc: id must be a string or integer")
 )
 
-// RequestID preserves the string and integer identity domains the pinned
-// gateway echoes verbatim. IDs are correlation values only.
 type RequestID struct {
 	text    string
 	integer int64
@@ -53,8 +51,7 @@ func (id RequestID) String() string {
 	}
 }
 func (id RequestID) valid() bool {
-	// An empty string id is a degenerate correlation key; the adapter never
-	// issues one and rejects it on inbound frames.
+
 	return id.kind == idInteger || (id.kind == idString && id.text != "")
 }
 
@@ -91,9 +88,7 @@ func (id *RequestID) UnmarshalJSON(data []byte) error {
 		*id = IntegerID(integer)
 		return nil
 	default:
-		// null is rejected: the pinned gateway answers id:null only for
-		// malformed input, and the adapter codec never writes malformed
-		// frames, so a null id on this boundary is drift.
+
 		return ErrInvalidID
 	}
 }
@@ -139,9 +134,7 @@ func ParseMessage(data []byte) (Message, error) {
 	if !utf8.Valid(data) {
 		return Message{}, fmt.Errorf("%w: frame is not UTF-8", ErrInvalidMessage)
 	}
-	// Deliberately narrower than the native reader, which strips lines and
-	// survives malformed input: a frame must be exactly one JSON object with
-	// no surrounding whitespace.
+
 	if len(data) == 0 || data[0] != '{' || data[len(data)-1] != '}' {
 		return Message{}, fmt.Errorf("%w: frame must be exactly one JSON object", ErrInvalidMessage)
 	}
@@ -166,9 +159,7 @@ func ParseMessage(data []byte) (Message, error) {
 			return Message{}, fmt.Errorf("%w: unknown member %q", ErrInvalidMessage, name)
 		}
 	}
-	// The native dispatcher never validates the jsonrpc member, but every
-	// frame it emits carries "2.0"; requiring it is the narrower adapter
-	// policy.
+
 	version, ok := object["jsonrpc"]
 	if !ok || !rawStringEqual(version, "2.0") {
 		return Message{}, fmt.Errorf("%w: jsonrpc must equal \"2.0\"", ErrInvalidMessage)
@@ -212,7 +203,7 @@ func ParseMessage(data []byte) (Message, error) {
 		if err := json.Unmarshal(object["method"], &message.Method); err != nil || message.Method == "" {
 			return Message{}, fmt.Errorf("%w: method must be a non-empty string", ErrInvalidMessage)
 		}
-		// The pinned _normalize_request accepts only object params (or null).
+
 		if hasParams && !rawObjectOrNull(object["params"]) {
 			return Message{}, fmt.Errorf("%w: params must be an object or null", ErrInvalidMessage)
 		}
@@ -379,6 +370,6 @@ func rawObjectOrNull(raw json.RawMessage) bool {
 	if trimmed[0] == '{' {
 		return json.Valid(trimmed)
 	}
-	// Bare null parses as absent params on the native side.
+
 	return string(trimmed) == "null"
 }

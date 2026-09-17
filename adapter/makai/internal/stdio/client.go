@@ -86,11 +86,6 @@ func (c *Client) Diagnostics() <-chan error { return c.diagnostics }
 func (c *Client) Done() <-chan struct{}     { return c.done }
 func (c *Client) Err() error                { c.mu.Lock(); defer c.mu.Unlock(); return c.err }
 
-// ReadDone closes once the reader goroutine has stopped, after every frame
-// already buffered on the input has been decoded and routed. A process owner
-// must wait for it before reaping the child: Cmd.Wait closes the stdout pipe,
-// so a response written immediately before exit would otherwise be lost to a
-// closed read end and reported as a process-exit failure.
 func (c *Client) ReadDone() <-chan struct{} { return c.readDone }
 
 func (c *Client) Call(ctx context.Context, request native.Envelope, accepted ...native.Type) (native.Envelope, error) {
@@ -136,7 +131,6 @@ func (c *Client) Call(ctx context.Context, request native.Envelope, accepted ...
 	}
 }
 
-// Send reports success only after the complete JSONL frame has been written.
 func (c *Client) Send(ctx context.Context, env native.Envelope) error {
 	c.mu.Lock()
 	if c.closed {
@@ -210,14 +204,7 @@ func (c *Client) route(env native.Envelope) error {
 		return fmt.Errorf("%w: %s", ErrDuplicateMessageID, env.MessageID)
 	}
 	c.seen[env.MessageID] = struct{}{}
-	// v0.2.0 sequence discipline (makai spec §13.1): allocated frames draw a
-	// per-registration counter describing allocation order, not observed wire
-	// order — synchronous replies overtake outbox-queued frames, and a retried
-	// publication may burn a counter value and leave a gap — while echo
-	// replies copy the request's inbound sequence verbatim. Continuity is
-	// therefore not enforceable and receive order stays the only ordering
-	// authority; duplicate message_id rejection above is the real replay
-	// guard. Zero remains reserved for request-validation agent_error frames.
+
 	if env.Sequence == 0 && (env.Type != native.TypeAgentError || env.InReplyTo == nil) {
 		c.mu.Unlock()
 		return fmt.Errorf("%w for %s: unexpected zero", ErrSequence, env.SessionID)

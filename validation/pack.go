@@ -18,41 +18,14 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// Extension packs are the protocol's own seam: a way for a third party to ship
-// capability keys together with the schemas that say what they mean, so its
-// envelopes are validated rather than merely tolerated.
-//
-// Two rules make packs composable rather than merely possible. The unprefixed
-// namespace is the spec's in its entirety, so a pack may declare names only
-// beneath its own reverse-DNS `id`; and the loaded set is prefix-free, so no
-// pack id equals or dot-prefixes another. Prefix matching is then a function
-// rather than a search: at most one loaded id can prefix any name, ownership is
-// decided without a precedence rule, and a collision is a load refusal naming
-// both ids rather than a runtime tie-break.
-//
-// Both are checked here, at load, and never on the wire. A refusal to load is
-// not a diagnostic: the validator never ran, so it has said nothing about any
-// trace. The load-error vocabulary (`pack_*`, `validation/manifest.go`) is kept
-// apart from the diagnostic vocabulary for that reason.
-
-// packBaseURI roots every pack resource. A pack's documents are registered
-// beneath packBaseURI + "<id>/<version>/", which is what makes a cross-pack
-// `$ref` distinguishable from an external one.
 const packBaseURI = "https://open-agent-protocol.local/ext/"
 
-// Declared roles. A packed type's role is stated, never inferred: a request and
-// an event both omit `in_reply_to`, and the format has no naming convention to
-// lean on, so the two would be indistinguishable — and they need opposite
-// treatment under an unadvertised key.
 const (
 	PackRoleRequest  = "request"
 	PackRoleResponse = "response"
 	PackRoleEvent    = "event"
 )
 
-// PackDescriptor is a pack.json. It declares what the pack defines rather than
-// leaving it to be inferred from the schemas, so containment can be checked
-// before anything is compiled.
 type PackDescriptor struct {
 	ID             string              `json:"id"`
 	Version        string              `json:"version"`
@@ -66,20 +39,11 @@ type PackDescriptor struct {
 	Fixtures       string              `json:"fixtures,omitempty"`
 }
 
-// PackDependency names a pack whose resources this pack's schemas may `$ref`.
-// Only an exact id and version satisfies it: version ranges would make the
-// loader choose between schemas on a vendor's behalf, and a mismatch caught at
-// load is the fail-closed outcome.
 type PackDependency struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
 }
 
-// PackEnvelopeType declares one envelope type the pack defines. Schema points
-// at the branch contributed to the envelope union; a response names the request
-// it answers in RepliesTo and takes that request's gate; a request may enumerate
-// in Refusals the error codes it may legitimately be answered with for domain
-// reasons the validator cannot evaluate.
 type PackEnvelopeType struct {
 	Type      string   `json:"type"`
 	Role      string   `json:"role"`
@@ -88,11 +52,6 @@ type PackEnvelopeType struct {
 	Refusals  []string `json:"refusals,omitempty"`
 }
 
-// PackGate binds a declared envelope type, or a member the pack adds to a core
-// payload, to the capability key that must be advertised for it. Every declared
-// request and event needs an entry: the gate is stated, never omitted, so a
-// missing one is a load refusal rather than a silent hole. Ungated says so
-// explicitly.
 type PackGate struct {
 	Type        string `json:"type,omitempty"`
 	PayloadType string `json:"payload_type,omitempty"`
@@ -101,28 +60,18 @@ type PackGate struct {
 	Ungated     bool   `json:"ungated,omitempty"`
 }
 
-// PackPayloadMember is a member the pack adds to a core payload. New envelope
-// types arrive as whole branches, but a member on an existing payload has no
-// branch of its own: the strict core payload rejects it and the tolerant
-// compile ignores it, so without a declared subschema a packed control would be
-// gated but unchecked.
 type PackPayloadMember struct {
 	PayloadType string          `json:"payload_type"`
 	Member      string          `json:"member"`
 	Schema      json.RawMessage `json:"schema"`
 }
 
-// PackRefusal is one reason a pack was refused, carrying a code from the
-// load-error vocabulary. Shape errors the plan does not name — unreadable
-// JSON, a missing id — are ordinary errors instead, since no fixture asserts
-// them.
 type PackRefusal struct {
 	Code    string
 	Pack    string
 	Message string
 }
 
-// PackLoadError is the refusal to load one or more packs.
 type PackLoadError struct{ Refusals []PackRefusal }
 
 func (e *PackLoadError) Error() string {
@@ -133,8 +82,6 @@ func (e *PackLoadError) Error() string {
 	return "extension pack refused: " + strings.Join(parts, "; ")
 }
 
-// Codes returns the distinct load-error codes, sorted. A load-invalid fixture
-// asserts exactly this set.
 func (e *PackLoadError) Codes() []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(e.Refusals))
@@ -149,19 +96,16 @@ func (e *PackLoadError) Codes() []string {
 	return out
 }
 
-// PackType is a loaded pack's envelope type, with the gate the stateful
-// validator resolves through instead of a hard-coded name.
 type PackType struct {
 	Pack       *Pack
 	Type       string
 	Role       string
 	RepliesTo  string
-	Capability string // "" when the pack declared the type ungated
+	Capability string
 	Refusals   map[string]bool
-	Response   string // for a request: the declared response type, if any
+	Response   string
 }
 
-// PackMember is a loaded pack's member on a core payload.
 type PackMember struct {
 	Pack        *Pack
 	PayloadType string
@@ -170,42 +114,31 @@ type PackMember struct {
 	URI         string
 }
 
-// Pack is a loaded extension pack: its descriptor, its schema documents under
-// their own base URI, and the lookup tables the validator resolves gates with.
 type Pack struct {
 	Descriptor PackDescriptor
 	Root       string
 	Base       string
 
-	documents map[string]any // absolute URI -> decoded schema document
-	order     []string       // document URIs in descriptor order
+	documents map[string]any
+	order     []string
 	branches  map[string]string
 	types     map[string]*PackType
 	members   map[string]map[string]*PackMember
-	fixtures  string // absolute path to the pack's own fixture manifest, or ""
+	fixtures  string
 }
 
-// ID reports the pack's namespace.
 func (p *Pack) ID() string { return p.Descriptor.ID }
 
-// Version reports the pack's declared version.
 func (p *Pack) Version() string { return p.Descriptor.Version }
 
-// Unit is the conformance term a pack's own fixtures claim. It is derived from
-// the pack rather than added to the hard-coded unit list, so a stale or
-// misspelled claim still fails closed.
 func (p *Pack) Unit() string { return "ext:" + p.Descriptor.ID + "/" + p.Descriptor.Version }
 
-// PackSet is the loaded set as the validator consults it: at most one pack owns
-// any name, so every lookup is a map hit.
 type PackSet struct {
 	packs   []*Pack
 	types   map[string]*PackType
 	members map[string]map[string]*PackMember
 }
 
-// NewPackSet indexes loaded packs for validation. The set is prefix-free and
-// contained, both checked at load, so no name can be claimed twice.
 func NewPackSet(packs []*Pack) *PackSet {
 	if len(packs) == 0 {
 		return nil
@@ -227,7 +160,6 @@ func NewPackSet(packs []*Pack) *PackSet {
 	return set
 }
 
-// Packs returns the loaded packs in load order.
 func (s *PackSet) Packs() []*Pack {
 	if s == nil {
 		return nil
@@ -235,7 +167,6 @@ func (s *PackSet) Packs() []*Pack {
 	return s.packs
 }
 
-// Type returns the declaration for a packed envelope type, or nil.
 func (s *PackSet) Type(name string) *PackType {
 	if s == nil {
 		return nil
@@ -243,7 +174,6 @@ func (s *PackSet) Type(name string) *PackType {
 	return s.types[name]
 }
 
-// Members returns the members packs add to one core payload type, or nil.
 func (s *PackSet) Members(payloadType string) map[string]*PackMember {
 	if s == nil {
 		return nil
@@ -251,10 +181,6 @@ func (s *PackSet) Members(payloadType string) map[string]*PackMember {
 	return s.members[payloadType]
 }
 
-// LoadPacks reads, checks, and compiles a set of extension packs. Every refusal
-// the plan names is collected in the phase it belongs to and the phases stop at
-// the first that refuses, so a pack is never judged on rules a prior failure
-// made meaningless.
 func LoadPacks(dirs []string) ([]*Pack, error) {
 	packs := make([]*Pack, 0, len(dirs))
 	for _, dir := range dirs {
@@ -288,10 +214,6 @@ var (
 	descriptorErr    error
 )
 
-// packDescriptorSchema compiles the descriptor schema out of the same embedded
-// bundle the wire schemas come from. The descriptor is checked for shape here
-// and for meaning by the loader: a schema can say that `role` is one of three
-// words, never that a response's `replies_to` names a request of this pack.
 func packDescriptorSchema() (*jsonschema.Schema, error) {
 	descriptorOnce.Do(func() {
 		compiler := jsonschema.NewCompiler()
@@ -331,9 +253,7 @@ func readPack(dir string) (*Pack, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The root is the resolved path: containment compares resolved paths
-	// against it, and a pack installed behind a version or current symlink
-	// would otherwise see every one of its own files as escaping.
+
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
@@ -372,11 +292,6 @@ func readPack(dir string) (*Pack, error) {
 	}, nil
 }
 
-// checkPrefixFree rejects a loaded set in which one pack id equals or
-// dot-prefixes another. The check is across the set, not per pack, because
-// neither pack is at fault alone: `com.example` and `com.example.storage` each
-// satisfy the own-prefix rule while both legally claiming
-// `com.example.storage.read`.
 func checkPrefixFree(packs []*Pack) []PackRefusal {
 	var refusals []PackRefusal
 	for i := 0; i < len(packs); i++ {
@@ -394,11 +309,6 @@ func checkPrefixFree(packs []*Pack) []PackRefusal {
 	return refusals
 }
 
-// checkDeclarations judges one pack's descriptor: containment of every declared
-// name, a stated role for every type, a stated gate for every request and
-// event, a response deriving its gate through replies_to rather than a gate of
-// its own, declared refusal codes, and payload members that name a real core
-// target and do not restate a member the core payload already defines.
 func checkDeclarations(packs []*Pack) []PackRefusal {
 	var refusals []PackRefusal
 	for _, p := range packs {
@@ -439,22 +349,18 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 			continue
 		}
 		if _, dup := declaredTypes[declared.Type]; dup {
-			// Indexing and branch composition are keyed by type: a second
-			// declaration would be judged in part and compiled in part,
-			// and neither is what the pack meant.
+
 			refuse(LoadPackTypeDuplicate, "envelope type %q is declared more than once", declared.Type)
 			continue
 		}
 		declaredTypes[declared.Type] = declared
 	}
 	if len(refusals) > 0 {
-		// Containment decides which names the pack owns; every later rule is
-		// stated over those names, so judging them now would report failures
-		// that are consequences of the first.
+
 		return refusals
 	}
 
-	answered := map[string]string{} // request type -> the response type that answers it
+	answered := map[string]string{}
 	for _, declared := range p.Descriptor.EnvelopeTypes {
 		switch declared.Role {
 		case PackRoleRequest, PackRoleResponse, PackRoleEvent:
@@ -470,9 +376,7 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 			if !ok || target.Role != PackRoleRequest {
 				refuse(LoadPackReplyTargetUnknown, "response %q answers %q, which is not a declared request of this pack", declared.Type, declared.RepliesTo)
 			} else if first, dup := answered[declared.RepliesTo]; dup {
-				// A request has one response type, as every core request
-				// does; correlation could otherwise expect only one of two
-				// declared answers and report the other as unmatched.
+
 				refuse(LoadPackReplyTargetAmbiguous, "responses %q and %q both answer %q; a request has one response type", first, declared.Type, declared.RepliesTo)
 			} else {
 				answered[declared.RepliesTo] = declared.Type
@@ -537,9 +441,7 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 	declaredMembers := map[string]bool{}
 	for _, member := range p.Descriptor.PayloadMembers {
 		if key := member.PayloadType + "#" + member.Member; declaredMembers[key] {
-			// Two declarations of one member would be resolved
-			// inconsistently — one subschema compiled, the other indexed —
-			// so neither is taken.
+
 			refuse(LoadPackMemberDuplicate, "payload member %q on %q is declared more than once", member.Member, member.PayloadType)
 			continue
 		} else {
@@ -551,18 +453,11 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 			continue
 		}
 		if member.PayloadType == "capabilities.updated" && memberGateKey(p, member) != "" {
-			// The update introduces a revision and marks the descriptor
-			// stale until the next capabilities.response; no descriptor of
-			// its own governs a gated member on it. An ungated member is
-			// schema only and needs none.
+
 			refuse(LoadPackMemberTargetUnknown, "payload member %q targets %q under a gate; that envelope introduces a revision and has no descriptor of its own to judge the gate against", member.Member, member.PayloadType)
 			continue
 		}
-		// Restatement is judged before containment, and that order is what
-		// makes the rule reachable: the member a pack would restate is a core
-		// one, which is unprefixed by definition, so containment alone would
-		// report every restatement as a namespace error and never as the
-		// override it is.
+
 		if payload.members[member.Member] {
 			refuse(LoadPackRestatesCoreMember, "payload member %q restates a member %q already defines; a pack that could narrow a core member would change core validity", member.Member, member.PayloadType)
 			continue
@@ -585,8 +480,6 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 	return nil
 }
 
-// index builds the lookup tables the validator resolves gates through, once the
-// descriptor has been judged.
 func (p *Pack) index() {
 	capabilities := map[string]string{}
 	for _, gate := range p.Descriptor.Gates {
@@ -631,8 +524,6 @@ func (p *Pack) index() {
 	}
 }
 
-// memberGateKey is the capability key a payload member's gate names, or ""
-// for an ungated member.
 func memberGateKey(p *Pack, member PackPayloadMember) string {
 	for _, gate := range p.Descriptor.Gates {
 		if gate.PayloadType == member.PayloadType && gate.Member == member.Member {
@@ -646,11 +537,6 @@ func (p *Pack) memberURI(index int) string {
 	return fmt.Sprintf("%smember-%d.json", p.Base, index)
 }
 
-// containmentRefusal judges one declared name against the pack's own id. The
-// refusal distinguishes the two ways a name can fall outside it: a name in the
-// spec's namespace — unprefixed, which is every name with no reverse-DNS prefix
-// and every name opening on a core vocabulary root — and a name under another
-// vendor's prefix.
 func containmentRefusal(id, name string) (string, bool) {
 	if name == "" {
 		return LoadPackUnprefixedName, false
@@ -664,15 +550,6 @@ func containmentRefusal(id, name string) (string, bool) {
 	return LoadPackForeignPrefix, false
 }
 
-// specNamespace reports whether a name belongs to the spec's namespace. The
-// rule is stated the way round that leaves the existing vocabulary alone: the
-// unprefixed namespace is the spec's in its entirety, whatever the name's
-// shape, and an extension name is one carrying a reverse-DNS prefix. A name
-// with fewer than three labels has no room for one; a longer name whose first
-// two labels open a core envelope type — `session.message.submit.request` — is
-// core vocabulary however many labels follow. No list of permitted roots is
-// maintained: the core roots are read off the bundle the validator already
-// compiles.
 func specNamespace(name string) bool {
 	labels := strings.Split(name, ".")
 	if len(labels) < 3 {
@@ -681,8 +558,6 @@ func specNamespace(name string) bool {
 	return coreRoots()[labels[0]+"."+labels[1]]
 }
 
-// reverseDNS reports whether a pack id is a reverse-DNS name: at least two
-// labels, each a non-empty DNS label.
 func reverseDNS(id string) bool {
 	labels := strings.Split(id, ".")
 	if len(labels) < 2 {
@@ -705,9 +580,6 @@ func reverseDNS(id string) bool {
 	return true
 }
 
-// corePayload is one core envelope type as the loader needs it: the role that
-// decides where a member added to it settles its gate, and the members the core
-// payload already defines, which a pack may not restate.
 type corePayload struct {
 	role    string
 	members map[string]bool
@@ -719,9 +591,6 @@ var (
 	coreRootNames map[string]bool
 )
 
-// coreVocabulary reads the core envelope types and their payload members off
-// the embedded bundle. The schemas are the authority: a type added to the
-// bundle is a core type here without a second list to update.
 func coreVocabulary() map[string]corePayload {
 	coreOnce.Do(loadCoreVocabulary)
 	return coreTypes
@@ -776,9 +645,6 @@ func loadCoreVocabulary() {
 	}
 }
 
-// coreRole is a core type's role, which the protocol's own naming already
-// states: a `.request` is answered, a `.response` answers, everything else is
-// an event the endpoint emits.
 func coreRole(name string) string {
 	switch {
 	case strings.HasSuffix(name, ".request"):
@@ -790,8 +656,6 @@ func coreRole(name string) string {
 	}
 }
 
-// collectPayloadMembers gathers the property names one payload schema defines,
-// following same- and cross-file references and allOf composition.
 func collectPayloadMembers(documents map[string]map[string]any, file string, node any, out map[string]bool, depth int) {
 	if depth > 8 {
 		return
@@ -845,11 +709,6 @@ func resolvePointer(document map[string]any, pointer string) any {
 	return node
 }
 
-// readDocuments reads each pack's schema files. The refusing loader governs
-// references, but the files the descriptor names are read before any reference
-// is resolved, so the same containment is owed to them first: every entry is a
-// relative path, cleaned, joined to the pack root, and — after resolving
-// symlinks — still beneath it, or the pack is refused before a file is opened.
 func readDocuments(packs []*Pack) []PackRefusal {
 	var refusals []PackRefusal
 	for _, p := range packs {
@@ -890,11 +749,6 @@ func readDocuments(packs []*Pack) []PackRefusal {
 	return refusals
 }
 
-// containedPath cleans one declared relative path, joins it beneath root, and
-// resolves symlinks, refusing anything that leaves the pack. An absolute path,
-// a `../` path, and a symlink pointing out of the pack are each refused before
-// the file is opened: a descriptor could otherwise name a private key on the
-// loading machine and have the loader read it as a schema.
 func containedPath(root, rel string) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("empty path")
@@ -917,8 +771,6 @@ func containedPath(root, rel string) (string, error) {
 	return resolved, nil
 }
 
-// checkDependencies requires every declared dependency to be satisfied by a
-// loaded pack of that exact id and version.
 func checkDependencies(packs []*Pack) []PackRefusal {
 	loaded := map[string]bool{}
 	for _, p := range packs {
@@ -939,27 +791,19 @@ func checkDependencies(packs []*Pack) []PackRefusal {
 	return refusals
 }
 
-// checkReferences bounds a pack's reachable schema surface to exactly what it
-// said it was: its own documents, the core bundle, and the packs it declared as
-// dependencies. A reference anywhere else — a file path, an unregistered URI,
-// another loaded pack's base absent from depends_on — is a load refusal rather
-// than a compile error surfaced later.
 func checkReferences(packs []*Pack) []PackRefusal {
 	var refusals []PackRefusal
 	for _, p := range packs {
 		allowed := map[string]bool{}
 		admit := func(owner *Pack) {
-			// A pack's referable resources are the documents its descriptor
-			// names and every in-pack resource those documents bind with an
-			// $id, which the compiler registers just the same.
+
 			for uri, document := range owner.documents {
 				allowed[uri] = true
 				for _, id := range documentIdentifiers(owner, uri, document) {
 					allowed[id] = true
 				}
 			}
-			// A payload member's inline schema is registered under its own
-			// generated URI, so its local references resolve there.
+
 			for i, member := range owner.Descriptor.PayloadMembers {
 				uri := owner.memberURI(i)
 				allowed[uri] = true
@@ -994,9 +838,6 @@ func checkReferences(packs []*Pack) []PackRefusal {
 	return refusals
 }
 
-// documentIdentifiers lists the resources a document binds within its pack's
-// own base through $id, root or nested; identifiers elsewhere are refused by
-// checkDocumentReferences and are not resources of the pack.
 func documentIdentifiers(p *Pack, base string, document any) []string {
 	baseURL, err := url.Parse(base)
 	if err != nil {
@@ -1023,12 +864,7 @@ func checkDocumentReferences(p *Pack, base string, document any, allowed map[str
 			continue
 		}
 		if ref.identifier {
-			// A schema's $id is the URI it binds itself to: the compiler
-			// registers the resource there and resolves every reference
-			// beneath it against it. One outside the pack's own space would
-			// register beneath the core or another pack — shadowing or
-			// hijacking a resource the pack never declared — so a pack
-			// schema may bind itself only within its own base.
+
 			if !strings.HasPrefix(ref.absolute, p.Base) {
 				refusals = append(refusals, PackRefusal{
 					Code:    LoadPackExternalRef,
@@ -1058,22 +894,13 @@ func isCoreResource(absolute string) bool {
 	return name != "" && !strings.Contains(name, "/")
 }
 
-// documentRef is one URI a schema document refers to or binds itself to,
-// resolved the way the compiler resolves it.
 type documentRef struct {
 	raw        string
 	absolute   string
-	identifier bool // an $id: the URI the schema binds itself to
+	identifier bool
 	err        error
 }
 
-// collectRefs walks a document the way the compiler resolves it: an $id
-// rebases every reference beneath it, so the walk carries the base along and
-// resolves each $ref against the base in force where it appears. The $id
-// itself is returned too, so the caller can judge where the schema binds.
-// The walk has no depth cutoff: a reference the loader does not see is one it
-// cannot judge, and the compiler would still resolve it. Nesting is bounded
-// by the decoder's own limit, which the stack handles.
 func collectRefs(node any, base *url.URL) []documentRef {
 	switch n := node.(type) {
 	case map[string]any:
@@ -1120,12 +947,6 @@ func resolveRef(base *url.URL, raw string, identifier bool) documentRef {
 	return documentRef{raw: raw, absolute: resolved.String(), identifier: identifier}
 }
 
-// checkBranches requires every contributed branch to pin `type` to a const
-// naming its own declared envelope type. The check is not bookkeeping: `oneOf`
-// requires exactly one match, so a branch broad enough to also match
-// `run.started` would make a core envelope invalid because a pack was loaded.
-// With the discriminator pinned and verified, branch selection is a dispatch on
-// `type` and the invariant holds by construction.
 func checkBranches(packs []*Pack) []PackRefusal {
 	var refusals []PackRefusal
 	for _, p := range packs {
@@ -1164,8 +985,6 @@ func checkBranches(packs []*Pack) []PackRefusal {
 	return refusals
 }
 
-// resolveBranch reads a `<file>#<pointer>` branch reference out of the pack's
-// own documents and returns its absolute URI and the decoded subschema.
 func (p *Pack) resolveBranch(ref string) (string, map[string]any, error) {
 	file, pointer := ref, ""
 	if idx := strings.Index(ref, "#"); idx >= 0 {
@@ -1194,9 +1013,6 @@ func (p *Pack) resolveBranch(ref string) (string, map[string]any, error) {
 	return uri + pointer, branch, nil
 }
 
-// trialCompile compiles the core bundle with the packs composed in, through the
-// same refusing loader the references were checked against, so a reference the
-// structural check could not judge still fails at load rather than at first use.
 func trialCompile(packs []*Pack) []PackRefusal {
 	if _, err := compileBundle(CompileOptions{Mode: ModeStrict, Packs: packs}); err != nil {
 		var refusal *PackLoadError
@@ -1216,10 +1032,6 @@ func packIDs(packs []*Pack) string {
 	return strings.Join(ids, ", ")
 }
 
-// checkPackCorpora holds a pack to the corpus-completeness rule over its own
-// capability keys: a vendor cannot claim conformance for a key that nothing
-// could show it dishonouring. A pack's fixture manifest may claim only its own
-// `ext:` term, never a core unit, so a pack can never widen a core claim.
 func checkPackCorpora(packs []*Pack) []PackRefusal {
 	var refusals []PackRefusal
 	for _, p := range packs {

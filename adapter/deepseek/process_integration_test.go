@@ -23,28 +23,15 @@ import (
 
 const (
 	deepseekMockSecret = "fixture-deepseek-key"
-	// The pinned SDK boundary is the shipped `sdk` profile, which stacks the
-	// dsh-base bundle with the dsh-sdk-app patch layer that mounts
-	// dsh-sdk-jsonrpc-server. The stock deepseek provider reads
-	// DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY, which is how the loopback gate
-	// redirects it.
+
 	deepseekRoute         = "deepseek-official"
 	deepseekModel         = "deepseek-v4-pro"
 	deepseekSmokeProvider = "deepseek-official"
 	deepseekSmokeModel    = "deepseek-v4-pro"
 )
 
-// deepseekProfileArgs is the pinned launch contract: the runtime boots a
-// profile under $DSH_HOME/profiles rather than a positional composition file.
 func deepseekProfileArgs() []string { return []string{"--profile", "sdk"} }
 
-// TestDeepSeekProcessSmoke is credential-free runtime evidence that a supplied
-// executable starts as the pinned dsh-jsonrpc-agent runtime and completes the
-// adapter readiness handshake over its own process layer. The correlated
-// initialize and shutdown round-trips prove request/response correlation, and
-// a nil Session.Close error proves the process exited. Set
-// OAP_DEEPSEEK_HARNESS_SHA256 to bind the evidence to an exact artifact; the
-// serverInfo version alone does not prove the pinned source commit.
 func TestDeepSeekProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_DEEPSEEK_HARNESS_SMOKE") != "1" {
 		t.Skip("set OAP_DEEPSEEK_HARNESS_SMOKE=1 and absolute OAP_DEEPSEEK_HARNESS_BIN pointing to the pinned dsh-jsonrpc-agent runtime to run; optionally set OAP_DEEPSEEK_HARNESS_SHA256 (64 hex characters) for exact-artifact evidence")
@@ -75,19 +62,13 @@ func TestDeepSeekProcessSmoke(t *testing.T) {
 	if state.SessionID != "deepseek-smoke-session" || state.Status != protocol.SessionIdle {
 		t.Fatalf("state=%+v", state)
 	}
-	// Close sends the correlated shutdown request and only returns nil after
-	// the child process exits; any hang or nonzero exit fails the gate.
+
 	if err := session.Close(ctx); err != nil {
 		t.Fatalf("close DeepSeek smoke session: %v", err)
 	}
 	closed = true
 }
 
-// TestDeepSeekProcessAgainstResponsesMock is the hermetic behavioral gate. The
-// only configured provider endpoint is an in-process loopback server, and the
-// child receives a fixed allowlisted environment containing no ambient
-// secrets. This is runtime-version evidence unless OAP_DEEPSEEK_HARNESS_SHA256
-// binds the exact artifact.
 func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping opt-in DeepSeek Harness process integration in short mode")
@@ -124,16 +105,13 @@ func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Admission is only "started" after the receipt matched a direct-user
-	// user/message inside an owned turn and step.
+
 	if admission.Admission != protocol.AdmissionStarted {
 		t.Fatalf("admission=%+v", admission)
 	}
 	events := adaptertest.Drain(t, stream, 30*time.Second)
 	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
-	// The adapter withholds the single terminal until the owned turn/end
-	// "completed" and a later session.status idle were both observed, so a
-	// run.completed terminal is the owned settlement proof.
+
 	var streamed strings.Builder
 	for _, event := range events {
 		if event.Type != protocol.TypeContentDelta {
@@ -157,9 +135,7 @@ func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 	if err := events[len(events)-1].DecodePayload(&completed); err != nil {
 		t.Fatal(err)
 	}
-	// A lone text part is normalized to bare-string content (the shape the
-	// deepseek corpus fixtures pin), so assert through the text reader rather
-	// than the parts reader.
+
 	text, ok := completed.FinalResponse.Content.Text()
 	if !ok || text != providertest.FixtureText {
 		t.Fatalf("final response=%s", completed.FinalResponse.Content)
@@ -241,9 +217,7 @@ func newPinnedDeepSeek(t *testing.T, binary, root string, environment, args []st
 		Executable: binary, Args: args, Environment: environment,
 		WorkingDirectory: workspace, Provider: provider, Model: model,
 		ShutdownTimeout: 5 * time.Second,
-		// rpc.Start already rejects any other serverInfo during the adapter's
-		// own startup; restating the exact pinned values here keeps the
-		// observed identity in the gate evidence itself.
+
 		ProcessFactory: ProcessFactoryFunc(func(ctx context.Context, config rpc.ProcessConfig) (ProcessBridge, error) {
 			process, err := rpc.Start(ctx, config)
 			if err != nil {
@@ -262,11 +236,6 @@ func newPinnedDeepSeek(t *testing.T, binary, root string, environment, args []st
 	return implementation
 }
 
-// deepseekEnvironment fully replaces the child environment: isolated HOME,
-// config, cache, data, state, and TMP directories; dead-loopback proxies with
-// loopback-only NO_PROXY so nothing but the loopback mock is reachable; and no
-// ambient credentials. Only the fixed non-secret placeholder key is injected
-// for the loopback gate.
 func deepseekEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 	t.Helper()
 	home := filepath.Join(root, "home")
@@ -292,9 +261,7 @@ func deepseekEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 		"HTTPS_PROXY=http://127.0.0.1:1",
 		"ALL_PROXY=http://127.0.0.1:1",
 		"NO_PROXY=127.0.0.1,localhost",
-		// The runtime boots a profile under $DSH_HOME/profiles and writes
-		// sessions under $DSH_SESSION_ROOT; both stay inside the isolated
-		// temporary root.
+
 		"DSH_HOME=" + filepath.Join(root, "dsh-home"),
 		"DSH_CWD=" + root,
 		"DSH_SESSION_ROOT=" + filepath.Join(root, "dsh-sessions"),
@@ -303,8 +270,7 @@ func deepseekEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 		environment = append(environment, "PATH="+path)
 	}
 	if loopbackBaseURL != "" {
-		// The stock deepseek provider reads these; the pinned runtime appends
-		// /chat/completions to the base URL.
+
 		environment = append(environment,
 			"DEEPSEEK_API_KEY="+deepseekMockSecret,
 			"DEEPSEEK_BASE_URL="+loopbackBaseURL,

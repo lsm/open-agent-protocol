@@ -1,4 +1,3 @@
-// Package protocol defines the Open Agent Protocol agent-control-core wire model.
 package protocol
 
 import (
@@ -71,7 +70,6 @@ const (
 	TypeErrorResponse                   EnvelopeType = "error.response"
 )
 
-// Envelope retains its payload and any additive top-level fields as raw JSON.
 type Envelope struct {
 	Protocol           string                     `json:"protocol"`
 	Version            string                     `json:"version"`

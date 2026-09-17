@@ -77,8 +77,7 @@ func (d *Decoder) Decode() (Frame, error) {
 }
 
 func decodeHeader(data []byte, dst any) error {
-	// A map permits event-specific members while DecodeStrict still rejects
-	// duplicate keys, non-objects, and trailing JSON.
+
 	var object map[string]json.RawMessage
 	if err := native.DecodeStrict(data, &object); err != nil {
 		return err
