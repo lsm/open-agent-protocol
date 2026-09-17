@@ -66,12 +66,15 @@ func drainSubscription(t *testing.T, f *frontend, id int64, session string) (uin
 	var first, lastSequence uint64
 	var terminal protocol.EnvelopeType
 	nextID := id + 1
-	for terminal == "" {
+	sent, answered := 0, 0
+	for terminal == "" || answered < sent {
 		line := f.line()
 		if strings.HasPrefix(line, `{"id":`) {
-			if response := f.decodeResponse(line); !response.OK {
+			response := f.decodeResponse(line)
+			if !response.OK {
 				t.Fatalf("op %d failed: %+v", response.ID, response.Error)
 			}
+			answered++
 			continue
 		}
 		var signal signalLine
@@ -103,6 +106,7 @@ func drainSubscription(t *testing.T, f *frontend, id int64, session string) (uin
 			f.send(fmt.Sprintf(`{"id":%d,"op":"resolve","session_id":%q,"request":%s}`,
 				nextID, session, resolveEnvelope(t, fmt.Sprintf("req-resolve-%d", nextID), envelope, session)))
 			nextID++
+			sent++
 		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
 			terminal = envelope.Type
 		}
