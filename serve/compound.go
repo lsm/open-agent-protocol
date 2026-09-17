@@ -100,6 +100,15 @@ func withAdmittedRun(state protocol.SessionState, admission protocol.MessageSubm
 	if request != "" {
 		entry.AdmittedSubmitRequests = []protocol.EnvelopeID{request}
 	}
+	if admission.Status == protocol.RunQueued {
+		position := 1
+		for _, existing := range state.ActiveRuns {
+			if existing.Status == protocol.RunQueued {
+				position++
+			}
+		}
+		entry.QueuePosition = &position
+	}
 	state.ActiveRuns = append(append([]protocol.ActiveRun(nil), state.ActiveRuns...), entry)
 	if admission.Status != protocol.RunQueued {
 		state.ActiveRunID = admission.RunID

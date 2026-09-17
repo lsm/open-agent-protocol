@@ -4651,6 +4651,26 @@
       "provenance": ["decisions/0009-compound-open.md"]
     },
     {
+      "id": "compound-open-queued-message",
+      "path": "valid/compound-open-queued-message.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open", "queue"],
+      "provenance": ["decisions/0009-compound-open.md", "decisions/0007-queue-delivery.md"]
+    },
+    {
+      "id": "compound-open-queued-without-position",
+      "path": "semantic-invalid/compound-open-queued-without-position.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["session_state_mismatch"],
+      "units": ["compound-open", "queue"],
+      "provenance": ["decisions/0009-compound-open.md", "decisions/0007-queue-delivery.md"]
+    },
+    {
       "id": "compound-open-anonymous-model-reconciled",
       "path": "semantic-invalid/compound-open-anonymous-model-reconciled.json",
       "kind": "semantic-invalid",

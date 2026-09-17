@@ -290,3 +290,62 @@ func driveScriptedRun(t *testing.T, hub *serve.Hub, server *httptest.Server, ses
 
 	return append(trace, until(protocol.TypeRunCompleted)...)
 }
+
+type queueingAdapter struct{ *base.Memory }
+
+func (a queueingAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	session, err := a.Memory.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return queueingSession{Session: session}, nil
+}
+
+type queueingSession struct{ base.Session }
+
+func (s queueingSession) Submit(_ context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{
+		SessionID:         request.SessionID,
+		Accepted:          true,
+		SubmissionID:      "sub-queued",
+		RequestedDelivery: request.Delivery,
+		EffectiveDelivery: protocol.EffectiveDeliveryQueue,
+		Admission:         protocol.AdmissionQueued,
+		RunID:             "r-queued",
+		Status:            protocol.RunQueued,
+	}, nil, nil
+}
+
+func TestOpenCarryingAQueuedMessageReportsItsQueuePosition(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", queueingAdapter{base.NewMemory(base.Config{})}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	status, response := openSessionWith(t, server, "queued", protocol.SessionOpenRequest{Message: openMessage()})
+	if status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, response.Payload)
+	}
+	requireEnvelopeSchema(t, response)
+
+	var opened protocol.SessionOpenResponse
+	if err := response.DecodePayload(&opened); err != nil {
+		t.Fatal(err)
+	}
+	if len(opened.ActiveRuns) != 1 {
+		t.Fatalf("the open reports %d active runs: %+v", len(opened.ActiveRuns), opened.ActiveRuns)
+	}
+	admitted := opened.ActiveRuns[0]
+	if admitted.Status != protocol.RunQueued {
+		t.Fatalf("admitted run status %q, want queued", admitted.Status)
+	}
+	if admitted.QueuePosition == nil || *admitted.QueuePosition != 1 {
+		t.Fatalf("a reservation on a fresh session reports position %v, want 1", admitted.QueuePosition)
+	}
+	if opened.Status != protocol.SessionQueued {
+		t.Fatalf("session status %q, want queued", opened.Status)
+	}
+	if opened.ActiveRunID != "" {
+		t.Fatalf("a queued admission named an active run %q", opened.ActiveRunID)
+	}
+}
