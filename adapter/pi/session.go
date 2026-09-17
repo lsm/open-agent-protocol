@@ -1110,7 +1110,9 @@ func (s *Session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	// overtake a resolution already admitted here.
 	if err := s.client.Respond(ctx, response); err != nil {
 		binding.phase = interactionResolved
-		s.failRun(binding.run, "pi_interaction_response_failed", err.Error())
+		// The reverse-channel write failed, so the run's own stream carried
+		// nothing about its ending.
+		s.failRunSettled(binding.run, "pi_interaction_response_failed", err.Error(), protocol.SettledByInferred)
 		s.reduceMu.Unlock()
 		return err
 	}
@@ -1228,7 +1230,9 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	s.reduceMu.Unlock()
 	if err := s.callStrict(ctx, native.Command{Type: native.CommandAbort}, nil); err != nil {
 		s.reduceMu.Lock()
-		s.failRun(run, "pi_abort_failed", err.Error())
+		// The abort never reached pi, so nothing was ever reported about how
+		// this run ended.
+		s.failRunSettled(run, "pi_abort_failed", err.Error(), protocol.SettledByInferred)
 		s.reduceMu.Unlock()
 		return protocol.RunCancelResponse{}, err
 	}

@@ -85,19 +85,35 @@ native observations must not produce duplicate portable terminals is untouched.
 
 ### What makes a terminal inferred
 
-A terminal is inferred when the endpoint never observed a run-scoped terminal
-for that run and settled it from evidence of another kind. The two shapes the
-corpus pins are:
+The test is what the endpoint had to go on, not how the run ended. Stating it
+sharply matters more than it might seem: because omission asserts observation,
+an endpoint that guesses wrong here does not merely omit a detail, it makes a
+false claim.
 
-- **A session-scoped stop.** The harness settles or destroys the session, and
-  the run's own settlement is never published or is discarded.
-- **Transport loss.** The channel the run was executing over dies — process
-  exit, or a frame the codec cannot read — with the run still open.
+A terminal is **observed** when the endpoint acted on run-scoped evidence it
+could read. That covers the harness's own terminal for the run, and equally a
+frame in this run's stream that the endpoint judged fatal — a duplicate tool
+call, an unknown required event, a step the harness reported failed, a foreign
+or malformed update. The endpoint was watching this run and ruled on what it
+saw. A terminal is not inferred merely because the ending was unpleasant or
+because the endpoint, rather than the harness, decided the run was over.
 
-An endpoint that fails a run for a violation it observed in the harness's own
-frames has observed the evidence it acted on, and that terminal is observed. The
-line is whether the endpoint saw the run end, not whether the ending was
-pleasant.
+A terminal is **inferred** when the endpoint had no such evidence to rule on:
+
+- **Transport loss.** The channel the run was executing over died — a process
+  exit, or a frame the codec could not read — with the run still open.
+- **A session-scoped stop.** The harness settled or destroyed the session and
+  said nothing about this run, whose own settlement is never published or is
+  discarded. It makes no difference whether the host asked for the stop.
+- **A control call that never landed.** A cancellation, an abort, or a
+  reverse-channel write failed, so nothing was ever reported back about how the
+  run ended.
+
+One case deliberately falls outside the member. A submission that fails before
+its run starts is not an inference: the endpoint watched its own request fail,
+there was never a run stream for it to be deprived of, and most adapters here
+settle that case without emitting a terminal at all. An endpoint that does emit
+a pre-start terminal there leaves `settled_by` absent.
 
 ### The member is per-terminal, not per-endpoint
 

@@ -290,7 +290,10 @@ func (s *session) handleEnvelope(env native.Envelope) {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		s.failRun(run, "makai_unsolicited_session_stop", "Makai stopped the native session without a pending cancellation")
+		// agent_stopped is session-scoped: it says the session stopped, never
+		// that this run ended. The run terminal is concluded from it, exactly
+		// as on the requested-cancellation path.
+		s.failRunSettled(run, "makai_unsolicited_session_stop", "Makai stopped the native session without a pending cancellation", protocol.SettledByInferred)
 	case native.TypeToolStreaming, native.TypeToolResult, native.TypeSessionInfo, native.TypeAck, native.TypeNack, native.TypePong, native.TypeGoodbye:
 		return
 	default:
