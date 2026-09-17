@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 	"github.com/lsm/open-agent-protocol/validation"
@@ -33,6 +34,9 @@ type Options struct {
 	Command   []string
 	SessionID protocol.SessionID
 	Stderr    io.Writer
+	// LineDeadline bounds the wait for each line the endpoint writes. Zero
+	// takes DefaultLineDeadline.
+	LineDeadline time.Duration
 }
 
 type runner struct {
@@ -104,7 +108,7 @@ func Run(ctx context.Context, options Options) (*Report, error) {
 	if session == "" {
 		session = "conformance"
 	}
-	client, err := Spawn(ctx, options.Command[0], options.Command[1:], options.Stderr)
+	client, err := SpawnWithDeadline(ctx, options.Command[0], options.Command[1:], options.Stderr, options.LineDeadline)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +312,7 @@ func (r *runner) validate() {
 // guessing where the next one starts.
 func framingContract(ctx context.Context, options Options) Check {
 	const name = "a malformed line ends the endpoint non-zero"
-	client, err := Spawn(ctx, options.Command[0], options.Command[1:], io.Discard)
+	client, err := SpawnWithDeadline(ctx, options.Command[0], options.Command[1:], io.Discard, options.LineDeadline)
 	if err != nil {
 		return Check{Name: name, Detail: err.Error()}
 	}

@@ -156,8 +156,17 @@ reading:
 		}
 	}
 
-	if stalled := s.settle(stopStreams, runErr != nil); stalled && runErr == nil {
-		runErr = ErrShutdownStalled
+	if s.settle(stopStreams, runErr != nil) {
+		if runErr == nil {
+			runErr = ErrShutdownStalled
+		}
+		// No final flush, and in particular no attempt to take the writer
+		// lock. The pump this teardown just abandoned is parked inside write
+		// holding that lock, and it is parked precisely because the pipe will
+		// not drain — so waiting for it here would hang the exit that the
+		// bounded wait exists to guarantee. Whatever is still buffered cannot
+		// be written anyway; the non-zero return is the report.
+		return runErr
 	}
 	s.mu.Lock()
 	flushErr := s.out.Flush()

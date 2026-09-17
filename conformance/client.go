@@ -24,6 +24,17 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
+// DefaultLineDeadline bounds how long the runner waits for the endpoint's
+// next line.
+//
+// It is generous on purpose. The binding places no bound on inter-line
+// latency, and a real endpoint pauses for as long as its model or its tools
+// take — a gap of minutes between run events is ordinary, not a fault. A
+// tight deadline would report non-conformance for a conformant binary, which
+// is the runner's primary use failing in the worst direction. It is still
+// bounded, because a deadlocked endpoint has to end the run somehow.
+const DefaultLineDeadline = 5 * time.Minute
+
 // ErrEndpointGone reports that the endpoint's stdout ended before the line
 // this client was waiting for.
 var ErrEndpointGone = errors.New("conformance: the endpoint produced no more lines")
@@ -75,8 +86,14 @@ type ControlFrame struct {
 	Message string `json:"message,omitempty"`
 }
 
-// Spawn starts the endpoint command and begins reading its stdout.
+// Spawn starts the endpoint command and begins reading its stdout, waiting
+// DefaultLineDeadline for each line. SpawnWithDeadline takes another bound.
 func Spawn(ctx context.Context, name string, args []string, stderr io.Writer) (*Client, error) {
+	return SpawnWithDeadline(ctx, name, args, stderr, DefaultLineDeadline)
+}
+
+// SpawnWithDeadline is Spawn with an explicit per-line bound.
+func SpawnWithDeadline(ctx context.Context, name string, args []string, stderr io.Writer, deadline time.Duration) (*Client, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
@@ -90,7 +107,10 @@ func Spawn(ctx context.Context, name string, args []string, stderr io.Writer) (*
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	c := &Client{cmd: cmd, stdin: stdin, lines: make(chan line, 64), deadline: 20 * time.Second}
+	if deadline <= 0 {
+		deadline = DefaultLineDeadline
+	}
+	c := &Client{cmd: cmd, stdin: stdin, lines: make(chan line, 64), deadline: deadline}
 	go c.read(stdout)
 	return c, nil
 }
