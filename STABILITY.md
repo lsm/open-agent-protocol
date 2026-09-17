@@ -40,7 +40,7 @@ one side of this line or the other. None is left unstated:
 | `+tools`, `+permissions`, `+user-input` | yes | Their requirements are part of the executable core frozen by Decision 0001, and `fixtures/manifest.json` carries fixtures under each name. |
 | `+extensions` | yes | [Decision 0004](decisions/0004-extension-packs.md), accepted. |
 | `+run-controls` | yes | [Decision 0005](decisions/0005-run-controls.md), accepted. |
-| `+models` | yes | [Decision 0006](decisions/0006-models-catalog.md), accepted. |
+| `+models` | yes | [Decision 0006](decisions/0006-models-catalog.md), accepted. [Decision 0014](decisions/0014-provider-descriptors.md) proposes one optional additive member and is `proposed`; the unit is covered either way. |
 | `+queue` | yes | [Decision 0007](decisions/0007-queue-delivery.md), accepted. |
 | `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
 | `+compound-open` | yes | [Decision 0009](decisions/0009-compound-open.md), accepted. |
