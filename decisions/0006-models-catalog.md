@@ -1,6 +1,9 @@
 # Decision 0006: Models Catalog
 
-Status: proposed
+Status: accepted 2026-09-16 (49 `models` fixtures; OpenCode executes the
+catalog through its production codec and advertises it at `degraded`, the level
+its evidence supports. Further catalogs graduate by amendment; T5b auth state is
+a separate staged unit, not an open item here)
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

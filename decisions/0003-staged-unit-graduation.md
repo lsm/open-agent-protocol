@@ -1,6 +1,8 @@
 # Decision 0003: Graduating Staged Control Units
 
-Status: proposed
+Status: accepted 2026-09-16 (process decision, accepted on the ground that
+Decisions 0004-0008 each followed this gate before it was ratified; the
+circularity is named under "Accepting this decision is circular, and says so")
 Date: 2026-09-13
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -71,6 +73,61 @@ land in the same change or the next. Step 4 lands last and flips the unit's
 status in the drafts from staged to executable. A unit that stalls at step 3
 stays staged: the memory adapter and the validator rules are kept, but no
 draft claims the unit is executable until a native adapter proves it.
+
+### What `accepted` means for a decision
+
+A decision is `proposed` while what it decided could still change in response
+to evidence this repository has not yet gathered. It is `accepted` when what
+it decided is true of the tree and nothing inside it is still waiting.
+
+A decision is accepted when all four of these hold:
+
+1. **Executable, not asserted.** Everything the decision says the protocol
+   does is executable on `main`. For a unit-graduating decision that means all
+   four steps of the one gate above have landed, the unit's positive and
+   negative fixtures are in `fixtures/manifest.json`, and `go run ./cmd/oap
+   check` passes.
+2. **Nothing pending inside it.** Every question the decision opens is either
+   answered in it or handed to a named owner outside it — an issue, a staged
+   unit, or a later decision. A deferral that is written down is settled; one
+   that is merely implied is not.
+3. **Nothing proposed contradicts it.** A decision another *proposed* decision
+   would amend settles with that decision, not ahead of it.
+4. **Merged.** It is on `main`, where the claims can be read against the code
+   rather than against a branch.
+
+Later amendment does not unmake acceptance, and the fear that it might is what
+would otherwise keep every record provisional forever. Decision 0001 is
+accepted and its admission clause was amended by Decision 0002. A unit whose
+executable surface grows as adapter evidence lands is amended, not reopened:
+the decision already decided that evidence governs the level, so evidence
+arriving is the decision working rather than changing. The amendment is
+recorded in the status line of the decision amended.
+
+The status vocabulary is `proposed`, `accepted`, and `superseded by NNNN`,
+with the parenthetical amendment note Decision 0001 already uses.
+
+Acceptance is a change like any other: a pull request that flips the status
+line and states, per decision, the ground for moving it. Stating the ground
+per decision is the point — a reviewer who disagrees about one decision
+reverts one line, rather than being handed a batch to take or leave.
+
+### Accepting this decision is circular, and says so
+
+This decision now defines both the unit gate and what acceptance means, so
+accepting it under its own rule is circular. Saying so is better than a
+silence someone else has to notice.
+
+The non-circular ground is that the process was followed before it was
+ratified. Decisions 0004 through 0008 each took a unit through the four steps
+above, and each landed with the reference execution, the validator rules and
+fixtures, and the native evidence the gate asks for. Accepting this decision
+records a practice five units have already exercised; it does not authorise an
+untried one. Criterion 1 reads accordingly for a process decision: what has to
+be true of the tree is that the process was used, and it was.
+
+A reader who rejects that ground should reject this status change first, since
+every other acceptance rests on it.
 
 ### Vertical cut through every surface
 
