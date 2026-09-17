@@ -114,14 +114,39 @@ which is what makes bring-your-own-key and per-session gateways expressible
 without the daemon relaxing anything.
 
 One rule does **not** come across with the rest, and the mirror is where it
-hides. Tool sources are per-session in every implementation that carries them,
-so attaching one at session open needs no scoping argument. Provider resolution
-is not per-session everywhere: an agent loop may build its provider registry
-once per process, before any session exists, in which case a session-scoped
-attachment has nowhere to live. 0017 makes that a refusal rather than a merge,
-for the reason the whole layer exists — a provider silently shared between two
-sessions sends one caller's prompts to the other caller's endpoint, and nothing
-on the wire says so.
+hides. The next section states it, generally, because it is not about
+providers.
+
+## When an attachment is free, and when it needs a scoping argument
+
+Attaching a tool definition at session open needs no argument about scope.
+Attaching a provider does. The difference is not that one is per-session and
+the other is not; that is the symptom. It is that **a tool definition resolves
+against nothing** — it is self-contained data travelling with the request, and
+attaching one asks the endpoint to hold it rather than to find anything — while
+a provider must be resolved against a registry for its wire format and a
+catalog for its endpoint, both of which the endpoint built before the session
+existed.
+
+> **Does the attached thing require resolution against state the endpoint built
+> before the session existed?** If not, attachment is free. If so, the endpoint
+> either gives each session its own view of that state, or must not advertise
+> the unit.
+
+[Decision 0017](../decisions/0017-provider-provisioning.md) adopts this and
+makes the failing case a refusal rather than a merge, because the merges are
+unobservable: a provider silently shared between two sessions sends one
+caller's prompts to the other caller's endpoint with nothing on the wire saying
+so.
+
+The predicate is worth stating here rather than only there, because it sorts
+things this draft has not written yet. Purely declarative attachments — a
+prompt fragment, an output schema, sampling defaults — are free. An attached
+MCP *source* is not: it names a server the endpoint must connect to and hold,
+which puts it on the provider side of the line despite living in the tools
+column of the table above. The pass-through arm in the third bullet above is
+therefore the same class of gap as the provider one, one layer out — not a
+milder version of it.
 
 ## Why this is one shape and not four decisions
 

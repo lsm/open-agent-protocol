@@ -84,39 +84,59 @@ be unavailable to it — which is the failure Decision 0008 fixed for tools when
 `session.open.response` began publishing attached sources beside configured
 ones.
 
-### An attachment is session-scoped, and an endpoint that cannot scope it refuses
+### Attachment is free only when the attached thing resolves against nothing
 
-The symmetry with `tool_sources` carries one assumption that does not travel
-with it: that provider resolution is per-session. In at least one real agent
-loop it is not.
+The symmetry with `tool_sources` carries an assumption that does not travel
+with it, and the assumption is not the one it first looks like.
 
-Makai's maintainers report that their tools genuinely are session-scoped —
-parsed per session from the frame that starts the agent — while provider
-resolution is process-global: one provider protocol server per process, named
-endpoints loaded from a config file at catalog build, base URLs read from the
-environment, and nothing in the resolution path taking a session id. Modelling
-providers on tool sources assumes a parity they do not have, and an endpoint in
-that shape would need a per-session overlay on a process-global registry to
-honour an attachment at all.
+It looks like session-scope. Makai's maintainers report that their tools are
+genuinely per-session — their multi-session host has no tool registry at all,
+tool definitions arriving as data in the frames that start an agent and a turn —
+while provider resolution is process-global: one provider protocol server per
+process, named endpoints loaded from a config file at catalog build, base URLs
+read from the environment, nothing in the resolution path taking a session id.
 
-That is a cost, not an objection, and this record does not pretend otherwise.
-What it does decide is what happens when an endpoint cannot pay it.
+But session-scope is the symptom. The property underneath it is that **a tool
+definition resolves against nothing.** It is self-contained data that travels
+with the request, so attaching one asks the endpoint to hold it, not to find
+anything. A provider must be resolved — against a registry for the wire format
+and a catalog for the endpoint — and the endpoint built both before the session
+existed.
+
+So the predicate this record adopts, stated generally because it is not about
+providers:
+
+> **Does the attached thing require resolution against state the endpoint built
+> before the session existed?** If it does not, attachment is free and needs no
+> scoping argument. If it does, the endpoint either gives each session its own
+> view of that state, or must not advertise the unit.
 
 **Two sessions attaching different endpoints under one provider id must not be
 representable as one.** An endpoint whose provider resolution predates its
 sessions has exactly three ways to merge a session-scoped attachment into a
 process-scoped registry: the first attachment silently wins, the second
 clobbers the first for every session, or the attachment is refused. The first
-two are observable to a caller that did nothing wrong and are not reportable in
-either direction — session B's prompts go to session A's endpoint, and nothing
-on the wire says so. Only refusal is honest, so refusal is the rule: an
+two are unobservable to a caller that did nothing wrong and are not reportable
+in either direction — session B's prompts go to session A's endpoint, and
+nothing on the wire says so. That is not a poor implementation of the feature;
+it is a cross-session leak arriving through the feature meant to make provider
+configuration visible. Only refusal is honest, so refusal is the rule: an
 endpoint that cannot give a session its own provider view does not advertise
 `action.providers.attach`, and refuses the open if one arrives.
 
-This generalizes past the harness that surfaced it. Any endpoint whose provider
-resolution is built before its sessions faces the same three choices, and the
-capability key is where that answer belongs — permanently refusing the unit is
-a conformant position, and a wrong merge is not.
+Permanently refusing the unit is a conformant position. A wrong merge is not.
+That puts the cost where it belongs: an endpoint with a process-global registry
+is conformant as it stands, and a per-session overlay buys a capability rather
+than paying off a debt.
+
+The predicate earns its generality twice over. It says an attachment of purely
+declarative data — a prompt fragment, an output schema, sampling defaults —
+is free and needs no scope section at all, so this is not a tax on attachments
+generally. And it classifies the one gap this record leaves open: an attached
+MCP *source* names a server the endpoint must connect to and hold, which is
+resolution, so it sits on the provider side of the predicate rather than the
+tool side. The pass-through arm below is the same class of hole one layer out,
+not a milder version of it.
 
 ### `id` names a vendor endpoint, not a wire implementation
 
@@ -285,7 +305,10 @@ same operator-configures-destinations rule and without the pass-through arm.
 The tool-source pass-through gap becomes a named, reachable thing rather than a
 sentence in a draft. This record does not close it for tool sources — that is
 someone's decision about an accepted unit's deployment policy, and changing it
-would refuse opens that are admitted today.
+would refuse opens that are admitted today. What it does say is that the gap is
+the same class as the provider one under the predicate above, and not a milder
+version of it: a remote source is a thing the endpoint resolves and holds, not
+a definition that travels with the call.
 
 ## What this decision does not admit
 
