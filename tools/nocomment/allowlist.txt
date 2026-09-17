@@ -2,11 +2,9 @@ adapter/acp/adapter.go
 adapter/adapter.go
 adapter/claude/adapter.go
 adapter/codex/appserver/adapter.go
-adapter/controltools_test.go
 adapter/deepseek/adapter.go
 adapter/hermes/adapter.go
 adapter/makai/adapter.go
-adapter/makai/controltools_test.go
 adapter/makai/corpus_test.go
 adapter/makai/session.go
 adapter/memory.go

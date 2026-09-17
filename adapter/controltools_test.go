@@ -13,9 +13,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// providedTool is the control-owned definition every case here provisions.
-// It names the opening participant as its owner, because that is the one
-// ownership an open may supply.
 func providedTool() protocol.ToolDefinition {
 	return protocol.ToolDefinition{
 		Name: "lookup", Description: "A tool the control layer executes.",
@@ -24,7 +21,6 @@ func providedTool() protocol.ToolDefinition {
 	}
 }
 
-// openProviding opens one reference session with a control-owned catalog.
 func openProviding(t *testing.T, tools ...protocol.ToolDefinition) adapter.Session {
 	t.Helper()
 	implementation := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}})
@@ -47,8 +43,6 @@ func referenceDescriptor(t *testing.T) adapter.Descriptor {
 	return descriptor
 }
 
-// submitProvidedCall submits one message and returns the admission, the
-// stream, and the control-owned call the script published.
 func submitProvidedCall(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream, []protocol.Envelope, protocol.ActionCallPayload) {
 	t.Helper()
 	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
@@ -80,7 +74,6 @@ func submitProvidedCall(t *testing.T, session adapter.Session) (protocol.Message
 	return admission, stream, events, call
 }
 
-// resolve is one resolution with its request id, the shape the codecs supply.
 func resolve(t *testing.T, session adapter.Session, id protocol.EnvelopeID, request protocol.ActionCallResolveRequest) protocol.ActionCallResolveResponse {
 	t.Helper()
 	resolver, ok := session.(adapter.CallResolver)
@@ -102,8 +95,6 @@ func resultArm(call protocol.ActionCallPayload) protocol.ActionCallResolveReques
 	}
 }
 
-// answerInput closes the scripted prompt so the run can settle, which is what
-// lets a trace carrying a control-owned call be validated whole.
 func answerInput(t *testing.T, session adapter.Session, event protocol.Envelope) {
 	t.Helper()
 	var prompt protocol.UserInputRequestedPayload
@@ -123,13 +114,6 @@ func answerInput(t *testing.T, session adapter.Session, event protocol.Envelope)
 	}
 }
 
-// TestProvidedCallRoundTripValidates is the unit executed end to end: the
-// script calls a tool it does not own, the control layer acknowledges and
-// resolves it, and the whole trace passes the real validator. Asserting the
-// validator rather than the event names is the point — the terminal's
-// request_id, its payload equality with the accepted resolution, and the
-// interaction rules are all checks this assertion runs and a name comparison
-// would not.
 func TestProvidedCallRoundTripValidates(t *testing.T) {
 	session := openProviding(t, providedTool())
 	admission, stream, events, call := submitProvidedCall(t, session)
@@ -160,8 +144,6 @@ func TestProvidedCallRoundTripValidates(t *testing.T) {
 	}
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, referenceDescriptor(t), events)
 
-	// The terminal carries what the resolution said, not what the endpoint
-	// would have produced on its own.
 	var completed protocol.ActionCallPayload
 	for _, event := range events {
 		if event.Type == protocol.TypeActionCallCompleted {
@@ -178,10 +160,6 @@ func TestProvidedCallRoundTripValidates(t *testing.T) {
 	}
 }
 
-// TestUnacknowledgedResolutionStillStarts pins the other half of the start
-// rule: a participant that resolves without acknowledging still gets a start
-// event, emitted immediately before the terminal because the result is itself
-// the evidence execution began.
 func TestUnacknowledgedResolutionStillStarts(t *testing.T) {
 	session := openProviding(t, providedTool())
 	_, stream, _, call := submitProvidedCall(t, session)
@@ -195,20 +173,13 @@ func TestUnacknowledgedResolutionStillStarts(t *testing.T) {
 	}
 }
 
-// TestResolveLadderReportsTheHighestReason walks the refusal ladder. Each case
-// makes a request that satisfies the named condition and, where it can, one
-// below it too — because the property under test is not that a reason exists
-// but that the endpoint reports the highest of the reasons a request
-// satisfies. A ladder whose lower rungs were reachable only in isolation would
-// pass a per-reason test and still answer the wrong thing in practice.
 func TestResolveLadderReportsTheHighestReason(t *testing.T) {
 	t.Run("unknown interaction", func(t *testing.T) {
 		session := openProviding(t, providedTool())
 		_, _, _, call := submitProvidedCall(t, session)
 		request := resultArm(call)
 		request.InteractionID = "no-such-interaction"
-		// Also a foreign responder: whether the interaction exists is asked
-		// first, because nothing else is answerable without it.
+
 		request.RespondedBy = "someone-else"
 		answer := resolve(t, session, "resolve-1", request)
 		if answer.Accepted || answer.Reason != protocol.ReasonUnknownInteraction {
@@ -222,9 +193,7 @@ func TestResolveLadderReportsTheHighestReason(t *testing.T) {
 		if answer := resolve(t, session, "resolve-1", resultArm(call)); !answer.Accepted {
 			t.Fatalf("resolution refused %q", answer.Reason)
 		}
-		// The call is settled, so already_resolved also holds. A foreign
-		// sender is still told only that it is foreign: the state of a call
-		// it does not own is not its business, and saying more would leak it.
+
 		request := resultArm(call)
 		request.RespondedBy = "someone-else"
 		answer := resolve(t, session, "resolve-2", request)
@@ -242,7 +211,7 @@ func TestResolveLadderReportsTheHighestReason(t *testing.T) {
 		if answer := resolve(t, session, "resolve-1", resultArm(call)); !answer.Accepted {
 			t.Fatalf("resolution refused %q", answer.Reason)
 		}
-		adaptertest.Next(t, stream, time.Second) // started
+		adaptertest.Next(t, stream, time.Second)
 		terminal := adaptertest.Next(t, stream, time.Second)
 
 		answer := resolve(t, session, "resolve-2", resultArm(call))
@@ -268,22 +237,8 @@ func TestResolveLadderReportsTheHighestReason(t *testing.T) {
 		}
 	})
 
-	// late_acknowledgement is the one rung this adapter cannot reach, and
-	// saying so is more useful than a test that pretends otherwise. The reason
-	// names the window between an accepted resolution and the publication of
-	// the terminal derived from it; this adapter publishes the terminal before
-	// ResolveCall returns, holding the operation mutex throughout, so no
-	// second resolution can arrive inside it. The ladder still reports it —
-	// the branch is there, and an endpoint that defers publication reaches it —
-	// and its conforming refusal is pinned by the
-	// control-call-late-acknowledgement fixture, which is where reachability
-	// as the highest reason is asserted for the wire rather than for one
-	// implementation's concurrency.
 }
 
-// TestCancelClosesAPendingProvidedCall pins that a run cancellation closes the
-// call before settling its parent, rather than terminating a run with an
-// interaction nobody will ever answer.
 func TestCancelClosesAPendingProvidedCall(t *testing.T) {
 	session := openProviding(t, providedTool())
 	admission, stream, events, _ := submitProvidedCall(t, session)
@@ -307,10 +262,6 @@ func TestCancelClosesAPendingProvidedCall(t *testing.T) {
 	adaptertest.AssertProtocolValidWithCancellation(t, admission, referenceDescriptor(t), events)
 }
 
-// TestProvidedCatalogAndAcknowledgedSubset pins the two state surfaces the
-// unit adds: the provided tool joins the session catalog with the opener as
-// its owner, and the acknowledged subset distinguishes the one case the bare
-// pending list cannot answer.
 func TestProvidedCatalogAndAcknowledgedSubset(t *testing.T) {
 	session := openProviding(t, providedTool())
 	lister, ok := session.(adapter.ToolLister)
@@ -352,9 +303,7 @@ func TestProvidedCatalogAndAcknowledgedSubset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Presence alone cannot say whether the acknowledgement landed: an
-	// accepted one does not settle the call, so the interaction is still
-	// pending either way. The subset is what answers it.
+
 	if len(state.ActiveRuns[0].PendingInteractions) != 1 {
 		t.Fatal("an acknowledgement does not settle the call")
 	}
@@ -363,9 +312,6 @@ func TestProvidedCatalogAndAcknowledgedSubset(t *testing.T) {
 	}
 }
 
-// TestProvisioningRefusalsNameTheOffendingTool walks the admission rules. Each
-// refusal has to name the entry to change, because a refusal that says only
-// that something was wrong tells the caller nothing it can act on.
 func TestProvisioningRefusalsNameTheOffendingTool(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -445,10 +391,6 @@ func TestProvisioningRefusalsNameTheOffendingTool(t *testing.T) {
 	}
 }
 
-// TestProvisioningAdmitsWhatItDiscloses is the other direction, and the one
-// that keeps the disclosure honest: an array violating no advertised limit
-// must be admitted. Without it an endpoint could advertise the key, refuse
-// everything, and pass conformance while honouring nothing.
 func TestProvisioningAdmitsWhatItDiscloses(t *testing.T) {
 	first := providedTool()
 	second := providedTool()
@@ -468,9 +410,6 @@ func TestProvisioningAdmitsWhatItDiscloses(t *testing.T) {
 	}
 }
 
-// TestUnprovidedSessionIsUnchanged pins that the unit is inert where it is not
-// elected: a session that provided nothing runs exactly the script it always
-// did, harness-owned call and permission gate included.
 func TestUnprovidedSessionIsUnchanged(t *testing.T) {
 	implementation := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}})
 	session, err := implementation.Open(context.Background(), adapter.OpenRequest{
