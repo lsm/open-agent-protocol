@@ -604,13 +604,17 @@ is what keeps the runner usable against an endpoint written in any language.
 
 Decisions:
 
-- [0001 — agent-control v0.1 executable core](decisions/0001-agent-control-v0.1-executable-core.md)
-- [0002 — admission before started](decisions/0002-admission-before-start.md)
-- [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (proposed)
-- [0005 — run controls](decisions/0005-run-controls.md) (proposed)
-- [0007 — queue delivery](decisions/0007-queue-delivery.md) (proposed)
-- [0008 — tool sources](decisions/0008-tool-sources.md) (proposed)
-- [0006 — models catalog](decisions/0006-models-catalog.md) (proposed)
+- [0001 — agent-control v0.1 executable core](decisions/0001-agent-control-v0.1-executable-core.md) (accepted)
+- [0002 — admission before started](decisions/0002-admission-before-start.md) (accepted)
+- [0003 — graduating staged control units](decisions/0003-staged-unit-graduation.md) (accepted)
+- [0004 — extension packs](decisions/0004-extension-packs.md) (accepted)
+- [0005 — run controls](decisions/0005-run-controls.md) (accepted)
+- [0006 — models catalog](decisions/0006-models-catalog.md) (accepted)
+- [0007 — queue delivery](decisions/0007-queue-delivery.md) (accepted)
+- [0008 — tool sources](decisions/0008-tool-sources.md) (accepted)
+
+Decision 0003 defines what `accepted` means and what moves a record from
+proposed to accepted.
 
 Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:

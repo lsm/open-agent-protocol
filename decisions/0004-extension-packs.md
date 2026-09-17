@@ -1,6 +1,9 @@
 # Decision 0004: Extension Packs
 
-Status: proposed
+Status: accepted 2026-09-16 (38 `extensions` fixtures; step 3 of the gate is
+satisfied vacuously and deliberately — this unit specifies the protocol's own
+extension seam rather than harness behaviour, so there is no native frame to
+pin, and every adapter exercises it passively)
 Date: 2026-09-15
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
