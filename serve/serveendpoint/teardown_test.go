@@ -341,12 +341,18 @@ func TestALostStreamNamesItsOwnRun(t *testing.T) {
 
 func TestAddressableEnvelopeIsAnsweredNotFatal(t *testing.T) {
 	cases := []struct {
-		name  string
-		line  string
-		fatal bool
+		name    string
+		line    string
+		fatal   bool
+		missing string
 	}{
-		{name: "unknown type is answered", line: `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"nonsense.request","id":"c1"}`},
+		{name: "unknown type is answered", line: `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"nonsense.request","id":"c1","payload":{}}`},
 		{name: "undecodable payload is answered", line: `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"c2","payload":{"session_id":42}}`},
+		{name: "missing version is answered", line: `{"protocol":"open-agent-protocol","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"c3","payload":{}}`, missing: "version"},
+		{name: "missing profile is answered", line: `{"protocol":"open-agent-protocol","version":"0.1","type":"capabilities.request","id":"c4","payload":{}}`, missing: "profile"},
+		{name: "missing payload is answered", line: `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"c5"}`, missing: "payload"},
+		{name: "missing type is answered", line: `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","id":"c6","payload":{}}`, missing: "type"},
+		{name: "null version counts as missing", line: `{"protocol":"open-agent-protocol","version":null,"profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"c7","payload":{}}`, missing: "version"},
 		{name: "no id cannot be answered", line: `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request"}`, fatal: true},
 		{name: "neither protocol nor control", line: `{"hello":"world"}`, fatal: true},
 		{name: "not json at all", line: `this is not an envelope`, fatal: true},
@@ -378,6 +384,9 @@ func TestAddressableEnvelopeIsAnsweredNotFatal(t *testing.T) {
 			}
 			if !strings.Contains(written, "error.response") || !strings.Contains(written, "in_reply_to") {
 				t.Fatalf("want a correlated error.response, got %q", written)
+			}
+			if testCase.missing != "" && !strings.Contains(written, testCase.missing) {
+				t.Fatalf("the refusal does not name the omitted member %q: %q", testCase.missing, written)
 			}
 		})
 	}

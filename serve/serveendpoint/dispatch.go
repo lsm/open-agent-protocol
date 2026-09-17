@@ -1,11 +1,13 @@
 package serveendpoint
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
@@ -61,6 +63,17 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 			code: "invalid_request", message: decodeErr.Error(),
 		}))
 	}
+	if missing := missingBaseMembers(line); len(missing) > 0 {
+		// The same answer for the same reason. A member the schema requires
+		// and this line omits does not put the boundary in doubt, so it is
+		// refused rather than fatal — but it is refused. Serving it would
+		// have the endpoint answer a frame its own schema rejects, and the
+		// binding promises a host the opposite.
+		return s.write(ctx, s.errorEnvelope(envelope, &refusal{
+			code:    "invalid_request",
+			message: "the envelope omits required member(s): " + strings.Join(missing, ", "),
+		}))
+	}
 	answer, after, err := s.serve(ctx, streams, envelope)
 	if err != nil {
 		answer, after = s.errorEnvelope(envelope, err), nil
@@ -77,6 +90,30 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 		after()
 	}
 	return nil
+}
+
+// baseMembers is what the envelope schema requires of every envelope,
+// whatever its type. It is the schema's own list, including the two the
+// classifier has already ruled on, so that reading it answers "which members
+// must be here" without having to also read the classifier.
+var baseMembers = []string{"protocol", "version", "profile", "type", "id", "payload"}
+
+// missingBaseMembers names the required members a line leaves out. An explicit
+// null counts as left out: the schema types each of these, so a null is a
+// member the host did not supply rather than one it supplied as nothing.
+func missingBaseMembers(line []byte) []string {
+	var present map[string]json.RawMessage
+	if json.Unmarshal(line, &present) != nil {
+		return nil
+	}
+	var missing []string
+	for _, member := range baseMembers {
+		raw, ok := present[member]
+		if !ok || string(bytes.TrimSpace(raw)) == "null" {
+			missing = append(missing, member)
+		}
+	}
+	return missing
 }
 
 // serve dispatches one request envelope to the hub and returns the envelope
