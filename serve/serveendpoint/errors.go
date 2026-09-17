@@ -1,0 +1,78 @@
+package serveendpoint
+
+import (
+	"context"
+	"errors"
+
+	base "github.com/lsm/open-agent-protocol/adapter"
+	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/serve"
+)
+
+// refusal is one typed protocol error this endpoint raises on its own behalf,
+// for the faults that never reach an adapter.
+type refusal struct {
+	code    string
+	message string
+	details map[string]any
+}
+
+func (r *refusal) Error() string { return r.message }
+
+// errorEnvelope maps one failure onto the single correlated error.response the
+// binding owes every request.
+//
+// The mapping is the one serve/servehttp uses, minus the HTTP status: a caller
+// that switches transports should not have to relearn which code means its
+// session is gone. A typed control refusal keeps its own code and details, so
+// an open refused for a capability tells the caller which one to stop
+// electing rather than only that the open failed.
+func (s *Server) errorEnvelope(request protocol.Envelope, err error) protocol.Envelope {
+	code, message, details := "internal", err.Error(), map[string]any(nil)
+
+	var own *refusal
+	if errors.As(err, &own) {
+		code, message, details = own.code, own.message, own.details
+	} else if refusalCode, refusalMessage, refusalDetails, typed := serve.ControlRefusal(err); typed {
+		code, message, details = refusalCode, refusalMessage, refusalDetails
+	} else {
+		switch {
+		case errors.Is(err, serve.ErrUnknownAdapter):
+			code = "unknown_adapter"
+		case errors.Is(err, serve.ErrSessionExists):
+			code = "session_exists"
+		case errors.Is(err, serve.ErrUnknownSession):
+			code = "unknown_session"
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
+		case errors.Is(err, base.ErrRunNotFound):
+			code = "run_not_found"
+		case errors.Is(err, base.ErrRunActive):
+			code = "run_active"
+		case errors.Is(err, base.ErrInvalidSubmission), errors.Is(err, base.ErrUnsupportedInput):
+			code = "invalid_submission"
+		case errors.Is(err, base.ErrInteractionNotFound), errors.Is(err, base.ErrInteractionResolved),
+			errors.Is(err, base.ErrWrongResponder), errors.Is(err, base.ErrInvalidResolution):
+			code = "resolution_rejected"
+		case errors.Is(err, base.ErrToolCatalogUnavailable):
+			code = "tool_catalog_unavailable"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		}
+	}
+
+	payload := protocol.ErrorResponse{Error: protocol.ProtocolError{Code: code, Message: message, Details: details}}
+	answer, buildErr := protocol.NewEnvelope(protocol.TypeErrorResponse, s.nextID("error"), payload)
+	if buildErr != nil {
+		// The error envelope itself would not encode. Nothing richer can be
+		// said on the wire, and the request must still be answered exactly
+		// once, so the bounded fallback carries the code and drops the rest.
+		answer, _ = protocol.NewEnvelope(protocol.TypeErrorResponse, s.nextID("error"), protocol.ErrorResponse{
+			Error: protocol.ProtocolError{Code: code, Message: "the endpoint could not encode this refusal"},
+		})
+	}
+	answer.InReplyTo = request.ID
+	answer.SessionID = request.SessionID
+	answer.RunID = request.RunID
+	return answer
+}

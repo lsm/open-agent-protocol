@@ -576,6 +576,28 @@ Research:
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
 - [Protocol feedback from eight adapter tranches](research/protocol-feedback-2026-09.md)
 
+### Implementing OAP natively
+
+Every adapter in this repository translates a harness *into* OAP. An endpoint
+is the other direction: one agent loop that speaks OAP itself.
+
+`drafts/endpoint-stdio.md` is the binding — OAP envelopes, one per line, over
+stdin and stdout. It is deliberately narrower than `oap serve --stdio`, which
+exposes a hub; an implementer should not have to build a registry, twelve ops
+and multiplexed subscriptions to be conformant.
+
+```sh
+oap endpoint --adapter memory     # the reference endpoint: one adapter, raw envelopes
+oap conformance                   # drive that reference endpoint and judge it
+oap conformance --command "makai --oap"   # drive somebody else's
+```
+
+`oap conformance` spawns the command as a process, drives a scripted session
+over the binding, assembles every envelope it sent and received into a trace,
+and hands that trace to the same validator `oap validate` uses. The runner
+drives; the validator judges. Driving a process rather than linking a library
+is what keeps the runner usable against an endpoint written in any language.
+
 Decisions:
 
 - [0001 — agent-control v0.1 executable core](decisions/0001-agent-control-v0.1-executable-core.md)
