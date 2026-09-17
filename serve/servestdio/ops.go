@@ -248,18 +248,6 @@ func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requ
 
 func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
 	switch request.Op {
-	case opOpen:
-		if werr := request.only(paramAdapter, paramRequest); werr != nil {
-			return nil, werr
-		}
-		if request.Adapter == "" {
-			return nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
-		}
-		result, subscription, werr := s.openOp(ctx, request, nil)
-		if subscription != nil {
-			subscription.Close()
-		}
-		return result, werr
 	case opAdapters:
 		if werr := request.only(); werr != nil {
 			return nil, werr
