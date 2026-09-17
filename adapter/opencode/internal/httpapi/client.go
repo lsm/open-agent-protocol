@@ -1,5 +1,3 @@
-// Package httpapi is the strict HTTP+SSE client for the pinned OpenCode
-// server surface used by the OAP adapter.
 package httpapi
 
 import (
@@ -19,12 +17,6 @@ import (
 	"github.com/lsm/open-agent-protocol/adapter/opencode/internal/native"
 )
 
-// subscribeEstablishGrace bounds how long Subscribe waits for response headers
-// before returning the subscription anyway. The pinned server defers
-// session-scoped SSE response headers until the stream carries an event, so a
-// fresh, silent session would otherwise block the caller until its context
-// expires. Immediate failures (HTTP errors, refused connections) still arrive
-// well inside this window and surface synchronously.
 const subscribeEstablishGrace = 250 * time.Millisecond
 
 const DefaultQueueCapacity = 256
@@ -34,7 +26,6 @@ var (
 	ErrSubscription = errors.New("opencode httpapi: subscription failed")
 )
 
-// Client talks to one OpenCode server. It is safe for concurrent use.
 type Client struct {
 	endpoint *url.URL
 	username string
@@ -50,8 +41,7 @@ type Options struct {
 	Username string
 	Password string
 	HTTP     *http.Client
-	// FrameLimit bounds one SSE event; QueueCapacity bounds the delivered
-	// event backlog of one subscription.
+
 	FrameLimit    int
 	QueueCapacity int
 }
@@ -123,9 +113,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 		return nil
 	}
-	// Read one byte past the limit: an artificial EOF from LimitReader would
-	// otherwise let a body whose valid JSON prefix fits the limit pass with its
-	// trailing bytes silently discarded.
+
 	payload, err := io.ReadAll(io.LimitReader(response.Body, int64(c.frame)+1))
 	if err != nil {
 		return err
@@ -145,7 +133,6 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	return nil
 }
 
-// decodeStrict rejects duplicate keys, unknown fields, and trailing values.
 func decodeStrict(data []byte, out any) error {
 	if err := native.RejectDuplicateKeys(data); err != nil {
 		return err
@@ -165,14 +152,12 @@ func decodeStrict(data []byte, out any) error {
 	return nil
 }
 
-// CreateSessionRequest selects an optional caller identity, agent, and model.
 type CreateSessionRequest struct {
 	ID    string
 	Agent string
 	Model *native.ModelRef
 }
 
-// CreateSession creates a server session and returns its projected record.
 func (c *Client) CreateSession(ctx context.Context, request CreateSessionRequest) (native.SessionInfo, error) {
 	body := map[string]any{}
 	if request.ID != "" {
@@ -196,8 +181,6 @@ func (c *Client) CreateSession(ctx context.Context, request CreateSessionRequest
 	return response.Data, nil
 }
 
-// Prompt durably admits one input. The pinned server rejects prompt-id
-// conflicts with HTTP 409.
 func (c *Client) Prompt(ctx context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error) {
 	var response struct {
 		Data native.Admitted `json:"data"`
@@ -215,30 +198,16 @@ func (c *Client) Prompt(ctx context.Context, session native.SessionID, request n
 	return response.Data, nil
 }
 
-// Interrupt requests interruption of active execution. Idle interruption is
-// a documented no-op.
 func (c *Client) Interrupt(ctx context.Context, session native.SessionID) error {
 	path := "/api/session/" + url.PathEscape(string(session)) + "/interrupt"
 	return c.do(ctx, http.MethodPost, path, nil, struct{}{}, nil)
 }
 
-// WaitIdle posts the pinned server's wait route, which the OpenAPI document
-// describes as waiting for a session agent loop to become idle.
-//
-// The route is NOT implemented at this pin: the core session service resolves
-// the session and then always raises OperationUnavailableError, which the
-// server returns as HTTP 503 ServiceUnavailableError with the message
-// "Session wait is not available yet" (a missing session still answers 404).
-// Upstream pins that behaviour in its own httpapi-session test, and the stub
-// is unchanged on its development branch. The method is kept because the
-// route is part of the pinned surface, but the adapter must not build
-// settlement on it; Active carries the quiescence signal instead.
 func (c *Client) WaitIdle(ctx context.Context, session native.SessionID) error {
 	path := "/api/session/" + url.PathEscape(string(session)) + "/wait"
 	return c.do(ctx, http.MethodPost, path, nil, struct{}{}, nil)
 }
 
-// Active returns the set of sessions with running execution.
 func (c *Client) Active(ctx context.Context) (map[native.SessionID]bool, error) {
 	var response struct {
 		Data map[native.SessionID]struct {
@@ -257,7 +226,6 @@ func (c *Client) Active(ctx context.Context) (map[native.SessionID]bool, error) 
 	return active, nil
 }
 
-// History reads one bounded page of durable events strictly after seq.
 func (c *Client) History(ctx context.Context, session native.SessionID, after int64, limit int) (native.HistoryPage, error) {
 	query := url.Values{}
 	if after >= 0 {
@@ -285,10 +253,6 @@ func (c *Client) History(ctx context.Context, session native.SessionID, after in
 	return page, nil
 }
 
-// Subscribe opens the per-session durable SSE stream. Events after the
-// cursor are replayed first, then live delivery continues. Exactly one
-// subscription per session is expected; a second runs concurrently and is
-// not deduplicated.
 func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after int64) (*Subscription, error) {
 	c.mu.Lock()
 	closed := c.closed
@@ -302,8 +266,7 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after 
 	}
 	target := c.endpoint.JoinPath("/api/session/" + url.PathEscape(string(session)) + "/event")
 	target.RawQuery = query.Encode()
-	// The request carries its own cancellable context so Close can interrupt
-	// a pump blocked in Decode on an idle stream; ctx still gates establishment.
+
 	requestCtx, cancel := context.WithCancel(ctx)
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.String(), nil)
 	if err != nil {
@@ -346,9 +309,7 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after 
 		}
 		return sub, nil
 	case <-timer.C:
-		// Headers are deferred until the stream has an event; hand the
-		// pending request to the pump and let any eventual failure surface
-		// through Done/Err rather than blocking the caller.
+
 		go func() {
 			if err := consume(<-settled); err != nil {
 				sub.fail(err)
@@ -372,7 +333,6 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Subscription delivers one session's durable event stream in order.
 type Subscription struct {
 	events    chan native.Event
 	done      chan struct{}
@@ -399,9 +359,7 @@ func (s *Subscription) Err() error {
 func (s *Subscription) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
-		// Cancelling the request context aborts the response body so a pump
-		// blocked in Decode on an idle stream unblocks and exits instead of
-		// leaking the goroutine and connection for the process lifetime.
+
 		if s.cancel != nil {
 			s.cancel()
 		}

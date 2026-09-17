@@ -20,10 +20,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve/servestdio"
 )
 
-// runServe starts the single-user local daemon over the adapter registry and
-// blocks until SIGINT/SIGTERM. Restarting the daemon kills every session: run
-// child processes are per-session and no adapter here is wired for native
-// cross-restart resume.
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -36,10 +32,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if fs.NArg() != 0 {
 		return errors.New("serve accepts no positional arguments")
 	}
-	// Exclusivity is decided on what the operator actually wrote, not on the
-	// value: --addr carries a default, so comparing against it would refuse
-	// every plain --stdio invocation and silently accept the one case that is
-	// genuinely ambiguous.
+
 	addrSet := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "addr" {
@@ -61,8 +54,6 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return err
 	}
 
-	// The signal context is also the base context of every request, so
-	// long-lived SSE streams terminate the moment shutdown begins.
 	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -96,8 +87,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 
 	select {
 	case err := <-serveDone:
-		// The accept loop died on its own: still settle any sessions that
-		// were opened before returning the error.
+
 		daemon.Close()
 		settle, cancelSettle := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 		defer cancelSettle()
@@ -106,20 +96,13 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	case <-signals.Done():
 	}
 
-	// The HTTP sweep and the session sweep get independent budgets: a
-	// stalled SSE client can consume the whole HTTP window inside its write,
-	// and handing the session sweep an already-expired context would skip
-	// adapter Close entirely, orphaning child agent processes.
 	fmt.Fprintln(stderr, "oap: shutting down")
 	httpShutdown, cancelHTTP := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelHTTP()
 	if err := httpServer.Shutdown(httpShutdown); err != nil {
 		fmt.Fprintf(stderr, "oap: http shutdown: %v\n", err)
 	}
-	// Subscriptions a compound open registered are released before the
-	// session sweep: each is held for an events request that will never
-	// arrive now, and waiting out its own expiry would leave the hub holding
-	// subscribers the daemon has already stopped serving.
+
 	daemon.Close()
 	sessionShutdown, cancelSessions := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelSessions()
@@ -128,21 +111,6 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	return nil
 }
 
-// serveStdio serves one host over the process's own stdin and stdout, the
-// spawn-a-binary embedding: the parent process launched this one, and that
-// launch is the authorization, so there is no port, no TLS and no Host
-// allowlist to establish.
-//
-// Nothing but protocol lines may reach stdout. The banner the HTTP path
-// writes there — the address a caller needs — has no counterpart here, since
-// the caller already holds both pipes; what is left is the adapter list, and
-// that goes to stderr with the rest of the diagnostics.
-//
-// The session sweep runs on every exit, including the malformed-line exit.
-// The frontend's own teardown settles the work it admitted, but the sessions
-// on the hub outlive it, and skipping the sweep on the error path would
-// orphan the child agent processes a session holds — which is exactly the
-// path a host hits when its encoder is broken.
 func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, stdin io.Reader, stdout, stderr io.Writer) error {
 	frontend, err := servestdio.New(hub, servestdio.Options{
 		Logger: log.New(stderr, "oap: ", 0),
@@ -160,10 +128,6 @@ func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, s
 	defer cancelSessions()
 	hub.CloseSessions(sessionShutdown)
 
-	// A malformed line is the host's framing defect and the one outcome that
-	// must not look like a clean end: it is returned so the process exits
-	// non-zero, and the dispatcher prints it as the single bounded
-	// diagnostic. Every other end — stdin EOF, a signal — is a normal one.
 	if runErr != nil {
 		return runErr
 	}
@@ -171,9 +135,6 @@ func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, s
 	return nil
 }
 
-// loopbackHosts returns the Host-header names a loopback bind serves, or nil
-// when the operator bound a non-loopback or wildcard address and thereby
-// opted out of the single-user trust model.
 func loopbackHosts(addr string) []string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -183,9 +144,7 @@ func loopbackHosts(addr string) []string {
 	case "localhost", "127.0.0.1", "::1":
 		return []string{"localhost", "127.0.0.1", "::1"}
 	default:
-		// The empty host binds every interface, and a Host allowlist is
-		// worthless against non-browser clients who choose their own Host;
-		// only an explicit loopback bind keeps the restriction meaningful.
+
 		return nil
 	}
 }

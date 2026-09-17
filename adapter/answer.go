@@ -2,15 +2,6 @@ package adapter
 
 import "github.com/lsm/open-agent-protocol/protocol"
 
-// ValidateInputAnswer checks one answer against the question it names. It
-// enforces the OAP answer shape exactly: an answer carries either text or
-// selected_option_ids, never both; a text question requires non-empty text and
-// no selections; a single-choice answer selects exactly one offered option; a
-// multi-choice answer selects one or more distinct offered options.
-//
-// Resolvers must call this before writing a native response so a malformed
-// answer can never be delivered and then echoed in a resolution event. Coverage
-// (which questions must be answered) stays the caller's policy.
 func ValidateInputAnswer(question protocol.InputQuestion, answer protocol.InputAnswer) error {
 	if answer.QuestionID != question.ID {
 		return ErrInvalidResolution
@@ -49,9 +40,6 @@ func ValidateInputAnswer(question protocol.InputQuestion, answer protocol.InputA
 	return nil
 }
 
-// IndexInputAnswers validates every answer against the offered questions and
-// returns them keyed by question id. Each answer must name a distinct offered
-// question and satisfy ValidateInputAnswer.
 func IndexInputAnswers(questions []protocol.InputQuestion, answers []protocol.InputAnswer) (map[string]protocol.InputAnswer, error) {
 	offered := make(map[string]protocol.InputQuestion, len(questions))
 	for _, question := range questions {

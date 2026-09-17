@@ -12,12 +12,6 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// The tolerance step is judged against the bundle *as it stands*: every sample
-// here is an envelope a later revision, or an extension pack, could legally
-// emit, validated against this revision's schemas in both modes. Tolerant must
-// accept the additive ones and both modes must reject the malformed ones —
-// the second half is what keeps the transform from being merely permissive.
-
 func compileMode(t *testing.T, mode Mode) *jsonschema.Schema {
 	t.Helper()
 	s, err := CompileSchemasWith(CompileOptions{Mode: mode})
@@ -27,7 +21,6 @@ func compileMode(t *testing.T, mode Mode) *jsonschema.Schema {
 	return s
 }
 
-// loadTrace reads a fixture as the list of decoded envelopes it contains.
 func loadTrace(t *testing.T, name string) []map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), "fixtures", "valid", name))
@@ -43,7 +36,6 @@ func loadTrace(t *testing.T, name string) []map[string]any {
 	return trace
 }
 
-// firstOfType returns the first envelope of the type, or fails.
 func firstOfType(t *testing.T, trace []map[string]any, typ string) map[string]any {
 	t.Helper()
 	for _, e := range trace {
@@ -55,7 +47,6 @@ func firstOfType(t *testing.T, trace []map[string]any, typ string) map[string]an
 	return nil
 }
 
-// roundTrip re-encodes an envelope so the schema sees plain decoded JSON.
 func roundTrip(t *testing.T, e map[string]any) any {
 	t.Helper()
 	data, err := json.Marshal(e)
@@ -74,8 +65,8 @@ func roundTrip(t *testing.T, e map[string]any) any {
 type modeExpectation struct {
 	name     string
 	envelope func(t *testing.T) map[string]any
-	strict   bool // accepted by the strict compile
-	tolerant bool // accepted by the tolerant compile
+	strict   bool
+	tolerant bool
 }
 
 func TestTolerantCompileSamples(t *testing.T) {
@@ -83,8 +74,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 	tolerant := compileMode(t, ModeTolerant)
 	samples := []modeExpectation{
 		{
-			// A new leaf enum value surfaces as a string rather than failing
-			// the message.
+
 			name: "new leaf enum value on submit response",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "session.message.submit.response")
@@ -94,7 +84,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: true,
 		},
 		{
-			// An unknown member of a closed payload is ignored, not rejected.
+
 			name: "unknown payload member",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
@@ -104,8 +94,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: true,
 		},
 		{
-			// An unknown content kind takes the discriminated-union fallback:
-			// the layered draft already names audio as a content kind.
+
 			name: "audio content part",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "session.message.submit.request")
@@ -116,9 +105,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: true,
 		},
 		{
-			// A later revision's optional member on a known content kind is
-			// ignored like any other unknown member: the branch's required
-			// members and types stay exact, its closedness does not.
+
 			name: "text content part with an additive member",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "session.message.submit.request")
@@ -129,9 +116,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: true,
 		},
 		{
-			// A known kind with a malformed body is rejected in both modes:
-			// the branch's required members and member types stay exact, so
-			// only an unknown kind takes the fallback.
+
 			name: "text content part missing text",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "session.message.submit.request")
@@ -142,8 +127,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: false,
 		},
 		{
-			// A const is a fixed semantic value, never a vocabulary: run.started
-			// carrying status "failed" is malformed under any revision.
+
 			name: "run.started with status failed",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
@@ -153,9 +137,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: false,
 		},
 		{
-			// An unknown question kind matches neither if-guard, takes neither
-			// then, and surfaces as a string. The guards themselves stay exact;
-			// only the outer enum they compare against is lifted.
+
 			name: "user.input.requested with unknown kind",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "user-input-completed.json"), "user.input.requested")
@@ -168,9 +150,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: true,
 		},
 		{
-			// A known question kind still takes its guard: single_choice
-			// without options is rejected in both modes, which is what proves
-			// the if-guards were not lifted along with the outer enum.
+
 			name: "single_choice question without options",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "user-input-completed.json"), "user.input.requested")
@@ -183,7 +163,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: false,
 		},
 		{
-			// An unknown envelope type satisfies the common fields only.
+
 			name: "unknown envelope type",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
@@ -195,8 +175,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: true,
 		},
 		{
-			// A known envelope type that fails its own branch is not rescued
-			// by the fallback: the fallback excludes every known type.
+
 			name: "known envelope type with wrong payload",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
@@ -206,7 +185,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: false,
 		},
 		{
-			// The protocol constants are never lifted.
+
 			name: "wrong protocol version",
 			envelope: func(t *testing.T) map[string]any {
 				e := firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
@@ -216,7 +195,7 @@ func TestTolerantCompileSamples(t *testing.T) {
 			strict: false, tolerant: false,
 		},
 		{
-			// The unmodified envelope is the control: valid in both.
+
 			name: "unmodified run.started",
 			envelope: func(t *testing.T) map[string]any {
 				return firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
@@ -237,15 +216,9 @@ func TestTolerantCompileSamples(t *testing.T) {
 	}
 }
 
-// A schema that admits an unknown envelope is not enough on its own: the
-// stateful validator advances a run's sequence cursor only for the types it
-// enumerates, so a tolerated unknown run event at N would be skipped and the
-// next known event at N+1 diagnosed as sequence_gap. Tolerant mode classifies
-// the unknown type by wire scope instead.
 func TestTolerantStateClassifiesUnknownRunEvent(t *testing.T) {
 	trace := loadTrace(t, "core-completed.json")
-	// Insert an unknown run-scoped event right after run.started, at the next
-	// sequence, and shift every later run event of that run by one.
+
 	var out []map[string]any
 	inserted := false
 	for _, e := range trace {
@@ -291,7 +264,6 @@ func TestTolerantStateClassifiesUnknownRunEvent(t *testing.T) {
 	}
 }
 
-// validateBoth runs a trace through both validators and returns the results.
 func validateBoth(t *testing.T, trace []map[string]any, name string) (strict, tolerant Result) {
 	t.Helper()
 	data, err := json.Marshal(trace)
@@ -318,10 +290,6 @@ func hasCode(r Result, code string) bool {
 	return false
 }
 
-// A known envelope carrying an unknown enum value is the other half of
-// tolerance: the schema accepts it, and the state must treat the value as
-// opaque — suspending the rule that reads it, keeping every rule that does
-// not — rather than judging it against a table it is not in.
 func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 	t.Run("run.status.updated with an unknown status", func(t *testing.T) {
 		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), statusUpdates("paused"))
@@ -334,10 +302,7 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		}
 	})
 	t.Run("the first step out of an unknown status is not judged by the table", func(t *testing.T) {
-		// running -> paused -> queued: running -> queued is illegal in this
-		// revision's table, but the validator cannot know what may follow
-		// paused. Once queued is reached the table applies again, so
-		// queued -> waiting_for_input is illegal.
+
 		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), statusUpdates("paused", "queued"))
 		if _, tolerant := validateBoth(t, trace, "paused-queued"); !tolerant.Valid() {
 			t.Fatalf("tolerant judged the exit from an unknown status: %v", tolerant.Diagnostics)
@@ -358,15 +323,13 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		if !tolerant.Valid() {
 			t.Fatalf("tolerant rejected an unknown admission: %v", tolerant.Diagnostics)
 		}
-		// The run must have been registered: without that every later run
-		// event would carry "run event has no accepted admission".
+
 		if hasCode(tolerant, CodeIllegalRunTransition) {
 			t.Fatalf("run was not registered under an unknown admission: %v", tolerant.Diagnostics)
 		}
 	})
 	t.Run("known members are still held to each other", func(t *testing.T) {
-		// A foreign effective delivery suspends only the predicates that read
-		// it; admission started with status queued contradicts itself.
+
 		trace := loadTrace(t, "core-completed.json")
 		resp := firstOfType(t, trace, "session.message.submit.response")
 		payload := resp["payload"].(map[string]any)
@@ -374,8 +337,7 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		if _, tolerant := validateBoth(t, trace, "later-queued"); !hasCode(tolerant, CodeIllegalRunTransition) {
 			t.Fatalf("contradictory known members passed under a foreign delivery: %v", tolerant.Diagnostics)
 		}
-		// Likewise a foreign admission leaves effective delivery and status
-		// bound to each other.
+
 		trace = loadTrace(t, "core-completed.json")
 		payload = firstOfType(t, trace, "session.message.submit.response")["payload"].(map[string]any)
 		payload["admission"], payload["effective_delivery"] = "parked", "queue"
@@ -384,10 +346,7 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		}
 	})
 	t.Run("a foreign admission naming a tracked run reserves nothing", func(t *testing.T) {
-		// A later revision's admission may describe an operation on the
-		// existing run; the validator cannot judge it, so it neither reports
-		// a second admission nor reserves anything. The run's session is
-		// still checked.
+
 		secondSubmit := func(session any, admission string) func(started map[string]any, seq int64) []map[string]any {
 			return func(started map[string]any, seq int64) []map[string]any {
 				common := map[string]any{"protocol": started["protocol"], "version": started["version"], "profile": started["profile"], "session_id": session}
@@ -430,10 +389,7 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		}
 	})
 	t.Run("a run admitted under a foreign admission is not held to the started lifecycle", func(t *testing.T) {
-		// Whether run.started is owed under a later revision's admission is
-		// unknown, so a known run event before it is not missing_run_started;
-		// the run's status is the one the response declared, so the first
-		// transition is judged from running, not from a fabricated queued.
+
 		foreignAdmitted := func(before ...string) []map[string]any {
 			trace := loadTrace(t, "core-completed.json")
 			firstOfType(t, trace, "session.message.submit.response")["payload"].(map[string]any)["admission"] = "merged"
@@ -448,9 +404,7 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		}
 	})
 	t.Run("an unknown support level does not satisfy a capability gate", func(t *testing.T) {
-		// agent-control-profile.md: unknown or absent support levels are
-		// treated as unavailable. The descriptor keeps the opaque value, but
-		// a tools event gated on it is refused.
+
 		trace := loadTrace(t, "tools-permission-completed.json")
 		features := firstOfType(t, trace, "capabilities.response")["payload"].(map[string]any)["features"].(map[string]any)
 		features["tools"].(map[string]any)["level"] = "partial"
@@ -463,10 +417,7 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		}
 	})
 	t.Run("a foreign status on an accepted cancel response is opaque", func(t *testing.T) {
-		// core-cancelled: run.started, cancel accepted, status.updated,
-		// run.cancelled. With the response declaring a foreign status the
-		// next known update is the first step out of it and is not judged as
-		// cancelling -> running; with the response declaring cancelling, it is.
+
 		cancelled := func(responseStatus, nextStatus string) []map[string]any {
 			trace := loadTrace(t, "core-cancelled.json")
 			firstOfType(t, trace, "run.cancel.response")["payload"].(map[string]any)["status"] = responseStatus
@@ -485,9 +436,7 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 		}
 	})
 	t.Run("a missing status is a shape defect, not an extension", func(t *testing.T) {
-		// The schema leaves status optional on submit.response; the state rule
-		// requires it for a started admission. An absent member is not a
-		// foreign value, so tolerant mode must keep that rule.
+
 		trace := loadTrace(t, "core-completed.json")
 		resp := firstOfType(t, trace, "session.message.submit.response")
 		delete(resp["payload"].(map[string]any), "status")
@@ -501,14 +450,8 @@ func TestTolerantStateTreatsUnknownEnumValuesAsOpaque(t *testing.T) {
 	})
 }
 
-// An unknown run-scoped event before run.started takes only the
-// type-independent bookkeeping: the pre-start rule is a known-type rule, since
-// only a known terminal may settle a run early and an unknown type cannot say
-// whether it is one.
 func TestTolerantStateChecksScopeOfUnknownEnvelopes(t *testing.T) {
-	// Every unknown scoped envelope is held to scope agreement between its
-	// generic payload members and its envelope, whatever it is called and
-	// whether or not it carries a sequence.
+
 	unknown := func(typ string, envelope, payload map[string]any) func(started map[string]any, seq int64) []map[string]any {
 		return func(started map[string]any, seq int64) []map[string]any {
 			e := map[string]any{"protocol": started["protocol"], "version": started["version"], "profile": started["profile"], "type": typ, "id": "ext-" + typ, "payload": payload}
@@ -520,7 +463,7 @@ func TestTolerantStateChecksScopeOfUnknownEnvelopes(t *testing.T) {
 	}
 	cases := map[string]struct {
 		typ      string
-		envelope map[string]any // merged over the common members; "started" values resolved below
+		envelope map[string]any
 		payload  map[string]any
 		mismatch bool
 	}{
@@ -538,8 +481,7 @@ func TestTolerantStateChecksScopeOfUnknownEnvelopes(t *testing.T) {
 			if got := hasCode(tolerant, CodeScopeMismatch); got != tc.mismatch {
 				t.Fatalf("scope_mismatch=%v, want %v: %v", got, tc.mismatch, tolerant.Diagnostics)
 			}
-			// The unmatched request diagnostic is expected for the request
-			// case; nothing else may leak from an agreeing envelope.
+
 			if !tc.mismatch && !strings.HasSuffix(tc.typ, ".request") && !tolerant.Valid() {
 				t.Fatalf("agreeing unknown envelope rejected: %v", tolerant.Diagnostics)
 			}
@@ -558,8 +500,7 @@ func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
 		return n
 	}
 	t.Run("a sequenced unknown run event reports one scope_mismatch", func(t *testing.T) {
-		// runEvent checks the generic payload scope itself; the classifier
-		// must not check it again on the way in.
+
 		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
 			return []map[string]any{{
 				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
@@ -574,9 +515,7 @@ func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
 		}
 	})
 	t.Run("an unknown response is held to its own envelope", func(t *testing.T) {
-		// The response answers within the request's run (payload r1 = req
-		// r1) but its envelope names another run: one scope_mismatch for the
-		// envelope/payload disagreement, none for correlation.
+
 		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
 			common := map[string]any{"protocol": started["protocol"], "version": started["version"], "profile": started["profile"], "session_id": started["session_id"]}
 			scope := map[string]any{"session_id": started["session_id"], "run_id": started["run_id"]}
@@ -593,7 +532,7 @@ func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
 		}
 	})
 	t.Run("a sequenced unknown request reports one scope_mismatch", func(t *testing.T) {
-		// The request block defers to runEvent for a sequenced request.
+
 		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
 			return []map[string]any{{
 				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
@@ -623,9 +562,7 @@ func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
 		}
 	})
 	t.Run("an uncorrelated unknown response is still held to its own envelope", func(t *testing.T) {
-		// No request matches, so correlation reports unmatched_response and
-		// stops; the envelope/payload disagreement is a separate defect and
-		// is still reported once.
+
 		trace := afterRunStarted(t, loadTrace(t, "core-completed.json"), func(started map[string]any, seq int64) []map[string]any {
 			return []map[string]any{{
 				"protocol": started["protocol"], "version": started["version"], "profile": started["profile"],
@@ -645,9 +582,7 @@ func TestTolerantStateUnknownEnvelopeScopeDiagnosticsAreExact(t *testing.T) {
 }
 
 func TestTolerantStateOpaqueAdmissionAtClose(t *testing.T) {
-	// A trace that ends while a foreign-admitted run is open owes a terminal
-	// (type-independent) but not run.started (a lifecycle rule the validator
-	// cannot judge under that admission).
+
 	trace := loadTrace(t, "core-completed.json")
 	firstOfType(t, trace, "session.message.submit.response")["payload"].(map[string]any)["admission"] = "merged"
 	trace = trace[:2]
@@ -666,8 +601,7 @@ func TestTolerantStateSkipsPreStartRuleForUnknownEvents(t *testing.T) {
 	inserted := false
 	for _, e := range trace {
 		if e["type"] == "run.started" && !inserted {
-			// Before run.started, at sequence 1; run.started and everything
-			// after shift by one.
+
 			out = append(out, map[string]any{
 				"protocol": e["protocol"], "version": e["version"], "profile": e["profile"],
 				"type": "com.example.run.prelude", "id": "ext-prelude",
@@ -692,10 +626,6 @@ func TestTolerantStateSkipsPreStartRuleForUnknownEvents(t *testing.T) {
 	}
 }
 
-// An unknown request/response pair is scoped by its envelope, so the generic
-// correlation check still binds the response to the request's run: a request
-// on run A answered on run B is a scope_mismatch whatever the operation is
-// called.
 func TestTolerantStateScopesUnknownRequestResponse(t *testing.T) {
 	base := firstOfType(t, loadTrace(t, "core-completed.json"), "run.started")
 	common := func(typ, id string, extra map[string]any) map[string]any {
@@ -716,7 +646,7 @@ func TestTolerantStateScopesUnknownRequestResponse(t *testing.T) {
 	if !hasCode(tolerant, CodeScopeMismatch) {
 		t.Fatalf("response on another run was not diagnosed: %v", tolerant.Diagnostics)
 	}
-	// The same pair on one run correlates cleanly.
+
 	trace[1]["run_id"] = "rA"
 	_, tolerant = validateBoth(t, trace, "pause-ok")
 	if hasCode(tolerant, CodeScopeMismatch) {
@@ -724,8 +654,6 @@ func TestTolerantStateScopesUnknownRequestResponse(t *testing.T) {
 	}
 }
 
-// The regression guard the plan requires: every fixture the strict compile
-// accepts, the tolerant compile accepts too.
 func TestTolerantAcceptsEveryPositiveFixture(t *testing.T) {
 	tolerant, err := NewWith(Options{Mode: ModeTolerant})
 	if err != nil {
@@ -747,10 +675,7 @@ func TestTolerantAcceptsEveryPositiveFixture(t *testing.T) {
 		}
 		validator := tolerant
 		if len(entry.Packs) > 0 {
-			// A fixture written in a pack's vocabulary is judged in that
-			// vocabulary in both modes: without the pack its types are
-			// unknown, which is the tolerated path a different fixture
-			// asserts, not this guard's subject.
+
 			dirs := make([]string, 0, len(entry.Packs))
 			for _, pack := range entry.Packs {
 				dirs = append(dirs, filepath.Join(root, pack))
@@ -788,11 +713,6 @@ func TestParseMode(t *testing.T) {
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
-// insertRunEvents returns the trace with the envelopes build produces
-// inserted before or after the first envelope of the anchor type. build
-// receives that envelope and the first sequence number the inserted run
-// events must take, in order; every run event from there on is renumbered
-// past them.
 func insertRunEvents(t *testing.T, trace []map[string]any, anchor string, before bool, build func(anchor map[string]any, seq int64) []map[string]any) []map[string]any {
 	t.Helper()
 	seqOf := func(e map[string]any) int64 {
@@ -840,7 +760,6 @@ func beforeRunStarted(t *testing.T, trace []map[string]any, build func(started m
 	return insertRunEvents(t, trace, "run.started", true, build)
 }
 
-// statusUpdates builds one run.status.updated per status, in order.
 func statusUpdates(statuses ...string) func(started map[string]any, seq int64) []map[string]any {
 	return func(started map[string]any, seq int64) []map[string]any {
 		var out []map[string]any

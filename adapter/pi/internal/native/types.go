@@ -1,5 +1,3 @@
-// Package native defines the JSON wire vocabulary exposed by Pi coding agent
-// v0.85.1 (commit d981de1229ef899957bbe968bc8dcda02a21f477) RPC mode.
 package native
 
 import (
@@ -87,8 +85,6 @@ type ImageContent struct {
 	MimeType string `json:"mimeType"`
 }
 
-// Command is the exact field union of RpcCommand in v0.85.1. Validate enforces
-// the discriminated member and rejects fields belonging to another member.
 type Command struct {
 	ID                 string            `json:"id,omitempty"`
 	Type               CommandType       `json:"type"`
@@ -407,7 +403,6 @@ func ValidEventType(t EventType) bool {
 	}
 }
 
-// Event retains the exact native object while exposing its pinned discriminator.
 type Event struct {
 	Type EventType
 	Raw  json.RawMessage
@@ -505,7 +500,7 @@ func (r ExtensionUIRequest) Validate() error {
 			return err
 		}
 	case ExtensionSetEditorText:
-		// Empty editor text is valid and clears the editor.
+
 	default:
 		return fmt.Errorf("%w: unknown extension method %q", ErrInvalid, r.Method)
 	}

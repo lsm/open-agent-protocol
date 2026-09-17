@@ -10,75 +10,37 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The tool-sources unit (T3a catalog with sources, T3b attachment at session
-// open). A source is described, not managed: the harness runs the client, OAP
-// says what the source is, attaches it at open, and observes its calls.
-//
-// Every gate here is judged on the correlated response, never on the request,
-// exactly as the run-controls gate is and for the same reason: an endpoint
-// that advertises neither key may still be asked for a catalog, and answering
-// with a typed refusal is the correct behaviour — diagnosing the request would
-// fail the conduct the wire mandates.
-
-// attachmentOnlyMembers are the members ToolSourceAttachment carries and
-// ToolSourceDescriptor does not. One of them can hold a literal credential, so
-// a published source carrying any of them is a leak whatever serializer
-// produced it.
 var attachmentOnlyMembers = []string{"command", "args", "environment"}
 
-// pendingList is what one action.tools.list.request left for its correlated
-// response to settle.
 type pendingList struct {
 	index, line int
 	session     protocol.SessionID
 	scoped      bool
 	expectation *controlExpectation
-	// honour marks a request the endpoint advertises the catalog for and that
-	// carries no defect any rule names. Refusing it is unhonoured_capability:
-	// an endpoint that advertises a catalog and refuses every request for one
-	// honours nothing.
+
 	honour bool
 }
 
-// pendingOpen is what one session.open.request carrying tool_sources or tools
-// left for its correlated response to settle. One open can elect both keys, so
-// the expectations of both are collected and the refusal precedence picks the
-// one the response owes — a single error.response carries one code, and the
-// caller acts on the most permanent thing wrong with its request.
 type pendingOpen struct {
 	index, line int
 	attachments []protocol.ToolSourceAttachment
 	tools       []protocol.ToolDefinition
 	expectation *controlExpectation
-	// honourDiagnostic is what refusing this open earns when it carries no
-	// defect any rule names and violates no limit the endpoint disclosed;
-	// honourKey names the capability that refusal would be dishonouring.
-	// Empty when some rule already owns the response.
+
 	honourDiagnostic string
 	honourKey        string
-	// limitRefusal is the shape a refusal must take when the request does
-	// violate a disclosed limit. It is not an expectation: exceeding a limit
-	// permits a refusal without requiring one, since a limit is the endpoint's
-	// own disclosure and admitting more than it promised breaks nothing a
-	// caller relied on. So an admitted open owes nothing here, while a refused
-	// one still owes a refusal that says which entry to drop.
+
 	limitRefusal *controlExpectation
 }
 
-// sessionCatalog is the last catalog one session was served under the active
-// capability revision: the source a call's attribution is checked against.
 type sessionCatalog struct {
 	revision string
 	sources  map[string]bool
 	tools    map[string]string
-	// owners is the catalog's tool-to-executor mapping, which the
-	// control-tools unit judges a call's execution_owner against: once tools
-	// can have two owners, routing one to the wrong participant is a defect
-	// the attribution mapping cannot see.
+
 	owners map[string]protocol.ParticipantID
 }
 
-// toolSourceMap indexes descriptors by id, reporting the first duplicate.
 func toolSourceMap(sources []protocol.ToolSourceDescriptor) (map[string]protocol.ToolSourceDescriptor, string) {
 	indexed := make(map[string]protocol.ToolSourceDescriptor, len(sources))
 	duplicate := ""
@@ -92,20 +54,10 @@ func toolSourceMap(sources []protocol.ToolSourceDescriptor) (map[string]protocol
 	return indexed, duplicate
 }
 
-// descriptorSources normalizes a capability descriptor's declared sources: its
-// top-level `sources` and every layer's, since a valid descriptor may declare
-// them under a layer alone, exactly as its catalog may be published there.
-//
-// The normalization itself lives in protocol beside EffectiveSupport's, so the
-// validator, the daemon, and the test kit all read a layered descriptor the
-// same way. This wrapper stays because the phase's callers hold a
-// CapabilitiesResponse rather than a descriptor.
 func descriptorSources(p protocol.CapabilitiesResponse) []protocol.ToolSourceDescriptor {
 	return protocol.CapabilityDescriptor(p).EffectiveSources()
 }
 
-// descriptorTools normalizes a descriptor's effective catalog entries, the way
-// collectCatalog normalizes their names.
 func descriptorTools(p protocol.CapabilitiesResponse) []protocol.ToolDefinition {
 	tools := append([]protocol.ToolDefinition(nil), p.Tools...)
 	layers := make([]string, 0, len(p.Layers))
@@ -119,10 +71,6 @@ func descriptorTools(p protocol.CapabilitiesResponse) []protocol.ToolDefinition 
 	return tools
 }
 
-// checkDescriptorSources judges a capability descriptor's own catalog before
-// any list, open, or call is judged against it: a descriptor that is ambiguous
-// or dangling on its own cannot resolve a tool to one source or one owner, and
-// a call that agrees with a dangling entry is not excused by that agreement.
 func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
 	s.checkPublishedSources(i, line, e)
 	sources := descriptorSources(p)
@@ -141,10 +89,7 @@ func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p proto
 		s.catalogAmbiguous = true
 		s.addExpected(CodeDuplicateToolName, i, line, e, "/payload/tools", "the descriptor's effective catalog lists two tools with one name", "one tool per name", name)
 	}
-	// The attribution the descriptor publishes is retained with its sources. A
-	// duplicate name makes the mapping meaningless, and the descriptor already
-	// carries its own diagnostic for that, so an ambiguous catalog attributes
-	// nothing rather than attributing arbitrarily.
+
 	s.descriptorAttribution = nil
 	s.descriptorOwners = nil
 	if !s.catalogAmbiguous {
@@ -167,10 +112,7 @@ func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p proto
 			s.addExpected(CodeUnmatchedToolSource, i, line, e, "/payload/tools", "a descriptor tool names a source the descriptor does not declare", "a declared source", tool.Source, tool.Name)
 		}
 	}
-	// A refresh must keep every attached source resolvable: a new descriptor
-	// that declares an id one of the open sessions attached makes that id
-	// ambiguous, and a post-refresh list is not mandatory, so it would
-	// otherwise go unnoticed until a call resolved to the wrong endpoint.
+
 	for _, id := range s.sessionIDsInOrder() {
 		track := s.sessions[id]
 		for _, attached := range track.attachedOrder {
@@ -179,9 +121,7 @@ func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p proto
 			}
 		}
 	}
-	// A refresh is judged against every session's provided tools on the same
-	// terms and for the same reason: they are session-lifetime facts, and a
-	// post-refresh list is not mandatory.
+
 	nativeNames := make(map[string]bool, len(names))
 	for _, name := range names {
 		nativeNames[name] = true
@@ -189,8 +129,6 @@ func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p proto
 	s.checkRefreshAgainstProvided(i, line, e, declared, nativeNames)
 }
 
-// sessionIDsInOrder gives the tracked sessions a stable order, so a descriptor
-// naming two sessions' attachments diagnoses them in one order every run.
 func (s *state) sessionIDsInOrder() []protocol.SessionID {
 	ids := make([]protocol.SessionID, 0, len(s.sessions))
 	for id := range s.sessions {
@@ -200,10 +138,6 @@ func (s *state) sessionIDsInOrder() []protocol.SessionID {
 	return ids
 }
 
-// toolsListRequest retains what one catalog request owes its response. The
-// missing-descriptor and stale-revision branches are diagnosed on the request,
-// as they are for every optional envelope, and nothing is retained for a key
-// whose level could not be read at all.
 func (s *state) toolsListRequest(i, line int, e protocol.Envelope) {
 	var p protocol.ToolsListRequest
 	_ = e.DecodePayload(&p)
@@ -239,10 +173,6 @@ func (s *state) toolsListRequest(i, line int, e protocol.Envelope) {
 	}
 }
 
-// answeredScope reports the session a catalog response answers in, reading the
-// payload first and the envelope after, mirroring the fallback a request's own
-// scope takes. A catalog names its session in either place, so a response is
-// scoped if either says so.
 func answeredScope(e protocol.Envelope, p protocol.ToolsListResponse) protocol.SessionID {
 	if p.SessionID != "" {
 		return p.SessionID
@@ -250,8 +180,6 @@ func answeredScope(e protocol.Envelope, p protocol.ToolsListResponse) protocol.S
 	return e.SessionID
 }
 
-// toolsListResponse judges one served catalog: the gate it was owed, the scope
-// it must answer in, and the catalog's own resolvability.
 func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 	var p protocol.ToolsListResponse
 	_ = e.DecodePayload(&p)
@@ -261,26 +189,11 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 		s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload", pending.expectation.message, "a typed refusal naming "+pending.expectation.key, "a served catalog", string(e.InReplyTo))
 	}
 	if pending != nil && pending.scoped && p.SessionID == pending.session && e.SessionID != pending.session {
-		// A session-scoped catalog must name its session on the envelope as
-		// well as in the payload, or a consumer routing by envelope scope
-		// cannot tie the catalog to the attachment it reflects.
+
 		s.addExpected(CodeScopeMismatch, i, line, e, "/session_id", "a session-scoped catalog must name its session on the envelope", string(pending.session), string(e.SessionID), string(e.InReplyTo))
 	}
 	if pending != nil && !pending.scoped {
-		// The mirror of the rule above, and the direction that leaks. The
-		// generic correlation check binds a response to its request's scope only
-		// when the request named one, which is right everywhere else: an empty
-		// request scope usually means the operation is not scoped. Here it means
-		// something specific — the caller asked for the endpoint's own catalog —
-		// so a session's catalog is not a permissible answer to it, and it is the
-		// unit that knows that, not the correlation check.
-		//
-		// Unchecked, a response naming one session consistently in both places
-		// passed every rule and published that session's attachments as what the
-		// endpoint offers everyone. This is the same defect the hub was fixed for
-		// two rounds ago, on the other side of the wire: there the boundary took
-		// the adapter's word for the scope, here the validator took the
-		// response's. Both now read the scope the question was asked in.
+
 		if answered := answeredScope(e, p); answered != "" {
 			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "an unscoped catalog request was answered with one session's catalog", "no session", string(answered), string(e.InReplyTo))
 		}
@@ -297,17 +210,7 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 	if name := duplicateToolName(names); name != "" {
 		s.addExpected(CodeDuplicateToolName, i, line, e, "/payload/tools", "a catalog lists two tools with one name", "one tool per name", name)
 	}
-	// A served catalog attributes every tool it lists. `source` stays optional
-	// in the schema, because a descriptor published by an endpoint outside this
-	// unit carries tools with no attribution and must keep validating — but an
-	// action.tools.list.response is this unit's own envelope, served only by an
-	// endpoint advertising action.tools.list, and attribution is the whole of
-	// what that key adds. A catalog whose tools name no source is the flat list
-	// the unit exists to replace, and a consumer cannot resolve any of it.
-	//
-	// A catalog the endpoint owed a refusal for is exempt: the serving is the
-	// defect, and judging the contents of a response that should not exist piles
-	// consequences onto one fault.
+
 	gated := pending != nil && pending.expectation != nil
 	for _, tool := range p.Tools {
 		switch {
@@ -329,10 +232,7 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 		track = &sessionTrack{}
 		s.sessions[p.SessionID] = track
 	}
-	// Attachment is for the session's lifetime, so an attached source is
-	// listed with the members it was attached with in every later catalog.
-	// Native entries may differ between lists — a harness refreshes its own
-	// catalog — but the open-time entries never drop out and never change.
+
 	for _, id := range track.attachedOrder {
 		attached := track.attached[id]
 		listed, ok := declared[id]
@@ -343,9 +243,7 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 			s.addExpected(CodeCatalogMismatch, i, line, e, "/payload/sources", "a session catalog describes an attached source differently", describeSource(attached), describeSource(listed), string(p.SessionID))
 		}
 	}
-	// Provisioning is for the session's lifetime too, and all-or-nothing, so
-	// a provided tool never drops out of a later catalog and never changes
-	// the members it was supplied with.
+
 	s.checkCatalogProvided(i, line, e, p.SessionID, track, p.Tools)
 	catalog := &sessionCatalog{revision: s.currentCapability, sources: map[string]bool{}, tools: map[string]string{}, owners: map[string]protocol.ParticipantID{}}
 	for id := range declared {
@@ -358,11 +256,6 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 	track.toolCatalog = catalog
 }
 
-// describesSource reports whether a published descriptor is a description of
-// the same source an attachment stated: the id and the kind agree, and every
-// optional member the attachment named is repeated. A member the attachment
-// left blank may be supplied, because an attachment is a request to attach and
-// not a claim to have described the source completely.
 func describesSource(attached, published protocol.ToolSourceDescriptor) bool {
 	if attached.ID != published.ID || attached.Kind != published.Kind {
 		return false
@@ -379,28 +272,10 @@ func describesSource(attached, published protocol.ToolSourceDescriptor) bool {
 	return true
 }
 
-// describeSource renders one descriptor for a diagnostic's expected/actual.
 func describeSource(source protocol.ToolSourceDescriptor) string {
 	return fmt.Sprintf("%s kind=%s protocol=%s endpoint=%s display_name=%s", source.ID, source.Kind, source.Protocol, source.Endpoint, source.DisplayName)
 }
 
-// checkPublishedSources refuses an attachment-only member on a published
-// source. The descriptor shape excludes them, so a strict bundle rejects this
-// in the schema phase; the rule exists for the tolerant bundle and for a
-// hand-rolled serializer, where an implementation reflecting the open-time
-// value straight into its catalog would leak a credential and still validate.
-//
-// It reads the payload's raw JSON rather than a decoded descriptor, because
-// decoding is exactly what hides the defect: an attachment-only member
-// unmarshals into no field of ToolSourceDescriptor and is gone before any
-// semantic check could see it.
-//
-// Every carrier of a published source runs it, and each runs it over every
-// place that carrier may publish one. A capability descriptor may declare its
-// sources under a layer alone, as it may its catalog, so a layer's array is
-// checked with the top-level array and under its own pointer. Holding the
-// descriptor to a weaker rule than the list, open, and state responses would
-// leave the hole exactly where a source is first published.
 func (s *state) checkPublishedSources(i, line int, e protocol.Envelope) {
 	var raw struct {
 		Sources []map[string]json.RawMessage `json:"sources"`
@@ -422,7 +297,6 @@ func (s *state) checkPublishedSources(i, line int, e protocol.Envelope) {
 	}
 }
 
-// checkRawSources judges one published `sources` array, whatever carries it.
 func (s *state) checkRawSources(i, line int, e protocol.Envelope, pointer string, sources []map[string]json.RawMessage) {
 	for index, source := range sources {
 		for _, member := range attachmentOnlyMembers {
@@ -433,16 +307,10 @@ func (s *state) checkRawSources(i, line int, e protocol.Envelope, pointer string
 	}
 }
 
-// escapePointerToken encodes one JSON Pointer reference token (RFC 6901): a
-// layer name is an arbitrary object key, so a diagnostic pointing at it must
-// escape the two characters a pointer reserves.
 func escapePointerToken(token string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(token, "~", "~0"), "/", "~1")
 }
 
-// sessionOpenRequest retains what an open carrying tool_sources owes its
-// response: the capability it elects, the consent it needed, and every defect
-// the validator can already see in the array.
 func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 	var p protocol.SessionOpenRequest
 	_ = e.DecodePayload(&p)
@@ -451,10 +319,7 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 	}
 	pending := &pendingOpen{index: i, line: line, attachments: p.ToolSources, tools: p.Tools}
 	defer func() { s.pendingOpens[e.ID] = pending }()
-	// One descriptor read for an open that may elect two keys: the
-	// missing-descriptor and stale-revision branches belong to the open, not
-	// to either capability, and diagnosing them once per key would report one
-	// defect twice.
+
 	if _, judged := s.controlDescriptor(i, line, e, protocol.FeatureToolSourcesAttach); !judged {
 		return
 	}
@@ -491,16 +356,13 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 		pending.limitRefusal = limits[0]
 		return
 	}
-	// Nothing is wrong with the request, so refusing it dishonours whichever
-	// key it elected. Two elected keys are ordered the way every other
-	// refusal precedence tie is broken, by the key name.
+
 	for _, key := range sortedKeys(honours) {
 		pending.honourKey, pending.honourDiagnostic = key, honours[key]
 		break
 	}
 }
 
-// sortedKeys gives a map's keys a stable order.
 func sortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for key := range m {
@@ -510,23 +372,12 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// attachExpectations judges one open's tool_sources array: the capability it
-// elects, the consent it needed, and every defect the validator can already
-// see in the array.
 func (s *state) attachExpectations(p protocol.SessionOpenRequest) (defects []*controlExpectation, limit *controlExpectation, honour bool) {
 	level := s.features[protocol.FeatureToolSourcesAttach]
 	support := s.featureDetail(protocol.FeatureToolSourcesAttach)
-	// An attach capability that discloses no session-open mode cannot admit an
-	// attachment at session open, whatever its level says: the mode is the
-	// disclosure that makes the key usable, so a descriptor without it is one
-	// no caller can attach against, and the capability rung owns the answer.
-	// This is also what keeps `remote` expressible — the modes are a set, so
-	// disclosing remote never erases session_open.
+
 	if !affirmative(level) || !support.DisclosesMode(protocol.ModeSessionOpen) {
-		// The capability rung owns the response: a caller told the capability
-		// is missing has no use for a detail about one of its modes, and a
-		// single error.response cannot carry both `unadvertised` and
-		// `unsatisfiable`. Every rung-3 expectation below is discharged.
+
 		return []*controlExpectation{{
 			rung: rungCapability, key: protocol.FeatureToolSourcesAttach, pointer: "/payload/tool_sources",
 			code: errorUnsupportedFeature, reason: reasonUnadvertised,
@@ -558,9 +409,7 @@ func (s *state) attachExpectations(p protocol.SessionOpenRequest) (defects []*co
 		}
 		seen[attachment.ID] = true
 		if attachment.Kind == protocol.ToolSourceRemote && !support.DisclosesMode(protocol.ModeRemote) {
-			// A remote source reaches an endpoint the operator never
-			// configured, so it is gated on its own disclosed mode rather
-			// than on attachment alone.
+
 			defects = append(defects, &controlExpectation{
 				rung: rungUnsatisfiable, key: protocol.FeatureToolSourcesAttach,
 				pointer: fmt.Sprintf("/payload/tool_sources/%d/kind", index),
@@ -580,25 +429,6 @@ func (s *state) attachExpectations(p protocol.SessionOpenRequest) (defects []*co
 	return nil, nil, true
 }
 
-// limitViolation names the first limit an attachment array puts outside what
-// the endpoint disclosed, and nil when it violates none. An endpoint that
-// discloses nothing is held to accepting every well-formed array, because a
-// refusal is then the evidence that a constraint exists which the caller was
-// never told about.
-//
-// It returns the refusal such an array is owed rather than a bare bool. Being
-// outside a disclosed limit is an unsatisfiability — the capability is
-// advertised and usable, and this request's value is the thing that cannot be
-// honoured — so the refusal takes the same shape every other unsatisfiable
-// attachment defect takes: `unsupported_feature`, `details.feature` naming the
-// attach key, `details.reason: "unsatisfiable"`, and `details.source` naming
-// the entry to drop. Without that, being over the limit was the one branch
-// where an endpoint could refuse with any code at all and pass, which is
-// exactly the outcome disclosing a limit is supposed to prevent.
-//
-// Two violations in one array are ordered by the refusal precedence, which on
-// one rung and one key is the lower JSON Pointer, so two encodings of one
-// request owe the same refusal.
 func limitViolation(support protocol.FeatureSupport, attachments []protocol.ToolSourceAttachment) *controlExpectation {
 	refusal := func(pointer, source, message string) *controlExpectation {
 		return &controlExpectation{
@@ -610,8 +440,7 @@ func limitViolation(support protocol.FeatureSupport, attachments []protocol.Tool
 	}
 	var violations []*controlExpectation
 	if max, ok := support.MaxSources(); ok && len(attachments) > max {
-		// The entry that carries the array past the ceiling is the one a
-		// caller drops to get under it.
+
 		violations = append(violations, refusal(
 			fmt.Sprintf("/payload/tool_sources/%d", max), attachments[max].ID,
 			"an open attaches more sources than the endpoint disclosed it accepts",
@@ -634,9 +463,6 @@ func limitViolation(support protocol.FeatureSupport, attachments []protocol.Tool
 	return violations[0]
 }
 
-// sessionOpenResponse settles the attachment gate and records the session's
-// attached sources, which are session-lifetime facts every later catalog and
-// snapshot is held to.
 func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol.SessionOpenResponse) {
 	s.checkPublishedSources(i, line, e)
 	pending := s.pendingOpens[e.InReplyTo]
@@ -646,8 +472,7 @@ func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol
 	}
 	if pending.expectation != nil {
 		s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload", pending.expectation.message, "a typed refusal naming "+pending.expectation.key, "an admitted open", string(e.InReplyTo))
-		// The admission itself is the defect; recording an attachment the
-		// endpoint should have refused would pile consequences onto one fault.
+
 		return
 	}
 	track := s.sessions[p.SessionID]
@@ -664,30 +489,11 @@ func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol
 		}
 		track.attached[attachment.ID] = attachment.Descriptor()
 	}
-	// Provisioning is admitted whole or not at all, so an admitted open
-	// provisioned every definition it was given, and each of them is a
-	// session-lifetime fact from here on.
+
 	s.recordProvidedTools(track, pending.tools)
 	s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources, true)
 }
 
-// checkPublishedUnion holds a session snapshot's sources to the union of the
-// open's attachments and the descriptor's declared sources, compared by id and
-// by each descriptor's published members. The check runs only for a session
-// whose open attached sources: without an attachment a snapshot can hide
-// nothing the descriptor does not already publish.
-//
-// adopt is set for the open response alone, and it is what lets an endpoint
-// know more about a source than the caller did. An attachment states an id and
-// a kind and may state nothing else — over the daemon a caller names an
-// operator-configured source by id, and the display name, protocol, and
-// endpoint come from the operator's registry, which is the only copy a wire
-// caller is allowed to influence. So the open response is held to agreeing
-// with what the attachment *stated* and may fill what it left blank; the
-// descriptor it publishes is then adopted as the session's, and every later
-// snapshot and catalog is held to that, exactly. Both halves of the lifetime
-// rule survive: an endpoint cannot contradict what the caller asked for, and
-// once it has described a source it cannot redescribe it.
 func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session protocol.SessionID, published []protocol.ToolSourceDescriptor, adopt bool) {
 	track := s.sessions[session]
 	if track == nil || len(track.attachedOrder) == 0 {
@@ -702,10 +508,7 @@ func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session pr
 	}
 	reported, duplicate := toolSourceMap(published)
 	if duplicate != "" {
-		// One id resolves to one source. Two entries under one id leave the
-		// union ambiguous whatever else agrees: the loops below would compare
-		// the first and never see the second, so a snapshot could list an
-		// attached source twice with different members and pass.
+
 		s.addExpected(CodeDuplicateToolSource, i, line, e, "/payload/sources", "a session snapshot declares two tool sources with one id", "one source per id", duplicate)
 	}
 	ids := make([]string, 0, len(expected))
@@ -723,8 +526,7 @@ func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session pr
 		case !adopt && got != expected[id]:
 			s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/sources", "session state describes a tool source differently from the attachment it reflects", describeSource(expected[id]), describeSource(got), string(session))
 		case adopt:
-			// Accepted as published: this is now the session's description of
-			// the source, and every later snapshot and catalog is held to it.
+
 			if track.attached != nil {
 				if _, attached := track.attached[id]; attached {
 					track.attached[id] = got
@@ -739,12 +541,6 @@ func (s *state) checkPublishedUnion(i, line int, e protocol.Envelope, session pr
 	}
 }
 
-// settleToolSourceRefusal judges a correlated error.response against what a
-// catalog request or an attaching open owed. A refusal under a code, feature,
-// reason, or detail that does not tell the caller what to change is the same
-// defect as no refusal at all; and a request the endpoint advertises and the
-// validator finds defect-free, refused anyway, is the endpoint honouring
-// nothing it advertised.
 func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 	var payload protocol.ErrorResponse
 	_ = e.DecodePayload(&payload)
@@ -766,9 +562,7 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 				s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
 		case pending.limitRefusal != nil:
-			// Refusing is permitted here and admitting is too, but a refusal
-			// still has to say which source to drop: "over the limit" is only
-			// actionable when the caller is told which entry put it there.
+
 			if attribution.owns(pending.limitRefusal) {
 				s.addExpected(pending.limitRefusal.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.limitRefusal.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
@@ -780,29 +574,6 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 	}
 }
 
-// attributionInForce resolves which published catalog attributes this
-// session's tools, and returns its tool-to-source mapping together with the
-// served catalog when one supplied it.
-//
-// This is the precedence, stated once, because two checks read it and a rule
-// restated is a rule that can disagree with itself. A session's served catalog
-// supersedes the descriptor's — wholly, not tool by tool. That is the part
-// worth being explicit about: an endpoint that serves a catalog omitting a
-// tool the descriptor once mapped has republished its listing without that
-// tool, and reading the descriptor's entry for it anyway would hold a call to
-// an attribution the endpoint has stopped publishing.
-//
-// A catalog served under a superseded revision does not count, and does not
-// leave a gap when it stops counting. The catalog belongs to the revision it
-// was served under — this unit's rule for a tool catalog and Decision 0006's
-// for a model one — so `capabilities.updated` discards it; what takes over is
-// the *new* descriptor's attribution, rebuilt from the next
-// capabilities.response, which is current rather than stale. So the fallback
-// is never to older information: it is either the session's catalog under the
-// active revision, or the active descriptor's own.
-//
-// An ambiguous descriptor catalog attributes nothing rather than attributing
-// arbitrarily; descriptorAttribution is already nil in that case.
 func (s *state) attributionInForce(track *sessionTrack) (map[string]string, *sessionCatalog) {
 	if track != nil && track.toolCatalog != nil && track.toolCatalog.revision == s.currentCapability {
 		return track.toolCatalog.tools, track.toolCatalog
@@ -810,30 +581,6 @@ func (s *state) attributionInForce(track *sessionTrack) (map[string]string, *ses
 	return s.descriptorAttribution, nil
 }
 
-// checkAttachModes judges the attach capability's own disclosure, where it is
-// published rather than on the first open that trips over it.
-//
-// This is checkSelectionModes' rule for this unit's key, and it is there for
-// the same reason: a key advertised with no mode a caller can elect promises
-// nothing. `session_open` is the only application this unit defines, so an
-// endpoint advertising `action.tool_sources.attach` affirmatively while
-// disclosing no modes — or only `remote`, which says how a source may be
-// reached and not when it may be attached — has published a capability no open
-// can use. The admission path already refuses such an open on the capability
-// rung; without this the descriptor itself passes whenever nobody happens to
-// attach, which makes the advertisement free.
-//
-// It is what makes the plural `modes` carry its weight. A set is the right
-// shape — the modes an endpoint supports simultaneously, unlike
-// `run.model_selection`'s scalar `mode`, which names when a selection applies —
-// but a set whose contents are never judged where they are published is the
-// weakest form of that choice. Judging it here is what makes disclosing
-// `remote` an addition rather than a substitution: the set must still contain
-// the one mode that makes the key electable.
-//
-// Unknown names alongside `session_open` are tolerated, as they are for tool
-// choice: the vocabulary is additive, and a descriptor naming a mode a later
-// unit defines still discloses the one it names here.
 func (s *state) checkAttachModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
 	support, ok := p.EffectiveSupport(protocol.FeatureToolSourcesAttach)
 	if !ok || !affirmative(support.Level) || support.DisclosesMode(protocol.ModeSessionOpen) {
@@ -842,28 +589,11 @@ func (s *state) checkAttachModes(i, line int, e protocol.Envelope, p protocol.Ca
 	s.addExpected(CodeUndisclosedAttachModes, i, line, e, "/payload/features/action.tool_sources.attach/modes", "action.tool_sources.attach is advertised without disclosing the session_open mode an open elects", protocol.ModeSessionOpen, describeModes(support.Modes))
 }
 
-// checkCallAttributed judges a call that names no source at all.
-//
-// The member stays optional on the wire, and the rule is scoped to where the
-// obligation comes from rather than to the member's presence: an endpoint that
-// does not advertise action.tools.list publishes no catalog to attribute
-// against, and demanding an attribution from it would be demanding an
-// invention. An endpoint that does advertise one, and whose own published
-// catalog records where this tool comes from, has the answer already — and
-// omitting it leaves a consumer parsing the tool name, which is the inference
-// `source` exists to remove. That is why the check requires a mapping rather
-// than the capability alone: a tool no published catalog lists is one the
-// endpoint has said nothing about, and silence there is honest.
 func (s *state) checkCallAttributed(i, line int, e protocol.Envelope, p protocol.ActionCallPayload, track *sessionTrack) {
 	if !affirmative(s.features[protocol.FeatureToolsList]) {
 		return
 	}
-	// One notion of "the catalog in force", shared with checkCallSource. The
-	// two used to resolve it separately and disagreed about a session catalog
-	// that omits a tool the descriptor maps: that check read the omission as
-	// unmapped, this one fell through to the superseded descriptor entry and
-	// demanded an attribution for a tool the endpoint no longer publishes one
-	// for. Silence about a tool no catalog in force lists is honest.
+
 	mapping, _ := s.attributionInForce(track)
 	listed, ok := mapping[p.Name]
 	if !ok || listed == "" {
@@ -872,23 +602,6 @@ func (s *state) checkCallAttributed(i, line int, e protocol.Envelope, p protocol
 	s.addExpected(CodeUnattributedCall, i, line, e, "/payload/source", "a call names no source although the endpoint publishes a catalog that attributes the tool", listed, "none", p.Name)
 }
 
-// checkCallSource judges one requested call's attribution against the catalog.
-// A call carrying `source` must name the source the session's catalog records
-// for that tool, or a declared source when no catalog lists the tool at all;
-// otherwise the call is attributed to the wrong endpoint, which is exactly what
-// `source` exists to prevent a consumer from having to infer from a name.
-//
-// Which catalog attributes the tool is attributionInForce's single answer: the
-// session's own where it has one under the active revision, and otherwise the
-// descriptor's, because a descriptor that publishes a tool under a source has
-// published that attribution and nothing has replaced it. A tool the catalog
-// in force does not list falls back to "any source this session resolves",
-// which is all that can be said about a tool no published catalog names.
-//
-// It runs on `action.call.requested` alone. The later events of the same call
-// carry an optional `name`, so a catalog lookup there could be evaded by
-// omitting it; they are held instead to the source this call was requested
-// under, which state.tool() retains in the call's own track.
 func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
 	var p protocol.ActionCallPayload
 	_ = e.DecodePayload(&p)
@@ -897,10 +610,7 @@ func (s *state) checkCallSource(i, line int, e protocol.Envelope) {
 		s.checkCallAttributed(i, line, e, p, track)
 		return
 	}
-	// The catalog in force decides, and only it: without this a call before the
-	// first list could attribute any tool to any declared source, which is the
-	// inference `source` exists to remove — the published catalog said where
-	// that tool comes from, and a call may not say otherwise.
+
 	mapping, served := s.attributionInForce(track)
 	if listed, ok := mapping[p.Name]; ok {
 		if listed != p.Source {

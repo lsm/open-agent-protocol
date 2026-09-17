@@ -120,9 +120,6 @@ func openTest(t *testing.T, client *fakeClient, capacity int) *Session {
 	return got.(*Session)
 }
 
-// Extension dialogs are emitted with the participant as the responder; an empty
-// identity would produce schema-invalid events that no valid resolution could
-// satisfy, so the open must be refused before any process is started.
 func TestOpenRejectsEmptyParticipant(t *testing.T) {
 	started := 0
 	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
@@ -176,12 +173,6 @@ func testDescriptor(t *testing.T) base.Descriptor {
 	return descriptor
 }
 
-// assertValidTrace runs the shared protocol assertion with the adapter's live
-// descriptor. assertCancelledTrace is the variant for runs the test itself
-// cancelled: it splices the harness-side exchange the cancellation implies.
-// Extension-dialog runs are exempt from both: production truthfully advertises
-// user input unavailable, so their traces cannot pass capability-aware
-// validation.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
@@ -192,11 +183,6 @@ func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse
 	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
 }
 
-// None of the four run controls has a per-run native surface: the prompt
-// command carries no model and no set_model is issued. Each must be refused
-// under its own capability key with the typed unsupported-control error rather
-// than a generic rejection, which names none of them, or a reported effective
-// model the run never used.
 func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	s := openTest(t, newFakeClient(), 32)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -219,8 +205,6 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	}
 }
 
-// A per-submit override is rejected, so the adapter must attribute the run to
-// the native get_state model instead of clearing it with the empty request value.
 func TestRunAttributesNativeModel(t *testing.T) {
 	client := newFakeClient()
 	client.state.Model = json.RawMessage(`{"id":"claude-x","name":"Claude X","provider":"anthropic"}`)
@@ -269,8 +253,6 @@ func TestProductionProcessForcesExtensionsDisabled(t *testing.T) {
 	}
 }
 
-// An explicitly empty Environment is an empty allowlist, not "inherit". The
-// adapter must forward it non-nil so rpc.Start installs an empty environment.
 func TestProductionProcessKeepsEmptyEnvironmentNonNil(t *testing.T) {
 	var got rpc.ProcessConfig
 	factory := ProcessFactoryFunc(func(_ context.Context, config rpc.ProcessConfig) (ProcessBridge, error) {
@@ -599,9 +581,7 @@ func TestExtensionConfirmIsGenericInput(t *testing.T) {
 }
 
 func TestExtensionInputRejectsMalformedTextAnswers(t *testing.T) {
-	// ExtensionInput/ExtensionEditor surface a required text question. An empty
-	// value or a choice-form answer must be rejected before any native write,
-	// never written as an empty string and then projected as the answer.
+
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
@@ -648,8 +628,7 @@ func TestExtensionInputRejectsMalformedTextAnswers(t *testing.T) {
 }
 
 func TestExtensionChoiceRejectsAttachedText(t *testing.T) {
-	// A Confirmed choice answer carrying text must be rejected before the native
-	// response is written: an OAP answer uses exactly one form.
+
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
@@ -688,8 +667,7 @@ func TestExtensionChoiceRejectsAttachedText(t *testing.T) {
 }
 
 func TestSelectExtensionRejectsEmptyOptions(t *testing.T) {
-	// The OAP single-choice question requires at least one option; an empty pi
-	// option slice must fail closed rather than surface an invalid interaction.
+
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	_, stream := submitTest(t, s)
@@ -710,8 +688,6 @@ func TestSelectExtensionRejectsEmptyOptions(t *testing.T) {
 	}
 }
 
-// Structured content requires at least one part; a completed turn with no text
-// or reasoning is represented as empty text, not an empty parts array.
 func TestFallbackContentEmptyUsesEmptyText(t *testing.T) {
 	content := fallbackContent(&runState{})
 	text, ok := content.Text()

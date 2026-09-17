@@ -117,10 +117,6 @@ func event(seq int64, typ string, data any) native.Event {
 }
 func source(kind string) native.MessageSource { return native.MessageSource{Kind: kind} }
 
-// assistantMessageWire builds an assistant/message event payload carrying a
-// compact stream as raw JSON, mirroring the pinned wire where the settled
-// message owns the stream that the adapter projects as content deltas. The
-// stream is passed raw because AssistantStreamRecord has no marshal form.
 type assistantMessageWire struct {
 	Turn    int64                   `json:"turn"`
 	Step    int64                   `json:"step"`
@@ -142,8 +138,6 @@ func (f *fakeClient) ev(seq int64, typ string, data any) {
 	f.notify(&native.SessionEventNotification{SessionID: "session", Event: event(seq, typ, data)})
 }
 
-// Structured content requires at least one part; an assistant message with no
-// blocks is represented as empty text, not an empty parts array.
 func TestBlocksContentEmptyUsesEmptyText(t *testing.T) {
 	session, _ := openTest(t)
 	content, err := session.(*Session).blocksContent(nil, nil)
@@ -173,8 +167,6 @@ func request() protocol.MessageSubmitRequest {
 	return protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
 }
 
-// The native prompt carries no model, so a per-submit override cannot be
-// applied; it must be refused rather than silently running the session model.
 func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	s, _ := openTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -314,8 +306,7 @@ func TestPromptResponseMayFollowEarlyNotifications(t *testing.T) {
 func TestCompletedRunMapsChunksUsageAndSettlement(t *testing.T) {
 	s, f := openTest(t)
 	a, st := admission(t, s, f, "receipt")
-	// The settled message owns the stream; its raw text-delta record projects
-	// the single content delta the run previously streamed live.
+
 	f.ev(5, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "hi"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[{"type":"chunk","time":5,"chunk":{"type":"text-delta","index":0,"text":"hi"}}]`, &native.TokenUsage{InputTokens: 2, OutputTokens: 1}))
 	f.ev(7, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 	f.ev(8, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
@@ -417,8 +408,7 @@ func TestPreAdmissionChildNotificationsDefer(t *testing.T) {
 		f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
 		f.ev(4, "user/message", native.UserMessage{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")})
 	}
-	// Force the failing interleaving deterministically: everything above must
-	// be reduced while the submission is still pre-receipt.
+
 	reduced := func(f *fakeClient) {
 		bar := make(chan struct{})
 		f.in <- rpc.InboundMessage{Barrier: bar}
@@ -482,12 +472,6 @@ func TestPreAdmissionChildNotificationsDefer(t *testing.T) {
 	})
 }
 
-// After the prompt response carries a messageId, native acceptance is confirmed
-// and the run is authoritative: a caller cancellation must not release the
-// reservation while the accepted turn may still execute (which would let a retry
-// overlap it and make its later observations foreign).
-// A successful prompt RPC that names no message may still have executed; the
-// session must be retired rather than released for a retry to overlap it.
 func TestPromptReceiptWithoutMessageIDRetiresSession(t *testing.T) {
 	s, f := openTest(t)
 	settled := make(chan error, 1)
@@ -540,12 +524,11 @@ func TestSubmitCancellationAfterReceiptKeepsReservation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("submit did not settle")
 	}
-	// A retry must be refused: the accepted native turn still owns the session.
+
 	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("overlapping submit: err=%v, want ErrRunActive", err)
 	}
-	// The retained reservation is still reducible: native ownership evidence
-	// promotes it and the turn settles, so the session is not wedged.
+
 	f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")}}})
 	f.ev(2, "turn/start", native.TurnStart{Turn: 1})
 	f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
@@ -562,8 +545,7 @@ func TestSubmitCancellationAfterReceiptKeepsReservation(t *testing.T) {
 }
 
 func TestEnteredMessageMayArriveInLaterStep(t *testing.T) {
-	// The ledger permits the entered direct-user message to be forwarded in
-	// any step of its turn; the proof must record the step that contains it.
+
 	proof := func(f *fakeClient, receipt string) {
 		f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")}}})
 		f.ev(2, "turn/start", native.TurnStart{Turn: 1})
@@ -616,16 +598,11 @@ func TestEnteredMessageMayArriveInLaterStep(t *testing.T) {
 	t.Run("live proof during dispatch", func(t *testing.T) { runCase(t, true) })
 }
 
-// TestNativeSequenceStartsAtZero pins the live-runtime convention: the pinned
-// harness numbers a session's events from zero, and the first event (the
-// synchronous inbox insertion) is seq=0. A lastSeq initialized to the zero
-// value with a <= check rejects the legitimate first event of every session.
 func TestNativeSequenceStartsAtZero(t *testing.T) {
 	s, f := openTest(t)
 	ch := submitAsync(s)
 	<-f.started
-	// The runtime inserts the user message synchronously before the prompt
-	// response returns, and that insertion is seq=0.
+
 	f.ev(0, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")}}})
 	f.prompts <- promptReply{id: "receipt"}
 	f.ev(1, "turn/start", native.TurnStart{Turn: 1})
@@ -657,12 +634,10 @@ func TestNativeSequenceStartsAtZero(t *testing.T) {
 	}
 }
 
-// TestNativeSequenceRegressionStillRejected confirms the monotonic guard keeps
-// its teeth once seq=0 is admissible: a repeated or lower sequence fails.
 func TestNativeSequenceRegressionStillRejected(t *testing.T) {
 	s, f := openTest(t)
 	a, st := admission(t, s, f, "receipt")
-	// admission() consumed seq 1..4; repeating seq 4 is a regression.
+
 	f.ev(4, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "hi"}}, native.MessageSource{Kind: "model", Provider: "p", Model: "m"}, `[]`, nil))
 	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
 	events := drain(t, st)

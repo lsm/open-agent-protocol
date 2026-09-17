@@ -1,5 +1,3 @@
-// Package provider describes model-provider compatibility surfaces independently
-// from OAP harness adapters.
 package provider
 
 import "fmt"

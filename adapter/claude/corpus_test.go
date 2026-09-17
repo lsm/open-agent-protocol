@@ -22,9 +22,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The Claude Code evidence corpus pins the artifacts frozen in
-// research/claude-code-agent-sdk-2.1.263-mapping.md: the wrapper and native
-// CLI tarballs, the CLI binary, and both reference SDK trees.
 const (
 	ccCorpusCLIVersion   = "2.1.263"
 	ccCorpusWrapperSHA   = "b325aaaf748065ebce116c50893120384ce6ec56c1133f42f45177f8d1030c66"
@@ -53,30 +50,29 @@ const (
 	ccCorpusPyStoreVal   = "16addd216281eecaadaedbe7ed361ad8205d0433"
 )
 
-// Every label required by the ledger's frozen evidence corpus plan.
 var ccLedgerFixtures = map[string]bool{
-	// handshake/session
+
 	"initialize-minimal": true, "per-turn-init": true, "second-turn": true,
-	// admission
+
 	"message-admitted": true, "command-lifecycle": true, "injected-turn-origin": true,
 	"queued-turn-count": true,
-	// run lifecycle
+
 	"completed-text": true, "max-turns": true, "api-error-result": true,
 	"error-result": true, "interrupt-cancel": true, "process-exit": true,
 	"malformed-stdout-line": true,
-	// streaming
+
 	"streaming-deltas": true, "interleaved-blocks": true,
-	// tools
+
 	"tool-roundtrip": true, "tool-failed": true, "tool-progress": true,
 	"auto-approved-tool": true,
-	// interactions
+
 	"permission-gate": true, "permission-deny": true,
-	// children
+
 	"subagent-task": true, "task-updated-terminal": true, "stop-task": true,
-	// hygiene
+
 	"keep-alive-ignored": true, "unknown-frame-ignored": true,
 	"no-implied-replay": true, "resume-fork": true,
-	// catalog
+
 	"tools-catalog-sources": true,
 }
 
@@ -150,9 +146,7 @@ type ccControl struct {
 	Decision string `json:"decision,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Expect   string `json:"expect,omitempty"`
-	// Catalog is the assert-catalog op's expected projection. A catalog is
-	// not an event, so the case declares it here rather than in the
-	// expected-oap trace.
+
 	Catalog *protocol.ToolsListResponse `json:"catalog,omitempty"`
 }
 type ccCorpusMapping struct {
@@ -169,12 +163,11 @@ type ccCorpusOmission struct {
 	Reason string `json:"reason"`
 }
 
-// ccDecodedFrame carries the production-codec result for one native frame.
 type ccDecodedFrame struct {
 	Message      *rpc.Message
-	Observation  any // typed value from the production decoder
+	Observation  any
 	Control      *ccControl
-	Invalid      error // production rejection, for decode-error frames
+	Invalid      error
 	UserUUID     string
 	ResponseType string
 }
@@ -270,11 +263,6 @@ func runClaudeCorpusCase(t *testing.T, root string, entry ccCorpusManifestCase) 
 	assertClaudeExpected(t, filepath.Join(dir, definition.ExpectedOAP), execution.envelopes)
 }
 
-// runClaudeScriptedCase drives the production codec, transport, and reducer
-// through the public adapter over real pipes: the scripted CLI counterpart
-// writes fixture lines the reader must decode, and every adapter write is
-// compared against the transcript. The initialize exchange at open is issued
-// exactly like the production process factory, so its wire shape is evidence.
 func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFrame, decoded []ccDecodedFrame) ccExecution {
 	t.Helper()
 	peer := newWirePeer(t)
@@ -309,9 +297,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 	initializePending := true
 	var cancelDone chan error
 	var pendingRequests []string
-	// reap collects the in-flight submission's outcome WITHOUT draining its
-	// stream: draining waits for run terminality, which mid-run controls
-	// (cancel) must not require.
+
 	reap := func() *ccSubmit {
 		if pending == nil {
 			return submitted
@@ -325,7 +311,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 		pending = nil
 		return submitted
 	}
-	// recordPending drains and records the reaped submission's event stream.
+
 	recordPending := func() {
 		if submitted == nil {
 			return
@@ -333,8 +319,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 		execution.record(t, submitted.admission, submitted.stream, submitted.err)
 		submitted = nil
 	}
-	// readRequest consumes the next adapter-issued control request, tracking
-	// its id so a later transcript reply can address it.
+
 	readRequest := func(label string) rpc.Message {
 		t.Helper()
 		select {
@@ -450,17 +435,12 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 					t.Fatalf("frame %d: cancel wrote %q, want interrupt", i+1, message.Subtype)
 				}
 			case "assert-catalog":
-				// The catalog is not an event, so it cannot ride the
-				// expected-oap trace: the case declares it inline and the
-				// projection is compared against it and then run through the
-				// real validator, which is what proves it resolves.
+
 				lister, ok := session.(base.ToolLister)
 				if !ok {
 					t.Fatalf("frame %d: the session serves no catalog", i+1)
 				}
-				// A degraded catalog is not served without consent: the
-				// refusal names the key to opt into, and only then is the
-				// catalog projected.
+
 				var degraded *base.DegradedControlError
 				if _, err := lister.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "session"}); !errors.As(err, &degraded) || degraded.Feature != protocol.FeatureToolsList {
 					t.Fatalf("frame %d: a catalog was served without the degraded opt-in (err = %v)", i+1, err)
@@ -486,11 +466,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 				}
 				adaptertest.AssertToolCatalog(t, execution.descriptor, protocol.SessionOpenRequest{}, request, catalog)
 				execution.catalogs = append(execution.catalogs, catalog.Tools)
-				// From here the session has published this catalog, so a later
-				// run's calls are judged against it rather than the descriptor.
-				// An endpoint-level answer belongs to no session and publishes
-				// nothing to this one, so it does not become the catalog in
-				// force.
+
 				if catalog.Tools.SessionID != "" {
 					served := catalog
 					execution.served, execution.servedRequest = &served, request
@@ -545,7 +521,6 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 	return execution
 }
 
-// ccExecution records what the behavioral run actually proved.
 type ccExecution struct {
 	descriptor        base.Descriptor
 	admissions        []protocol.MessageSubmitResponse
@@ -563,10 +538,7 @@ type ccExecution struct {
 	assertStates      []string
 	modelIDs          []string
 	catalogs          []protocol.ToolsListResponse
-	// served is the last catalog this session actually served, and nil until
-	// it has served one. A run after a serve is certified against it, because
-	// that catalog is the one in force for every call the run emits; a run
-	// before any serve is certified against the descriptor alone.
+
 	servedRequest protocol.ToolsListRequest
 	served        *base.ToolCatalog
 	closed        bool
@@ -598,8 +570,6 @@ func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	}
 	e.envelopes = append(e.envelopes, events...)
 }
-
-// ---- transcript loading ------------------------------------------------------
 
 func ccLoadFrames(t *testing.T, filename string) ([]ccFrame, []ccDecodedFrame) {
 	t.Helper()
@@ -686,8 +656,7 @@ func ccLoadFrames(t *testing.T, filename string) ([]ccFrame, []ccDecodedFrame) {
 						t.Fatalf("frame %d invalid assert-state status", i+1)
 					}
 				case "cancel":
-					// The cancel control makes the adapter issue interrupt, so
-					// the next reply answers an interrupt, not initialize.
+
 					lastRequestSubtype = native.ControlInterrupt
 				case "assert-catalog":
 					if control.Catalog == nil {
@@ -714,9 +683,6 @@ func ccLoadFrames(t *testing.T, filename string) ([]ccFrame, []ccDecodedFrame) {
 	return frames, decoded
 }
 
-// ccWireBytes returns the exact native wire bytes for a fixture raw value.
-// String raws carry byte-exact frames (including corrupt lines); object raws
-// are used verbatim.
 func ccWireBytes(t *testing.T, raw json.RawMessage) []byte {
 	t.Helper()
 	trimmed := bytes.TrimSpace(raw)
@@ -730,8 +696,6 @@ func ccWireBytes(t *testing.T, raw json.RawMessage) []byte {
 	return raw
 }
 
-// ccReplyPayload renders a fixture control_response raw with the addressed
-// request id answered by the harness (the minted id is opaque).
 func ccReplyPayload(t *testing.T, raw json.RawMessage) string {
 	t.Helper()
 	var envelope struct {
@@ -750,9 +714,6 @@ func ccReplyPayload(t *testing.T, raw json.RawMessage) string {
 	return string(payload)
 }
 
-// ccAssertWritten compares an adapter write against the fixture expectation:
-// canonical JSON equality, with the minted request id collapsed to the
-// "@request" placeholder when the fixture uses one.
 func ccAssertWritten(t *testing.T, actual, expected json.RawMessage, label string) {
 	t.Helper()
 	if bytes.Contains(expected, []byte(`"@request"`)) {
@@ -809,7 +770,6 @@ func ccDecodeFrameMap(t *testing.T, raw json.RawMessage) map[string]any {
 	return frame
 }
 
-// ccOpenGate waits for the reducer to surface an unresolved permission gate.
 func ccOpenGate(t *testing.T, impl *Session) *gateState {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -954,8 +914,6 @@ func assertClaudeClassifications(t *testing.T, frames []ccFrame, decoded []ccDec
 	}
 }
 
-// ---- ledger evidence rules ---------------------------------------------------
-
 func ccObserveIndexes(decoded []ccDecodedFrame, frameType, subtype string) []int {
 	var out []int
 	for i := range decoded {
@@ -1008,7 +966,6 @@ func ccRunTerminal(events []protocol.Envelope) (protocol.EnvelopeType, string, s
 	return "", "", ""
 }
 
-// ccResultEchoMatches reports whether a frame echoes the submitted turn uuid.
 func ccResultEchoMatches(frame ccFrame, uuid string) bool {
 	if uuid == "" {
 		return false
@@ -1031,7 +988,6 @@ func ccResultEchoMatches(frame ccFrame, uuid string) bool {
 	return false
 }
 
-// ccAnyRun reports whether any recorded run satisfies the probe.
 func ccAnyRun(execution ccExecution, probe func(typ protocol.EnvelopeType, a, b string) bool) bool {
 	for _, events := range execution.runs {
 		if len(events) == 0 {
@@ -1045,9 +1001,6 @@ func ccAnyRun(execution ccExecution, probe func(typ protocol.EnvelopeType, a, b 
 	return false
 }
 
-// ccCallSources reports the `source` each action.call.requested for one tool
-// carried, in run order, so a test can read the attribution rule as a sequence
-// rather than as a single envelope.
 func ccCallSources(runs [][]protocol.Envelope, tool string) []string {
 	var sources []string
 	for _, events := range runs {
@@ -1065,8 +1018,6 @@ func ccCallSources(runs [][]protocol.Envelope, tool string) []string {
 	return sources
 }
 
-// assertClaudeLedgerEvidence requires each ledger label to have executable
-// evidence in the fixture transcript and the behavioral execution record.
 func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame, decoded []ccDecodedFrame, execution *ccExecution) {
 	t.Helper()
 	for _, label := range labels {
@@ -1077,13 +1028,7 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			ok = execution.initializeShape && execution.initializeReply && execution.userWrites > 0 &&
 				advertised && feature.Level == protocol.SupportEmulated
 		case "tools-catalog-sources":
-			// Two catalogs: the pre-turn one, before any system/init frame has
-			// arrived, and the one projected from the frame's two lists. The
-			// first must be served rather than refused — the descriptor
-			// advertises the key — and the second joins the lists: every
-			// listed tool becomes an entry, every listed server a declared
-			// source, and a namespaced tool reaches the longest server name
-			// the same frame listed.
+
 			inits := ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit)
 			ok = len(inits) == 2 && len(execution.catalogs) == 2
 			if ok {
@@ -1102,10 +1047,9 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 				ok = len(catalog.Sources) == 3 && declared[nativeToolSource] &&
 					declared[mcpSourcePrefix+"files"] && declared[mcpSourcePrefix+"files__nested"] &&
 					attributed["mcp__files__read_file"] == mcpSourcePrefix+"files" &&
-					// The overlapping pair: the longest match, never the first
-					// a map happened to yield.
+
 					attributed["mcp__files__nested__read"] == mcpSourcePrefix+"files__nested" &&
-					// A namespaced name whose server the frame never listed.
+
 					attributed["mcp__absent__ghost"] == nativeToolSource &&
 					attributed["Bash"] == nativeToolSource
 				for _, tool := range catalog.Tools {
@@ -1115,15 +1059,7 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 				}
 			}
 			if ok {
-				// The attribution rule in both directions, which is the whole of
-				// it: the same MCP tool is called once before this session served
-				// its catalog and once after. Before, nothing had published where
-				// that tool comes from, so the call names nothing — naming
-				// `mcp:files` there would reference an id no envelope in the stream
-				// declares. After, the session published exactly that attribution,
-				// so the call names it — omitting it there would leave a consumer
-				// holding a catalog it cannot join to the call. Each run's trace is
-				// certified against the catalog in force when it happened.
+
 				sources := ccCallSources(execution.runs, "mcp__files__read_file")
 				ok = len(sources) == 2 && sources[0] == "" && sources[1] == mcpSourcePrefix+"files"
 			}
@@ -1346,7 +1282,7 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			ok = progress && ccHasObservation(decoded, native.TypeToolProgress, "") &&
 				ccEnvelopeCount(*execution, protocol.TypeRunCompleted) > 0
 		case "auto-approved-tool":
-			// A tool_use → tool_result span with no permission ask between it.
+
 			span := false
 			for i := range decoded {
 				if decoded[i].Message == nil || decoded[i].Message.Kind != rpc.KindObservation || decoded[i].Message.Type != native.TypeAssistant {
@@ -1430,8 +1366,7 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			})
 			ok = updated && completed
 		case "stop-task":
-			// v1 never issues a stop_task-shaped control request: interrupt is
-			// the only cancellation write, and children settle via frames.
+
 			onlyPinned := execution.controlWrites[native.ControlInitialize] >= 1
 			for subtype := range execution.controlWrites {
 				switch subtype {
@@ -1489,8 +1424,6 @@ func ccHasControlRequest(decoded []ccDecodedFrame, subtype string) bool {
 	return false
 }
 
-// ---- expected-trace comparison -------------------------------------------------
-
 func assertClaudeExpected(t *testing.T, filename string, events []protocol.Envelope) {
 	t.Helper()
 	data, err := os.ReadFile(filename)
@@ -1517,9 +1450,6 @@ func assertClaudeExpected(t *testing.T, filename string, events []protocol.Envel
 	}
 }
 
-// ccEqualEvents compares two traces after dropping wall-clock stamps: the
-// corpus harness is deterministic, so every other member — ids, sequences,
-// correlations — must match exactly.
 func ccEqualEvents(a, b []protocol.Envelope) bool {
 	return bytes.Equal(ccNormalizeTrace(a), ccNormalizeTrace(b))
 }
@@ -1546,8 +1476,6 @@ func ccNormalizeTrace(events []protocol.Envelope) []byte {
 	return normalized
 }
 
-// ---- corpus plumbing ------------------------------------------------------------
-
 func ccLoadJSON[T any](t *testing.T, filename string) T {
 	t.Helper()
 	var value T
@@ -1559,8 +1487,6 @@ func ccLoadJSON[T any](t *testing.T, filename string) T {
 	return value
 }
 
-// ccLoadOptional decodes a corpus file that may legitimately be empty in
-// update mode (the generated mapping file starts empty).
 func ccLoadOptional[T any](t *testing.T, filename string) T {
 	t.Helper()
 	var value T

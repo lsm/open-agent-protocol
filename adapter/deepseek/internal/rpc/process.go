@@ -24,7 +24,7 @@ type ProcessConfig struct {
 	Path string
 	Args []string
 	Dir  string
-	// Env nil inherits the parent environment; non-nil replaces it verbatim.
+
 	Env                []string
 	FrameLimit         int
 	QueueCapacity      int
@@ -60,8 +60,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	}
 	command := exec.Command(config.Path, append([]string(nil), config.Args...)...)
 	command.Dir = config.Dir
-	// slices.Clone preserves non-nilness: an explicitly empty allowlist stays
-	// empty instead of collapsing to nil and inheriting the parent.
+
 	if config.Env != nil {
 		command.Env = slices.Clone(config.Env)
 	}
@@ -95,11 +94,6 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	process.Client = NewClient(stdout, stdin, ClientOptions{FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, CloseReadWriter: pipes, StrictResponseIDs: true})
 	go process.wait()
 
-	// Activate the ordered inbound stream before the handshake so the
-	// initialize response barriers behind every earlier notification. Any
-	// native observation preceding the handshake is foreign activity at this
-	// boundary: the runtime owns no sessions before initialize returns, so
-	// fail closed rather than buffering events of unknown provenance.
 	inbound := process.Client.Inbound()
 	type initOutcome struct {
 		result native.InitializeResult
@@ -150,11 +144,7 @@ func (p *Process) Done() <-chan struct{} { return p.waitDone }
 func (p *Process) WaitError() error      { p.waitMu.Lock(); defer p.waitMu.Unlock(); return p.waitErr }
 func (p *Process) Close(ctx context.Context) error {
 	p.close.Do(func() {
-		// The shutdown response is delivered only after its ordering barrier is
-		// acknowledged by an inbound consumer. During teardown the semantic
-		// consumer may already be gone, so drain the stream here: acknowledge
-		// barriers and discard residual observations — the session is closing
-		// and they can no longer affect reducer state.
+
 		drained := make(chan struct{})
 		go func() {
 			defer close(drained)
@@ -194,10 +184,7 @@ func (p *Process) Close(ctx context.Context) error {
 	return p.closeErr
 }
 func (p *Process) wait() {
-	// Drain stdout before reaping. Cmd.Wait closes the stdout pipe, so the
-	// reader must finish routing every frame already buffered there before the
-	// pipe is closed; otherwise a response the child wrote immediately before
-	// exiting is reported as a process-exit failure on the pending call.
+
 	<-p.Client.ReadDone()
 	p.drainStderr()
 	err := p.command.Wait()
@@ -216,29 +203,15 @@ func processExitError(err error) error {
 }
 func (p *Process) abort() error {
 	_ = p.command.Process.Kill()
-	// Collect the dead child's stderr before releasing the pipes: this is the
-	// diagnostic the caller composes into the handshake error, and
-	// killAndRelease closes the read end. Bounded by abortStderrGrace so a
-	// descendant holding stderr cannot stall a failed Start.
+
 	p.drainStderrWithin(abortStderrGrace)
 	p.killAndRelease()
 	<-p.waitDone
 	return p.WaitError()
 }
 
-// drainStderr waits for the stderr copier to finish before the child is reaped.
-// Cmd.Wait closes the pipes it created as soon as the child exits, and
-// StderrPipe's contract is that every read must complete first: a copier that
-// has not yet consumed the buffered bytes fails on a closed file and the bytes
-// are lost, which is how a handshake failure ended up composing an empty
-// stderr. A descendant that inherited stderr can keep the read end from
-// reaching EOF, so bound the drain and close our side to release the copier,
-// exactly as the shutdown paths bound the stdout drain.
 func (p *Process) drainStderr() { p.drainStderrWithin(p.timeout) }
 
-// drainStderrWithin waits up to limit for the copier, then closes the read end
-// to release it. Releasing costs whatever a still-writing descendant had left
-// to say; blocking instead would cost the caller its bound.
 func (p *Process) drainStderrWithin(limit time.Duration) {
 	timer := time.NewTimer(limit)
 	defer timer.Stop()
@@ -250,17 +223,9 @@ func (p *Process) drainStderrWithin(limit time.Duration) {
 	}
 }
 
-// killAndRelease kills the child and retires the client before reaping. Reaping
-// waits for the reader to drain (see wait), but a reader blocked on a response
-// barrier — or on a stdout a descendant still holds open — would never reach
-// EOF. Retiring the client closes the pipe and releases the barrier so the
-// drain completes instead of stalling teardown.
 func (p *Process) killAndRelease() {
 	_ = p.command.Process.Kill()
-	// Release stderr too, not just the client's stdout. Forced shutdown has
-	// already spent its budget; without this the drain in wait() would start a
-	// fresh full timeout against a descendant-held stderr and Close would
-	// overrun its configured bound by a second timeout.
+
 	_ = p.stderrPipe.Close()
 	p.Client.closeWith(processExitError(nil))
 }
@@ -327,10 +292,4 @@ func redact(v string) string {
 	return strings.TrimSpace(secretLine.ReplaceAllString(v, `$1$2[REDACTED]`))
 }
 
-// abortStderrGrace bounds the stderr drain on the handshake-abort paths. The
-// child is already killed there, so the diagnostic stderr composed into the
-// failure is whatever it wrote before dying and is sitting in the pipe buffer
-// already: the copier needs a scheduling slice, not a shutdown budget. Bounding
-// it here keeps a descendant that inherited stderr from adding a full
-// ShutdownTimeout to a Start that has already failed or been cancelled.
 const abortStderrGrace = 250 * time.Millisecond

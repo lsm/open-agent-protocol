@@ -25,8 +25,6 @@ func hubEnvelope(t *testing.T, typ protocol.EnvelopeType, sequence uint64) proto
 	return envelope
 }
 
-// runEnvelope is hubEnvelope carrying a run id, for driving the hub's
-// per-run cursor accounting directly.
 func runEnvelope(t *testing.T, runID protocol.RunID, sequence uint64) protocol.Envelope {
 	t.Helper()
 	envelope := hubEnvelope(t, protocol.TypeRunStatusUpdated, sequence)
@@ -34,12 +32,6 @@ func runEnvelope(t *testing.T, runID protocol.RunID, sequence uint64) protocol.E
 	return envelope
 }
 
-// TestQueueOverflowCursorTracksPosition pins the queue-full cursor: it
-// names the run of the dropped envelope — the run whose events were lost —
-// from the consumer's last delivered position in it, or from its start
-// when the run was never delivered, so the replayed suffix always covers
-// the loss. A cursor rewritten onto an older observed run could not
-// recover an entirely unseen newer stream.
 func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(2)
@@ -49,8 +41,8 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	entry.startRun("run-a", make(chan base.Result, 1))
 	entry.startRun("run-b", make(chan base.Result, 1))
 	entry.publish(runEnvelope(t, "run-a", 1))
-	entry.publish(runEnvelope(t, "run-a", 2)) // the two-slot mailbox is full
-	entry.publish(runEnvelope(t, "run-b", 1)) // a newer run's envelope finds it full
+	entry.publish(runEnvelope(t, "run-a", 2))
+	entry.publish(runEnvelope(t, "run-b", 1))
 
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
 	for sequence := uint64(1); sequence <= 2; sequence++ {
@@ -68,8 +60,6 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 		t.Fatalf("overflow cursor %+v, want run-b at sequence 0 — the unseen dropped run", overflow)
 	}
 
-	// With the newer run already observed, the cursor resumes it from the
-	// consumer's position in it.
 	latecomer := newSession("hub", "memory", nil)
 	positioned, ok := latecomer.subscribe(2)
 	if !ok {
@@ -79,7 +69,7 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	latecomer.startRun("run-b", make(chan base.Result, 1))
 	latecomer.publish(runEnvelope(t, "run-a", 1))
 	latecomer.publish(runEnvelope(t, "run-b", 1))
-	latecomer.publish(runEnvelope(t, "run-b", 2)) // full mailbox, position in run-b
+	latecomer.publish(runEnvelope(t, "run-b", 2))
 
 	positionedSubscription := &Subscription{session: latecomer, ctx: context.Background(), sub: positioned}
 	if _, err := positionedSubscription.Next(); err != nil {
@@ -97,14 +87,6 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 	}
 }
 
-// TestOverflowRecoversFromTheLiveRunNotASettledReservation pins what the
-// admission serials are for. They are admission order, and overflow recovery
-// reads them as execution order too — true until a later-admitted run settles
-// before an earlier one, which is exactly what a reservation cancelled before
-// promotion does. Its terminal carries the higher serial, so a consumer that
-// acknowledged it and then fell behind on the still-live earlier run was handed
-// a cursor on a run that had already ended: the lost envelopes were
-// unreachable from it.
 func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(2)
@@ -112,13 +94,10 @@ func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
 		t.Fatal("subscribe on an open session was refused")
 	}
 
-	// The started run, still delivering.
 	streamA := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
 	entry.publish(runEnvelope(t, "run-a", 1))
 
-	// A reservation admitted behind it, cancelled before promotion: it takes
-	// the higher serial, publishes one terminal and never becomes current.
 	entry.mu.Lock()
 	entry.reservations++
 	entry.mu.Unlock()
@@ -129,8 +108,6 @@ func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
 	streamB <- base.Result{Envelope: cancelled}
 	close(streamB)
 
-	// The consumer reads both and acknowledges, so its position is the
-	// reservation's — the newest serial the session has handed out.
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
 	for _, want := range []protocol.RunID{"run-a", "run-b"} {
 		envelope, err := subscription.Next()
@@ -143,7 +120,6 @@ func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
 	}
 	waitForFinished(t, entry, "run-b")
 
-	// Now it falls behind on the still-live earlier run.
 	entry.publish(runEnvelope(t, "run-a", 2))
 	entry.publish(runEnvelope(t, "run-a", 3))
 	entry.publish(runEnvelope(t, "run-a", 4))
@@ -169,7 +145,6 @@ func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
 	close(streamA)
 }
 
-// waitForFinished waits until the hub has recorded a run's stream as drained.
 func waitForFinished(t *testing.T, entry *Session, run protocol.RunID) {
 	t.Helper()
 	deadline := time.After(testTimeout)
@@ -188,10 +163,6 @@ func waitForFinished(t *testing.T, entry *Session, run protocol.RunID) {
 	}
 }
 
-// TestDeferredEndDoesNotClobberOverflowTerminal pins first-writer-wins on a
-// subscriber's terminal state: a slow consumer sitting in a deferred cohort
-// that a queue-full publish already signalled must keep its recovery cursor
-// when the deferred run end later stops the cohort again.
 func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(2)
@@ -201,10 +172,8 @@ func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
 	streamA := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
 	entry.publish(runEnvelope(t, "run-a", 1))
-	entry.publish(runEnvelope(t, "run-a", 2)) // the two-slot mailbox is full
+	entry.publish(runEnvelope(t, "run-a", 2))
 
-	// The current run's drainer exits behind the older one, deferring an
-	// error end onto the cohort that holds the slow subscriber.
 	streamFailure := errors.New("run B stream died")
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-b", streamB)
@@ -225,9 +194,8 @@ func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
 		}
 	}
 
-	// The slow consumer's mailbox overflows first — that terminal wins.
 	entry.publish(runEnvelope(t, "run-a", 3))
-	close(streamA) // the older drainer applies the deferred error to the cohort
+	close(streamA)
 
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
 	for sequence := uint64(1); sequence <= 2; sequence++ {
@@ -241,17 +209,12 @@ func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
 	if !errors.As(err, &overflow) {
 		t.Fatalf("terminal %v (%T), want the OverflowError that signalled first", err, err)
 	}
-	// Run B is current and newer: the detach discards its future delivery
-	// too, so the complete-recovery cursor replays B from its start.
+
 	if overflow.RunID != "run-b" || overflow.LastSequence != 0 {
 		t.Fatalf("overflow cursor %+v, want run-b at sequence 0", overflow)
 	}
 }
 
-// TestMarkClosedDefersFinishToReader pins the drain-before-finish contract:
-// an adapter reports its run terminal once the terminal envelope is queued,
-// so a close that lands while the reader still holds final events must not
-// finish subscribers before those events are delivered.
 func TestMarkClosedDefersFinishToReader(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -266,8 +229,7 @@ func TestMarkClosedDefersFinishToReader(t *testing.T) {
 	if !entry.IsClosed() {
 		t.Fatal("session should record closed immediately")
 	}
-	// The queued event must still be delivered, and the subscriber must not
-	// be finished while the reader holds it.
+
 	select {
 	case <-sub.finish:
 		t.Fatal("subscriber finished before the reader drained")
@@ -289,7 +251,7 @@ func TestMarkClosedDefersFinishToReader(t *testing.T) {
 				t.Fatal("hub channel must never be closed by the producer")
 			}
 			if envelope.Sequence != nil && *envelope.Sequence == 2 {
-				// Terminal envelope delivered; the finish must follow.
+
 				select {
 				case <-sub.finish:
 					return
@@ -303,8 +265,6 @@ func TestMarkClosedDefersFinishToReader(t *testing.T) {
 	}
 }
 
-// TestMarkClosedFinishesImmediatelyWithoutReader covers the idle path: a
-// session closed with no run draining ends parked subscribers at once.
 func TestMarkClosedFinishesImmediatelyWithoutReader(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(4)
@@ -322,10 +282,6 @@ func TestMarkClosedFinishesImmediatelyWithoutReader(t *testing.T) {
 	}
 }
 
-// TestOverlappingReadersDeliverCurrentRunEnd pins the finish path when a
-// resubmit's reader exits before the previous run's drainer: however the
-// two readers interleave, the subscriber ends with the current run's
-// terminal outcome instead of parking forever.
 func TestOverlappingReadersDeliverCurrentRunEnd(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -336,7 +292,7 @@ func TestOverlappingReadersDeliverCurrentRunEnd(t *testing.T) {
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
 	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
-	// The resubmit lands inside run A's settle window; run B takes the hub.
+
 	entry.startRun("run-b", streamB)
 	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
 	streamFailure := errors.New("run B stream died")
@@ -362,13 +318,6 @@ func TestOverlappingReadersDeliverCurrentRunEnd(t *testing.T) {
 	}
 }
 
-// TestAdapterOverflowScopedToExposedSubscribers pins the adapter-overflow
-// scoping: a late overflow from an older run's still-draining stream
-// terminates the subscribers that observed that run, while a subscriber
-// that attached for a newer run keeps receiving it. The B subscriber
-// attaches only after the spanning subscriber observed the terminal —
-// proof that A's publish and signal both completed — so it cannot have
-// observed A and is deterministically out of the overflow's scope.
 func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	spanning, ok := entry.subscribe(8)
@@ -379,12 +328,11 @@ func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
 	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
-	// Run B takes the hub while A's stream still drains.
+
 	entry.startRun("run-b", streamB)
 	streamA <- base.Result{Error: base.ErrEventStreamOverflow}
 	close(streamA)
 
-	// The spanning subscriber observed A, so A's overflow is its terminal.
 	spanningSubscription := &Subscription{session: entry, ctx: context.Background(), sub: spanning}
 	for {
 		_, err := spanningSubscription.Next()
@@ -397,8 +345,6 @@ func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
 		}
 	}
 
-	// A subscriber attaching now never observes A: it receives B's
-	// envelope and ends with the hub's clean terminal.
 	bOnly, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe with a run active was refused")
@@ -415,17 +361,13 @@ func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
 	}
 }
 
-// TestOverflowFollowsDeliveredRuns pins exposure by delivery: a subscriber
-// attached during run A that keeps receiving across the settle window into
-// run B is terminated by B's adapter overflow — attachment alone does not
-// scope it to A.
 func TestOverflowFollowsDeliveredRuns(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
 	}
-	// Attach during run A and take one envelope of A.
+
 	streamA := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
 	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
@@ -433,9 +375,7 @@ func TestOverflowFollowsDeliveredRuns(t *testing.T) {
 	if envelope, err := spanning.Next(); err != nil || envelope.RunID != "run-a" {
 		t.Fatalf("run-a envelope: run %s error %v", envelope.RunID, err)
 	}
-	// Run B is admitted; the subscriber acknowledges B's envelope — only
-	// then does B's stream overflow, so the acknowledged position that
-	// scopes the overflow is pinned in B.
+
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-b", streamB)
 	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
@@ -454,10 +394,6 @@ func TestOverflowFollowsDeliveredRuns(t *testing.T) {
 	}
 }
 
-// gatedSession parks its Submit until the test releases it, signalling
-// each adapter call through the entered channel — pinning Submit's reader
-// reservation against the zero-reader detach racing an in-flight
-// admission.
 type gatedSession struct {
 	stubSession
 	entered        chan struct{}
@@ -480,10 +416,6 @@ func (g *gatedSession) Submit(_ context.Context, request protocol.MessageSubmitR
 	return protocol.MessageSubmitResponse{SessionID: request.SessionID, RunID: "run-b", Accepted: true}, g.stream, nil
 }
 
-// TestSubmitReservationBridgesAdmission pins the settle-window invariant:
-// run A's reader may exit while the adapter is still admitting run B, and
-// the subscriber attached before the resubmit must bridge into B rather
-// than take A's end.
 func TestSubmitReservationBridgesAdmission(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
@@ -503,10 +435,7 @@ func TestSubmitReservationBridgesAdmission(t *testing.T) {
 		})
 		admitted <- err
 	}()
-	// The admission is in flight (its reader slot reserved) when run A's
-	// stream ends; A's reader exits to a non-zero reader count, so the
-	// subscriber is not finished with A's end. Waiting for the exit also
-	// pins A1's publish before run B's reader can publish.
+
 	<-gated.entered
 	close(streamA)
 	deadline := time.After(testTimeout)
@@ -543,9 +472,6 @@ func TestSubmitReservationBridgesAdmission(t *testing.T) {
 	}
 }
 
-// TestSubmitReservationReleasesOnFailure pins the failure unwind: an
-// adapter rejection after A's reader exited still ends subscribers with
-// A's stashed outcome instead of wedging or hanging them parked.
 func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
 	entry := newSession("gated", "stub", gated)
@@ -582,10 +508,6 @@ func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 	}
 }
 
-// TestDeferredFinishSurvivesLaterReservations pins the multi-submit case:
-// the run's reader exits while two admissions are in flight, and the first
-// rejection must not discard the deferred finish the second rejection (or
-// a later admission) still owes the subscribers.
 func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
 	entry := newSession("gated", "stub", gated)
@@ -607,8 +529,7 @@ func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 			rejected <- err
 		}()
 	}
-	// Both admissions are in flight when run A's reader exits, deferring
-	// its finish behind the reservations; both are then rejected.
+
 	<-gated.entered
 	<-gated.entered
 	close(streamA)
@@ -619,7 +540,6 @@ func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 		}
 	}
 
-	// The last release applies the run's deferred clean finish.
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
 	envelope, err := subscription.Next()
 	if err != nil || envelope.RunID != "run-a" {
@@ -630,11 +550,6 @@ func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 	}
 }
 
-// TestDeferredFinishSparesLaterSubscribers pins the deferred cohort: a
-// subscriber registering between the run reader's deferred finish and the
-// reservation's rejection is owed nothing — it stays parked and receives
-// the next admitted run, while the cohort that did observe the run takes
-// its terminal.
 func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
 	entry := newSession("gated", "stub", gated)
@@ -655,7 +570,7 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 		rejected <- err
 	}()
 	<-gated.entered
-	close(streamA) // the reader exits into a deferred finish owed to cohort
+	close(streamA)
 	deadline := time.After(testTimeout)
 	for {
 		entry.mu.Lock()
@@ -679,7 +594,6 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 		t.Fatalf("submit error %v, want run-active", err)
 	}
 
-	// The cohort takes run A's outcome; the newcomer stays attached.
 	cohortSubscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
 	envelope, err := cohortSubscription.Next()
 	if err != nil || envelope.RunID != "run-a" {
@@ -694,7 +608,6 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 	default:
 	}
 
-	// The next admitted run reaches the newcomer.
 	gated.fail = nil
 	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "gated", Delivery: protocol.DeliveryAuto,
@@ -714,11 +627,6 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 	}
 }
 
-// TestDeferredRunEndSparesLaterSubscribers pins the cohort of a run whose
-// drainer exits behind an older one: the deferred outcome reaches the
-// subscribers that existed at the exit, while a subscriber registering in
-// the window is not swept by the older drainer's eventual finish and stays
-// parked for the next run.
 func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	cohort, ok := entry.subscribe(8)
@@ -731,8 +639,7 @@ func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
 	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
 	entry.startRun("run-b", streamB)
 	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
-	// The current run's drainer exits behind the older one, deferring its
-	// clean end to the cohort.
+
 	close(streamB)
 	deadline := time.After(testTimeout)
 	for {
@@ -754,8 +661,6 @@ func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
 	}
 	close(streamA)
 
-	// The cohort takes the current run's clean end after both envelopes;
-	// the newcomer is untouched.
 	cohortSubscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
 	seen := map[protocol.RunID]bool{}
 	for {
@@ -777,10 +682,6 @@ func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
 	default:
 	}
 
-	// The next run reaches the newcomer. Run A's still-buffered envelope
-	// may publish after the newcomer subscribed — live fan-out delivers
-	// whatever publishes from attachment on — so run-a may legitimately
-	// arrive first; the pin is that run-c is observed and the end is clean.
 	streamC := make(chan base.Result, 4)
 	entry.startRun("run-c", streamC)
 	streamC <- base.Result{Envelope: runEnvelope(t, "run-c", 1)}
@@ -802,13 +703,9 @@ func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
 	}
 }
 
-// TestRejectedSubmitKeepsSubscriptions pins the subscribe-before-submit
-// flow on an idle session: an adapter-level rejection unwinds its
-// reservation without finishing anybody, so the corrected retry's run
-// reaches the subscription that was parked all along.
 func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrInvalidSubmission}
-	close(gated.release) // the adapter rejects at once; no interleaving needed
+	close(gated.release)
 	entry := newSession("gated", "stub", gated)
 	sub, ok := entry.subscribe(8)
 	if !ok {
@@ -826,7 +723,6 @@ func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 	default:
 	}
 
-	// The corrected retry drives a real run to the same subscription.
 	gated.fail = nil
 	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "gated", Delivery: protocol.DeliveryAuto,
@@ -847,9 +743,6 @@ func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 	}
 }
 
-// TestLateOverflowDoesNotCutNewerRun pins the position scope: a subscriber
-// that moved past run A into run B has seen A complete, so a late overflow
-// from A's drained stream must not terminate it — it keeps receiving B.
 func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -862,10 +755,7 @@ func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
 	streamA <- base.Result{Envelope: runEnvelope(t, "run-a", 1)}
 
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	// Observe run A's envelope first, with A's channel then empty: no
-	// further run-a publish can interleave once run B flows, so the
-	// subscriber's position advance into B (observed next) is stable when
-	// A's late overflow is sent.
+
 	for {
 		envelope, err := subscription.Next()
 		if err != nil {
@@ -886,8 +776,7 @@ func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
 			break
 		}
 	}
-	// A's stream reports its overflow only now, with the subscriber
-	// positioned in B.
+
 	streamA <- base.Result{Error: base.ErrEventStreamOverflow}
 	close(streamA)
 	streamB <- base.Result{Envelope: runEnvelope(t, "run-b", 2)}
@@ -902,13 +791,8 @@ func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
 	}
 }
 
-// TestCloseSessionsAttemptsEverySession pins the shutdown fairness: under
-// a budget too tight for the old per-session floor, every session still
-// gets its Close attempted — an early stuck child must not eat the slices
-// the later sessions need to settle their own.
 func TestCloseSessionsAttemptsEverySession(t *testing.T) {
-	// A budget with headroom over the stuck sessions' settle loops: the
-	// pin is that every entry is attempted, not the tight total bound.
+
 	daemon := New(NewRegistry(), Options{ShutdownTimeout: 2 * time.Second})
 	sessions := make([]*countingSession, 4)
 	for index := range sessions {
@@ -926,7 +810,6 @@ func TestCloseSessionsAttemptsEverySession(t *testing.T) {
 	}
 }
 
-// countingSession records every Close attempt on a never-settling stub.
 type countingSession struct {
 	stubSession
 	closes atomic.Int32
@@ -937,10 +820,6 @@ func (c *countingSession) Close(ctx context.Context) error {
 	return c.stubSession.Close(ctx)
 }
 
-// TestCloseEndsSubscribersRegisteredAfterDeferredRun pins the close
-// transition behind stale readers: a subscriber registering after the
-// current run deferred its end is still ended by the close — no future run
-// can reach it — instead of parking until its context dies.
 func TestCloseEndsSubscribersRegisteredAfterDeferredRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	early, ok := entry.subscribe(8)
@@ -951,7 +830,7 @@ func TestCloseEndsSubscribersRegisteredAfterDeferredRun(t *testing.T) {
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
 	entry.startRun("run-b", streamB)
-	close(streamB) // the current run's drainer defers its end behind A's
+	close(streamB)
 	deadline := time.After(testTimeout)
 	for {
 		entry.mu.Lock()
@@ -981,10 +860,6 @@ func TestCloseEndsSubscribersRegisteredAfterDeferredRun(t *testing.T) {
 	}
 }
 
-// TestAdapterOverflowScopesByAcknowledgedRun pins that adapter-overflow
-// scoping uses the position the consumer acknowledged, not the mailbox
-// tail: run B enqueued behind unacknowledged run A envelopes does not move
-// the subscriber out of A's overflow.
 func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	streamA := make(chan base.Result, 4)
@@ -996,17 +871,15 @@ func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
 	}
 	entry.publish(runEnvelope(t, "run-a", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // acknowledges run A
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
 	entry.startRun("run-b", streamB)
-	entry.publish(runEnvelope(t, "run-a", 2)) // enqueued, unacknowledged
-	entry.publish(runEnvelope(t, "run-b", 1)) // enqueued behind it: tail B
+	entry.publish(runEnvelope(t, "run-a", 2))
+	entry.publish(runEnvelope(t, "run-b", 1))
 	close(streamB)
 	entry.signalOverflow("run-a")
 
-	// The consumer is still positioned in run A: it drains the mailbox and
-	// takes A's overflow instead of B's clean end.
 	for _, want := range []protocol.RunID{"run-a", "run-b"} {
 		envelope, err := subscription.Next()
 		if err != nil || envelope.RunID != want {
@@ -1024,10 +897,6 @@ func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
 	close(streamA)
 }
 
-// TestStaleRunErrorReachesExposedSubscribers pins the stale-error path: a
-// run whose drainer exits with an error while a newer run holds the hub
-// still terminates the subscribers exposed to it, instead of letting them
-// read the newer run's clean end and never learn of the loss.
 func TestStaleRunErrorReachesExposedSubscribers(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -1039,17 +908,16 @@ func TestStaleRunErrorReachesExposedSubscribers(t *testing.T) {
 	entry.startRun("run-a", streamA)
 	entry.publish(runEnvelope(t, "run-a", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // acknowledges run A
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
 	entry.startRun("run-b", streamB)
-	entry.publish(runEnvelope(t, "run-b", 1)) // queued; the consumer stays positioned in A
+	entry.publish(runEnvelope(t, "run-b", 1))
 	streamFailure := errors.New("run A stream died")
 	streamA <- base.Result{Error: streamFailure}
 	close(streamA)
 	close(streamB)
-	// Both readers exit before the consumer drains, so the stale failure
-	// has terminated the subscription ahead of any acknowledgement of B.
+
 	deadline := time.After(testTimeout)
 	for {
 		entry.mu.Lock()
@@ -1065,8 +933,6 @@ func TestStaleRunErrorReachesExposedSubscribers(t *testing.T) {
 		}
 	}
 
-	// The mailbox drains run B's queued envelope, then the stale failure
-	// ends the subscription — never a clean EOF hiding the loss.
 	if envelope, err := subscription.Next(); err != nil || envelope.RunID != "run-b" {
 		t.Fatalf("envelope: run %s error %v", envelope.RunID, err)
 	}
@@ -1075,10 +941,6 @@ func TestStaleRunErrorReachesExposedSubscribers(t *testing.T) {
 	}
 }
 
-// TestAcknowledgedPositionOverridesStalePending pins the exposure priority:
-// once the consumer acknowledged a newer run, a late envelope from an older
-// run still queued behind it does not re-expose it to the older run's
-// overflow — its delivery of the newer run continues uninterrupted.
 func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -1095,11 +957,11 @@ func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
 	}
 	entry.startRun("run-b", streamB)
 	entry.publish(runEnvelope(t, "run-b", 1))
-	if _, err := subscription.Next(); err != nil { // acknowledged run B
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	entry.publish(runEnvelope(t, "run-a", 2)) // a stale drainer's late envelope
-	entry.signalOverflow("run-a")             // must not terminate: position B
+	entry.publish(runEnvelope(t, "run-a", 2))
+	entry.signalOverflow("run-a")
 
 	entry.publish(runEnvelope(t, "run-b", 2))
 	close(streamA)
@@ -1115,10 +977,6 @@ func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
 	}
 }
 
-// TestNewerPendingRunExposesOverflow pins the newer-pending exposure: a
-// consumer that acknowledged run A with run B's envelopes queued but
-// unacknowledged is told of B's adapter overflow — B is its incomplete
-// future, and a clean end would hide the loss.
 func TestNewerPendingRunExposesOverflow(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -1129,13 +987,13 @@ func TestNewerPendingRunExposesOverflow(t *testing.T) {
 	entry.startRun("run-a", streamA)
 	entry.publish(runEnvelope(t, "run-a", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // acknowledges run A
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-b", streamB)
-	entry.publish(runEnvelope(t, "run-b", 1)) // queued, unacknowledged
-	entry.signalOverflow("run-b")             // newer pending run: exposed
+	entry.publish(runEnvelope(t, "run-b", 1))
+	entry.signalOverflow("run-b")
 
 	envelope, err := subscription.Next()
 	if err != nil || envelope.RunID != "run-b" {
@@ -1153,10 +1011,6 @@ func TestNewerPendingRunExposesOverflow(t *testing.T) {
 	close(streamB)
 }
 
-// TestQueueOverflowCursorRecoversDroppedRun pins the dropped-run cursor:
-// when the consumer has a position in the run whose envelope found the
-// queue full, the cursor resumes that run from the consumer's last
-// delivered position — not the run that happens to own the mailbox tail.
 func TestQueueOverflowCursorRecoversDroppedRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(1)
@@ -1175,8 +1029,7 @@ func TestQueueOverflowCursorRecoversDroppedRun(t *testing.T) {
 			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
 		}
 	}
-	// A stale drainer's late terminal takes the one-slot tail; the next
-	// run-B envelope is dropped by the full queue.
+
 	entry.publish(runEnvelope(t, "run-a", 12))
 	entry.publish(runEnvelope(t, "run-b", 2))
 
@@ -1194,10 +1047,6 @@ func TestQueueOverflowCursorRecoversDroppedRun(t *testing.T) {
 	}
 }
 
-// TestSubmitErrorStreamStillDrains pins the adapter contract some adapters
-// exercise (Pi): Submit may fail while returning a live stream whose run
-// stays alive adapter-side. The hub drains and publishes that stream —
-// subscriptions receive its events — while the caller still sees the error.
 func TestSubmitErrorStreamStillDrains(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
@@ -1206,7 +1055,7 @@ func TestSubmitErrorStreamStillDrains(t *testing.T) {
 		t.Fatal("subscribe on an open session was refused")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // the caller's context dies mid-admission
+	cancel()
 	done := make(chan error, 1)
 	go func() {
 		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
@@ -1223,9 +1072,6 @@ func TestSubmitErrorStreamStillDrains(t *testing.T) {
 		t.Fatalf("submit error %v, want context.Canceled", err)
 	}
 
-	// The orphaned stream still feeds the subscription, bound to the run
-	// its envelopes name: a stream overflow attributes to that run with a
-	// usable cursor, not an empty one.
 	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-x", 1)}
 	gated.stream <- base.Result{Error: base.ErrEventStreamOverflow}
 	close(gated.stream)
@@ -1244,15 +1090,10 @@ func TestSubmitErrorStreamStillDrains(t *testing.T) {
 	}
 }
 
-// TestOrphanBecomesCurrentOverCompletedRun pins the orphan promotion: a
-// stream returned with a submit error names a run whose envelopes make it
-// current over the run that completed before the admission — so a bare
-// Last-Event-ID reconnect resolves to it — while a genuinely newer
-// admission keeps precedence.
 func TestOrphanBecomesCurrentOverCompletedRun(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
-	// A run completed earlier leaves the hub's current run pointing at it.
+
 	streamOld := make(chan base.Result, 4)
 	entry.startRun("run-old", streamOld)
 	close(streamOld)
@@ -1304,10 +1145,6 @@ func TestOrphanBecomesCurrentOverCompletedRun(t *testing.T) {
 	}
 }
 
-// TestEmptyErrorStreamKeepsSubscriptionsParked pins the ACP-shaped
-// rejection: a submit error carrying an already-closed, empty stream is a
-// rejected admission, not a completed run — parked subscribers stay parked
-// for a corrected retry instead of reading a phantom run's end.
 func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
@@ -1334,8 +1171,7 @@ func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("submit error %v, want context.Canceled", err)
 	}
-	// The empty stream ends without an envelope: the drainer releases the
-	// reservation as a rejection and the parked subscriber survives.
+
 	releaseDeadline := time.After(testTimeout)
 	for {
 		entry.mu.Lock()
@@ -1356,7 +1192,6 @@ func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 	default:
 	}
 
-	// The corrected retry reaches the same subscription.
 	gated.failWithStream = nil
 	gated.fail = nil
 	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
@@ -1377,10 +1212,6 @@ func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 	}
 }
 
-// TestAcknowledgedOrderStaysMonotonic pins the acknowledged admission
-// order: a late envelope from an older run consumed after a newer run must
-// not drag the position backward and un-expose the subscriber to the newer
-// run's overflow.
 func TestAcknowledgedOrderStaysMonotonic(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -1389,19 +1220,18 @@ func TestAcknowledgedOrderStaysMonotonic(t *testing.T) {
 	}
 	streamA := make(chan base.Result, 4)
 	streamB := make(chan base.Result, 4)
-	entry.startRun("run-a", streamA) // admitted first
-	entry.startRun("run-b", streamB) // admitted second
+	entry.startRun("run-a", streamA)
+	entry.startRun("run-b", streamB)
 	entry.publish(runEnvelope(t, "run-b", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // acknowledges run B
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	entry.publish(runEnvelope(t, "run-a", 1))      // the older run's late envelope
-	if _, err := subscription.Next(); err != nil { // consumed after B
+	entry.publish(runEnvelope(t, "run-a", 1))
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	// B's adapter overflows with nothing of B pending: the acknowledged
-	// order still names B (the newer admission), so the subscriber is told.
+
 	entry.signalOverflow("run-b")
 	var overflow *OverflowError
 	if _, err := subscription.Next(); !errors.As(err, &overflow) {
@@ -1411,9 +1241,6 @@ func TestAcknowledgedOrderStaysMonotonic(t *testing.T) {
 	}
 }
 
-// TestExposureByAdmissionOrder pins that overflow exposure compares run
-// admission order, not mailbox-delivery order: a lagging older drainer
-// publishing after a newer run's envelope must not count as newer.
 func TestExposureByAdmissionOrder(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(8)
@@ -1422,16 +1249,16 @@ func TestExposureByAdmissionOrder(t *testing.T) {
 	}
 	streamA := make(chan base.Result, 4)
 	streamB := make(chan base.Result, 4)
-	entry.startRun("run-a", streamA) // admitted first
-	entry.startRun("run-b", streamB) // admitted second
-	// Delivery order inverts admission order: B publishes first.
+	entry.startRun("run-a", streamA)
+	entry.startRun("run-b", streamB)
+
 	entry.publish(runEnvelope(t, "run-b", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // acknowledges run B
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	entry.publish(runEnvelope(t, "run-a", 1)) // the lagging older run's envelope
-	entry.signalOverflow("run-a")             // admitted BEFORE the ack: not newer
+	entry.publish(runEnvelope(t, "run-a", 1))
+	entry.signalOverflow("run-a")
 
 	entry.publish(runEnvelope(t, "run-b", 2))
 	close(streamA)
@@ -1449,10 +1276,6 @@ func TestExposureByAdmissionOrder(t *testing.T) {
 	}
 }
 
-// TestCloseDuringEmptyErrorStreamEndsSubscribers pins the close-overlap: a
-// session closed while an empty error stream's drainer still holds the
-// reader slot ends its subscribers when that drainer releases — they must
-// not outlive the close.
 func TestCloseDuringEmptyErrorStreamEndsSubscribers(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
@@ -1471,14 +1294,13 @@ func TestCloseDuringEmptyErrorStreamEndsSubscribers(t *testing.T) {
 		done <- err
 	}()
 	<-gated.entered
-	gated.stream = make(chan base.Result, 4) // open: the drainer lingers
+	gated.stream = make(chan base.Result, 4)
 	gated.failWithStream = context.Canceled
 	close(gated.release)
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("submit error %v, want context.Canceled", err)
 	}
-	// The close lands while the empty stream's drainer has not yet seen the
-	// channel close; ending the stream afterwards must apply the close.
+
 	entry.mu.Lock()
 	draining := entry.readers > 0
 	entry.mu.Unlock()
@@ -1494,22 +1316,18 @@ func TestCloseDuringEmptyErrorStreamEndsSubscribers(t *testing.T) {
 	}
 }
 
-// TestAttachmentRunOrdersPendingExposure pins the pre-acknowledgement
-// baseline: a subscriber attaching while a newer run is current treats a
-// pending envelope from an older, still-draining run as delivery lag, not
-// loss — the older run's overflow must not detach it.
 func TestAttachmentRunOrdersPendingExposure(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	streamA := make(chan base.Result, 4)
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
 	entry.startRun("run-b", streamB)
-	sub, ok := entry.subscribe(8) // attaches while run B is current
+	sub, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe with a run active was refused")
 	}
-	entry.publish(runEnvelope(t, "run-a", 1)) // the older run's late envelope, pending
-	entry.signalOverflow("run-a")             // older than the attachment: not exposed
+	entry.publish(runEnvelope(t, "run-a", 1))
+	entry.signalOverflow("run-a")
 
 	entry.publish(runEnvelope(t, "run-b", 1))
 	close(streamA)
@@ -1528,10 +1346,6 @@ func TestAttachmentRunOrdersPendingExposure(t *testing.T) {
 	}
 }
 
-// TestDeferredErrorSurvivesNewAdmission pins the supersede rule: a new
-// admission may bury a deferred clean end, but a deferred stream error is
-// first delivered to the cohort that observed the failed run — such errors
-// are terminal for the subscriptions that saw them.
 func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
@@ -1543,11 +1357,10 @@ func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 	entry.startRun("run-b", streamB)
 	entry.publish(runEnvelope(t, "run-b", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // cohort observes run B
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	// A second admission is in flight when run B's stream fails, deferring
-	// the error behind the reservation.
+
 	admit := make(chan error, 1)
 	go func() {
 		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
@@ -1574,8 +1387,7 @@ func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 		default:
 		}
 	}
-	// The in-flight admission resolves into a new run: it supersedes the
-	// deferred state but must first deliver the error to the cohort.
+
 	close(gated.release)
 	if err := <-admit; err != nil {
 		t.Fatal(err)
@@ -1585,10 +1397,6 @@ func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 	}
 }
 
-// TestQueueOverflowPreservesNewerRun pins the queue-full loss cursor when a
-// stale envelope is dropped: a subscriber that acknowledged run B and has
-// B's future delivery discarded too must recover from B's position — never
-// from the older run whose late envelope found the queue full.
 func TestQueueOverflowPreservesNewerRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(1)
@@ -1607,8 +1415,7 @@ func TestQueueOverflowPreservesNewerRun(t *testing.T) {
 			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
 		}
 	}
-	// A stale run-A terminal takes the one-slot tail; the next run-B
-	// envelope is dropped — but B's remaining delivery is the loss.
+
 	entry.publish(runEnvelope(t, "run-a", 12))
 	entry.publish(runEnvelope(t, "run-b", 2))
 
@@ -1626,10 +1433,6 @@ func TestQueueOverflowPreservesNewerRun(t *testing.T) {
 	}
 }
 
-// TestAcknowledgedRunStaysPairedWithSerial pins the pairing: acknowledging
-// a late older-run envelope after a newer run keeps the acknowledged run
-// identifier at the newer run, so a later queue-full loss cursor resolved
-// by acknowledged position names the newer run — not the stale pointer.
 func TestAcknowledgedRunStaysPairedWithSerial(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	sub, ok := entry.subscribe(2)
@@ -1646,9 +1449,7 @@ func TestAcknowledgedRunStaysPairedWithSerial(t *testing.T) {
 			t.Fatalf("envelope: run %s error %v, want %s", envelope.RunID, err, want)
 		}
 	}
-	// The older run's late envelopes are acknowledged after B's — the
-	// acknowledged serial stays at B's while a regressed pointer would
-	// name A.
+
 	entry.publish(runEnvelope(t, "run-a", 12))
 	entry.publish(runEnvelope(t, "run-a", 13))
 	for sequence := uint64(12); sequence <= 13; sequence++ {
@@ -1657,11 +1458,10 @@ func TestAcknowledgedRunStaysPairedWithSerial(t *testing.T) {
 			t.Fatalf("late envelope %d: run %s sequence %v error %v", sequence, envelope.RunID, envelope.Sequence, err)
 		}
 	}
-	// Stale run-A envelopes fill the two-slot tail and a third is dropped;
-	// the acknowledged position is B — the cursor must name B.
+
 	entry.publish(runEnvelope(t, "run-a", 14))
 	entry.publish(runEnvelope(t, "run-a", 15))
-	entry.publish(runEnvelope(t, "run-a", 16)) // dropped; loss resolves by acknowledged position
+	entry.publish(runEnvelope(t, "run-a", 16))
 	for sequence := uint64(14); sequence <= 15; sequence++ {
 		envelope, err := subscription.Next()
 		if err != nil || envelope.RunID != "run-a" || envelope.Sequence == nil || *envelope.Sequence != sequence {
@@ -1678,10 +1478,6 @@ func TestAcknowledgedRunStaysPairedWithSerial(t *testing.T) {
 	}
 }
 
-// TestCloseGivesNewcomersCleanEndOverDeferredError pins the two-cohort
-// close: subscribers that observed a failed run receive its deferred error;
-// subscribers that registered after that run's exit receive the close's
-// clean end — never an error from a run they never saw.
 func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	cohort, ok := entry.subscribe(8)
@@ -1690,15 +1486,14 @@ func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
 	}
 	streamA := make(chan base.Result, 4)
 	streamB := make(chan base.Result, 4)
-	entry.startRun("run-a", streamA) // the older reader lags throughout
-	entry.startRun("run-b", streamB) // B is current
+	entry.startRun("run-a", streamA)
+	entry.startRun("run-b", streamB)
 	entry.publish(runEnvelope(t, "run-b", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
-	if _, err := subscription.Next(); err != nil { // cohort observes run B
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	// B's stream fails while A's older reader still drains: the current
-	// run's error defers behind company.
+
 	streamFailure := errors.New("run B stream died")
 	streamB <- base.Result{Error: streamFailure}
 	deadline := time.After(testTimeout)
@@ -1715,7 +1510,7 @@ func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
 		default:
 		}
 	}
-	newcomer, ok := entry.subscribe(8) // after B's exit: never observed B
+	newcomer, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe during the deferral window was refused")
 	}
@@ -1737,22 +1532,18 @@ func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
 	}
 }
 
-// TestQueueOverflowPrefersAttachedRun pins the pre-acknowledgement loss
-// cursor: a subscriber attaching while a newer run is current keeps that
-// run in the cursor when a late older envelope is dropped — its remaining
-// delivery is discarded too, and an older-run cursor cannot recover it.
 func TestQueueOverflowPrefersAttachedRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	streamA := make(chan base.Result, 1)
 	entry.startRun("run-a", streamA)
 	streamB := make(chan base.Result, 1)
 	entry.startRun("run-b", streamB)
-	sub, ok := entry.subscribe(1) // attaches while run B is current
+	sub, ok := entry.subscribe(1)
 	if !ok {
 		t.Fatal("subscribe with a run active was refused")
 	}
-	entry.publish(runEnvelope(t, "run-b", 1)) // fills the one-slot mailbox
-	entry.publish(runEnvelope(t, "run-a", 9)) // the older run's late envelope: dropped
+	entry.publish(runEnvelope(t, "run-b", 1))
+	entry.publish(runEnvelope(t, "run-a", 9))
 
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
 	envelope, err := subscription.Next()
@@ -1769,9 +1560,6 @@ func TestQueueOverflowPrefersAttachedRun(t *testing.T) {
 	}
 }
 
-// TestEmptyOrphanAppliesDeferredRunEnd pins the open-session path: a real
-// run's end deferred behind an unbound error stream applies when that empty
-// orphan exits last — affected consumers see the run's outcome, not a park.
 func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
@@ -1786,8 +1574,7 @@ func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
 	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	// A submit returns an error with a live, still-empty stream: its
-	// drainer lingers unbound, holding a reader slot.
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan error, 1)
@@ -1805,8 +1592,7 @@ func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("submit error %v, want context.Canceled", err)
 	}
-	// Run B's stream fails while the orphan holds its reader slot: B's end
-	// defers behind it.
+
 	streamFailure := errors.New("run B stream died")
 	streamB <- base.Result{Error: streamFailure}
 	close(streamB)
@@ -1824,18 +1610,13 @@ func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
 		default:
 		}
 	}
-	// The empty orphan exits last and must apply B's deferred end.
+
 	close(gated.stream)
 	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
 		t.Fatalf("terminal %v, want run B's deferred stream failure", err)
 	}
 }
 
-// TestQueueOverflowPrefersNewerQueuedRun pins the queued-run loss cursor:
-// a subscriber positioned on run A whose full mailbox already holds a
-// newer run B envelope loses B's remaining delivery too when a late A
-// envelope is dropped — the cursor must name B, whose queued envelope the
-// drain has just positioned.
 func TestQueueOverflowPrefersNewerQueuedRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	streamA := make(chan base.Result, 1)
@@ -1848,11 +1629,11 @@ func TestQueueOverflowPrefersNewerQueuedRun(t *testing.T) {
 	}
 	entry.publish(runEnvelope(t, "run-a", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // positioned on run A
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	entry.publish(runEnvelope(t, "run-b", 1)) // newer run's envelope fills the tail
-	entry.publish(runEnvelope(t, "run-a", 9)) // the older run's late envelope: dropped
+	entry.publish(runEnvelope(t, "run-b", 1))
+	entry.publish(runEnvelope(t, "run-a", 9))
 
 	envelope, err := subscription.Next()
 	if err != nil || envelope.RunID != "run-b" || envelope.Sequence == nil || *envelope.Sequence != 1 {
@@ -1868,13 +1649,9 @@ func TestQueueOverflowPrefersNewerQueuedRun(t *testing.T) {
 	}
 }
 
-// TestTerminalSubmitErrorClosesEntry pins the hub-side close on
-// ErrSessionClosed from Submit: a process-backed adapter whose transport
-// died leaves no future run possible, so a parked subscribe-before-submit
-// consumer must end at the rejection instead of blocking in Next forever.
 func TestTerminalSubmitErrorClosesEntry(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrSessionClosed}
-	close(gated.release) // the adapter rejects at once; no interleaving needed
+	close(gated.release)
 	entry := newSession("gated", "stub", gated)
 	sub, ok := entry.subscribe(8)
 	if !ok {
@@ -1900,10 +1677,6 @@ func TestTerminalSubmitErrorClosesEntry(t *testing.T) {
 	}
 }
 
-// TestCloseOverReservationErrorSplitsCohorts pins the no-reader
-// reservation branch: a deferred stream error reaches only its own cohort
-// when the close hands the finish to a lingering admission — a subscriber
-// registered after the failed run's exit is owed the clean close.
 func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
 	entry := newSession("gated", "stub", gated)
@@ -1915,11 +1688,10 @@ func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 	entry.startRun("run-b", streamB)
 	entry.publish(runEnvelope(t, "run-b", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: cohort}
-	if _, err := subscription.Next(); err != nil { // cohort observes run B
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	// An admission lingers; run B fails while only its reservation remains,
-	// deferring the error behind it.
+
 	admit := make(chan error, 1)
 	go func() {
 		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
@@ -1946,12 +1718,12 @@ func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 		default:
 		}
 	}
-	newcomer, ok := entry.subscribe(8) // after B's exit: never observed B
+	newcomer, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe during the deferral window was refused")
 	}
 	entry.markClosed()
-	gated.fail = base.ErrRunActive // the admission rejects; the close resolves the deferred finish
+	gated.fail = base.ErrRunActive
 	close(gated.release)
 	if err := <-admit; err == nil {
 		t.Fatal("the lingering admission unexpectedly succeeded after the close")
@@ -1966,11 +1738,6 @@ func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 	}
 }
 
-// TestQueueOverflowIncludesCurrentRun pins that the queue-full loss cursor
-// includes the current admitted run: run C admitted but not yet published
-// is the newest delivery discarded when a late older envelope drops — the
-// cursor names C (replayed from its start), never an older run whose
-// replay cannot recover C.
 func TestQueueOverflowIncludesCurrentRun(t *testing.T) {
 	entry := newSession("hub", "memory", nil)
 	streamA := make(chan base.Result, 1)
@@ -1981,17 +1748,16 @@ func TestQueueOverflowIncludesCurrentRun(t *testing.T) {
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
 	}
-	entry.publish(runEnvelope(t, "run-b", 1)) // fills the one-slot mailbox
+	entry.publish(runEnvelope(t, "run-b", 1))
 	subscription := &Subscription{session: entry, ctx: context.Background(), sub: sub}
-	if _, err := subscription.Next(); err != nil { // positioned on run B
+	if _, err := subscription.Next(); err != nil {
 		t.Fatal(err)
 	}
-	// Run C is admitted after B; its first envelope has not arrived when a
-	// late run-A envelope finds the full mailbox.
-	entry.publish(runEnvelope(t, "run-b", 2)) // B's tail fills the slot again
+
+	entry.publish(runEnvelope(t, "run-b", 2))
 	streamC := make(chan base.Result, 1)
 	entry.startRun("run-c", streamC)
-	entry.publish(runEnvelope(t, "run-a", 9)) // dropped; C's delivery is the loss
+	entry.publish(runEnvelope(t, "run-a", 9))
 
 	envelope, err := subscription.Next()
 	if err != nil || envelope.RunID != "run-b" || envelope.Sequence == nil || *envelope.Sequence != 2 {
@@ -2007,9 +1773,6 @@ func TestQueueOverflowIncludesCurrentRun(t *testing.T) {
 	}
 }
 
-// idleClosedSession reports the final closed state alongside
-// ErrSessionClosed from State, as a process-backed adapter whose child
-// exited while idle does.
 type idleClosedSession struct{ id protocol.SessionID }
 
 func (s *idleClosedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
@@ -2036,10 +1799,6 @@ func (s *idleClosedSession) Close(context.Context) error { return base.ErrSessio
 
 var _ base.Session = (*idleClosedSession)(nil)
 
-// TestStateReportingClosedClosesEntry pins the State wrapper: an adapter
-// whose child exited while idle reports the final state with
-// ErrSessionClosed; the hub-side entry closes so live subscribers end and
-// new subscriptions are refused instead of parking forever.
 func TestStateReportingClosedClosesEntry(t *testing.T) {
 	entry := newSession("idle-death", "stub", &idleClosedSession{id: "idle-death"})
 	sub, ok := entry.subscribe(8)
@@ -2061,9 +1820,6 @@ func TestStateReportingClosedClosesEntry(t *testing.T) {
 	}
 }
 
-// stubSession settles its run asynchronously after Cancel: Close keeps
-// refusing until settleAfter cancels have been issued, mimicking adapters
-// that acknowledge a cancel before the run settles.
 type stubSession struct {
 	cancels     int
 	settleAfter int
@@ -2094,9 +1850,6 @@ func (s *stubSession) Close(context.Context) error {
 	return nil
 }
 
-// TestCloseRetriesThroughAsyncCancel proves the shutdown sweep settles a
-// session whose cancel is acknowledged before its run settles, instead of
-// leaving the session (and its child process) unclosed.
 func TestCloseRetriesThroughAsyncCancel(t *testing.T) {
 	stub := &stubSession{settleAfter: 2}
 	entry := newSession("stub", "stub", stub)
@@ -2115,8 +1868,6 @@ func TestCloseRetriesThroughAsyncCancel(t *testing.T) {
 	}
 }
 
-// TestCloseStopsAtContextDeadline proves a session that never settles cannot
-// wedge shutdown: the retry loop yields at the context deadline.
 func TestCloseStopsAtContextDeadline(t *testing.T) {
 	stub := &stubSession{settleAfter: 1000}
 	entry := newSession("stub", "stub", stub)
@@ -2133,10 +1884,6 @@ func TestCloseStopsAtContextDeadline(t *testing.T) {
 
 var _ base.Session = (*stubSession)(nil)
 
-// queuedStubSession is an endpoint that queues: it reports its live runs in
-// active_runs and leaves active_run_id empty while only reservations remain,
-// which is what the queue unit requires of a snapshot. Its Close refuses until
-// needed cancels have been issued.
 type queuedStubSession struct {
 	live      []protocol.ActiveRun
 	activeRun protocol.RunID
@@ -2167,12 +1914,6 @@ func (s *queuedStubSession) Close(context.Context) error {
 
 var _ base.Session = (*queuedStubSession)(nil)
 
-// TestCloseCancelsReservationsTheSnapshotNames proves shutdown settles work
-// active_run_id cannot name. A reservation is admitted work that owes a
-// terminal, so an adapter's Close refuses for it, but the queue unit leaves
-// active_run_id absent while only reservations remain — reading that field
-// alone, the sweep would retry until it gave up and leave the child process
-// and an accepted submission alive.
 func TestCloseCancelsReservationsTheSnapshotNames(t *testing.T) {
 	stub := &queuedStubSession{needed: 1, live: []protocol.ActiveRun{{RunID: "run-queued", Status: protocol.RunQueued, Relationship: protocol.RelationshipPrimary}}}
 	entry := newSession("stub", "stub", stub)
@@ -2187,9 +1928,6 @@ func TestCloseCancelsReservationsTheSnapshotNames(t *testing.T) {
 	}
 }
 
-// Both slots are live work and each owes a terminal, so shutdown cancels the
-// started run and the reservation behind it, in the order the snapshot lists
-// them.
 func TestCloseCancelsEveryRunTheSnapshotLists(t *testing.T) {
 	stub := &queuedStubSession{
 		needed:    2,
@@ -2208,8 +1946,6 @@ func TestCloseCancelsEveryRunTheSnapshotLists(t *testing.T) {
 	}
 }
 
-// An endpoint that keeps no entries is unaffected: active_run_id is the whole
-// answer there, and it is still the one run shutdown cancels.
 func TestCloseFallsBackToTheNamedActiveRun(t *testing.T) {
 	stub := &queuedStubSession{needed: 1, activeRun: "run-started"}
 	entry := newSession("stub", "stub", stub)
@@ -2221,8 +1957,6 @@ func TestCloseFallsBackToTheNamedActiveRun(t *testing.T) {
 	}
 }
 
-// blockingSession refuses to close until its context is done, recording
-// whether it ever observed a live (not-yet-expired) context.
 type blockingSession struct {
 	stubSession
 	unblocked chan struct{}
@@ -2239,9 +1973,6 @@ func (s *blockingSession) Close(ctx context.Context) error {
 	}
 }
 
-// TestCloseSessionsSplitsBudgetPerSession proves one lingering session
-// cannot starve the rest of the sweep: the first session blocks through its
-// own share of the window and the second still closes on a live context.
 func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
 	daemon := New(NewRegistry(), Options{ShutdownTimeout: 600 * time.Millisecond})
 	blocker := &blockingSession{stubSession: stubSession{}, unblocked: make(chan struct{})}
@@ -2253,7 +1984,7 @@ func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
 	if err := daemon.sessions.add(quickEntry); err != nil {
 		t.Fatal(err)
 	}
-	close(blocker.unblocked) // both settle immediately; the split is what's pinned
+	close(blocker.unblocked)
 
 	done := make(chan struct{})
 	go func() { daemon.CloseSessions(context.Background()); close(done) }()
@@ -2270,10 +2001,6 @@ func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
 	}
 }
 
-// TestCloseSessionsBoundsTotalSweep proves the configured timeout bounds the
-// WHOLE sweep: sessions that never settle each burn only their share of the
-// remaining budget, so four stuck sessions under a 600ms window cannot run
-// the per-session 500ms floor into a two-second sweep.
 func TestCloseSessionsBoundsTotalSweep(t *testing.T) {
 	daemon := New(NewRegistry(), Options{ShutdownTimeout: 600 * time.Millisecond})
 	for index := range 4 {
@@ -2289,9 +2016,7 @@ func TestCloseSessionsBoundsTotalSweep(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("CloseSessions wedged")
 	}
-	// The old floor-per-session behavior ran ~4x500ms; the bounded sweep
-	// stays inside roughly twice the configured window even with scheduler
-	// noise between sessions.
+
 	if elapsed := time.Since(start); elapsed > 1200*time.Millisecond {
 		t.Fatalf("CloseSessions ran %v for four stuck sessions, outside the 600ms budget", elapsed)
 	}

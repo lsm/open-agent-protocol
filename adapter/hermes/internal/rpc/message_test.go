@@ -77,7 +77,7 @@ func TestMessageRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// MarshalJSON builds from a map, so members land in Go's sorted key order.
+
 	want := `{"id":7,"jsonrpc":"2.0","method":"prompt.submit","params":{"session_id":"s","text":"hi"}}`
 	if string(data) != want {
 		t.Fatalf("encoded %s", data)
@@ -121,9 +121,7 @@ func TestDecoderFraming(t *testing.T) {
 }
 
 func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
-	// Two pipes so the test can sequence the server side deterministically:
-	// once the outbound request has been read from the wire, its pending
-	// entry is registered, and the reply frames can follow in order.
+
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
 	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
@@ -140,13 +138,13 @@ func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
 		err := client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, &result)
 		results <- outcome{result, err}
 	}()
-	// Drain the request from the client→server pipe (registration is done).
+
 	request := make([]byte, 64)
 	if _, err := io.ReadFull(serverReader, request[:1]); err != nil {
 		t.Fatal(err)
 	}
 	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
-	// Wire order: an event notification, then the response to request 1.
+
 	_, _ = serverWriter.Write([]byte("{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"type\":\"message.start\",\"session_id\":\"s\",\"seq\":1}}\n"))
 	_, _ = serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"streaming"}}` + "\n"))
 	var observed []string
@@ -155,8 +153,7 @@ func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
 		case message := <-inbound:
 			switch {
 			case message.Barrier != nil:
-				// The response must wait until the notification ahead of it
-				// has been consumed.
+
 				if len(observed) != 1 {
 					t.Fatalf("barrier after %d observations", len(observed))
 				}
@@ -180,15 +177,11 @@ func TestClientOrdersNotificationBeforeResponseBarrier(t *testing.T) {
 	client.Close()
 }
 
-// A relay acquires the ordered inbound stream lazily. If it needed the route
-// lock, it would deadlock against a reader parked in a response barrier, which
-// holds that lock while it waits for the relay to acknowledge the barrier.
 func TestClientInboundDoesNotBlockWhileReaderWaitsOnBarrier(t *testing.T) {
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
 	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
-	// Activate the ordered stream up front, as the process handshake does when
-	// it consumes the ready frame.
+
 	inbound := client.Inbound()
 	results := make(chan error, 1)
 	go func() {
@@ -201,8 +194,7 @@ func TestClientInboundDoesNotBlockWhileReaderWaitsOnBarrier(t *testing.T) {
 	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	// Consume the barrier without acknowledging it, so the reader stays parked
-	// inside route() holding the route lock.
+
 	select {
 	case message := <-inbound:
 		if message.Barrier == nil {
@@ -226,8 +218,7 @@ func TestClientFailsClosedOnUnmatchedResponse(t *testing.T) {
 	client := NewClient(reader, writer, ClientOptions{})
 	inbound := client.Inbound()
 	_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","id":99,"result":{}}` + "\n"))
-	// Responses route through the ordering barrier: acknowledge it so the
-	// unmatched delivery is reached and the client retires fail-closed.
+
 	select {
 	case message := <-inbound:
 		if message.Barrier != nil {
@@ -254,15 +245,12 @@ func TestClientRejectsWriteAfterClose(t *testing.T) {
 }
 
 func TestClientSurvivesSequentialResponses(t *testing.T) {
-	// Regression: route() inverted deliver()'s continuation contract, so the
-	// read loop retired the client after the FIRST successfully delivered
-	// response. Every earlier test issued at most one response per client, so
-	// only a second sequential call exposed it.
+
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
 	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 8})
 	defer client.Close()
-	// Acknowledge ordering barriers as they arrive so responses release.
+
 	go func() {
 		for message := range client.Inbound() {
 			if message.Barrier != nil {
@@ -279,7 +267,7 @@ func TestClientSurvivesSequentialResponses(t *testing.T) {
 			}
 			results <- client.CallID(context.Background(), IntegerID(id), "prompt.submit", nil, &result)
 		}()
-		// Consume the request line before answering it.
+
 		if _, err := server.ReadBytes('\n'); err != nil {
 			t.Fatal(err)
 		}
@@ -305,11 +293,6 @@ func TestClientSurvivesSequentialResponses(t *testing.T) {
 	}
 }
 
-// Regression: a response parsed off the ordered stream before the transport
-// died must win over the death. shutdown used to retire the pending map while
-// the reader was still parked in the response barrier, so the genuine reply —
-// already decoded from the wire — was discarded, the call returned the
-// shutdown reason, and deliver raised ErrResponseNotFound over the real cause.
 func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T) {
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
@@ -326,11 +309,7 @@ func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T)
 		}
 		results <- err
 	}()
-	// Drain the whole request line, then push a notification through the same
-	// serialized writer and drain that too. The writer hands back each frame's
-	// result before it accepts the next, so once the notification is on the
-	// wire the call is certainly parked on its response rather than still
-	// inside a write that the close would fail.
+
 	serverLines := bufio.NewReader(serverReader)
 	if _, err := serverLines.ReadString('\n'); err != nil {
 		t.Fatal(err)
@@ -347,8 +326,7 @@ func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T)
 	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"streaming"}}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	// Take the barrier without acknowledging it: the reader is now parked
-	// holding a fully decoded response for request 1.
+
 	select {
 	case message := <-inbound:
 		if message.Barrier == nil {
@@ -357,7 +335,7 @@ func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T)
 	case <-time.After(2 * time.Second):
 		t.Fatal("no barrier was delivered")
 	}
-	// The transport dies underneath the parked reader.
+
 	client.Close()
 	select {
 	case err := <-results:
@@ -373,12 +351,6 @@ func TestClientDeliversResponseParkedInBarrierWhenTransportRetires(t *testing.T)
 	_ = serverWriter.Close()
 }
 
-// The malformed-frame corpus shape at the rpc layer: the gateway answers the
-// request, then writes a corrupt line and exits. Both the response and the
-// transport's death sit on one ordered stream, back to back, and the response
-// must win. Before the fix roughly one run in five settled on the death
-// instead — the pump had put the request on the wire but the caller's write
-// was still waiting for the pump's result when the reader retired the client.
 func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
 	const runs = 500
 	for i := 0; i < runs; i++ {
@@ -407,8 +379,7 @@ func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
 		if err := client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil); err != nil {
 			t.Fatalf("run %d: the response lost to the transport's death: %v", i, err)
 		}
-		// The call may return before the reader reaches the corrupt line;
-		// judge the retirement cause only once the reader has stopped.
+
 		<-client.ReadDone()
 		if err := client.Err(); !errors.Is(err, ErrInvalidMessage) {
 			t.Fatalf("run %d: retirement cause = %v, want the malformed frame", i, err)
@@ -417,10 +388,6 @@ func TestClientCallSurvivesResponseFollowedByMalformedFrame(t *testing.T) {
 	}
 }
 
-// A client built without a CloseReadWriter cannot interrupt a reader parked
-// in Decode, so settling the pending calls must never wait for the reader to
-// stop: when one call's cancellation retires the client, the other pending
-// call has to fail promptly instead of hanging until the peer closes stdout.
 func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T) {
 	serverReader, clientWriter := io.Pipe()
 	clientReader, clientWriterUnused := io.Pipe()
@@ -434,7 +401,7 @@ func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T
 	go func() { cancelled <- client.CallID(ctx, IntegerID(1), "a", nil, nil) }()
 	other := make(chan error, 1)
 	go func() { other <- client.CallID(context.Background(), IntegerID(2), "b", nil, nil) }()
-	// Both requests are on the wire; nothing ever answers them.
+
 	time.Sleep(20 * time.Millisecond)
 	cancel()
 	select {
@@ -455,10 +422,6 @@ func TestClientFailsPendingCallsWithoutCloserWhenAnotherCallCancels(t *testing.T
 	}
 }
 
-// A pump blocked inside Encode — the peer stopped reading stdin — cannot be
-// woken without a closer. When the reader then retires the client, a caller
-// waiting on that frame must be released with the death rather than held
-// until the peer happens to exit.
 func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	clientReader, serverWriter := io.Pipe()
 	blocked := &blockedPumpWriter{entered: make(chan struct{}), release: make(chan struct{})}
@@ -466,14 +429,13 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	client := NewClient(clientReader, blocked, ClientOptions{QueueCapacity: 8})
 	result := make(chan error, 1)
 	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
-	// Wait for the pump to be inside Encode, blocked in the writer.
+
 	select {
 	case <-blocked.entered:
 	case <-time.After(2 * time.Second):
 		t.Fatal("pump never entered Encode")
 	}
-	// The peer emits garbage: the reader retires the client while the pump
-	// is still blocked.
+
 	if _, err := serverWriter.Write([]byte("{not json\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -488,24 +450,18 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	_ = serverWriter.Close()
 }
 
-// A response whose ordering barrier cannot be enqueued must not be delivered:
-// the client is retiring on queue overflow with wire-earlier observations
-// still unreduced, so releasing the reply would let it overtake them. Only a
-// barrier that was enqueued and then overtaken by the transport's death
-// releases the response.
 func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
 	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 1})
-	_ = client.Inbound() // ordered stream active, nobody consuming
+	_ = client.Inbound()
 	result := make(chan error, 1)
 	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
 	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
 		t.Fatal(err)
 	}
 	go func() { _, _ = io.Copy(io.Discard, serverReader) }()
-	// One wire-earlier observation fills the queue; the response's barrier
-	// then cannot be enqueued.
+
 	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":"r1","method":"reverse","params":{}}` + "\n" + `{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -521,9 +477,6 @@ func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
 	_ = serverReader.Close()
 }
 
-// transportCloseCounter records how many times the client closed the
-// supplied CloseReadWriter. io.Closer does not promise idempotence, so a
-// retirement must close it exactly once whichever path reaches it first.
 type transportCloseCounter struct {
 	inner io.Closer
 	calls atomic.Int32
@@ -544,8 +497,7 @@ func TestClientClosesTransportExactlyOnce(t *testing.T) {
 			client.shutdown(errors.New("direct"))
 			_ = client.Close()
 		}
-		// The reader's own retirement on the closed pipe must not close it
-		// again either.
+
 		<-client.ReadDone()
 		if n := closer.calls.Load(); n != 1 {
 			t.Fatalf("%s: transport closed %d times, want exactly once", order, n)
@@ -556,9 +508,6 @@ func TestClientClosesTransportExactlyOnce(t *testing.T) {
 
 var errEncodeAfterDelivery = errors.New("encode failed after the frame was delivered")
 
-// releasedFailingWriter forwards each frame to the peer, then holds the write
-// open until released and reports a failure for it: a frame the peer received
-// and answered whose Encode nevertheless returned an error.
 type releasedFailingWriter struct {
 	inner   io.Writer
 	release chan struct{}
@@ -573,16 +522,6 @@ func (w *releasedFailingWriter) Write(p []byte) (int, error) {
 	return n, errEncodeAfterDelivery
 }
 
-// A frame the peer received and answered must settle on its response even when
-// Encode reports a failure for it: the client retires before the failure is
-// published, so the caller settles on its channel rather than removing a
-// pending id whose reply is already in hand.
-//
-// Unlike the other regression tests here this one also passes against the
-// client it fixes: there the pump published the failure before closing done,
-// and losing that window needs the caller scheduled in the instant between the
-// two, which 300 runs never hit. It guards the invariant rather than
-// reproducing the defect.
 func TestClientCallSettlesOnResponseWhenEncodeFailsAfterDelivery(t *testing.T) {
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
@@ -594,12 +533,11 @@ func TestClientCallSettlesOnResponseWhenEncodeFailsAfterDelivery(t *testing.T) {
 	if _, err := bufio.NewReader(serverReader).ReadString('\n'); err != nil {
 		t.Fatal(err)
 	}
-	// The peer answers while the pump still holds the write open.
+
 	if _, err := serverWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	// Take the barrier without acknowledging it: the reply is decoded and in
-	// hand while the pump still holds the write open.
+
 	select {
 	case message := <-inbound:
 		if message.Barrier == nil {
@@ -621,8 +559,6 @@ func TestClientCallSettlesOnResponseWhenEncodeFailsAfterDelivery(t *testing.T) {
 	_ = serverReader.Close()
 }
 
-// blockedPumpWriter reports when the pump has entered Write and holds it there
-// until the test releases it: a peer that stopped reading stdin.
 type blockedPumpWriter struct {
 	entered chan struct{}
 	release chan struct{}
@@ -635,14 +571,10 @@ func (w *blockedPumpWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// The settle decision belongs to the request, not to the pump: a later frame
-// blocked in Encode says nothing about a frame that already left it. With a
-// shared flag, A's caller reported the transport's death for a request the
-// peer had received in full because B happened to be encoding.
 func TestPumpSettlesIsPerRequest(t *testing.T) {
 	reader, writer := io.Pipe()
 	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
-	client := NewClient(reader, io.Discard, ClientOptions{}) // no closer
+	client := NewClient(reader, io.Discard, ClientOptions{})
 	past := writeRequest{started: make(chan struct{}), encoded: make(chan struct{}), result: make(chan error, 1)}
 	close(past.started)
 	close(past.encoded)

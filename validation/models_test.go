@@ -8,12 +8,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The models rules the fixture corpus cannot state on its own: what a degraded
-// catalog does not bind, what an unreported session model cannot contradict,
-// and the registrations the corpus check reads.
-
-// modelsTrace assembles a capability exchange, one catalog query and its
-// answer, and whatever a test appends, so a test states only what it is about.
 func modelsTrace(features, query, answer string, rest ...string) []byte {
 	descriptor := `{` + controlsCore + `,"type":"capabilities.response","id":"caps-resp","in_reply_to":"caps-req","capability_revision":"rev-1","payload":{"endpoint":{"id":"fixture"},"features":` + features + `}}`
 	envelopes := []string{
@@ -43,7 +37,6 @@ func modelsCatalog(body string) string {
 	return `{` + controlsCore + `,"type":"models.response","id":"models-resp","in_reply_to":"models-req","session_id":"s1","capability_revision":"rev-1","payload":{"session_id":"s1",` + body + `}}`
 }
 
-// modelSubmit is one submit selecting a model, admitted and run to completion.
 func modelSubmit(model string) []string {
 	return []string{
 		`{` + controlsCore + `,"type":"session.message.submit.request","id":"submit-req","session_id":"s1","capability_revision":"rev-1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto","model_id":"` + model + `"}}`,
@@ -55,10 +48,6 @@ func modelSubmit(model string) []string {
 
 const modelsNative = `{"models.list":{"level":"native"},"run.model_selection":{"level":"emulated","mode":"per_run"},"session.message.submit":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.state":{"level":"native"}}`
 
-// A degraded catalog refreshes out of band, which is what degraded discloses
-// here, so it does not bind a later admission: an earlier selection may have
-// matched a list that was never served, and diagnosing it would convict an
-// endpoint for a catalog nobody could have read.
 func TestDegradedCatalogDoesNotBindAdmissions(t *testing.T) {
 	v := MustNew()
 	degraded := `{"models.list":{"level":"degraded","reason":"refreshed per turn"},"run.model_selection":{"level":"emulated","mode":"per_run"},"session.message.submit":{"level":"native"},"session.message.delivery.auto":{"level":"native"}}`
@@ -66,15 +55,13 @@ func TestDegradedCatalogDoesNotBindAdmissions(t *testing.T) {
 	if got := v.ValidateBytes(trace, "degraded-catalog"); !got.Valid() {
 		t.Fatalf("a degraded catalog bound an admission: %+v", got.Diagnostics)
 	}
-	// The same trace at native binds it.
+
 	bound := modelsTrace(modelsNative, modelsQuery(""), modelsCatalog(`"current_model_id":"m1","models":[{"id":"m1","default":true}]`), modelSubmit("m2")...)
 	if got := v.ValidateBytes(bound, "native-catalog"); !got.HasCode(CodeModelNotInCatalog) {
 		t.Fatalf("want %s when a native catalog omits the admitted model: %+v", CodeModelNotInCatalog, got.Diagnostics)
 	}
 }
 
-// A degraded catalog is also exempt from the stability rule, for the same
-// reason: the descriptor's own reason discloses that it refreshes out of band.
 func TestDegradedCatalogMayChangeWithinARevision(t *testing.T) {
 	v := MustNew()
 	second := strings.NewReplacer("models-req", "models-req2", "models-resp", "models-resp2")
@@ -87,9 +74,6 @@ func TestDegradedCatalogMayChangeWithinARevision(t *testing.T) {
 	}
 }
 
-// A session whose model the trace never reported cannot contradict a catalog:
-// the rule diagnoses a value the session never held, and a session that held
-// no observed value never held anything to compare.
 func TestUnreportedSessionModelContradictsNothing(t *testing.T) {
 	v := MustNew()
 	trace := modelsTrace(modelsNative, modelsQuery(""), modelsCatalog(`"current_model_id":"m1","models":[{"id":"m1","default":true}]`))
@@ -98,8 +82,6 @@ func TestUnreportedSessionModelContradictsNothing(t *testing.T) {
 	}
 }
 
-// An empty catalog is a catalog: an endpoint that serves no model says so
-// rather than omitting the member, and nothing about it is self-contradictory.
 func TestEmptyCatalogIsWellFormed(t *testing.T) {
 	v := MustNew()
 	trace := modelsTrace(modelsNative, modelsQuery(""), modelsCatalog(`"models":[]`))
@@ -108,9 +90,6 @@ func TestEmptyCatalogIsWellFormed(t *testing.T) {
 	}
 }
 
-// A catalog naming a position the trace never reaches stays held rather than
-// diagnosed: the endpoint claimed knowledge the trace lacks, and silence is
-// not evidence against it.
 func TestUnreachedCatalogPositionIsNotDiagnosed(t *testing.T) {
 	v := MustNew()
 	answer := modelsCatalog(`"current_model_id":"m9","models":[{"id":"m9","default":true}],"as_of_model_event":{"run_id":"r7","sequence":4}`)
@@ -129,9 +108,6 @@ func TestModelsDiagnosticsAreRegistered(t *testing.T) {
 	}
 }
 
-// The unit owns exactly one capability key, and the corpus owes both aspects
-// for it. The deferral T1 recorded for run.model_selection is discharged by a
-// rule rather than by moving the fixture, so the map stays empty.
 func TestModelsCapabilitiesAreRegistered(t *testing.T) {
 	owned := unitCapabilities["models"]
 	if !slices.Contains(owned, protocol.FeatureModelsList) {

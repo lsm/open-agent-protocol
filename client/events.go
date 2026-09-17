@@ -15,67 +15,36 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// SSE event names for the daemon's terminal transport signals. They are
-// framing, not OAP envelopes.
 const (
 	signalOverflow = "oap-overflow"
 	signalGap      = "oap-replay-gap"
 )
 
 const (
-	// initialReconnectBackoff is the first wait between reconnect attempts
-	// after a transport failure; it doubles up to maxReconnectBackoff.
 	initialReconnectBackoff = 100 * time.Millisecond
 	maxReconnectBackoff     = time.Second
-	// maxEmptyCycles bounds consecutive reconnects whose connection ends
-	// without delivering anything: an EventsAfter cursor at a settled run's
-	// tail produces empty replays forever, and an endless silent reconnect
-	// loop is worse than a reported disconnect.
+
 	maxEmptyCycles = 3
 )
 
-// Events returns the session's event stream as a live subscription. The
-// subscription is opened before Events returns — the daemon registers it once
-// the response begins — so the canonical order (Events before Submit) cannot
-// miss the run's first envelope; a subscription opened mid-run receives only
-// events from that point on.
-//
-// Envelopes are returned in order. By default a dropped connection is resumed
-// invisibly: the client reconnects with the last observed sequence as the
-// cursor, the daemon replays the suffix, and the stream continues without
-// duplicates. WithStrictResume turns this off and reports the drop instead.
-// Next returns io.EOF once the stream ends at a run's terminal event. A
-// connection failure while opening the subscription is reported by the first
-// Next call.
 func (s *Session) Events(ctx context.Context) *EventStream {
 	stream := &EventStream{session: s, ctx: ctx, strict: s.client.strict}
 	stream.establish()
 	return stream
 }
 
-// EventsAfter returns the event stream replayed from a cursor: the current
-// run's envelopes after the given sequence first, then live events. It is the
-// manual resume path for consumers holding a cursor from an OverflowError,
-// ReplayGapError, or DisconnectError — pass the error's RunID so the replay is
-// bound to the run the cursor belongs to; if the daemon's current run no
-// longer matches, the stream surfaces a ResumeMismatchError instead of
-// silently mixing runs. An empty runID binds to whichever run is current.
 func (s *Session) EventsAfter(ctx context.Context, runID protocol.RunID, after uint64) *EventStream {
 	stream := &EventStream{session: s, ctx: ctx, strict: s.client.strict, startAfter: &after, lastSeq: after, runID: runID}
 	stream.establish()
 	return stream
 }
 
-// establish opens the initial connection so the subscription is live before
-// the caller proceeds; its failure is surfaced by the first Next call.
 func (es *EventStream) establish() {
 	if err := es.connect(); err != nil {
 		es.finished, es.err = true, err
 	}
 }
 
-// EventStream is one ordered envelope stream over a session. It is not safe
-// for concurrent use: exactly one goroutine consumes it through Next.
 type EventStream struct {
 	session    *Session
 	ctx        context.Context
@@ -84,24 +53,18 @@ type EventStream struct {
 
 	response *http.Response
 	reader   *bufio.Reader
-	// cursor is the last observed (run, sequence); runID is empty until the
-	// first envelope fixes it.
+
 	runID   protocol.RunID
 	lastSeq uint64
-	// resumed marks a connection opened with a cursor: its first envelope
-	// must continue runID at lastSeq+1 exactly.
+
 	resumed bool
-	// everConnected distinguishes the initial connect (whose transport
-	// failures surface at once) from reconnects (which back off and retry).
+
 	everConnected bool
-	// speculated records that the replay-from-start reconnect fallback was
-	// already tried, so a session without a run parks live instead of
-	// retrying the speculative cursor forever.
+
 	speculated bool
-	// terminal records that a run's terminal envelope was delivered, so a
-	// subsequent end of stream is the documented clean end, not a drop.
+
 	terminal bool
-	// connEvents counts envelopes delivered by the current connection.
+
 	connEvents  int
 	emptyCycles int
 	backoff     time.Duration
@@ -110,10 +73,6 @@ type EventStream struct {
 	err      error
 }
 
-// Next returns the next envelope. It returns io.EOF after the stream ends
-// cleanly at a run's terminal event, and any other error is terminal for the
-// stream: once Next reports an error other than io.EOF, subsequent calls
-// return the same error.
 func (es *EventStream) Next() (protocol.Envelope, error) {
 	if es.finished {
 		if es.err != nil {
@@ -133,7 +92,7 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 		}
 		var drop *connectionDrop
 		if !errors.As(err, &drop) {
-			// A daemon signal or a stream defect: surfaced, never retried.
+
 			return protocol.Envelope{}, es.stop(err)
 		}
 		es.closeResponse()
@@ -141,7 +100,7 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 			return protocol.Envelope{}, es.stop(err)
 		}
 		if es.terminal {
-			// The stream's documented clean end at run terminality.
+
 			return protocol.Envelope{}, es.stop(io.EOF)
 		}
 		if es.connEvents == 0 {
@@ -160,11 +119,10 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 				RunID: es.runID, LastSequence: es.lastSeq, Cause: drop.cause,
 			})
 		}
-		// Invisible resume: reconnect with the cursor and continue.
+
 	}
 }
 
-// stop makes err permanent for the stream: io.EOF is the clean end.
 func (es *EventStream) stop(err error) error {
 	es.closeResponse()
 	es.finished = true
@@ -172,11 +130,6 @@ func (es *EventStream) stop(err error) error {
 	return err
 }
 
-// connect opens one SSE connection, retrying transport failures with backoff
-// after the first successful connection. A cursor is attached whenever the
-// stream holds one; a reconnect with no observed envelope yet replays the
-// current run from its start, falling back to a live subscription when the
-// session has no run to replay.
 func (es *EventStream) connect() error {
 	for {
 		if err := es.ctx.Err(); err != nil {
@@ -211,10 +164,6 @@ func (es *EventStream) connect() error {
 	}
 }
 
-// cursor reports the reconnect cursor for the next connection. It is empty
-// for a fresh live subscription; a reconnect that has observed nothing
-// speculatively replays the current run from its start (speculative true), so
-// envelopes emitted during the disconnect are not missed.
 func (es *EventStream) cursor() (cursor string, speculative bool) {
 	switch {
 	case es.everConnected && es.runID != "":
@@ -228,10 +177,6 @@ func (es *EventStream) cursor() (cursor string, speculative bool) {
 	}
 }
 
-// open performs one GET on the session's event stream with the cursor both as
-// the Last-Event-ID header and as the explicit ?after= query parameter. The
-// stream contract is exactly 200 OK; every other status, success or failure,
-// is an error, so a returned response is always usable.
 func (es *EventStream) open(after string) (*http.Response, error) {
 	path := es.session.path("/events")
 	if after != "" {
@@ -255,18 +200,14 @@ func (es *EventStream) open(after string) (*http.Response, error) {
 		if err := es.session.client.failureError(response, body); err != nil {
 			return nil, err
 		}
-		// A 2xx that is not a stream — a proxy's 204, an incompatible
-		// daemon — must not pass as one: the caller would dereference a
-		// response that carries no stream body.
+
 		return nil, &ServerError{
 			Status:  response.StatusCode,
 			Message: fmt.Sprintf("event stream returned status %d, want %d OK", response.StatusCode, http.StatusOK),
 		}
 	}
 	if mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type")); err != nil || mediaType != "text/event-stream" {
-		// A 200 with some other body would parse as an empty or garbage
-		// stream — read errors that masquerade as drops, or a connection
-		// that parks forever. The endpoint must declare the event stream.
+
 		response.Body.Close()
 		return nil, &ServerError{
 			Status:  response.StatusCode,
@@ -276,7 +217,6 @@ func (es *EventStream) open(after string) (*http.Response, error) {
 	return response, nil
 }
 
-// wait sleeps one backoff step, doubling up to the cap.
 func (es *EventStream) wait() error {
 	if es.backoff == 0 {
 		es.backoff = initialReconnectBackoff
@@ -300,9 +240,6 @@ func (es *EventStream) closeResponse() {
 	}
 }
 
-// poll reads frames until one envelope is delivered, a terminal signal or
-// stream defect is found, or the connection ends. A connectionDrop wraps the
-// causes that mean "the connection ended, decide whether to resume".
 func (es *EventStream) poll() (protocol.Envelope, error) {
 	var (
 		envelope protocol.Envelope
@@ -316,13 +253,7 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 				failure = err
 				return false
 			}
-			// The hub's cursor is the recovery target, trusted as given:
-			// it names the run whose delivery was lost and the consumer's
-			// last position in it — which may be a run this connection
-			// never reached, or an older run whose late envelope filled the
-			// queue while a newer run's remaining delivery was discarded
-			// too. Overwriting it with the connection's own last position
-			// would strand whichever run the signal names.
+
 			failure = &OverflowError{RunID: protocol.RunID(signal.RunID), LastSequence: signal.LastSequence, Message: signal.Message}
 			return false
 		case signalGap:
@@ -350,8 +281,7 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 			envelope = parsed
 			return false
 		default:
-			// An unknown named event is framing the client does not define;
-			// skipping it keeps the stream forward-compatible.
+
 			return true
 		}
 	})
@@ -366,19 +296,12 @@ func (es *EventStream) poll() (protocol.Envelope, error) {
 	return envelope, nil
 }
 
-// deliver applies the stream's cursor integrity rules to one envelope and
-// records its position.
 func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
-	// An envelope naming another session never belongs on this stream: a
-	// misrouted stream must not deliver another session's content and
-	// interaction requests as this one's.
+
 	if envelope.SessionID != es.session.id {
 		return &MalformedFrameError{Detail: fmt.Sprintf("envelope for session %q on the %q stream", envelope.SessionID, es.session.id)}
 	}
-	// Every envelope on this stream is a sequenced run event; one without a
-	// sequence cannot be positioned, and delivering it would leave the cursor
-	// behind it — a later resume would replay it without any way to detect
-	// the duplicate. Sequences start at one.
+
 	if envelope.Sequence == nil || *envelope.Sequence == 0 {
 		return &MalformedFrameError{Detail: "event envelope carries no sequence"}
 	}
@@ -397,33 +320,23 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 		if es.runID != "" && envelope.RunID != es.runID {
 			return &ResumeMismatchError{AfterSequence: es.lastSeq, ExpectedRunID: es.runID, ObservedRunID: envelope.RunID, ObservedSequence: *envelope.Sequence}
 		}
-		// A cursor-bearing connection — including one replaying after zero —
-		// requests the run from a known position, unlike a fresh live
-		// subscription that may join mid-run: its first envelope must
-		// continue the cursor exactly, or envelopes were skipped.
+
 		if *envelope.Sequence != es.lastSeq+1 {
 			return &SequenceGapError{RunID: envelope.RunID, Expected: es.lastSeq + 1, Observed: *envelope.Sequence}
 		}
 	}
 	if envelope.RunID != es.runID {
 		if resumed && es.runID == "" {
-			// The first envelope of a cursor-carrying stream names the run
-			// the cursor belongs to: the run is adopted, and the sequence
-			// expectation stays bound to the cursor.
+
 			es.runID = envelope.RunID
 			es.terminal = isTerminal(envelope.Type)
 		} else if es.runID == "" {
-			// The stream's first observed envelope may join a run in
-			// progress: sequences before the join were never deliverable to
-			// this subscription, so the join position becomes the baseline.
+
 			es.runID = envelope.RunID
 			es.lastSeq = 0
 			es.terminal = isTerminal(envelope.Type)
 		} else {
-			// A live transition to a new run starts a fresh sequence space,
-			// and this stream was attached throughout, so it must witness
-			// the run from its first envelope: anything later means the
-			// opening events were lost.
+
 			if *envelope.Sequence != 1 {
 				return &SequenceGapError{RunID: envelope.RunID, Expected: 1, Observed: *envelope.Sequence}
 			}
@@ -434,10 +347,7 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 	} else if isTerminal(envelope.Type) {
 		es.terminal = true
 	}
-	// Run sequences are contiguous: within one run every envelope carries the
-	// previous sequence plus one. A regression is a replay defect, and a skip
-	// means an envelope was lost — advancing past it would hide it from the
-	// consumer and from a later cursor resume, so both surface.
+
 	if es.lastSeq > 0 {
 		switch {
 		case *envelope.Sequence <= es.lastSeq:
@@ -481,8 +391,6 @@ type gapSignal struct {
 	Message         string `json:"message"`
 }
 
-// connectionDrop wraps the read error (io.EOF included) that ended one SSE
-// connection: the stream may resume from its cursor.
 type connectionDrop struct{ cause error }
 
 func (e *connectionDrop) Error() string {
@@ -491,9 +399,6 @@ func (e *connectionDrop) Error() string {
 
 func (e *connectionDrop) Unwrap() error { return e.cause }
 
-// OverflowError is the daemon's oap-overflow signal: this connection's bounded
-// buffer fell behind. LastSequence is the last sequence delivered on the
-// stream; resume with EventsAfter and a cursor after it.
 type OverflowError struct {
 	RunID        protocol.RunID
 	LastSequence uint64
@@ -504,10 +409,6 @@ func (e *OverflowError) Error() string {
 	return fmt.Sprintf("client: event stream overflowed behind sequence %d (run %s); resume with a cursor after it", e.LastSequence, e.RunID)
 }
 
-// ReplayGapError is the daemon's oap-replay-gap signal: the requested cursor
-// is no longer retained. OldestAvailable and LatestAvailable bound what is;
-// a consumer that accepts the loss resumes with a cursor at or after
-// OldestAvailable - 1, bound to RunID when the stream knew it.
 type ReplayGapError struct {
 	RunID           protocol.RunID
 	RequestedAfter  uint64
@@ -524,10 +425,6 @@ func (e *ReplayGapError) Error() string {
 	return fmt.Sprintf("client: replay cursor %d expired (retained %d through %d); resume at or after %d", e.RequestedAfter, e.OldestAvailable, e.LatestAvailable, floor)
 }
 
-// DisconnectError reports a dropped event stream that was not resumed:
-// strict mode reports every drop, and auto-resume reports a stream that ends
-// repeatedly without events. RunID and LastSequence are the stream's last
-// observed position; resume with EventsAfter(LastSequence).
 type DisconnectError struct {
 	RunID        protocol.RunID
 	LastSequence uint64
@@ -540,9 +437,6 @@ func (e *DisconnectError) Error() string {
 
 func (e *DisconnectError) Unwrap() error { return e.Cause }
 
-// MalformedFrameError reports a stream frame the client cannot interpret: a
-// message frame that is not an envelope, a signal payload that does not
-// decode, or an id field disagreeing with the envelope it frames.
 type MalformedFrameError struct {
 	Detail string
 	Cause  error
@@ -557,9 +451,6 @@ func (e *MalformedFrameError) Error() string {
 
 func (e *MalformedFrameError) Unwrap() error { return e.Cause }
 
-// DuplicateSequenceError reports an envelope whose (run, sequence) position
-// was already delivered: a resumed stream replayed what the consumer already
-// saw, which is a wire defect to surface, not skip.
 type DuplicateSequenceError struct {
 	RunID    protocol.RunID
 	Sequence uint64
@@ -569,9 +460,6 @@ func (e *DuplicateSequenceError) Error() string {
 	return fmt.Sprintf("client: duplicate sequence %d in run %s", e.Sequence, e.RunID)
 }
 
-// SequenceGapError reports an envelope that skipped one or more sequences in
-// its run: an envelope was lost in transit or never published, and advancing
-// the cursor past the hole would silently drop it.
 type SequenceGapError struct {
 	RunID    protocol.RunID
 	Expected uint64
@@ -582,9 +470,6 @@ func (e *SequenceGapError) Error() string {
 	return fmt.Sprintf("client: run %s skipped from sequence %d to %d", e.RunID, e.Expected, e.Observed)
 }
 
-// ResumeMismatchError reports a replayed suffix that does not continue the
-// stream it was asked to: the run changed under the cursor, or the first
-// replayed sequence is not the cursor plus one.
 type ResumeMismatchError struct {
 	AfterSequence    uint64
 	ExpectedRunID    protocol.RunID

@@ -12,9 +12,7 @@ const (
 	PhaseDecode   Phase = "decode"
 	PhaseSchema   Phase = "schema"
 	PhaseSemantic Phase = "semantic"
-	// PhaseLoad is the phase of a fixture whose expectation is that loading a
-	// resource — an extension pack — fails before any trace is read. It is
-	// what a `load-invalid` manifest entry asserts.
+
 	PhaseLoad Phase = "load"
 )
 
@@ -50,106 +48,17 @@ const (
 	CodeUnknownParticipant           = "unknown_participant"
 	CodeSessionStateMismatch         = "session_state_mismatch"
 
-	// The run-controls unit. Each names one way a per-submit control can be
-	// betrayed rather than applied or refused.
-	//
-	// CodeUnappliedControl: the control was admitted and then not applied —
-	// a substituted model, a missing or nonconforming structured result, a
-	// call the policy excludes or a required call never made, or a per_run
-	// selection written into the session default.
-	//
-	// CodeUnsatisfiableControl: a control the endpoint could not honour was
-	// admitted anyway, or one it could honour was refused as unsatisfiable.
-	//
-	// CodeDegradedWithoutOptin: a degraded control was executed without the
-	// caller's consent, or refused under a code that does not ask for it.
-	//
-	// CodeDuplicateToolName: the catalog a tool_choice is judged against
-	// lists two tools with one name, so no entry in it can be unambiguous.
-	//
-	// CodeUndisclosedSelectionModes: a selection capability is advertised
-	// without the disclosure that makes it checkable — run.tool_selection
-	// without the tool_choice modes the endpoint enforces, or
-	// run.model_selection without how a selection is applied. Either would
-	// let the key promise nothing: every rule that binds the capability keys
-	// on the disclosure.
 	CodeUnappliedControl          = "unapplied_control"
 	CodeUnsatisfiableControl      = "unsatisfiable_control"
 	CodeDegradedWithoutOptin      = "degraded_without_optin"
 	CodeDuplicateToolName         = "duplicate_tool_name"
 	CodeUndisclosedSelectionModes = "undisclosed_selection_modes"
 
-	// The queue-delivery unit. Each names one way admitting a second
-	// nonterminal run per session can go wrong.
-	//
-	// CodeQueueOrderViolation: a later-admitted run published a sequenced
-	// event while an earlier-admitted run of the session was nonterminal.
-	// One run executes at a time, in admission order; the pre-start terminal
-	// of a run that never started is exempt, because it has no execution to
-	// interleave and its release of a slot is capacity the trace must show at
-	// the moment it occurs.
-	//
-	// CodeQueueLimitExceeded: a reservation put the session's nonterminal set
-	// or its queued subset above a disclosed bound, or a refusal reported a
-	// bound that the window shows was never reached — a caller told to wait
-	// for capacity it never lacked.
-	//
-	// CodePrematureSessionMutation: a snapshot reported a session default
-	// other than the one in force at the position it states it was captured
-	// at, which is how a reservation's session_mutation applied before its
-	// promotion is caught.
-	//
-	// CodeUndisclosedQueueLimit: the queue capability is advertised without a
-	// bound a submission could ever reach — absent, nonpositive, or walled
-	// off by an active bound that leaves no room for it beside a started run.
-	// Without one the limit validation has nothing to test and the key
-	// promises nothing.
 	CodeQueueOrderViolation      = "queue_order_violation"
 	CodeQueueLimitExceeded       = "queue_limit_exceeded"
 	CodePrematureSessionMutation = "premature_session_mutation"
 	CodeUndisclosedQueueLimit    = "undisclosed_queue_limit"
-	// The tool-sources unit. Each names one way a catalog can stop resolving
-	// a tool to one source, one owner, and one endpoint.
-	//
-	// CodeUnmatchedToolSource: a tool or a call names a source nothing
-	// declares, or one that disagrees with the source the session's catalog
-	// records for that tool, or — in a served catalog, whose whole point is
-	// attribution — names no source at all. Either way the attribution resolves
-	// nowhere, or somewhere else.
-	//
-	// CodeDuplicateToolSource: two descriptors share an id, so a tool's
-	// `source` and a call's `source` no longer resolve to one endpoint.
-	//
-	// CodeCatalogMismatch: a session-scoped catalog does not reflect the
-	// attachment it is required to. Attachment is for the session's lifetime,
-	// so an attached source never drops out of a later list and never changes
-	// the members it was attached with.
-	//
-	// CodeAttachmentFieldInCatalog: a published source carries `command`,
-	// `args`, or `environment` — the attachment-only members, one of which can
-	// hold a literal credential. The descriptor shape excludes them, so this
-	// catches a tolerant or hand-rolled serializer reflecting the open-time
-	// value straight back to clients.
-	//
-	// CodeUndisclosedAttachModes: action.tool_sources.attach is advertised
-	// affirmatively while disclosing no session_open mode, so the key names an
-	// application no open can elect. Diagnosed on the descriptor that
-	// publishes it, as undisclosed_selection_modes is.
-	//
-	// CodeUndisclosedAttachLimit: an attachment carrying no defect any rule
-	// names, and violating no limit the endpoint disclosed, was refused. The
-	// refusal is itself the evidence that a constraint exists which the caller
-	// was never told about.
-	//
-	// CodeUnattributedCall: an endpoint that advertises action.tools.list
-	// emitted a call naming no source for a tool its own published catalog
-	// attributes. `source` is optional on the wire for every endpoint, because
-	// one outside this unit has no catalog to attribute against — but an
-	// endpoint that publishes the mapping and then omits it on the call leaves a
-	// consumer parsing the tool name again, which is the inference the member
-	// exists to remove. It is distinct from unmatched_tool_source: that one says
-	// the attribution resolves somewhere wrong, this one that an endpoint which
-	// could attribute did not.
+
 	CodeUnmatchedToolSource      = "unmatched_tool_source"
 	CodeDuplicateToolSource      = "duplicate_tool_source"
 	CodeCatalogMismatch          = "catalog_mismatch"
@@ -157,51 +66,11 @@ const (
 	CodeUndisclosedAttachModes   = "undisclosed_attach_modes"
 	CodeUndisclosedAttachLimit   = "undisclosed_attach_limit"
 	CodeUnattributedCall         = "unattributed_call"
-	// The control-tools unit (Decision 0011). Each names one way a call the
-	// control layer is supposed to execute can stop being one.
-	//
-	// CodeWrongToolOwner: a tool is owned by a participant that cannot own
-	// it. At session open that is a supplied definition whose
-	// `execution_owner` is not the opening participant — a tool the endpoint
-	// would later classify as harness-owned or route to a participant that
-	// never provided it. On a call it is an `execution_owner` other than the
-	// one the session's catalog records for that name, in either direction: a
-	// harness-owned tool routed to the control participant, or a provided one
-	// routed to the harness. The check runs at supply time too, before any
-	// interaction exists, which wrong_interaction_responder cannot cover.
-	//
-	// CodeUndisclosedProvideLimit: a `tools` array carrying no defect any
-	// rule names, and violating no limit the endpoint disclosed, was refused.
-	// The same shape the queue bound and the attachment limits use, and for
-	// the same reason: without it an endpoint could advertise
-	// action.tools.provide, refuse every array it is ever given, and pass.
-	//
-	// CodeResolutionPayloadMismatch: a control-owned call's terminal carries
-	// something other than the outcome the accepted resolution stated. The
-	// authorization and the payload are separate facts, so an adapter that
-	// forwards an altered result to the harness would otherwise pass with an
-	// authorized terminal that says something the participant never said.
+
 	CodeWrongToolOwner            = "wrong_tool_owner"
 	CodeUndisclosedProvideLimit   = "undisclosed_provide_limit"
 	CodeResolutionPayloadMismatch = "resolution_payload_mismatch"
-	// The models unit. A catalog is a promise that its ids are selectable and
-	// that nothing else is, so each of these names one way the published
-	// catalog and the endpoint's own behaviour disagree.
-	//
-	// CodeModelNotInCatalog: a selection and the catalog contradict each other
-	// in either direction — an admitted model the catalog does not list, a
-	// listed model refused as missing, a refusal that names no id the caller
-	// can act on, or a catalog whose own current_model_id it does not describe.
-	//
-	// CodeAmbiguousDefaultModel: more than one descriptor claims to be the
-	// default, so the catalog names no default at all.
-	//
-	// CodeDuplicateModelID: two descriptors share an id, so an accepted
-	// model_id denotes no single descriptor's metadata.
-	//
-	// CodeUnannouncedCatalogChange: the catalog changed under one capability
-	// revision. The catalog is part of the capability snapshot, so a change
-	// that no capabilities.updated announced is one no consumer can observe.
+
 	CodeModelNotInCatalog        = "model_not_in_catalog"
 	CodeAmbiguousDefaultModel    = "ambiguous_default_model"
 	CodeDuplicateModelID         = "duplicate_model_id"

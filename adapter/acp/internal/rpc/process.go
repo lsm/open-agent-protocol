@@ -28,9 +28,6 @@ type Implementation struct {
 	Version string `json:"version"`
 }
 
-// ClientCapabilities is intentionally structural and permissive at its leaves.
-// The transport preserves negotiated v1 capability documents for the semantic
-// adapter without interpreting them.
 type ClientCapabilities map[string]json.RawMessage
 type AgentCapabilities map[string]json.RawMessage
 
@@ -96,8 +93,7 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	}
 	command := exec.Command(config.Path, append([]string(nil), config.Args...)...)
 	command.Dir = config.Dir
-	// slices.Clone preserves non-nilness: an explicitly empty allowlist stays
-	// empty instead of collapsing to nil and inheriting the parent.
+
 	if config.Env != nil {
 		command.Env = slices.Clone(config.Env)
 	}
@@ -199,10 +195,7 @@ func (process *Process) WaitError() error {
 }
 
 func (process *Process) wait() {
-	// Drain stdout before reaping. Cmd.Wait closes the stdout pipe, so the
-	// reader must finish routing every frame already buffered there before the
-	// pipes are closed; otherwise a response the child wrote immediately before
-	// exiting becomes a closed-pipe error on the pending call.
+
 	<-process.Client.ReadDone()
 	process.drainStderr()
 	err := process.command.Wait()
@@ -214,19 +207,8 @@ func (process *Process) wait() {
 	close(process.waitDone)
 }
 
-// drainStderr waits for the stderr copier to finish before the child is reaped.
-// Cmd.Wait closes the pipes it created as soon as the child exits, and
-// StderrPipe's contract is that every read must complete first: a copier that
-// has not yet consumed the buffered bytes fails on a closed file and the bytes
-// are lost, which is how a handshake failure ended up composing an empty
-// stderr. A descendant that inherited stderr can keep the read end from
-// reaching EOF, so bound the drain and close our side to release the copier,
-// exactly as the shutdown paths bound the stdout drain.
 func (process *Process) drainStderr() { process.drainStderrWithin(process.timeout) }
 
-// drainStderrWithin waits up to limit for the copier, then closes the read end
-// to release it. Releasing costs whatever a still-writing descendant had left
-// to say; blocking instead would cost the caller its bound.
 func (process *Process) drainStderrWithin(limit time.Duration) {
 	timer := time.NewTimer(limit)
 	defer timer.Stop()
@@ -246,22 +228,13 @@ func processExitError(err error) error {
 }
 func (process *Process) abort() error {
 	_ = process.command.Process.Kill()
-	// Collect the dead child's stderr before releasing the pipes: this is the
-	// diagnostic the caller composes into the handshake error, and
-	// killAndRelease closes the read end. Bounded by abortStderrGrace so a
-	// descendant holding stderr cannot stall a failed Start.
+
 	process.drainStderrWithin(abortStderrGrace)
 	process.killAndRelease()
 	<-process.waitDone
 	return process.WaitError()
 }
 
-// killAndRelease kills the child and closes the read pipes before reaping. A
-// surviving descendant could hold stdout or stderr open, and wait() drains both
-// before reaping; closing our ends forces those drains to finish. Releasing
-// stderr matters as much as stdout here: forced shutdown has already spent its
-// budget, and leaving stderr open would start a fresh full timeout inside
-// drainStderr and overrun the configured bound by a second timeout.
 func (process *Process) killAndRelease() {
 	_ = process.command.Process.Kill()
 	_ = process.pipes.Close()
@@ -340,10 +313,4 @@ func cloneMap(source ClientCapabilities) ClientCapabilities {
 	return result
 }
 
-// abortStderrGrace bounds the stderr drain on the handshake-abort paths. The
-// child is already killed there, so the diagnostic stderr composed into the
-// failure is whatever it wrote before dying and is sitting in the pipe buffer
-// already: the copier needs a scheduling slice, not a shutdown budget. Bounding
-// it here keeps a descendant that inherited stderr from adding a full
-// ShutdownTimeout to a Start that has already failed or been cancelled.
 const abortStderrGrace = 250 * time.Millisecond

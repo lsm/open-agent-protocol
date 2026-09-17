@@ -15,12 +15,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// TestOpenCodeServerIntegration is an explicitly gated smoke gate against a
-// real `opencode serve` process at the pinned v1.18.29 revision. It asserts
-// transport-level behavior only (health, session creation shape, durable
-// subscription establishment); behavioral proof lives in the corpus. It has
-// not been executed at this pin — a reproducible binary must be supplied by
-// the caller, and no ambient credentials are forwarded.
 func TestOpenCodeServerIntegration(t *testing.T) {
 	if os.Getenv("OAP_OPENCODE_INTEGRATION") != "1" {
 		t.Skip("set OAP_OPENCODE_INTEGRATION=1 and OAP_OPENCODE_BIN to run the pinned server gate")

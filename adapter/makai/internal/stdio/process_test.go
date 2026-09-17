@@ -17,8 +17,7 @@ import (
 )
 
 func TestProcessHelper(t *testing.T) {
-	// Activated either by environment or by an explicit argument, so the
-	// empty-allowlist fixture can be spawned with no environment at all.
+
 	envless := strings.Contains(strings.Join(os.Args, "\x00"), "--makai-emptyenv")
 	mode := os.Getenv("MAKAI_HELPER_MODE")
 	if mode == "" && !envless {
@@ -45,13 +44,12 @@ func TestProcessHelper(t *testing.T) {
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			os.Exit(12)
 		}
-		// A frame far larger than the pipe buffer keeps the reader busy past the
-		// child's exit, which is the window this exercises.
+
 		blob := strings.Repeat("x", 1<<20)
 		os.Stdout.WriteString(`{"type":"pong","session_id":"` + request.SessionID + `","message_id":"01ARZ3NDEKTSV4RRFFQ69G5FAW","sequence":1,"timestamp":1,"version":1,"in_reply_to":"` + request.MessageID + `","payload":{"ping_id":"` + blob + `"}}` + "\n")
 		os.Exit(0)
 	case "emptyenv":
-		// A parent-inherited probe means the empty allowlist collapsed to nil.
+
 		if os.Getenv("MAKAI_ENV_PROBE") != "" {
 			os.Exit(13)
 		}
@@ -63,8 +61,7 @@ func TestProcessHelper(t *testing.T) {
 		os.Stdout.WriteString("noise\n")
 		os.Exit(2)
 	case "ready-descendant":
-		// A descendant that inherits stdout and outlives this process keeps the
-		// parent's read end from reaching EOF after the direct child exits.
+
 		os.Stdout.WriteString(`{"type":"ready","protocol_version":"1"}` + "\n")
 		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
 		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
@@ -74,8 +71,7 @@ func TestProcessHelper(t *testing.T) {
 		}
 		os.Exit(0)
 	case "bad-descendant":
-		// A failed handshake whose descendant inherits stderr: the pipe never
-		// reaches EOF even though the direct child is killed.
+
 		os.Stderr.WriteString("api_key=secret-value\n" + strings.Repeat("x", 256))
 		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
 		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
@@ -86,9 +82,7 @@ func TestProcessHelper(t *testing.T) {
 		os.Stdout.WriteString("noise\n")
 		os.Exit(2)
 	case "ready-stderr-descendant":
-		// A descendant inheriting both pipes keeps either read end from
-		// reaching EOF once the direct child exits, so forced shutdown has to
-		// release both to stay inside one timeout budget.
+
 		os.Stdout.WriteString(`{"type":"ready","protocol_version":"1"}` + "\n")
 		descendant := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--")
 		descendant.Env = append(os.Environ(), "MAKAI_HELPER_MODE=holder")
@@ -109,16 +103,10 @@ func helperConfig(mode string) ProcessConfig {
 	return ProcessConfig{Path: os.Args[0], Args: []string{"-test.run=TestProcessHelper", "--"}, Env: append(os.Environ(), "GO_WANT_MAKAI_HELPER=1", "MAKAI_HELPER_MODE="+mode), ShutdownTimeout: 5 * time.Second, StderrLimit: 64}
 }
 
-// envlessHelperConfig spawns the helper with an explicitly empty allowlist, so
-// the child sees no parent variables at all.
 func envlessHelperConfig() ProcessConfig {
 	return ProcessConfig{Path: os.Args[0], Args: []string{"-test.run=TestProcessHelper", "--", "--makai-emptyenv"}, Env: []string{}, ShutdownTimeout: 2 * time.Second, StderrLimit: 64}
 }
 
-// The helper writes its response and then exits immediately. The reader must be
-// allowed to drain the buffered frame before the process owner reaps the child,
-// otherwise this call races the exit and reports a process-exit error for a
-// response that was already written.
 func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	for iteration := range 10 {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -127,8 +115,7 @@ func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: start: %v", iteration, err)
 		}
-		// A matched response is ordered behind an inbound barrier the consumer
-		// must acknowledge, so model the adapter's own draining loop.
+
 		go func() {
 			for {
 				select {
@@ -162,8 +149,6 @@ func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	}
 }
 
-// An explicitly empty allowlist must reach the child as an empty environment,
-// not collapse to nil and inherit the parent's variables.
 func TestProcessEmptyEnvironmentStaysEmpty(t *testing.T) {
 	t.Setenv("MAKAI_ENV_PROBE", "ambient-value")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -223,9 +208,6 @@ func TestProcessHandshakeCancellationReaps(t *testing.T) {
 	}
 }
 
-// A descendant holding stdout open keeps the reader from reaching EOF. A forced
-// shutdown must release the pipe through the client's closer before waiting, or
-// Close blocks forever despite the configured timeout.
 func TestProcessShutdownReleasesDescendantHeldPipe(t *testing.T) {
 	config := helperConfig("ready-descendant")
 	config.ShutdownTimeout = 200 * time.Millisecond
@@ -269,8 +251,6 @@ func TestRedactHidesQuotedAndBearerCredentials(t *testing.T) {
 	}
 }
 
-// lateReader defers the copier's first read until its gate opens, standing in
-// for a copier that has not yet drained the pipe when the child exits.
 type lateReader struct {
 	io.ReadCloser
 	gate chan struct{}
@@ -282,11 +262,6 @@ func (r *lateReader) Read(p []byte) (int, error) {
 	return r.ReadCloser.Read(p)
 }
 
-// Reaping must wait for the stderr copier. Cmd.Wait closes the pipes it
-// created, so a copier still holding buffered bytes when the child is reaped
-// reads from a closed file and loses them — which emptied the stderr composed
-// into handshake failures. The gate holds the copier past the point where the
-// old order would have reaped, and the bytes must still arrive.
 func TestProcessLaggingStderrCopierStillReachesBuffer(t *testing.T) {
 	gate := make(chan struct{})
 	config := helperConfig("bad")
@@ -308,10 +283,6 @@ func TestProcessLaggingStderrCopierStillReachesBuffer(t *testing.T) {
 	}
 }
 
-// A stderr the child's descendant holds open never reaches EOF. Forced shutdown
-// must release it as it releases stdout, so teardown finishes inside a single
-// timeout budget: if only stdout were released, the drain in wait() would start
-// a fresh full timeout and Close would take roughly twice its configured bound.
 func TestProcessShutdownReleasesDescendantHeldStderr(t *testing.T) {
 	const timeout = time.Second
 	config := helperConfig("ready-stderr-descendant")
@@ -327,7 +298,7 @@ func TestProcessShutdownReleasesDescendantHeldStderr(t *testing.T) {
 	go func() { _ = p.Close(context.Background()); done <- time.Since(start) }()
 	select {
 	case elapsed := <-done:
-		// Generous against a loaded CI box, but well under the doubled bound.
+
 		if elapsed > timeout+500*time.Millisecond {
 			t.Fatalf("Close took %v, want roughly one %v budget", elapsed, timeout)
 		}
@@ -336,9 +307,6 @@ func TestProcessShutdownReleasesDescendantHeldStderr(t *testing.T) {
 	}
 }
 
-// A failed handshake whose child left a descendant holding stderr must still
-// report that child's stderr, and must not wait a full ShutdownTimeout to do
-// it: the abort paths drain under a short grace and then release the pipe.
 func TestProcessHandshakeAbortBoundsDescendantHeldStderr(t *testing.T) {
 	config := helperConfig("bad-descendant")
 	config.ShutdownTimeout = 30 * time.Second
@@ -361,9 +329,6 @@ func TestProcessHandshakeAbortBoundsDescendantHeldStderr(t *testing.T) {
 	}
 }
 
-// The abort paths release the stderr read end to bound themselves, so the
-// release must come after the drain, never instead of it. Gate the copier
-// inside the grace window: the bytes must still reach the composed error.
 func TestProcessHandshakeAbortDrainsBeforeReleasing(t *testing.T) {
 	gate := make(chan struct{})
 	config := helperConfig("bad")

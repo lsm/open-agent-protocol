@@ -209,11 +209,6 @@ func TestRegistryRegister(t *testing.T) {
 	}
 }
 
-// TestLoadRegistryToolSources pins the operator-configured attachment surface:
-// the entry a client may name by id, with the environment allowlist resolved
-// at load — a bare NAME takes the daemon's own value and NAME=value passes
-// through literally. Resolving here rather than at open means a misconfigured
-// source fails at hub start.
 func TestLoadRegistryToolSources(t *testing.T) {
 	path := writeConfig(t, `{
 		"adapters": {"memory": {"type": "memory"}},
@@ -248,14 +243,6 @@ func TestLoadRegistryToolSources(t *testing.T) {
 	}
 }
 
-// TestLoadRegistryToolSourceNeedsEveryNameItLists is the one place a tool
-// source's allowlist is stricter than an adapter's. An adapter's list is a
-// broad "forward these if the daemon has them", written once for a harness; a
-// tool source's names the credentials one executable needs, and the daemon
-// launches that executable itself. Dropping an unexported name would start the
-// MCP server without its token, and it would fail as though the server were
-// broken when the fault is one name in the operator's own config. The failure
-// names the id and the variable, before anything depends on either.
 func TestLoadRegistryToolSourceNeedsEveryNameItLists(t *testing.T) {
 	config := `{
 		"adapters": {"memory": {"type": "memory"}},
@@ -274,8 +261,6 @@ func TestLoadRegistryToolSourceNeedsEveryNameItLists(t *testing.T) {
 		}
 	}
 
-	// The literal form is the escape hatch for a name that is meant to be
-	// optional: it says what the value is rather than hoping for one.
 	path = writeConfig(t, fmt.Sprintf(config, `"NEVER_EXPORTED="`))
 	registry, err := LoadRegistry(path, staticEnviron(nil))
 	if err != nil {
@@ -289,17 +274,12 @@ func TestLoadRegistryToolSourceNeedsEveryNameItLists(t *testing.T) {
 		t.Fatalf("resolved environment: %v", source.Environment)
 	}
 
-	// An adapter's own allowlist keeps the omitting rule, so the divergence is
-	// exactly where it was argued for and nowhere else.
 	path = writeConfig(t, `{"adapters": {"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "environment": ["NEVER_EXPORTED"]}}}`)
 	if _, err := LoadRegistry(path, staticEnviron(nil)); err != nil {
 		t.Fatalf("an adapter naming an unexported variable failed to load: %v", err)
 	}
 }
 
-// TestLoadRegistryToolSourceNeedsKind refuses an entry that says nothing about
-// what it is: kind is what decides whether an attachment is even eligible for
-// the transports an adapter discloses.
 func TestLoadRegistryToolSourceNeedsKind(t *testing.T) {
 	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"bare": {"command": "/bin/true"}}}`)
 	if _, err := LoadRegistry(path, os.LookupEnv); err == nil || !strings.Contains(err.Error(), "kind is required") {
@@ -307,35 +287,17 @@ func TestLoadRegistryToolSourceNeedsKind(t *testing.T) {
 	}
 }
 
-// TestLoadRegistryProcessToolSourceNeedsCommand refuses the entry the daemon
-// could never resolve, on the config path; the programmatic path is held to
-// the same check by the test above, because the two share one. A process source is the one kind the daemon supplies an
-// executable for, and the command is the whole of what it supplies: without
-// one there is nothing to spawn. The entry used to load, and the first open
-// naming it failed inside the adapter as an invalid resolution, which the route
-// reports as a generic open_failed — a 502 about a session, for a defect in one
-// line of the operator's config.
-//
-// Nothing that worked stops working: an entry in this shape was already
-// unusable and every open naming it already failed. Only where the failure is
-// reported changes, which is the argument the environment rule above makes too.
 func TestLoadRegistryProcessToolSourceNeedsCommand(t *testing.T) {
 	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"filesystem": {"kind": "process", "endpoint": "stdio:filesystem"}}}`)
 	if _, err := LoadRegistry(path, os.LookupEnv); err == nil || !strings.Contains(err.Error(), "a process source needs a command") {
 		t.Fatalf("load error = %v", err)
 	}
 
-	// A kind outside the protocol is refused on this path too, because both
-	// paths share one check.
 	path = writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"bogus-tools": {"kind": "bogus"}}}`)
 	if _, err := LoadRegistry(path, os.LookupEnv); err == nil || !strings.Contains(err.Error(), "is not a tool source kind") {
 		t.Fatalf("load error = %v", err)
 	}
 
-	// The command rule is stated forwards only. A non-process entry carrying no
-	// command is a complete entry, because nothing spawns it; which of the
-	// protocol's kinds an operator may configure is the adapter's disclosed
-	// transports to answer at admission, not this loader's.
 	path = writeConfig(t, `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"remote-tools": {"kind": "remote", "endpoint": "https://tools.example"}}}`)
 	registry, err := LoadRegistry(path, os.LookupEnv)
 	if err != nil {
@@ -346,19 +308,6 @@ func TestLoadRegistryProcessToolSourceNeedsCommand(t *testing.T) {
 	}
 }
 
-// TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged holds the
-// programmatic path to the rules the config path states, because they are one
-// surface and not two. An embedding host calls RegisterToolSource with exactly
-// the value LoadRegistry builds, so a rule enforced only while parsing a file
-// is a rule the other caller reaches around: it could register precisely the
-// entry a registry document is refused for, and the defect would surface one
-// open later as a generic open_failed.
-//
-// Registering is not opening, so this does fail a host that registers an entry
-// it never opens. That reach is intended and narrower than it looks: the only
-// thing a registered tool source is for is being resolved at open, so such an
-// entry is unusable by construction and every open that named it already
-// failed. Only where the failure is reported moves.
 func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string
@@ -366,17 +315,9 @@ func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) 
 		want   string
 	}{
 		{"no kind", protocol.ToolSourceAttachment{Command: "/usr/local/bin/mcp-filesystem"}, "kind is required"},
-		// A kind outside the protocol is dead config in both directions: the
-		// schema refuses it on the wire, so no client can name it, and a request
-		// naming any valid kind is refused for contradicting the configured one.
-		// That is well-formedness, the same class as the empty id — not a
-		// judgement about which of the protocol's transports are allowed, which
-		// stays the adapter's to make.
+
 		{"a kind outside the protocol", protocol.ToolSourceAttachment{Kind: "bogus"}, `kind "bogus" is not a tool source kind`},
-		// One variable, one entry. uniqueItems compares strings, so these two
-		// pass the schema while naming one variable — and the child would receive
-		// both, with two values and no defined winner. The route's merge closes
-		// the same hole on the caller's side.
+
 		{"one variable named twice", protocol.ToolSourceAttachment{
 			Kind: protocol.ToolSourceRemote, Environment: []string{"TOKEN", "TOKEN=literal"},
 		}, `environment names "TOKEN" twice`},
@@ -394,8 +335,6 @@ func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) 
 		})
 	}
 
-	// The complete entries both paths accept, including the non-process kind
-	// that needs no command: the rule is stated forwards only.
 	registry := NewRegistry()
 	for id, source := range map[string]protocol.ToolSourceAttachment{
 		"filesystem":   {Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"},
@@ -410,17 +349,6 @@ func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) 
 	}
 }
 
-// TestEveryAdapterRefusesUnadvertisedToolSources is the fail-closed contract
-// held across the whole registry rather than per adapter. OpenRequest.ToolSources
-// is a field an adapter written before the tool-sources unit never reads, so
-// without an explicit gate such an adapter returns a successful session having
-// silently dropped the sources the caller asked for — and a caller cannot tell
-// that session from one that attached them.
-//
-// Every adapter that does not advertise action.tool_sources.attach must
-// therefore refuse the open with the typed error naming the key, before any
-// process starts: the refusals below are all returned ahead of the adapter's
-// client factory, so a registry of executables that do not exist still answers.
 func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
 	path := writeConfig(t, `{
 		"adapters": {
@@ -448,8 +376,7 @@ func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
 			if !ok {
 				t.Fatalf("adapter %q missing from the registry it was built from", name)
 			}
-			// Every key this adapter advertises above `unavailable` must be
-			// absent, or the refusal below would be wrong rather than owed.
+
 			descriptor, err := implementation.Probe(context.Background())
 			if err != nil {
 				t.Fatalf("probe: %v", err)
@@ -473,16 +400,9 @@ func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
 	}
 }
 
-// TestAdvertisingAdaptersAdmitToolSources is the other direction: an endpoint
-// that does advertise the key must not be refused by the shared gate, or the
-// gate would make the advertisement unusable. Each adapter is fed its own
-// published disclosure rather than a hand-written one, so an adapter whose
-// descriptor stopped admitting attachment at open would fail here rather than
-// in a corpus somewhere.
 func TestAdvertisingAdaptersAdmitToolSources(t *testing.T) {
 	attaching := base.OpenRequest{ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/bin/true"}}}
-	// The executable never runs: Probe is static and the gate answers before
-	// any child is started.
+
 	acpAdapter, err := acp.New(acp.Config{Executable: "/bin/acp", WorkingDirectory: "/tmp"})
 	if err != nil {
 		t.Fatal(err)
@@ -502,20 +422,12 @@ func TestAdvertisingAdaptersAdmitToolSources(t *testing.T) {
 			}
 		})
 	}
-	// An open carrying no sources is never refused, whatever the endpoint
-	// advertises: an open that elects nothing owes nothing.
+
 	if err := base.RefuseUnadvertisedToolSources(base.OpenRequest{}); err != nil {
 		t.Fatalf("an open attaching nothing was refused: %v", err)
 	}
 }
 
-// TestSharedGateRefusesADisclosureAnOpenCannotElect closes the asymmetry that
-// would otherwise sit between the two paths: the daemon's open route and the
-// validator both hold an attach capability to disclosing a session-open mode,
-// and an adapter that admitted one without it would give an in-process
-// embedder a silently-attaching open where a wire caller is refused. The gate
-// is the one place both paths agree, so it judges the disclosure, not the key
-// name.
 func TestSharedGateRefusesADisclosureAnOpenCannotElect(t *testing.T) {
 	attaching := base.OpenRequest{ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/bin/true"}}}
 	for _, testCase := range []struct {

@@ -10,10 +10,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve"
 )
 
-// The models op mirrors the HTTP route one-to-one: the same envelope, the same
-// daemon-minted correlation, and the same refusal for an unknown session. The
-// degraded opt-in is a field of the line rather than a query parameter,
-// because that is the only difference the framing makes.
 func TestModelsOpServesTheCatalog(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	openSession(t, hub, "models")
@@ -29,8 +25,7 @@ func TestModelsOpServesTheCatalog(t *testing.T) {
 	if envelope.Type != protocol.TypeModelsResponse || envelope.InReplyTo == "" || envelope.SessionID != "models" {
 		t.Fatalf("models envelope: %+v", envelope)
 	}
-	// The same revision the HTTP route stamps: the two transports name one
-	// catalog under one descriptor, or a host reading both sees two.
+
 	if envelope.CapabilityRevision != base.CapabilityRevision {
 		t.Fatalf("models response cites revision %q, want %q", envelope.CapabilityRevision, base.CapabilityRevision)
 	}
@@ -42,9 +37,6 @@ func TestModelsOpServesTheCatalog(t *testing.T) {
 		t.Fatalf("catalog: %+v", catalog)
 	}
 
-	// The opt-in is accepted on this op and on no other, so a line carrying it
-	// elsewhere is a request error the host can correct rather than a framing
-	// defect that fails the frontend closed.
 	f.send(`{"id":2,"op":"models","session_id":"models","allow_degraded_features":["models.list"]}`)
 	requireOK(t, f.expectResponse(2))
 	f.send(`{"id":3,"op":"state","session_id":"models","allow_degraded_features":["models.list"]}`)
@@ -57,10 +49,6 @@ func TestModelsOpServesTheCatalog(t *testing.T) {
 	}
 }
 
-// A catalog scoped to another session, or to none, is refused on this
-// transport as on the other: the hub checks what the adapter handed back
-// before either codec can label an envelope with it, so neither can publish a
-// cross-session or schema-invalid models.response.
 func TestModelsOpRefusesAMisscopedCatalog(t *testing.T) {
 	for _, row := range []struct {
 		name    string
@@ -90,8 +78,6 @@ func TestModelsOpRefusesAMisscopedCatalog(t *testing.T) {
 	}
 }
 
-// misscopedLister is the reference adapter with its catalog relabelled to
-// another session — the third-party adapter bug the hub has to catch.
 type misscopedLister struct{ session protocol.SessionID }
 
 func (a *misscopedLister) Probe(ctx context.Context) (base.Descriptor, error) {

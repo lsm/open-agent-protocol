@@ -34,7 +34,7 @@ func TestDecoderRejectsNonUTF8(t *testing.T) {
 
 func TestDecoderFrameLimit(t *testing.T) {
 	frame := `{"type":"user","pad":"xxxxxxxxxx"}` + "\n"
-	limit := len(frame) - 1 // exactly the frame length is fine
+	limit := len(frame) - 1
 	if _, err := NewDecoder(strings.NewReader(frame), limit).Decode(); err != nil {
 		t.Fatalf("exact-limit frame rejected: %v", err)
 	}

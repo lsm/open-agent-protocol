@@ -75,11 +75,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// ACP's session/prompt carries only message content, and this adapter performs
-	// no session configuration mutation: no per-run model, instructions, tool
-	// policy, or output schema has a native mapping here.
-	// Each is refused under its own capability key before admission, so a
-	// caller learns which control to stop sending (decision 0005).
+
 	if err := base.RefuseUnadvertisedControls(req); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
@@ -108,7 +104,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	}
 	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunRunning, next: 1, messageID: s.newMessageID(), messageTexts: make(map[protocol.MessageID]string), nativeMessages: make(map[string]protocol.MessageID), admitted: make(chan struct{})}
 	run.messageTexts[run.messageID] = ""
-	// Reserve one slot for an ordered overflow marker after a contiguous prefix.
+
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
 	s.active = run
@@ -117,15 +113,12 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.state.ActiveRunID = run.id
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	s.mu.Unlock()
-	// ACP v1 keeps this call pending for the complete turn. Admission is safe only
-	// once the complete request frame has been written; the prompt goroutine then
-	// remains the sole owner of native settlement.
+
 	started := make(chan error, 1)
 	go s.prompt(run, prompt, started)
 	writeErr, writeDone := awaitAdmission(started, ctx)
 	if !writeDone {
-		// Keep the reservation until the native prompt settles, but unblock its
-		// terminal reducer.
+
 		close(run.admitted)
 		return protocol.MessageSubmitResponse{}, stream, ctx.Err()
 	}
@@ -154,10 +147,6 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	return response, stream, nil
 }
 
-// awaitAdmission reports the prompt-write outcome, preferring a completed write
-// even when the caller's context expires at the same moment: a confirmed native
-// admission must publish the run start boundary rather than be discarded as a
-// cancellation, which would release queued observations without run.started.
 func awaitAdmission(started <-chan error, ctx context.Context) (error, bool) {
 	select {
 	case err := <-started:
@@ -217,10 +206,7 @@ func (s *session) settlePrompt(run *runState, result native.PromptResult, callEr
 			_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "ACP prompt cancellation confirmed"}, true)
 			return
 		}
-		// A RemoteError is the agent answering this run's prompt with a
-		// failure, which is run-scoped evidence and stays observed. Any other
-		// call error means no answer ever came back, so the terminal is
-		// concluded from the silence.
+
 		settledBy := protocol.SettledByInferred
 		if remote != nil {
 			settledBy = ""
@@ -289,8 +275,7 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 	if run == nil {
 		return
 	}
-	// A conforming agent may respond immediately after the request write. Hold
-	// native observations until synthesized admission/run.started is published.
+
 	<-run.admitted
 	switch h.SessionUpdate {
 	case "agent_message_chunk":
@@ -305,9 +290,7 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 			var ok bool
 			mid, ok = run.nativeMessages[u.MessageID]
 			if !ok {
-				// ACP permits messageId to be absent. If the first explicit ID appears
-				// after unlabelled chunks, bind it to that same logical message rather
-				// than splitting the stream and dropping its prefix at settlement.
+
 				if len(run.nativeMessages) == 0 {
 					mid = run.messageID
 				} else {
@@ -336,12 +319,7 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 			return
 		}
 		s.applyToolUpdate(run, u)
-	// ACP v1 defines more stable session updates than carry run lifecycle. Only
-	// agent_message_chunk, tool_call, and tool_call_update are mapped; the rest
-	// are presentation affordances (commands, plans, modes, config, usage,
-	// session info) that a conforming agent may emit at any point, including
-	// mid-run. They are observed-only. A discriminator outside this set is still
-	// fatal so a stale pin fails loudly instead of silently dropping state.
+
 	case "user_message_chunk", "agent_thought_chunk", "plan", "plan_update", "plan_removed",
 		"available_commands_update", "current_mode_update", "config_option_update",
 		"session_info_update", "usage_update":
@@ -373,8 +351,7 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	}
 	<-run.admitted
 	if !s.applyToolCall(run, p.ToolCall) {
-		// The tool was rejected (e.g. an empty title) and the run settled; do
-		// not dereference a tool entry that was never created.
+
 		_ = r.RespondError(context.Background(), -32602, "invalid tool call", nil)
 		return
 	}
@@ -399,11 +376,7 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	ps := &permissionState{id: id, run: run, tool: tool, request: r, options: opts}
 	s.interactions[id] = ps
 	s.mu.Unlock()
-	// A consumer may resolve the gate the instant it observes this event, and
-	// Resolve correlates the resolution to it through in_reply_to. The id is
-	// therefore recorded under the publication lock, before any subscriber
-	// can see the event: recording it afterwards let a fast Resolve read an
-	// empty correlation.
+
 	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event protocol.Envelope) { ps.requestEventID = event.ID })
 }
 
@@ -440,14 +413,11 @@ func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
 	s.mu.Unlock()
 	if first {
 		payload := s.toolPayload(t)
-		// requested is the request-only boundary: the schema forbids the
-		// started-only and terminal-only members, even when the first native
-		// sighting is already a completed snapshot carrying output.
+
 		payload.Progress = nil
 		payload.Result = nil
 		payload.Error = nil
-		// ACP may omit rawInput; the envelope must still carry arguments_json,
-		// so a missing input is normalized to the JSON null value.
+
 		if payload.ArgumentsJSON == nil {
 			payload.ArgumentsJSON = json.RawMessage("null")
 		}
@@ -494,12 +464,10 @@ func (s *session) applyToolUpdate(run *runState, u native.ToolCallUpdate) {
 	}
 	s.mu.Unlock()
 	if status == "" {
-		// A sparse patch may arrive before execution starts; emitting progress
-		// then would precede action.call.started and carry no progress field.
-		// The patch is retained in the tool state and surfaces when it starts.
+
 		if started {
 			progress := s.toolPayload(t)
-			// callProgress forbids the request-only and terminal-only members.
+
 			progress.ArgumentsJSON = nil
 			progress.Result = nil
 			progress.Error = nil
@@ -544,9 +512,7 @@ func (s *session) applyToolStatus(t *toolState, status string) {
 	t.status = status
 	s.mu.Unlock()
 	if synthesizeStart {
-		// A native snapshot may first report the terminal. The validator admits
-		// a tool terminal only after action.call.started, so synthesize the
-		// boundary; started forbids the terminal-only members.
+
 		started := s.toolPayload(t)
 		started.Progress = nil
 		started.Result = nil
@@ -561,8 +527,7 @@ func (s *session) applyToolStatus(t *toolState, status string) {
 		payload.Error = nil
 	case protocol.TypeActionCallCompleted:
 		payload.ArgumentsJSON = nil
-		// completed requires result; a completion without native output is
-		// normalized to the JSON null value.
+
 		if payload.Result == nil {
 			payload.Result = json.RawMessage("null")
 		}
@@ -632,9 +597,7 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 		s.mu.Unlock()
 		return base.ErrWrongResponder
 	}
-	// The pending permission was emitted with requester "agent"; a resolution
-	// that names a different requester is ownership-inconsistent and must not
-	// resolve the native gate.
+
 	if res.Permission.RequestedBy != "" && res.Permission.RequestedBy != "agent" {
 		s.mu.Unlock()
 		return base.ErrInvalidResolution
@@ -651,8 +614,7 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	}
 	s.mu.Unlock()
 	if err := p.request.Respond(ctx, native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "selected", OptionID: option.OptionID}}); err != nil {
-		// The permission answer never reached the agent, so nothing was ever
-		// reported back about how this run ended.
+
 		s.settleChildren(p.run, true)
 		_ = s.emit(p.run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: p.run.id, Error: protocol.ProtocolError{Code: "acp_permission_response_failed", Message: err.Error()}, SettledBy: protocol.SettledByInferred}, true)
 		return err
@@ -663,9 +625,7 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 		return errTerminalWon
 	}
 	p.resolved = true
-	// The dispatcher records the request event id under the publication lock
-	// before the gate is visible (see handleRequest), so it is always present
-	// here; the lock only orders this read against that write.
+
 	requestEventID := p.requestEventID
 	s.mu.Unlock()
 	out := protocol.InteractionRejected
@@ -751,7 +711,7 @@ func (s *session) Resume(ctx context.Context, q base.ResumeRequest) (base.Recove
 	}
 	recovery := base.Recovery{State: s.state, RunID: r.id, RequestedAfter: q.AfterSequence, ReplayedFrom: q.AfterSequence, ReplayedThrough: q.AfterSequence}
 	gap := q.AfterSequence < latest && (oldest == 0 || q.AfterSequence+1 < oldest)
-	// Reserve one slot beyond the live-event budget for an overflow marker.
+
 	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
 	if gap {
 		recovery.ReplayGap = &base.ReplayGap{RequestedAfter: q.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
@@ -812,8 +772,7 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 	for _, p := range s.interactions {
 		if p.run == run && !p.resolved {
 			p.resolved = true
-			// Snapshot the correlation under the lock: the dispatcher
-			// records it after publishing the gate.
+
 			permissions = append(permissions, settledPermission{gate: p, requestEventID: p.requestEventID})
 		}
 	}
@@ -833,9 +792,7 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 	for _, t := range tools {
 		typ := protocol.TypeActionCallFailed
 		p := s.toolPayload(t)
-		// Both terminal branches forbid the request-only and execution-time
-		// members: failed carries the error discriminator, cancelled carries
-		// the scope and name only.
+
 		p.ArgumentsJSON = nil
 		p.Progress = nil
 		p.Result = nil
@@ -856,8 +813,7 @@ func (s *session) transportFailed() {
 	if !closed && r != nil {
 		s.opMu.Lock()
 		s.settleChildren(r, true)
-		// The transport died with the run open: this terminal is concluded
-		// from the loss, never observed on the wire.
+
 		_ = s.emit(r, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: r.id, Error: protocol.ProtocolError{Code: "acp_transport_failure", Message: fmt.Sprint(s.client.Err())}, SettledBy: protocol.SettledByInferred}, true)
 		s.opMu.Unlock()
 	}
@@ -883,11 +839,6 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 	return s.emitRecorded(run, typ, payload, terminal, inReplyTo, nil)
 }
 
-// emitRecorded publishes one envelope and, when record is set, hands the
-// finished envelope to it under the session lock before any subscriber can
-// observe the event. State a consumer may act on as soon as the event is
-// visible (a gate's request id, read back for in_reply_to) must be recorded
-// this way rather than after publication.
 func (s *session) emitRecorded(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID, record func(protocol.Envelope)) (protocol.Envelope, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
@@ -956,8 +907,7 @@ func (s *session) emitRecorded(run *runState, typ protocol.EnvelopeType, payload
 			}
 			continue
 		}
-		// The final channel slot is reserved for this ordered detach signal. The
-		// consumer sees a contiguous prefix and resumes from its last sequence.
+
 		ch <- base.Result{Error: base.ErrEventStreamOverflow}
 		close(ch)
 	}

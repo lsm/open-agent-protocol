@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// writeManifest writes a synthetic manifest and returns its path. Entries
-// reference fixture files that need not exist: LoadManifest checks the
-// manifest's own consistency, and only ValidateManifest opens fixtures.
 func writeManifest(t *testing.T, entries []FixtureEntry) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -33,7 +30,6 @@ func positive(id, unit string) FixtureEntry {
 	return FixtureEntry{ID: id, Path: "valid/" + id + ".json", Kind: KindPositive, Valid: true, Units: []string{unit}}
 }
 
-// withUnitKeys installs a capability-key table for the duration of a test.
 func withUnitKeys(t *testing.T, keys map[string][]string, deferred map[string]string) {
 	t.Helper()
 	prevKeys, prevDeferred := unitCapabilities, honourDeferred
@@ -44,7 +40,7 @@ func withUnitKeys(t *testing.T, keys map[string][]string, deferred map[string]st
 func TestManifestCoversShape(t *testing.T) {
 	cases := map[string]struct {
 		entry FixtureEntry
-		want  string // substring of the error, or "" for success
+		want  string
 	}{
 		"gate and honour are the only aspects": {
 			entry: negative("x", "core", Coverage{Capability: "run.x", Aspect: "verify"}),
@@ -128,16 +124,13 @@ func TestManifestLoadInvalidKind(t *testing.T) {
 			}
 		})
 	}
-	// A diagnostic-kind fixture must not borrow a load-error code either:
-	// the two vocabularies stay apart.
+
 	crossed := negative("x", "core")
 	crossed.Codes = []string{LoadPackUnprefixedName}
 	if _, err := LoadManifest(writeManifest(t, []FixtureEntry{crossed})); err == nil || !strings.Contains(err.Error(), "unknown diagnostic code") {
 		t.Fatalf("diagnostic fixture accepted a load-error code: %v", err)
 	}
-	// Running one goes through the pack loader: the entry's path names a pack
-	// directory, and an entry whose pack is not there is a broken fixture
-	// rather than a silently skipped one.
+
 	v := MustNew()
 	if _, err := v.ValidateManifest(writeManifest(t, []FixtureEntry{good})); err == nil || !strings.Contains(err.Error(), "pack-bad") {
 		t.Fatalf("ValidateManifest did not run the load-invalid fixture: %v", err)
@@ -170,7 +163,7 @@ func TestCorpusCompleteness(t *testing.T) {
 	})
 	t.Run("a gate fixture under an unrelated unit does not stand in", func(t *testing.T) {
 		withUnitKeys(t, map[string][]string{"run-controls": {"run.model_selection"}}, nil)
-		// tools claims the pair; run-controls owns the key and has nothing.
+
 		entries := []FixtureEntry{negative("tools-gate", "tools", gate), negative("controls-honour", "run-controls", honour)}
 		_, err := LoadManifest(writeManifest(t, entries))
 		if err == nil || !strings.Contains(err.Error(), "no negative gate fixture under unit run-controls") {
@@ -186,14 +179,12 @@ func TestCorpusCompleteness(t *testing.T) {
 	})
 	t.Run("a deferred honour fixture must sit under the deferring unit", func(t *testing.T) {
 		withUnitKeys(t, map[string][]string{"run-controls": {"run.model_selection"}}, map[string]string{"run.model_selection": "models"})
-		// The honour fixture under run-controls itself does not satisfy a
-		// deferral to models.
+
 		entries := []FixtureEntry{negative("controls-gate", "run-controls", gate), negative("controls-honour", "run-controls", honour)}
 		if _, err := LoadManifest(writeManifest(t, entries)); err == nil || !strings.Contains(err.Error(), "under unit models") {
 			t.Fatalf("deferral not enforced: %v", err)
 		}
-		// Under models, it does — even though models is claimed by that
-		// fixture alone.
+
 		entries[1] = negative("models-false-miss", "models", honour)
 		if _, err := LoadManifest(writeManifest(t, entries)); err != nil {
 			t.Fatalf("deferred coverage rejected: %v", err)

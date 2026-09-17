@@ -1,5 +1,3 @@
-// Package native defines the pinned Hermes tui_gateway wire vocabulary at
-// release v2026.8.31 (commit 29112bef099274229cadff79cdff7bf7b99c4b77).
 package native
 
 import (
@@ -14,7 +12,6 @@ const (
 	ReleaseTag    = "v2026.8.31"
 	ReleaseCommit = "29112bef099274229cadff79cdff7bf7b99c4b77"
 
-	// The only notification method the pinned gateway emits.
 	NotifyEvent = "event"
 
 	MethodSessionCreate     = "session.create"
@@ -36,10 +33,6 @@ const (
 
 var ErrInvalid = errors.New("hermes native: invalid pinned message")
 
-// Event is one wire event frame: the params object of an "event"
-// notification. Session-scoped frames carry a per-session monotonic seq;
-// session-less frames (gateway.ready omits the member, _emit globals carry
-// "") never do.
 type Event struct {
 	Type      string          `json:"type"`
 	SessionID string          `json:"session_id,omitempty"`
@@ -47,15 +40,12 @@ type Event struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
-// ReadyPayload is the gateway.ready payload emitted before any input is read.
 type ReadyPayload struct {
 	Skin         json.RawMessage `json:"skin"`
 	ChangeEvents bool            `json:"change_events"`
 	ReplayEpoch  string          `json:"replay_epoch"`
 }
 
-// DeltaPayload covers message.delta {text[, rendered]}, reasoning.delta
-// {text[, verbose]}, and thinking.delta {text}.
 type DeltaPayload struct {
 	Text     string `json:"text"`
 	Rendered string `json:"rendered,omitempty"`
@@ -67,9 +57,6 @@ type InterimPayload struct {
 	AlreadyStreamed bool   `json:"already_streamed"`
 }
 
-// MessageCompletePayload is the settlement frame. Status is interrupted |
-// error | complete on the parent session stream; the child-mirror variant
-// carries text only (empty status) and is never a parent settlement.
 type MessageCompletePayload struct {
 	Text              string          `json:"text"`
 	Usage             Usage           `json:"usage"`
@@ -90,15 +77,11 @@ type ErrorSurface struct {
 	Layer     string `json:"layer"`
 	Code      string `json:"code"`
 	Retryable bool   `json:"retryable"`
-	// Provider and Model name the failing session's identity, captured at
-	// classification time (error_surface.py:145-151); present only when
-	// non-empty.
+
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 }
 
-// Usage is the pinned usage dict; the context fields appear only when a
-// context compressor reports occupancy.
 type Usage struct {
 	Model          string `json:"model"`
 	Input          int64  `json:"input"`
@@ -112,16 +95,10 @@ type Usage struct {
 	ContextMax     *int64 `json:"context_max,omitempty"`
 	ContextPercent *int64 `json:"context_percent,omitempty"`
 	Compressions   *int64 `json:"compressions,omitempty"`
-	// ActiveSubagents is the live background/async subagent count the pinned
-	// gateway adds as a status-bar readout (server.py:7351).
+
 	ActiveSubagents *int64 `json:"active_subagents,omitempty"`
 }
 
-// UnmarshalJSON tolerates unknown keys in the usage dict. The pinned gateway
-// builds it as an extensible status-bar readout — avg_latency_s, avg_tps,
-// active_subagents, dev_credits_spent_micros — each addition guarded so it
-// "must never break usage reporting". Strict decoding here would fail an
-// entire run on a key the gateway itself treats as advisory.
 func (u *Usage) UnmarshalJSON(data []byte) error {
 	type usageAlias Usage
 	var value usageAlias
@@ -155,9 +132,6 @@ type ToolCompletePayload struct {
 	InlineDiff string          `json:"inline_diff,omitempty"`
 }
 
-// ApprovalRequestPayload is a passthrough of the producer's approval dict
-// plus the gateway-synthesized choices. It deliberately carries no
-// request_id: approvals resolve through the approval.respond registry.
 type ApprovalRequestPayload struct {
 	Command        string   `json:"command"`
 	PatternKey     string   `json:"pattern_key,omitempty"`
@@ -169,7 +143,6 @@ type ApprovalRequestPayload struct {
 	Choices        []string `json:"choices"`
 }
 
-// ClarifyQuestion is one element of the batch form.
 type ClarifyQuestion struct {
 	Qid         string   `json:"qid"`
 	Question    string   `json:"question"`
@@ -204,9 +177,6 @@ type ErrorPayload struct {
 	Message string `json:"message"`
 }
 
-// SubagentPayload is the parent-sid subagent frame family. Identity fields
-// are producer-optional; the reducer keys on subagent_id/child_session_id
-// when present.
 type SubagentPayload struct {
 	Goal            string          `json:"goal"`
 	TaskCount       int64           `json:"task_count"`
@@ -239,10 +209,6 @@ type TaskCompletePayload struct {
 	Text     string `json:"text"`
 }
 
-// SessionInfoPayload is the reconciliation subset of session.info. The frame
-// is observed-only: the pinned payload is large and best-effort in several
-// members, so the envelope is decoded leniently and only the fields the
-// reducer relies on are typed.
 type SessionInfoPayload struct {
 	Model           string   `json:"model"`
 	Provider        string   `json:"provider"`
@@ -252,8 +218,6 @@ type SessionInfoPayload struct {
 	StoredSessionID string   `json:"stored_session_id"`
 }
 
-// SessionCreateParams seeds one runtime session. Only the identity-relevant
-// members are modeled; the native coerces everything else.
 type SessionCreateParams struct {
 	Title string `json:"title,omitempty"`
 	Cwd   string `json:"cwd,omitempty"`
@@ -267,14 +231,11 @@ type SessionCreateResult struct {
 	Info            json.RawMessage `json:"info"`
 }
 
-// PromptSubmitParams is the conservative v1 surface: text on a session.
 type PromptSubmitParams struct {
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
 }
 
-// Submit result statuses. The success path is always "streaming"; the busy
-// trio reports the busy_input_mode outcome.
 const (
 	SubmitStreaming  = "streaming"
 	SubmitSteered    = "steered"
@@ -353,8 +314,6 @@ type SessionCloseResult struct {
 	Closed bool `json:"closed"`
 }
 
-// ApprovalRespondParams resolves through the session's approval registry;
-// choice defaults to deny server-side when omitted.
 type ApprovalRespondParams struct {
 	SessionID string `json:"session_id"`
 	Choice    string `json:"choice"`
@@ -366,9 +325,6 @@ type ApprovalRespondResult struct {
 	Resolved bool `json:"resolved"`
 }
 
-// RespondParams is the shared _block answer shape: request_id plus the
-// per-kind value member (answer for clarify, password for sudo, value for
-// secret) and the optional batch question selector.
 type RespondParams struct {
 	RequestID  string `json:"request_id"`
 	QuestionID string `json:"question_id,omitempty"`
@@ -382,8 +338,6 @@ type RespondResult struct {
 	Remaining []string `json:"remaining,omitempty"`
 }
 
-// Modeled event types: the envelope is validated and the payload strictly
-// decoded into its pinned struct (session.info is the lenient exception).
 const (
 	EventGatewayReady       = "gateway.ready"
 	EventMessageStart       = "message.start"
@@ -409,10 +363,6 @@ const (
 	EventBackgroundComplete = "background.complete"
 )
 
-// observedEvents is the closed set of pinned event types the adapter accepts
-// without reducer-relevant projection. A type outside this set and the
-// modeled set is a protocol violation: the pin is frozen, so an unknown type
-// is drift, not extensibility.
 var observedEvents = map[string]bool{
 	"reasoning.available": true, "tool.generating": true, "tool.output_risk": true,
 	"todo.updated": true, "session.title": true, "session.resume_progress": true,
@@ -438,8 +388,6 @@ var observedEvents = map[string]bool{
 	"pet.hatch.progress": true, "billing.step_up.verification": true,
 }
 
-// DecodeNotification types one inbound notification. The pinned gateway
-// emits only method "event".
 func DecodeNotification(method string, data []byte) (any, error) {
 	if method != NotifyEvent {
 		return nil, fmt.Errorf("%w: unknown notification method %q", ErrInvalid, method)
@@ -472,7 +420,7 @@ func (event Event) Validate() error {
 		return fmt.Errorf("%w: message.start carries no payload", ErrInvalid)
 	}
 	if event.Type == EventSessionInfo {
-		// Observed-only reconciliation frame: lenient members, typed subset.
+
 		var info SessionInfoPayload
 		if err := json.Unmarshal(event.Payload, &info); err != nil {
 			return fmt.Errorf("%w: invalid session.info payload: %v", ErrInvalid, err)
@@ -481,7 +429,7 @@ func (event Event) Validate() error {
 	}
 	target, _ := payloadTarget(event.Type)
 	if target == nil {
-		return nil // observed-only
+		return nil
 	}
 	if err := DecodeStrict(event.Payload, target); err != nil {
 		return fmt.Errorf("%w: invalid %s payload: %v", ErrInvalid, event.Type, err)
@@ -574,12 +522,6 @@ func knownEvent(eventType string) bool {
 	return observedEvents[eventType]
 }
 
-// runScopedEvents are the types whose frames belong to one owned run: turn
-// grammar, tools, and interaction gates. Every other known type — modeled
-// corroboration (message.interim, session.usage, session.info, error,
-// subagent/task completions) and the observed-only closure — may legally
-// arrive on an idle session, because the pin guarantees post-settlement
-// corroboration after message.complete.
 var runScopedEvents = map[string]bool{
 	EventMessageStart: true, EventMessageDelta: true, EventReasoningDelta: true, EventThinkingDelta: true,
 	EventMessageComplete: true, EventToolStart: true, EventToolComplete: true,
@@ -587,12 +529,8 @@ var runScopedEvents = map[string]bool{
 	EventSecretExpire: true, EventSudoExpire: true, EventClarifyExpire: true,
 }
 
-// IsRunScoped reports whether an event type carries run semantics and is
-// therefore illegal on an idle, run-less session.
 func IsRunScoped(eventType string) bool { return runScopedEvents[eventType] }
 
-// payloadTarget returns the strict decode target for a modeled type, nil for
-// an observed-only type, and ok=false when the type is not in the pin.
 func payloadTarget(eventType string) (any, bool) {
 	switch eventType {
 	case EventGatewayReady:
@@ -614,7 +552,7 @@ func payloadTarget(eventType string) (any, bool) {
 	case EventSessionUsage:
 		return &UsageTickPayload{}, true
 	case EventSessionInfo:
-		return nil, true // decoded leniently in Validate
+		return nil, true
 	case EventApprovalRequest:
 		return &ApprovalRequestPayload{}, true
 	case EventClarifyRequest:
@@ -644,8 +582,6 @@ func hexOnly(value string) bool {
 	return true
 }
 
-// ValidateReady pins the handshake payload identity: a uuid4-hex epoch and
-// the change-events contract flag.
 func ValidateReady(payload *ReadyPayload) error {
 	if len(payload.ReplayEpoch) != 32 || !hexOnly(payload.ReplayEpoch) {
 		return fmt.Errorf("%w: replay_epoch must be a uuid4 hex", ErrInvalid)

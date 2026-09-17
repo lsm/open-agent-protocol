@@ -1,4 +1,3 @@
-// Package native defines the pinned DeepSeek Harness SDK runtime wire vocabulary.
 package native
 
 import (
@@ -24,11 +23,6 @@ const (
 
 var ErrInvalid = errors.New("deepseek native: invalid pinned message")
 
-// pinnedObservedOnlyEvents is the 0.1.5-rc.2 session-event vocabulary this
-// adapter recognises but does not project. They are durable, non-ignorable
-// events at the pin (packages/core/session/src/known-event-types.ts), so
-// failing closed on them would reject every real turn; they carry no OAP
-// meaning, so they reduce to observed-only evidence.
 var pinnedObservedOnlyEvents = map[string]bool{
 	"agent-preset/selected":                  true,
 	"approval/asked":                         true,
@@ -74,10 +68,6 @@ var pinnedObservedOnlyEvents = map[string]bool{
 	"web/deepseek-search-llm-request":        true,
 }
 
-// ObservedOnly reports whether eventType is in the pinned vocabulary this
-// adapter recognises but does not project. Such an event is durable and
-// non-ignorable at the pin, so consumers must reduce it to observed-only
-// evidence rather than fail closed on it as unknown-required.
 func ObservedOnly(eventType string) bool { return pinnedObservedOnlyEvents[eventType] }
 
 type InitializeParams struct {
@@ -182,19 +172,12 @@ type InboxSpliced struct {
 	Outcome      string        `json:"outcome,omitempty"`
 }
 
-// AssistantAttempt is one model attempt that committed no surface message:
-// the embedded compact stream preserves a failed, retried, cancelled, or
-// stream-error attempt. Its content is never model-visible history.
 type AssistantAttempt struct {
 	Turn   int64                   `json:"turn"`
 	Step   int64                   `json:"step"`
 	Stream []AssistantStreamRecord `json:"stream"`
 }
 
-// AssistantStreamRecord is one compact record of a settled model stream: a
-// packed run of same-index deltas (text-chunks / reasoning-chunks /
-// tool-call-chunks), or a raw StreamChunk. Decoded by variant so each shape
-// stays strict.
 type AssistantStreamRecord struct {
 	Type  string
 	Index int64
@@ -224,9 +207,7 @@ func (r *AssistantStreamRecord) UnmarshalJSON(data []byte) error {
 		if err := DecodeStrict(data, &value); err != nil {
 			return err
 		}
-		// A packed run stores the first text at time0 and one inter-chunk gap
-		// per subsequent text, so dt has exactly one fewer entry than texts
-		// (assistant-stream AssistantStreamAccumulator.push).
+
 		if value.Time0 < 0 || value.Index < 0 || len(value.Texts) == 0 || len(value.DT) != len(value.Texts)-1 {
 			return fmt.Errorf("%w: invalid %s record", ErrInvalid, head.Type)
 		}
@@ -325,8 +306,6 @@ type RequestHeader struct {
 	Reason string      `json:"reason"`
 }
 
-// EpochHeader is the pinned request-header snapshot; config is retained raw
-// because LlmCallConfig is merge-extensible, but its identity fields are not.
 type EpochHeader struct {
 	Config          json.RawMessage `json:"config"`
 	AdapterDefaults json.RawMessage `json:"adapterDefaults,omitempty"`
@@ -354,9 +333,7 @@ func (header EpochHeader) valid() bool {
 		}
 		for _, tool := range tools {
 			var fields map[string]json.RawMessage
-			// The pinned runtime snapshots model-facing tool definitions with
-			// the provider schema key `parameters` (dsh-llm ToolDefinition),
-			// not OAP's own `input_schema`.
+
 			if DecodeStrict(tool, &fields) != nil || !blockHasKeys(fields, "name", "description", "parameters") {
 				return false
 			}
@@ -365,7 +342,6 @@ func (header EpochHeader) valid() bool {
 	return true
 }
 
-// DataAs strictly decodes the event payload into its pinned concrete type.
 func (event Event) DataAs(dst any) error { return DecodeStrict(event.Data, dst) }
 
 func DecodeNotification(method string, data []byte) (any, error) {
@@ -434,12 +410,7 @@ func (event Event) Validate() error {
 	if event.Type == "" || event.Seq < 0 || event.Time < 0 || len(event.Data) == 0 || (event.Ignorable != nil && !*event.Ignorable) {
 		return fmt.Errorf("%w: invalid event envelope", ErrInvalid)
 	}
-	// An event this adapter recognises but does not project is observed-only
-	// evidence, exactly like an `ignorable` omission: it carries no projection
-	// obligation, so neither its envelope metadata nor its payload is
-	// interpreted. The pin appends runtime-context system messages to the
-	// transcript surface (`surfaceOp` append/replace, agent-loop/runtime-context),
-	// so validating surface bookkeeping here would reject every real turn.
+
 	if pinnedObservedOnlyEvents[event.Type] {
 		return nil
 	}
@@ -484,10 +455,7 @@ func (event Event) Validate() error {
 	case "session/end-seed":
 		target = &struct{}{}
 	default:
-		// Events the pin recognises but this adapter deliberately does not
-		// project are observed-only evidence, exactly like an `ignorable`
-		// omission: they must not fail the run. Anything outside both sets is
-		// unknown-required and fails closed.
+
 		if pinnedObservedOnlyEvents[event.Type] {
 			return nil
 		}
@@ -558,8 +526,7 @@ func (event Event) Validate() error {
 				validContent = blocksOf(messageFields["content"])
 			}
 		}
-		// The compact stream is required: assistant/message carries the settled
-		// model stream, so a frame without it cannot be projected faithfully.
+
 		_, hasStream := fields["stream"]
 		if data.Turn <= 0 || data.Step <= 0 || !hasStream || data.Message.ID == "" || data.Message.Role != "assistant" || data.Message.Source.Kind != "model" || !validSource(data.Message.Source) || !validContent || (data.Usage != nil && !validUsage(*data.Usage)) {
 			return fmt.Errorf("%w: invalid assistant/message", ErrInvalid)
@@ -577,8 +544,7 @@ func (event Event) Validate() error {
 				validContent = blocksOf(messageFields["content"])
 			}
 		}
-		// The pinned ToolResultMessage content is exactly one tool-result block
-		// correlated with the message source's callId.
+
 		singleMatchingBlock := len(data.Message.Content) == 1 && data.Message.Content[0].Type == "tool-result" && data.Message.Content[0].ToolCallID == data.Message.Source.CallID
 		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !singleMatchingBlock || (data.Error != nil && (data.Error.Name == "" || data.Error.Code == "")) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
 			return fmt.Errorf("%w: invalid tool/result", ErrInvalid)
@@ -619,9 +585,6 @@ func validBlocks(blocks []ContentBlock) bool {
 	return true
 }
 
-// validBlocksRaw validates a raw content-block array: every element must be an
-// object carrying its pinned variant's required members, and decoded values
-// must satisfy the per-variant exclusions of validBlock.
 func validBlocksRaw(raw json.RawMessage) bool {
 	var elements []json.RawMessage
 	if len(raw) == 0 || DecodeStrict(raw, &elements) != nil || elements == nil {
@@ -662,8 +625,6 @@ func validBlockRaw(element json.RawMessage) bool {
 	}
 }
 
-// validBlock enforces per-variant field exclusivity: a decoded block may carry
-// only the members its pinned variant defines.
 func validBlock(block ContentBlock) bool {
 	switch block.Type {
 	case "text", "reasoning":
@@ -679,7 +640,6 @@ func validBlock(block ContentBlock) bool {
 	}
 }
 
-// validAttachment validates the pinned ImageAttachmentRef core identity.
 func validAttachment(raw json.RawMessage) bool {
 	var attachment struct {
 		AttachmentID string `json:"attachmentId"`
@@ -849,7 +809,7 @@ func validSource(v MessageSource) bool {
 	case "user":
 		return v.Plugin == "" && v.Provider == "" && v.Model == "" && v.CallID == "" && v.Form == "" && v.Summary == "" && v.Sections == nil && v.ReplayState == nil
 	case "plugin":
-		// form/summary/sections are the plugin variant's ContextFormed members.
+
 		return v.Plugin != "" && v.Provider == "" && v.Model == "" && v.CallID == "" && v.ReplayState == nil
 	case "model":
 		return v.Provider != "" && v.Model != "" && v.Plugin == "" && v.CallID == "" && v.Form == "" && v.Summary == "" && v.Sections == nil
@@ -866,8 +826,6 @@ func validStopReason(v string) bool {
 	return false
 }
 
-// maxSafeInteger is JavaScript's largest exactly representable integer; the
-// pinned runtime validates maxTokens as a positive safe integer.
 const maxSafeInteger = int64(9007199254740991)
 
 func ValidateInitializeParams(v InitializeParams) error {

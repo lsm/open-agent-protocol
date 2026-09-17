@@ -80,7 +80,6 @@ func TestSSEQueryCursorWinsOverHeader(t *testing.T) {
 	openSession(t, server, "memory", "sse-cursor-precedence")
 	goldenRun(t, server, "sse-cursor-precedence", "submit-sse-precedence")
 
-	// The query cursor is explicit and must override the header value.
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/sessions/sse-cursor-precedence/events?after=11", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -103,8 +102,7 @@ func TestSSEQueryCursorWinsOverHeader(t *testing.T) {
 }
 
 func TestSSEReplayGap(t *testing.T) {
-	// Journal capacity 2 retains only sequences 11 and 12 of the scripted
-	// twelve-envelope run, so a cursor older than 10 is a documented gap.
+
 	server := newMemoryServer(t, 2)
 	openSession(t, server, "memory", "sse-gap")
 	goldenRun(t, server, "sse-gap", "submit-sse-gap")
@@ -116,7 +114,6 @@ func TestSSEReplayGap(t *testing.T) {
 	}
 	stream.expectEnd()
 
-	// A cursor inside the retained window still replays.
 	stream = connectSSE(t, server, "/sessions/sse-gap/events?after=10", "")
 	replayed := stream.drainUntil(protocol.TypeRunCompleted)
 	requireSequence(t, replayed, 11)
@@ -143,7 +140,6 @@ func TestSSECursorErrors(t *testing.T) {
 	}
 	response.Body.Close()
 
-	// A cursor newer than the run is refused before the stream commits.
 	response, err = server.Client().Get(server.URL + "/sessions/sse-cursor-errors/events?after=99")
 	if err != nil {
 		t.Fatal(err)
@@ -187,8 +183,6 @@ func TestSSELiveSubscriptionMidRun(t *testing.T) {
 	_, admission := submitRun(t, server, "sse-mid-run", "submit-mid-run")
 	initial := stream.drainUntil(protocol.TypeActionPermissionRequested)
 
-	// A second connection joining mid-run receives live events without a
-	// replay prefix; it closes on the terminal event like any other.
 	late := connectSSE(t, server, "/sessions/sse-mid-run/events", "")
 	resolvePermission(t, server, permissionRequestAt(t, initial), "resolve-mid-1")
 	middle := stream.drainUntil(protocol.TypeRunStatusUpdated)
@@ -212,7 +206,7 @@ func TestSSELiveSubscriptionMidRun(t *testing.T) {
 func TestSSEStreamEndsOnSessionClose(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "sse-close")
-	// A parked stream on an idle session ends when the session closes.
+
 	stream := connectSSE(t, server, "/sessions/sse-close/events", "")
 	response, data := post(t, server, "/sessions/sse-close/close", "", nil)
 	if response.StatusCode != http.StatusNoContent {
@@ -221,11 +215,8 @@ func TestSSEStreamEndsOnSessionClose(t *testing.T) {
 	stream.expectEnd()
 }
 
-// --- overflow signalling ---
-
 func TestSSEOverflowSignalLive(t *testing.T) {
-	// An adapter-reported event-stream overflow terminates the SSE stream
-	// with the documented signal naming the last delivered sequence.
+
 	_, server := newServer(t, fakeRegistry(64, 2, 0), Options{})
 	openSession(t, server, "fake", "sse-overflow-live")
 	stream := connectSSE(t, server, "/sessions/sse-overflow-live/events", "")
@@ -259,10 +250,6 @@ func TestSSEOverflowSignalReplay(t *testing.T) {
 	stream.expectEnd()
 }
 
-// fakeAdapter wraps the memory reference adapter with scripted stream-error
-// injection. The adapters' own ClientFactory/ProcessFactory interfaces carry
-// internal RPC types, so daemon-side tests inject at the adapter boundary the
-// registry already exposes; the daemon cannot tell the difference.
 type fakeAdapter struct {
 	memory           base.Adapter
 	liveOverflowAt   int
@@ -310,9 +297,6 @@ func (f *fakeSession) Resume(ctx context.Context, request base.ResumeRequest) (b
 	return recovery, inject(stream, f.replayOverflowAt), nil
 }
 
-// inject replaces an adapter stream with one that reports
-// ErrEventStreamOverflow at the configured 1-based result index, exercising
-// the daemon's overflow signalling without a real child process.
 func inject(stream base.EventStream, overflowAt int) base.EventStream {
 	out := make(chan base.Result, 32)
 	go func() {
@@ -338,9 +322,7 @@ func fakeRegistry(capacity, liveOverflowAt, replayOverflowAt int) *serve.Registr
 }
 
 func TestSSEOnClosedSession(t *testing.T) {
-	// A live connection arriving after the session closed must be refused
-	// promptly — parking would hang the stream forever — and a cursor
-	// request must report the closed state rather than a missing run.
+
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "sse-closed")
 	response, data := post(t, server, "/sessions/sse-closed/close", "", nil)

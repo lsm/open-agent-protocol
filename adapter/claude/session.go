@@ -18,12 +18,6 @@ import (
 
 const streamCapacity = 64
 
-// The catalog vocabulary. harnessOwner is the participant that executes every
-// tool the CLI publishes — the CLI runs them itself — and is the same id every
-// emitted action.call payload names. nativeToolSource is the source a built-in
-// tool comes from; mcpSourcePrefix namespaces an MCP server's source id so it
-// can never collide with the native one; mcpToolPrefix is the prefix the CLI
-// gives a tool it exposes from an MCP server.
 const (
 	harnessOwner     = "claude-code"
 	nativeToolSource = "claude-code-native"
@@ -43,41 +37,18 @@ type Session struct {
 	ids      base.IDGenerator
 	capacity int
 
-	// nativeSessionID is the CLI session UUID, learned from the first frame
-	// that carries one. A changed id is conversation-reset evidence, not drift.
 	nativeSessionID string
 	participant     protocol.ParticipantID
 	state           protocol.SessionState
 	closed          bool
 	unusable        bool
 
-	// catalog is the tool catalog projected from the newest system/init
-	// frame: the CLI republishes its tools and its MCP server list on every
-	// turn, so the newest frame wins and there is none at all before the
-	// first submit. That is what makes action.tools.list degraded here.
 	catalog        []protocol.ToolDefinition
 	catalogSources []protocol.ToolSourceDescriptor
 	catalogKnown   bool
-	// servedTools is the tool-to-source mapping of the last catalog this
-	// session actually served, and nil until it has served one. It is what the
-	// adapter has published to this session, as against what it merely knows,
-	// and it is the adapter-side twin of the validator's attributionInForce.
-	// mu-domain, like the three fields above it.
+
 	servedTools map[string]string
-	// attribution is what those four fields *answer*: the mapping an emitted
-	// call may name, recomputed under mu whenever an input changes and then
-	// published as an immutable snapshot the dispatch loop reads with no lock
-	// at all.
-	//
-	// It exists because the answer is needed from the other lock domain. Every
-	// input is mu-domain, but startTool needs it while the reducer holds
-	// reduceMu, and reading the inputs there was a genuine race — a torn slice
-	// header at first, and a fatal `concurrent map read and map write` once a
-	// served catalog became a map. Taking mu in the reducer would have worked,
-	// and the established order (reduceMu then mu, as the InitFrame case uses)
-	// admits it, but a value replaced wholesale and never mutated does not need
-	// a lock: publishing it atomically makes the reducer's view immutable by
-	// construction rather than by a discipline the next reader has to know.
+
 	attribution atomic.Pointer[map[string]string]
 
 	pending      *runState
@@ -91,8 +62,6 @@ type Session struct {
 	stopOnce     sync.Once
 }
 
-// runState is reduceMu-domain except terminal/subscribers/started, which are
-// mu-domain.
 type runState struct {
 	id       protocol.RunID
 	status   protocol.RunStatus
@@ -100,22 +69,14 @@ type runState struct {
 	started  bool
 	terminal bool
 
-	// submissionUUID is the host-minted turn uuid; the CLI's echo of it (on
-	// the first reply frame) converges admission. Observations arriving
-	// before convergence buffer in wire order and replay at start.
 	submissionUUID string
 	echoSeen       bool
 	buffered       []rpc.InboundMessage
 	submittedText  string
 	messageID      protocol.MessageID
 
-	// model is the session model snapshot at admission: the admission response
-	// and run.started must attribute the run to the same model.
 	model string
 
-	// deferred holds a terminal candidate blocked on deferring children; the
-	// closing evidence (child settlement, a successor result, or the idle
-	// signal) publishes it.
 	deferred     *native.ResultFrame
 	children     map[string]bool
 	terminalKind string
@@ -129,11 +90,7 @@ type toolState struct {
 	id       protocol.ToolCallID
 	run      *runState
 	name     string
-	// source is the tool source this session's published catalog records for
-	// this tool, captured once when the call is created. Capturing rather than
-	// re-deriving is what makes the call and the catalog agree by construction:
-	// a call's attribution may not move mid-lifecycle, and the catalog it was
-	// attributed against is the one that was current when the call began.
+
 	source    string
 	args      json.RawMessage
 	requested protocol.EnvelopeID
@@ -141,7 +98,6 @@ type toolState struct {
 	terminal  bool
 }
 
-// gateState is one can_use_tool ask surfaced as an OAP input interaction.
 type gateState struct {
 	id        protocol.InteractionID
 	control   *rpc.IncomingControl
@@ -152,7 +108,6 @@ type gateState struct {
 	requested protocol.EnvelopeID
 }
 
-// childState tracks a background task of one run to its terminal frame.
 type childState struct {
 	taskID    string
 	toolUseID string
@@ -213,10 +168,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	run.subscribers = []chan base.Result{stream}
 	s.pending = run
 	s.mu.Unlock()
-	// The write completing is not admission — the CLI's echo of the turn uuid
-	// is. A write failure is either a clean pre-enqueue rejection (the frame
-	// never left) or an ambiguous loss (cancellation raced the write, or the
-	// transport died mid-flight): only the former may release the reservation.
+
 	writeErr := s.client.WriteUser(ctx, frame)
 	if writeErr != nil {
 		if !errors.Is(writeErr, rpc.ErrWriteQueue) {
@@ -237,10 +189,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			return protocol.MessageSubmitResponse{}, nil, startErr
 		}
 	case <-ctx.Done():
-		// Cancellation and the echo can race; a run that already converged is
-		// authoritative. Otherwise the user turn was already written and its
-		// native outcome is ambiguous — retire the session rather than
-		// release the reservation over a turn the CLI may still execute.
+
 		s.reduceMu.Lock()
 		if !run.started && !run.terminal {
 			s.mu.Lock()
@@ -259,12 +208,8 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(run.messageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, MessageIDs: []protocol.MessageID{run.messageID}}, stream, nil
 }
 
-// submitText validates the conservative v1 surface: one user text message.
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
-	// The native user frame carries no model override, instructions, tool policy,
-	// or output schema: Claude applies a model when the process is launched.
-	// Each is refused under its own capability key before admission, so a
-	// caller learns which control to stop sending (decision 0005).
+
 	if err := base.RefuseUnadvertisedControls(req); err != nil {
 		return "", err
 	}
@@ -300,8 +245,7 @@ func (s *Session) dispatch() {
 		select {
 		case in, ok := <-s.client.Inbound():
 			if !ok {
-				// The inbound stream ends only at transport retirement, after
-				// every frame the wire delivered has been handed over.
+
 				s.settleTransportDeath()
 				return
 			}
@@ -309,9 +253,7 @@ func (s *Session) dispatch() {
 			s.reduce(in)
 			s.reduceMu.Unlock()
 		case <-s.client.Done():
-			// Drain everything the reader already routed to the inbound
-			// stream's close before settling the failure: evidence ordering
-			// at death is deterministic.
+
 			for {
 				var in rpc.InboundMessage
 				var ok bool
@@ -334,9 +276,6 @@ func (s *Session) dispatch() {
 	}
 }
 
-// settleTransportDeath projects the retired transport: any live run failed
-// with the wire truth. An orderly Close (s.closed already set) settles
-// nothing — the run's own terminal evidence owned settlement.
 func (s *Session) settleTransportDeath() {
 	s.reduceMu.Lock()
 	defer s.reduceMu.Unlock()
@@ -364,8 +303,7 @@ func (s *Session) reduce(in rpc.InboundMessage) {
 func (s *Session) reduceControl(control *rpc.IncomingControl) {
 	ask, ok := control.Value.(*native.CanUseToolRequest)
 	if !ok {
-		// No hooks, SDK MCP servers, or dialogs are configured, so any other
-		// reverse request is unconfigured surface on this boundary.
+
 		s.foreignActivity(fmt.Sprintf("reverse control request %q", control.Subtype))
 		return
 	}
@@ -385,9 +323,7 @@ func (s *Session) applyObservation(observation *rpc.ObservationMessage) {
 		return
 	}
 	if run == nil {
-		// Session-scope evidence: injected turns, init refreshes, idle
-		// corroboration. Nothing here becomes a phantom run (frozen
-		// mismatch 7).
+
 		s.observeIdle(observation)
 		return
 	}
@@ -402,9 +338,6 @@ func (s *Session) applyObservation(observation *rpc.ObservationMessage) {
 	s.applyRunObservation(run, observation)
 }
 
-// observeIdle records session-scope evidence while no run is owned: the
-// per-turn init refresh updates the model truth; everything else (injected
-// turns, keep-alives, idle signals, unknown types) carries no projection.
 func (s *Session) observeIdle(observation *rpc.ObservationMessage) {
 	if init, ok := observation.Value.(*native.InitFrame); ok {
 		s.mu.Lock()
@@ -414,15 +347,6 @@ func (s *Session) observeIdle(observation *rpc.ObservationMessage) {
 	}
 }
 
-// projectCatalogLocked turns one system/init frame into the session's
-// catalog. The frame carries two lists and nothing joining them: the tool
-// names, and the MCP servers by name. A tool is attributed to an MCP source
-// only when its name carries the `mcp__<server>__` prefix of a server the
-// same frame listed — the join is between two members of one pinned frame
-// rather than a convention read out of a name — and every other tool is
-// attributed to the adapter's own native source. The frame reports no
-// endpoint for a server, so the descriptor carries none either; inventing one
-// would put a value on the wire that the harness never said.
 func (s *Session) projectCatalogLocked(init *native.InitFrame) {
 	sources := []protocol.ToolSourceDescriptor{{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"}}
 	var servers []string
@@ -457,18 +381,6 @@ func (s *Session) projectCatalogLocked(init *native.InitFrame) {
 	s.publishAttributionLocked()
 }
 
-// publishAttributionLocked recomputes the mapping an emitted call may name and
-// publishes it for the dispatch loop. Called under mu by every writer of an
-// input, so the recompute is serialized and each published map is fresh,
-// complete, and never written again.
-//
-// The rule it encodes is the one Decision 0008 states: a call names exactly
-// what the catalog in force attributes the tool to. A catalog this session
-// served is in force wholly, and supersedes the projection — including for a
-// tool the served catalog omits, which this session has published no
-// attribution for whatever a later frame knows. With none served, only the
-// descriptor has published anything, so the projection is filtered to the
-// sources it declares.
 func (s *Session) publishAttributionLocked() {
 	published := map[string]string{}
 	if s.servedTools != nil {
@@ -489,21 +401,6 @@ func (s *Session) publishAttributionLocked() {
 	s.attribution.Store(&published)
 }
 
-// toolSourceFor resolves one tool name against the servers the same frame
-// listed. A name whose mcp__<server>__ prefix names no listed server is a
-// built-in tool that merely looks namespaced, and is attributed natively
-// rather than to a source the catalog would not declare.
-//
-// Overlapping server names are why this takes the longest match rather than
-// the first. One frame may list both `foo` and `foo__bar`, and
-// `mcp__foo__bar__tool` then carries both prefixes: the separator is the same
-// `__` the names may themselves contain, so the split is genuinely ambiguous
-// and the wire offers nothing to disambiguate it. The longest match is the
-// one reading under which every listed server's own tools reach it — `foo`
-// winning would strand `foo__bar` entirely — and, being a total order over a
-// set of distinct names, it is the same answer on every run. Scanning a map
-// instead would let Go's randomized iteration give identical native evidence
-// two different catalogs.
 func toolSourceFor(name string, servers []string) string {
 	rest, namespaced := strings.CutPrefix(name, mcpToolPrefix)
 	if !namespaced {
@@ -521,19 +418,6 @@ func toolSourceFor(name string, servers []string) string {
 	return mcpSourcePrefix + longest
 }
 
-// Tools serves this session's effective catalog, projected from the newest
-// system/init frame.
-//
-// Before the first turn the CLI has published no init frame, so the session
-// knows of no tools yet. It answers with the native source and an empty tool
-// list rather than refusing: the descriptor advertises action.tools.list
-// affirmatively, and an endpoint that advertises a capability and then refuses
-// a request within every constraint it disclosed honours nothing — which is
-// exactly what unhonoured_capability names, and what this adapter's own
-// validator would say about such a refusal. `degraded` is the disclosure that
-// makes the empty answer readable: it says the catalog is only as current as
-// the last turn and that there has not been one yet, which is a fact a caller
-// can act on, where a refusal would leave it with nothing.
 func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) (base.ToolCatalog, error) {
 	if err := ctx.Err(); err != nil {
 		return base.ToolCatalog{}, err
@@ -547,26 +431,10 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 		return base.ToolCatalog{}, base.ErrRunNotFound
 	}
 	if !request.AllowsDegraded(protocol.FeatureToolsList) {
-		// The catalog is advertised degraded, so serving one without the
-		// caller's consent would give it degraded behaviour it never asked
-		// for: the snapshot is only as current as the last turn, and there is
-		// none before the first.
+
 		return base.ToolCatalog{}, &base.DegradedControlError{Feature: protocol.FeatureToolsList}
 	}
-	// A request naming no session asks for the endpoint's own catalog, and this
-	// endpoint has one thing to say at that scope: it executes its own built-in
-	// tools. Everything else it knows — which tools this turn offered, which MCP
-	// servers this session's operator configured — was learned from one
-	// session's `system/init` frame and belongs to that session. Answering with
-	// it would present one caller's MCP servers as endpoint-wide, and because
-	// such a response carries no session the validator's lifetime rule would
-	// never run over it.
-	//
-	// The same answer serves a scoped request before the first turn, for the
-	// same reason: the CLI publishes no init frame until it has been given
-	// input, so a session's catalog is genuinely unknown at open. `degraded` is
-	// the disclosure that makes the empty answer readable — the catalog is only
-	// as current as the last turn, and there has not been one.
+
 	if request.SessionID == "" || !s.catalogKnown {
 		return base.ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{
 			SessionID: request.SessionID,
@@ -574,25 +442,12 @@ func (s *Session) Tools(ctx context.Context, request protocol.ToolsListRequest) 
 			Tools:     []protocol.ToolDefinition{},
 		}}, nil
 	}
-	// make and copy, not append onto a nil slice: appending nothing to nil
-	// yields nil, and `tools` is a required array, so a turn whose init frame
-	// listed no tools would serve `"tools": null` and fail the schema at the
-	// one endpoint that has no validator in front of it. The projection above
-	// already allocates an empty slice for that case; this is what carries the
-	// non-nilness out through the copy.
+
 	tools := make([]protocol.ToolDefinition, len(s.catalog))
 	copy(tools, s.catalog)
 	sources := make([]protocol.ToolSourceDescriptor, len(s.catalogSources))
 	copy(sources, s.catalogSources)
-	// The descriptor this endpoint publishes is fixed at the pin, so the
-	// revision is constant even though the catalog under it is not: the CLI
-	// republishes its tool and MCP server lists every turn. That is what
-	// `degraded` discloses, and it is why the listing has to say which
-	// descriptor governed it — a caller holding one can tell a refresh from a
-	// re-listing only by the pair.
-	// What this session has served is now published, and a call may name it.
-	// Only a session-scoped answer counts: an unscoped request asks for the
-	// endpoint's own catalog, which is answered above and belongs to no session.
+
 	s.servedTools = make(map[string]string, len(tools))
 	for _, tool := range tools {
 		if tool.Source != "" {
@@ -613,9 +468,6 @@ func (s *Session) currentRun() *runState {
 	return run
 }
 
-// associate learns or relearns the CLI session identity from any frame that
-// carries one; a changed id is conversation-reset evidence, never drift. The
-// id is surfaced as session state metadata so the association is observable.
 func (s *Session) associate(observation *rpc.ObservationMessage) {
 	var frame struct {
 		SessionID string `json:"session_id"`
@@ -634,11 +486,6 @@ func (s *Session) associate(observation *rpc.ObservationMessage) {
 	}
 }
 
-// reserveObservation applies one observation against a reserved, not-yet-
-// echoed run: the turn-uuid echo converges admission; everything else
-// buffers in wire order for replay once the run starts. The converging
-// frame's own content reduces after run.started — the echo can ride the
-// first complete assistant frame, which may carry tool_use blocks.
 func (s *Session) reserveObservation(run *runState, observation *rpc.ObservationMessage) {
 	if s.echoMatches(run, observation.Value, observation.Raw) {
 		s.mu.Lock()
@@ -651,9 +498,6 @@ func (s *Session) reserveObservation(run *runState, observation *rpc.Observation
 	run.buffered = append(run.buffered, rpc.InboundMessage{Observation: observation})
 }
 
-// echoMatches reports whether a frame carries the submitted uuid — the
-// first reply frame of the turn (a stream event, an assistant frame, a
-// thinking-tokens system frame) or the turn's result frames.
 func (s *Session) echoMatches(run *runState, value any, raw json.RawMessage) bool {
 	uuid := run.submissionUUID
 	switch frame := value.(type) {
@@ -682,12 +526,11 @@ func containsUUID(uuids []string, uuid string) bool {
 	return false
 }
 
-// applyRunObservation reduces one observation for an owned, started run.
 func (s *Session) applyRunObservation(run *runState, observation *rpc.ObservationMessage) {
 	switch frame := observation.Value.(type) {
 	case *native.AssistantFrame:
 		if frame.ParentToolUseID != nil {
-			return // subagent-produced evidence; children settle via task frames
+			return
 		}
 		for i := range frame.Message.Content {
 			block := frame.Message.Content[i]
@@ -700,11 +543,11 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 			return
 		}
 		if frame.Origin != nil && frame.Origin.Kind != "human" {
-			return // injected user-role content inside the turn
+			return
 		}
 		blocks, ok := frame.Blocks()
 		if !ok {
-			return // synthetic markers (e.g. the interrupt notice) are evidence only
+			return
 		}
 		for _, block := range blocks {
 			if block.Type == "tool_result" && block.ToolUseID != "" {
@@ -715,9 +558,7 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 		if frame.ParentToolUseID != nil {
 			return
 		}
-		// Frames that attribute themselves to another turn are that turn's
-		// evidence; unattributed frames remain this turn's (the CLI does not
-		// stamp every event).
+
 		if (frame.UserMessageUUID != "" || len(frame.UserMessageUUIDs) > 0) && frame.UserMessageUUID != run.submissionUUID && !containsUUID(frame.UserMessageUUIDs, run.submissionUUID) {
 			return
 		}
@@ -740,16 +581,12 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 			s.settleChild(run, frame.TaskID)
 		}
 	case *native.SessionStateFrame:
-		// The CLI's authoritative idle signal closes the turn: a held
-		// terminal publishes even if tracked children (background tasks can
-		// outlive their turn) never reported.
+
 		if frame.State == "idle" {
 			s.publishDeferred(run)
 		}
 	default:
-		// tool_progress, command_lifecycle, status, session_state_changed,
-		// keep_alive, unknown types, and generic system notices are
-		// session-scope evidence.
+
 	}
 }
 
@@ -775,8 +612,7 @@ func (s *Session) startRun(run *runState) {
 		return
 	}
 	run.signalStart(nil)
-	// Observations buffered before the echo reduce now, in wire order. A
-	// replayed settlement defers rather than double-settling.
+
 	for _, in := range replay {
 		if run.terminal && run.deferred == nil {
 			return
@@ -820,7 +656,7 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 func (s *Session) endTool(run *runState, nativeID string, content json.RawMessage, isError *bool) {
 	tool := s.tools[nativeID]
 	if tool != nil && tool.run != run {
-		return // a prior run's tool reported late; evidence only
+		return
 	}
 	if tool == nil || tool.terminal {
 		s.failRun(run, "claude_tool_lifecycle", "unmatched tool completion")
@@ -830,7 +666,7 @@ func (s *Session) endTool(run *runState, nativeID string, content json.RawMessag
 	payload := s.toolPayload(tool)
 	payload.ArgumentsJSON = nil
 	if isError != nil && *isError {
-		// The failed shape carries error only; result is not a member there.
+
 		payload.Result = nil
 		payload.Error = &protocol.ProtocolError{Code: "claude_tool_error", Message: toolResultText(content)}
 		_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, payload, false, tool.started)
@@ -840,10 +676,6 @@ func (s *Session) endTool(run *runState, nativeID string, content json.RawMessag
 	_, _ = s.emitEnvelope(run, protocol.TypeActionCallCompleted, payload, false, tool.started)
 }
 
-// normalizedToolResult reduces the tool_result content to OAP result JSON:
-// string content becomes a JSON string; structured content passes through;
-// absent content is the empty string (result is a required member of the
-// completed shape).
 func normalizedToolResult(content json.RawMessage) json.RawMessage {
 	if len(content) == 0 {
 		return json.RawMessage(`""`)
@@ -871,70 +703,20 @@ func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
 }
 
-// attributionFor reports the source an emitted call may name for one tool
-// name, and "" when the endpoint has published no attribution a consumer of
-// this stream could resolve. It reads the snapshot publishAttributionLocked
-// published, so it is safe from the dispatch loop's own lock domain.
-//
-// This adapter advertises action.tools.list, so a consumer should be able to
-// relate an observed call to the catalog entry without re-parsing the tool
-// name — which is the inference `source` exists to remove. The value is read
-// out of the projected catalog rather than derived again from the name: a
-// second derivation is a second chance to disagree with the catalog, and the
-// catalog is what a consumer resolves the id against.
-//
-// It is then bounded by what this endpoint has actually published, which is
-// the rule the adapter has to get right in both directions. `source` is a
-// cross-reference, and what it may reference is the catalog in force: the
-// session's own where one has been served, and otherwise the descriptor's.
-// This is the adapter-side twin of the validator's attributionInForce, and the
-// two must agree, because the validator judges what this emits.
-//
-//   - A catalog this session served is published, so a call names exactly what
-//     that catalog recorded — until a later serve supersedes it. Declining
-//     there would be the inverse fault: the catalog in force attributes the
-//     tool, so a call omitting the source is `unattributed_call`.
-//   - With no catalog served, only the descriptor has published anything, and
-//     it declares the native source alone. The MCP servers are learned from
-//     this session's system/init frame and belong to the session; an event
-//     stream carries the descriptor and the events, and this catalog is
-//     advertised degraded and served on request by design, so a consumer may
-//     observe a whole run without one. A call naming `mcp:<server>` there
-//     names an id nothing in the stream declares — `unmatched_tool_source`.
-//
-// So neither direction is a preference: each is the only answer that does not
-// make the adapter fail a rule its own corpus exists to prove. What the
-// endpoint knows and what it has published are different things, and only the
-// second may be referenced.
-//
-// The reverse case is ACP's, and the two are one rule with different facts:
-// ACP's servers are the *adapter's* configuration, known before any session,
-// so its descriptor declares them and a call may name them from the start.
-//
-// An empty answer is an honest one, as it already was before the first
-// `system/init` frame and for a tool no catalog lists. Inventing
-// `claude-code-native` for any of those would be the guess the member exists
-// to replace.
 func (s *Session) attributionFor(name string) string {
-	// One atomic load and a read of a map nothing will write again. The
-	// decision itself was made under mu by publishAttributionLocked; this is
-	// only the lookup, which is why it is safe from the reducer's domain.
+
 	published := s.attribution.Load()
 	if published == nil {
-		// Nothing published yet: before the first system/init frame this session
-		// has no catalog and the descriptor has attributed nothing to these
-		// tools.
+
 		return ""
 	}
 	return (*published)[name]
 }
 
-// openGate surfaces one can_use_tool ask as an OAP permission interaction.
 func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolRequest) {
 	run := s.currentRun()
 	if run == nil || !run.started || run.terminal {
-		// A permission ask outside an owned turn cannot be answered through
-		// OAP; deny it so the CLI is never left blocked on a dead host.
+
 		_ = control.RespondError(context.Background(), "claude adapter: permission ask outside an owned run")
 		s.foreignActivity("can_use_tool outside an owned run")
 		return
@@ -971,9 +753,6 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunWaitingForInput, PendingUserInputID: id, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 }
 
-// Resolve answers one open permission gate with allow or deny. The original
-// tool input is what executes on allow (an OAP answer carries no rewritten
-// input); deny returns the operator's message to the model.
 func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -992,9 +771,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInteractionNotFound
 	}
-	// Validate the caller-supplied identity and scope against the pending gate
-	// before writing the native answer: a mismatched participant or scope would
-	// otherwise approve the tool call and leave an invalid ownership trail.
+
 	if resolution.RunID != "" && resolution.RunID != run.id {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
@@ -1015,9 +792,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}
-	// The gate was emitted with requester "agent"; a nested request that names a
-	// different requester is ownership-inconsistent and must not reach the native
-	// allow/deny response (the resolved event also hardcodes the stored requester).
+
 	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != "agent" {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
@@ -1038,12 +813,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return base.ErrInvalidResolution
 	}
 	gate.resolved = true
-	// Keep the reducer serialized through the native answer and the canonical
-	// resolution emissions. Releasing the lock in between would let a terminal
-	// the CLI emits immediately after reading the answer settle the run while
-	// the gate is marked resolved but unreported: sweepRun would skip it, the
-	// resolved event would lose to the terminal, and the stream would end with
-	// an unresolved interaction.
+
 	if err := gate.control.Respond(ctx, answer); err != nil {
 		gate.resolved = false
 		s.reduceMu.Unlock()
@@ -1051,14 +821,12 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	}
 	_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, gate.requested)
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
-	// A resolved gate is terminal: retire it so later asks are findable.
+
 	delete(s.interactions, gate.id)
 	s.reduceMu.Unlock()
 	return nil
 }
 
-// cancelGate resolves a withdrawn ask as cancelled; the CLI abandoned it and
-// no answer may be written.
 func (s *Session) cancelGate(requestID string) {
 	for _, gate := range s.interactions {
 		if gate.control == nil || gate.control.ID != requestID || gate.resolved {
@@ -1075,8 +843,6 @@ func (s *Session) cancelGate(requestID string) {
 	}
 }
 
-// Cancel issues the interrupt intent. Settlement arrives only as a result
-// frame whose terminal_reason is aborted_*; the receipt never settles.
 func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCancelResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.RunCancelResponse{}, err
@@ -1095,12 +861,6 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 
-// settleRun projects the turn terminal. A result whose echo does not carry
-// the submitted uuid is another turn's terminal (injected or foreign) and is
-// observed only. queued_turn_count > 0 means more turns of this submission
-// follow; the settlement defers to the closing result. Deferring children
-// (local agents/workflows) hold the terminal until they settle or a
-// successor turn closes.
 func (s *Session) settleRun(run *runState, frame *native.ResultFrame, raw json.RawMessage) {
 	if !s.echoMatches(run, frame, raw) {
 		return
@@ -1114,8 +874,6 @@ func (s *Session) settleRun(run *runState, frame *native.ResultFrame, raw json.R
 	s.publishTerminal(run, frame)
 }
 
-// unsettledDeferringChildren counts this run's unsettled deferring children;
-// a prior run's stale edges never hold a later run's terminal.
 func (s *Session) unsettledDeferringChildren(run *runState) int {
 	count := 0
 	for _, child := range s.children {
@@ -1140,9 +898,9 @@ func (s *Session) settleChild(run *runState, taskID string) {
 	}
 	child.settled = true
 	if child.run != run {
-		return // another run's task reported; evidence only
+		return
 	}
-	// A held terminal publishes once the last deferring child settles.
+
 	if run.terminal || run.deferred == nil {
 		return
 	}
@@ -1155,9 +913,6 @@ func (s *Session) settleChild(run *runState, taskID string) {
 	}
 }
 
-// publishDeferred releases a held terminal candidate on the CLI's
-// authoritative idle signal: the turn is closed even if tracked children
-// (background tasks can outlive their turn) never reported.
 func (s *Session) publishDeferred(run *runState) {
 	if run.terminal {
 		return
@@ -1171,7 +926,6 @@ func (s *Session) publishDeferred(run *runState) {
 	}
 }
 
-// publishTerminal emits the one absorbing terminal for the run.
 func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 	if !run.started {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: settlement before the turn echo", ErrNativeProtocol))
@@ -1184,9 +938,7 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 	}
 	run.deferred = nil
 	s.mu.Unlock()
-	// Everything the terminal absorbs settles first: open tool calls are
-	// cancelled, abandoned asks are answered and cancelled, and the run's
-	// child edges are pruned.
+
 	s.sweepRun(run)
 	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens), TotalTokens: uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens)}
 	switch {
@@ -1208,10 +960,6 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 	}
 }
 
-// sweepRun settles everything the run's terminal absorbs: open tool calls
-// are cancelled, abandoned permission asks are answered (so the CLI is never
-// left blocked) and resolved as cancelled, and the run's child edges are
-// pruned so stale state cannot hold a later run's terminal.
 func (s *Session) sweepRun(run *runState) {
 	for _, tool := range s.tools {
 		if tool.run != run || tool.terminal {
@@ -1238,8 +986,6 @@ func (s *Session) sweepRun(run *runState) {
 	}
 }
 
-// errorResultText follows the reference _error_result_text preference:
-// errors[], then result, then a non-success subtype, then the HTTP status.
 func errorResultText(frame *native.ResultFrame) string {
 	if len(frame.Errors) > 0 {
 		return strings.Join(frame.Errors, "; ")
@@ -1308,9 +1054,7 @@ func (s *Session) Close(ctx context.Context) error {
 	subs := s.allSubscribersLocked()
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
-	// Teardown is stdin EOF; the exit code never fails Close (the CLI exits
-	// non-zero on purpose after error results — the wire evidence settled
-	// the run already).
+
 	err := s.client.Close()
 	s.stopOnce.Do(func() { close(s.stop) })
 	for _, channel := range subs {
@@ -1360,11 +1104,6 @@ func (s *Session) failRun(run *runState, code, msg string) {
 	s.failRunSettled(run, code, msg, "")
 }
 
-// failRunSettled fails a run with explicit terminal provenance. An empty
-// settledBy omits the member, which asserts observation and is right wherever
-// the CLI's own frames carried the failure. Callers pass
-// protocol.SettledByInferred only where the adapter concluded the terminal
-// itself, having never observed one for the run.
 func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 	if run == nil {
 		return
@@ -1389,8 +1128,7 @@ func (s *Session) transportFailed() {
 	s.mu.Unlock()
 	if !closed && run != nil {
 		if run.started {
-			// The transport died with the run still open: the adapter never
-			// saw a result for it and concludes the terminal from the loss.
+
 			s.failRunSettled(run, "claude_process_exit", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)
 		} else {
 			s.abortPreStartUnlocked(run, fmt.Errorf("%w: %v", ErrNativeProtocol, s.client.Err()))

@@ -16,12 +16,6 @@ import (
 
 const testTimeout = 10 * time.Second
 
-// --- scripted adapters ---
-
-// manualAdapter opens sessions whose run streams the test controls: Submit
-// mints a run and the test emits results on demand, pinning hub behavior —
-// fan-out, overflow, signals — without racing on real adapter emission
-// timing.
 type manualAdapter struct {
 	mu       sync.Mutex
 	session  *manualSession
@@ -43,7 +37,6 @@ func (a *manualAdapter) Open(_ context.Context, request base.OpenRequest) (base.
 	return session, nil
 }
 
-// active returns the most recently opened session for the test to drive.
 func (a *manualAdapter) active(t *testing.T) *manualSession {
 	t.Helper()
 	a.mu.Lock()
@@ -54,10 +47,6 @@ func (a *manualAdapter) active(t *testing.T) *manualSession {
 	return a.session
 }
 
-// manualSession runs at most one stream at a time; the test emits envelopes
-// or stream errors into it and ends the run by closing the stream. With
-// replayOverflow set, Resume hands back a stream that reports an event-
-// stream overflow before delivering anything.
 type manualSession struct {
 	id             protocol.SessionID
 	mu             sync.Mutex
@@ -132,7 +121,6 @@ func (s *manualSession) Close(context.Context) error {
 	return nil
 }
 
-// emit publishes one sequenced envelope on the active run's stream.
 func (s *manualSession) emit(t *testing.T, sequence uint64) {
 	t.Helper()
 	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID(fmt.Sprintf("manual-%s-%d", s.id, sequence)), protocol.RunStatusUpdatedPayload{})
@@ -150,7 +138,6 @@ func (s *manualSession) emit(t *testing.T, sequence uint64) {
 	s.stream <- base.Result{Envelope: envelope}
 }
 
-// fail publishes one stream error on the active run's stream.
 func (s *manualSession) fail(t *testing.T, err error) {
 	t.Helper()
 	s.mu.Lock()
@@ -161,7 +148,6 @@ func (s *manualSession) fail(t *testing.T, err error) {
 	s.stream <- base.Result{Error: err}
 }
 
-// endRun closes the active run's stream; the hub treats it as the run's end.
 func (s *manualSession) endRun() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -171,8 +157,6 @@ func (s *manualSession) endRun() {
 	}
 	s.active = ""
 }
-
-// --- helpers ---
 
 func memoryHub(t *testing.T, capacity int) *serve.Hub {
 	t.Helper()
@@ -224,8 +208,6 @@ func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.En
 	return protocol.Envelope{}
 }
 
-// resolveGate resolves the pending permission or input gate using the
-// interaction envelope the run parked on.
 func resolveGate(t *testing.T, session *serve.Session, requested protocol.Envelope) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -286,9 +268,6 @@ func submitGolden(t *testing.T, session *serve.Session, prompt string) protocol.
 	return admission.RunID
 }
 
-// driveMemoryRun runs the memory adapter's scripted gates to completion
-// through one subscription and returns the run id, leaving the journal
-// terminal.
 func driveMemoryRun(t *testing.T, session *serve.Session, subscription *serve.Subscription) protocol.RunID {
 	t.Helper()
 	runID := submitGolden(t, session, "run the golden script")
@@ -302,8 +281,6 @@ func driveMemoryRun(t *testing.T, session *serve.Session, subscription *serve.Su
 	}
 	return runID
 }
-
-// --- open and dispatch ---
 
 func TestHubOpenRejections(t *testing.T) {
 	hub := memoryHub(t, 0)
@@ -324,7 +301,7 @@ func TestHubOpenRejections(t *testing.T) {
 	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "dup"}); !errors.Is(err, serve.ErrSessionExists) {
 		t.Fatalf("duplicate open error %v", err)
 	}
-	// The duplicate open must not disturb the tracked session.
+
 	if session.ID() != "dup" {
 		t.Fatalf("tracked session id %q", session.ID())
 	}
@@ -338,15 +315,12 @@ func TestHubOpenRejections(t *testing.T) {
 		t.Fatalf("scope mismatch error %v", err)
 	}
 
-	// A session that never ran has nothing to replay for a cursor.
 	openMemorySession(t, hub, "no-run")
 	if _, err := hub.Subscribe(ctx, "no-run", serve.After("", 0)); !errors.Is(err, serve.ErrNoRunToResume) {
 		t.Fatalf("no-run resume error %v", err)
 	}
 }
 
-// TestHubOpenDefaultsParticipant pins that a zero participant opens as the
-// default responder identity, so gates the run raises resolve for it.
 func TestHubOpenDefaultsParticipant(t *testing.T) {
 	hub := memoryHub(t, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -372,10 +346,6 @@ func TestHubOpenDefaultsParticipant(t *testing.T) {
 	}
 }
 
-// TestHubOpenClosesSessionWhenStateFails pins the open-failure contract: a
-// session the adapter opened but could not confirm is closed again — the
-// caller holds no handle and the hub never registered it, so nothing else
-// could settle its child — and the adapter's error surfaces verbatim.
 func TestHubOpenClosesSessionWhenStateFails(t *testing.T) {
 	stateFailure := errors.New("state probe failed")
 	manual := &manualAdapter{stateErr: stateFailure}
@@ -403,10 +373,6 @@ func TestHubOpenClosesSessionWhenStateFails(t *testing.T) {
 	}
 }
 
-// TestHubOpenMarksClosedOnClosedConfirmation pins the open contract when a
-// session closes between the adapter open and the confirmation read: the
-// final state is preserved and subscriptions are refused rather than parked
-// forever on a session that can never publish another run.
 func TestHubOpenMarksClosedOnClosedConfirmation(t *testing.T) {
 	gated := &manualClosedAdapter{}
 	registry := serve.NewRegistry()
@@ -432,9 +398,6 @@ func TestHubOpenMarksClosedOnClosedConfirmation(t *testing.T) {
 	}
 }
 
-// manualClosedAdapter opens sessions whose State reports the final closed
-// state alongside ErrSessionClosed, as an adapter whose child exits at
-// once does.
 type manualClosedAdapter struct{}
 
 func (manualClosedAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -475,8 +438,6 @@ func (s *closedStateSession) Resume(context.Context, base.ResumeRequest) (base.R
 func (s *closedStateSession) Close(context.Context) error { return base.ErrSessionClosed }
 
 var _ base.Session = (*closedStateSession)(nil)
-
-// --- fan-out, overflow, signals ---
 
 func TestHubFansOutToSubscribers(t *testing.T) {
 	manual := &manualAdapter{}
@@ -525,9 +486,6 @@ func TestHubFansOutToSubscribers(t *testing.T) {
 	}
 }
 
-// TestHubSubscriptionQueueOverflow pins the slow-consumer contract: a
-// subscription whose bounded buffer fills is terminated with OverflowError
-// naming the last sequence it delivered, while the run itself continues.
 func TestHubSubscriptionQueueOverflow(t *testing.T) {
 	manual := &manualAdapter{}
 	registry := serve.NewRegistry()
@@ -542,9 +500,7 @@ func TestHubSubscriptionQueueOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// slow never reads while the run publishes, so its one-envelope queue
-	// overflows at the second publish; fast drains between emits so the run
-	// itself is never stalled.
+
 	slow, err := hub.Subscribe(ctx, "overflow")
 	if err != nil {
 		t.Fatal(err)
@@ -581,15 +537,12 @@ func TestHubSubscriptionQueueOverflow(t *testing.T) {
 	if overflow.LastSequence != 1 || overflow.RunID != runID {
 		t.Fatalf("overflow cursor %+v, want sequence 1 run %s", overflow, runID)
 	}
-	// The signal is terminal for the subscription.
+
 	if _, err := slow.Next(); !errors.Is(err, overflow) && err.Error() != overflow.Error() {
 		t.Fatalf("repeated Next error %v, want the sticky overflow", err)
 	}
 }
 
-// TestHubAdapterStreamOverflow pins the adapter-reported overflow: the run
-// stream reporting ErrEventStreamOverflow terminates every subscription with
-// the signal.
 func TestHubAdapterStreamOverflow(t *testing.T) {
 	manual := &manualAdapter{}
 	registry := serve.NewRegistry()
@@ -628,8 +581,6 @@ func TestHubAdapterStreamOverflow(t *testing.T) {
 	}
 }
 
-// TestHubSubscriptionContextCancel pins cross-goroutine teardown: cancelling
-// the Subscribe context ends a parked Next and detaches the subscription.
 func TestHubSubscriptionContextCancel(t *testing.T) {
 	hub := memoryHub(t, 0)
 	openMemorySession(t, hub, "cancel-subscription")
@@ -652,16 +603,12 @@ func TestHubSubscriptionContextCancel(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("parked Next survived its context")
 	}
-	// The detached subscription reports the same error, not a hang.
+
 	if _, err := subscription.Next(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("repeated Next error %v", err)
 	}
 }
 
-// TestHubLiveStreamErrorSurfaces pins the live-path contract for a failing
-// run stream: the queued envelopes are still delivered, then the adapter's
-// error — not a clean io.EOF — terminates the subscription, matching the
-// replay path's handling of stream errors.
 func TestHubLiveStreamErrorSurfaces(t *testing.T) {
 	manual := &manualAdapter{}
 	registry := serve.NewRegistry()
@@ -698,17 +645,12 @@ func TestHubLiveStreamErrorSurfaces(t *testing.T) {
 	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
 		t.Fatalf("terminal error %v (%T), want the adapter stream error", err, err)
 	}
-	// The error is terminal for the subscription.
+
 	if _, err := subscription.Next(); !errors.Is(err, streamFailure) {
 		t.Fatalf("repeated Next error %v, want the sticky stream error", err)
 	}
 }
 
-// --- cursor resume and gaps ---
-
-// TestHubResumeFromCursorMidStream pins the resume contract mid-run: a
-// cursor subscription replays the retained suffix, then continues with live
-// events through the terminal envelope, contiguous with the cursor.
 func TestHubResumeFromCursorMidStream(t *testing.T) {
 	hub := memoryHub(t, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -726,8 +668,6 @@ func TestHubResumeFromCursorMidStream(t *testing.T) {
 		t.Fatalf("initial burst %d envelopes, want 4", len(initial))
 	}
 
-	// The run is parked at its gate with sequences 1..4 published; a cursor
-	// subscription joins at 3 and must replay 3..4 before live events.
 	resumed, err := hub.Subscribe(ctx, "resume", serve.After(runID, 2))
 	if err != nil {
 		t.Fatal(err)
@@ -738,8 +678,6 @@ func TestHubResumeFromCursorMidStream(t *testing.T) {
 	middle := nextUntil(t, live, typeStop(protocol.TypeRunStatusUpdated))
 	resolveGate(t, session, envelopeOfType(t, middle, protocol.TypeUserInputRequested))
 
-	// The cursor stream sees the replayed suffix plus everything the run
-	// emitted after the join, in one contiguous sequence space.
 	seen := nextUntil(t, resumed, typeStop(protocol.TypeRunCompleted))
 	for offset, envelope := range seen {
 		want := uint64(3 + offset)
@@ -756,8 +694,7 @@ func TestHubResumeFromCursorMidStream(t *testing.T) {
 }
 
 func TestHubReplayGap(t *testing.T) {
-	// Journal capacity 2 retains only sequences 11 and 12 of the scripted
-	// twelve-envelope run, so a cursor older than 10 is a documented gap.
+
 	hub := memoryHub(t, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -779,7 +716,6 @@ func TestHubReplayGap(t *testing.T) {
 		t.Fatalf("gap %+v, want after 1 retained 11..12", gap)
 	}
 
-	// A cursor inside the retained window still replays the suffix.
 	recovered, err := hub.Subscribe(ctx, "gap", serve.After(runID, 10))
 	if err != nil {
 		t.Fatal(err)
@@ -796,10 +732,6 @@ func TestHubReplayGap(t *testing.T) {
 	}
 }
 
-// TestHubCloseReplaySubscriptionEndsPromptly pins the Close contract on a
-// replay subscription whose adapter stream is still open: the run is parked
-// at its gate, the replayed suffix is consumed, and Close must end the
-// subscription at once instead of waiting for the parked run to settle.
 func TestHubCloseReplaySubscriptionEndsPromptly(t *testing.T) {
 	hub := memoryHub(t, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -823,8 +755,7 @@ func TestHubCloseReplaySubscriptionEndsPromptly(t *testing.T) {
 		t.Fatalf("replayed suffix %d envelopes, want 2", len(replayed))
 	}
 	resumed.Close()
-	// The run stays parked, so only the subscription's own teardown can end
-	// this Next.
+
 	done := make(chan error, 1)
 	go func() {
 		_, err := resumed.Next()
@@ -838,8 +769,7 @@ func TestHubCloseReplaySubscriptionEndsPromptly(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("post-Close Next did not end while the run was parked")
 	}
-	// Close is idempotent, and the parked run is unaffected: resolving the
-	// gate still settles it for the live subscription.
+
 	resumed.Close()
 	resolveGate(t, session, initial[len(initial)-1])
 	middle := nextUntil(t, live, typeStop(protocol.TypeRunStatusUpdated))
@@ -847,10 +777,6 @@ func TestHubCloseReplaySubscriptionEndsPromptly(t *testing.T) {
 	nextUntil(t, live, typeStop(protocol.TypeRunCompleted))
 }
 
-// TestHubCursorResumeBindsRun pins the run-bound cursor: with runs A and B
-// both settled and B current, a cursor bound to A replays A's suffix — not
-// B's events under A's sequence — while an unbound cursor resolves onto the
-// current run like the daemon's Last-Event-ID.
 func TestHubCursorResumeBindsRun(t *testing.T) {
 	hub := memoryHub(t, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -903,13 +829,6 @@ func TestHubCursorResumeBindsRun(t *testing.T) {
 	}
 }
 
-// TestHubOverflowSignalNamesOverflowedRun pins the overflow cursor against
-// the late-consumer race: a subscriber overflowed on run A that only reads
-// the signal after run B was admitted gets A as its resume run, because the
-// run is snapshotted when the overflow happens, not when the signal is read.
-// A witness subscription with a deep queue barriers on run A's completion
-// before run B starts, so which envelope overflowed the one-slot subscriber
-// is deterministic.
 func TestHubOverflowSignalNamesOverflowedRun(t *testing.T) {
 	manual := &manualAdapter{}
 	registry := serve.NewRegistry()
@@ -936,11 +855,6 @@ func TestHubOverflowSignalNamesOverflowedRun(t *testing.T) {
 	defer witness.Close()
 	active := manual.active(t)
 
-	// Run A queues one envelope into the slow subscriber's one-slot buffer,
-	// then overflows it. The witness drains between emits — the queue bound
-	// is hub-wide, so pacing the reader against it pins every queue state:
-	// A1 lands in both queues, the witness read empties its own, and A2 then
-	// overflows the slow subscriber while the witness takes it.
 	runA := submitGolden(t, session, "overflow on run A")
 	active.emit(t, 1)
 	if _, err := witness.Next(); err != nil {
@@ -951,13 +865,11 @@ func TestHubOverflowSignalNamesOverflowedRun(t *testing.T) {
 		t.Fatalf("witness envelope 2: %v", err)
 	}
 	active.endRun()
-	// The witness drains run A to its clean end, proving the reader finished
-	// every publish of run A before run B is admitted.
+
 	if _, err := witness.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("witness end error %v, want io.EOF", err)
 	}
 
-	// Run B intervenes and settles before the slow consumer reads anything.
 	runB := submitGolden(t, session, "run B intervenes")
 	active.emit(t, 1)
 	active.endRun()
@@ -982,9 +894,6 @@ func TestHubOverflowSignalNamesOverflowedRun(t *testing.T) {
 	}
 }
 
-// TestHubReplayOverflowSeedsCursor pins the replay cursor floor: when the
-// replay stream overflows before delivering anything, the signal's cursor
-// must not regress behind the position the subscription started after.
 func TestHubReplayOverflowSeedsCursor(t *testing.T) {
 	manual := &manualAdapter{}
 	registry := serve.NewRegistry()
@@ -1020,8 +929,6 @@ func TestHubReplayOverflowSeedsCursor(t *testing.T) {
 	}
 }
 
-// --- listing and close semantics ---
-
 func TestHubSessionsListingAcrossAdapters(t *testing.T) {
 	manual := &manualAdapter{}
 	registry := serve.NewRegistry()
@@ -1047,8 +954,6 @@ func TestHubSessionsListingAcrossAdapters(t *testing.T) {
 		t.Fatalf("listing has %d entries, want 2", got)
 	}
 
-	// One session mid-run lists running with its active run; the idle one
-	// stays idle.
 	subscription, err := hub.Subscribe(ctx, "list-b")
 	if err != nil {
 		t.Fatal(err)
@@ -1074,8 +979,6 @@ func TestHubSessionsListingAcrossAdapters(t *testing.T) {
 	assertListing("list-a", "alpha", protocol.SessionIdle, "")
 	assertListing("list-b", "beta", protocol.SessionRunning, runID)
 
-	// A settled run lists idle again; a closed session survives the listing
-	// with its final state.
 	manual.active(t).emit(t, 1)
 	manual.active(t).endRun()
 	for {
@@ -1105,13 +1008,10 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 	runID := submitGolden(t, session, "refuse the close, then settle")
 	initial := nextUntil(t, subscription, typeStop(protocol.TypeActionPermissionRequested))
 
-	// An active run refuses Close by contract.
 	if err := session.Close(ctx); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("active close error %v", err)
 	}
 
-	// Cancelling settles the run; the subscription follows it to the
-	// terminal event and ends cleanly.
 	if _, err := session.Cancel(ctx, runID); err != nil {
 		t.Fatal(err)
 	}
@@ -1131,8 +1031,7 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 	if !session.IsClosed() {
 		t.Fatal("session did not record the close")
 	}
-	// The closed session still reports its final state and stays listed;
-	// the adapter pairs its closed status with ErrSessionClosed.
+
 	state, err := session.State(ctx)
 	if !errors.Is(err, base.ErrSessionClosed) || state.Status != protocol.SessionClosed {
 		t.Fatalf("closed state %+v error %v", state, err)
@@ -1147,8 +1046,6 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 		t.Fatal("closed session missing from listing")
 	}
 
-	// Subscriptions are refused rather than parked, and operations surface
-	// the adapter's closed error.
 	if _, err := hub.Subscribe(ctx, "close"); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("subscribe on closed session error %v", err)
 	}
@@ -1162,12 +1059,6 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 	}
 }
 
-// --- concurrency ---
-
-// TestHubConcurrentSessions drives several sessions at once — each goroutine
-// subscribes, submits, resolves both scripted gates, and consumes to the
-// terminal event — so the race detector exercises concurrent Submit,
-// Resolve, and fan-out on one hub.
 func TestHubConcurrentSessions(t *testing.T) {
 	hub := memoryHub(t, 0)
 	const sessions = 4
