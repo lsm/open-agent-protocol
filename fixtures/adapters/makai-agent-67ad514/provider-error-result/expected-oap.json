@@ -16,7 +16,7 @@
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-4",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -37,7 +37,7 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-4",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -57,6 +57,6 @@
     "timestamp_ms": 8,
     "session_id": "session",
     "run_id": "run-4",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   }
 ]

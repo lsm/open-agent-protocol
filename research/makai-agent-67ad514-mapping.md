@@ -280,6 +280,29 @@ observations describe one logical invocation. The adapter correlates both using
 the namespaced portable `tool_call_id` and never emits duplicate OAP actions.
 A parent terminal closes any unfinished tool before settlement.
 
+The bridge is executed rather than refused as of the `+control-tools` unit
+([Decision 0011](../decisions/0011-control-layer-provided-tools.md)). A
+`tool_execute` naming a tool the control layer provided at session open opens
+an OAP interaction: `action.call.requested` carrying `interaction_id` and
+`responded_by`, resolved through `action.call.resolve.request`, answered back
+to makai as the `tool_result` it is waiting for, and only then settled with
+the derived terminal. Writing the native frame before publishing the terminal
+is deliberate — the reverse order would tell the control layer its answer had
+landed before it had.
+
+Two narrowings the adapter makes rather than widening the protocol. Makai
+provisions tools per `agent_message` and the unit provisions per session, so
+the definitions fixed at open are repeated verbatim on every message and a
+submit can neither add a tool nor drop one. And makai admits one outstanding
+`tool_execute` per run at this pin, so a second arriving while one is pending
+is a lifecycle fault rather than a second interaction: the native correlation
+is the `tool_call_id` the frame is about to reuse.
+
+`makai_tool_executor_unavailable` survives, narrowed to what it now names: a
+`tool_execute` for a tool this session never provided. Such a frame has no
+owner to route to, and the protocol gained a place for the frames the adapter
+can route rather than for every frame.
+
 The mapped agent protocol does not expose a general user permission
 interaction. Permission support remains unavailable rather than inferred from
 tool hosting.
@@ -498,6 +521,11 @@ never silent adapter compensation.
    decision — and the corpus now pins the second (`provider-error-result`).
 10. **Server and SDK session models differ:** implement one explicit boundary.
 11. **Tool bridge and tool observations overlap:** deduplicate one action.
+    The bridge half is now executed rather than refused: a `tool_execute`
+    naming a provided tool becomes a control-owned OAP interaction and its
+    resolution is written back as `tool_result` (Decision 0011,
+    `tool-bridge-roundtrip`). The deduplication rule is unchanged — one logical
+    invocation, one OAP action — and an unprovided name keeps the refusal.
 12. **Unknown observations:** classify each as mapped, observed-only,
     required-unmapped/fatal, or unsupported request.
 
@@ -515,6 +543,9 @@ ledger and in fixture omissions; it is never silent convergence.
 - one foreground run per session: enforced;
 - text streaming: `native` once exercised;
 - tool lifecycle and progress: `degraded` until complete fixtures pass;
+- control-layer-provided tools (`action.tools.provide`): `emulated`, executed
+  through the native `tool_execute`/`tool_result` bridge, with `max_tools` and
+  the accepted schema dialect disclosed;
 - configured model selection: native input, not a catalog;
 - model catalog: unavailable until authority and failure behavior are exercised;
 - cancellation: `degraded`, session-destructive;

@@ -23,14 +23,16 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.requested",
-    "id": "event-10",
+    "id": "event-11",
     "payload": {
+      "interaction_id": "call-9",
       "session_id": "session",
       "run_id": "run-4",
-      "tool_call_id": "tool-call-9",
+      "tool_call_id": "tool-call-10",
       "requested_by": "agent",
-      "execution_owner": "makai-agent",
-      "name": "search",
+      "responded_by": "user",
+      "execution_owner": "user",
+      "name": "lookup",
       "arguments_json": {
         "q": "oap"
       }
@@ -39,7 +41,7 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-4",
-    "tool_call_id": "tool-call-9",
+    "tool_call_id": "tool-call-10",
     "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
@@ -47,46 +49,26 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.started",
-    "id": "event-11",
+    "id": "event-13",
     "payload": {
+      "interaction_id": "call-9",
+      "request_id": "corpus-resolve-2",
       "session_id": "session",
       "run_id": "run-4",
-      "tool_call_id": "tool-call-9",
+      "tool_call_id": "tool-call-10",
       "requested_by": "agent",
-      "execution_owner": "makai-agent",
-      "name": "search"
-    },
-    "sequence": 3,
-    "timestamp_ms": 8,
-    "in_reply_to": "event-10",
-    "session_id": "session",
-    "run_id": "run-4",
-    "tool_call_id": "tool-call-9",
-    "capability_revision": "makai-agent-67ad514-oap-v2"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "action.call.progress",
-    "id": "event-12",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-4",
-      "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
-      "execution_owner": "makai-agent",
-      "name": "search",
-      "progress": {
-        "items": 1
+      "responded_by": "user",
+      "execution_owner": "user",
+      "name": "lookup",
+      "arguments_json": {
+        "q": "oap"
       }
     },
-    "sequence": 4,
+    "sequence": 3,
     "timestamp_ms": 9,
-    "in_reply_to": "event-11",
     "session_id": "session",
     "run_id": "run-4",
-    "tool_call_id": "tool-call-9",
+    "tool_call_id": "tool-call-10",
     "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
@@ -94,24 +76,27 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.completed",
-    "id": "event-13",
+    "id": "event-14",
     "payload": {
+      "interaction_id": "call-9",
+      "request_id": "corpus-resolve-2",
       "session_id": "session",
       "run_id": "run-4",
-      "tool_call_id": "tool-call-9",
+      "tool_call_id": "tool-call-10",
       "requested_by": "agent",
-      "execution_owner": "makai-agent",
-      "name": "search",
+      "responded_by": "user",
+      "execution_owner": "user",
+      "name": "lookup",
       "result": {
-        "ok": true
+        "hits": 2
       }
     },
-    "sequence": 5,
+    "sequence": 4,
     "timestamp_ms": 10,
-    "in_reply_to": "event-11",
+    "in_reply_to": "event-13",
     "session_id": "session",
     "run_id": "run-4",
-    "tool_call_id": "tool-call-9",
+    "tool_call_id": "tool-call-10",
     "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
@@ -119,7 +104,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-14",
+    "id": "event-15",
     "payload": {
       "session_id": "session",
       "run_id": "run-4",
@@ -130,7 +115,7 @@
       },
       "stop_reason": "stop"
     },
-    "sequence": 6,
+    "sequence": 5,
     "timestamp_ms": 11,
     "session_id": "session",
     "run_id": "run-4",

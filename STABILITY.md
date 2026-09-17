@@ -43,7 +43,9 @@ one side of this line or the other. None is left unstated:
 | `+models` | yes | [Decision 0006](decisions/0006-models-catalog.md), accepted. |
 | `+queue` | yes | [Decision 0007](decisions/0007-queue-delivery.md), accepted. |
 | `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
+| `+control-tools` | yes | [Decision 0011](decisions/0011-control-layer-provided-tools.md), accepted. |
 | `+persistence` | **no** | Its envelope types — `session.list.*`, `transcript.load.*`, `transcript.delta` — exist in no schema file and no Go type. The conformance draft describes a unit that has never been built. |
+| `+compound-open` | **no** | [Decision 0009](decisions/0009-compound-open.md) is `proposed`. A `proposed` record binds nothing. |
 | `+steer`, `+btw` | **no** | Staged, not graduated. No decision has taken either through the gate. |
 
 A unit joins the covered set when its graduating decision becomes `accepted`,
@@ -59,7 +61,8 @@ A rule is binding when the decision record carrying it is `accepted`.
 [Decision 0003](decisions/0003-staged-unit-graduation.md) defines what
 `accepted` means and what evidence it requires: the rule is executable on
 `main`, nothing inside the record is still pending, nothing proposed
-contradicts it, and it is merged. Decisions 0001 through 0008 are accepted.
+contradicts it, and it is merged. Decisions 0001 through 0008 and Decision
+0011 are accepted. Decisions 0009 and 0010 are `proposed`.
 
 A `proposed` record binds nothing. If you are reading one, you are reading a
 position this project may still change.
