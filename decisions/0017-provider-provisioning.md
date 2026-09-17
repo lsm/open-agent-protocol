@@ -84,6 +84,59 @@ be unavailable to it — which is the failure Decision 0008 fixed for tools when
 `session.open.response` began publishing attached sources beside configured
 ones.
 
+### An attachment is session-scoped, and an endpoint that cannot scope it refuses
+
+The symmetry with `tool_sources` carries one assumption that does not travel
+with it: that provider resolution is per-session. In at least one real agent
+loop it is not.
+
+Makai's maintainers report that their tools genuinely are session-scoped —
+parsed per session from the frame that starts the agent — while provider
+resolution is process-global: one provider protocol server per process, named
+endpoints loaded from a config file at catalog build, base URLs read from the
+environment, and nothing in the resolution path taking a session id. Modelling
+providers on tool sources assumes a parity they do not have, and an endpoint in
+that shape would need a per-session overlay on a process-global registry to
+honour an attachment at all.
+
+That is a cost, not an objection, and this record does not pretend otherwise.
+What it does decide is what happens when an endpoint cannot pay it.
+
+**Two sessions attaching different endpoints under one provider id must not be
+representable as one.** An endpoint whose provider resolution predates its
+sessions has exactly three ways to merge a session-scoped attachment into a
+process-scoped registry: the first attachment silently wins, the second
+clobbers the first for every session, or the attachment is refused. The first
+two are observable to a caller that did nothing wrong and are not reportable in
+either direction — session B's prompts go to session A's endpoint, and nothing
+on the wire says so. Only refusal is honest, so refusal is the rule: an
+endpoint that cannot give a session its own provider view does not advertise
+`action.providers.attach`, and refuses the open if one arrives.
+
+This generalizes past the harness that surfaced it. Any endpoint whose provider
+resolution is built before its sessions faces the same three choices, and the
+capability key is where that answer belongs — permanently refusing the unit is
+a conformant position, and a wrong merge is not.
+
+### `id` names a vendor endpoint, not a wire implementation
+
+`ProviderAttachment.id` and `ProviderDescriptor.id` name a configured vendor
+endpoint. `wire` names the request shape spoken to it. They are different
+layers and an implementer will conflate them, because both get called "the
+provider" in ordinary speech.
+
+Makai keeps them apart structurally: their API registry holds wire-format
+implementations, their catalog holds named vendor endpoints, and a model
+reference carries both — `provider_id/api@model_id`. `providers[]` maps onto
+the catalog, never onto the registry. An implementer who reads "provider" and
+wires this to their wire-format layer gets something that mostly works until
+two vendor endpoints share a request shape, at which point the ids collide and
+the catalog stops resolving.
+
+This is why Decision 0014 gives the descriptor both members instead of one, and
+why `wire` is drawn from a closed set while `id` stays opaque and
+endpoint-scoped.
+
 ### The unit is gated, whole-or-nothing, and fail-closed
 
 `action.providers.attach`, disclosed for the `session_open` mode, joining
@@ -256,6 +309,10 @@ that disagree.
 Mutating a session's providers after open. Attachment is admission, the way it
 is for tool sources. A mid-session provider change would move the catalog under
 a revision that is fixed for it.
+
+A process-global merge dressed as a session-scoped attachment. An endpoint that
+cannot scope a provider to one session refuses the unit; it does not admit the
+attachment and apply it everywhere.
 
 `auth_status`, or anything else that moves without the descriptor moving.
 Decision 0014 separated provider identity from provider usability and this

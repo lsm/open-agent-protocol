@@ -113,6 +113,16 @@ An in-process embedder whose control layer *is* the operator may accept more,
 which is what makes bring-your-own-key and per-session gateways expressible
 without the daemon relaxing anything.
 
+One rule does **not** come across with the rest, and the mirror is where it
+hides. Tool sources are per-session in every implementation that carries them,
+so attaching one at session open needs no scoping argument. Provider resolution
+is not per-session everywhere: an agent loop may build its provider registry
+once per process, before any session exists, in which case a session-scoped
+attachment has nowhere to live. 0017 makes that a refusal rather than a merge,
+for the reason the whole layer exists — a provider silently shared between two
+sessions sends one caller's prompts to the other caller's endpoint, and nothing
+on the wire says so.
+
 ## Why this is one shape and not four decisions
 
 Each boundary needs the same three things, and reading the decisions
