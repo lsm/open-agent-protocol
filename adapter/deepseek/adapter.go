@@ -1,4 +1,3 @@
-// Package deepseek adapts the pinned DeepSeek Harness SDK runtime to OAP.
 package deepseek
 
 import (
@@ -24,7 +23,6 @@ const (
 
 var ErrNativeProtocol = errors.New("deepseek adapter: invalid native protocol observation")
 
-// Client is the ordered JSON-RPC surface consumed by Session.
 type Client interface {
 	Call(context.Context, string, any, any) error
 	CallStarted(context.Context, string, any, any, chan<- error) error
@@ -112,9 +110,7 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	if config.Factory == nil {
-		// Copy into a non-nil base so an explicit empty allowlist stays an
-		// empty environment; appending into a nil base would silently turn it
-		// into inherit-parent.
+
 		env := config.Environment
 		if env != nil {
 			env = append([]string{}, env...)
@@ -182,17 +178,11 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// An open attaching tool sources to an endpoint that never advertised
-	// attachment is refused before a process starts: this adapter reads no
-	// ToolSources, so admitting the open would return a session that silently
-	// discarded them.
+
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
-	// The same gate for control-layer-provided tools: this adapter advertises
-	// no action.tools.provide, so an open supplying its own tool definitions
-	// is refused rather than returning a session whose provided catalog was
-	// silently discarded.
+
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}

@@ -1,11 +1,3 @@
-// Package servehttp exposes a serve.Hub over single-user local HTTP + SSE:
-// the transport of the `oap serve` daemon. OAP operations exchange verbatim
-// schema/v0.1 envelopes — every request is validated against the bundled OAP
-// schema and every refusal is a correlated error.response — /adapters and
-// /sessions are daemon-management surfaces returning plain JSON, and run
-// events stream as SSE with cursor resume and the documented gap/overflow
-// signals. The codec adds no protocol semantics of its own: each route
-// decodes its request, calls the hub, and encodes the result.
 package servehttp
 
 import (
@@ -33,31 +25,16 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// DefaultAddr binds the daemon to loopback: v0 is a single-user local service
-// with no authentication, so it must not listen on an external interface by
-// default.
 const DefaultAddr = "127.0.0.1:6270"
 
 const maxRequestBytes = 16 << 20
 
-// Options tunes the HTTP surface. The zero value is usable.
 type Options struct {
-	// HostAllowlist, when non-empty, restricts serving to requests whose
-	// Host header names one of these hostnames (port-insensitive). The CLI
-	// sets it to the loopback names, which closes the browser-borne
-	// cross-origin and DNS-rebinding vectors against the default
-	// unauthenticated loopback bind; an operator binding a non-loopback
-	// address opts out by leaving it empty.
 	HostAllowlist []string
-	// SubscriptionHold bounds how long a subscription opened by a compound
-	// open waits to be adopted by the events request that follows it. Zero
-	// takes DefaultSubscriptionHold.
+
 	SubscriptionHold time.Duration
 }
 
-// Server serves one hub over local HTTP + SSE. OAP operations exchange
-// verbatim schema/v0.1 envelopes; /adapters and /sessions are
-// daemon-management surfaces and return plain JSON.
 type Server struct {
 	hub         *serve.Hub
 	schema      *jsonschema.Schema
@@ -68,7 +45,6 @@ type Server struct {
 	held        map[protocol.SessionID]*heldSubscription
 }
 
-// New compiles the request gate and returns a server over the hub.
 func New(hub *serve.Hub, options Options) (*Server, error) {
 	schema, err := validation.CompileSchemas()
 	if err != nil {
@@ -86,11 +62,8 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 		held: map[protocol.SessionID]*heldSubscription{}}, nil
 }
 
-// Hub returns the hub the server serves.
 func (s *Server) Hub() *serve.Hub { return s.hub }
 
-// Handler returns the daemon's HTTP routes, wrapped in the origin boundary
-// and, when one is configured, the host restriction.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /adapters", s.handleAdapters)
@@ -125,28 +98,6 @@ func (s *Server) Handler() http.Handler {
 	return s.refuseBrowserOrigins(handler)
 }
 
-// refuseBrowserOrigins is the daemon's origin boundary, and it wraps every
-// route rather than sitting inside the ones that read a request envelope.
-//
-// It began inside readRequest, which meant it covered the four routes that
-// parse a body and not POST /sessions/{id}/close, which parses none: a page in
-// the user's browser could issue a no-cors POST and drop a live session with
-// its in-flight runs. The registry allowlist still governed process execution,
-// so the reach was a lost session rather than an executed command — but the
-// boundary the README and Decision 0008 describe was not the boundary the code
-// enforced, and a per-route check is a boundary that has to be remembered
-// again for every route yet to be written. Here it holds for all of them,
-// including the ones that take no body and the ones that do not exist yet.
-//
-// It is unconditional, unlike the host restriction above: that allowlist is an
-// operator's configuration, while this is what the daemon promises whatever it
-// is configured with.
-//
-// The Fetch specification attaches Origin to every cross-origin request whose
-// method is not GET or HEAD, so refusing it turns a simple POST from a page
-// into a preflight this daemon never answers. Reads are covered too: no
-// legitimate OAP client sends Origin, and a local daemon has no reason to
-// serve a browser page any of its surfaces.
 func (s *Server) refuseBrowserOrigins(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := r.Header["Origin"]; ok {
@@ -169,8 +120,6 @@ func (s *Server) lookupSession(w http.ResponseWriter, id string) (*serve.Session
 	}
 	return entry, true
 }
-
-// --- daemon-management surfaces ---
 
 type adapterInfo struct {
 	Name               string                         `json:"name"`
@@ -196,8 +145,7 @@ func (s *Server) handleAdapters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
-	// GET carries no request envelope; the response cites a daemon-minted
-	// correlation id, which a client may pair with its own request envelope.
+
 	correlation := s.nextID("request")
 	descriptor, err := s.hub.Probe(r.Context(), r.PathValue("name"))
 	if err != nil {
@@ -241,8 +189,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": infos})
 }
 
-// --- OAP operations ---
-
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	envelope, ok := s.readRequest(w, r, protocol.TypeSessionOpenRequest)
 	if !ok {
@@ -259,12 +205,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures, Tools: request.Tools}
-	// The refusal ladder runs capability, then degradation, then
-	// unsatisfiability, and the daemon's own attachment constraints are the
-	// third rung: telling a caller to fix its command, when the endpoint
-	// cannot attach sources at all, answers a question it never asked and
-	// hides the one it did. So the endpoint's own disclosure is consulted
-	// first, before any daemon-specific constraint is applied.
+
 	revision, refusal := serve.AttachmentGate(r.Context(), s.hub, name, envelope.CapabilityRevision, request)
 	if refusal == nil {
 		var subscribeRevision string
@@ -283,9 +224,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		}
 		code, message, details, typed := serve.ControlRefusal(refusal)
 		if !typed {
-			// The descriptor could not be read, so no rung has an answer and
-			// none is invented: the open fails rather than falling through to
-			// a constraint that would answer the wrong question.
+
 			s.writeError(w, http.StatusInternalServerError, "probe_failed", adapterMessage(refusal), envelope)
 			return
 		}
@@ -327,11 +266,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	opened, err := serve.OpenCompound(r.Context(), s.hub, name, open, compound)
 	entry, state := opened.Session, opened.State
 	if err != nil {
-		// A capability the open elected and the adapter refused is reported
-		// under its own typed code with the details that say what to change —
-		// the same mapping a refused run control takes — so an open refused
-		// for an attachment tells the caller which source to drop rather than
-		// only that the open failed.
+
 		if code, message, details, ok := serve.ControlRefusal(err); ok {
 			s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
 			return
@@ -346,29 +281,10 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, status, code, adapterMessage(err), envelope)
 		return
 	}
-	// The response is built from the state the open itself confirmed:
-	// re-reading state here could fail after registration (an expired
-	// request context, a flaky adapter probe) and report a successful open
-	// as 502 while the session stays live in the hub.
-	//
-	// The state goes on the wire whole. Naming members here copied two of
-	// them and dropped the rest, so an adapter that reported the session's
-	// model at open — the first snapshot a control layer sees — had it
-	// discarded on the way out, and the sources an open attached would have
-	// been the next to go.
+
 	response, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, s.nextID("response"), state)
 	if err != nil {
-		// The session is already registered, so an encode failure here is not
-		// the open failing: it is the open succeeding and the answer being
-		// lost. An adapter that reports a state this frontend cannot encode —
-		// an invalid raw value in its metadata is enough — would otherwise
-		// leave a live session behind a 500, with a minted id the caller never
-		// saw and cannot close, while retrying its own id earns 409.
-		//
-		// So the session is rolled back unless the caller named it, in which
-		// case it is theirs to close and the message says it is there. This is
-		// the policy servestdio's open takes for the same fact; the two routes
-		// answer one situation the same way or a caller has to learn both.
+
 		if opened.Subscription != nil {
 			opened.Subscription.Close()
 		}
@@ -381,13 +297,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
-	// The response carries the revision the open was admitted under, which is
-	// what the profile asks for in both directions: a pinned request has its
-	// revision repeated — the gate verified it is the current one, so the probed
-	// value and the caller's are the same string — and an unpinned one is given
-	// the revision used for admission, which is how a control layer detects that
-	// it was admitted under a newer snapshot than the one it last read. An open
-	// that attaches nothing is not probed and keeps the caller's own value.
+
 	response.CapabilityRevision = envelope.CapabilityRevision
 	if revision != "" {
 		response.CapabilityRevision = revision
@@ -395,12 +305,6 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, response)
 }
 
-// rollbackOpen closes a session whose open response could not be encoded, and
-// reports what it left behind.
-//
-// The rollback runs on a context of its own rather than the request's: the
-// request is already being answered, and a caller that hung up must not decide
-// whether a session it cannot see gets closed.
 func rollbackOpen(hub *serve.Hub, entry *serve.Session, named bool) string {
 	if named {
 		return "the open response could not be encoded; the session is open under the session_id the request supplied"
@@ -445,9 +349,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeSubmitError(w http.ResponseWriter, err error, envelope protocol.Envelope) {
-	// A refused control is reported under its own typed code with the details
-	// that say what to change (decision 0005). The mapping is the hub's, so
-	// this codec and the stdio frontend report one refusal identically.
+
 	if code, message, details, ok := serve.ControlRefusal(err); ok {
 		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
 		return
@@ -455,8 +357,6 @@ func (s *Server) writeSubmitError(w http.ResponseWriter, err error, envelope pro
 	s.writeControlError(w, err, http.StatusInternalServerError, "internal", envelope)
 }
 
-// writeControlError writes one failure that is not a typed control refusal,
-// under the fallback status and code the caller names.
 func (s *Server) writeControlError(w http.ResponseWriter, err error, fallbackStatus int, fallbackCode string, envelope protocol.Envelope) {
 	if code, message, details, ok := serve.ControlRefusal(err); ok {
 		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
@@ -552,10 +452,6 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, response)
 }
 
-// resolveCall answers a control-owned call's resolution. Unlike the two gates
-// beside it, a refusal is a 200 carrying the reason: the ranked reasons are
-// the endpoint's answer to a well-formed request, not a transport fault, and
-// mapping them to a 4xx would lose the one thing the resolver needs.
 func (s *Server) resolveCall(w http.ResponseWriter, r *http.Request, entry *serve.Session, envelope protocol.Envelope) {
 	var request protocol.ActionCallResolveRequest
 	if err := envelope.DecodePayload(&request); err != nil {
@@ -565,11 +461,7 @@ func (s *Server) resolveCall(w http.ResponseWriter, r *http.Request, entry *serv
 	answer, err := entry.ResolveCall(r.Context(), base.CallResolution{RequestID: envelope.ID, Request: request})
 	if err != nil {
 		envelope.RunID = request.RunID
-		// A typed control refusal keeps its code and its details, as every
-		// neighbouring path here does. An endpoint that does not execute
-		// control-owned tools is refused for that capability by name, so the
-		// caller learns which key to stop electing rather than only that the
-		// resolution failed.
+
 		if code, message, details, typed := serve.ControlRefusal(err); typed {
 			s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
 			return
@@ -668,10 +560,6 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, response)
 }
 
-// handleTools serves one session's effective tool catalog. The degraded
-// opt-in rides a repeatable `?allow_degraded=<key>` query parameter, mapped
-// onto the payload before the daemon mints the request, so a caller can
-// consent to a degraded catalog over a GET.
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	entry, ok := s.lookupSession(w, r.PathValue("id"))
 	if !ok {
@@ -689,22 +577,13 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.InReplyTo = s.nextID("request")
-	// The hub verified the listing is this session's before returning it, so
-	// the envelope is labelled from the hub's own identity rather than from
-	// adapter data, as on the models route.
+
 	response.SessionID = entry.ID()
-	// The revision comes back with the listing rather than from a descriptor
-	// read at another moment: a catalog nothing can bind to a descriptor
-	// cannot be cached or invalidated, and this unit's catalogs move under a
-	// live descriptor more than the model ones do — an endpoint republishing
-	// its tools per turn changes what it lists without anyone asking.
+
 	response.CapabilityRevision = catalog.Revision
 	writeEnvelope(w, http.StatusOK, response)
 }
 
-// writeToolsError maps a catalog failure onto the typed refusal the wire
-// requires. An endpoint that serves no portable catalog must say which
-// capability to stop requesting, not merely that something failed.
 func (s *Server) writeToolsError(w http.ResponseWriter, err error, request protocol.Envelope) {
 	switch {
 	case errors.Is(err, base.ErrToolCatalogUnavailable):
@@ -720,14 +599,6 @@ func (s *Server) writeToolsError(w http.ResponseWriter, err error, request proto
 	}
 }
 
-// handleModels serves one session's model catalog, mirroring the capabilities
-// route: the GET carries no request envelope, so the response cites a
-// daemon-minted correlation id a host may pair with its own request.
-//
-// The degraded opt-in travels as a repeatable ?allow_degraded=<key> query
-// parameter. A GET carries no body, and a header would hide a wire-visible
-// field from logs and curl, so the parameter is what the daemon maps onto the
-// payload's allow_degraded_features before minting the query.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	entry, ok := s.lookupSession(w, r.PathValue("id"))
 	if !ok {
@@ -745,23 +616,13 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.InReplyTo = s.nextID("request")
-	// The hub verified the listing is this session's before returning it, so
-	// the envelope is labelled from the hub's own identity rather than from
-	// adapter data: the scope on the wire is the one the daemon addressed.
+
 	response.SessionID = entry.ID()
-	// The revision comes back with the listing rather than from a descriptor
-	// read at another moment: on an endpoint whose capabilities can update, a
-	// separately probed revision can already be the wrong one by the time the
-	// catalog is produced, and the label is the whole of what makes the
-	// listing cacheable.
+
 	response.CapabilityRevision = catalog.Revision
 	writeEnvelope(w, http.StatusOK, response)
 }
 
-// writeModelsError reports a refused catalog query. A refusal the caller can
-// act on — the key unadvertised, or degraded without the opt-in — goes through
-// the hub's shared control mapping, so a query refused over HTTP is refused
-// identically over stdio.
 func (s *Server) writeModelsError(w http.ResponseWriter, err error, envelope protocol.Envelope) {
 	if code, message, details, ok := serve.ControlRefusal(err); ok {
 		s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
@@ -784,8 +645,7 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// v0.1 defines no session.close envelope, so a successful close returns
-	// no body; failures return the usual correlated error.response.
+
 	if err := entry.Close(r.Context()); err != nil {
 		status, code := http.StatusInternalServerError, "internal"
 		switch {
@@ -807,10 +667,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A closed session can neither deliver live events nor replay: refusing
-	// up front keeps a live connection from parking forever and reports the
-	// closed state for cursor requests that would otherwise surface the
-	// missing run instead.
+
 	if entry.IsClosed() {
 		s.writeError(w, http.StatusConflict, "session_closed", "the session is closed", protocol.Envelope{SessionID: entry.ID()})
 		return
@@ -831,9 +688,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, "invalid_cursor", fmt.Sprintf("cursor %q is not an unsigned sequence", cursor), protocol.Envelope{SessionID: entry.ID()})
 			return
 		}
-		// The wire cursor carries only a sequence: the daemon resolves it
-		// onto the session's current run, exactly as documented for
-		// Last-Event-ID reconnects.
+
 		options = append(options, serve.After("", after))
 	}
 	var subscription *serve.Subscription
@@ -862,9 +717,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status, code := http.StatusInternalServerError, "internal"
 		switch {
-		// The hub's closed-session refusal unwraps to the adapter sentinel,
-		// so one case covers both the hub refusal and an adapter Resume that
-		// reports the session closed.
+
 		case errors.Is(err, base.ErrSessionClosed):
 			status, code = http.StatusConflict, "session_closed"
 		case errors.Is(err, serve.ErrNoRunToResume):
@@ -879,31 +732,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, status, code, adapterMessage(err), protocol.Envelope{SessionID: entry.ID()})
 		return
 	}
-	// The subscription owns connection lifetime from here: detaching it on
-	// the way out mirrors a client disconnect, and the hub drains whatever
-	// adapter stream backs it.
+
 	defer subscription.Close()
 	startSSE(w, flusher)
 	s.streamSubscription(w, flusher, subscription)
 }
 
-// --- request gate and response helpers ---
-
-// readRequest parses one request envelope, validates it against the bundled
-// OAP envelope schema, and checks its type against the endpoint. Every
-// rejection is written as a correlated error.response.
-//
-// It also carries the media-type half of the daemon's browser boundary: the
-// Host allowlist admits a simple cross-origin POST from a page in the user's
-// browser, and a simple request cannot declare a JSON content type. That
-// boundary is defence in depth beside the registry allowlist above, not
-// instead of it.
-//
-// Its other half, the Origin refusal, is enforced for every route in
-// refuseBrowserOrigins rather than here, because it is a statement about the
-// daemon. The media type stays here because it is a statement about a body:
-// the routes that read none — close — cannot require a content type without
-// refusing every client that posts them empty.
 func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...protocol.EnvelopeType) (protocol.Envelope, bool) {
 	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
 		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "the daemon requires Content-Type: application/json", protocol.Envelope{})
@@ -950,15 +784,10 @@ func envelopeTypes(types []protocol.EnvelopeType) string {
 	return strings.Join(names, " or ")
 }
 
-// writeError emits one schema-valid error.response envelope. Errors that could
-// echo request content keep the message bounded; correlation is preserved
-// whenever the request itself parsed.
 func (s *Server) writeError(w http.ResponseWriter, status int, code, message string, request protocol.Envelope) {
 	s.writeErrorDetails(w, status, code, message, nil, request)
 }
 
-// writeErrorDetails writes one typed error.response, carrying the details a
-// typed refusal names.
 func (s *Server) writeErrorDetails(w http.ResponseWriter, status int, code, message string, details map[string]any, request protocol.Envelope) {
 	envelope, err := protocol.NewEnvelope(protocol.TypeErrorResponse, s.nextID("error"), protocol.ErrorResponse{
 		Error: protocol.ProtocolError{Code: code, Message: trimMessage(message), Details: details},
@@ -998,15 +827,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(body)
 }
 
-// adapterMessage flattens adapter errors into a bounded, credential-free
-// string: adapter diagnostics never carry resolved environment values, and
-// the bound keeps a runaway native error from flooding the response.
 func adapterMessage(err error) string {
 	return trimMessage(err.Error())
 }
 
-// trimMessage bounds an error message on a rune boundary so the truncated
-// string stays valid UTF-8 for JSON marshaling.
 func trimMessage(message string) string {
 	const limit = 300
 	runes := []rune(message)

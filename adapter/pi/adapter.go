@@ -1,4 +1,3 @@
-// Package pi adapts Pi coding agent v0.85.1 RPC mode to OAP.
 package pi
 
 import (
@@ -30,7 +29,6 @@ var (
 	ErrUnsupportedInput = errors.New("pi adapter: unsupported input")
 )
 
-// Client is the ordered Pi RPC surface consumed by a Session.
 type Client interface {
 	Call(context.Context, native.Command, any) error
 	Respond(context.Context, native.ExtensionUIResponse) error
@@ -40,11 +38,6 @@ type Client interface {
 	Close() error
 }
 
-// ClientFactory supplies a ready client and its initial get_state snapshot.
-// rpc.Process performs that readiness handshake for the built-in factory. Custom
-// factories must disable Pi extensions: every admitted prompt must cross the
-// model-producing agent_start boundary rather than be consumed by an extension
-// command or input hook.
 type ClientFactory interface {
 	Start(context.Context) (Client, native.SessionState, error)
 }
@@ -54,8 +47,6 @@ func (f ClientFactoryFunc) Start(ctx context.Context) (Client, native.SessionSta
 	return f(ctx)
 }
 
-// ProcessBridge allows process ownership to be injected independently of the
-// RPC client. Done must close when the child exits; Close owns child teardown.
 type ProcessBridge interface {
 	ClientHandle() Client
 	InitialSessionState() native.SessionState
@@ -88,7 +79,6 @@ type Config struct {
 	ShutdownTimeout    time.Duration
 }
 
-// Adapter maps Pi process sessions into canonical OAP sessions.
 type Adapter struct {
 	config Config
 	clock  base.Clock
@@ -131,12 +121,9 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	if config.Factory == nil {
-		// Pi's parser treats repeated --no-extensions flags idempotently. Force it
-		// after caller arguments so discovered extensions cannot consume a prompt
-		// without producing agent_start.
+
 		args := append(append([]string(nil), config.Args...), "--no-extensions")
-		// slices.Clone preserves non-nilness: an explicitly empty allowlist must
-		// reach rpc.Start as non-nil or it collapses to "inherit the parent".
+
 		pc := rpc.ProcessConfig{Path: config.Executable, Args: args, Dir: config.WorkingDirectory, Env: slices.Clone(config.Environment), FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ShutdownTimeout: config.ShutdownTimeout}
 		config.Factory = ClientFactoryFunc(func(ctx context.Context) (Client, native.SessionState, error) {
 			bridge, err := config.ProcessFactory.Start(ctx, pc)
@@ -201,23 +188,15 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// An open attaching tool sources to an endpoint that never advertised
-	// attachment is refused before a process starts: this adapter reads no
-	// ToolSources, so admitting the open would return a session that silently
-	// discarded them.
+
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
-	// The same gate for control-layer-provided tools: this adapter advertises
-	// no action.tools.provide, so an open supplying its own tool definitions
-	// is refused rather than returning a session whose provided catalog was
-	// silently discarded.
+
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
-	// Extension dialogs are emitted with the participant as the responder, so an
-	// empty identity would produce schema-invalid events that no valid resolution
-	// could satisfy. Reject before starting a process.
+
 	if req.Participant.ID == "" {
 		return nil, base.ErrInvalidParticipant
 	}

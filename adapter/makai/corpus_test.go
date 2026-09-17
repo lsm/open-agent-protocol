@@ -70,14 +70,9 @@ type makaiCorpusCase struct {
 	IdentityMap  map[string]string `json:"identity_map"`
 	Journal      int               `json:"journal_capacity,omitempty"`
 	ReplayAfter  *uint64           `json:"replay_after,omitempty"`
-	// RetireAfterTerminal asserts the terminal above retired the mapped
-	// session: a further submission and a state read must both answer
-	// ErrSessionClosed instead of admitting doomed native work.
+
 	RetireAfterTerminal bool `json:"retire_after_terminal,omitempty"`
-	// ProvidedTools is the control-owned catalog the case opens with. A case
-	// that supplies one reaches the native tool_execute/tool_result bridge,
-	// which is unreachable without it: a tool name the session never provided
-	// has no owner to route to and keeps the adapter's long-standing refusal.
+
 	ProvidedTools []protocol.ToolDefinition `json:"provided_tools,omitempty"`
 }
 type makaiProvenance struct {
@@ -94,19 +89,10 @@ type makaiCorpusFrame struct {
 	Fidelity       string          `json:"fidelity"`
 	Action         string          `json:"action,omitempty"`
 	Raw            json.RawMessage `json:"raw"`
-	// Resolve is the control participant's answer to a pending control-owned
-	// call. It appears on a client-to-agent frame whose raw is the native
-	// tool_result the adapter must write back, so the corpus pins both halves
-	// of what the adapter owes: the ranked response the resolver reads, and
-	// the frame the harness is waiting for. Pinning only the OAP side would
-	// pass an adapter that emitted a conforming terminal and told makai
-	// nothing.
+
 	Resolve *makaiCorpusResolve `json:"resolve,omitempty"`
 }
 
-// makaiCorpusResolve is one scripted resolution and the answer it must get.
-// Accepted is stated rather than assumed, so a refusal can be pinned as
-// deliberately as an acceptance.
 type makaiCorpusResolve struct {
 	Arm      string                  `json:"arm"`
 	Result   json.RawMessage         `json:"result,omitempty"`
@@ -265,27 +251,17 @@ func runMakaiCorpusCase(t *testing.T, root string, entry makaiCorpusManifestCase
 	}
 }
 
-// resolveMakaiCorpusCall answers the run's pending control-owned call and
-// asserts both halves of what the adapter owes: the ranked response the
-// resolver reads, and the native tool_result the harness is waiting for,
-// compared against the frame the corpus pins.
 func resolveMakaiCorpusCall(t *testing.T, open base.Session, client *fakeClient, runID protocol.RunID, index int, frame makaiCorpusFrame, want *native.Envelope) {
 	t.Helper()
 	if frame.Resolve == nil || want == nil || want.Type != native.TypeToolResult {
 		t.Fatalf("frame %d: a resolve-call frame needs a resolve block and a native tool_result", index)
 	}
-	// The corpus reads the pending call off the reducer rather than off the
-	// event stream, which the case drains only at the end. This test is in the
-	// adapter's own package precisely so a fixture can name an interaction the
-	// adapter minted without the protocol growing a surface for it.
+
 	inner, ok := open.(*session)
 	if !ok {
 		t.Fatalf("frame %d: unexpected session type", index)
 	}
-	// Frames reach the reducer through a channel, so the call this resolution
-	// answers may not have been published yet when the script reaches here.
-	// Waiting for it is the scripted step's own synchronization; the
-	// alternative is a flake that depends on goroutine scheduling.
+
 	var call *callState
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -350,8 +326,6 @@ func resolveMakaiCorpusCall(t *testing.T, open base.Session, client *fakeClient,
 	}
 }
 
-// makaiSameJSON compares two encodings by value, so a corpus expectation is
-// not pinned to the adapter's key order.
 func makaiSameJSON(t *testing.T, got, want string) bool {
 	t.Helper()
 	var a, b any
@@ -415,9 +389,7 @@ func assertMakaiClassifications(t *testing.T, frames []makaiCorpusFrame, decoded
 			typ = string(decoded[i].Type)
 		}
 		mapping := mappings[i]
-		// A resolution is the one frame that travels the other way: the
-		// adapter writes it, so the corpus records it as client-to-agent and
-		// the case asserts the adapter produced it rather than feeding it in.
+
 		direction := "agent-to-client"
 		if frame.Action == "resolve-call" {
 			direction = "client-to-agent"

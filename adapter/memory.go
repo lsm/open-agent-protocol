@@ -18,40 +18,20 @@ import (
 
 const defaultJournalCapacity = 64
 
-// The reference adapter's fixed model catalog and structured result. Both are
-// disclosed: the catalog through model_not_found for anything outside it, the
-// result through run.structured_output's fixed_result constraint. A caller and
-// a validator can therefore check a refusal in both directions instead of
-// taking the endpoint's word for it.
 const (
 	ModelPrimary   = "reference-model-a"
 	ModelSecondary = "reference-model-b"
 	fixedResult    = `{"ok":true}`
 	scriptedTool   = "scripted_tool"
-	// scriptedToolOwner runs the scripted tool, and is what every emitted
-	// action.call payload names as its execution_owner.
+
 	scriptedToolOwner = "reference-adapter"
-	// scriptedSource is the native source the scripted tool comes from, and
-	// syntheticMCPSource a declared MCP process source with no tools of its
-	// own, so a catalog entry's `source` resolves to a descriptor rather than
-	// to a name a consumer has to parse.
+
 	scriptedSource     = "reference-native"
 	syntheticMCPSource = "reference-mcp"
-	// endpointID is this endpoint's identity, and therefore the agent
-	// participant every interaction it raises is requested by. The two are
-	// one value because protocol.initialize.response declares the endpoint
-	// and nothing else declares the agent side: an adapter naming a different
-	// requester raises gates addressed to a participant the trace never saw
-	// declared, which a host that initializes reads as unknown_participant.
+
 	endpointID = "reference.memory"
 )
 
-// The provisioning limits the descriptor discloses for
-// action.tools.provide. They are declared because the unit's rule is that a
-// constraint must be advertised to be exercised: an adapter permitted to
-// refuse any well-formed array could advertise the key, refuse everything,
-// and pass conformance while honouring nothing. Refusing an array that
-// satisfies every one of these is undisclosed_provide_limit.
 const (
 	maxProvidedTools    = 2
 	providedNamePattern = "^[a-z][a-z0-9_]*$"
@@ -60,9 +40,6 @@ const (
 
 var providedNameRE = regexp.MustCompile(providedNamePattern)
 
-// provideSupport is this adapter's one disclosure for action.tools.provide.
-// Probe publishes it and admitProvidedTools gates on it, so the descriptor a
-// caller reads and the admission its open meets are the same value.
 var provideSupport = protocol.FeatureSupport{
 	Level: protocol.SupportEmulated,
 	Limits: map[string]json.RawMessage{
@@ -73,12 +50,6 @@ var provideSupport = protocol.FeatureSupport{
 	Reason: "provided tools are called by the script and executed by the control layer through the resolve pair",
 }
 
-// scriptedCatalog is the reference adapter's effective tool catalog: the one
-// tool its script calls, and the one a tool_choice policy can name. The
-// descriptor publishes it and the submit gate judges against it, from here, so
-// the endpoint cannot advertise one catalog and enforce another — which is the
-// contradiction a validator reads as an empty catalog, refusing every policy
-// the adapter itself accepts.
 func scriptedCatalog() []protocol.ToolDefinition {
 	return []protocol.ToolDefinition{{
 		Name:           scriptedTool,
@@ -93,11 +64,6 @@ func scriptedCatalog() []protocol.ToolDefinition {
 	}}
 }
 
-// declaredSources are the tool sources the reference descriptor publishes: the
-// native one its scripted tool comes from, and a synthetic MCP process source
-// that declares no tools of its own. The second exists so a consumer can see a
-// non-native source resolved by id without the reference adapter pretending to
-// run an MCP client.
 func declaredSources() []protocol.ToolSourceDescriptor {
 	return []protocol.ToolSourceDescriptor{
 		{ID: scriptedSource, Kind: protocol.ToolSourceNative, DisplayName: "Reference Adapter Script"},
@@ -108,19 +74,10 @@ func declaredSources() []protocol.ToolSourceDescriptor {
 	}
 }
 
-// attachTransports and maxAttachedSources are the attachment limits the
-// descriptor discloses. Disclosing them is what makes a refusal checkable: an
-// endpoint that advertised attachment and refused every array while declaring
-// no limit would honour nothing, so refusing an array within every declared
-// limit is a conformance failure.
 var attachTransports = []string{protocol.ToolSourceProcess, protocol.ToolSourceLocal}
 
 const maxAttachedSources = 2
 
-// attachSupport is this adapter's one disclosure for
-// action.tool_sources.attach. Probe publishes it and admitToolSources gates on
-// it, so the descriptor a caller reads and the admission its open meets are
-// the same value rather than two that can drift apart.
 var attachSupport = protocol.FeatureSupport{
 	Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen},
 	Limits: map[string]json.RawMessage{
@@ -130,35 +87,10 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-// CapabilityRevision is the advertised reference-adapter revision. Every
-// emitted envelope repeats it so a consumer can bind an event to the
-// descriptor snapshot it was produced under.
-// v2 published the scripted tool in the catalog; v1 published none. v3
-// advertises models.list and serves the fixed model catalog, v5 declares the
-// tool sources, attributes the scripted tool to one of them, and advertises
-// the catalog and attachment capabilities with their disclosed limits, and v6
-// advertises session.message.delivery.queue with the bounds that make the
-// claim checkable. A revision identifies exactly one descriptor, so a consumer
-// holding an older snapshot must see this one as new rather than read a
-// reservation against a descriptor that offered no queue.
-//
-// v4 belongs to no published descriptor. The units that graduate in parallel
-// each bump this constant, and two branches that both took the next number
-// would publish two different descriptors under one revision — the exact
-// confusion the revision exists to prevent — so each reserved its own and the
-// one that merges second takes the number after what it finds. This descriptor
-// is neither of theirs: it says everything both of them say and the queue
-// besides, so it is new again.
-//
-// v8 advertises action.tools.provide with the limits that make a refusal
-// checkable in both directions. A descriptor that publishes a provided tool's
-// catalog entry is a different descriptor from one that cannot provision at
-// all, so the revision moves.
 const CapabilityRevision = "reference-memory-v8"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
-// Clock and IDGenerator make every observable value deterministic in tests.
 type Clock interface {
 	Now() time.Time
 }
@@ -173,8 +105,6 @@ type Config struct {
 	JournalCapacity int
 }
 
-// Memory is a deterministic process-local reference adapter. It executes one
-// fixed interaction script; it is not a general model simulation.
 type Memory struct {
 	clock    Clock
 	ids      IDGenerator
@@ -206,11 +136,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"session.state":                 {Level: protocol.SupportNative},
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
-		// The queue, emulated: a submission while the scripted run is active
-		// reserves a second run and promotes it when the first settles. The
-		// bounds are disclosed because advertising a queue is a claim that
-		// some submission will be queued, and the bound is what makes the
-		// claim checkable.
+
 		protocol.FeatureDeliveryQueue: {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
 		"run.streaming":               {Level: protocol.SupportNative},
 		"run.status":                  {Level: protocol.SupportNative},
@@ -220,25 +146,15 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"run.replay":                  {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
 		"action.tools":                {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
 		"action.tools.execute":        {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
-		// The catalog and attachment, executed deterministically. Both
-		// disclosures are machine-readable: the mode says attachment happens
-		// at session open and nowhere else, and the limits say exactly which
-		// arrays are honoured, so a refusal is checkable in both directions.
+
 		protocol.FeatureToolsList:         {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
 		protocol.FeatureToolSourcesAttach: attachSupport,
 		protocol.FeatureToolsProvide:      provideSupport,
 		"action.permissions":              {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		"user_input":                      {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
-		// The run controls, executed deterministically. Each disclosure is
-		// machine-readable so a refusal is checkable in both directions: the
-		// mode says the session default never moves, the enforced tool_choice
-		// modes say which policies a refusal may cite, and fixed_result names
-		// the exact object every structured completion carries.
+
 		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Mode: protocol.ModePerRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
-		// The catalog the model gate is judged against is served rather than
-		// left implicit, so a caller can read the two ids the adapter accepts
-		// instead of discovering them one model_not_found at a time. It is
-		// fixed for the revision, which is what native means here.
+
 		protocol.FeatureModelsList:   {Level: protocol.SupportNative, Reason: "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},
 		protocol.FeatureInstructions: {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
 		protocol.FeatureToolSelection: {
@@ -259,13 +175,10 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 			ProtocolVersions: []string{protocol.Version},
 			Profiles:         []string{protocol.Profile},
 			Features:         features,
-			// The catalog a tool_choice is judged against is the descriptor's,
-			// so it is published rather than kept private to the session.
+
 			Tools:   scriptedCatalog(),
 			Sources: declaredSources(),
-			// One started run beside one reservation: the active bound leaves
-			// room for the queued subset, or the queue it advertises could
-			// never be reached.
+
 			Limits: &protocol.CapabilityLimits{
 				MaxActiveRunsPerSession: protocol.Limit(2),
 				MaxQueuedRunsPerSession: protocol.Limit(1),
@@ -284,21 +197,16 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// The participant is the recorded responder for every permission and
-	// user-input gate this adapter raises, so an empty identity would both
-	// violate the schema and make those gates unresolvable.
+
 	if request.Participant.ID == "" {
 		return nil, fmt.Errorf("%w: open requires a non-empty participant id", ErrInvalidParticipant)
 	}
-	// Attachment is judged before any identity is allocated, so a refused open
-	// leaves no session behind. The array is accepted whole or not at all.
+
 	attached, err := admitToolSources(request)
 	if err != nil {
 		return nil, err
 	}
-	// Provisioning is judged in the same place and on the same terms: whole
-	// or not at all, before any identity exists, so a refused open leaves no
-	// session holding a catalog it silently trimmed.
+
 	provided, err := admitProvidedTools(request, attached)
 	if err != nil {
 		return nil, err
@@ -318,14 +226,8 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	}, nil
 }
 
-// admitToolSources judges one open's attachment array against what Probe
-// advertises. Every refusal names the offending source, so a caller and the
-// validator agree on which entry to change; a refusal that violated no
-// disclosed limit would be the endpoint honouring nothing it advertised.
 func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, error) {
-	// The same gate every other adapter runs, with the key this one
-	// advertises: uniform so one grep finds every endpoint's admission, and a
-	// no-op here only because the advertisement is real.
+
 	if err := RefuseUnadvertisedToolSources(request, attachSupport); err != nil {
 		return nil, err
 	}
@@ -348,18 +250,12 @@ func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, err
 		case attachment.ID == "" || attachment.Kind == "":
 			return nil, refuse(attachment.ID, "an attachment needs an id and a kind")
 		case seen[attachment.ID] || declared[attachment.ID]:
-			// One id resolves to one descriptor, so a collision with another
-			// attachment or with a declared source is refused rather than
-			// shadowed: a call carrying that source would otherwise route to
-			// whichever entry happened to win.
+
 			return nil, refuse(attachment.ID, "the id already resolves to a declared or attached source")
 		case !slices.Contains(attachTransports, attachment.Kind):
 			return nil, refuse(attachment.ID, "kind "+attachment.Kind+" is outside the disclosed transports")
 		case DuplicateEnvironmentName(attachment.Environment) != "":
-			// This adapter runs no client, so no child could be confused by it —
-			// but it is the reference, and an attachment naming one variable
-			// twice is ill-formed wherever it is sent. An endpoint the unit's
-			// rules are read off should not admit what they say to refuse.
+
 			return nil, refuse(attachment.ID, "environment names "+DuplicateEnvironmentName(attachment.Environment)+" twice")
 		}
 		seen[attachment.ID] = true
@@ -367,9 +263,6 @@ func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, err
 	return append([]protocol.ToolSourceAttachment(nil), request.ToolSources...), nil
 }
 
-// sessionSources is the union the session publishes: the descriptor's declared
-// sources and the open's attachments, in the descriptor shape. The projection
-// is the point — command, args, and environment never reach a client.
 func sessionSources(attached []protocol.ToolSourceAttachment) []protocol.ToolSourceDescriptor {
 	sources := declaredSources()
 	for _, attachment := range attached {
@@ -378,16 +271,6 @@ func sessionSources(attached []protocol.ToolSourceAttachment) []protocol.ToolSou
 	return sources
 }
 
-// admitProvidedTools judges one open's `tools` array against what Probe
-// advertises. Every refusal names the offending entry, so a caller and the
-// validator agree on which one to change, and every refusal cites a condition
-// some rule names: an array that violates nothing disclosed must be admitted,
-// or the advertisement promises nothing.
-//
-// The order is the order of the unit's rules rather than convenience.
-// Ownership and a dangling source are refused first because both are defects
-// visible in the request itself; the ceiling and the name and dialect shapes
-// follow, and each is a limit this descriptor discloses.
 func admitProvidedTools(request OpenRequest, attached []protocol.ToolSourceAttachment) ([]protocol.ToolDefinition, error) {
 	if err := RefuseUnadvertisedTools(request, provideSupport); err != nil {
 		return nil, err
@@ -414,10 +297,7 @@ func admitProvidedTools(request OpenRequest, attached []protocol.ToolSourceAttac
 		case tool.Name == "":
 			return nil, refuse("", "a provided tool needs a name")
 		case tool.ExecutionOwner != request.Participant.ID:
-			// Checked where it is stated rather than where it fails: an open
-			// admitting a tool owned by anyone else has taken on a routing
-			// decision it cannot make, since no envelope carries a sender to
-			// compare against later.
+
 			return nil, refuse(tool.Name, "execution_owner must be the opening participant")
 		case tool.Source != "" && !resolvable[tool.Source]:
 			return nil, refuse(tool.Name, "source "+tool.Source+" resolves to no declared or attached source")
@@ -426,9 +306,7 @@ func admitProvidedTools(request OpenRequest, attached []protocol.ToolSourceAttac
 		case !providedNameRE.MatchString(tool.Name):
 			return nil, refuse(tool.Name, "the name is outside the disclosed name_pattern "+providedNamePattern)
 		case !admissibleDialect(tool.InputSchema):
-			// A schema naming no $schema elects this endpoint's dialect, so a
-			// disclosed dialect binds only a definition that declared a
-			// different one.
+
 			return nil, refuse(tool.Name, "the input schema declares a dialect outside the disclosed "+providedDialect)
 		}
 		taken[tool.Name] = true
@@ -436,8 +314,6 @@ func admitProvidedTools(request OpenRequest, attached []protocol.ToolSourceAttac
 	return append([]protocol.ToolDefinition(nil), request.Tools...), nil
 }
 
-// admissibleDialect reports whether a provided tool's input schema elects a
-// dialect this adapter accepts. An absent $schema elects the endpoint's.
 func admissibleDialect(schema json.RawMessage) bool {
 	if len(schema) == 0 {
 		return true
@@ -451,8 +327,6 @@ func admissibleDialect(schema json.RawMessage) bool {
 	return declared.Schema == "" || declared.Schema == providedDialect
 }
 
-// mustJSON encodes a disclosed limit. The values are package constants, so a
-// failure here is a programming error rather than an input defect.
 func mustJSON(value any) json.RawMessage {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -471,26 +345,15 @@ type memorySession struct {
 	participant protocol.ParticipantID
 	state       protocol.SessionState
 	attached    []protocol.ToolSourceAttachment
-	// provided is the control layer's own tool catalog for this session,
-	// fixed at open for the session's lifetime. Its presence is what makes
-	// the script call a control-owned tool instead of executing its own.
+
 	provided []protocol.ToolDefinition
 	closed   bool
 	active   *memoryRun
-	// reserved is the one queued reservation this adapter admits beside a
-	// started run, per its disclosed max_queued_runs_per_session of 1. It
-	// promotes when the started run settles, and can settle pre-start itself.
+
 	reserved *memoryRun
 	runs     map[protocol.RunID]*memoryRun
 	journal  []protocol.Envelope
-	// settled is every run this session has removed from its projection,
-	// with the sequence its terminal carries. A state read is answered
-	// synchronously while lifecycle reaches a consumer through a buffered
-	// stream, so a snapshot taken at a settlement can be on the wire before
-	// the terminal it reflects. Naming the run and its terminal here says
-	// what the endpoint actually knows — this run is gone, and here is the
-	// event that ended it — instead of leaving the run to vanish from a
-	// listing the trace still reads as holding it.
+
 	settled []protocol.SettledRun
 }
 
@@ -498,11 +361,7 @@ type scriptStage uint8
 
 const (
 	stagePermission scriptStage = iota
-	// stageCall is the control-owned call's stage: the run has published a
-	// call it does not own and is waiting for the participant to execute it.
-	// It replaces the permission stage rather than following it — gating the
-	// control layer's own tool behind the control layer's own approval adds
-	// nothing the trace can read.
+
 	stageCall
 	stageInput
 	stageTerminal
@@ -511,22 +370,13 @@ const (
 type memoryRun struct {
 	id     protocol.RunID
 	status protocol.RunStatus
-	// started marks a run whose run.started has been emitted. A reservation
-	// that settles before promotion emits its terminal and nothing else:
-	// non-terminal run-scoped events before run.started are illegal.
+
 	started bool
-	// queuedAdmission records that the admission response said queued. With
-	// started it decides how the run is projected: the trace knows a run
-	// admitted queued as a reservation until its run.started reaches it, and
-	// that is the same test the queue unit's state rules apply.
+
 	queuedAdmission bool
-	// answered records that Submit has an admission response to return for
-	// this run. Until then the run holds a slot and counts against the
-	// bounds, but nothing has told anyone it was accepted, so a concurrent
-	// state read must not name it.
+
 	answered bool
-	// pendingInteraction is the gate this run has published and not yet
-	// resolved, which is what an active_runs entry reports.
+
 	pendingInteraction protocol.InteractionID
 	stage              scriptStage
 	controls           admittedControls
@@ -535,15 +385,7 @@ type memoryRun struct {
 	permissionID       protocol.InteractionID
 	inputID            protocol.InteractionID
 	toolCallID         protocol.ToolCallID
-	// The control-owned call's bookkeeping. callID is its interaction;
-	// providedTool the definition the script calls. acknowledged records an
-	// accepted `started`, and settled the accepted resolution — with the
-	// arm, the payload it carried, and the request that authorized it, all of
-	// which the derived terminal must repeat. settlementID is the envelope an
-	// already_resolved refusal points at: the terminal where one exists, and
-	// otherwise the acceptance that settled the call, because the window
-	// between them is the one a retry lands in and it may not be left without
-	// a conforming answer.
+
 	callID           protocol.InteractionID
 	providedTool     protocol.ToolDefinition
 	acknowledged     bool
@@ -563,13 +405,7 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// Every control is judged before any identity is allocated: a refused
-	// submission reserves no submission id, no run id, and writes nothing.
-	// The gate also runs ahead of ordinary submission validation, because the
-	// ladder ranks a control refusal above it: a caller told only that its
-	// submission was invalid would fix the messages, resubmit, and be refused
-	// for the control anyway. Every adapter here runs the gate in this
-	// position, so one request gets one answer whichever endpoint serves it.
+
 	controls, err := s.admitControls(request)
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
@@ -578,8 +414,7 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		return protocol.MessageSubmitResponse{}, nil, ErrInvalidSubmission
 	}
 	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto && request.Delivery != protocol.DeliveryQueue {
-		// steer and btw stay outside this subset; the queue is advertised, so
-		// it is applied rather than refused.
+
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", ErrInvalidSubmission, request.Delivery)
 	}
 
@@ -594,9 +429,7 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	}
 	busy := s.active != nil && !s.active.terminal
 	if busy && s.reserved != nil && !s.reserved.terminal {
-		// The disclosed queue bound is one reservation. Beyond it the wire's
-		// answer is run_active, which is what ErrRunActive becomes at every
-		// binding.
+
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, ErrRunActive
 	}
@@ -609,15 +442,10 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		requestedBy:  endpointID, respondedBy: s.participant,
 	}
 	if !controls.callsTool {
-		// The policy excludes the scripted tool, so the run never opens a
-		// call and its permission gate: the script goes straight to the
-		// input stage.
+
 		run.stage = stageInput
 	} else if len(s.provided) > 0 {
-		// The session was opened with a control-owned catalog, so the call
-		// the script makes is one this endpoint does not execute. It is an
-		// interaction rather than a gate: the participant runs the tool and
-		// answers with the outcome.
+
 		run.stage = stageCall
 		run.callID = protocol.InteractionID(s.ids.NewID("call"))
 		run.providedTool = controls.elected
@@ -625,17 +453,11 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	stream := make(chan Result, 32)
 	run.subscribers = append(run.subscribers, stream)
 	s.runs[run.id] = run
-	// A reservation is admitted while the started run holds the session; an
-	// explicit queue on an idle session is admitted as a reservation too and
-	// promotes at once, since "run after current work reaches a safe
-	// boundary" is trivially satisfied when there is no current work.
+
 	reservation := busy || request.Delivery == protocol.DeliveryQueue
 	run.queuedAdmission = reservation
 	if reservation {
-		// The response says queued, so the projection has to as well until
-		// run.started reaches the trace — including on an idle session, where
-		// the promotion is immediate but is still an event the trace has to
-		// be told about before a snapshot can claim it happened.
+
 		run.status = protocol.RunQueued
 	}
 	if busy {
@@ -673,22 +495,10 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 			admission.DeliveryResolution = "session_busy"
 		}
 	}
-	// The response is decided here but it is not published here, and it is
-	// not published when this call returns either: both frontends build the
-	// submit response envelope after Submit hands the admission back. Until
-	// that envelope exists the trace carries no admission for this run to have
-	// been anchored to, so a state read taken in the meantime names a run from
-	// nowhere — and an adapter cannot tell when it exists, for the same reason
-	// it cannot supply the anchor: the envelope and its id are the frontend's.
-	// So this is not the boundary; it is the latest point the adapter can see,
-	// and the projection is armed here and flips as the response is handed
-	// back. Closing the rest belongs to the layer that creates the envelope
-	// and is recorded as its own limit in decision 0007.
+
 	defer s.answerRun(run)
 	if busy {
-		// Nothing is emitted for a reservation: its run identity is reserved
-		// at admission and its first run-scoped event is either its promotion
-		// or its pre-start terminal.
+
 		return admission, stream, nil
 	}
 	if err := s.emitInitial(run); err != nil {
@@ -697,13 +507,6 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 	return admission, stream, nil
 }
 
-// answerRun publishes a run into the session's projection. It is deferred from
-// the admission that decided it, so the run is projected as Submit returns
-// rather than while it is still running: separating the two widens the window
-// where a snapshot describes a run nothing has admitted, and this is as narrow
-// as the adapter can make it. It does not close it — the trace carries the
-// admission only once the frontend builds its envelope, which happens after
-// this returns and which nothing here can observe.
 func (s *memorySession) answerRun(run *memoryRun) {
 	s.mu.Lock()
 	run.answered = true
@@ -711,20 +514,10 @@ func (s *memorySession) answerRun(run *memoryRun) {
 	s.mu.Unlock()
 }
 
-// refreshStateLocked recomputes the session's published state from the runs it
-// holds. active_runs lists every nonterminal run in admission order, which is
-// what a snapshot of a session with a reservation has to carry: active_run_id
-// alone cannot describe two.
-// live reports whether a run still owes a terminal.
 func live(run *memoryRun) bool { return run != nil && !run.terminal }
 
 func (s *memorySession) refreshStateLocked() {
-	// Which run is started is read from the trace, not from the slot it
-	// occupies. An explicit queue on an idle session is admitted queued and
-	// promotes at once, but the promotion is still an event: until it is
-	// emitted, naming that run in active_run_id and listing it without a
-	// queue position would describe a started run the trace has not been told
-	// about — the shape this repository's own state rules reject.
+
 	var entries []protocol.ActiveRun
 	position := 0
 	var started *memoryRun
@@ -741,31 +534,20 @@ func (s *memorySession) refreshStateLocked() {
 		entries = append(entries, s.entryLocked(run, position))
 	}
 	s.state.ActiveRuns = entries
-	// The capture anchor is what keeps the listing above honest about what is
-	// missing from it. Which run is started is read from the trace; which runs
-	// are gone has to be stated, because the trace may not have been told yet.
+
 	if len(s.settled) > 0 {
 		s.state.AsOf = &protocol.SessionCapture{Settled: s.settled}
 	}
 	switch {
 	case started != nil:
-		// The session's status follows its started run's, so a refresh
-		// triggered by any later emission cannot quietly move a session
-		// waiting for input back to running.
-		//
-		// It follows the same evidence the entry beside it publishes: the run
-		// status, or an unresolved gate the entry names. The permission gate
-		// blocks the run without a status update of its own — only the input
-		// gate reports one — so reading the status alone described a session
-		// running beside a run it had just said was blocked.
+
 		s.state.Status = protocol.SessionRunning
 		if started.status == protocol.RunWaitingForInput || started.pendingInteraction != "" {
 			s.state.Status = protocol.SessionWaitingForInput
 		}
 		s.state.ActiveRunID = started.id
 	case len(entries) > 0:
-		// Only reservations remain, so no run is started and active_run_id
-		// names none.
+
 		s.state.Status = protocol.SessionQueued
 		s.state.ActiveRunID = ""
 	default:
@@ -774,21 +556,13 @@ func (s *memorySession) refreshStateLocked() {
 	}
 }
 
-// reservationOf reports whether the trace still knows a run as a reservation:
-// it was admitted queued and its run.started has not been emitted.
 func reservationOf(run *memoryRun) bool { return run.queuedAdmission && !run.started }
 
-// entryLocked describes one nonterminal run. The capture position is the run's
-// own cursor, which is what makes the pending set judgeable: this adapter
-// captures state and publishes lifecycle under one mutex, so the position it
-// states is always one the trace has reached.
 func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.ActiveRun {
 	sequence := run.nextSequence - 1
 	status := run.status
 	if reservationOf(run) {
-		// A reservation is reported as one whatever its own bookkeeping says,
-		// for the same reason the position is: the trace has not been told it
-		// began.
+
 		status = protocol.RunQueued
 	}
 	entry := protocol.ActiveRun{
@@ -802,10 +576,6 @@ func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.Activ
 	return entry
 }
 
-// pendingInteractions is the run's unresolved permission and user-input gates,
-// read from what the run has actually published rather than from where its
-// script has reached. A snapshot taken between the stage moving and the event
-// being emitted would otherwise name an interaction the trace has not seen.
 func pendingInteractions(run *memoryRun) []protocol.InteractionID {
 	if run.pendingInteraction == "" {
 		return nil
@@ -813,18 +583,6 @@ func pendingInteractions(run *memoryRun) []protocol.InteractionID {
 	return []protocol.InteractionID{run.pendingInteraction}
 }
 
-// acknowledgedInteractions is the subset of the pending set whose `started`
-// acknowledgement this endpoint accepted. It exists because presence alone
-// cannot answer the question a resolver that lost its response is asking: an
-// accepted acknowledgement does not settle the call and a refused request
-// changes nothing, so both outcomes leave the interaction listed. A resolver
-// reading only the pending set would either resend an acknowledgement, be
-// refused already_resolved, and misread that as the call having settled — or
-// never send one the harness is still waiting for.
-//
-// It is read at the snapshot rather than anchored to as_of_sequence: a resolve
-// response consumes no sequence, so acceptance has no position in the run's
-// sequence domain to be anchored to.
 func acknowledgedInteractions(run *memoryRun) []protocol.InteractionID {
 	if !run.acknowledged || run.pendingInteraction == "" || run.pendingInteraction != run.callID {
 		return nil
@@ -833,9 +591,7 @@ func acknowledgedInteractions(run *memoryRun) []protocol.InteractionID {
 }
 
 func (s *memorySession) emitInitial(run *memoryRun) error {
-	// An admitted model is authoritative for the run; absent one the run
-	// reports the session default, as before. Either way the default itself
-	// does not move: the application is per_run.
+
 	model := run.controls.model
 	if model == "" {
 		model = s.state.CurrentModelID
@@ -848,8 +604,7 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	if err := s.emit(run, protocol.TypeRunStarted, started, false); err != nil {
 		return err
 	}
-	// Admitted instructions are prepended to the scripted text, so their
-	// effect is observable on the wire rather than only asserted.
+
 	text := "I will use the scripted tool."
 	if !run.controls.callsTool {
 		text = "I will answer without the scripted tool."
@@ -865,10 +620,7 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 		return s.requestInput(run)
 	}
 	if run.callID != "" {
-		// A control-owned call carries its interaction and its responder, or
-		// no control layer could resolve it. It stays `requested` until
-		// execution is evidenced by the participant's own acknowledgement or
-		// result — never on this endpoint's initiative.
+
 		provided := protocol.ActionCallPayload{
 			InteractionID: run.callID, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID,
 			Name: run.providedTool.Name, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`),
@@ -885,8 +637,6 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	return s.emit(run, protocol.TypeActionPermissionRequested, permission, false)
 }
 
-// requestInput opens the scripted prompt and reports the wait. It is the one
-// stage every script reaches, whether or not the tool was called.
 func (s *memorySession) requestInput(run *memoryRun) error {
 	input := protocol.UserInputRequestedPayload{InteractionID: run.inputID, SessionID: s.state.SessionID, RunID: run.id, Title: "Golden input", Description: "Choose the deterministic answer.", Questions: goldenInputQuestions(), RequestedBy: run.requestedBy, RespondedBy: run.respondedBy}
 	if run.controls.callsTool {
@@ -902,10 +652,7 @@ func (s *memorySession) requestInput(run *memoryRun) error {
 		PendingUserInputID: run.inputID,
 		UpdatedAtMS:        s.clock.Now().UnixMilli(),
 	}
-	// The run's status moves before the event that reports it, not after: the
-	// emission refreshes the published state, and a refresh taken while the
-	// run still called itself running would leave a snapshot describing a
-	// session waiting for input whose only run is listed as running.
+
 	s.mu.Lock()
 	if !run.terminal {
 		run.status = protocol.RunWaitingForInput
@@ -915,9 +662,6 @@ func (s *memorySession) requestInput(run *memoryRun) error {
 	return s.emit(run, protocol.TypeRunStatusUpdated, status, false)
 }
 
-// admittedControls is the control set one run was admitted with. It is read
-// back when the run completes, so the endpoint's execution and its admission
-// cannot drift.
 type admittedControls struct {
 	model        string
 	instructions string
@@ -927,9 +671,6 @@ type admittedControls struct {
 	callsTool    bool
 }
 
-// modelCatalog is the reference adapter's fixed model catalog: the same two
-// ids admitControls admits, published so the gate and the catalog cannot
-// disagree. The first is the default, and there is exactly one.
 func modelCatalog() []protocol.ModelDescriptor {
 	return []protocol.ModelDescriptor{
 		{ID: ModelPrimary, DisplayName: "Reference Model A", ProviderID: "reference", ContextWindow: 8192, Default: true},
@@ -937,14 +678,6 @@ func modelCatalog() []protocol.ModelDescriptor {
 	}
 }
 
-// Models serves the session's effective catalog. It is deterministic and
-// revision-stable: the same list for the life of the descriptor, so a consumer
-// can cache it against the capability revision.
-//
-// The catalog reports no current model because the reference adapter holds no
-// session default: a per_run selection binds its own run and leaves the
-// default alone, and a session that has never been told which model to use has
-// none to report. The default descriptor says which one it would pick.
 func (s *memorySession) Models(ctx context.Context, request protocol.ModelsRequest) (Catalog, error) {
 	if err := ctx.Err(); err != nil {
 		return Catalog{}, err
@@ -957,8 +690,7 @@ func (s *memorySession) Models(ctx context.Context, request protocol.ModelsReque
 	if request.SessionID != "" && request.SessionID != s.state.SessionID {
 		return Catalog{}, fmt.Errorf("%w: catalog query names session %q", ErrInvalidSubmission, request.SessionID)
 	}
-	// The revision is read here, with the listing, rather than left for a
-	// caller to pair with a descriptor it probed separately.
+
 	return Catalog{
 		Revision: CapabilityRevision,
 		Models: protocol.ModelsResponse{
@@ -969,13 +701,6 @@ func (s *memorySession) Models(ctx context.Context, request protocol.ModelsReque
 	}, nil
 }
 
-// catalog names the effective tool catalog this session's policies are judged
-// against. It is the catalog this session lists, which is the descriptor's own
-// plus whatever the open provided: a tool_choice is judged against what a
-// caller can see, and `tools.list` is where a caller sees it. Judging against
-// the descriptor alone refused every policy naming a provided tool as "outside
-// the catalog" while the same session listed that tool, which is the endpoint
-// contradicting its own listing.
 func (s *memorySession) catalog() []string {
 	names := make([]string, 0, 1+len(s.provided))
 	for _, tool := range s.callable() {
@@ -984,21 +709,12 @@ func (s *memorySession) catalog() []string {
 	return names
 }
 
-// callable is the session's catalog in the order a run elects from it. A
-// session opened with a control-owned catalog calls one of those tools rather
-// than the scripted one, so the provided entries come first: electing by
-// policy over this order is what makes a provided tool past the first
-// reachable at all.
 func (s *memorySession) callable() []protocol.ToolDefinition {
 	tools := make([]protocol.ToolDefinition, 0, 1+len(s.provided))
 	tools = append(tools, scriptedCatalog()...)
 	return append(tools, s.provided...)
 }
 
-// elect picks the tool this run will call: the first one the policy permits,
-// preferring a provided tool when the session has any, because that is the one
-// the script substitutes. It reports false when the policy permits none, which
-// is the run that opens no call at all.
 func (s *memorySession) elect(policy *protocol.ToolChoice) (protocol.ToolDefinition, bool) {
 	candidates := s.callable()
 	if len(s.provided) > 0 {
@@ -1012,28 +728,16 @@ func (s *memorySession) elect(policy *protocol.ToolChoice) (protocol.ToolDefinit
 	return protocol.ToolDefinition{}, false
 }
 
-// admitControls judges every per-submit control against what Probe advertises
-// and reports the first refusal in the plan's precedence order: capability,
-// then degradation, then unsatisfiability. The reference adapter advertises no
-// control `degraded`, so the middle rung never fires here; it is the validator
-// and the native adapters that exercise it.
 func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (admittedControls, error) {
 	controls := admittedControls{callsTool: true}
-	// Refusals are collected rather than returned where they are found. A
-	// request can fail several controls at once and one error.response
-	// carries one code, so within the unsatisfiability rung the plan ranks
-	// them by the lower capability key: returning the first defect found
-	// would answer by the order this function happens to read the controls
-	// in, and name a different control than the validator names for the same
-	// request.
+
 	var refusals []keyedRefusal
 	refuse := func(key string, err error) { refusals = append(refusals, keyedRefusal{key: key, err: err}) }
 	if request.Instructions != nil {
 		controls.instructions = *request.Instructions
 	}
 	if request.ModelID != nil {
-		// A present-but-empty id is a control like any other and, past the
-		// gate, a model id like any other: one no catalog can list.
+
 		model := *request.ModelID
 		if model != ModelPrimary && model != ModelSecondary {
 			refuse(protocol.FeatureModelSelection, &ModelNotFoundError{ModelID: model})
@@ -1052,20 +756,14 @@ func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (ad
 			controls.choice = policy
 		}
 	}
-	// The election answers the policy against the tool the run will actually
-	// call, not against the scripted one it would have called with no catalog
-	// provided. Judging the scripted tool while substituting a provided one
-	// answered a question about a tool the run was never going to reach.
+
 	controls.elected, controls.callsTool = s.elect(controls.choice)
 	if len(request.OutputSchema) > 0 {
 		compiled, err := validation.CompileOutputSchema(request.OutputSchema)
 		switch {
 		case err != nil:
 			refuse(protocol.FeatureStructuredOutput, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: err.Error()})
-		// The scripted result is fixed and disclosed as fixed_result, so a
-		// schema that object cannot satisfy could only complete
-		// nonconforming. Refusing it before admission is the promise the
-		// constraint makes, checkable in both directions.
+
 		case compiled.Validate(json.RawMessage(fixedResult)) != nil:
 			refuse(protocol.FeatureStructuredOutput, &UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: ControlUnsatisfiable, Field: "output_schema", Detail: "the fixed result does not satisfy the requested schema"})
 		default:
@@ -1079,8 +777,6 @@ func (s *memorySession) admitControls(request protocol.MessageSubmitRequest) (ad
 	return controls, nil
 }
 
-// keyedRefusal is one control refusal together with the capability key it
-// falls under, which is what ranks it against the others a request earned.
 type keyedRefusal struct {
 	key string
 	err error
@@ -1098,12 +794,6 @@ func (s *memorySession) State(ctx context.Context) (protocol.SessionState, error
 	return s.cloneStateLocked(), nil
 }
 
-// cloneStateLocked detaches the published snapshot from the session's own
-// slices, so a consumer holding one cannot see it change underneath — and
-// cannot change it. Every path that hands a SessionState to a caller goes
-// through here, State and the recovery snapshot alike: a by-value copy shares
-// active_runs' backing array and its pointer fields, so a caller editing what
-// it was given would reach into the session's own state.
 func (s *memorySession) cloneStateLocked() protocol.SessionState {
 	state := s.state
 	state.ActiveRuns = append([]protocol.ActiveRun(nil), s.state.ActiveRuns...)
@@ -1132,27 +822,6 @@ func (s *memorySession) cloneStateLocked() protocol.SessionState {
 	return state
 }
 
-// Tools serves a catalog scoped the way the request asked for it, and the
-// response repeats that scope so a consumer, and the validator, can tell which
-// of the two it was given.
-//
-// A request naming this session asks for the session's effective catalog: the
-// scripted tool attributed to the native source it comes from, and every
-// source the session resolves — the descriptor's declared ones plus the open's
-// attachments.
-//
-// A request naming no session asks for the endpoint's own catalog, and gets
-// the declared sources alone. An attachment belongs to one session, so it is
-// not part of what the endpoint publishes to everyone, and the unscoped answer
-// is the shape a caller who has never opened a session would receive. Answering
-// it with this session's attachments would present a source one caller attached
-// as endpoint-wide, and because the response carries no session the validator's
-// lifetime rule — which ties an attached source to the session that attached it
-// — would never run over it. Refusing the unscoped list instead was the other
-// option and is worse: the caller asked a question this endpoint can answer,
-// and the endpoint catalog is exactly what its own descriptor already
-// publishes. Silently scoping the answer to this session would be worse still,
-// substituting a different question's answer for the one asked.
 func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListRequest) (ToolCatalog, error) {
 	if err := ctx.Err(); err != nil {
 		return ToolCatalog{}, err
@@ -1169,15 +838,10 @@ func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListReq
 	if request.SessionID != "" {
 		sources = sessionSources(s.attached)
 	}
-	// The revision travels with the listing because only the session knows
-	// which descriptor it served this one under; this adapter's never moves,
-	// which is exactly why saying so costs nothing.
+
 	tools := scriptedCatalog()
 	if request.SessionID != "" {
-		// A provided tool joins the session's catalog next to the harness's
-		// own, listed with the opener as execution_owner. It is a session
-		// fact rather than a descriptor one, so an endpoint-wide listing does
-		// not carry it.
+
 		tools = append(tools, s.provided...)
 	}
 	return ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{
@@ -1187,9 +851,6 @@ func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListReq
 	}}, nil
 }
 
-// goldenInputQuestions is the deterministic prompt the reference adapter
-// offers. The same questions validate a resolution, so the advertised and
-// accepted shapes cannot drift.
 func goldenInputQuestions() []protocol.InputQuestion {
 	return []protocol.InputQuestion{{
 		ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
@@ -1227,8 +888,7 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 			s.mu.Unlock()
 			return ErrInvalidResolution
 		}
-		// The nested request must preserve the stored ownership, and the choice
-		// must be one the scripted gate offered with a matching grant value.
+
 		if resolution.Permission.RequestedBy != run.requestedBy || resolution.Permission.RespondedBy != run.respondedBy {
 			s.mu.Unlock()
 			return ErrInvalidResolution
@@ -1247,19 +907,14 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 			s.mu.Unlock()
 			return ErrInvalidResolution
 		}
-		// The scripted prompt offers exactly one required single-choice question
-		// ("choice" with the single option "yes"); anything else cannot be
-		// reported as a submitted resolution. Validation reuses the offered
-		// question so the accepted and advertised shapes cannot drift.
+
 		if len(resolution.Input.Answers) != 1 || ValidateInputAnswer(goldenInputQuestions()[0], resolution.Input.Answers[0]) != nil {
 			s.mu.Unlock()
 			return ErrInvalidResolution
 		}
 		run.stage = stageTerminal
 	} else if stage == stageCall {
-		// The run's only pending interaction is a control-owned call, which
-		// is resolved through ResolveCall. A permission or input resolution
-		// here names an interaction the run does not have.
+
 		s.mu.Unlock()
 		return ErrInteractionNotFound
 	} else {
@@ -1274,8 +929,6 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 	return s.resolveInput(run, *resolution.Input)
 }
 
-// offeredPermissionChoice reports whether the scripted permission request
-// offered the choice and, if so, the grant value that choice selects.
 func offeredPermissionChoice(choice string) (bool, bool) {
 	switch choice {
 	case "approve":
@@ -1305,8 +958,7 @@ func (s *memorySession) resolvePermission(run *memoryRun, request protocol.Permi
 	if err := s.emit(run, protocol.TypeActionCallStarted, call, false); err != nil {
 		return err
 	}
-	// The completion payload forbids the request-only members; clear the
-	// arguments the start event carried.
+
 	call.ArgumentsJSON = nil
 	call.Result = json.RawMessage(`{"ok":true}`)
 	if err := s.emit(run, protocol.TypeActionCallCompleted, call, false); err != nil {
@@ -1327,8 +979,7 @@ func (s *memorySession) resolveInput(run *memoryRun, request protocol.UserInputR
 	}
 	completed := protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: delta.MessageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(finalText)}, StopReason: "end_turn", ModelID: run.controls.model}
 	if len(run.controls.outputSchema) > 0 {
-		// The admitted schema binds the final response, and the disclosed
-		// fixed_result is what every structured completion carries.
+
 		completed.Result = json.RawMessage(fixedResult)
 	}
 	if err := s.emit(run, protocol.TypeRunCompleted, completed, true); err != nil && err != errTerminalWon {
@@ -1337,12 +988,6 @@ func (s *memorySession) resolveInput(run *memoryRun, request protocol.UserInputR
 	return nil
 }
 
-// ResolveCall answers one resolution of a control-owned call. Every refusal is
-// a conforming outcome rather than an error: the reason is the highest of the
-// five the request satisfies, and an empty set means the request is valid,
-// which obliges acceptance. Refusing a valid resolution under any reason at
-// all would let an endpoint emit nothing, let a later cancellation settle the
-// call and the run, and pass conformance on a trace that answered nobody.
 func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResolution) (protocol.ActionCallResolveResponse, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -1368,17 +1013,12 @@ func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResoluti
 		return protocol.ActionCallResolveResponse{}, ErrSessionClosed
 	}
 	run := s.runs[request.RunID]
-	// Whether the interaction exists is asked first, because nothing else is
-	// answerable without it. A run this session never admitted, a run with no
-	// control-owned call, and a mismatched interaction id are the same answer.
+
 	if run == nil || run.callID == "" || request.InteractionID != run.callID || request.SessionID != s.state.SessionID {
 		s.mu.Unlock()
 		return refuse(protocol.ReasonUnknownInteraction, "")
 	}
-	// Then whether this sender may speak for the call at all. A foreign
-	// responder is refused for being foreign however the call stands: the
-	// state of an interaction it does not own is not its business, and
-	// reporting a more advanced reason would leak that state.
+
 	if request.RespondedBy != run.respondedBy || request.RequestedBy != run.requestedBy || request.ToolCallID != run.toolCallID {
 		s.mu.Unlock()
 		return refuse(protocol.ReasonWrongResponder, "")
@@ -1388,21 +1028,14 @@ func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResoluti
 		s.mu.Unlock()
 		return refuse(protocol.ReasonUnknownInteraction, "")
 	}
-	// Only then how far the call has progressed, most advanced first. A
-	// settled call refuses every arm, and the settlement it names is the
-	// terminal where the trace carries one and otherwise the acceptance that
-	// settled it — the window between the two is where a lost response's
-	// retry lands, and it may not be left without a conforming answer.
+
 	if run.settledArm != "" {
 		settlement := run.settlementID
 		if settlement == "" {
 			settlement = run.settledRequestID
 		}
 		if arm == protocol.ResolveArmAcknowledge && run.settlementID == "" {
-			// The acknowledgement arm has a more specific answer here: the
-			// resolution was accepted but its terminal has not been
-			// published, so this acknowledgement is late rather than
-			// answering a call that is finished on the wire.
+
 			s.mu.Unlock()
 			return refuse(protocol.ReasonLateAcknowledgement, "")
 		}
@@ -1414,8 +1047,7 @@ func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResoluti
 		return refuse(protocol.ReasonAlreadyResolved, run.settlementID)
 	}
 	if arm == protocol.ResolveArmAcknowledge && run.acknowledged {
-		// A repeat is the more specific of the two acknowledgement answers,
-		// so it outranks late where both could hold.
+
 		s.mu.Unlock()
 		return refuse(protocol.ReasonRepeatedAcknowledgement, "")
 	}
@@ -1424,8 +1056,7 @@ func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResoluti
 	if arm == protocol.ResolveArmAcknowledge {
 		run.acknowledged = true
 		s.mu.Unlock()
-		// An acknowledgement is not a resolution: it releases the started
-		// event and nothing else. The call stays pending.
+
 		call := s.callPayload(run, resolution.RequestID)
 		call.ArgumentsJSON = json.RawMessage(`{"operation":"golden"}`)
 		if err := s.emit(run, protocol.TypeActionCallStarted, call, false); err != nil && err != errTerminalWon {
@@ -1433,10 +1064,7 @@ func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResoluti
 		}
 		return answer, nil
 	}
-	// The accepted payload is stored with the acceptance because the terminal
-	// must carry it: authorization and payload are separate facts, and an
-	// endpoint that forwarded something other than what the participant said
-	// would otherwise pass with an authorized terminal nobody stated.
+
 	run.settledArm = arm
 	run.settledRequestID = resolution.RequestID
 	run.settledResult = request.Result
@@ -1451,10 +1079,6 @@ func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResoluti
 	return answer, nil
 }
 
-// callPayload is the control-owned call's identity, repeated on every event
-// derived from a resolution. request_id names the resolve request the event
-// came from: two resolutions of one call can be outstanding at once — a result
-// and its retry — so tool_call_id alone cannot say which one released it.
 func (s *memorySession) callPayload(run *memoryRun, requestID protocol.EnvelopeID) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{
 		InteractionID: run.callID, RequestID: requestID,
@@ -1464,11 +1088,6 @@ func (s *memorySession) callPayload(run *memoryRun, requestID protocol.EnvelopeI
 	}
 }
 
-// settleCall publishes the terminal an accepted resolution authorized, and the
-// started event it implies when the participant resolved without having
-// acknowledged: the result is itself the evidence execution began, so the
-// start is emitted immediately before the terminal rather than invented
-// earlier on the endpoint's own initiative.
 func (s *memorySession) settleCall(run *memoryRun, acknowledged bool) error {
 	if !acknowledged {
 		started := s.callPayload(run, run.settledRequestID)
@@ -1524,10 +1143,7 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 	s.mu.Unlock()
 
 	if reservation {
-		// A reservation settles pre-start: its first and only run-scoped
-		// event is the terminal. A status update or a closing child
-		// lifecycle before it would be a non-terminal event before
-		// run.started, which decision 0002 forbids.
+
 		cancelled := protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "reservation cancelled before promotion"}
 		_ = s.emit(run, protocol.TypeRunCancelled, cancelled, true)
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
@@ -1537,14 +1153,9 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 	if err := s.emit(run, protocol.TypeRunStatusUpdated, status, false); err != nil && err != errTerminalWon {
 		return protocol.RunCancelResponse{}, err
 	}
-	// Close pending child lifecycles before settling their parent run. An
-	// unacknowledged call goes from requested to cancelled and an
-	// acknowledged one does too: the transition table already permits both,
-	// and neither is a resolution the participant gave.
+
 	if run.stage == stageCall {
-		// The cancellation payload carries no error and no request_id: no
-		// resolution authorized it, and the schema's closed cancelled shape
-		// admits neither.
+
 		cancelled := s.callPayload(run, "")
 		_ = s.emit(run, protocol.TypeActionCallCancelled, cancelled, false)
 	}
@@ -1561,8 +1172,6 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 	cancelled := protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "cancel confirmed"}
 	_ = s.emit(run, protocol.TypeRunCancelled, cancelled, true)
 
-	// The acknowledgement describes accepted intent, not terminal settlement. The
-	// confirmed run.cancelled event above is authoritative.
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 
@@ -1611,8 +1220,7 @@ func (s *memorySession) Resume(ctx context.Context, request ResumeRequest) (Reco
 		recovery.ReplayedThrough = 0
 		suffix = nil
 	}
-	// Capacity includes the complete bounded remainder of this fixed script, so a
-	// detached or slow consumer cannot stall execution.
+
 	stream := make(chan Result, len(suffix)+32)
 	if !gap {
 		for _, envelope := range suffix {
@@ -1647,11 +1255,7 @@ func (s *memorySession) Close(ctx context.Context) error {
 		return nil
 	}
 	if live(s.active) || live(s.reserved) {
-		// A reservation is admitted work that owes a terminal, so it refuses
-		// a close exactly as a started run does. This adapter promotes
-		// synchronously on the started run's terminal, so the reservation is
-		// never the only nonterminal run for long; the contract is the same
-		// either way, and a caller cancels it first.
+
 		s.mu.Unlock()
 		return ErrRunActive
 	}
@@ -1671,22 +1275,6 @@ func (s *memorySession) Close(ctx context.Context) error {
 	return nil
 }
 
-// emit publishes one envelope and then, when that envelope settled the started
-// run, promotes the reservation waiting behind it. The promotion is after the
-// publish rather than inside it, so the terminal is sent before the promoted
-// run's run.started is.
-//
-// Sent, not delivered. Each run is a stream of its own, and the adapter
-// boundary is one ordered channel per stream: two channels have no order
-// between them, and nothing at this boundary reports what a consumer has
-// published. A consumer draining the two streams independently — which is
-// what serve does, one readRun goroutine each — can therefore put the
-// promoted run's start on the wire ahead of the terminal it was sequenced
-// behind, and no barrier here closes that. Waiting for the settled run's
-// channels to empty only narrows it: empty means received, not published, and
-// it would make the adapter's own liveness depend on a consumer it cannot
-// see. Ordering across run domains belongs to the layer that holds both
-// streams; decision 0007 records it as the serving layer's.
 func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool) error {
 	promoted, err := s.publish(run, typ, payload, terminal)
 	if err != nil {
@@ -1698,9 +1286,6 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 	return nil
 }
 
-// publish is the sole sequence allocator and reducer. It appends before
-// publishing, serializes publishers, and never sends while the state mutex is
-// held. It reports the reservation the envelope promoted, if any.
 func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool) (*memoryRun, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
@@ -1725,8 +1310,7 @@ func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, paylo
 	envelope.CapabilityRevision = CapabilityRevision
 	switch typ {
 	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeUserInputRequested:
-		// A run whose tool_choice excluded the scripted tool opens no call, so
-		// its prompt carries no tool binding to name.
+
 		if run.controls.callsTool {
 			envelope.ToolCallID = run.toolCallID
 		}
@@ -1750,10 +1334,7 @@ func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, paylo
 		}
 	case protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
 		if run.callID != "" && run.pendingInteraction == run.callID {
-			// The terminal leaves the call's pending set and becomes the
-			// settlement an already_resolved refusal points at: it is the
-			// most advanced thing the trace carries for this interaction, so
-			// it supersedes the acceptance that authorized it.
+
 			run.pendingInteraction = ""
 			run.settlementID = envelope.ID
 		}
@@ -1800,9 +1381,6 @@ func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, paylo
 	return promoted, nil
 }
 
-// cloneEnvelope detaches an envelope handed to a consumer from the retained
-// journal: the payload slice and the sequence/timestamp pointers must not be
-// shared, or a consumer's edit would corrupt replayed history.
 func cloneEnvelope(envelope protocol.Envelope) protocol.Envelope {
 	cloned := envelope
 	if envelope.Payload != nil {
@@ -1829,13 +1407,8 @@ func (g *sequenceIDs) NewID(kind string) string {
 	return kind + "-" + strconv.FormatUint(g.value.Add(1), 10)
 }
 
-// The reference adapter serves a portable catalog, so it implements the
-// optional catalog surface rather than leaving the boundary to refuse.
 var _ ToolLister = (*memorySession)(nil)
 
-// The reference adapter implements every optional session capability the
-// executable units define, so a unit's wire shape is executable rather than
-// prose before any native adapter proves it.
 var _ ModelLister = (*memorySession)(nil)
 
 var _ CallResolver = (*memorySession)(nil)

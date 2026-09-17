@@ -1,5 +1,3 @@
-// Package adapter defines the in-process boundary between an OAP control layer
-// and an agent-control implementation.
 package adapter
 
 import (
@@ -12,13 +10,11 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// Adapter discovers capabilities and opens isolated sessions.
 type Adapter interface {
 	Probe(context.Context) (Descriptor, error)
 	Open(context.Context, OpenRequest) (Session, error)
 }
 
-// Session is safe for concurrent use. Exactly one run may be nonterminal.
 type Session interface {
 	Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, EventStream, error)
 	State(context.Context) (protocol.SessionState, error)
@@ -28,39 +24,16 @@ type Session interface {
 	Close(context.Context) error
 }
 
-// Catalog is one session's model listing together with the capability
-// revision that governs it.
-//
-// The two travel together because they are one answer. The catalog is part of
-// the capability snapshot, so a listing is only meaningful under the revision
-// it was produced within, and a caller stamping a revision it read separately
-// is labelling the catalog with a descriptor it may not have come from: on an
-// endpoint whose capabilities can update, the revision can move between the
-// two reads and nothing downstream would know. Only the session can say which
-// descriptor it served this listing under, so it says it.
 type Catalog struct {
-	// Revision is the capability revision this listing belongs to. An empty
-	// one is a catalog nothing can bind, and is refused rather than served.
 	Revision string
-	// Models is the served catalog.
+
 	Models protocol.ModelsResponse
 }
 
-// ModelLister is the optional session capability for the session-scoped model
-// catalog (unit `models`). It is discovered by type assertion rather than
-// added to Session, so every existing implementation compiles unchanged and a
-// session whose adapter does not implement it is refused under the ordinary
-// gate instead of answering an empty catalog.
-//
-// The request carries the caller's own allow_degraded_features, so an adapter
-// serving a degraded catalog applies the opt-in rule itself: the consent is
-// per request, and only the adapter knows what its catalog costs.
 type ModelLister interface {
 	Models(context.Context, protocol.ModelsRequest) (Catalog, error)
 }
 
-// EventStream carries either an envelope or an error in one ordered channel.
-// A closed channel is normal end-of-stream; there is no separately racing Err method.
 type EventStream <-chan Result
 
 type Result struct {
@@ -68,7 +41,6 @@ type Result struct {
 	Error    error
 }
 
-// Descriptor reports effective behavior of this adapter implementation.
 type Descriptor struct {
 	Capabilities               protocol.CapabilityDescriptor
 	CapabilityRevision         string
@@ -90,70 +62,30 @@ type OpenRequest struct {
 	SessionID   protocol.SessionID
 	Participant protocol.Participant
 	Metadata    map[string]any
-	// ToolSources are the sources attached for the session's lifetime. An
-	// adapter that cannot attach at open refuses the open with the typed
-	// unsupported_feature naming action.tool_sources.attach rather than
-	// opening a session that silently has none of them.
+
 	ToolSources []protocol.ToolSourceAttachment
-	// Tools are the definitions the control layer provides for the session's
-	// lifetime, gated on action.tools.provide. An adapter that cannot
-	// provision every one of them refuses the open with the typed
-	// unsupported_feature rather than opening a session that silently
-	// provisioned a subset: a caller that provided five tools and got three
-	// has a run whose behaviour depends on which two were dropped.
+
 	Tools []protocol.ToolDefinition
-	// AllowDegradedFeatures is the caller's consent to a degraded application
-	// of the capabilities the open elects. An open electing a degraded key
-	// without naming it here is refused with capability_degraded.
+
 	AllowDegradedFeatures []string
 }
 
-// AllowsDegraded reports whether the open opted into the degraded application
-// of one capability key.
 func (r OpenRequest) AllowsDegraded(key string) bool {
 	return slices.Contains(r.AllowDegradedFeatures, key)
 }
 
-// ToolCatalog is one session's tool listing together with the capability
-// revision that governs it, for the reason Catalog pairs the two above: a
-// catalog is part of the capability snapshot, so it is meaningful only under
-// the revision it was produced within. A caller that stamped a revision it
-// read separately would label the listing with a descriptor it may not have
-// come from — and this unit's catalogs move under a live descriptor more than
-// the model ones do, because an endpoint republishing its tools per turn
-// changes what it lists without anyone asking.
 type ToolCatalog struct {
-	// Revision is the capability revision this listing belongs to. An empty
-	// one is a catalog nothing can bind, and is refused rather than served.
 	Revision string
-	// Tools is the served catalog.
+
 	Tools protocol.ToolsListResponse
 }
 
-// ToolLister is the optional catalog surface. An adapter that can publish a
-// portable catalog implements it and advertises action.tools.list; one that
-// cannot does not implement it, and the boundary answers the typed refusal
-// that names the capability rather than a generic failure.
-//
-// The argument is the wire payload struct so the adapter applies the
-// degraded opt-in rule to exactly what the caller sent.
 type ToolLister interface {
 	Tools(context.Context, protocol.ToolsListRequest) (ToolCatalog, error)
 }
 
-// ErrToolCatalogUnavailable is the sentinel for an endpoint that serves no
-// portable catalog. Codecs map it to unsupported_feature with
-// details.feature: "action.tools.list" and details.reason: "unadvertised",
-// which is the refusal the wire requires and the validator accepts.
 var ErrToolCatalogUnavailable = errors.New("adapter: no portable tool catalog is served")
 
-// InteractionResolution is a tagged union: exactly one of Permission or Input
-// must be present. RespondedBy must match the pending interaction's responder.
-//
-// A control-owned call is resolved through CallResolver instead, not through a
-// third arm here, because its answer is a response rather than an error: the
-// five ranked refusal reasons are conforming outcomes an endpoint must report,
-// and a nil-or-error return has nowhere to put them.
 type InteractionResolution struct {
 	RunID       protocol.RunID
 	RespondedBy protocol.ParticipantID
@@ -161,27 +93,11 @@ type InteractionResolution struct {
 	Input       *protocol.UserInputResolveRequest
 }
 
-// CallResolution is one resolution of a control-owned call, together with the
-// envelope id of the request that carried it.
-//
-// The id is not decoration. A resolve-derived action.call.started or terminal
-// carries request_id, and over HTTP the response travels the POST body while
-// the event it authorizes travels the event stream — so a client holding the
-// event needs to know which of two outstanding resolutions of one call
-// released it. The adapter cannot invent that id, so the codec passes it in.
 type CallResolution struct {
 	RequestID protocol.EnvelopeID
 	Request   protocol.ActionCallResolveRequest
 }
 
-// CallResolver is implemented by a session that executes control-layer-provided
-// tools (action.tools.provide). ResolveCall answers one resolution with the
-// response the endpoint owes it: accepted, or refused with the highest of the
-// five ranked reasons the request satisfies.
-//
-// An error return is for faults the response shape cannot carry — a closed
-// session, a cancelled context — never for a refusal. A refusal is a
-// conforming answer and belongs in the response.
 type CallResolver interface {
 	ResolveCall(context.Context, CallResolution) (protocol.ActionCallResolveResponse, error)
 }
@@ -200,7 +116,6 @@ type Recovery struct {
 	ReplayGap       *ReplayGap
 }
 
-// ReplayGap says the requested cursor is older than this process-memory journal.
 type ReplayGap struct {
 	RequestedAfter  uint64
 	OldestAvailable uint64
@@ -225,29 +140,11 @@ var (
 	ErrEventStreamOverflow = errors.New("adapter: event stream consumer fell behind; resume from the last sequence")
 )
 
-// ErrModelNotFound reports a model_id outside the endpoint's effective
-// catalog. It is the one control refusal that is not an unsupported feature:
-// the capability is advertised and the request was understood.
 var ErrModelNotFound = errors.New("adapter: model is not in the effective catalog")
 
-// RefuseUnadvertisedControls reports the typed refusal owed for the first
-// per-submit control a submission carries that this endpoint has not
-// advertised, and nil when it carries none. advertised names the capability
-// keys the endpoint offers above `unavailable`.
-//
-// Every endpoint owes this refusal whether or not it supports a single
-// control: refusing an unadvertised control correctly is the discipline, and
-// a generic "invalid submission" tells a caller only that something was wrong
-// — not which control to stop sending. The controls are judged in the refusal
-// precedence order, which within the capability rung is the lower capability
-// key, so an endpoint and the validator name the same one.
-//
-// Call it before ordinary submission validation, so a control is refused
-// before any identity is allocated or any native write happens.
 func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertised ...string) error {
 	offers := func(key string) bool { return slices.Contains(advertised, key) }
-	// Sorted by capability key: instructions, model_selection,
-	// structured_output, tool_selection.
+
 	for _, control := range []struct {
 		key     string
 		present bool
@@ -264,30 +161,6 @@ func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertise
 	return nil
 }
 
-// RefuseUnadvertisedToolSources reports the typed refusal owed when an open
-// attaches tool sources to an endpoint whose own disclosure does not admit
-// them, and nil when the open attaches none. disclosed is the endpoint's
-// `action.tool_sources.attach` support — the same value its Probe publishes —
-// and passing none says it discloses none.
-//
-// It exists for the same reason RefuseUnadvertisedControls does, and the
-// reason is sharper here: OpenRequest.ToolSources is a field an adapter
-// written before this unit never reads, so without an explicit gate such an
-// adapter returns a successful session having silently dropped the sources the
-// caller asked for. That is the one outcome the fail-closed contract exists to
-// prevent — a caller cannot tell an endpoint that attached its sources from
-// one that discarded them — and "the adapter ignores the field" is not a
-// refusal a caller can act on.
-//
-// It takes the disclosure rather than a list of key names because the key is
-// not usable on its name alone: an attach capability that discloses no
-// session_open mode offers nothing an open can elect, and the validator and
-// the daemon's open route both refuse such an open. An adapter admitting it
-// would make the in-process path weaker than the wire path — the asymmetry
-// this helper exists to prevent — so the one gate answers both.
-//
-// Call it before any native write and before a session identity exists, so a
-// refused open leaves nothing behind.
 func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.FeatureSupport) error {
 	if len(request.ToolSources) == 0 {
 		return nil
@@ -303,14 +176,6 @@ func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.Fe
 	return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
 }
 
-// RefuseUnadvertisedTools is the same gate for control-layer-provided tools:
-// an open supplying `tools` to an endpoint that never advertised
-// action.tools.provide is refused before a session exists, rather than
-// returning one whose provided catalog was silently discarded.
-//
-// Unlike attachment, provisioning discloses no mode — session open is the
-// whole provisioning surface the unit admits — so the advertisement is the
-// support level alone.
 func RefuseUnadvertisedTools(request OpenRequest, disclosed ...protocol.FeatureSupport) error {
 	if len(request.Tools) == 0 {
 		return nil
@@ -323,20 +188,6 @@ func RefuseUnadvertisedTools(request OpenRequest, disclosed ...protocol.FeatureS
 	return &UnsupportedControlError{Feature: protocol.FeatureToolsProvide, Reason: ControlUnadvertised}
 }
 
-// DuplicateEnvironmentName reports the first variable an allowlist names twice,
-// or "" when each appears once.
-//
-// It lives here because both places that admit an attachment need it and
-// neither can import the other: the daemon's registry judges the operator's own
-// entries, and an adapter judges the attachment it is handed, which over an
-// in-process embedding never passed through the daemon at all.
-//
-// The rule is the same at both: one variable, one entry. `uniqueItems` on the
-// wire compares strings, so `TOKEN` and `TOKEN=x` — or `TOKEN=first` and
-// `TOKEN=second` — satisfy it while naming one variable, and a child handed
-// both has a credential whose value is decided by nothing the protocol, the
-// adapter, or the harness's own schema states. An environment is the last place
-// to leave an outcome undefined, because what is in it is credentials.
 func DuplicateEnvironmentName(entries []string) string {
 	if len(entries) < 2 {
 		return ""
@@ -352,22 +203,14 @@ func DuplicateEnvironmentName(entries []string) string {
 	return ""
 }
 
-// UnsupportedControlError refuses a per-submit control before admission:
-// either the endpoint never advertised the capability (Reason
-// ControlUnadvertised) or it cannot honour this request's value of the control
-// (Reason ControlUnsatisfiable). Codecs map it to the typed
-// `unsupported_feature` error with details.feature and details.reason.
 type UnsupportedControlError struct {
 	Feature string
 	Reason  string
-	// Tool and Field name the offending member of an unsatisfiable control,
-	// so a refusal and a validator name the same entry. Source names the
-	// offending tool source of an unsatisfiable attachment.
+
 	Tool, Field, Source string
 	Detail              string
 }
 
-// The two conditions unsupported_feature covers.
 const (
 	ControlUnadvertised  = "unadvertised"
 	ControlUnsatisfiable = "unsatisfiable"
@@ -381,9 +224,6 @@ func (e *UnsupportedControlError) Error() string {
 }
 func (e *UnsupportedControlError) Unwrap() error { return ErrUnsupportedInput }
 
-// DegradedControlError refuses a control the endpoint advertises `degraded`
-// when the caller did not name its key in allow_degraded_features. The opt-in
-// it asks for is a request the caller can simply reissue.
 type DegradedControlError struct{ Feature string }
 
 func (e *DegradedControlError) Error() string {
@@ -391,9 +231,6 @@ func (e *DegradedControlError) Error() string {
 }
 func (e *DegradedControlError) Unwrap() error { return ErrUnsupportedInput }
 
-// ModelNotFoundError names the id a catalog does not carry. An empty id is
-// necessarily outside every catalog, so it takes this refusal too rather than
-// a second unsatisfiability of its own.
 type ModelNotFoundError struct{ ModelID string }
 
 func (e *ModelNotFoundError) Error() string {

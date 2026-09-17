@@ -1,4 +1,3 @@
-// Package appserver adapts the pinned Codex app-server control surface to OAP.
 package appserver
 
 import (
@@ -29,7 +28,7 @@ var (
 type Client interface {
 	Call(context.Context, string, any, any) error
 	Notify(context.Context, string, any) error
-	// Inbound delivers reverse requests and notifications in wire order.
+
 	Inbound() <-chan rpc.InboundMessage
 	Done() <-chan struct{}
 	Err() error
@@ -131,11 +130,7 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"session.state":                 {Level: protocol.SupportNative},
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
-		// turn/start takes the model as a per-turn parameter, so a requested
-		// model binds exactly its own run and the thread's configured model
-		// stays the session default. The other three controls have no per-run
-		// native surface at this pin and are refused under their own keys
-		// rather than accepted and ignored (decision 0005).
+
 		protocol.FeatureModelSelection:   {Level: protocol.SupportNative, Mode: protocol.ModePerRun, Reason: "turn/start carries the model for one turn"},
 		protocol.FeatureInstructions:     {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn instruction override"},
 		protocol.FeatureToolSelection:    {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn tool policy"},
@@ -167,23 +162,15 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// An open attaching tool sources to an endpoint that never advertised
-	// attachment is refused before a process starts: this adapter reads no
-	// ToolSources, so admitting the open would return a session that silently
-	// discarded them.
+
 	if err := adapter.RefuseUnadvertisedToolSources(request); err != nil {
 		return nil, err
 	}
-	// The same gate for control-layer-provided tools: this adapter advertises
-	// no action.tools.provide, so an open supplying its own tool definitions
-	// is refused rather than returning a session whose provided catalog was
-	// silently discarded.
+
 	if err := adapter.RefuseUnadvertisedTools(request); err != nil {
 		return nil, err
 	}
-	// Approval and user-input events copy the participant into responded_by, so
-	// an empty identity would emit schema-invalid events that no valid resolution
-	// could satisfy. Reject before starting a process.
+
 	if request.Participant.ID == "" {
 		return nil, adapter.ErrInvalidParticipant
 	}

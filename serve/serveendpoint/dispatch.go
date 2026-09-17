@@ -14,15 +14,8 @@ import (
 	"github.com/lsm/open-agent-protocol/serve"
 )
 
-// handle serves one host line. A decode fault is a framing defect and ends
-// Run; everything after that is answered on the wire with exactly one
-// correlated envelope, because the binding promises a request is never left
-// without an answer.
 func (s *Server) handle(ctx context.Context, streams context.Context, line []byte) error {
-	// A line is an envelope or a binding control frame, told apart by which
-	// members it carries. Routing on shape keeps the two vocabularies
-	// separate: a control frame is this transport's business and never
-	// reaches the hub as protocol.
+
 	var shape struct {
 		Protocol string `json:"protocol"`
 		Control  string `json:"control"`
@@ -38,37 +31,23 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 		return s.handleControl(streams, frame)
 	}
 	if shape.Protocol == "" {
-		// Neither an envelope nor a control. The boundary was found and the
-		// JSON parsed, but nothing says what this line is, so there is no
-		// path that could answer it and no reason to trust the next one.
+
 		return fmt.Errorf("%w: the line declares neither protocol nor control", ErrMalformedLine)
 	}
 	var envelope protocol.Envelope
 	decodeErr := json.Unmarshal(line, &envelope)
 	if envelope.ID == "" {
-		// A line that declares `protocol` has said what it is, so its framing
-		// is not in doubt — but without an id there is nothing to correlate an
-		// answer to, and every response this binding defines requires
-		// in_reply_to. An endpoint cannot answer it, and answering something
-		// else in its place would put an uncorrelated envelope on a stream a
-		// host reads by correlation. Dropping it silently would be worse: the
-		// host waits forever for a response to a request it believes it sent.
+
 		return fmt.Errorf("%w: an envelope needs an id to be answerable", ErrMalformedLine)
 	}
 	if decodeErr != nil {
-		// Declared, addressable, and wrong. That is a protocol error, not a
-		// framing one: the host gets a correlated refusal and the stream
-		// carries on.
+
 		return s.write(ctx, s.errorEnvelope(envelope, &refusal{
 			code: "invalid_request", message: decodeErr.Error(),
 		}))
 	}
 	if missing := missingBaseMembers(line); len(missing) > 0 {
-		// The same answer for the same reason. A member the schema requires
-		// and this line omits does not put the boundary in doubt, so it is
-		// refused rather than fatal — but it is refused. Serving it would
-		// have the endpoint answer a frame its own schema rejects, and the
-		// binding promises a host the opposite.
+
 		return s.write(ctx, s.errorEnvelope(envelope, &refusal{
 			code:    "invalid_request",
 			message: "the envelope omits required member(s): " + strings.Join(missing, ", "),
@@ -81,26 +60,15 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 	if writeErr := s.write(ctx, answer); writeErr != nil {
 		return writeErr
 	}
-	// Whatever the request set in motion starts after its answer is on the
-	// wire. The binding promises no ordering between a response and an event,
-	// so a host must cope either way, but a reference implementation racing
-	// its own acknowledgement would make the conformance suite intermittent
-	// against its own known-good target.
+
 	if after != nil {
 		after()
 	}
 	return nil
 }
 
-// baseMembers is what the envelope schema requires of every envelope,
-// whatever its type. It is the schema's own list, including the two the
-// classifier has already ruled on, so that reading it answers "which members
-// must be here" without having to also read the classifier.
 var baseMembers = []string{"protocol", "version", "profile", "type", "id", "payload"}
 
-// missingBaseMembers names the required members a line leaves out. An explicit
-// null counts as left out: the schema types each of these, so a null is a
-// member the host did not supply rather than one it supplied as nothing.
 func missingBaseMembers(line []byte) []string {
 	var present map[string]json.RawMessage
 	if json.Unmarshal(line, &present) != nil {
@@ -116,9 +84,6 @@ func missingBaseMembers(line []byte) []string {
 	return missing
 }
 
-// serve dispatches one request envelope to the hub and returns the envelope
-// that answers it. The dispatch is on the envelope's own type: an endpoint has
-// no op names, because the protocol already names every request.
 func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
 	plain := func(answer protocol.Envelope, err error) (protocol.Envelope, func(), error) {
 		return answer, nil, err
@@ -154,10 +119,7 @@ func (s *Server) initialize(ctx context.Context, e protocol.Envelope) (protocol.
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
-	// The declared control participant is remembered here and used by every
-	// later open. An endpoint that ignored it would raise gates addressed to
-	// a participant the trace never saw declared, and the interaction rules
-	// are written against the declared one.
+
 	var request protocol.InitializeRequest
 	if err := e.DecodePayload(&request); err != nil {
 		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
@@ -180,16 +142,6 @@ func (s *Server) initialize(ctx context.Context, e protocol.Envelope) (protocol.
 	return answer, nil
 }
 
-// refuseStaleRevision enforces the rule that a request citing a capability
-// revision must cite the current one. A host that reads a success from a
-// request bound to a descriptor this endpoint has moved past has bound its
-// decision to a snapshot that no longer holds — which is the whole reason the
-// revision is on the wire.
-//
-// Discovery is exempt, because a stale revision must never be able to block
-// the two requests that would tell the host what the current one is. That
-// exemption is the validator's too, so the rule enforced here and the rule a
-// trace is judged by are the same rule.
 func (s *Server) refuseStaleRevision(ctx context.Context, e protocol.Envelope) error {
 	if e.CapabilityRevision == "" {
 		return nil
@@ -212,9 +164,6 @@ func (s *Server) refuseStaleRevision(ctx context.Context, e protocol.Envelope) e
 	}
 }
 
-// controlParticipant is the identity initialize declared, or the daemon's
-// default when a host opened without initializing. The default keeps a host
-// that skips discovery working, exactly as it did before initialize was read.
 func (s *Server) controlParticipant() protocol.ParticipantID {
 	s.participantMu.Lock()
 	defer s.participantMu.Unlock()
@@ -282,13 +231,6 @@ func (s *Server) state(ctx context.Context, e protocol.Envelope) (protocol.Envel
 	return answer, nil
 }
 
-// submit admits one message and streams the run it admits.
-//
-// The subscription is taken before the submit, not after. A subscription
-// started afterwards races the hub's own reader, which begins draining the
-// adapter stream inside Submit, so the run's opening envelopes can be gone
-// before the pump attaches. Subscribing first turns a race the endpoint
-// usually wins into one it cannot lose.
 func (s *Server) submit(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
 	entry, err := s.session(e)
 	if err != nil {
@@ -316,9 +258,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	answer.SessionID = admission.SessionID
 	answer.RunID = admission.RunID
 	answer.CapabilityRevision = e.CapabilityRevision
-	// The subscription is already attached, so it buffers while the answer is
-	// written; starting the pump afterwards costs no events and keeps the
-	// acknowledgement first.
+
 	start := func() {
 		s.pumps.Add(1)
 		go func() {
@@ -329,27 +269,6 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	return answer, start, nil
 }
 
-// pump writes one run's events as they are produced.
-//
-// A hub subscription is session-wide: publish fans every envelope to every
-// subscriber. So a pump must deliver only the run it was started for, or a
-// session with two subscriptions sends the host each envelope twice — which
-// is what an ordinary queued submit produces, since `auto` resolves to
-// `queue` while a run is streaming and the second submit attaches a second
-// subscription. A replay makes it three. The stream is run-scoped by
-// construction — publish keys all of its bookkeeping on the envelope's run —
-// so filtering on that run loses nothing.
-//
-// A clean end at the run's terminal needs no signal of its own: the terminal
-// envelope is the marker, exactly as it is on every other binding.
-//
-// Every other ending does need one. This transport's pipe stays open after a
-// run stream dies, so a host that simply stopped receiving envelopes cannot
-// tell a dead subscription from a slow agent, and its trace would be missing
-// a terminal with nothing to say why. Each abnormal ending therefore emits a
-// stream.lost control frame carrying the position the host actually reached,
-// which is a cursor it can replay from — the recovery this binding already
-// defines.
 func (s *Server) pump(ctx context.Context, subscription *serve.Subscription, run protocol.RunID) {
 	defer subscription.Close()
 	var delivered uint64
@@ -372,9 +291,6 @@ func (s *Server) pump(ctx context.Context, subscription *serve.Subscription, run
 	}
 }
 
-// reportLostStream names an ending the host could not otherwise observe. A
-// clean end and a teardown are not endings of this kind: the first carries
-// its own terminal envelope, and the second ends the whole process.
 func (s *Server) reportLostStream(ctx context.Context, run protocol.RunID, delivered uint64, err error) {
 	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
 		return
@@ -387,13 +303,7 @@ func (s *Server) reportLostStream(ctx context.Context, run protocol.RunID, deliv
 	case errors.Is(err, ErrFrameTooLarge):
 		code = "frame_limit"
 	}
-	// The frame names this pump's own run and its own delivered position,
-	// never the overflow's. A subscription is session-wide, so the run that
-	// filled the mailbox is often not the run this pump serves — and a
-	// second submit's pump, which has delivered nothing yet, would otherwise
-	// report the first run as lost and leave its own run unmentioned. The
-	// host would then replay a run it already had and never learn that the
-	// other one had stopped arriving.
+
 	after := delivered
 	s.logger.Printf("serveendpoint: run stream ended early (%s): %v", code, err)
 	if writeErr := s.writeControl(ctx, controlFrame{
@@ -413,10 +323,7 @@ func (s *Server) cancel(ctx context.Context, e protocol.Envelope) (protocol.Enve
 	if err := e.DecodePayload(&request); err != nil {
 		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
 	}
-	// Session.Cancel takes only a run id, so the payload's own session claim
-	// is unchecked unless the codec checks it. Both other codecs do, and
-	// without it a cancel addressed to one session while naming another is
-	// answered "accepted" for a run the caller did not mean.
+
 	if request.SessionID != entry.ID() {
 		return protocol.Envelope{}, &refusal{
 			code:    "scope_mismatch",
@@ -479,19 +386,11 @@ func (s *Server) resolve(ctx context.Context, e protocol.Envelope) (protocol.Env
 	answer.InReplyTo = e.ID
 	answer.SessionID = entry.ID()
 	answer.RunID = resolution.RunID
-	// A resolution exercises an optional feature, so the exchange is bound to
-	// one descriptor snapshot: the request cites the revision it was made
-	// under and the response repeats it. Dropping it here makes an otherwise
-	// conformant exchange fail validation as a stale revision.
+
 	answer.CapabilityRevision = e.CapabilityRevision
 	return answer, nil
 }
 
-// resolveCall answers a control-owned call's resolution. A refusal is carried
-// in the response rather than raised as a refusal envelope: the five ranked
-// reasons are the endpoint's answer to a well-formed request, and turning one
-// into an error.response would leave the resolver unable to tell a rejected
-// resolution from a broken one.
 func (s *Server) resolveCall(ctx context.Context, entry *serve.Session, e protocol.Envelope) (protocol.Envelope, error) {
 	var request protocol.ActionCallResolveRequest
 	if err := e.DecodePayload(&request); err != nil {
@@ -558,10 +457,6 @@ func (s *Server) tools(ctx context.Context, e protocol.Envelope) (protocol.Envel
 	return answer, nil
 }
 
-// session resolves the session an envelope addresses. An endpoint carries one
-// agent loop, but the envelope still names its session, and answering a
-// request scoped to a session this endpoint does not hold is a refusal rather
-// than a silent substitution.
 func (s *Server) session(e protocol.Envelope) (*serve.Session, error) {
 	if e.SessionID == "" {
 		return nil, &refusal{code: "invalid_request", message: "this request must name its session"}
