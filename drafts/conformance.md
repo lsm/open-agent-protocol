@@ -32,6 +32,7 @@ Conformance units are additive:
 - `+tool-sources`
 - `+models`
 - `+queue`
+- `+compound-open`
 - `+steer`
 - `+btw`
 

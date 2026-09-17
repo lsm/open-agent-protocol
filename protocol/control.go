@@ -163,6 +163,17 @@ const (
 	FeatureToolSourcesAttach = "action.tool_sources.attach"
 )
 
+// FeatureOpenSubscribe governs registering a session's subscription inside the
+// open — the compound open's subscribe member.
+//
+// It is its own key rather than part of a streaming one, because what it
+// discloses is not whether an endpoint streams but when its stream can be
+// joined. An adapter whose events do not exist until the first run streams
+// perfectly well and still cannot subscribe at open; it discloses degraded
+// here and a consenting host gets a subscription that begins when the stream
+// does, which is still ahead of any separate events request.
+const FeatureOpenSubscribe = "session.open.subscribe"
+
 // Application modes action.tool_sources.attach discloses, in
 // FeatureSupport.Modes rather than Mode.
 //
@@ -443,12 +454,70 @@ func (a ToolSourceAttachment) Descriptor() ToolSourceDescriptor {
 	return ToolSourceDescriptor{ID: a.ID, Kind: a.Kind, DisplayName: a.DisplayName, Protocol: a.Protocol, Endpoint: a.Endpoint}
 }
 
+// SessionOpenRequest opens a session. Subscribe and Message are the compound
+// open's two members, each independent of the other: a host that delivers one
+// message and stops sets Message and leaves Subscribe false, and one that
+// watches a session it will drive later does the reverse.
+//
+// Subscribe registers the session's subscription as part of the open, before
+// the response is produced, so the subscription cannot be late. It defaults to
+// false because an unwanted subscription is not free — over stdio its
+// envelopes are written into the output the host must drain, and a host that
+// does not read them fills the writer's queue.
+//
+// It carries no cursor. The session is being created, so there is nothing to
+// replay, and an open naming an existing session id is refused rather than
+// reopening it; reattach stays with the events request and its own cursor.
 type SessionOpenRequest struct {
 	SessionID             SessionID                  `json:"session_id,omitempty"`
+	Subscribe             bool                       `json:"subscribe,omitempty"`
+	Message               *OpenMessage               `json:"message,omitempty"`
 	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
 	ToolSources           []ToolSourceAttachment     `json:"tool_sources,omitempty"`
 	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
 	Recovery              *RecoveryMetadata          `json:"recovery,omitempty"`
+}
+
+// OpenMessage is a first submission carried by an open: the submit request's
+// members without SessionID, which an open names or mints itself and which a
+// host proposing no id could not fill in.
+//
+// Every other member is the submit request's, and deliberately so — a
+// compound open admits a message under the same rules a separate submit does,
+// including delivery resolution and the degraded consent its controls need.
+// TestOpenMessageMirrorsSubmitRequest holds the two shapes together, because
+// the schema states them separately and nothing else would catch a member
+// added to one and not the other.
+// The member types are the submit request's exactly, pointers included: a
+// present-empty control is a control here too, and flattening one to a string
+// would lose the distinction the run-controls gate reads.
+type OpenMessage struct {
+	Messages              []Message                  `json:"messages"`
+	Delivery              RequestedDeliveryMode      `json:"delivery"`
+	ModelID               *string                    `json:"model_id,omitempty"`
+	Instructions          *string                    `json:"instructions,omitempty"`
+	ToolChoice            json.RawMessage            `json:"tool_choice,omitempty"`
+	OutputSchema          json.RawMessage            `json:"output_schema,omitempty"`
+	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
+	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+// Submit projects the open's message onto the submit request an endpoint
+// admits it as, binding it to the session the open named or minted. The
+// projection exists so a compound open and a separate submit reach the
+// admission path as one shape rather than two.
+func (m OpenMessage) Submit(session SessionID) MessageSubmitRequest {
+	return MessageSubmitRequest{
+		SessionID:             session,
+		Messages:              m.Messages,
+		Delivery:              m.Delivery,
+		ModelID:               m.ModelID,
+		Instructions:          m.Instructions,
+		ToolChoice:            m.ToolChoice,
+		OutputSchema:          m.OutputSchema,
+		AllowDegradedFeatures: m.AllowDegradedFeatures,
+		Metadata:              m.Metadata,
+	}
 }
 
 // AllowsDegraded reports whether the open opted into the degraded application
