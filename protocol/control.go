@@ -219,6 +219,8 @@ const (
 	FeatureToolSourcesAttach = "action.tool_sources.attach"
 )
 
+const FeatureOpenSubscribe = "session.open.subscribe"
+
 // FeatureToolsProvide governs control-layer-provided tools: the control layer
 // may supply tool definitions at session open and executes their calls.
 //
@@ -511,11 +513,38 @@ func (a ToolSourceAttachment) Descriptor() ToolSourceDescriptor {
 
 type SessionOpenRequest struct {
 	SessionID             SessionID                  `json:"session_id,omitempty"`
+	Subscribe             bool                       `json:"subscribe,omitempty"`
+	Message               *OpenMessage               `json:"message,omitempty"`
 	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
 	ToolSources           []ToolSourceAttachment     `json:"tool_sources,omitempty"`
 	Tools                 []ToolDefinition           `json:"tools,omitempty"`
 	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
 	Recovery              *RecoveryMetadata          `json:"recovery,omitempty"`
+}
+
+type OpenMessage struct {
+	Messages              []Message                  `json:"messages"`
+	Delivery              RequestedDeliveryMode      `json:"delivery"`
+	ModelID               *string                    `json:"model_id,omitempty"`
+	Instructions          *string                    `json:"instructions,omitempty"`
+	ToolChoice            json.RawMessage            `json:"tool_choice,omitempty"`
+	OutputSchema          json.RawMessage            `json:"output_schema,omitempty"`
+	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
+	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+func (m OpenMessage) Submit(session SessionID) MessageSubmitRequest {
+	return MessageSubmitRequest{
+		SessionID:             session,
+		Messages:              m.Messages,
+		Delivery:              m.Delivery,
+		ModelID:               m.ModelID,
+		Instructions:          m.Instructions,
+		ToolChoice:            m.ToolChoice,
+		OutputSchema:          m.OutputSchema,
+		AllowDegradedFeatures: m.AllowDegradedFeatures,
+		Metadata:              m.Metadata,
+	}
 }
 
 // AllowsDegraded reports whether the open opted into the degraded application

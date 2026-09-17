@@ -424,8 +424,30 @@ export interface ToolSourceAttachment {
   environment?: string[];
 }
 
+/**
+ * A first submission carried by an open: the submit request without
+ * `session_id`, which an open names or mints itself and which a host proposing
+ * no id could not fill in. Stated as an omission rather than a copied member
+ * list, so a control added to a submit is available at open by construction.
+ */
+export type OpenMessage = Omit<MessageSubmitRequest, 'session_id'>;
+
 export interface SessionOpenRequest {
   session_id?: string;
+  /**
+   * Register the session's subscription inside the open, before the response
+   * is produced, so it cannot be late. Gated on `session.open.subscribe`.
+   *
+   * It carries no cursor: the session is being created, so there is nothing to
+   * replay. Reattach stays with the events request.
+   */
+  subscribe?: boolean;
+  /**
+   * A first submission admitted as part of the open. Independent of
+   * `subscribe` — a host may deliver one message and never subscribe — and its
+   * acknowledgement is the admitted run in the response's `active_runs`.
+   */
+  message?: OpenMessage;
   metadata?: Record<string, unknown>;
   /** The sources the session resolves for its lifetime. */
   tool_sources?: ToolSourceAttachment[];

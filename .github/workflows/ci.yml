@@ -18,6 +18,8 @@ jobs:
           cache: true
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
+      - name: Check comment policy
+        run: go run ./tools/nocomment --check
       - name: Vet
         run: go vet ./...
       - name: Test

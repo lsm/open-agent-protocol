@@ -43,7 +43,7 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 		for _, id := range p.AsOf.AdmittedSubmitRequests {
 			switch s.namesSubmitRequest(id, p.SessionID, "") {
 			case admissionWrong:
-				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/admitted_submit_requests", "capture anchor names an envelope that is not a submit request the trace carries for this session", "a submit request on "+string(p.SessionID), string(id))
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/admitted_submit_requests", "capture anchor names an envelope that is not a request the trace carries as admitting a message on this session", "a submit request, or an open carrying a message, on "+string(p.SessionID), string(id))
 				continue
 			case admissionPending:
 				// A claim that the endpoint had already admitted a submission,
@@ -673,7 +673,7 @@ func (s *state) checkEntryAnchor(i, line int, e protocol.Envelope, pointer strin
 	for _, id := range entry.AdmittedSubmitRequests {
 		switch s.namesSubmitRequest(id, session, r.id) {
 		case admissionWrong:
-			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/admitted_submit_requests", "entry anchor names an envelope that is not a submit request the trace carries for this run", "a submit request on "+string(r.id), string(id), string(r.id))
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/admitted_submit_requests", "entry anchor names an envelope that is not a request the trace carries as admitting a message on this run", "a submit request, or an open carrying a message, on "+string(r.id), string(id), string(r.id))
 		case admissionPending:
 			// The request is on the session but unanswered, so it cannot
 			// contradict the run it is claimed for yet. It can later: the
@@ -785,11 +785,9 @@ const (
 	admissionPending
 )
 
-// namesSubmitRequest judges whether an envelope id names a submit request the
-// trace carries for the session, and — when a run is named — for that run.
 func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.SessionID, run protocol.RunID) int {
 	req := s.requests[id]
-	if req == nil || req.typ != protocol.TypeSessionMessageSubmitRequest || req.session != session {
+	if req == nil || req.session != session || !admitsMessages(req) {
 		return admissionWrong
 	}
 	for _, candidate := range s.runs {
@@ -806,6 +804,16 @@ func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.Sess
 		return admissionWrong
 	}
 	return admissionPending
+}
+
+func admitsMessages(req *requestState) bool {
+	switch req.typ {
+	case protocol.TypeSessionMessageSubmitRequest:
+		return true
+	case protocol.TypeSessionOpenRequest:
+		return req.carriesMessage
+	}
+	return false
 }
 
 // checkCaptureModel judges the session default a snapshot reports against the

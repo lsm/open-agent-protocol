@@ -1,6 +1,6 @@
 # Compound Open
 
-Status: proposed design
+Status: settled by [Decision 0009](../decisions/0009-compound-open.md)
 Date: 2026-09-16
 Base protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -165,14 +165,20 @@ other pipelined disorder this surface admits reports itself: resolving an
 interaction before the run waits for it is refused, and submitting to a
 session that does not exist is refused. The one disorder that does not
 report itself is an uncursored subscription joining mid-run, which is what
-the compound open closes and what the joined-at sequence above makes
-visible when a host subscribes separately anyway.
+the compound open closes. The joined-at sequence above would make it
+visible when a host subscribes separately anyway; the decision specified it
+and deferred building it to
+[#61](https://github.com/lsm/open-agent-protocol/issues/61).
 
 **What would revive it.** A second sequence whose disorder is silent rather
 than refused; or OAP carried over a network where round trips are not free.
 Either is sufficient; neither is true today.
 
-## Open questions for the decision
+## Open questions, and how the decision answered them
+
+[Decision 0009](../decisions/0009-compound-open.md) settled all four. They
+are kept as asked, because what a design left open is part of the record.
+
 
 - Whether `subscribe` may carry an `after` cursor, making a compound open
   also the reattach path, or whether reattach stays with `events` alone.
@@ -185,3 +191,13 @@ Either is sufficient; neither is true today.
 - Whether an endpoint that cannot subscribe at open — an adapter whose
   stream is not available until the first run — refuses the flag or
   degrades, and which capability key says so.
+
+**Answered:** no cursor on `subscribe`, and reattach stays with `events`
+alone. The joined-at sequence is a named `oap-subscribed` signal on both
+transports rather than a response member, and is deferred unbuilt to
+[#61](https://github.com/lsm/open-agent-protocol/issues/61). The
+acknowledgement for `message` is no new member at all: it rides in the
+state document's `active_runs`, which already had the shape, so
+`session.open.response` is untouched. And an endpoint that cannot
+subscribe at open takes the ladder every optional feature takes, under the
+key `session.open.subscribe`.

@@ -759,20 +759,23 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 		}
 	}
 	if pending := s.pendingOpens[e.InReplyTo]; pending != nil {
+		attribution := s.attributeRefusal(e.InReplyTo, payload.Error)
 		switch {
 		case pending.expectation != nil:
-			if !conformingRefusal(payload.Error, pending.expectation) {
+			if attribution.owns(pending.expectation) {
 				s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
 		case pending.limitRefusal != nil:
 			// Refusing is permitted here and admitting is too, but a refusal
 			// still has to say which source to drop: "over the limit" is only
 			// actionable when the caller is told which entry put it there.
-			if !conformingRefusal(payload.Error, pending.limitRefusal) {
+			if attribution.owns(pending.limitRefusal) {
 				s.addExpected(pending.limitRefusal.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.limitRefusal.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
 		case pending.honourDiagnostic != "":
-			s.addExpected(pending.honourDiagnostic, i, line, e, "/payload/error", "an open carrying no defect and violating no disclosed limit was refused by an endpoint advertising "+pending.honourKey, "an admitted open or a disclosed limit", describeRefusal(payload.Error), string(e.InReplyTo))
+			if !attribution.discharged() {
+				s.addExpected(pending.honourDiagnostic, i, line, e, "/payload/error", "an open carrying no defect and violating no disclosed limit was refused by an endpoint advertising "+pending.honourKey, "an admitted open or a disclosed limit", describeRefusal(payload.Error), string(e.InReplyTo))
+			}
 		}
 	}
 }

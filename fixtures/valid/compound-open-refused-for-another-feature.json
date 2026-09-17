@@ -1,0 +1,81 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "session.open.subscribe": {
+          "level": "native"
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "action.tool_sources.attach": {
+          "level": "native",
+          "modes": [
+            "session_open"
+          ],
+          "limits": {
+            "transports": [
+              "local"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "oc",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "subscribe": true,
+      "tool_sources": [
+        {
+          "id": "workspace",
+          "kind": "process"
+        }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "errr",
+    "in_reply_to": "oc",
+    "session_id": "s1",
+    "payload": {
+      "error": {
+        "code": "unsupported_feature",
+        "message": "tool source \"workspace\" is a process source; this endpoint discloses local transports only",
+        "details": {
+          "feature": "action.tool_sources.attach",
+          "reason": "unsatisfiable",
+          "source": "workspace"
+        }
+      }
+    }
+  }
+]

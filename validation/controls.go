@@ -551,8 +551,12 @@ func (s *state) settleControlRefusal(i, line int, e protocol.Envelope) {
 		text, isText := value.(string)
 		return text, ok && isText
 	}
+	attribution := s.attributeRefusal(e.InReplyTo, payload.Error)
+	if attribution.discharged() {
+		return
+	}
 	if expectation := pending.expectation; expectation != nil {
-		if !conformingRefusal(payload.Error, expectation) {
+		if attribution.owns(expectation) {
 			s.addExpected(expectation.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 		}
 		return

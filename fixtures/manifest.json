@@ -4641,6 +4641,168 @@
     {"id":"queue-refusal-after-an-answered-sibling","path":"semantic-invalid/queue-refusal-after-an-answered-sibling.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {"id":"queue-refusal-among-unanswered-siblings","path":"valid/queue-refusal-among-unanswered-siblings.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {
+      "id": "compound-open-admits-its-message",
+      "path": "valid/compound-open-admits-its-message.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-queued-message",
+      "path": "valid/compound-open-queued-message.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open", "queue"],
+      "provenance": ["decisions/0009-compound-open.md", "decisions/0007-queue-delivery.md"]
+    },
+    {
+      "id": "compound-open-queued-without-position",
+      "path": "semantic-invalid/compound-open-queued-without-position.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["session_state_mismatch"],
+      "units": ["compound-open", "queue"],
+      "provenance": ["decisions/0009-compound-open.md", "decisions/0007-queue-delivery.md"]
+    },
+    {
+      "id": "compound-open-anonymous-model-reconciled",
+      "path": "semantic-invalid/compound-open-anonymous-model-reconciled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["model_not_in_catalog"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-session-exists-discharges-elections",
+      "path": "valid/compound-open-session-exists-discharges-elections.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-refused-on-another-election",
+      "path": "valid/compound-open-refused-on-another-election.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-subscribe-unadvertised-refused",
+      "path": "valid/compound-open-subscribe-unadvertised-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-refused-for-an-existing-session",
+      "path": "valid/compound-open-refused-for-an-existing-session.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-per-run-model-selection",
+      "path": "valid/compound-open-per-run-model-selection.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-refused-for-another-feature",
+      "path": "valid/compound-open-refused-for-another-feature.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-degraded-subscribe-refused-without-optin",
+      "path": "valid/compound-open-degraded-subscribe-refused-without-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-degraded-subscribe-with-optin",
+      "path": "valid/compound-open-degraded-subscribe-with-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-degraded-subscribe-admitted-without-optin",
+      "path": "semantic-invalid/compound-open-degraded-subscribe-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["degraded_without_optin"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-subscribe-unadvertised",
+      "path": "semantic-invalid/compound-open-subscribe-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["unavailable_capability"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"],
+      "covers": [{ "capability": "session.open.subscribe", "aspect": "gate" }]
+    },
+    {
+      "id": "compound-open-subscribe-refused-advertised",
+      "path": "semantic-invalid/compound-open-subscribe-refused-advertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["unhonoured_capability"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"],
+      "covers": [{ "capability": "session.open.subscribe", "aspect": "honour" }]
+    },
+    {
+      "id": "compound-open-anchor-names-an-open-without-a-message",
+      "path": "semantic-invalid/compound-open-anchor-names-an-open-without-a-message.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["session_state_mismatch"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
       "id": "endpoint-two-settlement-paths-settle-one-run",
       "path": "semantic-invalid/endpoint-two-settlement-paths-settle-one-run.json",
       "kind": "semantic-invalid",

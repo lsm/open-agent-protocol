@@ -184,13 +184,15 @@ func TestEventsOpDeliversTheRunStream(t *testing.T) {
 	var lastSequence uint64
 	var terminal protocol.EnvelopeType
 	nextID := int64(4)
-	for terminal == "" {
+	sent, answered := 1, 0
+	for terminal == "" || answered < sent {
 		line := f.line()
 		if strings.HasPrefix(line, `{"id":`) {
 			response := f.decodeResponse(line)
 			if !response.OK {
 				t.Fatalf("op %d failed: %+v", response.ID, response.Error)
 			}
+			answered++
 			continue
 		}
 		var signal signalLine
@@ -219,6 +221,7 @@ func TestEventsOpDeliversTheRunStream(t *testing.T) {
 			f.send(fmt.Sprintf(`{"id":%d,"op":"resolve","session_id":"stream","request":%s}`,
 				nextID, resolveEnvelope(t, fmt.Sprintf("req-resolve-%d", nextID), envelope, "stream")))
 			nextID++
+			sent++
 		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
 			terminal = envelope.Type
 		}

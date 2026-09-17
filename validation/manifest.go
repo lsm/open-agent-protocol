@@ -151,7 +151,8 @@ var unitCapabilities = map[string][]string{
 	// The session-scoped model catalog. One key, and the two aspects every key
 	// owes: a catalog served without the key advertised, and a catalog query
 	// refused on an endpoint that advertises it.
-	"models": {protocol.FeatureModelsList},
+	"models":        {protocol.FeatureModelsList},
+	"compound-open": {protocol.FeatureOpenSubscribe},
 }
 
 // honourDeferred names the unit whose corpus carries a key's honour fixture

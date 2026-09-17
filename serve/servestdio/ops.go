@@ -168,8 +168,20 @@ type wireError struct {
 // admission slot. Everything dispatch returns is finished by the time it
 // returns it.
 func (s *Server) serveRequest(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
-	if request.Op == opEvents {
+	switch request.Op {
+	case opEvents:
 		s.serveEvents(ctx, run, request, lines)
+		return
+	case opOpen:
+		if werr := request.only(paramAdapter, paramRequest); werr != nil {
+			s.respond(ctx, lines, request, nil, werr)
+			return
+		}
+		if request.Adapter == "" {
+			s.respond(ctx, lines, request, nil, &wireError{Code: "invalid_request", Message: "adapter is required"})
+			return
+		}
+		s.serveOpen(ctx, run, request, lines)
 		return
 	}
 	result, werr := s.dispatch(ctx, request)
@@ -236,14 +248,6 @@ func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requ
 
 func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
 	switch request.Op {
-	case opOpen:
-		if werr := request.only(paramAdapter, paramRequest); werr != nil {
-			return nil, werr
-		}
-		if request.Adapter == "" {
-			return nil, &wireError{Code: "invalid_request", Message: "adapter is required"}
-		}
-		return s.openOp(ctx, request)
 	case opAdapters:
 		if werr := request.only(); werr != nil {
 			return nil, werr
@@ -426,23 +430,30 @@ func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
 // stays open, and the host can name it to close or to read its state. The
 // distinction is not a special case for open; it is the line resolve, cancel
 // and close already sit on the other side of.
-func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+func (s *Server) openOp(ctx context.Context, request requestLine, stream context.Context) (json.RawMessage, *serve.Subscription, *wireError) {
 	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionOpenRequest)
 	if werr != nil {
-		return nil, werr
+		return nil, nil, werr
 	}
 	var payload protocol.SessionOpenRequest
 	if err := envelope.DecodePayload(&payload); err != nil {
-		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+		return nil, nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
 	}
 	if _, found := s.hub.Registry().Lookup(request.Adapter); !found {
-		return nil, &wireError{Code: "unknown_adapter", Message: fmt.Sprintf("no adapter %q", trimMessage(request.Adapter))}
+		return nil, nil, &wireError{Code: "unknown_adapter", Message: fmt.Sprintf("no adapter %q", trimMessage(request.Adapter))}
 	}
 	revision, refusal := serve.AttachmentGate(ctx, s.hub, request.Adapter, envelope.CapabilityRevision, payload)
+	if refusal == nil {
+		var subscribeRevision string
+		subscribeRevision, refusal = serve.SubscribeGate(ctx, s.hub, request.Adapter, envelope.CapabilityRevision, payload)
+		if subscribeRevision != "" {
+			revision = subscribeRevision
+		}
+	}
 	if refusal != nil {
 		var stale *serve.StaleRevisionError
 		if errors.As(refusal, &stale) {
-			return nil, &wireError{Code: "stale_capabilities", Message: stale.Error(), Details: map[string]any{
+			return nil, nil, &wireError{Code: "stale_capabilities", Message: stale.Error(), Details: map[string]any{
 				"expected_revision": stale.Expected, "current_revision": stale.Current,
 			}}
 		}
@@ -451,9 +462,9 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 			// The descriptor could not be read, so no rung has an answer and
 			// none is invented: the open fails rather than falling through to
 			// a constraint that would answer the wrong question.
-			return nil, &wireError{Code: "probe_failed", Message: adapterMessage(refusal)}
+			return nil, nil, &wireError{Code: "probe_failed", Message: adapterMessage(refusal)}
 		}
-		return nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
+		return nil, nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
 	}
 	attachments, unresolvable := serve.ResolveAttachments(s.hub, payload.ToolSources)
 	if unresolvable != nil {
@@ -462,7 +473,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		// bounds every message it writes; unbounded here, one id would make a
 		// typed refusal exceed the frame limit and degrade to
 		// response_too_large, which is the same-code parity this op claims.
-		return nil, &wireError{Code: "unsupported_feature", Message: trimMessage(unresolvable.Error()), Details: map[string]any{
+		return nil, nil, &wireError{Code: "unsupported_feature", Message: trimMessage(unresolvable.Error()), Details: map[string]any{
 			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": unresolvable.Source,
 		}}
 	}
@@ -477,12 +488,18 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		for key, raw := range payload.Metadata {
 			var value any
 			if err := json.Unmarshal(raw, &value); err != nil {
-				return nil, &wireError{Code: "invalid_payload", Message: fmt.Sprintf("metadata %q: %v", trimMessage(key), trimMessage(err.Error()))}
+				return nil, nil, &wireError{Code: "invalid_payload", Message: fmt.Sprintf("metadata %q: %v", trimMessage(key), trimMessage(err.Error()))}
 			}
 			open.Metadata[key] = value
 		}
 	}
-	entry, state, err := s.hub.Open(ctx, request.Adapter, open)
+	opened, err := serve.OpenCompound(ctx, s.hub, request.Adapter, open, serve.CompoundOpen{
+		Subscribe: payload.Subscribe,
+		Stream:    stream,
+		Message:   payload.Message,
+		RequestID: envelope.ID,
+	})
+	entry, state := opened.Session, opened.State
 	if err != nil {
 		// A capability the open elected and the adapter refused is reported
 		// under its own typed code with the details that say what to change —
@@ -490,7 +507,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		// for an attachment tells the caller which source to drop rather than
 		// only that the open failed.
 		if code, message, details, ok := serve.ControlRefusal(err); ok {
-			return nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
+			return nil, nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
 		}
 		code := "open_failed"
 		switch {
@@ -499,8 +516,14 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		case errors.Is(err, serve.ErrSessionExists):
 			code = "session_exists"
 		}
-		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+		return nil, nil, &wireError{Code: code, Message: adapterMessage(err)}
 	}
+	handedOff := false
+	defer func() {
+		if !handedOff && opened.Subscription != nil {
+			opened.Subscription.Close()
+		}
+	}()
 	// The response is built from the state the open itself confirmed:
 	// re-reading state here could fail after registration (an abandoned
 	// request context, a flaky adapter probe) and report a successful open as
@@ -521,7 +544,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 		// So it takes the same rollback policy, and the same exemption: a
 		// session the host named is one it can still close itself.
 		s.logger.Printf("servestdio: open %d: encode response: %v", *request.ID, err)
-		return nil, s.refuseUnencodableOpen(ctx, request, entry, payload.SessionID != "")
+		return nil, nil, s.refuseUnencodableOpen(ctx, request, entry, payload.SessionID != "")
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
@@ -539,12 +562,13 @@ func (s *Server) openOp(ctx context.Context, request requestLine) (json.RawMessa
 	}
 	result, werr := envelopeResult(response)
 	if werr != nil {
-		return nil, werr
+		return nil, nil, werr
 	}
 	if !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
-		return nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "")
+		return nil, nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "")
 	}
-	return result, nil
+	handedOff = true
+	return result, opened.Subscription, nil
 }
 
 // refuseUnencodableOpen answers an open whose response cannot be encoded, and
@@ -564,7 +588,7 @@ func (s *Server) refuseUnencodableOpen(ctx context.Context, request requestLine,
 		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session is open under the session_id the request supplied"}
 	}
 	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
-	err := entry.Close(rollback)
+	err := serve.Rollback(rollback, s.hub, entry)
 	cancelRollback()
 	if err == nil || errors.Is(err, base.ErrSessionClosed) {
 		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session was rolled back"}
@@ -589,7 +613,7 @@ func (s *Server) refuseOversizedOpen(ctx context.Context, request requestLine, e
 		return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session is open under the session_id the request supplied"}
 	}
 	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
-	err := entry.Close(rollback)
+	err := serve.Rollback(rollback, s.hub, entry)
 	cancelRollback()
 	if err == nil || errors.Is(err, base.ErrSessionClosed) {
 		return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session was rolled back"}
@@ -1394,4 +1418,65 @@ func trimMessage(message string) string {
 		return message
 	}
 	return string(runes[:limit]) + "…"
+}
+
+func (s *Server) serveOpen(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
+	if !subscribesAtOpen(request) {
+		result, subscription, werr := s.openOp(ctx, request, nil)
+		if subscription != nil {
+			subscription.Close()
+		}
+		s.respond(ctx, lines, request, result, werr)
+		return
+	}
+	pumps, outcome, why := run.attach()
+	switch outcome {
+	case closedToWork:
+		s.respond(ctx, lines, request, nil, &wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
+		return
+	case refused:
+		s.respond(ctx, lines, request, nil, &wireError{Code: "busy", Message: why + "; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has"})
+		return
+	}
+	result, subscription, werr := s.openOp(ctx, request, pumps)
+	if subscription == nil {
+		run.detach()
+		s.respond(ctx, lines, request, result, werr)
+		return
+	}
+	if !s.respond(ctx, lines, request, result, werr) {
+		run.detach()
+		subscription.Close()
+		return
+	}
+	entry, lookupErr := s.hub.Session(protocol.SessionID(openedSession(result)))
+	if lookupErr != nil {
+		run.detach()
+		subscription.Close()
+		return
+	}
+	go func() {
+		defer run.detach()
+		s.pump(pumps, entry, subscription, *request.ID, 0, lines)
+	}()
+}
+
+func subscribesAtOpen(request requestLine) bool {
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(request.Request, &envelope); err != nil {
+		return false
+	}
+	var payload protocol.SessionOpenRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return false
+	}
+	return payload.Subscribe
+}
+
+func openedSession(result json.RawMessage) string {
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(result, &envelope); err != nil {
+		return ""
+	}
+	return string(envelope.SessionID)
 }

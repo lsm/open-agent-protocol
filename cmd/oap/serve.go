@@ -98,6 +98,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	case err := <-serveDone:
 		// The accept loop died on its own: still settle any sessions that
 		// were opened before returning the error.
+		daemon.Close()
 		settle, cancelSettle := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 		defer cancelSettle()
 		hub.CloseSessions(settle)
@@ -115,6 +116,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err := httpServer.Shutdown(httpShutdown); err != nil {
 		fmt.Fprintf(stderr, "oap: http shutdown: %v\n", err)
 	}
+	// Subscriptions a compound open registered are released before the
+	// session sweep: each is held for an events request that will never
+	// arrive now, and waiting out its own expiry would leave the hub holding
+	// subscribers the daemon has already stopped serving.
+	daemon.Close()
 	sessionShutdown, cancelSessions := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelSessions()
 	hub.CloseSessions(sessionShutdown)
