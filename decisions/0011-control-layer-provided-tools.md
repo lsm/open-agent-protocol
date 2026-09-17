@@ -1,13 +1,16 @@
 # Decision 0011: Control-Layer-Provided Tools
 
 Status: proposed
-Date: 2026-09-16
+Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
 Unit: `control-tools` (claim term `+control-tools`; plan sub-unit T3c)
 Amends: nothing. Extends
 [Decision 0001](0001-agent-control-v0.1-executable-core.md) and
-[Decision 0008](0008-tool-sources.md) without amending either
+[Decision 0008](0008-tool-sources.md) without amending either, and discharges
+the named deferral in Decision 0008's status line — "T3c control-layer tools
+stays staged as a named deferral with its own future decision" — by being that
+decision
 Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 Design: [Staged Units Graduation Plan](../drafts/staged-units-graduation.md),
 section "T3c. Control-layer-provided tools"
@@ -33,8 +36,18 @@ maintainer's decision about implementing OAP natively.
 
 Decision 0008 graduated the other two thirds of the tool-sources work: a
 catalog that says where its tools come from (T3a), and attachment of sources at
-session open (T3b). Both describe execution the harness performs. This decision
-graduates the third: tools the control layer supplies and executes itself.
+session open (T3b). Both describe execution the harness performs, and both are
+accepted. What it did not graduate it deferred by name, to "its own future
+decision"; this is that decision, and it graduates the third third: tools the
+control layer supplies and executes itself.
+
+The core draft already anticipates it in the terms this decision uses.
+`execution_owner` is required on every catalog entry and every `action.call.*`
+payload precisely so the mixed case is expressible, and the draft states the
+rule this decision makes executable: "a call claiming an owner the catalog does
+not give that tool is not a call the endpoint should honor"
+(`drafts/agent-control-core.md`). What was missing was not the field but
+everything the control layer needed to answer with.
 
 ## Decisions
 
@@ -175,9 +188,9 @@ decoration:
 
 - `unknown_interaction`: no such pending interaction on the run.
 - `wrong_responder`: the sender is not the interaction's declared responder.
-- `already_resolved`: the call is settled on the wire — a terminal the trace
-  carries, whether the endpoint derived it or a harness-side timeout produced
-  it — or, for a `result` or `error` arm, a resolution the endpoint has already
+- `already_resolved`: the call is resolved — a terminal the trace carries,
+  whether the endpoint derived it or a harness-side timeout produced it, or,
+  for a `result` or `error` arm, a resolution the endpoint has already
   accepted.
 - `repeated_acknowledgement`: the arm is `started` and one was already
   accepted.
@@ -190,11 +203,32 @@ repeat is the more specific answer, so it outranks the other where both hold —
 which is the sense in which the acknowledgement reasons are ordered, while
 `already_resolved` outranks them both by being the more advanced state.
 
-The split between `already_resolved` and `late_acknowledgement` is also what
-makes `settlement_id` a member of one and not the other. `already_resolved` is
-the reason that has a published settlement to point at; a late acknowledgement
-names nothing because nothing has settled yet — the resolution that overtook it
-is the sender's own, and the sender already has its response.
+`settlement_id` belongs to `already_resolved` and to no other reason because
+`already_resolved` is the only one with a settlement to point at, and *both*
+halves of its condition supply one. Where a terminal exists, that is the
+settlement. Where the call is resolved but its terminal has not been published
+yet, the accepted `action.call.resolve.response` is: the acceptance is what
+settled the call, the trace carries it, and it is correlated by `in_reply_to`
+to a request the resolver itself sent, so a resolver reading the refusal can
+place it.
+
+That second half is not a convenience. Without it the window between an
+accepted resolution and its terminal has *no conforming refusal at all*: the
+reason is required, the reason requires an id, and the only envelope that could
+have supplied one has not been published. That window is precisely the
+result-and-retry interleaving `request_id` exists for — a resolution whose
+response was lost and the retry that follows it — so it is the last window that
+may be left without an answer. Fixture
+`control-call-overlapping-resolutions` is the conforming refusal there, and
+`control-call-ack-after-settlement` the one for the other half.
+
+Two properties are asserted of the ladder as a whole, because neither is
+self-evident and the enumeration has already failed both once. Every reason
+must be reachable *as the highest*, or the vocabulary carries a name nothing
+can produce. And every reason must have a conforming refusal in every window it
+can fire, or an endpoint is required to report a reason it cannot legally
+report. The windows are enumerated beside the ladder in
+`validation/controltools.go`, and each has a fixture.
 
 An empty set means the request is valid, and a valid request must be accepted.
 Without that rule an endpoint could refuse the one correct resolution under any
