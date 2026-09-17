@@ -132,11 +132,25 @@ excludes, because an unstated boundary reads as an unfilled gap, and an
 implementer deciding whether they can move entirely onto OAP needs the
 difference.
 
-**Direct model inference is out of scope.** A call that sends a prompt to a
-model and streams tokens back — no agent loop, no turns, no tools, no run — is
-not agent control, and this profile does not carry it. Every execution path
-here begins at a session and a submission and mints a run, because a run is the
+**Direct model inference is not carried on this wire.** A call that sends a
+prompt to a model and streams tokens back — no agent loop, no turns, no tools,
+no run — is not agent control, and no envelope here carries it. Every execution
+path begins at a session and a submission and mints a run, because a run is the
 thing whose lifecycle there is anything to normalize.
+
+This is a statement about the wire, not about the layers. The model provider is
+one of OAP's own layers, named as such in this repository's README beside the
+control layer, the agent loop and the tool executor, and that README says those
+layers may live in one process. An endpoint that speaks to a vendor API
+directly — normalizing the OpenAI and Anthropic request and streaming shapes
+behind one agent loop, with no third-party harness in between — is an ordinary
+OAP endpoint. It has a session, runs and tools like any other, and how it
+obtains its tokens is below this boundary and nobody else's business.
+
+What is excluded is exposing that inference call *through* OAP to the control
+layer as its own operation. The distinction matters because the two get
+confused: a provider layer under an endpoint is in scope by the README's own
+model, and a `provider.complete` envelope on the control wire is not.
 
 The reason is what OAP is for. Eight harnesses disagree about terminals,
 sequences, cancellation and admission, and this profile exists to make those
@@ -148,10 +162,15 @@ already normalized, and would have to answer what run identity means for an
 execution with no agent semantics — a question with no good answer.
 
 The practical consequence, stated plainly so nobody discovers it late: **a
-harness whose wire carries both agent control and direct provider access
-cannot move entirely onto OAP.** It runs OAP for the agent boundary and keeps
-its own surface, or a vendor's, for direct inference. That is a boundary rather
-than a shortfall, and it is deliberate.
+harness whose wire exposes direct provider access to its clients cannot move
+that surface onto OAP.** It runs OAP for the agent boundary and keeps its own
+surface, or a vendor's, for direct inference. That is a boundary rather than a
+shortfall, and it is deliberate.
+
+It constrains what the wire exposes and not what an endpoint is built on. An
+implementer free to drop their passthrough surface, or one who never had it,
+can put the provider layer under an OAP endpoint and have no second wire at
+all.
 
 Emulating inference as a tool-less single-submit session is possible and is not
 recommended. It buys a session and a run the caller did not want, and the
