@@ -619,7 +619,9 @@ Decisions:
 - [0006 — models catalog](decisions/0006-models-catalog.md) (accepted)
 - [0007 — queue delivery](decisions/0007-queue-delivery.md) (accepted)
 - [0008 — tool sources](decisions/0008-tool-sources.md) (accepted)
-- [0011 — control-layer-provided tools](decisions/0011-control-layer-provided-tools.md) (proposed)
+- [0009 — compound open](decisions/0009-compound-open.md) (accepted)
+- [0010 — terminal provenance](decisions/0010-terminal-provenance.md) (accepted)
+- [0011 — control-layer-provided tools](decisions/0011-control-layer-provided-tools.md) (proposed — awaiting adapter evidence)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted.
