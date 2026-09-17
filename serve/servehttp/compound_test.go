@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -78,16 +79,61 @@ func TestOpenCarriesItsMessage(t *testing.T) {
 	}
 }
 
-func TestOpenCarryingAMessageThatCannotBeAdmittedOpensNothing(t *testing.T) {
-	hub, server := newServer(t, memoryRegistry(64), Options{})
-	message := openMessage()
-	message.Delivery = "not-a-delivery-mode"
-	status, response := openSessionWith(t, server, "rollback", protocol.SessionOpenRequest{Message: message})
+type refusingSubmitAdapter struct{ *base.Memory }
+
+func (a refusingSubmitAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	session, err := a.Memory.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return refusingSubmitSession{Session: session}, nil
+}
+
+type refusingSubmitSession struct{ base.Session }
+
+func (s refusingSubmitSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return protocol.MessageSubmitResponse{}, nil, errors.New("the adapter refuses this submission")
+}
+
+func TestOpenRollsBackWhenItsMessageCannotBeAdmitted(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", refusingSubmitAdapter{base.NewMemory(base.Config{})}); err != nil {
+		t.Fatal(err)
+	}
+	hub, server := newServer(t, registry, Options{})
+	status, envelope := openSessionWith(t, server, "rollback", protocol.SessionOpenRequest{Message: openMessage()})
 	if status == http.StatusOK {
-		t.Fatalf("an unadmittable message opened a session anyway: %s", response.Payload)
+		t.Fatalf("an unadmittable message opened a session anyway: %s", envelope.Payload)
 	}
 	if _, err := hub.Session("rollback"); err == nil {
 		t.Fatal("the refused open left its session behind")
+	}
+	if sessions := hub.Sessions(context.Background()); len(sessions) != 0 {
+		t.Fatalf("the refused open left %d sessions behind", len(sessions))
+	}
+	status, envelope = openSessionWith(t, server, "rollback", protocol.SessionOpenRequest{})
+	if status != http.StatusOK {
+		t.Fatalf("reopening the rolled-back id answered %d: a host that receives a refusal holds no session id it must clean up: %s", status, envelope.Payload)
+	}
+}
+
+func TestOpenCarryingAnUnschematicMessageIsRefusedAtTheGate(t *testing.T) {
+	hub, server := newServer(t, memoryRegistry(64), Options{})
+	message := openMessage()
+	message.Delivery = "not-a-delivery-mode"
+	status, response := openSessionWith(t, server, "ungated", protocol.SessionOpenRequest{Message: message})
+	if status != http.StatusBadRequest {
+		t.Fatalf("open status %d, want 400: %s", status, response.Payload)
+	}
+	var failure protocol.ErrorResponse
+	if err := response.DecodePayload(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "schema_invalid" {
+		t.Fatalf("refusal code %q, want schema_invalid: the open message is gated by the envelope schema", failure.Error.Code)
+	}
+	if sessions := hub.Sessions(context.Background()); len(sessions) != 0 {
+		t.Fatalf("a gate refusal left %d sessions behind", len(sessions))
 	}
 }
 

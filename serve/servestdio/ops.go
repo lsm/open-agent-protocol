@@ -530,6 +530,12 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 		}
 		return nil, nil, &wireError{Code: code, Message: adapterMessage(err)}
 	}
+	handedOff := false
+	defer func() {
+		if !handedOff && opened.Subscription != nil {
+			opened.Subscription.Close()
+		}
+	}()
 	// The response is built from the state the open itself confirmed:
 	// re-reading state here could fail after registration (an abandoned
 	// request context, a flaky adapter probe) and report a successful open as
@@ -573,6 +579,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 	if !s.fits(responseLine{ID: *request.ID, OK: true, Result: result}) {
 		return nil, nil, s.refuseOversizedOpen(ctx, request, entry, payload.SessionID != "")
 	}
+	handedOff = true
 	return result, opened.Subscription, nil
 }
 
@@ -593,7 +600,7 @@ func (s *Server) refuseUnencodableOpen(ctx context.Context, request requestLine,
 		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session is open under the session_id the request supplied"}
 	}
 	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
-	err := entry.Close(rollback)
+	err := serve.Rollback(rollback, s.hub, entry)
 	cancelRollback()
 	if err == nil || errors.Is(err, base.ErrSessionClosed) {
 		return &wireError{Code: "internal", Message: "the open response could not be encoded; the session was rolled back"}
@@ -618,7 +625,7 @@ func (s *Server) refuseOversizedOpen(ctx context.Context, request requestLine, e
 		return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session is open under the session_id the request supplied"}
 	}
 	rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), s.shutdown)
-	err := entry.Close(rollback)
+	err := serve.Rollback(rollback, s.hub, entry)
 	cancelRollback()
 	if err == nil || errors.Is(err, base.ErrSessionClosed) {
 		return &wireError{Code: "response_too_large", Message: "the open response exceeds the frame limit; the session was rolled back"}

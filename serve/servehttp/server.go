@@ -372,7 +372,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		if opened.Subscription != nil {
 			opened.Subscription.Close()
 		}
-		s.writeError(w, http.StatusInternalServerError, "internal", rollbackOpen(entry, request.SessionID != ""), envelope)
+		s.writeError(w, http.StatusInternalServerError, "internal", rollbackOpen(s.hub, entry, request.SessionID != ""), envelope)
 		return
 	}
 	if opened.Subscription != nil {
@@ -401,13 +401,13 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 // The rollback runs on a context of its own rather than the request's: the
 // request is already being answered, and a caller that hung up must not decide
 // whether a session it cannot see gets closed.
-func rollbackOpen(entry *serve.Session, named bool) string {
+func rollbackOpen(hub *serve.Hub, entry *serve.Session, named bool) string {
 	if named {
 		return "the open response could not be encoded; the session is open under the session_id the request supplied"
 	}
 	rollback, cancel := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancel()
-	if err := entry.Close(rollback); err != nil && !errors.Is(err, base.ErrSessionClosed) {
+	if err := serve.Rollback(rollback, hub, entry); err != nil && !errors.Is(err, base.ErrSessionClosed) {
 		return "the open response could not be encoded; rolling the session back failed and it may still be live"
 	}
 	return "the open response could not be encoded; the session was rolled back"

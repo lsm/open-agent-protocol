@@ -55,7 +55,7 @@ func OpenCompound(ctx context.Context, hub *Hub, name string, open base.OpenRequ
 		}
 		subscription, err := hub.Subscribe(stream, entry.ID())
 		if err != nil {
-			rollbackCompound(entry)
+			rollbackCompound(hub, entry)
 			return CompoundResult{}, err
 		}
 		result.Subscription = subscription
@@ -68,7 +68,7 @@ func OpenCompound(ctx context.Context, hub *Hub, name string, open base.OpenRequ
 		if result.Subscription != nil {
 			result.Subscription.Close()
 		}
-		rollbackCompound(entry)
+		rollbackCompound(hub, entry)
 		return CompoundResult{}, err
 	}
 	result.Admission = &admission
@@ -76,10 +76,16 @@ func OpenCompound(ctx context.Context, hub *Hub, name string, open base.OpenRequ
 	return result, nil
 }
 
-func rollbackCompound(entry *Session) {
+func Rollback(ctx context.Context, hub *Hub, entry *Session) error {
+	err := entry.Close(ctx)
+	hub.sessions.remove(entry.ID())
+	return err
+}
+
+func rollbackCompound(hub *Hub, entry *Session) {
 	rollback, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), DefaultShutdownTimeout)
 	defer cancel()
-	_ = entry.Close(rollback)
+	_ = Rollback(rollback, hub, entry)
 }
 
 func withAdmittedRun(state protocol.SessionState, admission protocol.MessageSubmitResponse, request protocol.EnvelopeID) protocol.SessionState {
