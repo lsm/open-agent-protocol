@@ -148,6 +148,11 @@ var unitCapabilities = map[string][]string{
 	// owes: a catalog served without the key advertised, and a catalog query
 	// refused on an endpoint that advertises it.
 	"models": {protocol.FeatureModelsList},
+	// The compound open owns the subscription member's key. Its message
+	// member registers none: a message carried by an open is admitted under
+	// the delivery key it requests, which the delivery units already own, and
+	// registering it here would give one key two owners.
+	"compound-open": {protocol.FeatureOpenSubscribe},
 }
 
 // honourDeferred names the unit whose corpus carries a key's honour fixture

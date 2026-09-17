@@ -43,7 +43,7 @@ func (s *state) checkSessionCapture(i, line int, e protocol.Envelope, p protocol
 		for _, id := range p.AsOf.AdmittedSubmitRequests {
 			switch s.namesSubmitRequest(id, p.SessionID, "") {
 			case admissionWrong:
-				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/admitted_submit_requests", "capture anchor names an envelope that is not a submit request the trace carries for this session", "a submit request on "+string(p.SessionID), string(id))
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/admitted_submit_requests", "capture anchor names an envelope that is not a request the trace carries as admitting a message on this session", "a submit request, or an open carrying a message, on "+string(p.SessionID), string(id))
 				continue
 			case admissionPending:
 				// A claim that the endpoint had already admitted a submission,
@@ -673,7 +673,7 @@ func (s *state) checkEntryAnchor(i, line int, e protocol.Envelope, pointer strin
 	for _, id := range entry.AdmittedSubmitRequests {
 		switch s.namesSubmitRequest(id, session, r.id) {
 		case admissionWrong:
-			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/admitted_submit_requests", "entry anchor names an envelope that is not a submit request the trace carries for this run", "a submit request on "+string(r.id), string(id), string(r.id))
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/admitted_submit_requests", "entry anchor names an envelope that is not a request the trace carries as admitting a message on this run", "a submit request, or an open carrying a message, on "+string(r.id), string(id), string(r.id))
 		case admissionPending:
 			// The request is on the session but unanswered, so it cannot
 			// contradict the run it is claimed for yet. It can later: the
@@ -777,11 +777,21 @@ const (
 	admissionPending
 )
 
-// namesSubmitRequest judges whether an envelope id names a submit request the
-// trace carries for the session, and — when a run is named — for that run.
+// namesSubmitRequest judges whether an envelope id names a request that
+// admitted a message on the session, and — when a run is named — for that run.
+//
+// A compound open counts. Its request is a session.open.request rather than a
+// submit, but it carried a message and the run it produced is admitted by it,
+// so an entry naming it as its capture anchor names the request that really
+// admitted the run. Reading only the submit type would have made every
+// compound open's own state report contradict itself.
+//
+// An open that carried no message does not count, and is not merely
+// uninteresting: it admitted nothing, so an entry naming it claims an
+// admission that never happened.
 func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.SessionID, run protocol.RunID) int {
 	req := s.requests[id]
-	if req == nil || req.typ != protocol.TypeSessionMessageSubmitRequest || req.session != session {
+	if req == nil || req.session != session || !admitsMessages(req) {
 		return admissionWrong
 	}
 	for _, candidate := range s.runs {
@@ -798,6 +808,18 @@ func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.Sess
 		return admissionWrong
 	}
 	return admissionPending
+}
+
+// admitsMessages reports whether a request is one a run can be admitted by:
+// a submit, or an open that carried a first message.
+func admitsMessages(req *requestState) bool {
+	switch req.typ {
+	case protocol.TypeSessionMessageSubmitRequest:
+		return true
+	case protocol.TypeSessionOpenRequest:
+		return req.carriesMessage
+	}
+	return false
 }
 
 // checkCaptureModel judges the session default a snapshot reports against the

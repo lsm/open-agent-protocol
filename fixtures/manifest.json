@@ -4639,6 +4639,48 @@
     {"id":"queue-state-lead-executes-a-run-that-never-starts","path":"semantic-invalid/queue-state-lead-executes-a-run-that-never-starts.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {"id":"queue-state-lead-executes-a-run-whose-start-follows","path":"valid/queue-state-lead-executes-a-run-whose-start-follows.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {"id":"queue-refusal-after-an-answered-sibling","path":"semantic-invalid/queue-refusal-after-an-answered-sibling.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-refusal-among-unanswered-siblings","path":"valid/queue-refusal-among-unanswered-siblings.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]}
+    {"id":"queue-refusal-among-unanswered-siblings","path":"valid/queue-refusal-among-unanswered-siblings.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
+    {
+      "id": "compound-open-admits-its-message",
+      "path": "valid/compound-open-admits-its-message.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-subscribe-unadvertised",
+      "path": "semantic-invalid/compound-open-subscribe-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["unavailable_capability"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"],
+      "covers": [{ "capability": "session.open.subscribe", "aspect": "gate" }]
+    },
+    {
+      "id": "compound-open-subscribe-refused-advertised",
+      "path": "semantic-invalid/compound-open-subscribe-refused-advertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["unhonoured_capability"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"],
+      "covers": [{ "capability": "session.open.subscribe", "aspect": "honour" }]
+    },
+    {
+      "id": "compound-open-anchor-names-an-open-without-a-message",
+      "path": "semantic-invalid/compound-open-anchor-names-an-open-without-a-message.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["session_state_mismatch"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    }
   ]
 }

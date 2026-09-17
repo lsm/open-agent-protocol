@@ -116,6 +116,10 @@ type requestState struct {
 	session            protocol.SessionID
 	run                protocol.RunID
 	interaction        protocol.InteractionID
+	// carriesMessage marks a session.open.request that carried a first
+	// message, which makes it the admitting request for the run the open
+	// produced — the one request that is an admission without being a submit.
+	carriesMessage bool
 	// gates are the packed capability gates the request carried, with their
 	// advertisement under the descriptor current when it was made.
 	gates []packGate
@@ -224,6 +228,10 @@ type state struct {
 	// behaviour, so the gate is settled on the response.
 	pendingLists map[protocol.EnvelopeID]*pendingList
 	pendingOpens map[protocol.EnvelopeID]*pendingOpen
+	// pendingSubscribes are the opens that elected subscribe against an
+	// endpoint advertising it, held until the response says whether the
+	// endpoint honoured what it advertised.
+	pendingSubscribes map[protocol.EnvelopeID]bool
 	// descriptorAttribution is the active descriptor's own tool-to-source
 	// mapping. A descriptor that publishes a catalog publishes an attribution
 	// with it, and until a session-scoped list supersedes it that mapping is
@@ -248,7 +256,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]bool{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -422,6 +430,11 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if p.Recovery != nil && p.Recovery.Recovered {
 			s.bootstrapRecoveredRuns(i, line, p, st)
 		}
+		// Before the state document is applied and judged, because this
+		// response is the admission: the run it names exists from here, and a
+		// capture check that ran first would diagnose the open for reporting a
+		// run the trace did not carry — a run this very envelope admits.
+		s.compoundOpenResponse(i, line, e, p)
 		s.applyStateDocument(i, line, e, p, st)
 		s.checkSessionCapture(i, line, e, p, st)
 		// The open response is a session-state document, so the model it
@@ -456,7 +469,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.observeModel(p.SessionID, p.CurrentModelID, "", 0)
 		s.sessionOpenResponse(i, line, e, p)
 	case protocol.TypeSessionOpenRequest:
+		var p protocol.SessionOpenRequest
+		_ = e.DecodePayload(&p)
 		s.sessionOpenRequest(i, line, e)
+		s.compoundOpenRequest(i, line, e, p)
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
@@ -577,6 +593,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.settleControlRefusal(i, line, e)
 		s.settleToolSourceRefusal(i, line, e)
 		s.settleModelsRefusal(i, line, e)
+		s.settleSubscribeRefusal(i, line, e)
 	case protocol.TypeRunCancelResponse:
 		var p protocol.RunCancelResponse
 		_ = e.DecodePayload(&p)
