@@ -38,6 +38,9 @@ func (s *state) retainedExpectations(request protocol.EnvelopeID) []*controlExpe
 }
 
 func (s *state) attributeRefusal(request protocol.EnvelopeID, err protocol.ProtocolError) refusalAttribution {
+	if s.isOpenRequest(request) && openLevelRefusals[err.Code] {
+		return refusalAttribution{aside: true}
+	}
 	retained := s.retainedExpectations(request)
 	if len(retained) == 0 {
 		return refusalAttribution{}
@@ -50,9 +53,6 @@ func (s *state) attributeRefusal(request protocol.EnvelopeID, err protocol.Proto
 		if speaker == nil || expectation.less(speaker) {
 			speaker = expectation
 		}
-	}
-	if s.isOpenRequest(request) && openLevelRefusals[err.Code] {
-		return refusalAttribution{aside: true}
 	}
 	return refusalAttribution{speaker: speaker}
 }
