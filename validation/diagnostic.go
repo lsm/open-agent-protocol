@@ -157,6 +157,33 @@ const (
 	CodeUndisclosedAttachModes   = "undisclosed_attach_modes"
 	CodeUndisclosedAttachLimit   = "undisclosed_attach_limit"
 	CodeUnattributedCall         = "unattributed_call"
+	// The control-tools unit (Decision 0011). Each names one way a call the
+	// control layer is supposed to execute can stop being one.
+	//
+	// CodeWrongToolOwner: a tool is owned by a participant that cannot own
+	// it. At session open that is a supplied definition whose
+	// `execution_owner` is not the opening participant — a tool the endpoint
+	// would later classify as harness-owned or route to a participant that
+	// never provided it. On a call it is an `execution_owner` other than the
+	// one the session's catalog records for that name, in either direction: a
+	// harness-owned tool routed to the control participant, or a provided one
+	// routed to the harness. The check runs at supply time too, before any
+	// interaction exists, which wrong_interaction_responder cannot cover.
+	//
+	// CodeUndisclosedProvideLimit: a `tools` array carrying no defect any
+	// rule names, and violating no limit the endpoint disclosed, was refused.
+	// The same shape the queue bound and the attachment limits use, and for
+	// the same reason: without it an endpoint could advertise
+	// action.tools.provide, refuse every array it is ever given, and pass.
+	//
+	// CodeResolutionPayloadMismatch: a control-owned call's terminal carries
+	// something other than the outcome the accepted resolution stated. The
+	// authorization and the payload are separate facts, so an adapter that
+	// forwards an altered result to the harness would otherwise pass with an
+	// authorized terminal that says something the participant never said.
+	CodeWrongToolOwner            = "wrong_tool_owner"
+	CodeUndisclosedProvideLimit   = "undisclosed_provide_limit"
+	CodeResolutionPayloadMismatch = "resolution_payload_mismatch"
 	// The models unit. A catalog is a promise that its ids are selectable and
 	// that nothing else is, so each of these names one way the published
 	// catalog and the endpoint's own behaviour disagree.
