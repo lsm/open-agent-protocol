@@ -173,7 +173,7 @@ func comments(src []byte) []comment {
 func scan(src []byte) []span {
 	var spans []span
 	for _, c := range comments(src) {
-		if c.name == "" {
+		if c.name == "" && !c.load {
 			spans = append(spans, c.span)
 		}
 	}
