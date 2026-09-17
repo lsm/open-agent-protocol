@@ -44,7 +44,7 @@ one side of this line or the other. None is left unstated:
 | `+queue` | yes | [Decision 0007](decisions/0007-queue-delivery.md), accepted. |
 | `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
 | `+control-tools` | yes | [Decision 0011](decisions/0011-control-layer-provided-tools.md), accepted. |
-| `+persistence` | **no** | Its envelope types — `session.list.*`, `transcript.load.*`, `transcript.delta` — exist in no schema file and no Go type. The conformance draft describes a unit that has never been built. |
+| `+persistence` | **retired** | [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md) removes it. Its envelope types existed in no schema file and no Go type; the conformance draft described a unit that had never been built, and no endpoint may claim it against `0.1`. |
 | `+compound-open` | **no** | [Decision 0009](decisions/0009-compound-open.md) is `proposed`. A `proposed` record binds nothing. |
 | `+steer`, `+btw` | **no** | Staged, not graduated. No decision has taken either through the gate. |
 
@@ -271,10 +271,14 @@ record where the next reader sees it.
 Stated plainly, so the covered surface stays meaningful:
 
 - **Units not marked covered above.** A unit whose graduating decision is not
-  `accepted` may change in any way, including disappearing. That covers both
-  the staged units in [the graduation plan](drafts/staged-units-graduation.md)
-  and `+persistence`, which the conformance draft describes but nothing in this
-  repository implements.
+  `accepted` may change in any way, including disappearing — as `+persistence`
+  did. That covers the staged units in
+  [the graduation plan](drafts/staged-units-graduation.md), and is the reason
+  the table above states every unit rather than only the covered ones.
+- **Durable session listing and transcript loading.** v0.1 core has no
+  vocabulary for either, and [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md)
+  says why inventing one without native evidence is the wrong order. An
+  endpoint that has these today names them in an extension pack.
 - **Draft documents.** Everything in `drafts/` other than the requirement
   sections named under "What is covered" is working material.
 - **The adapters.** They track third-party harnesses at pinned commits and
