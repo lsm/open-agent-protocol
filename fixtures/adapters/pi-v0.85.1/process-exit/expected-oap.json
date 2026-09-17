@@ -29,7 +29,8 @@
       "error": {
         "code": "pi_process_exit",
         "message": "fixture process exit"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 2,
     "timestamp_ms": 5,

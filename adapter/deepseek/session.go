@@ -907,6 +907,14 @@ func (s *Session) abortPreStart(run *runState, err error) {
 	}
 }
 func (s *Session) failRun(run *runState, code, msg string) {
+	s.failRunSettled(run, code, msg, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right wherever
+// the harness's own frames carried the failure; the transport-death path
+// passes protocol.SettledByInferred, having observed no terminal for the run.
+func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 	if run == nil {
 		return
 	}
@@ -914,7 +922,7 @@ func (s *Session) failRun(run *runState, code, msg string) {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: %s", ErrNativeProtocol, msg))
 		return
 	}
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}, SettledBy: settledBy}, true)
 }
 func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 	s.mu.Lock()
@@ -946,7 +954,7 @@ func (s *Session) transportFailed() {
 	}
 	s.mu.Unlock()
 	if !closed && run != nil {
-		s.failRun(run, "deepseek_process_exit", fmt.Sprint(s.client.Err()))
+		s.failRunSettled(run, "deepseek_process_exit", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)
 	}
 }
 func (s *Session) emit(run *runState, t protocol.EnvelopeType, p any, terminal bool) error {

@@ -4697,6 +4697,9 @@
     {"id":"control-call-recovered-cancelled","path":"valid/control-call-recovered-cancelled.json","kind":"positive","valid":true,"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
     {"id":"control-call-recovered-ack-reported","path":"valid/control-call-recovered-ack-reported.json","kind":"positive","valid":true,"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
     {"id":"control-call-recovered-state-keeps-resolved","path":"semantic-invalid/control-call-recovered-state-keeps-resolved.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-recovered-ack-omitted","path":"semantic-invalid/control-call-recovered-ack-omitted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]}
+    {"id":"control-call-recovered-ack-omitted","path":"semantic-invalid/control-call-recovered-ack-omitted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
+
+    {"id":"terminal-provenance-inferred","path":"valid/terminal-provenance-inferred.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core"],"provenance":["decisions/0010-terminal-provenance.md"]},
+    {"id":"terminal-provenance-bad-enum","path":"schema-invalid/terminal-provenance-bad-enum.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core"],"provenance":["decisions/0010-terminal-provenance.md"]}
   ]
 }

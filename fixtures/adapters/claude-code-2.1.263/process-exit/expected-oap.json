@@ -51,7 +51,8 @@
       "error": {
         "code": "claude_process_exit",
         "message": "io: read/write on closed pipe"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 3,
     "timestamp_ms": 5,

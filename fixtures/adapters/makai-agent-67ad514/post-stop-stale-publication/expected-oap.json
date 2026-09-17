@@ -45,7 +45,8 @@
     "payload": {
       "session_id": "session",
       "run_id": "run-4",
-      "reason": "Makai confirmed destructive session stop"
+      "reason": "destructive session stop",
+      "settled_by": "inferred"
     },
     "sequence": 3,
     "timestamp_ms": 10,

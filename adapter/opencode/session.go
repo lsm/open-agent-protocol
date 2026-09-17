@@ -242,7 +242,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	nativeMessage := native.MessageID(s.ids.NewID("opencode-message"))
 	if !nativeMessage.Valid() {
 		s.answerRun(run)
-		s.abandon(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message")
+		s.abandon(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message", protocol.SettledByInferred)
 		return reservation, stream, nil
 	}
 	run.nativeMessageID = nativeMessage
@@ -261,7 +261,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		delete(s.pending, nativeMessage)
 		s.mu.Unlock()
 		s.answerRun(run)
-		s.abandon(run, "opencode_admission_ambiguous", err.Error())
+		s.abandon(run, "opencode_admission_ambiguous", err.Error(), settledByFor(err))
 		return reservation, stream, nil
 	}
 	if admitted.ID != nativeMessage {
@@ -269,7 +269,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		delete(s.pending, nativeMessage)
 		s.mu.Unlock()
 		s.answerRun(run)
-		s.abandon(run, "opencode_foreign_admission", fmt.Sprintf("server admitted %s for request %s", admitted.ID, nativeMessage))
+		s.abandon(run, "opencode_foreign_admission", fmt.Sprintf("server admitted %s for request %s", admitted.ID, nativeMessage), "")
 		return reservation, stream, nil
 	}
 	reservation.MessageIDs = []protocol.MessageID{protocol.MessageID(admitted.ID)}
@@ -477,7 +477,7 @@ func (s *session) dispatch() {
 
 func (s *session) handleEventLocked(event native.Event) {
 	if event.Durable.AggregateID != string(s.nativeID) {
-		s.abandon(nil, "opencode_foreign_session", "durable event belongs to another session")
+		s.abandon(nil, "opencode_foreign_session", "durable event belongs to another session", "")
 		return
 	}
 	s.mu.Lock()
@@ -821,7 +821,7 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 	}()
 	proceed, err := s.awaitQuiescenceLocked(run)
 	if err != nil {
-		s.abandon(run, "opencode_quiescence_failed", err.Error())
+		s.abandon(run, "opencode_quiescence_failed", err.Error(), settledByFor(err))
 		return
 	}
 	if !proceed {
@@ -841,7 +841,7 @@ func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
 		}
 		page, err := s.client.History(s.settleContext(), s.nativeID, after, s.historyLimit)
 		if err != nil {
-			s.abandon(run, "opencode_history_failed", err.Error())
+			s.abandon(run, "opencode_history_failed", err.Error(), settledByFor(err))
 			return
 		}
 		for _, event := range page.Events {
@@ -1178,12 +1178,16 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		// here would cancel the wrong work. The reservation is therefore
 		// dropped adapter-side and settles pre-start, and a later promotion
 		// for it is ignored — the terminal has already absorbed the run.
+		// Nothing is sent for this run and nothing is heard about it: the
+		// server still holds the input and may yet promote it, and this
+		// terminal is the adapter's own decision to stop listening. It
+		// asserts a cancellation no evidence reports, which is inferred.
 		<-run.admitted
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion"}, true)
+		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion", SettledBy: protocol.SettledByInferred}, true)
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
 	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
-		s.abandon(run, "opencode_cancellation_ambiguous", err.Error())
+		s.abandon(run, "opencode_cancellation_ambiguous", err.Error(), settledByFor(err))
 		return protocol.RunCancelResponse{}, err
 	}
 	if prompted {
@@ -1317,8 +1321,17 @@ func (s *session) settleTools(run *runState, cancel bool) {
 }
 
 func (s *session) failRun(run *runState, code, message string) {
+	s.failRunSettled(run, code, message, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right for a
+// failure the server's own durable events carried — a failed step, an invalid
+// tool lifecycle. Every settlement abandon synthesizes passes
+// protocol.SettledByInferred instead, having observed no terminal for the run.
+func (s *session) failRunSettled(run *runState, code, message, settledBy string) {
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
 }
 
 func (s *session) transportFailed() {
@@ -1330,7 +1343,7 @@ func (s *session) transportFailed() {
 	if err == nil {
 		err = io.EOF
 	}
-	s.abandon(nil, "opencode_stream_failed", err.Error())
+	s.abandon(nil, "opencode_stream_failed", err.Error(), protocol.SettledByInferred)
 }
 
 // abandon settles every admitted run when the session stops being usable.
@@ -1349,7 +1362,20 @@ func (s *session) transportFailed() {
 // passing lost its queue slot before ever being promoted, which is what
 // queue_dropped names — one already promoted lost whatever the failure was,
 // and saying queue_dropped for that would name the wrong thing.
-func (s *session) abandon(origin *runState, code, message string) {
+// settledByFor reports the terminal provenance of a failed native call. An
+// *native.APIError is the server answering this request — a definite status
+// and tag it chose to send — which is run-scoped evidence, so a terminal drawn
+// from it is observed. Any other error means no answer came back at all, and
+// the terminal is concluded from that silence.
+func settledByFor(err error) string {
+	var api *native.APIError
+	if errors.As(err, &api) {
+		return ""
+	}
+	return protocol.SettledByInferred
+}
+
+func (s *session) abandon(origin *runState, code, message, settledBy string) {
 	s.mu.Lock()
 	run, reserved := s.active, s.reserved
 	closed := s.closed
@@ -1360,18 +1386,23 @@ func (s *session) abandon(origin *runState, code, message string) {
 	if closed {
 		return
 	}
+	// settledBy is the caller's: abandon is reached both from evidence the
+	// server sent and from its silence, and only the caller knows which.
 	if run != nil && !run.terminal {
 		<-run.admitted
-		s.failRun(run, code, message)
+		s.failRunSettled(run, code, message, settledBy)
 	}
 	if reserved != nil && !reserved.terminal {
 		<-reserved.admitted
-		failCode, failMessage := code, message
+		failCode, failMessage, failSettledBy := code, message, settledBy
 		if reserved != origin && !reserved.promotionSeen {
 			failCode = "queue_dropped"
 			failMessage = "the reservation was dropped before promotion: " + message
+			// This reservation was only caught in passing: whatever the
+			// server said, it said nothing about this run.
+			failSettledBy = protocol.SettledByInferred
 		}
-		s.failRun(reserved, failCode, failMessage)
+		s.failRunSettled(reserved, failCode, failMessage, failSettledBy)
 	}
 }
 

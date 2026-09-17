@@ -28,7 +28,7 @@
       "run_id": "run-b",
       "error": {
         "code": "acp_prompt_error",
-        "message": "fixture prompt failure"
+        "message": "acp rpc error -32603 for request 3: fixture prompt failure"
       }
     },
     "sequence": 2,

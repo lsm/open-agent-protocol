@@ -76,7 +76,8 @@
       "error": {
         "code": "deepseek_process_exit",
         "message": "deepseek native: invalid pinned message: unknown required event \"future/required-control\""
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 2,
     "timestamp_ms": 7,

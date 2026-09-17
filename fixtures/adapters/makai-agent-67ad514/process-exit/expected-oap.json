@@ -30,7 +30,8 @@
       "error": {
         "code": "makai_transport_failure",
         "message": "EOF"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 2,
     "timestamp_ms": 7,

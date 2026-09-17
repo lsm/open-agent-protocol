@@ -111,6 +111,18 @@ func (f *fakeClient) result(t *testing.T, sequence uint64, result any) {
 	f.inbound <- stdio.Inbound{Envelope: &env}
 }
 
+// stopped publishes a bare session-scoped agent_stopped, the frame Makai sends
+// when it tears the native session down without a pending cancellation.
+func (f *fakeClient) stopped(t *testing.T, sequence uint64) {
+	t.Helper()
+	id := native.MessageID(fmt.Sprintf("00000000000000000000%06d", sequence+100))
+	env, err := native.NewEnvelope(native.TypeAgentStopped, "Abcdefghijklmnopqrstu", id, sequence, int64(sequence), native.AgentStopped{SessionID: "Abcdefghijklmnopqrstu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.inbound <- stdio.Inbound{Envelope: &env}
+}
+
 func openTest(t *testing.T, capacity int) (base.Session, *fakeClient) {
 	t.Helper()
 	client := newFakeClient()
@@ -390,4 +402,33 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 		out[i] = events[i].Type
 	}
 	return out
+}
+
+// An unsolicited agent_stopped is session-scoped evidence: it reports that the
+// native session stopped, never that this run ended. The terminal the adapter
+// derives from it is therefore inferred, and under Decision 0010 it must say
+// so — a silent terminal would claim the adapter watched the run end.
+func TestUnsolicitedSessionStopSettlesInferred(t *testing.T) {
+	session, client := openTest(t, 32)
+	response, stream := submitTest(t, session)
+	client.stopped(t, 2)
+	events := collect(t, stream)
+	if len(events) == 0 {
+		t.Fatal("no events")
+	}
+	terminal := events[len(events)-1]
+	if terminal.Type != protocol.TypeRunFailed {
+		t.Fatalf("terminal=%s, want run.failed", terminal.Type)
+	}
+	var payload protocol.RunFailedPayload
+	if err := terminal.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "makai_unsolicited_session_stop" {
+		t.Fatalf("code=%s", payload.Error.Code)
+	}
+	if payload.SettledBy != protocol.SettledByInferred {
+		t.Fatalf("settled_by=%q, want %q", payload.SettledBy, protocol.SettledByInferred)
+	}
+	assertValidTrace(t, response, events)
 }

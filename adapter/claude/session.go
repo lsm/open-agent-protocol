@@ -1357,6 +1357,15 @@ func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 }
 
 func (s *Session) failRun(run *runState, code, msg string) {
+	s.failRunSettled(run, code, msg, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right wherever
+// the CLI's own frames carried the failure. Callers pass
+// protocol.SettledByInferred only where the adapter concluded the terminal
+// itself, having never observed one for the run.
+func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 	if run == nil {
 		return
 	}
@@ -1364,7 +1373,7 @@ func (s *Session) failRun(run *runState, code, msg string) {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: %s", ErrNativeProtocol, msg))
 		return
 	}
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}, SettledBy: settledBy}, true)
 }
 
 func (s *Session) transportFailed() {
@@ -1380,7 +1389,9 @@ func (s *Session) transportFailed() {
 	s.mu.Unlock()
 	if !closed && run != nil {
 		if run.started {
-			s.failRun(run, "claude_process_exit", fmt.Sprint(s.client.Err()))
+			// The transport died with the run still open: the adapter never
+			// saw a result for it and concludes the terminal from the loss.
+			s.failRunSettled(run, "claude_process_exit", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)
 		} else {
 			s.abortPreStartUnlocked(run, fmt.Errorf("%w: %v", ErrNativeProtocol, s.client.Err()))
 		}

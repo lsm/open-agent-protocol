@@ -1110,7 +1110,9 @@ func (s *Session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	// overtake a resolution already admitted here.
 	if err := s.client.Respond(ctx, response); err != nil {
 		binding.phase = interactionResolved
-		s.failRun(binding.run, "pi_interaction_response_failed", err.Error())
+		// The reverse-channel write failed, so the run's own stream carried
+		// nothing about its ending.
+		s.failRunSettled(binding.run, "pi_interaction_response_failed", err.Error(), protocol.SettledByInferred)
 		s.reduceMu.Unlock()
 		return err
 	}
@@ -1228,7 +1230,16 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	s.reduceMu.Unlock()
 	if err := s.callStrict(ctx, native.Command{Type: native.CommandAbort}, nil); err != nil {
 		s.reduceMu.Lock()
-		s.failRun(run, "pi_abort_failed", err.Error())
+		// A RemoteError is pi answering the abort with a failure, which is
+		// run-scoped evidence about this run and stays observed. Any other
+		// error means the abort never landed, so the terminal is concluded
+		// from the silence.
+		settledBy := protocol.SettledByInferred
+		var remote *rpc.RemoteError
+		if errors.As(err, &remote) {
+			settledBy = ""
+		}
+		s.failRunSettled(run, "pi_abort_failed", err.Error(), settledBy)
 		s.reduceMu.Unlock()
 		return protocol.RunCancelResponse{}, err
 	}
@@ -1374,6 +1385,14 @@ func (s *Session) terminateBeforeStart(run *runState, err error) {
 }
 
 func (s *Session) failRun(run *runState, code, message string) {
+	s.failRunSettled(run, code, message, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right wherever
+// pi's own frames carried the failure; the transport-death path passes
+// protocol.SettledByInferred, having observed no terminal for the run.
+func (s *Session) failRunSettled(run *runState, code, message, settledBy string) {
 	if run == nil {
 		return
 	}
@@ -1384,7 +1403,7 @@ func (s *Session) failRun(run *runState, code, message string) {
 	}
 	run.signalStart(err)
 	s.settleChildren(run, true)
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
 }
 func (s *Session) transportFailed() {
 	s.mu.Lock()
@@ -1395,7 +1414,7 @@ func (s *Session) transportFailed() {
 	}
 	s.mu.Unlock()
 	if !closed && run != nil {
-		s.failRun(run, "pi_process_exit", fmt.Sprint(s.client.Err()))
+		s.failRunSettled(run, "pi_process_exit", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)
 	}
 }
 func (s *Session) emit(run *runState, t protocol.EnvelopeType, p any, terminal bool) error {

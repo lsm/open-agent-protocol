@@ -115,7 +115,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.unusable = true
 		s.mu.Unlock()
 		close(run.admitted)
-		s.failRun(run, "makai_admission_failed", err.Error())
+		// The submission is a bare Send with no answer awaited, so a failure
+		// here means nothing was ever reported back about this run — not that
+		// Makai refused it. Whether the bytes reached the wire is unknowable
+		// from the error alone.
+		s.failRunSettled(run, "makai_admission_failed", err.Error(), protocol.SettledByInferred)
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	s.mu.Lock()
@@ -123,7 +127,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.mu.Unlock()
 	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
-		s.failRun(run, "makai_admission_projection_failed", err.Error())
+		// The Send succeeded, so Makai holds the message and may well be
+		// executing the turn right now. This terminal is the adapter failing
+		// to project a run it never saw end, which is the strongest form of
+		// inference here, not the weakest.
+		s.failRunSettled(run, "makai_admission_projection_failed", err.Error(), protocol.SettledByInferred)
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	response := protocol.MessageSubmitResponse{SessionID: s.state.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), MessageIDs: messageIDs}
@@ -290,7 +298,10 @@ func (s *session) handleEnvelope(env native.Envelope) {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		s.failRun(run, "makai_unsolicited_session_stop", "Makai stopped the native session without a pending cancellation")
+		// agent_stopped is session-scoped: it says the session stopped, never
+		// that this run ended. The run terminal is concluded from it, exactly
+		// as on the requested-cancellation path.
+		s.failRunSettled(run, "makai_unsolicited_session_stop", "Makai stopped the native session without a pending cancellation", protocol.SettledByInferred)
 	case native.TypeToolStreaming, native.TypeToolResult, native.TypeSessionInfo, native.TypeAck, native.TypeNack, native.TypePong, native.TypeGoodbye:
 		return
 	default:
@@ -484,9 +495,15 @@ func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		reason := "Makai confirmed session-destructive cancellation"
+		// agent_end carried stop_reason "cancelled", so this terminal is an
+		// observed native fact on both branches and neither sets settled_by.
+		// The two reasons differ only in cause — whether the host asked for
+		// the cancellation or Makai took it unprompted — now that terminal
+		// provenance is carried by settled_by rather than by the choice
+		// between "confirmed" and "reported".
+		reason := "cancelled at the host's request"
 		if !cancelRequested {
-			reason = "Makai reported cancellation"
+			reason = "cancelled by Makai without a host request"
 		}
 		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: reason}, true)
 		return
@@ -596,7 +613,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		s.failRun(run, "makai_cancellation_ambiguous", err.Error())
+		s.failRunSettled(run, "makai_cancellation_ambiguous", err.Error(), protocol.SettledByInferred)
 		return protocol.RunCancelResponse{}, err
 	}
 	if response.Type == native.TypeAgentError {
@@ -621,8 +638,11 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	// execution publishes its final agent_end. That publish is then discarded.
 	// The correlated agent_stopped response is therefore the last observable
 	// cancellation evidence and must be normalized into adapter settlement.
+	// Normalizing a session-scoped stop into a run terminal the adapter never
+	// observed is exactly settled_by "inferred", so the reason is free to name
+	// the cause instead of claiming Makai confirmed the run's own settlement.
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "Makai confirmed destructive session stop"}, true)
+	_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "destructive session stop", SettledBy: protocol.SettledByInferred}, true)
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelled}, nil
 }
 func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.Recovery, base.EventStream, error) {
@@ -728,8 +748,17 @@ func (s *session) settleTools(run *runState, cancel bool) {
 	}
 }
 func (s *session) failRun(run *runState, code, message string) {
+	s.failRunSettled(run, code, message, "")
+}
+
+// failRunSettled fails a run with explicit terminal provenance. An empty
+// settledBy omits the member, which asserts observation and is right wherever
+// Makai's own frames carried the failure; the transport-death and
+// ambiguous-cancellation paths pass protocol.SettledByInferred, having
+// observed no terminal for the run.
+func (s *session) failRunSettled(run *runState, code, message, settledBy string) {
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
+	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
 }
 func (s *session) transportFailed() {
 	s.transitionMu.Lock()
@@ -743,7 +772,7 @@ func (s *session) transportFailed() {
 	s.mu.Unlock()
 	if !closed && run != nil {
 		<-run.admitted
-		s.failRun(run, "makai_transport_failure", fmt.Sprint(s.client.Err()))
+		s.failRunSettled(run, "makai_transport_failure", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)
 	}
 }
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {
