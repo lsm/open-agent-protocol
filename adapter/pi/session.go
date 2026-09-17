@@ -1230,9 +1230,16 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	s.reduceMu.Unlock()
 	if err := s.callStrict(ctx, native.Command{Type: native.CommandAbort}, nil); err != nil {
 		s.reduceMu.Lock()
-		// The abort never reached pi, so nothing was ever reported about how
-		// this run ended.
-		s.failRunSettled(run, "pi_abort_failed", err.Error(), protocol.SettledByInferred)
+		// A RemoteError is pi answering the abort with a failure, which is
+		// run-scoped evidence about this run and stays observed. Any other
+		// error means the abort never landed, so the terminal is concluded
+		// from the silence.
+		settledBy := protocol.SettledByInferred
+		var remote *rpc.RemoteError
+		if errors.As(err, &remote) {
+			settledBy = ""
+		}
+		s.failRunSettled(run, "pi_abort_failed", err.Error(), settledBy)
 		s.reduceMu.Unlock()
 		return protocol.RunCancelResponse{}, err
 	}
