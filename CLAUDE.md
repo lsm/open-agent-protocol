@@ -12,6 +12,7 @@ Go 1.27 module, no Makefile. CI (`.github/workflows/ci.yml`) has two independent
 
 ```sh
 test -z "$(gofmt -l .)"
+go run ./tools/nocomment --check   # zero-comments policy, ratcheted by tools/nocomment/allowlist.txt
 go vet ./...
 go test ./...
 go test -race ./...
@@ -109,6 +110,16 @@ Adding an adapter means all of the above plus: a `case` in `serve/registry.go`'s
 
 ## Conventions
 
+- **Source files carry zero comments.** Rationale lives in commit messages, PR
+  descriptions, `decisions/`, and `drafts/` — not in code. `tools/nocomment`
+  (vendored from `lsm/nocomment-for-agents`) enforces it, and
+  `tools/nocomment/allowlist.txt` is a shrink-only ratchet listing the files
+  that still carry comments. New and rewritten files are stripped and left off
+  the allowlist; an allowlisted file loses its entry when its comments go. Only
+  toolchain-honored directives (`//go:build`, `//go:embed`, `//go:generate`,
+  `//nolint`) are exempt, and the stripper is AST-based so that exemption set
+  cannot drift from the toolchain. Never add a comment to a file that is not on
+  the allowlist.
 - Commit subjects are `<area>: <imperative sentence>` where area is a package or adapter name (`serve:`, `codex:`, `adapter:`, `fix:`).
 - Changing `schema/v0.1/*.json` requires matching edits to `protocol/`, the validator, a fixture, and `clients/ts/src/protocol.ts` (its `schema.test.ts` cross-checks the hand-written interfaces against the schema).
 - The hub, codecs, and clients never log envelope payloads or resolved environment values.
