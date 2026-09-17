@@ -14,6 +14,13 @@ resource provider, and binding can live in one process or across multiple
 transports while preserving the same protocol semantics. Adapters for existing
 SDKs or protocols are implementation shims, not a separate semantic layer.
 
+Implementing OAP natively? [**STABILITY.md**](STABILITY.md) is what this
+project commits to about the v0.1 core surface: what is frozen, what may still
+be added, how conformance is defined and answered, how long a deprecation runs,
+and what you are owed before a breaking change lands. Implementers who want
+notice of proposed breaking changes add themselves to
+[IMPLEMENTERS.md](IMPLEMENTERS.md).
+
 Current drafts:
 
 - [Conformance Draft](drafts/conformance.md)
