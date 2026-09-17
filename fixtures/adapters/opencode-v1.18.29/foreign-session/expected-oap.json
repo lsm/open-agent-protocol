@@ -11,8 +11,7 @@
       "error": {
         "code": "opencode_foreign_session",
         "message": "durable event belongs to another session"
-      },
-      "settled_by": "inferred"
+      }
     },
     "sequence": 1,
     "timestamp_ms": 3,

@@ -113,11 +113,14 @@ A terminal is **inferred** when the endpoint had no such evidence to rule on:
   either, and an endpoint that cannot tell the two apart should not be emitting
   the member at all.
 
-One case deliberately falls outside the member. A submission that fails before
-its run starts is not an inference: the endpoint watched its own request fail,
-there was never a run stream for it to be deprived of, and most adapters here
-settle that case without emitting a terminal at all. An endpoint that does emit
-a pre-start terminal there leaves `settled_by` absent.
+The test does not depend on whether the run ever started. A submission that
+fails before its start is judged on the same question as any other terminal: a
+definite refusal the endpoint received — an HTTP status the server chose to
+send, a typed error answering the request — is observed, while a request that
+vanished into a dead transport is inferred. Most adapters here settle a
+pre-start failure without emitting a terminal at all, so the question rarely
+arises; where one does emit it, which Decision 0002 admits as a pre-start
+`run.failed`, the member applies on exactly these terms.
 
 ### The member is per-terminal, not per-endpoint
 

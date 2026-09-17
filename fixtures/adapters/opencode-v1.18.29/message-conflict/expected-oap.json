@@ -10,9 +10,8 @@
       "run_id": "run-1",
       "error": {
         "code": "opencode_admission_ambiguous",
-        "message": "HTTP 409 ConflictError"
-      },
-      "settled_by": "inferred"
+        "message": "opencode native: HTTP 409 ConflictError"
+      }
     },
     "sequence": 1,
     "timestamp_ms": 3,
