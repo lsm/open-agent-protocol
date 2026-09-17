@@ -280,7 +280,7 @@ func runCorpusRequest(t *testing.T, client *fakeClient, session adapter.Session,
 			err := session.Resolve(context.Background(), adapter.InteractionResolution{
 				RunID: admission.RunID, RespondedBy: "user",
 				Permission: &protocol.PermissionResolveRequest{
-					InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+					InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user",
 					SessionID: admission.SessionID, RunID: admission.RunID,
 					ChoiceID: frame.Resolve.ChoiceID, Granted: frame.Resolve.Granted,
 				},
@@ -297,7 +297,7 @@ func runCorpusRequest(t *testing.T, client *fakeClient, session adapter.Session,
 			err := session.Resolve(context.Background(), adapter.InteractionResolution{
 				RunID: admission.RunID, RespondedBy: "user",
 				Input: &protocol.UserInputResolveRequest{
-					InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+					InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user",
 					SessionID: admission.SessionID, RunID: admission.RunID, Answers: frame.Resolve.Answers,
 				},
 			})

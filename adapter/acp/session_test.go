@@ -772,7 +772,7 @@ func TestPermissionResolveRejectsForeignRequester(t *testing.T) {
 	if err := s.Resolve(context.Background(), resolution); !errors.Is(err, base.ErrInvalidResolution) {
 		t.Fatalf("foreign requester: got %v, want ErrInvalidResolution", err)
 	}
-	resolution.Permission.RequestedBy = "agent"
+	resolution.Permission.RequestedBy = endpointID
 	if err := s.Resolve(context.Background(), resolution); err != nil {
 		t.Fatalf("valid requester rejected after foreign one: %v", err)
 	}
@@ -870,7 +870,7 @@ func TestPermissionGateIsCorrelatedWhenPublished(t *testing.T) {
 		t.Fatalf("gate observed with request event id %q, want %q", recorded, gate.ID)
 	}
 
-	if err := s.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true}}); err != nil {
+	if err := s.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	resolved := adaptertest.Next(t, stream, 2*time.Second)

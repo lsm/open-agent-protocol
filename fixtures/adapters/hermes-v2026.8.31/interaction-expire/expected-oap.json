@@ -26,7 +26,7 @@
     "id": "event-e",
     "payload": {
       "interaction_id": "interaction-d",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -85,7 +85,7 @@
     "id": "event-g",
     "payload": {
       "interaction_id": "interaction-d",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",

@@ -27,7 +27,7 @@
       "session_id": "session",
       "run_id": "run-1",
       "tool_call_id": "tool-call-6",
-      "requested_by": "agent",
+      "requested_by": "opencode.server",
       "execution_owner": "opencode-server",
       "name": "read",
       "arguments_json": {
@@ -51,7 +51,7 @@
       "session_id": "session",
       "run_id": "run-1",
       "tool_call_id": "tool-call-6",
-      "requested_by": "agent",
+      "requested_by": "opencode.server",
       "execution_owner": "opencode-server",
       "name": "read"
     },
@@ -94,7 +94,7 @@
       "session_id": "session",
       "run_id": "run-1",
       "tool_call_id": "tool-call-6",
-      "requested_by": "agent",
+      "requested_by": "opencode.server",
       "execution_owner": "opencode-server",
       "name": "read",
       "error": {
