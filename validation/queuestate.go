@@ -707,6 +707,7 @@ func (s *state) checkEntryPending(i, line int, e protocol.Envelope, pointer stri
 	// any — those are the entries whose reconciliation depends on a position.
 	if len(listed) > 0 && entry.AsOfSequence == nil {
 		s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/as_of_sequence", "an entry carrying pending_interactions must state the position it was captured at", "a capture position", "absent", string(r.id))
+		s.checkEntryAcknowledged(i, line, e, pointer, entry, r, nil)
 		return
 	}
 	if entry.AsOfSequence == nil {
@@ -718,17 +719,24 @@ func (s *state) checkEntryPending(i, line int, e protocol.Envelope, pointer stri
 		if s.queueOffered() && !sameIDSet(unresolved, knownTo(r, listed)) {
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/pending_interactions", "entry does not report the unresolved interactions its run is blocked on", describeIDs(unresolved), describeIDs(listed), string(r.id))
 		}
+		s.checkEntryAcknowledged(i, line, e, pointer, entry, r, unresolved)
 		return
 	}
 	seq := *entry.AsOfSequence
 	if seq > r.next-1 {
 		s.deferred = append(s.deferred, &deferredStateClaim{kind: claimCapture, session: r.session, run: r.id, sequence: seq, listed: listed, index: i, line: line, envelope: e})
+		// The pending set is reconciled when the trace reaches the position;
+		// the acknowledged subset's own two directions — every id is one the
+		// entry lists, and every id has an acknowledgement the trace accepted
+		// — hold at any position and are judged here.
+		s.checkEntryAcknowledged(i, line, e, pointer, entry, r, nil)
 		return
 	}
 	want := pendingAt(r, seq)
 	if !sameIDSet(want, knownTo(r, listed)) {
 		s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/pending_interactions", "active_runs entry does not report the run's unresolved interactions at the position it states", describeIDs(want), describeIDs(listed), string(r.id))
 	}
+	s.checkEntryAcknowledged(i, line, e, pointer, entry, r, want)
 }
 
 // recordSettledClaims registers every run the snapshot says it has already

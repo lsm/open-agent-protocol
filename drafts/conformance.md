@@ -30,6 +30,7 @@ Conformance units are additive:
 - `+user-input`
 - `+run-controls`
 - `+tool-sources`
+- `+control-tools`
 - `+models`
 - `+queue`
 - `+steer`
@@ -413,8 +414,76 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   a published source — in any of those, or in the capability descriptor's own
   `sources`, top level or under a layer.
 
-Runtime attach and detach, a catalog served without a session, and
-control-layer-provided tools are outside this unit; the last is `+control-tools`.
+Runtime attach and detach and a catalog served without a session are outside
+this unit; control-layer-provided tools are `+control-tools`, below.
+
+### `+control-tools`
+
+An implementation conforms to `+control-tools` if the control layer can supply
+tools at session open and execute their calls. Executable since
+[Decision 0011](../decisions/0011-control-layer-provided-tools.md).
+
+An implementation:
+
+- advertises `action.tools.provide` with an effective support level other than
+  `unavailable`, and refuses a `session.open.request` carrying `tools` it has
+  not advertised with `unsupported_feature`, `details.feature:
+  "action.tools.provide"`, and `details.reason: "unadvertised"`. An open
+  admitted without the key is `unavailable_capability`;
+- provisions the supplied array whole or refuses the open. A refusal is
+  `unsupported_feature` with `details.reason: "unsatisfiable"` and the detail
+  that names the offending entry: `details.tool` for a foreign
+  `execution_owner` or a colliding `name`, `details.source` for a `source`
+  neither the descriptor nor the same open declares. A refusal under another
+  code, or without that detail, is diagnosed as the defect it failed to name —
+  `wrong_tool_owner`, `duplicate_tool_name`, or `unmatched_tool_source` — and so
+  is an open admitted despite the defect;
+- discloses in `limits` every constraint it actually enforces on a `tools`
+  array — `max_tools`, `name_pattern`, `schema_dialect` — because refusing an
+  array that carries no defect and violates no disclosed limit is
+  `undisclosed_provide_limit`. A `schema_dialect` binds only a definition that
+  declares a different one;
+- lists every provided tool in each session-scoped catalog, under the owner,
+  schema, and source it was supplied with, for the session's lifetime
+  (`catalog_mismatch`), and keeps the tool's name unique and its source
+  resolvable across every capability refresh;
+- opens an interaction for each call to a provided tool: `action.call.requested`
+  with `interaction_id`, `requested_by`, `responded_by`, and the control
+  participant as `execution_owner` (`illegal_tool_transition` without the
+  first two), routed to the owner the catalog records (`wrong_tool_owner`
+  otherwise);
+- accepts `action.call.resolve.request` in three arms — `started`, `result`,
+  `error`, exactly one — and answers each with an
+  `action.call.resolve.response`. A valid resolution is accepted; a refusal
+  carries the highest reason the request satisfies, in the order
+  `unknown_interaction`, `wrong_responder`, `already_resolved`,
+  `repeated_acknowledgement`, `late_acknowledgement`. `already_resolved` is a
+  terminal the trace carries, or — for a `result` or `error` arm — a resolution
+  already accepted; `late_acknowledgement` is a `started` arriving after the
+  sender's own resolution was accepted and before its terminal was published.
+  Only an `already_resolved` refusal names a settlement, in
+  `details.settlement_id`, because it is the only reason that has one: the
+  terminal where one exists, and otherwise the accepted
+  `action.call.resolve.response` that settled the call. Naming the acceptance
+  is what gives the window between a resolution and its terminal a conforming
+  refusal at all, which is the window a lost response and its retry land in;
+- emits `action.call.started` only once an accepted resolution evidences
+  execution, and derives each terminal from an accepted resolution of the
+  matching arm, carrying exactly what that resolution stated
+  (`resolution_payload_mismatch` otherwise). Every resolve-derived event names
+  its request in `request_id`;
+- counts unresolved control-owned calls among each `active_runs` entry's
+  `pending_interactions`, and reports in `acknowledged_interactions` the subset
+  whose `started` it accepted;
+- settles a call a reattach recovered on the same terms as any other, even
+  though what authorized it is behind the cursor. Its terminal is where it
+  leaves the pending set, so a run that terminates after it is not carrying a
+  pending interaction and a snapshot taken after it does not list one; an
+  acknowledgement accepted after the reattach is reported like any other, and
+  one accepted before it is neither known nor required.
+
+Per-submit provisioning, runtime attach and detach of provided tools, and
+deadlines on an unanswered call are outside this unit.
 
 ### `+models`
 

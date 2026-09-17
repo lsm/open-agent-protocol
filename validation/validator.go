@@ -476,6 +476,10 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.ToolsListResponse{}
 	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
 		return &protocol.ActionCallPayload{}
+	case protocol.TypeActionCallResolveRequest:
+		return &protocol.ActionCallResolveRequest{}
+	case protocol.TypeActionCallResolveResponse:
+		return &protocol.ActionCallResolveResponse{}
 	case protocol.TypeActionPermissionRequested:
 		return &protocol.PermissionRequestedPayload{}
 	case protocol.TypeActionPermissionResolveRequest:

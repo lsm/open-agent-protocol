@@ -1,0 +1,194 @@
+[
+  {
+    "id": "init-req",
+    "payload": {
+      "participant": {
+        "id": "control",
+        "name": "Control layer"
+      },
+      "profiles": [
+        "open-agent-protocol.agent-control-core"
+      ],
+      "protocol_versions": [
+        "0.1"
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "protocol.initialize.request",
+    "version": "0.1"
+  },
+  {
+    "id": "init-resp",
+    "in_reply_to": "init-req",
+    "payload": {
+      "endpoint": {
+        "id": "agent",
+        "name": "Control-tools fixture endpoint"
+      },
+      "profile": "open-agent-protocol.agent-control-core",
+      "protocol_version": "0.1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "protocol.initialize.response",
+    "version": "0.1"
+  },
+  {
+    "id": "caps-req",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "caps-resp",
+    "in_reply_to": "caps-req",
+    "payload": {
+      "endpoint": {
+        "id": "agent",
+        "name": "Control-tools fixture endpoint"
+      },
+      "features": {
+        "action.tools.provide": {
+          "level": "native"
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.message.submit": {
+          "level": "native"
+        },
+        "session.open": {
+          "level": "native"
+        },
+        "session.state": {
+          "level": "native"
+        },
+        "tools": {
+          "level": "native"
+        }
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "open-req",
+    "payload": {
+      "recovery": {
+        "previous_run_id": "r1",
+        "recovered": true,
+        "resume_cursor": "41"
+      },
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "open-resp",
+    "in_reply_to": "open-req",
+    "payload": {
+      "active_run_id": "r1",
+      "active_runs": [
+        {
+          "as_of_sequence": 41,
+          "pending_interactions": [
+            "i-1"
+          ],
+          "relationship": "primary",
+          "run_id": "r1",
+          "status": "running"
+        }
+      ],
+      "recovery": {
+        "previous_run_id": "r1",
+        "recovered": true,
+        "resume_cursor": "41"
+      },
+      "session_id": "s1",
+      "status": "waiting_for_input"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "cancel-req",
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "session_id": "s1",
+    "type": "run.cancel.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "cancel-resp",
+    "in_reply_to": "cancel-req",
+    "payload": {
+      "accepted": true,
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "cancelling"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "session_id": "s1",
+    "type": "run.cancel.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "ev-cancelled",
+    "payload": {
+      "execution_owner": "control",
+      "interaction_id": "i-1",
+      "name": "echo",
+      "run_id": "r1",
+      "session_id": "s1",
+      "tool_call_id": "t-1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "sequence": 42,
+    "session_id": "s1",
+    "tool_call_id": "t-1",
+    "type": "action.call.cancelled",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "ev-run-cancelled",
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "run_id": "r1",
+    "sequence": 43,
+    "session_id": "s1",
+    "type": "run.cancelled",
+    "version": "0.1"
+  }
+]

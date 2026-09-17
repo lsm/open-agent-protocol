@@ -56,6 +56,8 @@ const (
 	TypeActionCallCompleted             EnvelopeType = "action.call.completed"
 	TypeActionCallFailed                EnvelopeType = "action.call.failed"
 	TypeActionCallCancelled             EnvelopeType = "action.call.cancelled"
+	TypeActionCallResolveRequest        EnvelopeType = "action.call.resolve.request"
+	TypeActionCallResolveResponse       EnvelopeType = "action.call.resolve.response"
 	TypeActionPermissionRequested       EnvelopeType = "action.permission.requested"
 	TypeActionPermissionResolveRequest  EnvelopeType = "action.permission.resolve.request"
 	TypeActionPermissionResolveResponse EnvelopeType = "action.permission.resolve.response"

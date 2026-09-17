@@ -1,0 +1,115 @@
+[
+  {
+    "id": "init-req",
+    "payload": {
+      "participant": {
+        "id": "control",
+        "name": "Control layer"
+      },
+      "profiles": [
+        "open-agent-protocol.agent-control-core"
+      ],
+      "protocol_versions": [
+        "0.1"
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "protocol.initialize.request",
+    "version": "0.1"
+  },
+  {
+    "id": "init-resp",
+    "in_reply_to": "init-req",
+    "payload": {
+      "endpoint": {
+        "id": "agent",
+        "name": "Control-tools fixture endpoint"
+      },
+      "profile": "open-agent-protocol.agent-control-core",
+      "protocol_version": "0.1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "protocol.initialize.response",
+    "version": "0.1"
+  },
+  {
+    "id": "caps-req",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "caps-resp",
+    "in_reply_to": "caps-req",
+    "payload": {
+      "endpoint": {
+        "id": "agent",
+        "name": "Control-tools fixture endpoint"
+      },
+      "features": {
+        "action.tools.provide": {
+          "level": "unavailable"
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.message.submit": {
+          "level": "native"
+        },
+        "session.open": {
+          "level": "native"
+        },
+        "session.state": {
+          "level": "native"
+        },
+        "tools": {
+          "level": "native"
+        }
+      }
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "open-req",
+    "payload": {
+      "session_id": "s1",
+      "tools": [
+        {
+          "execution_owner": "control",
+          "input_schema": {
+            "type": "object"
+          },
+          "name": "echo"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "control-tools-v1",
+    "id": "open-resp",
+    "in_reply_to": "open-req",
+    "payload": {
+      "session_id": "s1",
+      "status": "idle"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.response",
+    "version": "0.1"
+  }
+]

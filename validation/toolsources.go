@@ -40,21 +40,28 @@ type pendingList struct {
 	honour bool
 }
 
-// pendingOpen is what one session.open.request carrying tool_sources left for
-// its correlated response to settle.
+// pendingOpen is what one session.open.request carrying tool_sources or tools
+// left for its correlated response to settle. One open can elect both keys, so
+// the expectations of both are collected and the refusal precedence picks the
+// one the response owes — a single error.response carries one code, and the
+// caller acts on the most permanent thing wrong with its request.
 type pendingOpen struct {
 	index, line int
 	attachments []protocol.ToolSourceAttachment
+	tools       []protocol.ToolDefinition
 	expectation *controlExpectation
-	// withinLimits marks an attachment array that violates no limit the
-	// endpoint disclosed, so refusing it is undisclosed_attach_limit.
-	withinLimits bool
-	// limitRefusal is the shape a refusal must take when the array does
+	// honourDiagnostic is what refusing this open earns when it carries no
+	// defect any rule names and violates no limit the endpoint disclosed;
+	// honourKey names the capability that refusal would be dishonouring.
+	// Empty when some rule already owns the response.
+	honourDiagnostic string
+	honourKey        string
+	// limitRefusal is the shape a refusal must take when the request does
 	// violate a disclosed limit. It is not an expectation: exceeding a limit
 	// permits a refusal without requiring one, since a limit is the endpoint's
 	// own disclosure and admitting more than it promised breaks nothing a
 	// caller relied on. So an admitted open owes nothing here, while a refused
-	// one still owes a refusal that says which source to drop.
+	// one still owes a refusal that says which entry to drop.
 	limitRefusal *controlExpectation
 }
 
@@ -64,6 +71,11 @@ type sessionCatalog struct {
 	revision string
 	sources  map[string]bool
 	tools    map[string]string
+	// owners is the catalog's tool-to-executor mapping, which the
+	// control-tools unit judges a call's execution_owner against: once tools
+	// can have two owners, routing one to the wrong participant is a defect
+	// the attribution mapping cannot see.
+	owners map[string]protocol.ParticipantID
 }
 
 // toolSourceMap indexes descriptors by id, reporting the first duplicate.
@@ -134,11 +146,16 @@ func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p proto
 	// carries its own diagnostic for that, so an ambiguous catalog attributes
 	// nothing rather than attributing arbitrarily.
 	s.descriptorAttribution = nil
+	s.descriptorOwners = nil
 	if !s.catalogAmbiguous {
 		s.descriptorAttribution = make(map[string]string, len(tools))
+		s.descriptorOwners = make(map[string]protocol.ParticipantID, len(tools))
 		for _, tool := range tools {
 			if tool.Source != "" {
 				s.descriptorAttribution[tool.Name] = tool.Source
+			}
+			if tool.ExecutionOwner != "" {
+				s.descriptorOwners[tool.Name] = tool.ExecutionOwner
 			}
 		}
 	}
@@ -162,6 +179,14 @@ func (s *state) checkDescriptorSources(i, line int, e protocol.Envelope, p proto
 			}
 		}
 	}
+	// A refresh is judged against every session's provided tools on the same
+	// terms and for the same reason: they are session-lifetime facts, and a
+	// post-refresh list is not mandatory.
+	nativeNames := make(map[string]bool, len(names))
+	for _, name := range names {
+		nativeNames[name] = true
+	}
+	s.checkRefreshAgainstProvided(i, line, e, declared, nativeNames)
 }
 
 // sessionIDsInOrder gives the tracked sessions a stable order, so a descriptor
@@ -318,12 +343,17 @@ func (s *state) toolsListResponse(i, line int, e protocol.Envelope) {
 			s.addExpected(CodeCatalogMismatch, i, line, e, "/payload/sources", "a session catalog describes an attached source differently", describeSource(attached), describeSource(listed), string(p.SessionID))
 		}
 	}
-	catalog := &sessionCatalog{revision: s.currentCapability, sources: map[string]bool{}, tools: map[string]string{}}
+	// Provisioning is for the session's lifetime too, and all-or-nothing, so
+	// a provided tool never drops out of a later catalog and never changes
+	// the members it was supplied with.
+	s.checkCatalogProvided(i, line, e, p.SessionID, track, p.Tools)
+	catalog := &sessionCatalog{revision: s.currentCapability, sources: map[string]bool{}, tools: map[string]string{}, owners: map[string]protocol.ParticipantID{}}
 	for id := range declared {
 		catalog.sources[id] = true
 	}
 	for _, tool := range p.Tools {
 		catalog.tools[tool.Name] = tool.Source
+		catalog.owners[tool.Name] = tool.ExecutionOwner
 	}
 	track.toolCatalog = catalog
 }
@@ -416,15 +446,75 @@ func escapePointerToken(token string) string {
 func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 	var p protocol.SessionOpenRequest
 	_ = e.DecodePayload(&p)
-	if len(p.ToolSources) == 0 {
+	if len(p.ToolSources) == 0 && len(p.Tools) == 0 {
 		return
 	}
-	pending := &pendingOpen{index: i, line: line, attachments: p.ToolSources}
+	pending := &pendingOpen{index: i, line: line, attachments: p.ToolSources, tools: p.Tools}
 	defer func() { s.pendingOpens[e.ID] = pending }()
-	level, judged := s.controlDescriptor(i, line, e, protocol.FeatureToolSourcesAttach)
-	if !judged {
+	// One descriptor read for an open that may elect two keys: the
+	// missing-descriptor and stale-revision branches belong to the open, not
+	// to either capability, and diagnosing them once per key would report one
+	// defect twice.
+	if _, judged := s.controlDescriptor(i, line, e, protocol.FeatureToolSourcesAttach); !judged {
 		return
 	}
+	var defects []*controlExpectation
+	var limits []*controlExpectation
+	honours := map[string]string{}
+	if len(p.ToolSources) > 0 {
+		attachDefects, attachLimit, honour := s.attachExpectations(p)
+		defects = append(defects, attachDefects...)
+		if attachLimit != nil {
+			limits = append(limits, attachLimit)
+		}
+		if honour {
+			honours[protocol.FeatureToolSourcesAttach] = CodeUndisclosedAttachLimit
+		}
+	}
+	if len(p.Tools) > 0 {
+		provideDefects, provideLimit, honour := s.provideExpectations(p)
+		defects = append(defects, provideDefects...)
+		if provideLimit != nil {
+			limits = append(limits, provideLimit)
+		}
+		if honour {
+			honours[protocol.FeatureToolsProvide] = CodeUndisclosedProvideLimit
+		}
+	}
+	sort.SliceStable(defects, func(a, b int) bool { return defects[a].less(defects[b]) })
+	if len(defects) > 0 {
+		pending.expectation = defects[0]
+		return
+	}
+	sort.SliceStable(limits, func(a, b int) bool { return limits[a].less(limits[b]) })
+	if len(limits) > 0 {
+		pending.limitRefusal = limits[0]
+		return
+	}
+	// Nothing is wrong with the request, so refusing it dishonours whichever
+	// key it elected. Two elected keys are ordered the way every other
+	// refusal precedence tie is broken, by the key name.
+	for _, key := range sortedKeys(honours) {
+		pending.honourKey, pending.honourDiagnostic = key, honours[key]
+		break
+	}
+}
+
+// sortedKeys gives a map's keys a stable order.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// attachExpectations judges one open's tool_sources array: the capability it
+// elects, the consent it needed, and every defect the validator can already
+// see in the array.
+func (s *state) attachExpectations(p protocol.SessionOpenRequest) (defects []*controlExpectation, limit *controlExpectation, honour bool) {
+	level := s.features[protocol.FeatureToolSourcesAttach]
 	support := s.featureDetail(protocol.FeatureToolSourcesAttach)
 	// An attach capability that discloses no session-open mode cannot admit an
 	// attachment at session open, whatever its level says: the mode is the
@@ -437,25 +527,22 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 		// is missing has no use for a detail about one of its modes, and a
 		// single error.response cannot carry both `unadvertised` and
 		// `unsatisfiable`. Every rung-3 expectation below is discharged.
-		pending.expectation = &controlExpectation{
+		return []*controlExpectation{{
 			rung: rungCapability, key: protocol.FeatureToolSourcesAttach, pointer: "/payload/tool_sources",
 			code: errorUnsupportedFeature, reason: reasonUnadvertised,
 			detailName: "feature", detailValue: protocol.FeatureToolSourcesAttach,
 			diagnostic: CodeUnavailableCapability,
 			message:    "an open attaches tool sources to an endpoint that has not affirmatively advertised attachment",
-		}
-		return
+		}}, nil, false
 	}
 	if level == protocol.SupportDegraded && !p.AllowsDegraded(protocol.FeatureToolSourcesAttach) {
-		pending.expectation = &controlExpectation{
+		return []*controlExpectation{{
 			rung: rungDegradation, key: protocol.FeatureToolSourcesAttach, pointer: "/payload/tool_sources",
 			code: errorCapabilityDegraded, detailName: "feature", detailValue: protocol.FeatureToolSourcesAttach,
 			diagnostic: CodeDegradedWithoutOptin,
 			message:    "an open attaches tool sources under a degraded capability without the caller's opt-in",
-		}
-		return
+		}}, nil, false
 	}
-	var defects []*controlExpectation
 	seen := map[string]bool{}
 	for index, attachment := range p.ToolSources {
 		_, declared := s.declaredSources[attachment.ID]
@@ -484,16 +571,13 @@ func (s *state) sessionOpenRequest(i, line int, e protocol.Envelope) {
 			})
 		}
 	}
-	sort.SliceStable(defects, func(a, b int) bool { return defects[a].less(defects[b]) })
 	if len(defects) > 0 {
-		pending.expectation = defects[0]
-		return
+		return defects, nil, false
 	}
 	if violation := limitViolation(support, p.ToolSources); violation != nil {
-		pending.limitRefusal = violation
-		return
+		return nil, violation, false
 	}
-	pending.withinLimits = true
+	return nil, nil, true
 }
 
 // limitViolation names the first limit an attachment array puts outside what
@@ -580,6 +664,10 @@ func (s *state) sessionOpenResponse(i, line int, e protocol.Envelope, p protocol
 		}
 		track.attached[attachment.ID] = attachment.Descriptor()
 	}
+	// Provisioning is admitted whole or not at all, so an admitted open
+	// provisioned every definition it was given, and each of them is a
+	// session-lifetime fact from here on.
+	s.recordProvidedTools(track, pending.tools)
 	s.checkPublishedUnion(i, line, e, p.SessionID, p.Sources, true)
 }
 
@@ -683,8 +771,8 @@ func (s *state) settleToolSourceRefusal(i, line int, e protocol.Envelope) {
 			if !conformingRefusal(payload.Error, pending.limitRefusal) {
 				s.addExpected(pending.limitRefusal.diagnostic, i, line, e, "/payload/error", "refusal does not tell the caller what to change", pending.limitRefusal.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
 			}
-		case pending.withinLimits:
-			s.addExpected(CodeUndisclosedAttachLimit, i, line, e, "/payload/error", "an attachment carrying no defect and violating no disclosed limit was refused", "an admitted open or a disclosed limit", describeRefusal(payload.Error), string(e.InReplyTo))
+		case pending.honourDiagnostic != "":
+			s.addExpected(pending.honourDiagnostic, i, line, e, "/payload/error", "an open carrying no defect and violating no disclosed limit was refused by an endpoint advertising "+pending.honourKey, "an admitted open or a disclosed limit", describeRefusal(payload.Error), string(e.InReplyTo))
 		}
 	}
 }
