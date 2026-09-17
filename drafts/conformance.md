@@ -458,11 +458,15 @@ An implementation:
   carries the highest reason the request satisfies, in the order
   `unknown_interaction`, `wrong_responder`, `already_resolved`,
   `repeated_acknowledgement`, `late_acknowledgement`. `already_resolved` is a
-  settlement the trace carries, or a resolution already accepted;
-  `late_acknowledgement` is a `started` arriving after the sender's own
-  resolution was accepted and before its terminal was published. Only an
-  `already_resolved` refusal names a settlement, in `details.settlement_id`,
-  because it is the only one that has one;
+  terminal the trace carries, or — for a `result` or `error` arm — a resolution
+  already accepted; `late_acknowledgement` is a `started` arriving after the
+  sender's own resolution was accepted and before its terminal was published.
+  Only an `already_resolved` refusal names a settlement, in
+  `details.settlement_id`, because it is the only reason that has one: the
+  terminal where one exists, and otherwise the accepted
+  `action.call.resolve.response` that settled the call. Naming the acceptance
+  is what gives the window between a resolution and its terminal a conforming
+  refusal at all, which is the window a lost response and its retry land in;
 - emits `action.call.started` only once an accepted resolution evidences
   execution, and derives each terminal from an accepted resolution of the
   matching arm, carrying exactly what that resolution stated

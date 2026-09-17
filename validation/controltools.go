@@ -337,25 +337,47 @@ func (s *state) controlResolveRequest(i, line int, e protocol.Envelope) {
 //
 //   - unknown_interaction: no such pending interaction on the run.
 //   - wrong_responder: the sender is not the interaction's declared responder.
-//   - already_resolved: the call is settled on the wire — a terminal the trace
-//     carries, from the endpoint's own derivation or from a harness-side
-//     timeout — or, for a result or error arm, a resolution the endpoint has
-//     already accepted. This is the one reason that has a settlement envelope
-//     to point at, which is why it is the one that carries settlement_id.
+//   - already_resolved: the call is resolved — a terminal the trace carries,
+//     from the endpoint's own derivation or from a harness-side timeout, or,
+//     for a result or error arm, a resolution the endpoint has already
+//     accepted. This is the one reason with a settlement envelope to point
+//     at, which is why it is the one that carries settlement_id, and both
+//     halves of the condition supply one: the terminal in the first case, the
+//     accepted resolve response in the second.
 //   - repeated_acknowledgement: an acknowledgement, and one was already
 //     accepted. A repeat is the more specific diagnosis than the one below,
 //     so it outranks it where both hold.
 //   - late_acknowledgement: an acknowledgement arriving after the
 //     participant's own result or error was accepted, but before the terminal
 //     derived from it has been published. The call is not settled on the wire
-//     yet, so there is nothing to name; the acknowledgement is simply too late
-//     to mean anything, because the resolution it would have preceded has
-//     already landed.
+//     yet, so the acknowledgement is simply too late to mean anything — the
+//     resolution it would have preceded has already landed.
 //
 // An empty reason means the request is valid, and a valid request must be
 // accepted: without that an endpoint could refuse the one correct resolution
 // with any reason at all, emit nothing, and let a later cancellation settle
 // the call and the run so the trace passed.
+//
+// Two properties are load-bearing and neither is self-evident, so both are
+// stated where the ladder is. Each reason must be reachable *as the highest*,
+// or the vocabulary carries a name nothing can produce. And each must have a
+// conforming refusal in every window it can fire, or an endpoint is required
+// to report a reason it cannot legally report — which is what happened in the
+// window between an accepted resolution and its terminal, where the reason
+// demanded an id that only the terminal could have supplied.
+//
+// The windows, exhaustively, for an interaction the sender owns:
+//
+//	acceptedArm  settled  arm          highest reason            names
+//	—            false    any          (valid: must be accepted)  —
+//	—            false    started+ack  repeated_acknowledgement   nothing
+//	set          false    started      late_acknowledgement       nothing
+//	set          false    result/err   already_resolved           the acceptance
+//	any          true     any          already_resolved           the terminal
+//
+// A foreign sender outranks all of them with wrong_responder, which names
+// nothing, and an absent interaction outranks that with unknown_interaction,
+// which names nothing either.
 func (s *state) resolveLadder(p protocol.ActionCallResolveRequest, x *interactionState) protocol.ResolveReason {
 	var conditions []protocol.ResolveReason
 	if p.RespondedBy != x.respondedBy || (p.RequestedBy != "" && p.RequestedBy != x.requestedBy) {
@@ -456,21 +478,33 @@ func (s *state) acceptResolution(e protocol.Envelope, pending *pendingResolve, x
 	if req := s.requests[e.InReplyTo]; req != nil {
 		_ = req.envelope.DecodePayload(&p)
 	}
+	if x.settlements == nil {
+		x.settlements = map[protocol.EnvelopeID]bool{}
+	}
 	switch pending.arm {
 	case protocol.ResolveArmAcknowledge:
 		x.acked = true
-	case protocol.ResolveArmResult:
-		x.acceptedArm = protocol.ResolveArmResult
-		x.acceptedResult = p.Result
-	case protocol.ResolveArmError:
-		x.acceptedArm = protocol.ResolveArmError
-		x.acceptedError = p.Error
+	case protocol.ResolveArmResult, protocol.ResolveArmError:
+		if pending.arm == protocol.ResolveArmResult {
+			x.acceptedArm, x.acceptedResult = protocol.ResolveArmResult, p.Result
+		} else {
+			x.acceptedArm, x.acceptedError = protocol.ResolveArmError, p.Error
+		}
+		// The acceptance settles the call, and is therefore an envelope a
+		// later already_resolved refusal may name — which it has to be, or
+		// the window between an accepted resolution and the terminal derived
+		// from it has no conforming refusal at all: the reason is required,
+		// the reason requires an id, and the terminal that would supply one
+		// has not been published yet. That window is the result-and-retry
+		// interleaving request_id exists for, so it is the last one that may
+		// be left without an answer.
+		//
+		// It does not settle the call *on the wire*, which is a separate
+		// fact: x.settled stays false until a terminal event is published,
+		// because that is what decides whether a later acknowledgement is
+		// already_resolved or late_acknowledgement.
+		x.settlements[e.ID] = true
 	}
-	// An accepted resolution does not settle the call on the wire; the
-	// terminal derived from it does, and that is the envelope a later refusal
-	// has to be able to name. Recording the acceptance as a settlement here
-	// would let a refusal point at a response no consumer of the event stream
-	// ever sees.
 }
 
 func settlementIDs(x *interactionState) []string {
