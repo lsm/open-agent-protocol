@@ -75,6 +75,62 @@ const (
 	LimitTransports = "transports"
 )
 
+// The limits `action.tools.provide` discloses: how many definitions one open
+// may supply, the name shape the endpoint accepts, and the JSON Schema
+// dialect it can provision an `input_schema` in. Refusing a protocol-valid
+// `tools` array that violates none of them, and carries no defect any rule
+// names, is undisclosed_provide_limit — the check that stops an endpoint
+// advertising the key and honouring nothing.
+const (
+	LimitMaxTools      = "max_tools"
+	LimitNamePattern   = "name_pattern"
+	LimitSchemaDialect = "schema_dialect"
+)
+
+// MaxTools reports the disclosed provisioning ceiling, and false when the
+// endpoint declared no usable one. A non-positive ceiling discloses nothing,
+// for the reason MaxSources refuses a zero one: a ceiling every possible
+// array violates would make refusing all of them conforming.
+func (f FeatureSupport) MaxTools() (int, bool) {
+	raw, ok := f.Limits[LimitMaxTools]
+	if !ok {
+		return 0, false
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err != nil || value < 1 {
+		return 0, false
+	}
+	return value, true
+}
+
+// NamePattern reports the disclosed regular expression a provided tool's name
+// must match, and false when the endpoint declared none.
+func (f FeatureSupport) NamePattern() (string, bool) {
+	return f.limitString(LimitNamePattern)
+}
+
+// SchemaDialect reports the disclosed JSON Schema dialect a provided tool's
+// input_schema must declare through `$schema`, and false when the endpoint
+// declared none. A definition whose input_schema names no dialect elects the
+// endpoint's, so only a definition that names a different one is outside the
+// limit: an endpoint cannot disclose a dialect and then refuse every array
+// that did not repeat it.
+func (f FeatureSupport) SchemaDialect() (string, bool) {
+	return f.limitString(LimitSchemaDialect)
+}
+
+func (f FeatureSupport) limitString(name string) (string, bool) {
+	raw, ok := f.Limits[name]
+	if !ok {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+		return "", false
+	}
+	return value, true
+}
+
 // MaxSources reports the disclosed attachment ceiling, and false when the
 // endpoint declared no usable one.
 //
@@ -164,6 +220,16 @@ const (
 )
 
 const FeatureOpenSubscribe = "session.open.subscribe"
+
+// FeatureToolsProvide governs control-layer-provided tools: the control layer
+// may supply tool definitions at session open and executes their calls.
+//
+// It is a key of its own rather than a reading of `action.tools.execute`,
+// which keeps the meaning the `+tools` unit gives it — normalized harness-side
+// execution — so an old client reading a new descriptor and a new client
+// reading an old one both interpret that key as they do today, and only this
+// one gates control-owned execution.
+const FeatureToolsProvide = "action.tools.provide"
 
 // Application modes action.tool_sources.attach discloses, in
 // FeatureSupport.Modes rather than Mode.
@@ -451,6 +517,7 @@ type SessionOpenRequest struct {
 	Message               *OpenMessage               `json:"message,omitempty"`
 	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
 	ToolSources           []ToolSourceAttachment     `json:"tool_sources,omitempty"`
+	Tools                 []ToolDefinition           `json:"tools,omitempty"`
 	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
 	Recovery              *RecoveryMetadata          `json:"recovery,omitempty"`
 }
@@ -552,6 +619,16 @@ type ActiveRun struct {
 	AsOfSequence           *uint64         `json:"as_of_sequence,omitempty"`
 	AdmittedSubmitRequests []EnvelopeID    `json:"admitted_submit_requests,omitempty"`
 	PendingInteractions    []InteractionID `json:"pending_interactions,omitempty"`
+	// AcknowledgedInteractions is the subset of PendingInteractions whose
+	// `started` acknowledgement the endpoint has accepted (control-tools
+	// unit). The bare pending list cannot carry this: for a result or error
+	// resolution absence is the answer, but for an acknowledgement both
+	// outcomes leave the interaction present — an accepted `started` does not
+	// settle the call, and a rejected request changes nothing — so a resolver
+	// that lost its response could not tell whether the acknowledgement
+	// landed. Present and acknowledged means only the result is owed; present
+	// and unacknowledged means the acknowledgement is; absent means resolved.
+	AcknowledgedInteractions []InteractionID `json:"acknowledged_interactions,omitempty"`
 }
 
 // SessionCapture is the session-level capture position of a state snapshot

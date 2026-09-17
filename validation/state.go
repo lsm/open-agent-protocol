@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -95,7 +96,32 @@ type interactionState struct {
 	// position it was captured at is judged there rather than at the position
 	// the trace happens to have reached.
 	openedAt, resolvedAt uint64
+	// The control-tools unit's bookkeeping for a control-owned call (kind
+	// interactionKindToolCall).
+	//
+	// acked records an accepted `started`, which is an acknowledgement and
+	// not a resolution: at most one, and never once the call has settled.
+	// acceptedArm, acceptedResult and acceptedError are the resolution the
+	// endpoint accepted, kept because a terminal must be derived from it and
+	// must carry exactly what it stated. resolveRequests is every resolve
+	// request the trace carries for this interaction, which is what a
+	// derived event's request_id must name. settlements is every envelope
+	// that settled the call — the accepted resolution's response, or a
+	// terminal from any producer — which is what an already_resolved
+	// refusal's details.settlement_id must name.
+	acked           bool
+	settled         bool
+	acceptedArm     string
+	acceptedResult  json.RawMessage
+	acceptedError   *protocol.ProtocolError
+	resolveRequests map[protocol.EnvelopeID]bool
+	settlements     map[protocol.EnvelopeID]bool
 }
+
+// controlCall reports whether this interaction is a call the control layer
+// owns the execution of.
+func (x *interactionState) controlCall() bool { return x.kind == interactionKindToolCall }
+
 type recoveryExpectation struct {
 	session         protocol.SessionID
 	run             protocol.RunID
@@ -154,6 +180,14 @@ type sessionTrack struct {
 	// toolCatalog is the last tool catalog this session was served, with the revision
 	// it was served under, so no sourced call is judged against stale names.
 	toolCatalog *sessionCatalog
+	// provided is the control-layer tool definitions the open supplied, kept
+	// for the session's lifetime for the reason attached sources are:
+	// provisioning is all-or-nothing and per-submit provisioning is deferred,
+	// so every later catalog must carry them unchanged, and every revision
+	// refresh is rechecked against them. providedOrder fixes the order they
+	// are judged in.
+	provided      map[string]protocol.ToolDefinition
+	providedOrder []string
 	// The models unit's per-session bookkeeping: the catalog this session was
 	// served and the revision it was served under, the values the session's
 	// model took (so a catalog captured mid-flight is judged against the set
@@ -172,10 +206,15 @@ type sessionTrack struct {
 // requested source retained here a later event could omit the name and name
 // another source, and the catalog lookup would miss and accept it merely
 // because that source is declared somewhere.
+// interaction is the control-owned call's interaction, bound at the requested
+// event. Every later event's interaction_id is optional on the wire, so the
+// binding is kept here rather than read from each event, which is the same
+// reason source is.
 type toolTrack struct {
-	status string
-	owner  protocol.ParticipantID
-	source string
+	status      string
+	owner       protocol.ParticipantID
+	source      string
+	interaction protocol.InteractionID
 }
 type state struct {
 	fixture           string
@@ -235,6 +274,20 @@ type state struct {
 	// declaredSources is the active descriptor's declared tool sources,
 	// normalized across its layers.
 	declaredSources map[string]protocol.ToolSourceDescriptor
+	// descriptorOwners is the active descriptor's tool-to-owner mapping, the
+	// fallback a call's execution_owner is judged against where no session
+	// catalog is in force.
+	descriptorOwners map[string]protocol.ParticipantID
+	// controlParticipant is the participant protocol.initialize.request
+	// declared. Envelopes carry no sender field, so this is what a supplied
+	// tool's execution_owner and a control-owned call's owner are compared
+	// against; a trace with no initialize request declares no control
+	// participant and the ownership rules stand down rather than guess.
+	controlParticipant protocol.ParticipantID
+	// pendingResolves retains what each action.call.resolve.request owes its
+	// correlated response, for the reason pendingControls does: the refusal
+	// is the required behaviour, so the ladder is settled on the response.
+	pendingResolves map[protocol.EnvelopeID]*pendingResolve
 	// pendingModels retains what each catalog query owes its correlated
 	// response, keyed by the query's envelope id.
 	pendingModels map[protocol.EnvelopeID]*pendingModelsQuery
@@ -250,7 +303,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -313,6 +366,11 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.initialized = true
 		if p.Participant != nil {
 			s.participants[p.Participant.ID] = true
+			// The initialize request is the control layer introducing itself,
+			// so the participant it declares is the control participant: the
+			// only identity a supplied tool may name as its execution_owner,
+			// and the one a control-owned call is routed to.
+			s.controlParticipant = p.Participant.ID
 		}
 	case protocol.TypeProtocolInitializeResponse:
 		var p protocol.InitializeResponse
@@ -547,6 +605,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.toolsListRequest(i, line, e)
 	case protocol.TypeActionToolsListResponse:
 		s.toolsListResponse(i, line, e)
+	case protocol.TypeActionCallResolveRequest:
+		s.controlResolveRequest(i, line, e)
+	case protocol.TypeActionCallResolveResponse:
+		s.controlResolveResponse(i, line, e)
 	case protocol.TypeActionPermissionResolveRequest:
 		var p protocol.PermissionResolveRequest
 		_ = e.DecodePayload(&p)
@@ -788,6 +850,14 @@ func envelopeInteraction(e protocol.Envelope) protocol.InteractionID {
 		var p protocol.PermissionResolveRequest
 		_ = e.DecodePayload(&p)
 		return p.InteractionID
+	case protocol.TypeActionCallResolveRequest:
+		var p protocol.ActionCallResolveRequest
+		_ = e.DecodePayload(&p)
+		return p.InteractionID
+	case protocol.TypeActionCallResolveResponse:
+		var p protocol.ActionCallResolveResponse
+		_ = e.DecodePayload(&p)
+		return p.InteractionID
 	case protocol.TypeUserInputResolveRequest, protocol.TypeUserInputResolveResponse, protocol.TypeUserInputCancelRequest, protocol.TypeUserInputCancelResponse:
 		if e.Type == protocol.TypeUserInputResolveRequest {
 			var p protocol.UserInputResolveRequest
@@ -832,6 +902,10 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		return p.SessionID, p.RunID
 	case protocol.TypeActionPermissionResolveRequest:
 		var p protocol.PermissionResolveRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeActionCallResolveRequest:
+		var p protocol.ActionCallResolveRequest
 		_ = e.DecodePayload(&p)
 		return p.SessionID, p.RunID
 	case protocol.TypeUserInputResolveRequest:
@@ -891,6 +965,10 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		return p.SessionID, p.RunID
 	case protocol.TypeActionPermissionResolveResponse:
 		var p protocol.PermissionResolveResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeActionCallResolveResponse:
+		var p protocol.ActionCallResolveResponse
 		_ = e.DecodePayload(&p)
 		return p.SessionID, p.RunID
 	case protocol.TypeUserInputResolveResponse, protocol.TypeUserInputCancelResponse:
@@ -1201,6 +1279,8 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		s.tool(i, line, e, "requested")
 		s.checkCallAgainstChoice(i, line, e, r)
 		s.checkCallSource(i, line, e)
+		s.checkCallOwner(i, line, e)
+		s.controlCallRequested(i, line, e, r)
 	// The catalog resolution runs on the requested event alone, which is where
 	// the attribution is established; every later event of the same call is
 	// bound to it by the mid-lifecycle check in tool(), which needs no name
@@ -1208,18 +1288,22 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	case protocol.TypeActionCallStarted:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "started")
+		s.controlCallEvent(i, line, e, r, "started")
 	case protocol.TypeActionCallProgress:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "progress")
 	case protocol.TypeActionCallCompleted:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "completed")
+		s.controlCallEvent(i, line, e, r, "completed")
 	case protocol.TypeActionCallFailed:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "failed")
+		s.controlCallEvent(i, line, e, r, "failed")
 	case protocol.TypeActionCallCancelled:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "cancelled")
+		s.controlCallEvent(i, line, e, r, "cancelled")
 	case protocol.TypeActionPermissionRequested:
 		s.feature(i, line, e, "permissions")
 		s.interactionRequested(i, line, e, "permission")

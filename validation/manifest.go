@@ -138,12 +138,16 @@ var unitCapabilities = map[string][]string{
 	"queue": {protocol.FeatureDeliveryQueue},
 	// Tool sources: the catalog that carries them (T3a) and attachment at
 	// session open (T3b). Control-layer-provided tools are the separate
-	// `control-tools` unit and register action.tools.provide when they
-	// graduate; nothing here claims them.
+	// `control-tools` unit below.
 	"tool-sources": {
 		protocol.FeatureToolsList,
 		protocol.FeatureToolSourcesAttach,
 	},
+	// Control-layer-provided tools (T3c, Decision 0011). One key. Its gate is
+	// the `tools` array an unadvertising endpoint must refuse; its honour is
+	// the refusal of an array that carries no defect and violates no
+	// disclosed limit.
+	"control-tools": {protocol.FeatureToolsProvide},
 	// The session-scoped model catalog. One key, and the two aspects every key
 	// owes: a catalog served without the key advertised, and a catalog query
 	// refused on an endpoint that advertises it.
@@ -194,6 +198,7 @@ func diagnosticCodes() map[string]bool {
 		CodePrematureSessionMutation, CodeUndisclosedQueueLimit,
 		CodeUnmatchedToolSource, CodeDuplicateToolSource, CodeCatalogMismatch,
 		CodeAttachmentFieldInCatalog, CodeUndisclosedAttachLimit, CodeUndisclosedAttachModes, CodeUnattributedCall,
+		CodeWrongToolOwner, CodeUndisclosedProvideLimit, CodeResolutionPayloadMismatch,
 		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
 	}
 	result := make(map[string]bool, len(codes))

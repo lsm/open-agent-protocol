@@ -36,7 +36,8 @@ var makaiLedgerFixtures = map[string]bool{
 	"second-message-same-session": true, "multi-turn-tools": true,
 	"tool-completed": true, "tool-progress": true, "tool-failed": true,
 	"unfinished-child": true, "error-plus-agent-end": true, "cancel-confirmed": true,
-	"completion-wins-race": true, "process-exit": true, "malformed-nested-event": true,
+	"provider-error-result": true, "completion-wins-race": true,
+	"process-exit": true, "malformed-nested-event": true,
 	"no-implied-native-replay":   true,
 	"idle-eviction-session-gone": true, "post-stop-stale-publication": true,
 }

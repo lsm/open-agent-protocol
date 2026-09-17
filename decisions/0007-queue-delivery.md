@@ -1,6 +1,8 @@
 # Decision 0007: Queue Delivery
 
-Status: proposed
+Status: accepted 2026-09-16 (174 `queue` fixtures; OpenCode executes
+`delivery:"queue"` with promotion natively. Nothing in the record is left
+pending)
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

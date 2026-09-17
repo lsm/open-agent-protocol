@@ -118,6 +118,7 @@ protocol/common.go
 protocol/control.go
 protocol/control_test.go
 protocol/envelope.go
+protocol/resolve_test.go
 protocol/run.go
 provider/zai.go
 schema/embed.go
@@ -146,6 +147,7 @@ serve/subscribe.go
 serve/toolcatalog_test.go
 validation/controls.go
 validation/controls_test.go
+validation/controltools.go
 validation/diagnostic.go
 validation/manifest.go
 validation/manifest_covers_test.go

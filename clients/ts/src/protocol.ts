@@ -44,6 +44,8 @@ export const EnvelopeType = {
   ActionCallCompleted: 'action.call.completed',
   ActionCallFailed: 'action.call.failed',
   ActionCallCancelled: 'action.call.cancelled',
+  ActionCallResolveRequest: 'action.call.resolve.request',
+  ActionCallResolveResponse: 'action.call.resolve.response',
   ActionPermissionRequested: 'action.permission.requested',
   ActionPermissionResolveRequest: 'action.permission.resolve.request',
   ActionPermissionResolveResponse: 'action.permission.resolve.response',
@@ -235,7 +237,13 @@ export interface FeatureSupport {
   /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries — an object, because only an object is a structured result. */
   constraints?: { fixed_result?: Record<string, unknown> } & Record<string, unknown>;
   /** The bounds that make a refusal checkable: `action.tool_sources.attach` discloses `max_sources` and the `transports` it accepts, and refusing an array that violates neither is a conformance failure. Both are held to values a request can satisfy — a positive ceiling, and transports drawn from the source-kind vocabulary — because a limit no attachment can meet would make refusing every one of them conforming, so the schema refuses it. */
-  limits?: { max_sources?: number; transports?: ToolSourceKind[] } & Record<string, unknown>;
+  limits?: {
+    max_sources?: number;
+    transports?: ToolSourceKind[];
+    max_tools?: number;
+    name_pattern?: string;
+    schema_dialect?: string;
+  } & Record<string, unknown>;
 }
 
 /** Where a tool source's tools are executed from. An MCP source is a `process` or `remote` kind whose `protocol` is `mcp`. */
@@ -443,6 +451,13 @@ export interface SessionOpenRequest {
   metadata?: Record<string, unknown>;
   /** The sources the session resolves for its lifetime. */
   tool_sources?: ToolSourceAttachment[];
+  /**
+   * The tools the control layer provides and executes, for the session's
+   * lifetime (`action.tools.provide`). Every entry's `execution_owner` is the
+   * opening participant, and every `source` it names is one this open attaches
+   * or the descriptor declares; the array is provisioned whole or refused.
+   */
+  tools?: ToolDefinition[];
   /** Consent to the degraded application of the capabilities the open elects. */
   allow_degraded_features?: string[];
   recovery?: RecoveryMetadata;
@@ -493,8 +508,16 @@ export interface ActiveRun {
   as_of_sequence?: number;
   /** The submit request envelope ids on this run the entry reflects as admitted. */
   admitted_submit_requests?: string[];
-  /** The run's unresolved permission and user-input interactions at `as_of_sequence`. */
+  /** The run's unresolved interactions of every kind at `as_of_sequence`: permission gates, user-input prompts, and control-owned tool calls. */
   pending_interactions?: string[];
+  /**
+   * The subset of `pending_interactions` whose `started` acknowledgement the
+   * endpoint has accepted (control-tools unit). A resolver that lost its
+   * resolve response reads both: present and acknowledged means only the
+   * result is owed, present and unacknowledged means the acknowledgement is,
+   * absent means the call resolved.
+   */
+  acknowledged_interactions?: string[];
 }
 
 /** A stated position in a run's sequence domain; `run_id: null` with `sequence: 0` is the genesis position, before the session's first model-affecting event. */
@@ -681,6 +704,14 @@ export interface ActionCallRequestedPayload extends ActionCallBase {
 
 export interface ActionCallStartedPayload extends ActionCallBase {
   name: string;
+  /**
+   * The `action.call.resolve.request` this event was derived from, on a
+   * control-owned call. The resolve response and this event travel different
+   * streams, so a client holds the event until the call that authorized it
+   * returns — and `tool_call_id` cannot say which call that was, because two
+   * resolutions of one tool call can be outstanding at once.
+   */
+  request_id?: string;
   arguments_json?: unknown;
   progress?: undefined;
   result?: undefined;
@@ -696,6 +727,8 @@ export interface ActionCallProgressPayload extends ActionCallBase {
 
 export interface ActionCallCompletedPayload extends ActionCallBase {
   result: JSONValue;
+  /** The `action.call.resolve.request` whose accepted `result` this terminal carries, on a control-owned call. */
+  request_id?: string;
   arguments_json?: undefined;
   progress?: undefined;
   error?: undefined;
@@ -703,6 +736,8 @@ export interface ActionCallCompletedPayload extends ActionCallBase {
 
 export interface ActionCallFailedPayload extends ActionCallBase {
   error: ProtocolError;
+  /** The `action.call.resolve.request` whose accepted `error` this terminal carries, on a control-owned call. */
+  request_id?: string;
   arguments_json?: undefined;
   progress?: undefined;
   result?: undefined;
@@ -714,6 +749,95 @@ export interface ActionCallCancelledPayload extends ActionCallBase {
   result?: undefined;
   error?: undefined;
 }
+
+/** The fields every `action.call.resolve.request` carries; exactly one arm is added to them. */
+interface ActionCallResolveBase {
+  interaction_id: string;
+  session_id: string;
+  run_id: string;
+  tool_call_id: string;
+  requested_by: string;
+  responded_by: string;
+}
+
+/**
+ * The control participant has begun executing a call it owns. An
+ * acknowledgement is not a resolution: at most one, and only before one.
+ */
+export interface ActionCallAcknowledgeRequest extends ActionCallResolveBase {
+  started: Record<string, never>;
+  result?: undefined;
+  error?: undefined;
+}
+
+/** The control participant's outcome for a call it owns. */
+export interface ActionCallResultRequest extends ActionCallResolveBase {
+  result: JSONValue;
+  started?: undefined;
+  error?: undefined;
+}
+
+/** The control participant's failure for a call it owns. */
+export interface ActionCallErrorRequest extends ActionCallResolveBase {
+  error: ProtocolError;
+  started?: undefined;
+  result?: undefined;
+}
+
+export type ActionCallResolveRequest =
+  | ActionCallAcknowledgeRequest
+  | ActionCallResultRequest
+  | ActionCallErrorRequest;
+
+/**
+ * Why a resolution was refused, ranked most informative first. One request can
+ * satisfy several at once and one response carries one reason, so the endpoint
+ * reports the highest the request satisfies: whether the interaction exists,
+ * then whether this sender may speak for it at all, then how far the call has
+ * already progressed.
+ */
+export type ResolveRefusalReason =
+  | 'unknown_interaction'
+  | 'wrong_responder'
+  | 'already_resolved'
+  | 'repeated_acknowledgement'
+  | 'late_acknowledgement';
+
+/** The closed detail object an `already_resolved` refusal carries. */
+export interface ActionCallResolveDetails {
+  /** The envelope that settled the call, so a client reading the refusal before the settlement can look the settlement up instead of reading a valid rejection as an arbitrary one. */
+  settlement_id: string;
+}
+
+interface ActionCallResolveResponseBase {
+  interaction_id: string;
+  session_id: string;
+  run_id: string;
+  tool_call_id: string;
+}
+
+export interface ActionCallResolveAccepted extends ActionCallResolveResponseBase {
+  accepted: true;
+  reason?: undefined;
+  details?: undefined;
+}
+
+export interface ActionCallResolveSettled extends ActionCallResolveResponseBase {
+  accepted: false;
+  reason: 'already_resolved';
+  details: ActionCallResolveDetails;
+}
+
+export interface ActionCallResolveRefused extends ActionCallResolveResponseBase {
+  accepted: false;
+  reason: Exclude<ResolveRefusalReason, 'already_resolved'>;
+  details?: undefined;
+}
+
+export type ActionCallResolveResponse =
+  | ActionCallResolveAccepted
+  | ActionCallResolveSettled
+  | ActionCallResolveRefused;
 
 export interface PermissionChoice {
   id: string;

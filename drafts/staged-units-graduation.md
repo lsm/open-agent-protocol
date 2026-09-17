@@ -3208,7 +3208,7 @@ Wire:
   response `{ "interaction_id", "session_id", "run_id", "tool_call_id",
   "accepted", "reason"?, "details"? }` (`reason` present only with
   `accepted: false`, and `details` only alongside it: an object whose one
-  member for now is `settled_by`, the envelope id of the settlement a
+  member for now is `settlement_id`, the envelope id of the settlement a
   `already_resolved` refusal points at, required with that reason and
   absent otherwise — the payload is closed, so the field the validator
   and the client recovery path depend on has to be declared here and on
@@ -3941,7 +3941,7 @@ the request used.
   gives — the server does not control the client's sockets — so the
   refusal carries its own justification instead of depending on arrival
   order. An `accepted: false` whose reason is `already_resolved` names
-  the envelope that settled the call in `details.settled_by`, and the
+  the envelope that settled the call in `details.settlement_id`, and the
   validator requires that id to be a settlement the trace actually
   carries for that interaction (`unmatched_interaction` otherwise, so
   the field cannot be invented). A client reading the refusal first has
@@ -3952,7 +3952,7 @@ the request used.
   harness timeout settles the call while the resolution is in flight, the
   `action.call.cancelled` precedes the `accepted: false`, which names it)
   and `control-call-refusal-invents-settlement`
-  (`unmatched_interaction`; `details.settled_by` names an envelope that
+  (`unmatched_interaction`; `details.settlement_id` names an envelope that
   settled nothing). The context-done fallback reconciles as the
   steer fallback does rather than lifting the gate blind: the hub first
   publishes a `session.state.updated` whose `active_runs` entry for the

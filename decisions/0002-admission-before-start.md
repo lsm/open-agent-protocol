@@ -107,6 +107,48 @@ composition canonical.
 - Consumers reconciling from events alone must tolerate a run whose only
   event is a terminal; the submit response carries the admission claim.
 
+## Clarification: why the submission/run split survives at the narrowest fidelity
+
+This section records reasoning this decision already relied upon. It states no
+new rule, narrows nothing, and leaves every ruling above exactly as accepted; it
+exists because the reasoning was load-bearing and unwritten, and a reader who
+reconstructed it differently would reach a different implementation.
+
+The decision's Consequences note that endpoints gating admission on start
+evidence — DeepSeek, Claude Code, pi, and every adapter like them — "are
+unaffected; their `started` admissions remain the high-fidelity path". For such
+an endpoint, `queue`, `steer`, and `btw` are all unavailable, the queued
+admission shape can never occur, and admission collapses to started-or-rejected.
+The submission/run split then looks like ceremony: two identity domains, a
+response shape carrying `admission`, `requested_delivery`, and
+`effective_delivery`, and only one answer any of them can ever give. The
+temptation is to let those endpoints collapse the identities — return the run as
+the submission, or omit the split entirely. Two reasons it stays.
+
+First, the split still carries information even there. A rejected submission
+carries a `submission_id` and no `run_id`: `admission="rejected"` is a real
+answer about a real thing that happened, and it is precisely the case where no
+run exists to name it by. Collapsing submission identity into run identity
+leaves that answer with nothing to attach to, so the endpoint has to invent a
+run that never ran or answer out of band. The split is not paying for the queued
+shape; it is paying for the boundary between "the endpoint took your message"
+and "the endpoint started work", which exists at every fidelity because refusal
+exists at every fidelity. That a started-or-rejected endpoint only ever uses two
+of the split's positions does not make the split unused.
+
+Second, and decisively: uniform trace shape across endpoint fidelities is the
+point of the capability model. Capabilities exist so that what an endpoint *can
+do* varies while what its traces *look like* does not — a consumer reads one
+shape and learns an endpoint's limits from the descriptor, not from the shape of
+what arrives. Letting an endpoint collapse identities because its fidelity is
+narrow inverts that: it saves one endpoint a little ceremony and charges every
+consumer a second shape to parse, a second correlation path to test, and a
+branch that can only be exercised against the narrow endpoints. The cost is
+borne by everyone who did not choose it, permanently, and it scales with the
+number of fidelities, while the saving is one field an adapter sets once. The
+capability model is how an endpoint reports being narrow. Structural divergence
+is not.
+
 ## Deferred work unchanged from Decision 0001
 
 Durable idempotent admission, cross-replica identity mapping, contextual and

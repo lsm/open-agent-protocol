@@ -99,6 +99,10 @@ const samples: PayloadSample[] = [
         modes: ['session_open', 'remote'],
         limits: { max_sources: 2, transports: ['process', 'local'] },
       },
+      'action.tools.provide': {
+        level: 'native',
+        limits: { max_tools: 8, name_pattern: '^[a-z_]+$', schema_dialect: 'https://json-schema.org/draft/2020-12/schema' },
+      },
     },
     limits: { max_active_runs_per_session: 2, max_queued_runs_per_session: 1 },
     layers: {
@@ -210,7 +214,8 @@ const samples: PayloadSample[] = [
     },
     metadata: { origin: 'test' },
     tool_sources: [{ id: 'files', kind: 'process', protocol: 'mcp', command: '/usr/local/bin/mcp-filesystem' }],
-    allow_degraded_features: ['action.tool_sources.attach', 'session.open.subscribe'],
+    tools: [{ name: 'echo', description: 'echoes', input_schema: { type: 'object' }, execution_owner: 'user', source: 'files' }],
+    allow_degraded_features: ['action.tool_sources.attach', 'session.open.subscribe', 'action.tools.provide'],
     recovery: {
       recovered: true,
       previous_session_id: 's-0',
@@ -224,7 +229,7 @@ const samples: PayloadSample[] = [
     status: 'running',
     active_run_id: 'r-1',
     active_runs: [
-      { run_id: 'r-1', status: 'running', relationship: 'primary', as_of_sequence: 4, pending_interactions: ['i-1'] },
+      { run_id: 'r-1', status: 'running', relationship: 'primary', as_of_sequence: 4, pending_interactions: ['i-1'], acknowledged_interactions: ['i-1'] },
       { run_id: 'r-2', status: 'queued', relationship: 'primary', queue_position: 1, admitted_submit_requests: ['e-9'] },
     ],
     current_model_id: 'model-a',
@@ -247,6 +252,7 @@ const samples: PayloadSample[] = [
     as_of_sequence: 0,
     admitted_submit_requests: ['e-9'],
     pending_interactions: ['i-1'],
+    acknowledged_interactions: ['i-1'],
   }),
   sample<protocol.SessionCapture>('SessionCapture', 'session.schema.json', 'sessionCapture', {
     admitted_submit_requests: ['e-9'],
@@ -384,6 +390,7 @@ const samples: PayloadSample[] = [
   }),
   sample<protocol.ActionCallStartedPayload>('ActionCallStartedPayload', 'action.schema.json', 'callStarted', {
     interaction_id: 'i-1',
+    request_id: 'env-7',
     session_id: 's-1',
     run_id: 'r-1',
     tool_call_id: 't-1',
@@ -408,6 +415,7 @@ const samples: PayloadSample[] = [
   }),
   sample<protocol.ActionCallCompletedPayload>('ActionCallCompletedPayload', 'action.schema.json', 'callCompleted', {
     interaction_id: 'i-1',
+    request_id: 'env-7',
     session_id: 's-1',
     run_id: 'r-1',
     tool_call_id: 't-1',
@@ -420,6 +428,7 @@ const samples: PayloadSample[] = [
   }),
   sample<protocol.ActionCallFailedPayload>('ActionCallFailedPayload', 'action.schema.json', 'callFailed', {
     interaction_id: 'i-1',
+    request_id: 'env-7',
     session_id: 's-1',
     run_id: 'r-1',
     tool_call_id: 't-1',
@@ -440,6 +449,24 @@ const samples: PayloadSample[] = [
     execution_owner: 'user',
     source: 'native',
     name: 'echo',
+  }),
+  sample<protocol.ActionCallResolveRequest>('ActionCallResolveRequest', 'action.schema.json', 'callResolveRequest', {
+    interaction_id: 'i-1',
+    session_id: 's-1',
+    run_id: 'r-1',
+    tool_call_id: 't-1',
+    requested_by: 'agent',
+    responded_by: 'user',
+    result: { output: 'hi' },
+  }),
+  sample<protocol.ActionCallResolveResponse>('ActionCallResolveResponse', 'action.schema.json', 'callResolveResponse', {
+    interaction_id: 'i-1',
+    session_id: 's-1',
+    run_id: 'r-1',
+    tool_call_id: 't-1',
+    accepted: false,
+    reason: 'already_resolved',
+    details: { settlement_id: 'env-9' },
   }),
   sample<protocol.PermissionRequestedPayload>('PermissionRequestedPayload', 'action.schema.json', 'permissionRequested', {
     interaction_id: 'i-1',
@@ -709,6 +736,16 @@ test('the schema exclusivity rules are compile-time errors', () => {
   const failedWithArguments: protocol.ActionCallFailedPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', error: { code: 'x', message: 'boom' }, arguments_json: {} };
   // @ts-expect-error a cancelled call carries none of the exclusive fields
   const cancelledWithError: protocol.ActionCallCancelledPayload = { session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', execution_owner: 'user', error: { code: 'x', message: 'boom' } };
+  // @ts-expect-error a resolution carries exactly one of started, result, and error
+  const twoArms: protocol.ActionCallResolveRequest = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', requested_by: 'agent', responded_by: 'user', started: {}, result: { ok: true } };
+  // @ts-expect-error a resolution must carry one of the three arms
+  const noArm: protocol.ActionCallResolveRequest = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', requested_by: 'agent', responded_by: 'user' };
+  // @ts-expect-error an accepted resolution carries no refusal reason
+  const acceptedWithReason: protocol.ActionCallResolveResponse = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', accepted: true, reason: 'already_resolved' };
+  // @ts-expect-error an already_resolved refusal must name the settlement it points at
+  const settledWithoutID: protocol.ActionCallResolveResponse = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', accepted: false, reason: 'already_resolved' };
+  // @ts-expect-error every other reason carries no details
+  const refusedWithDetails: protocol.ActionCallResolveResponse = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', accepted: false, reason: 'wrong_responder', details: { settlement_id: 'env-9' } };
   // @ts-expect-error an initialize request needs at least one version
   const noVersions: protocol.InitializeRequest = { protocol_versions: [], profiles: ['open-agent-protocol.agent-control-core'] };
   // @ts-expect-error a capability snapshot needs at least one profile when present
@@ -739,6 +776,11 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void progressWithResult;
   void failedWithArguments;
   void cancelledWithError;
+  void twoArms;
+  void noArm;
+  void acceptedWithReason;
+  void settledWithoutID;
+  void refusedWithDetails;
   void noVersions;
   void noProfiles;
   void noModes;
@@ -761,6 +803,9 @@ test('the schema exclusivity rules are compile-time errors', () => {
   const textQuestion: protocol.InputQuestion = { id: 'q-1', prompt: 'name', kind: 'text' };
   const choiceQuestion: protocol.InputQuestion = { id: 'q-2', prompt: 'pick', kind: 'single_choice', options: [{ id: 'a', label: 'A' }] };
   const cancelledResolution: protocol.UserInputResolvedPayload = { interaction_id: 'i-2', requested_by: 'agent', responded_by: 'user', session_id: 's-1', run_id: 'r-1', status: 'cancelled' };
+  const acknowledgement: protocol.ActionCallResolveRequest = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', requested_by: 'agent', responded_by: 'user', started: {} };
+  const acceptedResolution: protocol.ActionCallResolveResponse = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', accepted: true };
+  const settledRefusal: protocol.ActionCallResolveResponse = { interaction_id: 'i-1', session_id: 's-1', run_id: 'r-1', tool_call_id: 't-1', accepted: false, reason: 'already_resolved', details: { settlement_id: 'env-9' } };
   void urlImage;
   void inlineImage;
   void parts;
@@ -769,4 +814,7 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void textQuestion;
   void choiceQuestion;
   void cancelledResolution;
+  void acknowledgement;
+  void acceptedResolution;
+  void settledRefusal;
 });

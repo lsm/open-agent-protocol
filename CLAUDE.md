@@ -113,8 +113,11 @@ Adding an adapter means all of the above plus: a `case` in `serve/registry.go`'s
 - **Source files carry zero comments.** Rationale lives in commit messages, PR
   descriptions, `decisions/`, and `drafts/` — not in code. `tools/nocomment`
   (vendored from `lsm/nocomment-for-agents`) enforces it, and
-  `tools/nocomment/allowlist.txt` is a shrink-only ratchet listing the files
-  that still carry comments. New and rewritten files are stripped and left off
+  `tools/nocomment/allowlist.txt` is a ratchet listing the files that still
+  carry comments. It shrinks, with one exception: a branch that forked before
+  this policy lands adds its commented files to the list when it merges,
+  because stripping another unit's rationale inside a merge commit destroys
+  what its own commits never recorded. New and rewritten files are stripped and left off
   the allowlist; an allowlisted file loses its entry when its comments go.
   Exempt are the build directives the toolchain honors (`//go:build`,
   `//go:embed`, `//go:generate`) and the directive-shaped comments the stripper
