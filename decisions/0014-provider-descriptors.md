@@ -215,5 +215,17 @@ Provider health, quota, latency or cost. All of them change under a catalog
 that is fixed for a capability revision, and a descriptor that went stale
 between two reads would be worse than no descriptor.
 
+Authentication state, for the same reason and against a real request for it.
+Makai's `auth_providers_response` carries `provider_id`, `name` and
+`auth_status` together, and a client that cannot tell "logged into one vendor,
+not the other" cannot render a model picker honestly — which is true of any
+multi-provider harness. But `auth_status` changes the moment someone logs in,
+and a revision-fixed descriptor is the wrong carrier for something that moves
+without the descriptor moving. Provider *identity* is stable and belongs here;
+provider *usability* is dynamic and belongs with whatever covers credential
+acquisition, which the core draft records as an open question. Splitting them
+is the cost of getting identity right; carrying both here would make the
+catalog either stale or unstable.
+
 A registry of provider ids with meanings assigned by this project. `id` is
 opaque and endpoint-scoped, exactly like a tool source id.

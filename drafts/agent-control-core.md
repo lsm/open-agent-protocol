@@ -164,7 +164,34 @@ OpenCode's daemon password are both this kind.
 
 Whether *provider* credential acquisition belongs here is a separate and open
 question — it is agent-loop state, not transport state — and no unit covers it
-today. No adapter in this repository has a credential path at all; an expired
+today. It has **two** open cases, not one, and a unit designed for the first
+leaves the second homeless:
+
+- **Reactive.** A run blocks because a credential is missing or expired. This
+  is the case the constraints below are drawn from.
+- **Proactive.** A user authenticates with nothing running: no session, no
+  run, no blocked execution. In the one harness that exposes this natively it
+  is a distinct identity domain — a flow id, with no session or run appearing
+  anywhere in the exchange — and it is the case users hit first, because you
+  log in and then start working.
+
+Proactive acquisition arrives with provider *discovery*, because they are one
+surface: an endpoint that tells a client which providers exist and which are
+usable has told it what to authenticate against, and a client that can see it
+is logged out and cannot act on it is worse served than one told nothing.
+Discovery of provider identity is [Decision 0014](../decisions/0014-provider-descriptors.md);
+the usability half is not, for the reason that record gives — a descriptor is
+fixed for a capability revision and an auth state is not.
+
+Two facts about expressibility, since the proactive case looks harder than it
+is and is harder in a different place than it looks. Session-less *queries* are
+already precedented: `capabilities.request` carries no session at all and
+`action.tools.list.request` makes one optional for an endpoint-wide listing, so
+enumerating providers without a session invents nothing. What has no precedent
+is a session-less *stateful exchange* — every multi-turn thing in v0.1 hangs off
+a run through an interaction — so a flow identity that outlives no session and
+belongs to no run would be the protocol's third identity domain. That is the
+part worth designing rather than assuming. No adapter in this repository has a credential path at all; an expired
 provider credential becomes `run.failed` like any other provider error.
 
 Three facts from the one harness that exposes it natively, recorded so whoever
