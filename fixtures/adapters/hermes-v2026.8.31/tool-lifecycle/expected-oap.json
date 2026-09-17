@@ -28,7 +28,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-d",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "read_file",
       "arguments_json": {
@@ -52,7 +52,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-d",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "read_file"
     },
@@ -74,7 +74,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-d",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "read_file",
       "result": "ok"
@@ -97,7 +97,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-h",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "run_cmd",
       "arguments_json": null
@@ -119,7 +119,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-h",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "run_cmd"
     },
@@ -141,7 +141,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-h",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "run_cmd",
       "result": "error: exit 1"

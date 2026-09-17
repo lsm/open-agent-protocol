@@ -27,7 +27,7 @@
       "session_id": "session",
       "run_id": "run-2",
       "tool_call_id": "tool-call-6",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "execution_owner": "pi",
       "name": "read",
       "arguments_json": {
@@ -51,7 +51,7 @@
       "session_id": "session",
       "run_id": "run-2",
       "tool_call_id": "tool-call-6",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "execution_owner": "pi",
       "name": "read"
     },
@@ -73,7 +73,7 @@
       "session_id": "session",
       "run_id": "run-2",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "execution_owner": "pi",
       "name": "read",
       "arguments_json": {
@@ -97,7 +97,7 @@
       "session_id": "session",
       "run_id": "run-2",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "execution_owner": "pi",
       "name": "read"
     },
@@ -119,7 +119,7 @@
       "session_id": "session",
       "run_id": "run-2",
       "tool_call_id": "tool-call-6",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "execution_owner": "pi",
       "name": "read",
       "progress": {
@@ -144,7 +144,7 @@
       "session_id": "session",
       "run_id": "run-2",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "execution_owner": "pi",
       "name": "read",
       "result": {
@@ -169,7 +169,7 @@
       "session_id": "session",
       "run_id": "run-2",
       "tool_call_id": "tool-call-6",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "execution_owner": "pi",
       "name": "read",
       "error": {

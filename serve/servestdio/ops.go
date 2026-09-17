@@ -482,6 +482,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 		Participant:           protocol.Participant{ID: serve.DefaultParticipant},
 		AllowDegradedFeatures: payload.AllowDegradedFeatures,
 		ToolSources:           attachments,
+		Tools:                 payload.Tools,
 	}
 	if payload.Metadata != nil {
 		open.Metadata = make(map[string]any, len(payload.Metadata))
@@ -765,13 +766,16 @@ func submitError(err error) *wireError {
 }
 
 func (s *Server) resolveOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
-	envelope, werr := s.gateRequest(request.Request, protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest)
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest, protocol.TypeActionCallResolveRequest)
 	if werr != nil {
 		return nil, werr
 	}
 	entry, werr := s.lookupSession(request.SessionID)
 	if werr != nil {
 		return nil, werr
+	}
+	if envelope.Type == protocol.TypeActionCallResolveRequest {
+		return s.resolveCallOp(ctx, entry, envelope)
 	}
 	resolution := base.InteractionResolution{}
 	switch envelope.Type {
@@ -825,6 +829,47 @@ func (s *Server) resolveOp(ctx context.Context, request requestLine) (json.RawMe
 	response.InReplyTo = envelope.ID
 	response.SessionID = entry.ID()
 	response.RunID = resolution.RunID
+	response.CapabilityRevision = envelope.CapabilityRevision
+	return envelopeResult(response)
+}
+
+// resolveCallOp answers a control-owned call's resolution. A refusal travels in
+// the response, not as a wire error: the ranked reasons are the endpoint's
+// answer to a well-formed request, and this codec mirrors the HTTP one
+// one-to-one, where the same refusal is a 200.
+func (s *Server) resolveCallOp(ctx context.Context, entry *serve.Session, envelope protocol.Envelope) (json.RawMessage, *wireError) {
+	var payload protocol.ActionCallResolveRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+	}
+	answer, err := entry.ResolveCall(ctx, base.CallResolution{RequestID: envelope.ID, Request: payload})
+	if err != nil {
+		// Same-code parity with the HTTP route, details included: a caller
+		// that switches transports should not have to relearn which key it
+		// was refused for.
+		if code, message, details, typed := serve.ControlRefusal(err); typed {
+			return nil, &wireError{Code: code, Message: trimMessage(message), Details: details}
+		}
+		code := "internal"
+		switch {
+		case errors.Is(err, serve.ErrScopeMismatch):
+			code = "scope_mismatch"
+		case errors.Is(err, base.ErrUnsupportedInput):
+			code = "unsupported_feature"
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			code = "request_cancelled"
+		}
+		return nil, &wireError{Code: code, Message: adapterMessage(err)}
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeActionCallResolveResponse, protocol.EnvelopeID(s.nextID("response")), answer)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = entry.ID()
+	response.RunID = payload.RunID
 	response.CapabilityRevision = envelope.CapabilityRevision
 	return envelopeResult(response)
 }

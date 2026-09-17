@@ -258,7 +258,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "unknown_adapter", fmt.Sprintf("no adapter %q", name), envelope)
 		return
 	}
-	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures}
+	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures, Tools: request.Tools}
 	// The refusal ladder runs capability, then degradation, then
 	// unsatisfiability, and the daemon's own attachment constraints are the
 	// third rung: telling a caller to fix its command, when the endpoint
@@ -479,12 +479,16 @@ func (s *Server) writeControlError(w http.ResponseWriter, err error, fallbackSta
 }
 
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
-	envelope, ok := s.readRequest(w, r, protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest)
+	envelope, ok := s.readRequest(w, r, protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest, protocol.TypeActionCallResolveRequest)
 	if !ok {
 		return
 	}
 	entry, ok := s.lookupSession(w, r.PathValue("id"))
 	if !ok {
+		return
+	}
+	if envelope.Type == protocol.TypeActionCallResolveRequest {
+		s.resolveCall(w, r, entry, envelope)
 		return
 	}
 	resolution := base.InteractionResolution{}
@@ -544,6 +548,54 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	response.InReplyTo = envelope.ID
 	response.SessionID = entry.ID()
 	response.RunID = resolution.RunID
+	response.CapabilityRevision = envelope.CapabilityRevision
+	writeEnvelope(w, http.StatusOK, response)
+}
+
+// resolveCall answers a control-owned call's resolution. Unlike the two gates
+// beside it, a refusal is a 200 carrying the reason: the ranked reasons are
+// the endpoint's answer to a well-formed request, not a transport fault, and
+// mapping them to a 4xx would lose the one thing the resolver needs.
+func (s *Server) resolveCall(w http.ResponseWriter, r *http.Request, entry *serve.Session, envelope protocol.Envelope) {
+	var request protocol.ActionCallResolveRequest
+	if err := envelope.DecodePayload(&request); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_payload", err.Error(), envelope)
+		return
+	}
+	answer, err := entry.ResolveCall(r.Context(), base.CallResolution{RequestID: envelope.ID, Request: request})
+	if err != nil {
+		envelope.RunID = request.RunID
+		// A typed control refusal keeps its code and its details, as every
+		// neighbouring path here does. An endpoint that does not execute
+		// control-owned tools is refused for that capability by name, so the
+		// caller learns which key to stop electing rather than only that the
+		// resolution failed.
+		if code, message, details, typed := serve.ControlRefusal(err); typed {
+			s.writeErrorDetails(w, http.StatusBadRequest, code, message, details, envelope)
+			return
+		}
+		status, code := http.StatusInternalServerError, "internal"
+		switch {
+		case errors.Is(err, serve.ErrScopeMismatch):
+			status, code = http.StatusBadRequest, "scope_mismatch"
+		case errors.Is(err, base.ErrUnsupportedInput):
+			status, code = http.StatusBadRequest, "unsupported_feature"
+		case errors.Is(err, base.ErrSessionClosed):
+			status, code = http.StatusConflict, "session_closed"
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			status, code = http.StatusBadRequest, "request_cancelled"
+		}
+		s.writeError(w, status, code, adapterMessage(err), envelope)
+		return
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeActionCallResolveResponse, s.nextID("response"), answer)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
+		return
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = entry.ID()
+	response.RunID = request.RunID
 	response.CapabilityRevision = envelope.CapabilityRevision
 	writeEnvelope(w, http.StatusOK, response)
 }

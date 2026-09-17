@@ -707,7 +707,7 @@ func (s *Session) endTool(run *runState, v native.ToolResult) {
 }
 func toolKey(r *runState, id string) string { return fmt.Sprintf("%p\x00%s", r, id) }
 func (s *Session) toolPayload(t *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: "agent", ExecutionOwner: "deepseek-harness", Name: t.name, ArgumentsJSON: cloneRaw(t.args)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: endpointID, ExecutionOwner: "deepseek-harness", Name: t.name, ArgumentsJSON: cloneRaw(t.args)}
 }
 
 func (s *Session) trySettle(run *runState) {

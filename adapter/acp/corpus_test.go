@@ -252,7 +252,7 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 			if frame.Granted == nil {
 				t.Fatal("permission fixture missing granted")
 			}
-			err := session.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: frame.ChoiceID, Granted: *frame.Granted}})
+			err := session.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: frame.ChoiceID, Granted: *frame.Granted}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -594,7 +594,7 @@ func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, de
 	if cut < 0 {
 		t.Fatal("permission case emitted no permission gate")
 	}
-	resolveRequest, err := protocol.NewEnvelope(protocol.TypeActionPermissionResolveRequest, "permission-resolve-request", protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true})
+	resolveRequest, err := protocol.NewEnvelope(protocol.TypeActionPermissionResolveRequest, "permission-resolve-request", protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true})
 	if err != nil {
 		t.Fatal(err)
 	}

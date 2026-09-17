@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	endpointID             = "codex.app-server"
 	CodexCommit            = "8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9"
 	CapabilityRevision     = "codex-appserver-8d7cc24-oap-v1"
 	defaultJournalCapacity = 256
@@ -150,7 +151,7 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"action.permissions":             {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
 		"user_input":                     {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
 	}
-	endpoint := protocol.EndpointDescriptor{ID: "codex.app-server", Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
+	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
 	return adapter.Descriptor{
 		Capabilities:               protocol.CapabilityDescriptor{Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features},
 		CapabilityRevision:         CapabilityRevision,
@@ -171,6 +172,13 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	// ToolSources, so admitting the open would return a session that silently
 	// discarded them.
 	if err := adapter.RefuseUnadvertisedToolSources(request); err != nil {
+		return nil, err
+	}
+	// The same gate for control-layer-provided tools: this adapter advertises
+	// no action.tools.provide, so an open supplying its own tool definitions
+	// is refused rather than returning a session whose provided catalog was
+	// silently discarded.
+	if err := adapter.RefuseUnadvertisedTools(request); err != nil {
 		return nil, err
 	}
 	// Approval and user-input events copy the participant into responded_by, so

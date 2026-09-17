@@ -531,7 +531,7 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 			return
 		}
 		interactionID := protocol.InteractionID(session.ids.NewID("interaction"))
-		binding := &interactionBinding{kind: permissionInteraction, runID: run.id, toolCallID: item.toolCallID, requestedBy: "agent", respondedBy: session.participant, request: request, permissionChoices: decisions}
+		binding := &interactionBinding{kind: permissionInteraction, runID: run.id, toolCallID: item.toolCallID, requestedBy: endpointID, respondedBy: session.participant, request: request, permissionChoices: decisions}
 		session.interactions[interactionID] = binding
 		session.mu.Unlock()
 		title := "Allow Codex action"
@@ -587,7 +587,7 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 		}
 		session.mu.Lock()
 		interactionID := protocol.InteractionID(session.ids.NewID("interaction"))
-		binding := &interactionBinding{kind: inputInteraction, runID: run.id, toolCallID: protocol.ToolCallID(params.ItemID), requestedBy: "agent", respondedBy: session.participant, request: request, questions: questions, optionLabels: optionLabels}
+		binding := &interactionBinding{kind: inputInteraction, runID: run.id, toolCallID: protocol.ToolCallID(params.ItemID), requestedBy: endpointID, respondedBy: session.participant, request: request, questions: questions, optionLabels: optionLabels}
 		session.interactions[interactionID] = binding
 		run.status = protocol.RunWaitingForInput
 		session.state.Status = protocol.SessionWaitingForInput
@@ -805,14 +805,14 @@ func actionPayload(sessionID protocol.SessionID, runID protocol.RunID, binding i
 	return protocol.ActionCallPayload{
 		SessionID: sessionID, RunID: runID, ToolCallID: binding.toolCallID,
 		Name: binding.name, ArgumentsJSON: binding.arguments,
-		RequestedBy: "agent", ExecutionOwner: "codex.app-server",
+		RequestedBy: endpointID, ExecutionOwner: "codex.app-server",
 	}
 }
 
 func actionTerminalPayload(sessionID protocol.SessionID, runID protocol.RunID, binding itemBinding) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{
 		SessionID: sessionID, RunID: runID, ToolCallID: binding.toolCallID,
-		Name: binding.name, RequestedBy: "agent", ExecutionOwner: "codex.app-server",
+		Name: binding.name, RequestedBy: endpointID, ExecutionOwner: "codex.app-server",
 	}
 }
 

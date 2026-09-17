@@ -1,14 +1,15 @@
 # Decision 0011: Control-Layer-Provided Tools
 
-Status: proposed — assessed 2026-09-17 against Decision 0003 and held. Steps
-2 and 4 of the gate have landed: 58 `control-tools` fixtures, the validator
-rules, and this record. Steps 1 and 3 have not. The reference adapter does not
-implement the unit, and the `tool-bridge-roundtrip` corpus case this decision
-names as required is absent, so the wire shape is prose and authored files
-rather than something executed. This decision says as much itself: "the
-adapter graduates the unit by adding the `tool-bridge-roundtrip` corpus case
-and advertising `action.tools.provide`." A unit that stalls at step 3 stays
-staged
+Status: accepted 2026-09-17. Assessed against Decision 0003 earlier the same
+day and **held**, correctly: steps 2 and 4 had landed — 58 `control-tools`
+fixtures, the validator rules, this record — and steps 1 and 3 had not, so the
+wire shape was prose and authored files agreeing with each other. That hold is
+discharged by the work that carries this status. Step 1: the memory reference
+adapter provisions at open and executes a control-owned call. Step 3: the Makai
+adapter executes the unit through its production codec and reducer, with the
+`tool-bridge-roundtrip` corpus case — the one this record names as required and
+the corpus never contained — pinned to its ledger commit. Nothing pending
+remains inside this record
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -32,15 +33,31 @@ can do neither. There is no envelope on which to say "I will run this", no
 envelope on which to say "here is the result", and nowhere for an adapter to
 put the result if it had one.
 
-That is not a gap in a capability nobody reaches. The Makai adapter reaches it
-on every run: `adapter/makai/session.go:288` fails the run with
-`makai_tool_executor_unavailable` the moment the harness emits `tool_execute`,
-because the frame asks the client to execute a tool and OAP has nowhere to
-carry the answer back. The adapter is not cutting a corner — it is reporting
-honestly that the protocol cannot express what the harness asked for. Anything
-a Makai consumer hosts itself is therefore unavailable over OAP today, whatever
-else the adapter supports, and that is the last blocker on an external
+That is not a gap in a capability nobody reaches, but the way it is unreachable
+is the point. This repository's Makai adapter declares an empty `tools` array
+on every `agent_message`, so the harness is offered nothing to hand back and
+never emits `tool_execute`; the refusal waiting behind it —
+`adapter/makai/session.go` failing the run with the adapter-minted reason
+`makai_tool_executor_unavailable` — is a path no run takes. Makai's own native
+OAP mode declares empty in both payloads for the same reason.
+
+Both integrations suppress the capability at the source rather than meeting it
+in flight, and they suppress it *because* OAP has nowhere to put a
+caller-executed tool. That is stronger evidence than a refusal in a live trace
+would be: a refusal proves an endpoint hit a wall once, while two independent
+integrations declining to offer the feature at all shows the wall is load-
+bearing enough to design around. Anything a Makai consumer hosts itself is
+unavailable over OAP today, and that is the last blocker on an external
 maintainer's decision about implementing OAP natively.
+
+**Correction, 2026-09-17.** This paragraph first said the adapter "reaches it
+on every run" and cited the failure as observed behaviour. It reaches it on no
+run, for the reason now stated: `"tools": []any{}` was marshalled onto every
+message before this unit landed, so the frame that would trigger the refusal
+never arrived. The gap the unit closes is real and the evidence for it was
+wrong. `makai_tool_executor_unavailable` is also this repository's identifier
+rather than Makai's, and appears nowhere in the Makai tree — a reader grepping
+for it there finds nothing.
 
 Decision 0008 graduated the other two thirds of the tool-sources work: a
 catalog that says where its tools come from (T3a), and attachment of sources at
@@ -140,8 +157,22 @@ Run cancel closes pending control-owned calls with `action.call.cancelled`
 before the run terminal, as the memory adapter already does for permission
 gates; an unacknowledged call goes from `requested` to `cancelled`, which the
 transition table already permits. Deadlines remain deferred (PF-2); a
-harness-side timeout settles an unacknowledged call as `cancelled` and an
-acknowledged one as `failed`, with the harness's code as the reason.
+harness-side timeout settles the call as `cancelled`, acknowledged or not,
+with the harness's code as the reason.
+
+**Correction, 2026-09-17.** This paragraph first said an acknowledged call
+times out as `failed`, and that sentence was never satisfiable. The rule three
+sections below requires `action.call.failed` to derive from an accepted
+`error`-arm resolution; an acknowledgement is not one, and
+`validation/controltools.go` enforces it, so a `failed` terminal on that path
+is `illegal_tool_transition` on every trace that carries it. Nothing ever
+emitted it, because nothing could emit it and pass. `cancelled` is what the
+transition table admits from both `requested` and `started` with no resolution
+behind it, and it is also the truer statement: the call was not resolved.
+
+The correction changes no wire behaviour and invalidates no trace — it replaces
+a sentence describing an unreachable state with one describing the reachable
+one, and the executable rule was always the other section's.
 
 ### The resolution is a request/response pair with three arms
 
@@ -372,11 +403,37 @@ this unit's to settle.
 ## Evidence
 
 Makai's `tool_execute`/`tool_result` bridge is exactly this boundary. The
-adapter's native codec already decodes both frames, every `agent_message`
-already carries a `tools` list, and `adapter/makai/session.go:288` currently
-fails the run rather than routing the request anywhere, because there is
-nowhere to route it to. The ledger names `tool-bridge-roundtrip` as a required
-corpus case the pinned corpus does not yet contain.
+adapter's native codec already decodes both frames and every `agent_message`
+already carries a `tools` list; what it lacked was anywhere to route the
+request, so it failed the run instead.
+
+It no longer does. The adapter provisions at open, writes the provided
+definitions onto every `agent_message`, turns a `tool_execute` naming one of
+them into a control-owned interaction, and writes the participant's answer
+back as the `tool_result` the harness is waiting for before publishing the
+derived terminal. `tool-bridge-roundtrip` — the case the ledger has named as
+required since the first pin and the corpus never contained — now exists,
+pinned to the same commit as every other Makai case, and it asserts both
+halves: the ranked response the resolver reads and the native frame the
+harness receives. Pinning only the OAP side would pass an adapter that emitted
+a conforming terminal and told makai nothing.
+
+`makai_tool_executor_unavailable` — this repository's identifier for the
+refusal, not one Makai mints — survives, narrowed to what it now names: a
+`tool_execute` for a tool the session never provided. That frame still has no
+owner to route to, and this unit gave the adapter a place for the frames it
+can route rather than for every frame.
+
+It is also reachable for the first time. The adapter now writes the provided
+catalog onto every `agent_message` instead of an empty array, so the harness
+can ask, which means the refusal and the round trip are both paths a run can
+actually take.
+
+The reference execution is the memory adapter, which provisions under three
+disclosed limits — a ceiling, a name pattern and a schema dialect — and calls
+a provided tool in place of its own scripted one when a session supplies a
+catalog. A session that provides nothing runs exactly the script it always
+did, which is what makes the unit inert where it is not elected.
 
 The per-submit deferral was checked against the Makai maintainers' own model
 rather than assumed. Their finding:
@@ -427,10 +484,11 @@ endpoint that got it right and must not be diagnosed for it.
 ## Consequences
 
 An endpoint can now be asked to run a tool it does not own, and a control layer
-can answer. The Makai adapter's `makai_tool_executor_unavailable` becomes an
-adapter decision rather than a protocol limit: the frames it refuses today have
-a place to go, and the adapter graduates the unit by adding the
-`tool-bridge-roundtrip` corpus case and advertising `action.tools.provide`.
+can answer. The Makai adapter's `makai_tool_executor_unavailable` is an adapter
+decision rather than a protocol limit: the frames it refused have a place to
+go, and the adapter graduated the unit by adding the `tool-bridge-roundtrip`
+corpus case and advertising `action.tools.provide` at capability revision
+`makai-agent-67ad514-oap-v2`.
 
 The `+tools` unit's meaning is untouched. `action.tools.execute` keeps the
 meaning that unit gives it — normalized harness-side execution — so an old

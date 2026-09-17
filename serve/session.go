@@ -344,6 +344,26 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	return s.session.Resolve(ctx, resolution)
 }
 
+// ResolveCall answers one resolution of a control-owned call. A refusal is
+// returned in the response rather than as an error, because the five ranked
+// reasons are conforming outcomes the endpoint owes the resolver.
+//
+// An adapter that does not execute control-layer-provided tools does not
+// implement CallResolver, and the answer is the same typed unsupported_feature
+// its open would have given: the key was never advertised.
+func (s *Session) ResolveCall(ctx context.Context, resolution base.CallResolution) (protocol.ActionCallResolveResponse, error) {
+	if resolution.Request.SessionID != s.id {
+		return protocol.ActionCallResolveResponse{}, &ScopeMismatchError{Payload: resolution.Request.SessionID, Addressed: s.id}
+	}
+	resolver, ok := s.session.(base.CallResolver)
+	if !ok {
+		return protocol.ActionCallResolveResponse{}, &base.UnsupportedControlError{
+			Feature: protocol.FeatureToolsProvide, Reason: base.ControlUnadvertised,
+		}
+	}
+	return resolver.ResolveCall(ctx, resolution)
+}
+
 // Cancel requests cancellation of one run and returns the acknowledgement.
 // The confirmed run.cancelled event on the event stream is authoritative.
 func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {

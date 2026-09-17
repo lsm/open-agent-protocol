@@ -24,7 +24,6 @@ run are the `+queue` unit's, not the core claim's.
 
 Conformance units are additive:
 
-- `+persistence`
 - `+tools`
 - `+permissions`
 - `+user-input`
@@ -42,7 +41,7 @@ Example claims:
 - `open-agent-protocol.agent-control-core`
 - `open-agent-protocol.agent-control-core+tools+permissions`
 - `open-agent-protocol.agent-control-core+run-controls`
-- `open-agent-protocol.agent-control-core+persistence+tools+permissions+user-input+models+steer`
+- `open-agent-protocol.agent-control-core+tools+permissions+user-input+models+steer`
 
 Conformance units are testable units of behavior, not transport names and not
 implementation brands. A control layer should still gate controls from
@@ -198,24 +197,6 @@ An implementation conforms to `+user-input` if it:
 
 Draft persistence is not required for `+user-input`. An implementation that
 persists draft answers may expose that through extensions or a richer profile.
-
-### `+persistence`
-
-An implementation conforms to `+persistence` if it:
-
-- advertises `session.list` and `transcript.load` with effective support levels
-  other than `unavailable`;
-- supports `session.list.request` and `session.list.response`;
-- supports `transcript.load.request` and `transcript.load.response`;
-- returns stable message IDs for persisted messages when available;
-- provides cursor behavior for pagination or sync when it advertises cursors;
-- emits `transcript.delta` when it advertises live transcript sync;
-- can recover canonical session state after reconnect through
-  `session.state.request`.
-
-`transcript.delta` is optional unless the implementation claims live transcript
-sync. An implementation may support historical transcript loading without live
-persisted row deltas.
 
 ### `+run-controls`
 

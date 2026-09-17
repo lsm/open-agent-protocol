@@ -199,6 +199,11 @@ func runHelperEndpoint(mode string) int {
 				return 2
 			}
 			if shape.Protocol == "" && shape.Control != "" {
+				if mode == "mute-controls" {
+					// The defect a real endpoint had: it ignores the control
+					// channel entirely rather than answering it.
+					continue
+				}
 				// An endpoint that serves no control must answer, not die: a
 				// host speaking a newer binding is not a framing fault.
 				frame, _ := json.Marshal(ControlFrame{
@@ -229,6 +234,17 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		e.CapabilityRevision = request.CapabilityRevision
 	}
 	switch request.Type {
+	case protocol.TypeProtocolInitializeRequest:
+		emit(protocol.TypeProtocolInitializeResponse, protocol.InitializeResponse{
+			ProtocolVersion: protocol.Version, Profile: protocol.Profile,
+			Endpoint: protocol.EndpointDescriptor{ID: "helper.double-settle", Name: "Double-settling helper endpoint"},
+		}, func(e *protocol.Envelope) { reply(e); e.CapabilityRevision = revision })
+	case protocol.TypeRunCancelRequest:
+		// This helper declares no run.cancel capability, so the conformant
+		// answer is the typed refusal rather than an acknowledgement.
+		emit(protocol.TypeErrorResponse, protocol.ErrorResponse{
+			Error: protocol.ProtocolError{Code: "unsupported_feature", Message: "this helper cannot cancel"},
+		}, reply)
 	case protocol.TypeCapabilitiesRequest:
 		emit(protocol.TypeCapabilitiesResponse, protocol.CapabilityDescriptor{
 			Endpoint: protocol.EndpointDescriptor{ID: "helper.double-settle", Name: "Double-settling helper endpoint"},
@@ -296,6 +312,14 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		_ = request.DecodePayload(&state)
 		emit(protocol.TypeSessionStateResponse, protocol.SessionState{
 			SessionID: state.SessionID, Status: protocol.SessionIdle, UpdatedAtMS: 2,
+		}, reply)
+	default:
+		// Every request gets one correlated answer, including a type this
+		// helper does not serve. Silence is not a conformant option and it is
+		// not a cheap one either: the runner waits out its full line deadline
+		// for an answer that never comes.
+		emit(protocol.TypeErrorResponse, protocol.ErrorResponse{
+			Error: protocol.ProtocolError{Code: "unsupported_request", Message: "this helper serves no " + string(request.Type)},
 		}, reply)
 	}
 }
@@ -501,5 +525,50 @@ func TestClientDoesNotWaitForeverOnAnEndpointThatClosesStdout(t *testing.T) {
 	}
 	if client.cmd.ProcessState == nil {
 		t.Fatal("the endpoint was left running after the runner gave up on it")
+	}
+}
+
+// TestUnansweredControlDoesNotCascade pins that an endpoint ignoring the
+// control channel fails one check rather than six.
+//
+// The runner used to kill the endpoint whenever any wait expired, which was
+// right for a response it was owed and wrong for a control it was not. Every
+// later check then reported "file already closed" — the runner's own doing,
+// reading as though the endpoint had died. A maintainer spent a debugging pass
+// on a teardown bug that did not exist.
+func TestUnansweredControlDoesNotCascade(t *testing.T) {
+	report, err := Run(context.Background(), Options{
+		Command:      helperCommand(t, "mute-controls"),
+		Stderr:       io.Discard,
+		LineDeadline: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay Check
+	for _, check := range report.Checks {
+		if strings.Contains(check.Name, "cursor replay") {
+			replay = check
+		}
+		if strings.Contains(check.Detail, "file already closed") {
+			t.Fatalf("check %q reports a closed pipe, so the runner killed the endpoint over a control it was never owed", check.Name)
+		}
+	}
+	if replay.Name == "" || replay.Passed {
+		t.Fatalf("the replay check should fail for an endpoint that answers no control: %+v", replay)
+	}
+	if !strings.Contains(replay.Detail, "unsupported_control") {
+		t.Fatalf("the failure should say what the endpoint owed: %q", replay.Detail)
+	}
+	// The checks after replay must have run against a live endpoint. The
+	// helper answers state, so that one is the witness.
+	var state Check
+	for _, check := range report.Checks {
+		if strings.Contains(check.Name, "session.state.request is answered") {
+			state = check
+		}
+	}
+	if state.Name == "" || !state.Passed {
+		t.Fatalf("the checks after an unanswered control must still run: %+v", state)
 	}
 }

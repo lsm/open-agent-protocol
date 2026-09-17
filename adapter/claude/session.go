@@ -700,7 +700,7 @@ func toolResultText(content json.RawMessage) string {
 }
 
 func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: "agent", ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: endpointID, ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
 }
 
 func (s *Session) attributionFor(name string) string {
@@ -743,7 +743,7 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 	}}
 	gate := &gateState{id: id, control: control, ask: ask, run: run, questions: questions}
 	s.interactions[id] = gate
-	requested, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: questions, AllowCancel: true}, false, "")
+	requested, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: questions, AllowCancel: true}, false, "")
 	if emitErr != nil {
 		_ = control.RespondError(context.Background(), "claude adapter: gate could not be surfaced")
 		delete(s.interactions, id)
@@ -793,7 +793,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return base.ErrInvalidResolution
 	}
 
-	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != "agent" {
+	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != endpointID {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}
@@ -819,7 +819,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return err
 	}
-	_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, gate.requested)
+	_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, gate.requested)
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 
 	delete(s.interactions, gate.id)
@@ -835,7 +835,7 @@ func (s *Session) cancelGate(requestID string) {
 		gate.resolved = true
 		run := gate.run
 		if run != nil && run.started && !run.terminal {
-			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, gate.requested)
+			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, gate.requested)
 			_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 		}
 		delete(s.interactions, gate.id)
@@ -977,7 +977,7 @@ func (s *Session) sweepRun(run *runState) {
 		gate.resolved = true
 		delete(s.interactions, gate.id)
 		_ = gate.control.RespondError(context.Background(), "claude adapter: run settled while the permission ask was open")
-		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, gate.requested)
+		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, gate.requested)
 	}
 	for id, child := range s.children {
 		if child.run == run {

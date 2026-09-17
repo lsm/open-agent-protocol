@@ -597,7 +597,7 @@ func TestCommandApprovalRoundTrip(t *testing.T) {
 	resolution := adapter.InteractionResolution{
 		RunID: admission.RunID, RespondedBy: "user",
 		Permission: &protocol.PermissionResolveRequest{
-			InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user",
 			SessionID: "session-1", RunID: admission.RunID, ChoiceID: "accept", Granted: true,
 		},
 	}
@@ -656,7 +656,7 @@ func TestApprovalDecisionsAndAvailability(t *testing.T) {
 			if len(payload.Choices) != 3 {
 				t.Fatalf("choices: %+v", payload.Choices)
 			}
-			resolution := adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, ChoiceID: test.choiceID, Granted: test.granted}}
+			resolution := adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, ChoiceID: test.choiceID, Granted: test.granted}}
 			if err := session.Resolve(context.Background(), resolution); err != nil {
 				t.Fatal(err)
 			}
@@ -701,7 +701,7 @@ func TestUserInputRoundTrip(t *testing.T) {
 	resolution := adapter.InteractionResolution{
 		RunID: admission.RunID, RespondedBy: "user",
 		Input: &protocol.UserInputResolveRequest{
-			InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user",
 			SessionID: "session-1", RunID: admission.RunID,
 			Answers: []protocol.InputAnswer{{QuestionID: "mode", SelectedOptionIDs: []string{"option-2"}}, {QuestionID: "note", Text: "ship it"}},
 		},
@@ -756,7 +756,7 @@ func TestDispatchReducesRequestAfterPrecedingNotification(t *testing.T) {
 	err := sess.Resolve(context.Background(), adapter.InteractionResolution{
 		RunID: admission.RunID, RespondedBy: "user",
 		Input: &protocol.UserInputResolveRequest{
-			InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user",
 			SessionID: "session-1", RunID: admission.RunID,
 			Answers: []protocol.InputAnswer{{QuestionID: "mode", SelectedOptionIDs: []string{"option-2"}}},
 		},
@@ -821,18 +821,18 @@ func TestUserInputIsOtherDoesNotAdvertiseUnsatisfiableOption(t *testing.T) {
 		"other with text":  {QuestionID: "choice", SelectedOptionIDs: []string{"other"}, Text: "custom"},
 		"bare other":       {QuestionID: "choice", SelectedOptionIDs: []string{"other"}},
 	} {
-		resolution := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{answer, {QuestionID: "note", Text: "n"}}}
+		resolution := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{answer, {QuestionID: "note", Text: "n"}}}
 		if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &resolution}); !errors.Is(err, adapter.ErrInvalidResolution) {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
 
-	missing := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}}}
+	missing := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}}}
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &missing}); !errors.Is(err, adapter.ErrInvalidResolution) {
 		t.Fatalf("missing required answer: %v", err)
 	}
 
-	valid := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}, {QuestionID: "note", Text: "complete"}}}
+	valid := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"option-1"}}, {QuestionID: "note", Text: "complete"}}}
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &valid}); err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +884,7 @@ func TestInteractionResolutionValidation(t *testing.T) {
 	if err := requested.DecodePayload(&payload); err != nil {
 		t.Fatal(err)
 	}
-	base := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"missing"}}}}
+	base := protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"missing"}}}}
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "intruder", Input: &base}); !errors.Is(err, adapter.ErrWrongResponder) {
 		t.Fatalf("wrong responder: %v", err)
 	}

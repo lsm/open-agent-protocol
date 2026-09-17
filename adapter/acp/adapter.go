@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	endpointID             = "acp.v1"
 	ACPVersion             = 1
 	SchemaVersion          = "1.21.0"
 	CapabilityRevision     = "acp-v1.7.0-schema-v1.21.0-oap-v3"
@@ -170,7 +171,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute":            {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle is normalized"},
 		"action.permissions":              {Level: protocol.SupportNative, Reason: "ACP permission choice semantics with synthesized portable identity"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "acp.v1", Name: "ACP v1 Adapter", Version: "1.7.0", Adapter: "acp-v1-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: a.configuredSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "run", CancellationImplementation: "native_session_notification"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "ACP v1 Adapter", Version: "1.7.0", Adapter: "acp-v1-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: a.configuredSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "run", CancellationImplementation: "native_session_notification"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -239,6 +240,13 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 	// advertises: uniform so one grep finds every endpoint's admission, and a
 	// no-op here only because the advertisement is real.
 	if err := base.RefuseUnadvertisedToolSources(request, attachSupport); err != nil {
+		return nil, err
+	}
+	// The same gate for control-layer-provided tools: this adapter advertises
+	// no action.tools.provide, so an open supplying its own tool definitions
+	// is refused rather than returning a session whose provided catalog was
+	// silently discarded.
+	if err := base.RefuseUnadvertisedTools(request); err != nil {
 		return nil, err
 	}
 	attachments := request.ToolSources

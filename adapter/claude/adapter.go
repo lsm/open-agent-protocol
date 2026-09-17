@@ -17,6 +17,7 @@ import (
 )
 
 const (
+	endpointID             = "claude-code.cli"
 	PinnedVersion          = native.ReleaseTag
 	CapabilityRevision     = "claude-code-2.1.263-oap-v3"
 	defaultJournalCapacity = 256
@@ -218,7 +219,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
 		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "claude-code.cli", Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -230,6 +231,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	// ToolSources, so admitting the open would return a session that silently
 	// discarded them.
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
+		return nil, err
+	}
+	// The same gate for control-layer-provided tools: this adapter advertises
+	// no action.tools.provide, so an open supplying its own tool definitions
+	// is refused rather than returning a session whose provided catalog was
+	// silently discarded.
+	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
 	client, err := a.config.Factory.Start(ctx)

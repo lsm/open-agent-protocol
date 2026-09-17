@@ -27,7 +27,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-f",
-      "requested_by": "agent",
+      "requested_by": "acp.v1",
       "execution_owner": "acp-agent",
       "name": "Read file",
       "arguments_json": {
@@ -51,7 +51,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-f",
-      "requested_by": "agent",
+      "requested_by": "acp.v1",
       "execution_owner": "acp-agent",
       "name": "Read file",
       "arguments_json": {
@@ -73,7 +73,7 @@
     "id": "event-j",
     "payload": {
       "interaction_id": "interaction-i",
-      "requested_by": "agent",
+      "requested_by": "acp.v1",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -110,7 +110,7 @@
     "id": "event-k",
     "payload": {
       "interaction_id": "interaction-i",
-      "requested_by": "agent",
+      "requested_by": "acp.v1",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -137,7 +137,7 @@
       "session_id": "session",
       "run_id": "run-b",
       "tool_call_id": "tool-call-f",
-      "requested_by": "agent",
+      "requested_by": "acp.v1",
       "execution_owner": "acp-agent",
       "name": "Read file",
       "result": {

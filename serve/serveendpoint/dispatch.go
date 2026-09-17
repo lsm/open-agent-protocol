@@ -1,11 +1,13 @@
 package serveendpoint
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	base "github.com/lsm/open-agent-protocol/adapter"
 	"github.com/lsm/open-agent-protocol/protocol"
@@ -35,12 +37,42 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 		}
 		return s.handleControl(streams, frame)
 	}
-	var envelope protocol.Envelope
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		return fmt.Errorf("%w: %v", ErrMalformedLine, err)
+	if shape.Protocol == "" {
+		// Neither an envelope nor a control. The boundary was found and the
+		// JSON parsed, but nothing says what this line is, so there is no
+		// path that could answer it and no reason to trust the next one.
+		return fmt.Errorf("%w: the line declares neither protocol nor control", ErrMalformedLine)
 	}
-	if envelope.Type == "" || envelope.ID == "" {
-		return fmt.Errorf("%w: an envelope needs a type and an id", ErrMalformedLine)
+	var envelope protocol.Envelope
+	decodeErr := json.Unmarshal(line, &envelope)
+	if envelope.ID == "" {
+		// A line that declares `protocol` has said what it is, so its framing
+		// is not in doubt — but without an id there is nothing to correlate an
+		// answer to, and every response this binding defines requires
+		// in_reply_to. An endpoint cannot answer it, and answering something
+		// else in its place would put an uncorrelated envelope on a stream a
+		// host reads by correlation. Dropping it silently would be worse: the
+		// host waits forever for a response to a request it believes it sent.
+		return fmt.Errorf("%w: an envelope needs an id to be answerable", ErrMalformedLine)
+	}
+	if decodeErr != nil {
+		// Declared, addressable, and wrong. That is a protocol error, not a
+		// framing one: the host gets a correlated refusal and the stream
+		// carries on.
+		return s.write(ctx, s.errorEnvelope(envelope, &refusal{
+			code: "invalid_request", message: decodeErr.Error(),
+		}))
+	}
+	if missing := missingBaseMembers(line); len(missing) > 0 {
+		// The same answer for the same reason. A member the schema requires
+		// and this line omits does not put the boundary in doubt, so it is
+		// refused rather than fatal — but it is refused. Serving it would
+		// have the endpoint answer a frame its own schema rejects, and the
+		// binding promises a host the opposite.
+		return s.write(ctx, s.errorEnvelope(envelope, &refusal{
+			code:    "invalid_request",
+			message: "the envelope omits required member(s): " + strings.Join(missing, ", "),
+		}))
 	}
 	answer, after, err := s.serve(ctx, streams, envelope)
 	if err != nil {
@@ -60,12 +92,39 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 	return nil
 }
 
+// baseMembers is what the envelope schema requires of every envelope,
+// whatever its type. It is the schema's own list, including the two the
+// classifier has already ruled on, so that reading it answers "which members
+// must be here" without having to also read the classifier.
+var baseMembers = []string{"protocol", "version", "profile", "type", "id", "payload"}
+
+// missingBaseMembers names the required members a line leaves out. An explicit
+// null counts as left out: the schema types each of these, so a null is a
+// member the host did not supply rather than one it supplied as nothing.
+func missingBaseMembers(line []byte) []string {
+	var present map[string]json.RawMessage
+	if json.Unmarshal(line, &present) != nil {
+		return nil
+	}
+	var missing []string
+	for _, member := range baseMembers {
+		raw, ok := present[member]
+		if !ok || string(bytes.TrimSpace(raw)) == "null" {
+			missing = append(missing, member)
+		}
+	}
+	return missing
+}
+
 // serve dispatches one request envelope to the hub and returns the envelope
 // that answers it. The dispatch is on the envelope's own type: an endpoint has
 // no op names, because the protocol already names every request.
 func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
 	plain := func(answer protocol.Envelope, err error) (protocol.Envelope, func(), error) {
 		return answer, nil, err
+	}
+	if err := s.refuseStaleRevision(ctx, e); err != nil {
+		return protocol.Envelope{}, nil, err
 	}
 	switch e.Type {
 	case protocol.TypeProtocolInitializeRequest:
@@ -80,7 +139,7 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 		return s.submit(ctx, streams, e)
 	case protocol.TypeRunCancelRequest:
 		return plain(s.cancel(ctx, e))
-	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest:
+	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest, protocol.TypeActionCallResolveRequest:
 		return plain(s.resolve(ctx, e))
 	case protocol.TypeModelsRequest:
 		return plain(s.models(ctx, e))
@@ -95,6 +154,19 @@ func (s *Server) initialize(ctx context.Context, e protocol.Envelope) (protocol.
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
+	// The declared control participant is remembered here and used by every
+	// later open. An endpoint that ignored it would raise gates addressed to
+	// a participant the trace never saw declared, and the interaction rules
+	// are written against the declared one.
+	var request protocol.InitializeRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	if request.Participant != nil && request.Participant.ID != "" {
+		s.participantMu.Lock()
+		s.participant = request.Participant.ID
+		s.participantMu.Unlock()
+	}
 	answer, err := protocol.NewEnvelope(protocol.TypeProtocolInitializeResponse, s.nextID("response"), protocol.InitializeResponse{
 		ProtocolVersion: protocol.Version,
 		Profile:         protocol.Profile,
@@ -106,6 +178,50 @@ func (s *Server) initialize(ctx context.Context, e protocol.Envelope) (protocol.
 	answer.InReplyTo = e.ID
 	answer.CapabilityRevision = descriptor.CapabilityRevision
 	return answer, nil
+}
+
+// refuseStaleRevision enforces the rule that a request citing a capability
+// revision must cite the current one. A host that reads a success from a
+// request bound to a descriptor this endpoint has moved past has bound its
+// decision to a snapshot that no longer holds — which is the whole reason the
+// revision is on the wire.
+//
+// Discovery is exempt, because a stale revision must never be able to block
+// the two requests that would tell the host what the current one is. That
+// exemption is the validator's too, so the rule enforced here and the rule a
+// trace is judged by are the same rule.
+func (s *Server) refuseStaleRevision(ctx context.Context, e protocol.Envelope) error {
+	if e.CapabilityRevision == "" {
+		return nil
+	}
+	switch e.Type {
+	case protocol.TypeProtocolInitializeRequest, protocol.TypeCapabilitiesRequest:
+		return nil
+	}
+	descriptor, err := s.hub.Probe(ctx, s.adapter)
+	if err != nil {
+		return err
+	}
+	if descriptor.CapabilityRevision == "" || e.CapabilityRevision == descriptor.CapabilityRevision {
+		return nil
+	}
+	return &refusal{
+		code:    "stale_capabilities",
+		message: fmt.Sprintf("capability revision %q is not the current %q", e.CapabilityRevision, descriptor.CapabilityRevision),
+		details: map[string]any{"expected_revision": e.CapabilityRevision, "current_revision": descriptor.CapabilityRevision},
+	}
+}
+
+// controlParticipant is the identity initialize declared, or the daemon's
+// default when a host opened without initializing. The default keeps a host
+// that skips discovery working, exactly as it did before initialize was read.
+func (s *Server) controlParticipant() protocol.ParticipantID {
+	s.participantMu.Lock()
+	defer s.participantMu.Unlock()
+	if s.participant == "" {
+		return serve.DefaultParticipant
+	}
+	return s.participant
 }
 
 func (s *Server) capabilities(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
@@ -129,8 +245,9 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 	}
 	open := base.OpenRequest{
 		SessionID:             request.SessionID,
-		Participant:           protocol.Participant{ID: serve.DefaultParticipant},
+		Participant:           protocol.Participant{ID: s.controlParticipant()},
 		AllowDegradedFeatures: request.AllowDegradedFeatures,
+		Tools:                 request.Tools,
 	}
 	entry, state, err := s.hub.Open(ctx, s.adapter, open)
 	if err != nil {
@@ -326,6 +443,9 @@ func (s *Server) resolve(ctx context.Context, e protocol.Envelope) (protocol.Env
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
+	if e.Type == protocol.TypeActionCallResolveRequest {
+		return s.resolveCall(ctx, entry, e)
+	}
 	var resolution base.InteractionResolution
 	var answer protocol.Envelope
 	if e.Type == protocol.TypeActionPermissionResolveRequest {
@@ -363,6 +483,31 @@ func (s *Server) resolve(ctx context.Context, e protocol.Envelope) (protocol.Env
 	// one descriptor snapshot: the request cites the revision it was made
 	// under and the response repeats it. Dropping it here makes an otherwise
 	// conformant exchange fail validation as a stale revision.
+	answer.CapabilityRevision = e.CapabilityRevision
+	return answer, nil
+}
+
+// resolveCall answers a control-owned call's resolution. A refusal is carried
+// in the response rather than raised as a refusal envelope: the five ranked
+// reasons are the endpoint's answer to a well-formed request, and turning one
+// into an error.response would leave the resolver unable to tell a rejected
+// resolution from a broken one.
+func (s *Server) resolveCall(ctx context.Context, entry *serve.Session, e protocol.Envelope) (protocol.Envelope, error) {
+	var request protocol.ActionCallResolveRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	result, err := entry.ResolveCall(ctx, base.CallResolution{RequestID: e.ID, Request: request})
+	if err != nil {
+		return protocol.Envelope{}, err
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeActionCallResolveResponse, s.nextID("response"), result)
+	if err != nil {
+		return protocol.Envelope{}, err
+	}
+	answer.InReplyTo = e.ID
+	answer.SessionID = entry.ID()
+	answer.RunID = request.RunID
 	answer.CapabilityRevision = e.CapabilityRevision
 	return answer, nil
 }

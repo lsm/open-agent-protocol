@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -17,8 +18,15 @@ import (
 )
 
 const (
-	PinnedCommit           = "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5"
-	CapabilityRevision     = "makai-agent-67ad514-oap-v1"
+	PinnedCommit = "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5"
+	// endpointID is this endpoint's identity, and therefore the agent
+	// participant every interaction it raises is requested by. The two are
+	// one value because protocol.initialize.response declares the endpoint
+	// and nothing else declares the agent side: an adapter naming a different
+	// requester raises gates addressed to a participant the trace never saw
+	// declared.
+	endpointID             = "makai.agent"
+	CapabilityRevision     = "makai-agent-67ad514-oap-v2"
 	defaultJournalCapacity = 256
 )
 
@@ -112,6 +120,85 @@ func (c *processClient) Close() error {
 	return c.Process.Close(ctx)
 }
 
+// The provisioning limits this adapter discloses. maxProvidedTools is a bound
+// on the native tools array rather than a protocol one; the dialect is the
+// one makai's parameters_schema_json carries at this pin. Both are declared
+// because a constraint must be advertised to be exercised: refusing an array
+// that satisfies every disclosed limit is undisclosed_provide_limit.
+const (
+	maxProvidedTools = 32
+	providedDialect  = "https://json-schema.org/draft/2020-12/schema"
+)
+
+var provideSupport = protocol.FeatureSupport{
+	Level: protocol.SupportEmulated,
+	Limits: map[string]json.RawMessage{
+		protocol.LimitMaxTools: json.RawMessage(strconv.Itoa(maxProvidedTools)),
+		"schema_dialect":       json.RawMessage(`"` + providedDialect + `"`),
+	},
+	Reason: "provided definitions are written onto every agent_message and executed through the native tool_execute/tool_result bridge",
+}
+
+// admitProvidedTools judges one open's control-owned catalog. Provisioning is
+// whole or not at all and is judged before a process starts, so a refused open
+// leaves no child behind and no session holding a catalog it silently trimmed.
+//
+// Makai provisions per message rather than per session, which is a wider
+// surface than this unit admits. The adapter narrows it rather than widening
+// the protocol: the array is fixed at open and repeated verbatim on every
+// agent_message, so the session's provided catalog cannot change under a run.
+func admitProvidedTools(req base.OpenRequest) ([]protocol.ToolDefinition, error) {
+	if err := base.RefuseUnadvertisedTools(req, provideSupport); err != nil {
+		return nil, err
+	}
+	if len(req.Tools) == 0 {
+		return nil, nil
+	}
+	refuse := func(tool, detail string) error {
+		return &base.UnsupportedControlError{Feature: protocol.FeatureToolsProvide, Reason: base.ControlUnsatisfiable, Tool: tool, Detail: detail}
+	}
+	if len(req.Tools) > maxProvidedTools {
+		return nil, refuse(req.Tools[maxProvidedTools].Name, fmt.Sprintf("at most %d tools may be provided", maxProvidedTools))
+	}
+	seen := map[string]bool{}
+	for _, tool := range req.Tools {
+		switch {
+		case tool.Name == "":
+			return nil, refuse("", "a provided tool needs a name")
+		case tool.ExecutionOwner != req.Participant.ID:
+			return nil, refuse(tool.Name, "execution_owner must be the opening participant")
+		case seen[tool.Name]:
+			// One name resolves to one definition. Makai routes tool_execute
+			// by name, so a collision would route a call to whichever entry
+			// happened to win.
+			return nil, refuse(tool.Name, "the name is provided twice")
+		case tool.Source != "":
+			// This adapter declares no sources and attaches none, so a
+			// provided tool naming one is dangling by construction.
+			return nil, refuse(tool.Name, "source "+tool.Source+" resolves to no declared or attached source")
+		case !admissibleDialect(tool.InputSchema):
+			return nil, refuse(tool.Name, "the input schema declares a dialect outside the disclosed "+providedDialect)
+		}
+		seen[tool.Name] = true
+	}
+	return append([]protocol.ToolDefinition(nil), req.Tools...), nil
+}
+
+// admissibleDialect reports whether a provided schema elects a dialect this
+// adapter accepts. An absent $schema elects the endpoint's.
+func admissibleDialect(schema json.RawMessage) bool {
+	if len(schema) == 0 {
+		return true
+	}
+	var declared struct {
+		Schema string `json:"$schema"`
+	}
+	if err := json.Unmarshal(schema, &declared); err != nil {
+		return false
+	}
+	return declared.Schema == "" || declared.Schema == providedDialect
+}
+
 func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 	if err := ctx.Err(); err != nil {
 		return base.Descriptor{}, err
@@ -137,10 +224,17 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
 		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "observed native tool lifecycle; no portable authoritative catalog"},
-		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "client-hosted tool execution requires an explicit executor boundary not yet exposed by this adapter"},
-		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "Makai agent protocol exposes no permission interaction"},
+		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the pinned agent protocol has no harness-side executor this adapter can drive"},
+		// The tool_execute/tool_result bridge is exactly the control-layer
+		// boundary: the harness asks the client to run a tool and waits for
+		// the answer. The limits are disclosed because a refusal is only
+		// conforming where it violates one — max_tools is the native
+		// tools array this adapter writes onto every agent_message, and the
+		// dialect is what makai's parameters_schema_json carries.
+		protocol.FeatureToolsProvide: provideSupport,
+		"action.permissions":         {Level: protocol.SupportUnavailable, Reason: "Makai agent protocol exposes no permission interaction"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "makai.agent", Name: "Makai Agent Adapter", Version: PinnedCommit[:7], Adapter: "makai-agent-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "session", CancellationImplementation: "native_session_teardown"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Makai Agent Adapter", Version: PinnedCommit[:7], Adapter: "makai-agent-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "native_session_teardown"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -152,6 +246,10 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	// ToolSources, so admitting the open would return a session that silently
 	// discarded them.
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
+		return nil, err
+	}
+	provided, err := admitProvidedTools(req)
+	if err != nil {
 		return nil, err
 	}
 	client, err := a.config.Factory.Start(ctx)
@@ -217,7 +315,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: started.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, stop: make(chan struct{}), nativeSequence: 1}
+	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: started.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, provided: provided, stop: make(chan struct{}), nativeSequence: 1}
 	go s.dispatch()
 	return s, nil
 }

@@ -17,6 +17,7 @@ import (
 )
 
 const (
+	endpointID   = "opencode.server"
 	PinnedTag    = native.PinnedTag
 	PinnedCommit = "16747470f976aca3d362ad730bcd3fe82ecc2c9a"
 	// A revision identifies exactly one descriptor, so a consumer holding the
@@ -173,7 +174,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		// not the server's own list, and it grows as steps are observed.
 		protocol.FeatureModelsList: {Level: protocol.SupportDegraded, Reason: "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision"},
 	}
-	endpoint := protocol.EndpointDescriptor{ID: "opencode.server", Name: "OpenCode Server Adapter", Version: PinnedTag, Adapter: "opencode-http-sse"}
+	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "OpenCode Server Adapter", Version: PinnedTag, Adapter: "opencode-http-sse"}
 	return base.Descriptor{
 		Capabilities: protocol.CapabilityDescriptor{
 			Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features,
@@ -205,6 +206,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	// ToolSources, so admitting the open would return a session that silently
 	// discarded them.
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
+		return nil, err
+	}
+	// The same gate for control-layer-provided tools: this adapter advertises
+	// no action.tools.provide, so an open supplying its own tool definitions
+	// is refused rather than returning a session whose provided catalog was
+	// silently discarded.
+	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
 	client, err := a.config.Factory.Start(ctx)

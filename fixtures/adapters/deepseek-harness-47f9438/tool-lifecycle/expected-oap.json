@@ -28,7 +28,7 @@
       "session_id": "session",
       "run_id": "run-c",
       "tool_call_id": "tool-call-e",
-      "requested_by": "agent",
+      "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
       "name": "read_file",
       "arguments_json": {
@@ -52,7 +52,7 @@
       "session_id": "session",
       "run_id": "run-c",
       "tool_call_id": "tool-call-e",
-      "requested_by": "agent",
+      "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
       "name": "read_file"
     },
@@ -74,7 +74,7 @@
       "session_id": "session",
       "run_id": "run-c",
       "tool_call_id": "tool-call-e",
-      "requested_by": "agent",
+      "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
       "name": "read_file",
       "result": [
@@ -154,7 +154,7 @@
       "session_id": "session",
       "run_id": "run-l",
       "tool_call_id": "tool-call-n",
-      "requested_by": "agent",
+      "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
       "name": "read_file",
       "arguments_json": {
@@ -178,7 +178,7 @@
       "session_id": "session",
       "run_id": "run-l",
       "tool_call_id": "tool-call-n",
-      "requested_by": "agent",
+      "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
       "name": "read_file"
     },
@@ -200,7 +200,7 @@
       "session_id": "session",
       "run_id": "run-l",
       "tool_call_id": "tool-call-n",
-      "requested_by": "agent",
+      "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
       "name": "read_file",
       "error": {

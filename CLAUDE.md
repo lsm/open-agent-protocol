@@ -29,6 +29,20 @@ go test ./adapter/codex/appserver -run EvidenceCorpus -v   # the hermetic corpus
 
 CLI subcommands (`go run ./cmd/oap <cmd>`): `check`, `validate [--format=json] <trace.json>...`, `fixtures [manifest]`, `demo`, `serve [--config path] [--addr host:port] [--stdio]`, `endpoint [--adapter name]`, `conformance [--command "<cmd>"] [--format json]`, `providers zai-cn`.
 
+Run the endpoint conformance harness after changing the stdio binding,
+`serve/serveendpoint`, or the memory adapter's script:
+
+```sh
+go run ./cmd/oap conformance --command "go run ./cmd/oap endpoint"
+```
+
+It drives a scripted session over `drafts/endpoint-stdio.md` and hands the
+assembled trace to the same validator. A check reported `skipped` is an
+obligation the endpoint does not carry — cursor replay is not a Core Profile
+Requirement — not one it failed. Two checks are driven with deliberately wrong
+requests, a stale revision and a cancel for a settled run, and `Client.Probe`
+keeps those exchanges out of the assembled trace.
+
 `endpoint` and `conformance` are the endpoint-role pair, and are not the same
 layer as `serve --stdio`. `serve --stdio` exposes the **hub** (twelve ops, an
 adapter dimension, cursor replay, multiplexed subscriptions), each line
@@ -90,6 +104,8 @@ These are what the validator enforces and what every adapter's reducer must prod
 - `capability_revision` is schema-required only on the envelopes whose entire content is bound to one descriptor: `capabilities.response`, `capabilities.updated`, `models.response`, and
 `action.tools.list.response`. The validator adds: a request that supplies a revision must cite the current one (`protocol.initialize.request` and `capabilities.request` are exempt so discovery is never blocked) and its successful response must repeat it; and any envelope exercising an optional feature (non-`auto` delivery, tools, permissions, user input) must cite the active descriptor revision. As an implementation convention, not a validator rule, the adapters in this repo stamp the revision on every event they emit so consumers can bind an event to its descriptor snapshot. Capabilities report effective fidelity (`native`/`emulated`/`degraded`/`unavailable`), never an idealized harness.
 - Only the declared responder resolves an interaction, once. Answers are validated with `adapter.ValidateInputAnswer` before any native write.
+- A control-owned call (`action.tools.provide`) is a third interaction kind, resolved through `adapter.CallResolver` rather than `Session.Resolve`, because its answer is a response carrying one of five ranked refusal reasons rather than an error. The endpoint reports the highest reason a request satisfies; an empty set obliges acceptance. An adapter that does not implement the unit calls `adapter.RefuseUnadvertisedTools` at open, beside the tool-sources gate.
+- The agent participant an adapter names as `requested_by` must be the endpoint id its `protocol.initialize.response` declares. Nothing else declares the agent side, so a mismatch is `unknown_participant` on every gate it raises — and is invisible until a trace contains an initialize exchange.
 
 ### Anatomy of a harness adapter
 

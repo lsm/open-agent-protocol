@@ -110,10 +110,10 @@ func TestGoldenScript(t *testing.T) {
 	if err := events[3].DecodePayload(&requested); err != nil {
 		t.Fatal(err)
 	}
-	if requested.RequestedBy != "agent" || requested.RespondedBy != "user" {
+	if requested.RequestedBy != "reference.memory" || requested.RespondedBy != "user" {
 		t.Fatalf("ownership omitted: %+v", requested)
 	}
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, SessionID: "session-1", RunID: runID, RequestedBy: "agent", RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, SessionID: "session-1", RunID: runID, RequestedBy: "reference.memory", RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	events = drainAvailable(stream)
@@ -132,7 +132,7 @@ func TestGoldenScript(t *testing.T) {
 	if err := events[3].DecodePayload(&input); err != nil {
 		t.Fatal(err)
 	}
-	if input.RequestedBy != "agent" || input.RespondedBy != "user" {
+	if input.RequestedBy != "reference.memory" || input.RespondedBy != "user" {
 		t.Fatalf("ownership omitted: %+v", input)
 	}
 	resolution := adapter.InteractionResolution{
@@ -140,7 +140,7 @@ func TestGoldenScript(t *testing.T) {
 		RespondedBy: "user",
 		Input: &protocol.UserInputResolveRequest{
 			InteractionID: input.InteractionID,
-			RequestedBy:   "agent",
+			RequestedBy:   "reference.memory",
 			RespondedBy:   "user",
 			SessionID:     "session-1",
 			RunID:         runID,
@@ -264,13 +264,13 @@ func TestCompletedCancelReturnsTypedError(t *testing.T) {
 	initial := drainAvailable(stream)
 	var permission protocol.PermissionRequestedPayload
 	_ = initial[3].DecodePayload(&permission)
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	middle := drainAvailable(stream)
 	var input protocol.UserInputRequestedPayload
 	_ = middle[3].DecodePayload(&input)
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = drainAvailable(stream)
@@ -291,7 +291,7 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	initial := drainAvailable(stream)
 	var permission protocol.PermissionRequestedPayload
 	_ = initial[3].DecodePayload(&permission)
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	middle := drainAvailable(stream)
@@ -301,7 +301,7 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}})
+		_ = session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}})
 	}()
 	cancelAck := make(chan protocol.RunCancelResponse, 1)
 	go func() {
@@ -343,7 +343,7 @@ func TestToolCompletionOmitsRequestOnlyArguments(t *testing.T) {
 			_ = envelope.DecodePayload(&permission)
 		}
 	}
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	observed := false
@@ -378,7 +378,7 @@ func TestUserInputRequestEnvelopeCarriesToolBinding(t *testing.T) {
 			_ = envelope.DecodePayload(&permission)
 		}
 	}
-	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
 	found := false
@@ -724,7 +724,7 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 	}
 	var prompt protocol.UserInputRequestedPayload
 	_ = initial[2].DecodePayload(&prompt)
-	answer := protocol.UserInputResolveRequest{InteractionID: prompt.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}
+	answer := protocol.UserInputResolveRequest{InteractionID: prompt.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: admission.RunID, Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &answer}); err != nil {
 		t.Fatalf("resolve input: %v", err)
 	}
@@ -749,7 +749,7 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 	initial := drainAvailable(stream)
 	var permission protocol.PermissionRequestedPayload
 	_ = initial[3].DecodePayload(&permission)
-	valid := protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}
+	valid := protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, ChoiceID: "approve", Granted: true}
 	for name, mutate := range map[string]func(*protocol.PermissionResolveRequest){
 		"foreign nested requester": func(p *protocol.PermissionResolveRequest) { p.RequestedBy = "intruder" },
 		"foreign nested responder": func(p *protocol.PermissionResolveRequest) { p.RespondedBy = "intruder" },
@@ -780,7 +780,7 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 		"mixed form":       {{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}, Text: "yes"}},
 		"foreign question": {{QuestionID: "other", SelectedOptionIDs: []string{"yes"}}},
 	} {
-		request := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: answers}
+		request := protocol.UserInputResolveRequest{InteractionID: input.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user", SessionID: "session-1", RunID: runID, Answers: answers}
 		if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Input: &request}); !errors.Is(err, adapter.ErrInvalidResolution) {
 			t.Fatalf("%s: got %v, want adapter.ErrInvalidResolution", name, err)
 		}
@@ -1039,7 +1039,7 @@ func runScriptedTool(t *testing.T, session adapter.Session, admission protocol.M
 		RunID: admission.RunID, RespondedBy: "user",
 		Permission: &protocol.PermissionResolveRequest{
 			InteractionID: requested.InteractionID, SessionID: "session-1", RunID: admission.RunID,
-			RequestedBy: "agent", RespondedBy: "user", ChoiceID: "approve", Granted: true,
+			RequestedBy: "reference.memory", RespondedBy: "user", ChoiceID: "approve", Granted: true,
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1060,7 +1060,7 @@ func runScriptedTool(t *testing.T, session adapter.Session, admission protocol.M
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{
 		RunID: admission.RunID, RespondedBy: "user",
 		Input: &protocol.UserInputResolveRequest{
-			InteractionID: input.InteractionID, RequestedBy: "agent", RespondedBy: "user",
+			InteractionID: input.InteractionID, RequestedBy: "reference.memory", RespondedBy: "user",
 			SessionID: "session-1", RunID: admission.RunID,
 			Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}},
 		},

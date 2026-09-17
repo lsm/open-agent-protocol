@@ -28,7 +28,7 @@
       "session_id": "session-1",
       "run_id": "run-02",
       "tool_call_id": "tool-call-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
       "name": "codex.file_change",
       "arguments_json": {
@@ -58,7 +58,7 @@
       "session_id": "session-1",
       "run_id": "run-02",
       "tool_call_id": "tool-call-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
       "name": "codex.file_change",
       "arguments_json": {
@@ -86,7 +86,7 @@
     "id": "event-10",
     "payload": {
       "interaction_id": "interaction-09",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "responded_by": "user",
       "session_id": "session-1",
       "run_id": "run-02",
@@ -136,7 +136,7 @@
     "id": "event-11",
     "payload": {
       "interaction_id": "interaction-09",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "responded_by": "user",
       "session_id": "session-1",
       "run_id": "run-02",
@@ -162,7 +162,7 @@
       "session_id": "session-1",
       "run_id": "run-02",
       "tool_call_id": "tool-call-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
       "name": "codex.file_change",
       "result": {
