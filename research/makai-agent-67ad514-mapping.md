@@ -280,6 +280,37 @@ observations describe one logical invocation. The adapter correlates both using
 the namespaced portable `tool_call_id` and never emits duplicate OAP actions.
 A parent terminal closes any unfinished tool before settlement.
 
+Before this unit the bridge was not merely refused but unreachable: the adapter
+marshalled `"tools": []any{}` onto every `agent_message`, so the harness was
+offered no tool, never emitted `tool_execute`, and the refusal behind it was a
+path no run took. Makai's own native OAP mode declares empty in both payloads
+for the same reason. Both sides suppressed the capability at the source
+because OAP had nowhere to put a caller-executed tool.
+
+The bridge is executed rather than refused as of the `+control-tools` unit
+([Decision 0011](../decisions/0011-control-layer-provided-tools.md)). A
+`tool_execute` naming a tool the control layer provided at session open opens
+an OAP interaction: `action.call.requested` carrying `interaction_id` and
+`responded_by`, resolved through `action.call.resolve.request`, answered back
+to makai as the `tool_result` it is waiting for, and only then settled with
+the derived terminal. Writing the native frame before publishing the terminal
+is deliberate — the reverse order would tell the control layer its answer had
+landed before it had.
+
+Two narrowings the adapter makes rather than widening the protocol. Makai
+provisions tools per `agent_message` and the unit provisions per session, so
+the definitions fixed at open are repeated verbatim on every message and a
+submit can neither add a tool nor drop one. And makai admits one outstanding
+`tool_execute` per run at this pin, so a second arriving while one is pending
+is a lifecycle fault rather than a second interaction: the native correlation
+is the `tool_call_id` the frame is about to reuse.
+
+`makai_tool_executor_unavailable` — an identifier this repository mints, not
+one Makai sends — survives, narrowed to what it now names: a
+`tool_execute` for a tool this session never provided. Such a frame has no
+owner to route to, and the protocol gained a place for the frames the adapter
+can route rather than for every frame.
+
 The mapped agent protocol does not expose a general user permission
 interaction. Permission support remains unavailable rather than inferred from
 tool hosting.
@@ -313,6 +344,16 @@ vocabulary defines must not become one — and the reducer must keep discarding
 it. Should makai ever give it a producer, it is a tool-progress carrier
 overlapping `tool_execution_update`, and P0 #11's deduplication rule governs
 it.
+
+Where the two `lossy` observations go is now a decision rather than a silence.
+Neither has a core carrier and neither is getting one: per-segment prompt
+accounting is not a lifecycle fact, and inventing a core envelope for it would
+repeat the mistake [Decision 0012](../decisions/0012-persistence-is-not-in-v0.1-core.md)
+retires. An endpoint that wants to carry them names them in an extension pack
+([Decision 0004](../decisions/0004-extension-packs.md)), which is what the seam
+is for. This adapter carries neither, because a pack it invented on the
+harness's behalf would be a namespace nobody else reads. The classification
+below is the whole claim: produced, dropped, and recorded as dropped.
 
 `context_usage` and `prompt_segment_usage` are produced: both are `AgentEvent`
 union members in `zig/src/agent/types.zig`, emitted from `agent_loop.zig` and
@@ -498,6 +539,11 @@ never silent adapter compensation.
    decision — and the corpus now pins the second (`provider-error-result`).
 10. **Server and SDK session models differ:** implement one explicit boundary.
 11. **Tool bridge and tool observations overlap:** deduplicate one action.
+    The bridge half is now executed rather than refused: a `tool_execute`
+    naming a provided tool becomes a control-owned OAP interaction and its
+    resolution is written back as `tool_result` (Decision 0011,
+    `tool-bridge-roundtrip`). The deduplication rule is unchanged — one logical
+    invocation, one OAP action — and an unprovided name keeps the refusal.
 12. **Unknown observations:** classify each as mapped, observed-only,
     required-unmapped/fatal, or unsupported request.
 
@@ -515,6 +561,9 @@ ledger and in fixture omissions; it is never silent convergence.
 - one foreground run per session: enforced;
 - text streaming: `native` once exercised;
 - tool lifecycle and progress: `degraded` until complete fixtures pass;
+- control-layer-provided tools (`action.tools.provide`): `emulated`, executed
+  through the native `tool_execute`/`tool_result` bridge, with `max_tools` and
+  the accepted schema dialect disclosed;
 - configured model selection: native input, not a catalog;
 - model catalog: unavailable until authority and failure behavior are exercised;
 - cancellation: `degraded`, session-destructive;
@@ -567,6 +616,24 @@ Native-sequence fault coverage follows §13.1 at this pin: duplicate frames are
 rejected by `message_id`, zero is reserved for correlated validation errors,
 and allocated-sequence gaps/reordering are legal wire shapes (pinned by the
 transport tests) rather than corpus faults.
+
+## Pin staleness: main implements natively
+
+This ledger is pinned to `67ad514` and describes the adapter's translation of
+it. Makai's `main` has moved: PR #310 adds a native OAP mode —
+`zig/src/protocol/oap/{types,envelope,server,bridge}.zig` behind `makai --oap`,
+translating onto the same agent loop through `bridge.zig` — which the
+maintainers report implements all five P0 behaviours this ledger records as
+absent: a run-scoped cancellation terminal, `run.failed` for provider errors,
+a submission/run split with an explicit admission response, server-allocated
+contiguous per-run sequences, and a capability revision with a
+`stale_capabilities` refusal.
+
+That report is a source reading, not a conformance result, and it is recorded
+here as such. `oap conformance --command` against a built `makai --oap` is what
+would settle it, and until that runs neither side can falsify a conformance
+claim about #310. The pinned adapter above is unaffected either way: it adapts
+`67ad514` and keeps doing so.
 
 ## v1.1 deviations and re-pin gate
 

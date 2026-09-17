@@ -241,6 +241,13 @@ func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServe
 	if err := base.RefuseUnadvertisedToolSources(request, attachSupport); err != nil {
 		return nil, err
 	}
+	// The same gate for control-layer-provided tools: this adapter advertises
+	// no action.tools.provide, so an open supplying its own tool definitions
+	// is refused rather than returning a session whose provided catalog was
+	// silently discarded.
+	if err := base.RefuseUnadvertisedTools(request); err != nil {
+		return nil, err
+	}
 	attachments := request.ToolSources
 	if len(attachments) == 0 {
 		return nil, nil

@@ -110,11 +110,36 @@ is the session's lifetime:
   governs an output that has not moved, not the pace of a host that is keeping
   up, so it is long — the reference endpoint uses two minutes. A slow host is
   not a gone one.
-- A **malformed line** — not JSON, not an envelope, or over the length bound —
-  is the host's framing defect. The endpoint writes one bounded diagnostic to
-  stderr and exits **non-zero**. It does not attempt to resynchronise, because
-  a stream whose framing is in doubt cannot be trusted to carry the next
-  boundary.
+- A **malformed line** is the host's framing defect. The endpoint writes one
+  bounded diagnostic to stderr and exits **non-zero**. It does not attempt to
+  resynchronise, because a stream whose framing is in doubt cannot be trusted
+  to carry the next boundary.
+
+  Which lines those are is decided **before decoding**, on what the line
+  declares itself to be, and the test is the one that governs an unknown
+  control: did the frame parse, and was its boundary found?
+
+  1. Not JSON, not a JSON object, or over the length bound — **fatal**. The
+     boundary is genuinely in doubt.
+  2. A `control` member and no `protocol` member — a control frame. Answered,
+     never fatal, even when the endpoint implements no controls.
+  3. A `protocol` member and an `id` — an envelope, and its framing is not in
+     doubt whatever else is wrong with it. An unknown `type`, a payload that
+     does not decode, a missing required member: all of these get a correlated
+     `error.response` and the stream carries on. **Not fatal.**
+  4. A `protocol` member and no `id` — **fatal**, and for a different reason
+     than (1). The line said what it is, so framing is fine; but every response
+     this binding defines requires `in_reply_to`, so there is nothing to
+     address an answer to. The endpoint cannot answer it, answering something
+     uncorrelated in its place would corrupt a stream a host reads by
+     correlation, and dropping it silently would leave the host waiting forever
+     for a response to a request it believes it sent.
+  5. Neither `protocol` nor `control` — **fatal**. The JSON parsed, but nothing
+     says what the line is, so no path could answer it.
+
+  The distinction that matters is (3) against (1): an envelope that is merely
+  *wrong* is a protocol error, and only a line whose framing or addressability
+  is in doubt ends the process.
 - An endpoint does not invent terminals. A run still in flight when stdin
   closes ends with the session, unobserved — the host that hung up has by
   definition stopped reading it, and a synthesised `run.failed` written into a
@@ -230,3 +255,36 @@ different code, and the validator is the one the adapters are already held to.
 The runner drives a **process**, not an in-process adapter, so it works against
 any binary regardless of implementation language. `oap endpoint` is the
 known-good target it is developed against.
+
+**What the script needs from you, and what it does not.** It drives one run,
+so it needs a run to be admittable. It does not need that run to succeed:
+the terminal check accepts `run.completed`, `run.failed` or `run.cancelled`,
+because core requirement 9 is exactly one terminal and not a successful one.
+An endpoint with no provider configured, or one pointed at a model that does
+not exist, still conforms — it admits the submission and settles the run —
+and conformance does not require credentials or a reachable model server.
+
+Naming a model is the one place the script cannot guess. An endpoint is
+entitled to have no default model and to refuse a submission that names none.
+So the script takes `--model`, and failing that reads the endpoint's own
+`models.list` when it advertises one, preferring the entry that declares
+itself default. An endpoint that advertises no catalog and holds no default
+cannot be driven past submit by any host, which is worth knowing about that
+endpoint rather than something the harness should paper over.
+
+A check can also be **skipped**, which is not the same as failing. Cursor
+replay is not among the Core Profile Requirements, and this binding says an
+endpoint that does not recognise a control answers `unsupported_control` and
+keeps going — so an endpoint that answers that way has done what it was told
+to, and the runner records the obligation as one this endpoint does not carry.
+Failing it would put a requirement in the harness that is in no document.
+
+What the runner drives, and what it does not. It walks discovery
+(`protocol.initialize` and `capabilities`), a session, an admitted run with
+both scripted gates answered from the stream, a terminal, a cursor replay,
+reconciliation, the stale-revision rule, the cancellation disjunction, and the
+exit contract. Two of those are driven with deliberately wrong requests — a
+revision the endpoint never issued, and a cancel for a run that has already
+settled — and those exchanges are kept out of the assembled trace, because the
+endpoint's answer is what is under test and the request is a fault the runner
+committed on purpose.

@@ -188,6 +188,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
+	// The same gate for control-layer-provided tools: this adapter advertises
+	// no action.tools.provide, so an open supplying its own tool definitions
+	// is refused rather than returning a session whose provided catalog was
+	// silently discarded.
+	if err := base.RefuseUnadvertisedTools(req); err != nil {
+		return nil, err
+	}
 	client, model, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err

@@ -100,6 +100,13 @@
         "post-stop-stale-publication"
       ],
       "path": "post-stop-stale-publication"
+    },
+    {
+      "id": "tool-bridge-roundtrip",
+      "ledger_fixtures": [
+        "tool-bridge-roundtrip"
+      ],
+      "path": "tool-bridge-roundtrip"
     }
   ],
   "commit": "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5",

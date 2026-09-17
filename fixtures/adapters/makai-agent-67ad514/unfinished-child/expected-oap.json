@@ -16,7 +16,7 @@
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-4",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -28,7 +28,7 @@
       "session_id": "session",
       "run_id": "run-4",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "makai.agent",
       "execution_owner": "makai-agent",
       "name": "slow",
       "arguments_json": {}
@@ -38,7 +38,7 @@
     "session_id": "session",
     "run_id": "run-4",
     "tool_call_id": "tool-call-9",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -50,7 +50,7 @@
       "session_id": "session",
       "run_id": "run-4",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "makai.agent",
       "execution_owner": "makai-agent",
       "name": "slow"
     },
@@ -60,7 +60,7 @@
     "session_id": "session",
     "run_id": "run-4",
     "tool_call_id": "tool-call-9",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -72,7 +72,7 @@
       "session_id": "session",
       "run_id": "run-4",
       "tool_call_id": "tool-call-9",
-      "requested_by": "agent",
+      "requested_by": "makai.agent",
       "execution_owner": "makai-agent",
       "name": "slow",
       "error": {
@@ -86,7 +86,7 @@
     "session_id": "session",
     "run_id": "run-4",
     "tool_call_id": "tool-call-9",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -108,6 +108,6 @@
     "timestamp_ms": 10,
     "session_id": "session",
     "run_id": "run-4",
-    "capability_revision": "makai-agent-67ad514-oap-v1"
+    "capability_revision": "makai-agent-67ad514-oap-v2"
   }
 ]

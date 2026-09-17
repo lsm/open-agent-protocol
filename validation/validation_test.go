@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/protocol"
@@ -574,4 +575,36 @@ func FuzzApplyEnvelopeNeverPanics(f *testing.F) {
 		s.apply(0, 1, e)
 		s.close(1)
 	})
+}
+
+// TestSchemaDiagnosticNamesTheDeclaredBranch pins that a schema failure is
+// reported against the branch the envelope's own type selects.
+//
+// The bundle is one oneOf, so a frame failing its own branch also fails the
+// other forty-two, and their leaves are true statements about schemas the
+// author never claimed. This envelope is an error.response missing
+// in_reply_to, and it was reported as "missing properties
+// 'capability_revision', 'sequence'" — neither of them the field actually
+// missing, both of them requirements of branches it was never trying to be.
+// An implementer reading that goes looking for the wrong defect, and one did.
+func TestSchemaDiagnosticNamesTheDeclaredBranch(t *testing.T) {
+	const trace = `[{"protocol":"open-agent-protocol","version":"0.1",` +
+		`"profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"e1",` +
+		`"timestamp_ms":1,"payload":{"error":{"code":"invalid_request","message":"no"}}}]`
+	result := MustNew().Validate(bytes.NewReader([]byte(trace)), "branch")
+	if result.Valid() {
+		t.Fatal("an error.response without in_reply_to must not validate")
+	}
+	if len(result.Diagnostics) != 1 {
+		t.Fatalf("got %d diagnostics, want one: %+v", len(result.Diagnostics), result.Diagnostics)
+	}
+	message := result.Diagnostics[0].Message
+	if !strings.Contains(message, "in_reply_to") {
+		t.Fatalf("diagnostic %q does not name the member that is actually missing", message)
+	}
+	for _, foreign := range []string{"capability_revision", "sequence", "run_id", "session_id"} {
+		if strings.Contains(message, foreign) {
+			t.Fatalf("diagnostic %q names %q, a requirement of a branch this envelope never claimed", message, foreign)
+		}
+	}
 }

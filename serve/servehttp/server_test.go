@@ -822,7 +822,7 @@ func TestResolveRejections(t *testing.T) {
 	openSession(t, server, "memory", "resolve-reject")
 
 	unknownRun := requestEnvelope(t, protocol.TypeActionPermissionResolveRequest, "resolve-unknown", protocol.PermissionResolveRequest{
-		InteractionID: "interaction-1", RequestedBy: "agent", RespondedBy: serve.DefaultParticipant,
+		InteractionID: "interaction-1", RequestedBy: "reference.memory", RespondedBy: serve.DefaultParticipant,
 		SessionID: "resolve-reject", RunID: "run-404", ChoiceID: "approve", Granted: true,
 	}, "resolve-reject", "run-404", "")
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/resolve-reject/resolve", unknownRun)
@@ -831,7 +831,7 @@ func TestResolveRejections(t *testing.T) {
 	// The scripted gate only resolves for the declared responder.
 	_, admission := submitRun(t, server, "resolve-reject", "submit-resolve")
 	wrongResponder := requestEnvelope(t, protocol.TypeActionPermissionResolveRequest, "resolve-wrong", protocol.PermissionResolveRequest{
-		InteractionID: "interaction-1", RequestedBy: "agent", RespondedBy: "someone-else",
+		InteractionID: "interaction-1", RequestedBy: "reference.memory", RespondedBy: "someone-else",
 		SessionID: "resolve-reject", RunID: admission.RunID, ChoiceID: "approve", Granted: true,
 	}, "resolve-reject", string(admission.RunID), "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/resolve-reject/resolve", wrongResponder)

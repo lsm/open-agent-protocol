@@ -95,6 +95,13 @@ type OpenRequest struct {
 	// unsupported_feature naming action.tool_sources.attach rather than
 	// opening a session that silently has none of them.
 	ToolSources []protocol.ToolSourceAttachment
+	// Tools are the definitions the control layer provides for the session's
+	// lifetime, gated on action.tools.provide. An adapter that cannot
+	// provision every one of them refuses the open with the typed
+	// unsupported_feature rather than opening a session that silently
+	// provisioned a subset: a caller that provided five tools and got three
+	// has a run whose behaviour depends on which two were dropped.
+	Tools []protocol.ToolDefinition
 	// AllowDegradedFeatures is the caller's consent to a degraded application
 	// of the capabilities the open elects. An open electing a degraded key
 	// without naming it here is refused with capability_degraded.
@@ -142,11 +149,41 @@ var ErrToolCatalogUnavailable = errors.New("adapter: no portable tool catalog is
 
 // InteractionResolution is a tagged union: exactly one of Permission or Input
 // must be present. RespondedBy must match the pending interaction's responder.
+//
+// A control-owned call is resolved through CallResolver instead, not through a
+// third arm here, because its answer is a response rather than an error: the
+// five ranked refusal reasons are conforming outcomes an endpoint must report,
+// and a nil-or-error return has nowhere to put them.
 type InteractionResolution struct {
 	RunID       protocol.RunID
 	RespondedBy protocol.ParticipantID
 	Permission  *protocol.PermissionResolveRequest
 	Input       *protocol.UserInputResolveRequest
+}
+
+// CallResolution is one resolution of a control-owned call, together with the
+// envelope id of the request that carried it.
+//
+// The id is not decoration. A resolve-derived action.call.started or terminal
+// carries request_id, and over HTTP the response travels the POST body while
+// the event it authorizes travels the event stream — so a client holding the
+// event needs to know which of two outstanding resolutions of one call
+// released it. The adapter cannot invent that id, so the codec passes it in.
+type CallResolution struct {
+	RequestID protocol.EnvelopeID
+	Request   protocol.ActionCallResolveRequest
+}
+
+// CallResolver is implemented by a session that executes control-layer-provided
+// tools (action.tools.provide). ResolveCall answers one resolution with the
+// response the endpoint owes it: accepted, or refused with the highest of the
+// five ranked reasons the request satisfies.
+//
+// An error return is for faults the response shape cannot carry — a closed
+// session, a cancelled context — never for a refusal. A refusal is a
+// conforming answer and belongs in the response.
+type CallResolver interface {
+	ResolveCall(context.Context, CallResolution) (protocol.ActionCallResolveResponse, error)
 }
 
 type ResumeRequest struct {
@@ -264,6 +301,26 @@ func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.Fe
 		}
 	}
 	return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
+}
+
+// RefuseUnadvertisedTools is the same gate for control-layer-provided tools:
+// an open supplying `tools` to an endpoint that never advertised
+// action.tools.provide is refused before a session exists, rather than
+// returning one whose provided catalog was silently discarded.
+//
+// Unlike attachment, provisioning discloses no mode — session open is the
+// whole provisioning surface the unit admits — so the advertisement is the
+// support level alone.
+func RefuseUnadvertisedTools(request OpenRequest, disclosed ...protocol.FeatureSupport) error {
+	if len(request.Tools) == 0 {
+		return nil
+	}
+	for _, support := range disclosed {
+		if support.Level != "" && support.Level != protocol.SupportUnavailable {
+			return nil
+		}
+	}
+	return &UnsupportedControlError{Feature: protocol.FeatureToolsProvide, Reason: ControlUnadvertised}
 }
 
 // DuplicateEnvironmentName reports the first variable an allowlist names twice,

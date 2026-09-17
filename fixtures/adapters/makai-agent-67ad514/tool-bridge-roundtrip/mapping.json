@@ -1,0 +1,23 @@
+[
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 1,
+    "oap": "adapter reducer projection",
+    "type": "tool_execute"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 2,
+    "oap": "adapter reducer projection",
+    "type": "tool_result"
+  },
+  {
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "index": 3,
+    "oap": "adapter reducer projection",
+    "type": "agent_event"
+  }
+]

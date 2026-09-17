@@ -284,7 +284,7 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := session.Resolve(ctx, adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, SessionID: "demo-session", RunID: admission.RunID, RequestedBy: "agent", RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
+	if err := session.Resolve(ctx, adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: permission.InteractionID, SessionID: "demo-session", RunID: admission.RunID, RequestedBy: "reference.memory", RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
 		return err
 	}
 	middle, err := drainStream(stream)
@@ -295,7 +295,7 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := session.Resolve(ctx, adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, SessionID: "demo-session", RunID: admission.RunID, RequestedBy: "agent", RespondedBy: "user", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}}); err != nil {
+	if err := session.Resolve(ctx, adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: input.InteractionID, SessionID: "demo-session", RunID: admission.RunID, RequestedBy: "reference.memory", RespondedBy: "user", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}}); err != nil {
 		return err
 	}
 	final, err := drainToClose(stream)

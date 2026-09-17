@@ -83,6 +83,14 @@ type Server struct {
 
 	ids atomic.Uint64
 
+	// participant is the control identity protocol.initialize.request
+	// declared, read by every session this endpoint opens. Without it an
+	// endpoint would open sessions under a name the host never named, and
+	// every gate it raised would be addressed to a participant the trace
+	// cannot see declared — which is what unknown_participant reports.
+	participantMu sync.Mutex
+	participant   protocol.ParticipantID
+
 	// lines is the only path to stdout. Producers hand a framed line over
 	// and one goroutine owns the write, so a peer that has stopped reading
 	// parks that goroutine alone instead of whoever happened to be holding a
