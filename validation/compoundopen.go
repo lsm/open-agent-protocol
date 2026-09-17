@@ -111,7 +111,7 @@ func (s *state) compoundOpenResponse(i, line int, e protocol.Envelope, p protoco
 		Admission:         admissionFor(entry.Status),
 		RunID:             entry.RunID,
 		Status:            entry.Status,
-		ModelID:           p.CurrentModelID,
+		ModelID:           admittedModel(requestedSubmission(req), p),
 	})
 }
 
@@ -127,16 +127,22 @@ func (s *state) soleAdmittedRun(p protocol.SessionOpenResponse) (protocol.Active
 	return found, count == 1
 }
 
+func admittedModel(request protocol.MessageSubmitRequest, p protocol.SessionOpenResponse) string {
+	if request.ModelID != nil {
+		return *request.ModelID
+	}
+	return p.CurrentModelID
+}
+
 func refusesSubscribe(err protocol.ProtocolError) bool {
-	if err.Code == errorUnsupportedFeature || err.Code == errorCapabilityDegraded {
+	if err.Code != errorUnsupportedFeature && err.Code != errorCapabilityDegraded {
+		return false
+	}
+	named, ok := err.Details["feature"].(string)
+	if !ok {
 		return true
 	}
-	for _, value := range err.Details {
-		if name, ok := value.(string); ok && name == protocol.FeatureOpenSubscribe {
-			return true
-		}
-	}
-	return false
+	return named == protocol.FeatureOpenSubscribe
 }
 
 func (s *state) activeRunCount(p protocol.SessionOpenResponse) string {

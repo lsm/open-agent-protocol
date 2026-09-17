@@ -4651,6 +4651,26 @@
       "provenance": ["decisions/0009-compound-open.md"]
     },
     {
+      "id": "compound-open-per-run-model-selection",
+      "path": "valid/compound-open-per-run-model-selection.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-refused-for-another-feature",
+      "path": "valid/compound-open-refused-for-another-feature.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
       "id": "compound-open-degraded-subscribe-refused-without-optin",
       "path": "valid/compound-open-degraded-subscribe-refused-without-optin.json",
       "kind": "positive",
