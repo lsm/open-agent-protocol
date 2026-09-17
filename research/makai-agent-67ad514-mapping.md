@@ -622,9 +622,9 @@ transport tests) rather than corpus faults.
 This ledger is pinned to `67ad514` and describes the adapter's translation of
 it. Makai's `main` has moved: PR #310 adds a native OAP mode —
 `zig/src/protocol/oap/{types,envelope,server,bridge}.zig` behind `makai --oap`,
-translating onto the same agent loop through `bridge.zig` — which the
-maintainers report implements all five P0 behaviours this ledger records as
-absent: a run-scoped cancellation terminal, `run.failed` for provider errors,
+translating onto the same agent loop through `bridge.zig` — which, read from
+that tree rather than pinned here, implements all five P0 behaviours this ledger
+records as absent: a run-scoped cancellation terminal, `run.failed` for provider errors,
 a submission/run split with an explicit admission response, server-allocated
 contiguous per-run sequences, and a capability revision with a
 `stale_capabilities` refusal.

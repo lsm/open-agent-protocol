@@ -89,7 +89,8 @@ ones.
 The symmetry with `tool_sources` carries an assumption that does not travel
 with it, and the assumption is not the one it first looks like.
 
-It looks like session-scope. Makai's maintainers report that their tools are
+It looks like session-scope. Checked against source in the Makai tree, their
+tools are
 genuinely per-session — their multi-session host has no tool registry at all,
 tool definitions arriving as data in the frames that start an agent and a turn —
 while provider resolution is process-global: one provider protocol server per
@@ -112,9 +113,9 @@ for the wire, a catalog for the endpoint. Every OAP submit carries one.
 What separates them is read from write. Naming an existing provider *reads*
 shared state: two sessions naming the same one get the same answer, and neither
 changes what the other sees. Attaching a provider *adds an entry* to it, and
-that is what forces first-wins, clobber or refuse. Makai's maintainers point at
-their own split as the check — provider lookup happens per request, while
-registration happens once at startup and nowhere else outside tests.
+that is what forces first-wins, clobber or refuse. The Makai tree's own split is
+the check — provider lookup happens per request, while registration happens once
+at startup and nowhere else outside tests.
 
 So the predicate this record adopts, stated generally because it is not about
 providers:
@@ -257,9 +258,9 @@ operator would otherwise have supplied.
 provider request. This is a rule about the payload, not an omission that held
 because nobody asked for one.
 
-Makai's maintainers raised it against this record's draft, from their own
-implementation: `headers` sits on both their per-provider `Model` and their
-per-call `StreamOptions`, and `Authorization: Bearer sk-...` is a header. A
+It was raised against this record's draft and checked against source in the
+Makai tree: `headers` sits on both their per-provider `Model` and their per-call
+`StreamOptions`, and `Authorization: Bearer sk-...` is a header. A
 credential allowlist that governs a credential field does nothing when the
 credential is not put in the credential field. On their side headers are
 operator configuration and never caller-supplied, which is why it has never
@@ -292,16 +293,18 @@ from the wire.
 The reference adapter can execute the unit, and executing it there proves the
 shape is implementable, which is step 1 of Decision 0003's gate and not step 3.
 
-**This record's account of Makai's tree was checked by its maintainers against
-source, on 2026-09-17**, after the first three drafts of this record had each
-been corrected by them. The characterization verified covers every claim made
+**This record's account of the Makai tree was verified against source on
+2026-09-17**, after the first three drafts of this record had each been
+corrected from it. The characterization verified covers every claim made
 here: no tool registry in the multi-session host, tool definitions arriving as
 data in the frames that start an agent and a turn, one provider protocol server
 per process, named endpoints loaded at catalog build, base URLs from the
 environment, no session id anywhere in the resolution path, and lookup per
 request against registration only at startup. That raises those claims from
-reported to checked. It does not make them step-3 evidence, because nothing in
-that tree speaks this unit.
+reported to checked, and the check is in the source rather than in anyone's
+recollection — a reader challenging one of the seven should go to the tree. It
+does not make them step-3 evidence, because nothing in that tree speaks this
+unit, and no Makai maintainer is on record asserting any of it.
 
 **The hazard is verified even though the feature is not.** The two runs above
 are against merged code at `906b2a1`. They are why this record specifies a

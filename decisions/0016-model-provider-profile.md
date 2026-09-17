@@ -146,11 +146,11 @@ unanswered for adapters — has to be answered here rather than deferred.
 
 ## What the envelope set must not assume
 
-This decision defers the envelopes. Makai's maintainers supplied the shape of
-their provider layer against that deferral, and four constraints in it are
-cheap to record now and expensive to discover after a schema exists. Their
-standing is the same as every other live-tree report in these records: read
-from their working tree, not pinned in `adapter/makai/`, so not evidence under
+This decision defers the envelopes. The shape of Makai's provider layer was read
+from source against that deferral, and four constraints in it are cheap to
+record now and expensive to discover after a schema exists. Their standing is
+the same as every other live-tree reading in these records: taken from that
+working tree, not pinned in `adapter/makai/`, so not evidence under
 [Decision 0003](0003-staged-unit-graduation.md)'s step 3. They are design
 constraints, not graduation evidence.
 

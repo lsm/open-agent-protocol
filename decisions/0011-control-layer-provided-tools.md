@@ -435,8 +435,8 @@ a provided tool in place of its own scripted one when a session supplies a
 catalog. A session that provides nothing runs exactly the script it always
 did, which is what makes the unit inert where it is not elected.
 
-The per-submit deferral was checked against the Makai maintainers' own model
-rather than assumed. Their finding:
+The per-submit deferral was checked against the Makai tree's own model rather
+than assumed. What the source shows:
 
 > Every makai consumer writes `tools` into both `config_json` and
 > `message_json` from a single source and always emits the key. Their
