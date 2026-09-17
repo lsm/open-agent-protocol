@@ -313,6 +313,14 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		emit(protocol.TypeSessionStateResponse, protocol.SessionState{
 			SessionID: state.SessionID, Status: protocol.SessionIdle, UpdatedAtMS: 2,
 		}, reply)
+	default:
+		// Every request gets one correlated answer, including a type this
+		// helper does not serve. Silence is not a conformant option and it is
+		// not a cheap one either: the runner waits out its full line deadline
+		// for an answer that never comes.
+		emit(protocol.TypeErrorResponse, protocol.ErrorResponse{
+			Error: protocol.ProtocolError{Code: "unsupported_request", Message: "this helper serves no " + string(request.Type)},
+		}, reply)
 	}
 }
 
