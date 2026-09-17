@@ -170,8 +170,17 @@ type ToolsListResponse struct {
 	Tools     []ToolDefinition       `json:"tools"`
 }
 
+// ActionCallPayload is every action.call.* event. RequestID names the
+// action.call.resolve.request an event was derived from, and is carried by a
+// control-owned call's action.call.started and its result-derived terminal.
+// It exists because a client reads the resolve response on one stream and the
+// event it authorized on another: two resolutions of one call can be
+// outstanding at once — a result and its retry — so `tool_call_id` alone
+// cannot say which request authorized the event being held, and the
+// correlation has to be at the request.
 type ActionCallPayload struct {
 	InteractionID  InteractionID   `json:"interaction_id,omitempty"`
+	RequestID      EnvelopeID      `json:"request_id,omitempty"`
 	SessionID      SessionID       `json:"session_id"`
 	RunID          RunID           `json:"run_id"`
 	ToolCallID     ToolCallID      `json:"tool_call_id"`
@@ -184,6 +193,136 @@ type ActionCallPayload struct {
 	Progress       json.RawMessage `json:"progress,omitempty"`
 	Result         json.RawMessage `json:"result,omitempty"`
 	Error          *ProtocolError  `json:"error,omitempty"`
+}
+
+// ResolveArmStarted is the acknowledgement arm's payload: an empty object.
+// It is a struct rather than a bool so the wire shape stays extensible and so
+// presence, not truth, is what the arm means.
+type ResolveArmStarted struct{}
+
+// The three arms of one action.call.resolve.request, and the names the
+// validator and the adapters use for them.
+const (
+	ResolveArmAcknowledge = "started"
+	ResolveArmResult      = "result"
+	ResolveArmError       = "error"
+)
+
+// ResolveReason is why a control-owned call's resolution was refused. The five
+// are ranked, most informative first, and the endpoint reports — and the
+// validator requires — the highest reason the request satisfies, because one
+// request can satisfy several at once and one response carries one reason.
+//
+// The order asks what the sender most needs to know. Whether the interaction
+// exists comes first; then whether this sender may speak for it at all, since
+// the state of a call it does not own is not its business; and only then how
+// far the call has progressed, most advanced first.
+type ResolveReason string
+
+const (
+	ReasonUnknownInteraction      ResolveReason = "unknown_interaction"
+	ReasonWrongResponder          ResolveReason = "wrong_responder"
+	ReasonAlreadyResolved         ResolveReason = "already_resolved"
+	ReasonRepeatedAcknowledgement ResolveReason = "repeated_acknowledgement"
+	ReasonLateAcknowledgement     ResolveReason = "late_acknowledgement"
+)
+
+// resolveReasonLadder is the ranking, highest first. Index 0 outranks index 1.
+var resolveReasonLadder = []ResolveReason{
+	ReasonUnknownInteraction,
+	ReasonWrongResponder,
+	ReasonAlreadyResolved,
+	ReasonRepeatedAcknowledgement,
+	ReasonLateAcknowledgement,
+}
+
+// ResolveReasonRank reports a reason's position on the ladder and whether it
+// is on it at all. A lower rank outranks a higher one.
+func ResolveReasonRank(reason ResolveReason) (int, bool) {
+	for rank, known := range resolveReasonLadder {
+		if known == reason {
+			return rank, true
+		}
+	}
+	return 0, false
+}
+
+// HighestResolveReason picks the reason a refusal must carry from the set of
+// conditions a request satisfies.
+func HighestResolveReason(reasons ...ResolveReason) ResolveReason {
+	best := ResolveReason("")
+	bestRank := len(resolveReasonLadder)
+	for _, reason := range reasons {
+		rank, ok := ResolveReasonRank(reason)
+		if !ok || rank >= bestRank {
+			continue
+		}
+		best, bestRank = reason, rank
+	}
+	return best
+}
+
+// ActionCallResolveRequest is the control participant's answer to a call it
+// owns, in exactly one of three arms: Started acknowledges that execution has
+// begun, Result or Error resolves the call. An acknowledgement is not a
+// resolution — it may appear at most once and only before one.
+type ActionCallResolveRequest struct {
+	InteractionID InteractionID      `json:"interaction_id"`
+	SessionID     SessionID          `json:"session_id"`
+	RunID         RunID              `json:"run_id"`
+	ToolCallID    ToolCallID         `json:"tool_call_id"`
+	RequestedBy   ParticipantID      `json:"requested_by"`
+	RespondedBy   ParticipantID      `json:"responded_by"`
+	Started       *ResolveArmStarted `json:"started,omitempty"`
+	Result        json.RawMessage    `json:"result,omitempty"`
+	Error         *ProtocolError     `json:"error,omitempty"`
+}
+
+// Arm reports which of the three the request carries, or "" when it carries
+// none or more than one — a shape the schema rejects, and one the validator
+// must be able to name rather than guess at.
+func (r ActionCallResolveRequest) Arm() string {
+	arm, count := "", 0
+	if r.Started != nil {
+		arm, count = ResolveArmAcknowledge, count+1
+	}
+	if r.Result != nil {
+		arm, count = ResolveArmResult, count+1
+	}
+	if r.Error != nil {
+		arm, count = ResolveArmError, count+1
+	}
+	if count != 1 {
+		return ""
+	}
+	return arm
+}
+
+// ActionCallResolveDetails is the closed detail object an unaccepted
+// resolution carries. SettlementID is the envelope id of the settlement an
+// `already_resolved` refusal points at: required with that reason and absent
+// otherwise.
+//
+// The member is declared here rather than left to a free-form object because
+// over HTTP the refusal arrives on the POST body while the settlement travels
+// the event stream, so a client can read the refusal first; carrying the id
+// lets it wait for, or look up, the event that justifies the refusal instead
+// of reading a valid rejection as an arbitrary one. A field the validator and
+// the client recovery path both depend on cannot be an assumption.
+type ActionCallResolveDetails struct {
+	SettlementID EnvelopeID `json:"settlement_id,omitempty"`
+}
+
+// ActionCallResolveResponse answers one resolution. Reason is present only
+// with Accepted false, and Details only alongside Reason.
+type ActionCallResolveResponse struct {
+	InteractionID InteractionID             `json:"interaction_id"`
+	SessionID     SessionID                 `json:"session_id"`
+	RunID         RunID                     `json:"run_id"`
+	ToolCallID    ToolCallID                `json:"tool_call_id"`
+	Accepted      bool                      `json:"accepted"`
+	Reason        ResolveReason             `json:"reason,omitempty"`
+	Details       *ActionCallResolveDetails `json:"details,omitempty"`
 }
 
 type PermissionChoice struct {
