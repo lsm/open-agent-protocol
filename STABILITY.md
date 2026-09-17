@@ -272,6 +272,17 @@ Stated plainly, so the covered surface stays meaningful:
   the staged units in [the graduation plan](drafts/staged-units-graduation.md)
   and `+persistence`, which the conformance draft describes but nothing in this
   repository implements.
+- **Anything outside the agent-control boundary.** Direct model inference is
+  excluded by design, not pending: the core draft's "What This Protocol Is Not"
+  says why, and says the consequence — a harness whose wire carries both agent
+  control and direct provider access cannot move entirely onto OAP. Transport
+  authentication is a binding concern. Provider credential acquisition is
+  neither settled nor covered, and the same section records what a unit
+  covering it would have to answer.
+
+  This is listed here rather than only in the draft because this document is
+  the one a native implementer reads, and a boundary they discover late is
+  worse than one they read first.
 - **Draft documents.** Everything in `drafts/` other than the requirement
   sections named under "What is covered" is working material.
 - **The adapters.** They track third-party harnesses at pinned commits and
