@@ -253,6 +253,20 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	// hides the one it did. So the endpoint's own disclosure is consulted
 	// first, before any daemon-specific constraint is applied.
 	revision, refusal := serve.AttachmentGate(r.Context(), s.hub, name, envelope.CapabilityRevision, request)
+	if refusal == nil {
+		var subscribeRevision string
+		subscribeRevision, refusal = serve.SubscribeGate(r.Context(), s.hub, name, envelope.CapabilityRevision, request)
+		if subscribeRevision != "" {
+			revision = subscribeRevision
+		}
+	}
+	if refusal == nil && request.Subscribe {
+		refusal = &base.UnsupportedControlError{
+			Feature: protocol.FeatureOpenSubscribe,
+			Reason:  base.ControlUnsatisfiable,
+			Detail:  "this route answers an open with one response body and cannot also carry its event stream; open without subscribe, then GET the session's events",
+		}
+	}
 	if refusal != nil {
 		var stale *serve.StaleRevisionError
 		if errors.As(refusal, &stale) {
@@ -291,7 +305,11 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			open.Metadata[key] = value
 		}
 	}
-	entry, state, err := s.hub.Open(r.Context(), name, open)
+	opened, err := serve.OpenCompound(r.Context(), s.hub, name, open, serve.CompoundOpen{
+		Message:   request.Message,
+		RequestID: envelope.ID,
+	})
+	entry, state := opened.Session, opened.State
 	if err != nil {
 		// A capability the open elected and the adapter refused is reported
 		// under its own typed code with the details that say what to change —
