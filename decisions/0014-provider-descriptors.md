@@ -9,7 +9,8 @@ Unit: `models` (claim term `+models`) — an additive extension of the unit
 Amends: nothing. Extends
 [Decision 0006](0006-models-catalog.md) additively: one optional member on an
 existing payload, whose absence means exactly what the catalog meant before it
-existed
+existed. The caller-supplied `endpoint` member is separately gated on a
+capability key and is the one part with no native evidence yet
 Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 
 ## Context
@@ -53,7 +54,8 @@ A list of `ProviderDescriptor`, parallel to `sources[]` on
 request shape the endpoint speaks to that provider, from the closed set the
 `provider` package already names: `openai-responses`, `anthropic-messages`,
 `openai-chat-completions`. `kind` distinguishes a provider the endpoint
-reaches directly from one reached through a gateway or proxy.
+reaches directly from one reached through a gateway or proxy. `endpoint` is
+the destination, optional and gated — see the layering below.
 
 Every member but `id` is optional, and the list itself is optional. An endpoint
 that publishes no `providers[]` is exactly as conformant as it is today, and a
@@ -74,46 +76,62 @@ provider list that omitted the providers its models actually name, and a
 consumer would be no better off than with the bare string. The rule is what
 makes the join reliable enough to build on.
 
-### Configuration stays off the wire
+### The vocabulary is layered, and only credentials are forbidden outright
 
-**No member of `ProviderDescriptor` carries a base URL, a credential, a
-header, a key name, or a path.** A provider is named and characterised, never
-configured. This decision adds nothing a control layer can use to point an
-endpoint somewhere new.
+A first version of this decision refused wire-carried provider configuration
+in every form, and argued that "this is the rule this repository already
+enforces one layer down", citing tool sources. That argument was wrong on a
+checkable fact. `protocol.ToolSourceAttachment` carries `command`, `args`,
+`environment` and `endpoint`, and `schema/v0.1/session.schema.json` admits all
+four. It is `oap serve` that refuses them — `serve/attach.go` returns "the
+daemon does not accept a command or arguments from the wire; name an
+operator-configured source by id" — while an in-process embedder passes them
+straight to the adapter. A deployment policy was cited as though it were a
+protocol decision.
 
-This is not caution; it is the rule this repository already enforces one layer
-down. `serve/attach.go` refuses a command or arguments arriving on the wire
-outright — "the daemon does not accept a command or arguments from the wire;
-name an operator-configured source by id" — and accepts only the bare `NAME`
-allowlist form in an environment block. Tool sources are named on the wire and
-configured by the operator. Providers get the identical split, because the
-asymmetry would be indefensible: a control layer that may not choose which
-binary runs a tool certainly may not choose which endpoint receives the prompt.
+The shape tool sources actually have is four layers, and providers take the
+same four:
 
-The security property is worth stating plainly rather than leaving as an
-inference. An endpoint that accepted a provider base URL from its control layer
-would let whoever holds the control channel redirect every prompt, every tool
-result and every file the agent has read to a host of their choosing, with the
-endpoint's own credentials or none. That is a prompt-exfiltration primitive
-delivered through a configuration convenience, and no amount of allowlisting on
-the receiving side makes it a good trade when the operator's config file
-already does the job.
+1. **The protocol carries the vocabulary**, base URL included. An optional
+   `endpoint` on `ProviderDescriptor`, exactly as `ToolSourceAttachment`
+   carries one.
+2. **A capability key gates it.** An endpoint that does not advertise
+   caller-supplied provider endpoints refuses one with the typed
+   `unsupported_feature`, and its surface does not grow.
+3. **`oap serve` refuses it as local policy** and resolves provider ids against
+   the operator's configuration, exactly as it does for sources. The daemon's
+   trust model is unchanged: loopback, single-user, nothing from the wire that
+   names a program or a destination.
+4. **Credentials never travel.** This is the one absolute, and it already has
+   its shape: the daemon accepts only the bare `NAME` allowlist form in an
+   attachment's `environment`. Variable names, never values. The wire says
+   which secret to use; the operator supplies it.
 
-Decision 0004's extension packs remain available to an endpoint whose operators
-genuinely want wire-level provider configuration in a controlled deployment. It
-belongs in a namespace whose users opted into it, not in core.
+Layer 4 is not a deployment choice and no capability key unlocks it. Layers 1
+through 3 are, and separating them is what lets an embedder or a hosted
+control layer do bring-your-own-key and per-session gateways while `oap serve`
+stays as strict as it is today.
+
+The exfiltration concern that motivated the first version is real and is
+answered by layer 2 rather than by refusing the vocabulary. An endpoint that
+lets its control layer choose a destination can have every prompt, tool result
+and file the agent has read sent to a host of the caller's choosing. That is a
+reason to make it an advertised, refusable capability that most endpoints never
+offer — the same answer OAP gives every other dangerous affordance — not a
+reason to make it inexpressible for the deployments where the control layer and
+the operator are the same party.
 
 ### The `provider` package is the model, not the payload
 
 `provider.Preset` carries `BaseURL`, `Path`, `Model`, `EvidenceClass` and
-`SourceURL`. `ProviderDescriptor` deliberately carries none of them.
+`SourceURL`. `ProviderDescriptor` carries the first as an optional member and
+none of the rest.
 
 The package exists to record what this project has *verified* about a
-provider's compatibility, with an evidence class saying how well — it is
-research, and it is right that it sits outside the protocol. What goes on the
-wire is the subset a consumer needs to interpret a catalog it is reading now.
-Promoting the rest would put deployment facts and provenance claims into an
-envelope, and neither is the control layer's business.
+provider's compatibility, with an evidence class saying how well. That is
+research, and it is right that it sits outside the protocol. `EvidenceClass`
+and `SourceURL` are provenance claims about this repository's own testing, and
+a consumer reading a live catalog has no use for them.
 
 ## Evidence
 
@@ -132,19 +150,35 @@ and confirms that the configuration lives with the operator.
 `wire_api = "responses"` per provider, which is the `wire` member, and it keeps
 the base URL in its configuration file, which is where this leaves it.
 
-**This repository** already separated the two concerns in code. `provider/`
-models compatibility "independently from OAP harness adapters", and
-`cmd/oap providers zai-cn` serves it as a CLI query rather than a protocol
-operation.
+**This repository** already separated the two concerns in code. `provider/`'s
+package doc described it as modelling "model-provider compatibility surfaces
+independently from OAP harness adapters" — that sentence was deleted by the
+comment sweep in #64 and is recoverable at
+`git show 88186c8:provider/zai.go`; the separation it described is still in
+the package's structure and in `cmd/oap providers zai-cn`, which serves the
+presets as a CLI query rather than a protocol operation.
 
-**Counter-evidence, recorded rather than omitted.** No pinned adapter
-currently populates `provider_id` at all. The reference adapter emits
-`ProviderID: "reference"` on both catalog entries and no other adapter sets it,
-so this decision extends a field that is, today, almost entirely unused. That
-is an argument for graduating it alongside adapters that serve a real catalog —
-Pi has `get_available_models` and advertises no `models.list` at all — and not
-an argument against the shape. The gate's step 3 will not be satisfiable until
-at least one native adapter both serves a catalog and attributes it.
+**Two adapters already populate `provider_id`, and a first version of this
+record said none did.** That claim came from reading the reference adapter and
+stopping. OpenCode derives it for every entry in a real served catalog,
+splitting the native `provider/model` id shape
+(`adapter/opencode/session.go:915`), so the field is in use against a genuine
+multi-provider harness today. The reference adapter emits `"reference"` on both
+its fixed entries.
+
+**Makai's native wire carries more than this decision proposes to expose.**
+`AgentEndEvent` has `provider_id` *and* `api`
+(`adapter/makai/internal/native/events.go:39`) — which provider served the run
+and over which wire — and the adapter maps neither. That is the `wire` member
+arriving from a harness that already reports it per run, and it is the
+strongest single piece of evidence here: a harness volunteering the fact
+unprompted, with nowhere for it to go.
+
+What remains genuinely unproven is the caller-supplied `endpoint` of layer 1.
+No pinned harness accepts a provider endpoint from its client — ACP, Codex and
+Hermes all take it from operator configuration — so that member graduates on a
+native implementation or not at all, and the gate's step 3 is where that is
+decided.
 
 ## Consequences
 
@@ -165,9 +199,13 @@ without doing anything.
 
 ## What this decision does not admit
 
-Provider configuration over the wire, in any form, including a "trusted"
-control layer, an allowlisted base URL, or a provider id that an endpoint
-resolves to a caller-supplied endpoint.
+Credentials over the wire, in any form, under any capability key, for any
+deployment. Not a token, not a header, not an environment value. A name that
+the operator resolves is the only form a secret takes on this wire.
+
+A caller-supplied `endpoint` from an endpoint that has not advertised it. The
+member existing does not make it offerable; layer 2 is what makes it offered,
+and an endpoint that stays silent refuses it typed.
 
 Provider selection as a run control. `model_id` already selects, and Decision
 0005 made it per-run; a model resolves to its provider through the catalog. A
