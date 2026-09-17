@@ -279,26 +279,89 @@ func (c *Client) Wait() (int, error) {
 	return 0, nil
 }
 
-// Transcript is every envelope sent and received, in the order it crossed the
-// pipe, with each envelope id kept once. It is what becomes the trace the
-// validator judges.
+// Transcript is every envelope sent and received, each id once, ordered so a
+// run's events follow the response that admitted it.
 //
-// The deduplication is required rather than tidy, and it is the binding's own
-// rule: a replay re-delivers envelopes the host already holds, so the same
-// envelope crossing the pipe twice is one event delivered twice and not two
-// events. A trace that kept both copies would fail on duplicate envelope ids
-// for a reason that has nothing to do with the endpoint being judged.
+// Two departures from pipe-arrival order, both required rather than tidy.
+//
+// Each envelope id is kept once, because a replay re-delivers envelopes the
+// host already holds: the same envelope crossing the pipe twice is one event
+// delivered twice, and a trace keeping both copies fails on duplicate ids for
+// a reason that has nothing to do with the endpoint.
+//
+// And a run's events are held until the response admitting that run has been
+// emitted. The binding promises no ordering between a response and an event —
+// an endpoint may emit a run's first events while still inside its submit
+// handling, and over HTTP the two arrive on genuinely separate connections —
+// but a trace is a logical record, and admission precedes started in it. A
+// host that recorded arrival order would flag a conformant endpoint with
+// illegal_run_transition, intermittently, depending on which side won a race.
+// Ordering here is what makes the wire free to be unordered.
+//
+// Events whose run is never admitted are emitted at the end rather than
+// dropped: that is an endpoint defect, and the validator should be the one to
+// say so.
 func (c *Client) Transcript() []protocol.Envelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	seen := make(map[protocol.EnvelopeID]bool, len(c.transcript))
 	trace := make([]protocol.Envelope, 0, len(c.transcript))
+	admitted := map[protocol.RunID]bool{}
+	held := map[protocol.RunID][]protocol.Envelope{}
+	var order []protocol.RunID
+
+	emit := func(envelope protocol.Envelope) {
+		trace = append(trace, envelope)
+	}
+	release := func(run protocol.RunID) {
+		for _, envelope := range held[run] {
+			emit(envelope)
+		}
+		delete(held, run)
+	}
+
 	for _, envelope := range c.transcript {
 		if envelope.ID != "" && seen[envelope.ID] {
 			continue
 		}
 		seen[envelope.ID] = true
-		trace = append(trace, envelope)
+
+		if run := envelope.RunID; run != "" && envelope.Sequence != nil && !admitted[run] {
+			if _, holding := held[run]; !holding {
+				order = append(order, run)
+			}
+			held[run] = append(held[run], envelope)
+			continue
+		}
+		emit(envelope)
+		if run := admittedRun(envelope); run != "" && !admitted[run] {
+			admitted[run] = true
+			release(run)
+		}
+	}
+	for _, run := range order {
+		release(run)
 	}
 	return trace
+}
+
+// admittedRun reports the run a response admits, which is what a run's events
+// must follow. The run is read from the payload rather than the envelope
+// label, because labelling the envelope is this repository's convention and
+// not something the binding requires of anyone else.
+func admittedRun(envelope protocol.Envelope) protocol.RunID {
+	switch envelope.Type {
+	case protocol.TypeSessionMessageSubmitResponse:
+		var admission protocol.MessageSubmitResponse
+		if envelope.DecodePayload(&admission) == nil {
+			return admission.RunID
+		}
+	case protocol.TypeSessionOpenResponse:
+		var state protocol.SessionState
+		if envelope.DecodePayload(&state) == nil {
+			return state.ActiveRunID
+		}
+	}
+	return ""
 }

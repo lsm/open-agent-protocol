@@ -42,38 +42,52 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 	if envelope.Type == "" || envelope.ID == "" {
 		return fmt.Errorf("%w: an envelope needs a type and an id", ErrMalformedLine)
 	}
-	answer, err := s.serve(ctx, streams, envelope)
+	answer, after, err := s.serve(ctx, streams, envelope)
 	if err != nil {
-		answer = s.errorEnvelope(envelope, err)
+		answer, after = s.errorEnvelope(envelope, err), nil
 	}
-	return s.write(answer)
+	if writeErr := s.write(answer); writeErr != nil {
+		return writeErr
+	}
+	// Whatever the request set in motion starts after its answer is on the
+	// wire. The binding promises no ordering between a response and an event,
+	// so a host must cope either way, but a reference implementation racing
+	// its own acknowledgement would make the conformance suite intermittent
+	// against its own known-good target.
+	if after != nil {
+		after()
+	}
+	return nil
 }
 
 // serve dispatches one request envelope to the hub and returns the envelope
 // that answers it. The dispatch is on the envelope's own type: an endpoint has
 // no op names, because the protocol already names every request.
-func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, error) {
+func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
+	plain := func(answer protocol.Envelope, err error) (protocol.Envelope, func(), error) {
+		return answer, nil, err
+	}
 	switch e.Type {
 	case protocol.TypeProtocolInitializeRequest:
-		return s.initialize(ctx, e)
+		return plain(s.initialize(ctx, e))
 	case protocol.TypeCapabilitiesRequest:
-		return s.capabilities(ctx, e)
+		return plain(s.capabilities(ctx, e))
 	case protocol.TypeSessionOpenRequest:
-		return s.open(ctx, e)
+		return plain(s.open(ctx, e))
 	case protocol.TypeSessionStateRequest:
-		return s.state(ctx, e)
+		return plain(s.state(ctx, e))
 	case protocol.TypeSessionMessageSubmitRequest:
 		return s.submit(ctx, streams, e)
 	case protocol.TypeRunCancelRequest:
-		return s.cancel(ctx, e)
+		return plain(s.cancel(ctx, e))
 	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest:
-		return s.resolve(ctx, e)
+		return plain(s.resolve(ctx, e))
 	case protocol.TypeModelsRequest:
-		return s.models(ctx, e)
+		return plain(s.models(ctx, e))
 	case protocol.TypeActionToolsListRequest:
-		return s.tools(ctx, e)
+		return plain(s.tools(ctx, e))
 	}
-	return protocol.Envelope{}, &refusal{code: "unsupported_request", message: fmt.Sprintf("this endpoint serves no %s", e.Type)}
+	return protocol.Envelope{}, nil, &refusal{code: "unsupported_request", message: fmt.Sprintf("this endpoint serves no %s", e.Type)}
 }
 
 func (s *Server) initialize(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
@@ -158,39 +172,44 @@ func (s *Server) state(ctx context.Context, e protocol.Envelope) (protocol.Envel
 // adapter stream inside Submit, so the run's opening envelopes can be gone
 // before the pump attaches. Subscribing first turns a race the endpoint
 // usually wins into one it cannot lose.
-func (s *Server) submit(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, error) {
+func (s *Server) submit(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
 	entry, err := s.session(e)
 	if err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	var request protocol.MessageSubmitRequest
 	if err := e.DecodePayload(&request); err != nil {
-		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+		return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: err.Error()}
 	}
 	subscription, err := s.hub.Subscribe(streams, entry.ID())
 	if err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	admission, err := entry.Submit(ctx, request)
 	if err != nil {
 		subscription.Close()
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	answer, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, s.nextID("response"), admission)
 	if err != nil {
 		subscription.Close()
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	answer.InReplyTo = e.ID
 	answer.SessionID = admission.SessionID
 	answer.RunID = admission.RunID
 	answer.CapabilityRevision = e.CapabilityRevision
-	s.pumps.Add(1)
-	go func() {
-		defer s.pumps.Done()
-		s.pump(subscription)
-	}()
-	return answer, nil
+	// The subscription is already attached, so it buffers while the answer is
+	// written; starting the pump afterwards costs no events and keeps the
+	// acknowledgement first.
+	start := func() {
+		s.pumps.Add(1)
+		go func() {
+			defer s.pumps.Done()
+			s.pump(subscription)
+		}()
+	}
+	return answer, start, nil
 }
 
 // pump writes one run's events as they are produced. A clean end at the run's

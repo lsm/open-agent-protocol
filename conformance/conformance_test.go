@@ -31,8 +31,8 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("OAP_CONFORMANCE_HELPER") != "" {
-		os.Exit(runHelperEndpoint())
+	if mode := os.Getenv("OAP_CONFORMANCE_HELPER"); mode != "" {
+		os.Exit(runHelperEndpoint(mode))
 	}
 	code := m.Run()
 	if buildDir != "" {
@@ -149,7 +149,7 @@ func helperCommand(t *testing.T, mode string) []string {
 // from this test binary the way the adapter rpc suites re-execute theirs. It
 // speaks just enough of the binding to be driven, and gets exactly one thing
 // wrong.
-func runHelperEndpoint() int {
+func runHelperEndpoint(mode string) int {
 	const revision = "helper-v1"
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
@@ -175,12 +175,32 @@ func runHelperEndpoint() int {
 	for {
 		text, err := reader.ReadString('\n')
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			var shape struct {
+				Protocol string `json:"protocol"`
+				Control  string `json:"control"`
+				ID       string `json:"id"`
+			}
+			if json.Unmarshal([]byte(trimmed), &shape) != nil {
+				fmt.Fprintln(os.Stderr, "helper: malformed line")
+				return 2
+			}
+			if shape.Protocol == "" && shape.Control != "" {
+				// An endpoint that serves no control must answer, not die: a
+				// host speaking a newer binding is not a framing fault.
+				frame, _ := json.Marshal(ControlFrame{
+					Control: "replay.error", ID: shape.ID, Code: "unsupported_control",
+					Message: "this helper serves no controls",
+				})
+				out.Write(append(frame, '\n'))
+				out.Flush()
+				continue
+			}
 			var request protocol.Envelope
 			if json.Unmarshal([]byte(trimmed), &request) != nil || request.Type == "" {
 				fmt.Fprintln(os.Stderr, "helper: malformed line")
 				return 2
 			}
-			handleHelperRequest(request, revision, emit)
+			handleHelperRequest(request, revision, mode, emit)
 		}
 		if err != nil {
 			return 0
@@ -188,7 +208,7 @@ func runHelperEndpoint() int {
 	}
 }
 
-func handleHelperRequest(request protocol.Envelope, revision string, emit func(protocol.EnvelopeType, any, func(*protocol.Envelope))) {
+func handleHelperRequest(request protocol.Envelope, revision, mode string, emit func(protocol.EnvelopeType, any, func(*protocol.Envelope))) {
 	reply := func(e *protocol.Envelope) {
 		e.InReplyTo = request.ID
 		e.SessionID = request.SessionID
@@ -214,11 +234,6 @@ func handleHelperRequest(request protocol.Envelope, revision string, emit func(p
 	case protocol.TypeSessionMessageSubmitRequest:
 		var submit protocol.MessageSubmitRequest
 		_ = request.DecodePayload(&submit)
-		emit(protocol.TypeSessionMessageSubmitResponse, protocol.MessageSubmitResponse{
-			SessionID: submit.SessionID, Accepted: true, SubmissionID: "helper-sub",
-			RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart,
-			Admission: protocol.AdmissionStarted, RunID: "helper-run", Status: protocol.RunRunning,
-		}, func(e *protocol.Envelope) { reply(e); e.RunID = "helper-run" })
 		run := func(e *protocol.Envelope) {
 			e.SessionID = submit.SessionID
 			e.RunID = "helper-run"
@@ -226,13 +241,36 @@ func handleHelperRequest(request protocol.Envelope, revision string, emit func(p
 		seq := func(n uint64) func(*protocol.Envelope) {
 			return func(e *protocol.Envelope) { run(e); e.Sequence = &n }
 		}
-		emit(protocol.TypeRunStarted, protocol.RunStartedPayload{
-			SessionID: submit.SessionID, RunID: "helper-run", Status: protocol.RunRunning,
-		}, seq(1))
-		emit(protocol.TypeRunCompleted, protocol.RunCompletedPayload{
-			SessionID: submit.SessionID, RunID: "helper-run", StopReason: "end_turn",
-			FinalResponse: protocol.Message{Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
-		}, seq(2))
+		acknowledge := func() {
+			emit(protocol.TypeSessionMessageSubmitResponse, protocol.MessageSubmitResponse{
+				SessionID: submit.SessionID, Accepted: true, SubmissionID: "helper-sub",
+				RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart,
+				Admission: protocol.AdmissionStarted, RunID: "helper-run", Status: protocol.RunRunning,
+			}, func(e *protocol.Envelope) { reply(e); e.RunID = "helper-run" })
+		}
+		started := func() {
+			emit(protocol.TypeRunStarted, protocol.RunStartedPayload{
+				SessionID: submit.SessionID, RunID: "helper-run", Status: protocol.RunRunning,
+			}, seq(1))
+		}
+		completed := func() {
+			emit(protocol.TypeRunCompleted, protocol.RunCompletedPayload{
+				SessionID: submit.SessionID, RunID: "helper-run", StopReason: "end_turn",
+				FinalResponse: protocol.Message{Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+			}, seq(2))
+		}
+
+		if mode == "early-events" {
+			// Legal on this binding and awkward for a host: the run's events
+			// reach the pipe before the response that admits it.
+			started()
+			completed()
+			acknowledge()
+			return
+		}
+		acknowledge()
+		started()
+		completed()
 		// The defect: the error path settles the same run the completion path
 		// just settled. Two settlement paths, two different terminals.
 		emit(protocol.TypeRunFailed, protocol.RunFailedPayload{
@@ -351,5 +389,33 @@ func TestIdleEndpointStopsOnSignal(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		cmd.Process.Kill()
 		t.Fatal("an idle endpoint ignored SIGINT; only SIGKILL would stop it, which skips the session sweep")
+	}
+}
+
+// TestRunnerAcceptsAnEndpointThatStreamsBeforeAcknowledging pins the ordering
+// the binding explicitly permits and the reference endpoint could once
+// produce by losing a race with its own writer.
+//
+// A trace is a logical record — admission precedes started in it — while the
+// wire is free to be unordered, so the host is what reconciles them. Recording
+// arrival order would flag a conformant endpoint with illegal_run_transition,
+// and would do it intermittently, which is the worst way for a conformance
+// runner to be wrong.
+func TestRunnerAcceptsAnEndpointThatStreamsBeforeAcknowledging(t *testing.T) {
+	report, err := Run(context.Background(), Options{
+		Command: helperCommand(t, "early-events"),
+		Stderr:  io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, diagnostic := range report.Diagnostics {
+		t.Errorf("an endpoint streaming before its acknowledgement was judged invalid: %s: %s",
+			diagnostic.Code, diagnostic.Message)
+	}
+	for _, check := range report.Checks {
+		if !check.Passed && check.Name == "the exchange validates as an OAP trace" {
+			t.Fatalf("the assembled trace was rejected: %s", check.Detail)
+		}
 	}
 }

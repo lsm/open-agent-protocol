@@ -140,6 +140,18 @@ A control frame is a JSON object carrying a `control` member and no `protocol`
 member, which is what distinguishes it from an envelope on the same line. A
 host that never replays never sends one and never sees one.
 
+An endpoint that does not recognise a control **answers it** and keeps going:
+
+```json
+{"control":"replay.error","id":"r1","code":"unsupported_control","message":"..."}
+```
+
+A control frame it has never heard of is not a framing fault. The frame parsed,
+its boundary was found, and the only thing in doubt is whether this endpoint
+implements it — so the stream is still trustworthy and the host is owed an
+answer rather than a dead process. This is what keeps the control vocabulary
+extensible: a host speaking a newer binding degrades to one that does not.
+
 **Requesting a replay.** The host writes:
 
 ```json
