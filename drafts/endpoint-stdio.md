@@ -231,6 +231,22 @@ The runner drives a **process**, not an in-process adapter, so it works against
 any binary regardless of implementation language. `oap endpoint` is the
 known-good target it is developed against.
 
+**What the script needs from you, and what it does not.** It drives one run,
+so it needs a run to be admittable. It does not need that run to succeed:
+the terminal check accepts `run.completed`, `run.failed` or `run.cancelled`,
+because core requirement 9 is exactly one terminal and not a successful one.
+An endpoint with no provider configured, or one pointed at a model that does
+not exist, still conforms — it admits the submission and settles the run —
+and conformance does not require credentials or a reachable model server.
+
+Naming a model is the one place the script cannot guess. An endpoint is
+entitled to have no default model and to refuse a submission that names none.
+So the script takes `--model`, and failing that reads the endpoint's own
+`models.list` when it advertises one, preferring the entry that declares
+itself default. An endpoint that advertises no catalog and holds no default
+cannot be driven past submit by any host, which is worth knowing about that
+endpoint rather than something the harness should paper over.
+
 A check can also be **skipped**, which is not the same as failing. Cursor
 replay is not among the Core Profile Requirements, and this binding says an
 endpoint that does not recognise a control answers `unsupported_control` and

@@ -44,6 +44,9 @@ type Options struct {
 	// LineDeadline bounds the wait for each line the endpoint writes. Zero
 	// takes DefaultLineDeadline.
 	LineDeadline time.Duration
+	// Model is the model id the scripted submission names. Empty lets the
+	// endpoint's own catalog decide, and falls back to naming none.
+	Model string
 }
 
 type runner struct {
@@ -57,6 +60,9 @@ type runner struct {
 	// rather than assuming: an obligation that is conditional on a declared
 	// capability cannot be judged without one.
 	descriptor protocol.CapabilityDescriptor
+	// model is the operator's chosen model id, or "" to let the catalog
+	// decide. See electModel.
+	model string
 }
 
 func (r *runner) next(kind string) protocol.EnvelopeID {
@@ -131,7 +137,7 @@ func Run(ctx context.Context, options Options) (*Report, error) {
 		return nil, err
 	}
 	defer client.Close()
-	r := &runner{client: client, report: &Report{}, session: session}
+	r := &runner{client: client, report: &Report{}, session: session, model: options.Model}
 
 	r.drive()
 
@@ -213,11 +219,15 @@ func (r *runner) drive() {
 		r.pass("the open names the session it was asked for")
 	}
 
-	admitted, err := r.request(protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
+	submission := protocol.MessageSubmitRequest{
 		SessionID: r.session,
 		Delivery:  protocol.DeliveryAuto,
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("drive one scripted run")}},
-	}, "", r.revision)
+	}
+	if model := r.electModel(); model != "" {
+		submission.ModelID = protocol.ControlValue(model)
+	}
+	admitted, err := r.request(protocol.TypeSessionMessageSubmitRequest, submission, "", r.revision)
 	if !r.record("session.message.submit.request is answered", err) {
 		return
 	}
@@ -370,6 +380,43 @@ func (r *runner) answerCancel() {
 	r.pass(name)
 }
 
+// electModel picks the model the scripted submission names, or "" to name
+// none.
+//
+// An endpoint is entitled to have no default model, and one that does refuses
+// a submission that names none — correctly, and at the first step that
+// actually exercises the lifecycle. Requiring a default would be a rule in the
+// harness that is in no document, and hard-coding an id would be the harness
+// guessing at a catalog it has not read. So the catalog is what answers it:
+// the operator's --model if given, otherwise the endpoint's own models.list
+// when it advertises one, preferring the entry that declares itself default.
+//
+// An endpoint advertising no catalog and holding no default cannot be driven
+// past submit by anyone, which is a fact about that endpoint rather than a
+// failure this runner can attribute, and the refusal says so in its own words.
+func (r *runner) electModel() string {
+	if r.model != "" {
+		return r.model
+	}
+	if support, ok := r.descriptor.Features[protocol.FeatureModelsList]; !ok || support.Level == "" || support.Level == protocol.SupportUnavailable {
+		return ""
+	}
+	answer, err := r.request(protocol.TypeModelsRequest, protocol.ModelsRequest{SessionID: r.session}, "", r.revision)
+	if err != nil {
+		return ""
+	}
+	var catalog protocol.ModelsResponse
+	if err := answer.DecodePayload(&catalog); err != nil || len(catalog.Models) == 0 {
+		return ""
+	}
+	for _, model := range catalog.Models {
+		if model.Default {
+			return model.ID
+		}
+	}
+	return catalog.Models[0].ID
+}
+
 // consumeRun reads the run's events, answering each scripted gate from what
 // the gate itself offers rather than from anything this runner knows about a
 // particular implementation: the first choice a permission lists, and the
@@ -405,11 +452,17 @@ func (r *runner) consumeRun() {
 			}
 			r.pass("a user input gate is resolvable from the stream")
 		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
-			if event.Type == protocol.TypeRunCompleted {
-				r.pass("the run reaches a terminal event")
-			} else {
-				r.fail("the run reaches run.completed", fmt.Sprintf("the run settled %s", event.Type))
-			}
+			// Core requirement 9 is exactly one terminal, not a successful
+			// one. Demanding run.completed would make conformance depend on
+			// the endpoint having a working model and credentials for it,
+			// which is not a protocol property: an endpoint that admits a
+			// run and settles it as failed has done everything the lifecycle
+			// asks. The terminal is named in the detail so a reader can still
+			// see which one arrived.
+			r.report.Checks = append(r.report.Checks, Check{
+				Name: "the run reaches a terminal event", Passed: true,
+				Detail: "settled " + string(event.Type),
+			})
 			return
 		}
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/lsm/open-agent-protocol/conformance"
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/validation"
 )
 
 // runConformance drives an endpoint binary through the stdio binding and
@@ -30,6 +31,8 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 	sessionID := fs.String("session", "conformance", "session id to open")
 	format := fs.String("format", "text", "text or json")
 	verbose := fs.Bool("verbose", false, "print the endpoint's stderr")
+	model := fs.String("model", "", "model id for the scripted submission (default: the endpoint's own catalog, else none)")
+	traceOut := fs.String("trace-out", "", "write the assembled trace to this file, so a diagnostic can be read against the envelope it anchors to")
 	timeout := fs.Duration("timeout", conformance.DefaultLineDeadline, "how long to wait for each line the endpoint writes")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -55,6 +58,7 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 		SessionID:    protocol.SessionID(*sessionID),
 		Stderr:       childStderr,
 		LineDeadline: *timeout,
+		Model:        *model,
 	})
 	if err != nil {
 		return err
@@ -79,13 +83,53 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 			}
 		}
 		for _, diagnostic := range report.Diagnostics {
+			// The anchor is the actionable half. A code and a message say what
+			// rule broke; the envelope index, id, type and JSON pointer say
+			// which frame broke it, and an implementer reading the report
+			// cannot see the assembled trace the way this runner can.
 			fmt.Fprintf(stdout, "     %s: %s\n", diagnostic.Code, diagnostic.Message)
+			anchor := diagnosticAnchor(diagnostic)
+			if anchor != "" {
+				fmt.Fprintf(stdout, "       at %s\n", anchor)
+			}
 		}
+		if *traceOut == "" && len(report.Diagnostics) > 0 {
+			fmt.Fprintf(stdout, "     (run again with --trace-out=trace.json to read the assembled trace)\n")
+		}
+	}
+	if *traceOut != "" {
+		encoded, err := json.MarshalIndent(report.Trace, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(*traceOut, append(encoded, '\n'), 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "trace: %s (%d envelopes)\n", *traceOut, len(report.Trace))
 	}
 	if !report.Passed {
 		return errors.New("endpoint is not conformant")
 	}
 	return nil
+}
+
+// diagnosticAnchor renders the envelope a diagnostic is about, as much of it
+// as the diagnostic carries.
+func diagnosticAnchor(d validation.Diagnostic) string {
+	var parts []string
+	if d.Index > 0 {
+		parts = append(parts, fmt.Sprintf("envelope %d", d.Index))
+	}
+	if d.Type != "" {
+		parts = append(parts, d.Type)
+	}
+	if d.EnvelopeID != "" {
+		parts = append(parts, "id "+d.EnvelopeID)
+	}
+	if d.Pointer != "" {
+		parts = append(parts, d.Pointer)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // endpointCommand resolves the argv to spawn. Splitting on spaces is enough
