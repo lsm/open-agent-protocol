@@ -35,12 +35,31 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 		}
 		return s.handleControl(streams, frame)
 	}
-	var envelope protocol.Envelope
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		return fmt.Errorf("%w: %v", ErrMalformedLine, err)
+	if shape.Protocol == "" {
+		// Neither an envelope nor a control. The boundary was found and the
+		// JSON parsed, but nothing says what this line is, so there is no
+		// path that could answer it and no reason to trust the next one.
+		return fmt.Errorf("%w: the line declares neither protocol nor control", ErrMalformedLine)
 	}
-	if envelope.Type == "" || envelope.ID == "" {
-		return fmt.Errorf("%w: an envelope needs a type and an id", ErrMalformedLine)
+	var envelope protocol.Envelope
+	decodeErr := json.Unmarshal(line, &envelope)
+	if envelope.ID == "" {
+		// A line that declares `protocol` has said what it is, so its framing
+		// is not in doubt — but without an id there is nothing to correlate an
+		// answer to, and every response this binding defines requires
+		// in_reply_to. An endpoint cannot answer it, and answering something
+		// else in its place would put an uncorrelated envelope on a stream a
+		// host reads by correlation. Dropping it silently would be worse: the
+		// host waits forever for a response to a request it believes it sent.
+		return fmt.Errorf("%w: an envelope needs an id to be answerable", ErrMalformedLine)
+	}
+	if decodeErr != nil {
+		// Declared, addressable, and wrong. That is a protocol error, not a
+		// framing one: the host gets a correlated refusal and the stream
+		// carries on.
+		return s.write(ctx, s.errorEnvelope(envelope, &refusal{
+			code: "invalid_request", message: decodeErr.Error(),
+		}))
 	}
 	answer, after, err := s.serve(ctx, streams, envelope)
 	if err != nil {

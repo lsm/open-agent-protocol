@@ -110,11 +110,36 @@ is the session's lifetime:
   governs an output that has not moved, not the pace of a host that is keeping
   up, so it is long — the reference endpoint uses two minutes. A slow host is
   not a gone one.
-- A **malformed line** — not JSON, not an envelope, or over the length bound —
-  is the host's framing defect. The endpoint writes one bounded diagnostic to
-  stderr and exits **non-zero**. It does not attempt to resynchronise, because
-  a stream whose framing is in doubt cannot be trusted to carry the next
-  boundary.
+- A **malformed line** is the host's framing defect. The endpoint writes one
+  bounded diagnostic to stderr and exits **non-zero**. It does not attempt to
+  resynchronise, because a stream whose framing is in doubt cannot be trusted
+  to carry the next boundary.
+
+  Which lines those are is decided **before decoding**, on what the line
+  declares itself to be, and the test is the one that governs an unknown
+  control: did the frame parse, and was its boundary found?
+
+  1. Not JSON, not a JSON object, or over the length bound — **fatal**. The
+     boundary is genuinely in doubt.
+  2. A `control` member and no `protocol` member — a control frame. Answered,
+     never fatal, even when the endpoint implements no controls.
+  3. A `protocol` member and an `id` — an envelope, and its framing is not in
+     doubt whatever else is wrong with it. An unknown `type`, a payload that
+     does not decode, a missing required member: all of these get a correlated
+     `error.response` and the stream carries on. **Not fatal.**
+  4. A `protocol` member and no `id` — **fatal**, and for a different reason
+     than (1). The line said what it is, so framing is fine; but every response
+     this binding defines requires `in_reply_to`, so there is nothing to
+     address an answer to. The endpoint cannot answer it, answering something
+     uncorrelated in its place would corrupt a stream a host reads by
+     correlation, and dropping it silently would leave the host waiting forever
+     for a response to a request it believes it sent.
+  5. Neither `protocol` nor `control` — **fatal**. The JSON parsed, but nothing
+     says what the line is, so no path could answer it.
+
+  The distinction that matters is (3) against (1): an envelope that is merely
+  *wrong* is a protocol error, and only a line whose framing or addressability
+  is in doubt ends the process.
 - An endpoint does not invent terminals. A run still in flight when stdin
   closes ends with the session, unobserved — the host that hung up has by
   definition stopped reading it, and a synthesised `run.failed` written into a
