@@ -15,20 +15,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve/serveendpoint"
 )
 
-// runEndpoint serves one adapter as an OAP endpoint: raw envelopes, one per
-// line, on this process's own stdin and stdout.
-//
-// This is the role a harness takes when it implements OAP natively, and it is
-// deliberately narrower than `oap serve --stdio`. That frontend exposes the
-// hub — an adapter dimension, twelve ops, cursor replay, several
-// subscriptions multiplexed over one pipe. An implementer should not have to
-// build a hub to be conformant, so this mode exposes exactly one agent loop
-// and carries the envelopes themselves. drafts/endpoint-stdio.md is the
-// binding; this is its reference implementation, and the target
-// `oap conformance` is developed against.
-//
-// Nothing but protocol lines may reach stdout, so the adapter banner and
-// every diagnostic go to stderr.
 func runEndpoint(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("endpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -70,10 +56,6 @@ func runEndpoint(ctx context.Context, args []string, stdin io.Reader, stdout, st
 
 	runErr := endpoint.Run(signals, stdin, stdout)
 
-	// The session sweep runs on every exit, including the framing-fault exit:
-	// the endpoint's own teardown settles what it admitted, but the session
-	// outlives it on the hub, and skipping the sweep would orphan whatever
-	// child process an adapter holds.
 	sweep, cancelSweep := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelSweep()
 	hub.CloseSessions(sweep)

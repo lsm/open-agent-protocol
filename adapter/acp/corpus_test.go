@@ -66,11 +66,7 @@ type acpCorpusCase struct {
 	IdentityMap  map[string]string `json:"identity_map"`
 	Journal      int               `json:"journal_capacity,omitempty"`
 	ReplayAfter  *uint64           `json:"replay_after,omitempty"`
-	// ToolSources are the attachments the open supplies, Environment the
-	// operator allowlist a bare NAME resolves against, and ExpectedServers
-	// the mcpServers array session/new must have carried. Attachment is not
-	// an event, so the case declares what the adapter owed the native wire
-	// rather than expecting it in the OAP trace.
+
 	ToolSources     []protocol.ToolSourceAttachment `json:"tool_sources,omitempty"`
 	Environment     []string                        `json:"environment,omitempty"`
 	ExpectedServers []native.MCPServer              `json:"expected_mcp_servers,omitempty"`
@@ -124,8 +120,7 @@ func newCorpusClient() *corpusClient {
 func (c *corpusClient) Call(_ context.Context, method string, params any, result any) error {
 	switch method {
 	case native.MethodSessionNew:
-		// The params are kept so a case can assert what the adapter actually
-		// wrote to session/new, which is where an attachment lands natively.
+
 		if typed, ok := params.(native.SessionNewParams); ok {
 			c.sessionNew = typed
 		}
@@ -274,11 +269,7 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 				prefix = append(prefix, adaptertest.Drain(t, stream, time.Second)...)
 			}
 		case "prompt-error":
-			// The pinned frame is a JSON-RPC error response, so the agent
-			// answered this run's prompt. Deliver the RemoteError the
-			// production client builds from exactly that frame rather than a
-			// bare error: since Decision 0010 the two are no longer
-			// equivalent, and only a bare one means no answer came back.
+
 			if message.Error == nil {
 				t.Fatal("prompt-error frame carries no JSON-RPC error object")
 			}
@@ -316,11 +307,6 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 	}
 }
 
-// assertACPAttachment proves attachment at open on both sides of the
-// boundary: the mcpServers array the adapter actually wrote to session/new —
-// with the operator's allowlist resolved and a name it never exposed dropped
-// — and the sanitized projection the session publishes back, which carries
-// the descriptor's members and none of the attachment-only ones.
 func assertACPAttachment(t *testing.T, session base.Session, client *corpusClient, definition acpCorpusCase) {
 	t.Helper()
 	got, err := json.Marshal(client.sessionNew.MCPServers)
@@ -350,8 +336,7 @@ func assertACPAttachment(t *testing.T, session base.Session, client *corpusClien
 			t.Fatalf("session state publishes %+v for %q, want the descriptor projection", published[attachment.ID], attachment.ID)
 		}
 	}
-	// The projection is the point: nothing that could carry a credential
-	// reaches a client through state.
+
 	encoded, err := json.Marshal(state.Sources)
 	if err != nil {
 		t.Fatal(err)
@@ -365,8 +350,7 @@ func assertACPAttachment(t *testing.T, session base.Session, client *corpusClien
 
 func corpusIncomingRequest(t *testing.T, message rpc.Message) *rpc.IncomingRequest {
 	t.Helper()
-	// Build an actual RPC client so the fixture exercises native request decoding
-	// and the adapter's native response path, not a synthetic private struct.
+
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
 	client := rpc.NewClient(serverReader, serverWriter, rpc.ClientOptions{CloseReadWriter: pipePair{serverReader, serverWriter}, StrictResponseIDs: true})
@@ -585,10 +569,6 @@ func TestACPCorpusPinConstants(t *testing.T) {
 	}
 }
 
-// validateACPTrace runs the shared protocol assertion over a corpus run. A
-// permission case additionally splices the harness-side resolve exchange the
-// session already performed, so the validator certifies the client half of
-// the interaction, not only the adapter's events.
 func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled, permission bool) {
 	t.Helper()
 	if !permission {

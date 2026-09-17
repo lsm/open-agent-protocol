@@ -14,9 +14,6 @@ import (
 
 const readyFrame = `{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{"name":"default"},"change_events":true,"replay_epoch":"0123456789abcdef0123456789abcdef"}}}`
 
-// TestHermesProcessHelper is the spawned child for the drain regression: it
-// completes the ready handshake, answers one probe (id 1) with an oversized
-// frame, then exits immediately while the reader is still busy.
 func TestHermesProcessHelper(t *testing.T) {
 	if os.Getenv("OAP_HERMES_RPC_HELPER") == "" {
 		return
@@ -179,18 +176,13 @@ sleep 10
 	}
 }
 
-// The helper writes its response and then exits immediately. The reader must be
-// allowed to drain the buffered frame before the process owner reaps the child,
-// otherwise this call races the exit and reports a process-exit error for a
-// response that was already written.
 func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	for iteration := range 10 {
 		p, err := Start(context.Background(), hermesHelperConfig())
 		if err != nil {
 			t.Fatalf("iteration %d: start: %v", iteration, err)
 		}
-		// A matched response is ordered behind an inbound barrier the consumer
-		// must acknowledge, so model the adapter's own draining loop.
+
 		go func() {
 			for {
 				select {

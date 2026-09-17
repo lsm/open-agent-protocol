@@ -111,8 +111,6 @@ func (f *fakeClient) result(t *testing.T, sequence uint64, result any) {
 	f.inbound <- stdio.Inbound{Envelope: &env}
 }
 
-// stopped publishes a bare session-scoped agent_stopped, the frame Makai sends
-// when it tears the native session down without a pending cancellation.
 func (f *fakeClient) stopped(t *testing.T, sequence uint64) {
 	t.Helper()
 	id := native.MessageID(fmt.Sprintf("00000000000000000000%06d", sequence+100))
@@ -169,20 +167,11 @@ func testDescriptor(t *testing.T) base.Descriptor {
 	return descriptor
 }
 
-// assertValidTrace runs the shared protocol assertion with the adapter's live
-// descriptor; the shared trace assembly supplies the cancel exchange a
-// run.cancelled terminal implies.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
 }
 
-// An empty model_id is present, so it is a control the caller chose, not an
-// absent one. No catalog carries the empty id, so it takes the same refusal
-// any other miss takes: substituting the native default would admit the run
-// under a model the caller never asked for and report that id back as
-// effective. The three controls with no native surface here are refused under
-// their own capability keys instead of a generic invalid submission.
 func TestSubmitRefusesAnEmptyModelAndUnadvertisedControls(t *testing.T) {
 	session, client := openTest(t, 32)
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
@@ -218,8 +207,6 @@ func TestSubmitRefusesAnEmptyModelAndUnadvertisedControls(t *testing.T) {
 		}
 	}
 
-	// Every refusal preceded admission, so a named model still runs and the
-	// trace still validates.
 	admission, stream := submitTest(t, session)
 	client.event(t, 2, map[string]any{"type": "agent_end", "stop_reason": "stop"})
 	assertValidTrace(t, admission, collect(t, stream))
@@ -269,8 +256,7 @@ func TestForeignAgentStartedIsRejected(t *testing.T) {
 }
 
 func TestOpenEmitsDualKeyAgentStart(t *testing.T) {
-	// v0.2.0 (#198): agent_start must carry the canonical session_id key and
-	// the permanent resume_session_id alias with the same value.
+
 	client := newFakeClient()
 	var request native.Envelope
 	client.callHook = func(_ context.Context, env native.Envelope, _ ...native.Type) (native.Envelope, error) {
@@ -404,10 +390,6 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	return out
 }
 
-// An unsolicited agent_stopped is session-scoped evidence: it reports that the
-// native session stopped, never that this run ended. The terminal the adapter
-// derives from it is therefore inferred, and under Decision 0010 it must say
-// so — a silent terminal would claim the adapter watched the run end.
 func TestUnsolicitedSessionStopSettlesInferred(t *testing.T) {
 	session, client := openTest(t, 32)
 	response, stream := submitTest(t, session)

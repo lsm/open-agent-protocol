@@ -1,4 +1,3 @@
-// Package providertest provides deterministic loopback mocks for provider wires.
 package providertest
 
 import (

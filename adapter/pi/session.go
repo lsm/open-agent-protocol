@@ -19,7 +19,6 @@ const streamCapacity = 64
 
 var errTerminalWon = errors.New("pi adapter: terminal already selected")
 
-// Session is a concurrently safe Pi-backed OAP session.
 type Session struct {
 	mu           sync.Mutex
 	reduceMu     sync.Mutex
@@ -222,9 +221,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// Serialize command admission before publishing the reserved run. A cancel
-	// that observes the run can mark intent immediately, then waits until the
-	// prompt command has completed before sending abort.
+
 	s.commandMu.Lock()
 	s.reduceMu.Lock()
 	s.mu.Lock()
@@ -250,8 +247,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
 	s.active, s.runs[run.id] = run, run
-	// The native get_state model was recorded at open; a per-submit override was
-	// rejected by nativePrompt, so retain it instead of clearing the field.
+
 	model := s.state.CurrentModelID
 	s.state.Status, s.state.ActiveRunID, s.state.UpdatedAtMS = protocol.SessionRunning, run.id, s.clock.Now().UnixMilli()
 	s.mu.Unlock()
@@ -268,16 +264,14 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.reduceMu.Unlock()
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
-	// Prompt success proves admission but not execution. Do not report the
-	// canonical started admission until the authoritative agent_start arrives.
+
 	select {
 	case startErr := <-run.startResult:
 		if startErr != nil {
 			return protocol.MessageSubmitResponse{}, stream, startErr
 		}
 	case <-ctx.Done():
-		// Admission succeeded, but start is now ambiguous to this caller. Keep the
-		// reserved run alive for reducer/transport authority and never misreport it.
+
 		return protocol.MessageSubmitResponse{}, stream, ctx.Err()
 	}
 	response := protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: model, MessageIDs: messageIDs}
@@ -285,10 +279,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []native.ImageContent, []protocol.MessageID, error) {
-	// The prompt command carries only content and no set_model is issued, so no
-	// per-run model, instructions, tool policy, or output schema can be applied.
-	// Each is refused under its own capability key before admission, so a
-	// caller learns which control to stop sending (decision 0005).
+
 	if err := base.RefuseUnadvertisedControls(req); err != nil {
 		return "", nil, nil, err
 	}
@@ -333,17 +324,12 @@ func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []nat
 	}
 	text := strings.Join(texts, "\n\n")
 	if strings.HasPrefix(text, "/") {
-		// A registered extension slash command can acknowledge Pi's prompt RPC
-		// without entering the model loop or emitting agent_start. The adapter
-		// cannot distinguish registered commands from unknown slash input, so it
-		// conservatively rejects the entire ambiguous class before native I/O.
+
 		return "", nil, nil, fmt.Errorf("%w: slash-command input", ErrUnsupportedInput)
 	}
 	return text, images, ids, nil
 }
 
-// nativeModelID projects Pi's get_state model object onto OAP's opaque model
-// identity: provider/id when both are present, else id, else name.
 func nativeModelID(raw json.RawMessage) string {
 	var ref struct {
 		ID       string `json:"id"`
@@ -445,10 +431,7 @@ func (s *Session) applyEvent(event native.Event) {
 		return
 	}
 	if !run.started && event.Type != native.EventAgentStart {
-		// Pi may write observations before the prompt response is delivered. Keep
-		// them private until agent_start establishes the canonical run boundary.
-		// A settlement without agent_start makes canonical started admission
-		// impossible and is surfaced without emitting an invalid pre-start run event.
+
 		if event.Type == native.EventAgentSettled {
 			s.terminateBeforeStart(run, fmt.Errorf("%w: agent_settled arrived without agent_start", ErrNativeProtocol))
 			return
@@ -748,8 +731,7 @@ func (s *Session) toolPayload(t *toolState) protocol.ActionCallPayload {
 }
 
 func (s *Session) settleRun(run *runState) {
-	// Prefer the terminal candidate's message over message_end so a previous
-	// retry attempt can never supply the authoritative final response.
+
 	var final *wireMessage
 	if run.candidate != nil {
 		for i := len(run.candidate.Messages) - 1; i >= 0; i-- {
@@ -1024,8 +1006,7 @@ func fallbackContent(r *runState) protocol.MessageContent {
 		return protocol.TextContent(parts[0].Text)
 	}
 	if len(parts) == 0 {
-		// Structured content requires at least one part; an empty turn is
-		// represented as empty text.
+
 		return protocol.TextContent("")
 	}
 	return protocol.PartsContent(parts)
@@ -1041,9 +1022,7 @@ func (s *Session) applyExtension(r native.ExtensionUIRequest) {
 	default:
 		return
 	}
-	// A select extension must offer at least one non-empty option: the OAP
-	// single-choice question requires an option, and pi's native validator
-	// rejects only a nil option slice.
+
 	if r.Method == native.ExtensionSelect {
 		if len(r.Options) == 0 {
 			s.failRun(run, "pi_invalid_extension", "select extension offered no options")
@@ -1105,13 +1084,10 @@ func (s *Session) Resolve(ctx context.Context, res base.InteractionResolution) e
 		return err
 	}
 	binding.phase = interactionResolving
-	// Respond is caller-bounded by ctx. Keep the reducer serialized through the
-	// reverse-channel write and canonical child emissions so agent_settled cannot
-	// overtake a resolution already admitted here.
+
 	if err := s.client.Respond(ctx, response); err != nil {
 		binding.phase = interactionResolved
-		// The reverse-channel write failed, so the run's own stream carried
-		// nothing about its ending.
+
 		s.failRunSettled(binding.run, "pi_interaction_response_failed", err.Error(), protocol.SettledByInferred)
 		s.reduceMu.Unlock()
 		return err
@@ -1181,9 +1157,7 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 		s.unusable = true
 		return s.state, fmt.Errorf("%w: native session changed", ErrNativeProtocol)
 	}
-	// Native idle can precede delivery of an already-written agent_settled by
-	// an unbounded listener delay. It is reconciliation evidence only; never a
-	// terminal contradiction or substitute for the authoritative event.
+
 	s.nativeState = nativeState
 	if s.closed || s.unusable {
 		return s.state, base.ErrSessionClosed
@@ -1230,10 +1204,7 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	s.reduceMu.Unlock()
 	if err := s.callStrict(ctx, native.Command{Type: native.CommandAbort}, nil); err != nil {
 		s.reduceMu.Lock()
-		// A RemoteError is pi answering the abort with a failure, which is
-		// run-scoped evidence about this run and stays observed. Any other
-		// error means the abort never landed, so the terminal is concluded
-		// from the silence.
+
 		settledBy := protocol.SettledByInferred
 		var remote *rpc.RemoteError
 		if errors.As(err, &remote) {
@@ -1357,8 +1328,7 @@ func (s *Session) settleChildren(run *runState, cancel bool) {
 			continue
 		}
 		i.phase = interactionResolved
-		// Never perform reverse-channel I/O while reducing a terminal event. Pi
-		// is already settling and no longer needs an extension response.
+
 		_ = s.emit(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: i.id, RequestedBy: i.requestedBy, RespondedBy: i.respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false)
 	}
 }
@@ -1388,10 +1358,6 @@ func (s *Session) failRun(run *runState, code, message string) {
 	s.failRunSettled(run, code, message, "")
 }
 
-// failRunSettled fails a run with explicit terminal provenance. An empty
-// settledBy omits the member, which asserts observation and is right wherever
-// pi's own frames carried the failure; the transport-death path passes
-// protocol.SettledByInferred, having observed no terminal for the run.
 func (s *Session) failRunSettled(run *runState, code, message, settledBy string) {
 	if run == nil {
 		return

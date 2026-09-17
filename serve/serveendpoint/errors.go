@@ -9,8 +9,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve"
 )
 
-// refusal is one typed protocol error this endpoint raises on its own behalf,
-// for the faults that never reach an adapter.
 type refusal struct {
 	code    string
 	message string
@@ -19,14 +17,6 @@ type refusal struct {
 
 func (r *refusal) Error() string { return r.message }
 
-// errorEnvelope maps one failure onto the single correlated error.response the
-// binding owes every request.
-//
-// The mapping is the one serve/servehttp uses, minus the HTTP status: a caller
-// that switches transports should not have to relearn which code means its
-// session is gone. A typed control refusal keeps its own code and details, so
-// an open refused for a capability tells the caller which one to stop
-// electing rather than only that the open failed.
 func (s *Server) errorEnvelope(request protocol.Envelope, err error) protocol.Envelope {
 	code, message, details := "internal", err.Error(), map[string]any(nil)
 
@@ -69,9 +59,7 @@ func (s *Server) errorEnvelope(request protocol.Envelope, err error) protocol.En
 	payload := protocol.ErrorResponse{Error: protocol.ProtocolError{Code: code, Message: message, Details: details}}
 	answer, buildErr := protocol.NewEnvelope(protocol.TypeErrorResponse, s.nextID("error"), payload)
 	if buildErr != nil {
-		// The error envelope itself would not encode. Nothing richer can be
-		// said on the wire, and the request must still be answered exactly
-		// once, so the bounded fallback carries the code and drops the rest.
+
 		answer, _ = protocol.NewEnvelope(protocol.TypeErrorResponse, s.nextID("error"), protocol.ErrorResponse{
 			Error: protocol.ProtocolError{Code: code, Message: "the endpoint could not encode this refusal"},
 		})

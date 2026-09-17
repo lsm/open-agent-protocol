@@ -20,10 +20,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
 
-// failingProbeAdapter registers as an adapter but fails every probe with an
-// over-long diagnostic, so the listings' error branch — and the message
-// trimming both transports apply to it — is part of the pinned parity rather
-// than an untested copy.
 type failingProbeAdapter struct{}
 
 func (failingProbeAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -34,18 +30,6 @@ func (failingProbeAdapter) Open(context.Context, base.OpenRequest) (base.Session
 	return nil, errors.New("unreachable: every probe fails before any open")
 }
 
-// The cross-transport parity checks: the op mirror claims servehttp's bodies
-// verbatim, and the inbound budget claims the same 16 MiB both transports
-// accept. These tests pin both claims behaviorally — the listings byte for
-// byte over equal hubs, and the budget at its exact boundary — so the parity
-// is checked, not hoped for, as the two transports evolve.
-
-// TestListingsMatchHTTP serves equal hubs over HTTP and stdio and requires
-// the adapters and sessions documents to be byte-equal: the listings are
-// transport-neutral presentations of the same hub state — a healthy and a
-// probe-failing adapter, open and closed sessions — so any drift between the
-// mirrored presentation helpers, error branch and message trimming included,
-// fails here.
 func TestListingsMatchHTTP(t *testing.T) {
 	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
 	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
@@ -92,8 +76,6 @@ func TestListingsMatchHTTP(t *testing.T) {
 		t.Fatalf("sessions listing drifted:\n http %s\nstdio %s", httpBody, result)
 	}
 
-	// A closed session stays listed on both transports; the listing remains
-	// equal after the state change each surface drove itself.
 	closeResponse, err := http.Post(httpFrontend.URL+"/sessions/list-b/close", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -114,12 +96,6 @@ func TestListingsMatchHTTP(t *testing.T) {
 	}
 }
 
-// createdAtField matches the hub-stamped creation times inside one sessions
-// listing. The two hubs stamp their own wall clocks microseconds apart while
-// RFC3339 carries second resolution, so the values are normalized before the
-// byte comparison — every other byte of the two documents must still match,
-// and the match itself requires the field to be present and non-empty on
-// both sides.
 var createdAtField = regexp.MustCompile(`"created_at":"[^"]+"`)
 
 func normalizedCreatedAt(t *testing.T, body string) string {
@@ -130,11 +106,6 @@ func normalizedCreatedAt(t *testing.T, body string) string {
 	return createdAtField.ReplaceAllString(body, `"created_at":"<normalized>"`)
 }
 
-// TestToolsOpMatchesHTTP holds the catalog op to the HTTP route it mirrors:
-// over equal hubs the two answer the same catalog, and both refuse a session
-// nobody opened under the same code. The envelope ids differ because each
-// frontend mints its own, so the comparison is of the payload — which is what
-// the op's claim to be the route's body verbatim actually means.
 func TestToolsOpMatchesHTTP(t *testing.T) {
 	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
 	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
@@ -183,12 +154,7 @@ func TestToolsOpMatchesHTTP(t *testing.T) {
 	if overStdio.Type != overHTTP.Type {
 		t.Fatalf("stdio answered %s, HTTP answered %s", overStdio.Type, overHTTP.Type)
 	}
-	// The revision is compared beside the payload, because it is now part of
-	// the answer rather than transport bookkeeping: it is what binds the catalog
-	// to a descriptor snapshot, and a caller that could only get it on one
-	// transport would have to hold a per-transport table to cache a listing.
-	// Both frontends mint their own envelope ids, so the id is the only field
-	// the mirror claim exempts.
+
 	if overStdio.Revision == "" || overStdio.Revision != overHTTP.Revision {
 		t.Fatalf("stdio revision %q, HTTP revision %q", overStdio.Revision, overHTTP.Revision)
 	}
@@ -196,8 +162,6 @@ func TestToolsOpMatchesHTTP(t *testing.T) {
 		t.Fatalf("catalog payloads differ\nstdio: %s\nhttp:  %s", overStdio.Payload, overHTTP.Payload)
 	}
 
-	// The unknown-session refusal is the same on both, so a caller that
-	// branches on the code cannot need a per-transport table.
 	unknown, err := http.Get(httpFrontend.URL + "/sessions/nobody/tools")
 	if err != nil {
 		t.Fatal(err)
@@ -224,21 +188,9 @@ func TestToolsOpMatchesHTTP(t *testing.T) {
 	}
 }
 
-// TestOpenOpMatchesHTTP holds the open op to the route it mirrors. Both
-// frontends run the same admission — one serve.AttachmentGate, one
-// serve.ResolveAttachments — so the session state a successful open publishes
-// is the same document, and an attachment the daemon will not take from the
-// wire is refused under the same code whichever pipe carried it.
-//
-// The attaching case is the one worth pinning. A stdio peer is a separate
-// process on the far side of a pipe, so it is a wire caller: a command it
-// supplies is refused exactly as a webpage's would be over HTTP. An open that
-// names the operator's configured source by id alone is admitted on both, and
-// gets the operator's own fuller descriptor back.
 func TestOpenOpMatchesHTTP(t *testing.T) {
 	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
-	// The operator's own source: command, args and environment come from
-	// here and never from either wire.
+
 	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
 		if err := hub.Registry().RegisterToolSource("workspace-files", protocol.ToolSourceAttachment{
 			Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
@@ -316,9 +268,6 @@ func TestOpenOpMatchesHTTP(t *testing.T) {
 	}
 }
 
-// requireEqualPayloads compares two response envelopes by everything but the
-// envelope id, which both frontends mint from their own counter and which the
-// mirror claim exempts.
 func requireEqualPayloads(t *testing.T, overStdio, overHTTP json.RawMessage) {
 	t.Helper()
 	var stdioEnvelope, httpEnvelope struct {
@@ -343,7 +292,6 @@ func requireEqualPayloads(t *testing.T, overStdio, overHTTP json.RawMessage) {
 	}
 }
 
-// errorCode reads the refusal code out of one HTTP error.response body.
 func errorCode(t *testing.T, body []byte) string {
 	t.Helper()
 	var failure struct {
@@ -362,13 +310,6 @@ func errorCode(t *testing.T, body []byte) string {
 	return failure.Payload.Error.Code
 }
 
-// TestRequestBudgetMatchesHTTP carries one schema-valid run-cancel envelope
-// — padded to a chosen size — across both transports: the envelope, not the
-// line, is the budgeted unit (servehttp reads it as the body limit, the op
-// gate budgets the request param), so a wrapper's bytes cannot make one
-// transport accept what the other refuses. At the budget both transports
-// accept the envelope and refuse it on identical merits (the submit route
-// answers type_mismatch); one byte over, both refuse it for size.
 func TestRequestBudgetMatchesHTTP(t *testing.T) {
 	cancelEnvelope := func(pad int) []byte {
 		t.Helper()
@@ -378,8 +319,7 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The envelope schema's run def requires the addressing on the
-		// envelope itself, not only in the payload.
+
 		envelope.SessionID = "budget"
 		envelope.RunID = "run-9"
 		data, err := json.Marshal(envelope)
@@ -390,8 +330,7 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 	}
 	sizedEnvelope := func(size int) []byte {
 		t.Helper()
-		// The reason field is omitempty, so the empty skeleton omits it
-		// entirely; measuring the one-rune form makes the padding linear.
+
 		pad := size - len(cancelEnvelope(1)) + 1
 		if pad < 1 {
 			t.Fatalf("envelope skeleton already exceeds %d bytes", size)
@@ -404,7 +343,6 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		return data
 	}
 
-	// HTTP: the submit route budgets the body, then judges the envelope.
 	server, err := servehttp.New(newTestHub(t, 64, 64), servehttp.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -432,9 +370,6 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		return envelope.Payload.Error.Code
 	}
 
-	// stdio: the same envelope rides the request param of a submit line —
-	// the wrapper's bytes land inside the frame limit's allowance, not the
-	// envelope budget.
 	f := startFrontend(t, newTestHub(t, 64, 64), Options{})
 	nextBudgetID := int64(1)
 	stdioCode := func(id int64, envelope []byte, sessionID string) string {
@@ -462,11 +397,6 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		nextBudgetID++
 	}
 
-	// The wrapper allowance covers every address the HTTP surface can
-	// accept — Go's server admits request lines only within its 1 MiB
-	// header limit — so a near-limit envelope addressed by a large id rides
-	// both transports to the same op-level verdict instead of
-	// framing-defecting on one.
 	longAddress := strings.Repeat("a", 512<<10)
 	envelope := sizedEnvelope(maxEnvelopeBytes)
 	if code := postCode(envelope, longAddress); code != "type_mismatch" {
@@ -477,11 +407,6 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 	}
 	nextBudgetID++
 
-	// The encodings expand the same raw address differently — a NUL is
-	// three bytes as %00 in the HTTP target and six as a JSON \u escape
-	// of the same byte in the wrapper — so the allowance is sized for the
-	// expansion ratio, not the raw byte count: the control-character id
-	// that worst-cases the ratio rides both transports too.
 	nulAddress := strings.Repeat("%00", 200<<10)
 	nulLineID := strings.Repeat("\\u0000", 200<<10)
 	if code := postCode(envelope, nulAddress); code != "type_mismatch" {
@@ -494,10 +419,6 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 
-	// The frame limit itself still bounds the line: a line of exactly the
-	// limit frames (and is answered on its merits), one byte past it is the
-	// fail-closed defect — the wrapper allowance is headroom, not a second
-	// budget.
 	prefix, suffix := `{"id":1,"op":"bogus","request":"`, `"}`
 	atLimit := startFrontend(t, newTestHub(t, 64, 64), Options{})
 	atLimit.send(prefix + strings.Repeat("b", DefaultFrameLimit-len(prefix)-len(suffix)) + suffix)

@@ -51,7 +51,7 @@ func TestScanSSENamedEventAndID(t *testing.T) {
 	if first.event != "oap-overflow" || first.lastID != "42" || !first.hasID {
 		t.Fatalf("first frame %+v", first)
 	}
-	// Event name and id reset between frames; the default name returns.
+
 	second := frames[1]
 	if second.event != "message" || second.hasID {
 		t.Fatalf("second frame %+v", second)
@@ -89,9 +89,7 @@ func TestScanSSELeadingBOM(t *testing.T) {
 }
 
 func TestScanSSEFieldRules(t *testing.T) {
-	// One optional space after the colon is dropped, further spaces are kept;
-	// a field line without a colon names an unknown field, which is ignored
-	// alongside retry and anything unrecognized.
+
 	frames := scanFrames(t, "data:  two spaces\ndata:one\nretry: 100\nunknown: x\nnosolondata\n\n")
 	if len(frames) != 1 {
 		t.Fatalf("dispatched %d frames, want 1", len(frames))
@@ -115,8 +113,7 @@ func TestScanSSEIDWithNULDiscarded(t *testing.T) {
 }
 
 func TestScanSSENoDataNoDispatch(t *testing.T) {
-	// Blank lines and id-only frames dispatch nothing; data: with an empty
-	// value still dispatches an empty payload.
+
 	frames := scanFrames(t, "\n\nid: 1\n\ndata:\n\n")
 	if len(frames) != 1 {
 		t.Fatalf("dispatched %d frames, want 1", len(frames))
@@ -134,8 +131,7 @@ func TestScanSSEUnterminatedTailDiscarded(t *testing.T) {
 }
 
 func TestScanSSEStopsWhenHandlerDeclines(t *testing.T) {
-	// The scan stops at the first declined frame and reads no further, so
-	// scanning the same reader again resumes with the following frame.
+
 	reader := bufio.NewReader(strings.NewReader("data: one\n\ndata: two\n\ndata: three\n\n"))
 	var first frame
 	if err := scanSSE(reader, func(f frame) bool {

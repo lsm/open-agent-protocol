@@ -14,9 +14,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve"
 )
 
-// The catalog route mirrors the capabilities route: a GET with no request
-// envelope, answered by a models.response citing a daemon-minted correlation
-// id. An unknown session is refused before any adapter is asked.
 func TestModelsRoute(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "models-test")
@@ -38,10 +35,7 @@ func TestModelsRoute(t *testing.T) {
 	if envelope.InReplyTo == "" {
 		t.Fatal("models response lacks a correlation id")
 	}
-	// The catalog is part of the capability snapshot, so the response names
-	// the revision whose models.list promise governs it: without it a consumer
-	// cannot bind the listing to a descriptor, and the validator's own gate
-	// reads the catalog as citing a stale revision.
+
 	if envelope.CapabilityRevision != base.CapabilityRevision {
 		t.Fatalf("models response cites revision %q, want %q", envelope.CapabilityRevision, base.CapabilityRevision)
 	}
@@ -70,10 +64,6 @@ func TestModelsRoute(t *testing.T) {
 	requireErrorResponse(t, missing.StatusCode, http.StatusNotFound, missingEnvelope, "unknown_session")
 }
 
-// The degraded opt-in is a wire-visible field, so it travels as a repeatable
-// query parameter rather than a header: a GET carries no body, and a header
-// would hide it from logs and curl. The daemon maps it onto the payload the
-// adapter reads, unchanged and in order.
 func TestModelsRouteCarriesTheDegradedOptin(t *testing.T) {
 	recorder := &recordingLister{}
 	registry := serve.NewRegistry()
@@ -97,9 +87,6 @@ func TestModelsRouteCarriesTheDegradedOptin(t *testing.T) {
 	}
 }
 
-// A session whose adapter serves no catalog is refused under the key rather
-// than answered with an empty list: an endpoint that lists nothing and one
-// that cannot list are different answers to the same question.
 func TestModelsRouteRefusesAnAdapterWithoutACatalog(t *testing.T) {
 	registry := serve.NewRegistry()
 	if err := registry.Register("catalogless", catalogless{}); err != nil {
@@ -128,11 +115,6 @@ func TestModelsRouteRefusesAnAdapterWithoutACatalog(t *testing.T) {
 	}
 }
 
-// The revision a catalog carries is the one its lister produced it under, not
-// one the daemon read from a descriptor at some other moment. An adapter whose
-// capabilities can update moves between the two reads, and a listing labelled
-// with the older revision is one a client caches against the wrong models.list
-// promise — the exact property the label exists to provide.
 func TestModelsRouteStampsTheListersRevision(t *testing.T) {
 	registry := serve.NewRegistry()
 	if err := registry.Register("moving", &movingLister{revision: "moved-past-the-probe"}); err != nil {
@@ -162,10 +144,6 @@ func TestModelsRouteStampsTheListersRevision(t *testing.T) {
 	}
 }
 
-// A listing nothing can bind to a descriptor is worse than none: a consumer
-// would cache it under no revision and never know when to discard it, and the
-// validator's own gate rejects the envelope. The hub refuses rather than
-// inventing a label.
 func TestModelsRouteRefusesAnUnlabelledCatalog(t *testing.T) {
 	registry := serve.NewRegistry()
 	if err := registry.Register("unlabelled", &movingLister{}); err != nil {
@@ -187,12 +165,6 @@ func TestModelsRouteRefusesAnUnlabelledCatalog(t *testing.T) {
 	requireErrorResponse(t, response.StatusCode, http.StatusInternalServerError, envelope, "internal")
 }
 
-// A catalog scoped to another session, or to none, is refused rather than
-// published or relabelled. Publishing the adapter's value emits a
-// cross-session or schema-invalid models.response — one the daemon's own
-// clients reject — and rewriting it would show one session's models under
-// another's id, which is the fault laundered into something that looks
-// correct.
 func TestModelsRouteRefusesAMisscopedCatalog(t *testing.T) {
 	for _, row := range []struct {
 		name    string
@@ -224,13 +196,6 @@ func TestModelsRouteRefusesAMisscopedCatalog(t *testing.T) {
 	}
 }
 
-// An endpoint that lists no models answers with an empty list, never a null.
-// An adapter that builds its listing by appending leaves the slice nil when it
-// appends nothing, and Go marshals that as null where the schema requires an
-// array — so the daemon would publish an invalid envelope for a state that is
-// perfectly legal. The hub normalises it: unlike a missing revision or a
-// foreign scope, the two spellings say the same thing and only one is on the
-// wire, so this repairs the encoding without inventing an answer.
 func TestModelsRouteServesAnEmptyCatalogAsAnEmptyList(t *testing.T) {
 	registry := serve.NewRegistry()
 	if err := registry.Register("empty", &movingLister{revision: base.CapabilityRevision, empty: true}); err != nil {
@@ -252,9 +217,7 @@ func TestModelsRouteServesAnEmptyCatalogAsAnEmptyList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Read the payload as raw members: decoding into ModelsResponse would
-	// erase the difference between the two encodings, which is the whole of
-	// what this test is about.
+
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(envelope.Payload, &members); err != nil {
 		t.Fatal(err)
@@ -264,11 +227,6 @@ func TestModelsRouteServesAnEmptyCatalogAsAnEmptyList(t *testing.T) {
 	}
 }
 
-// movingLister probes as the reference adapter but serves its catalog under a
-// revision — and optionally a session — of its own, standing in for an adapter
-// whose descriptor moved between the two reads, or one that scopes its listing
-// wrongly. An empty revision stands in for one that labels nothing at all, and
-// empty for an adapter whose append-built listing gained no entries.
 type movingLister struct {
 	revision string
 	session  *protocol.SessionID
@@ -304,16 +262,12 @@ func (s *movingSession) Models(ctx context.Context, request protocol.ModelsReque
 		catalog.Models.SessionID = *s.session
 	}
 	if s.empty {
-		// Nil, not an empty slice: exactly what an adapter that only ever
-		// appends hands back when it has nothing to append.
+
 		catalog.Models.Models = nil
 	}
 	return catalog, nil
 }
 
-// recordingLister is the reference adapter with one addition: it records the
-// catalog request it was handed, so a test can see what crossed the boundary
-// rather than only what came back.
 type recordingLister struct {
 	mu       sync.Mutex
 	requests []protocol.ModelsRequest
@@ -352,8 +306,6 @@ func (s *recordingSession) Models(ctx context.Context, request protocol.ModelsRe
 	return s.Session.(base.ModelLister).Models(ctx, request)
 }
 
-// catalogless is an adapter whose sessions serve no catalog at all, which is
-// what every session implementation written before this unit is.
 type catalogless struct{}
 
 func (catalogless) Probe(ctx context.Context) (base.Descriptor, error) {
@@ -368,7 +320,4 @@ func (catalogless) Open(ctx context.Context, request base.OpenRequest) (base.Ses
 	return sessionWithoutCatalog{Session: session}, nil
 }
 
-// sessionWithoutCatalog hides the reference adapter's ModelLister behind a
-// struct that does not promote it, so the type assertion the hub makes fails
-// exactly as it does for an adapter that never implemented it.
 type sessionWithoutCatalog struct{ base.Session }

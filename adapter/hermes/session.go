@@ -43,33 +43,17 @@ type Session struct {
 	lastSeq      int64
 	stop         chan struct{}
 	stopOnce     sync.Once
-	// transportDead records that the reducer settled the transport's death
-	// (transportFailed ran). A Submit whose prompt.submit call was in flight
-	// at that point owns its reservation's settlement and reads this after
-	// the reply.
+
 	transportDead bool
 }
 
-// runState is reduceMu-domain except terminal/subscribers/started, which are
-// mu-domain like the DeepSeek reducer.
 type runState struct {
 	id       protocol.RunID
 	status   protocol.RunStatus
 	next     uint64
 	started  bool
 	terminal bool
-	// accepted records the {status: streaming} response; openSeen records
-	// the message.start frame. The run starts when both are observed — in
-	// either wire order. Run-scoped observations arriving before the
-	// convergence point are buffered in wire order and replayed at start:
-	// the response barrier orders only wire-earlier events, so a piped
-	// burst can deliver turn frames around the response.
-	//
-	// submitting (reduceMu-domain) is set while the prompt.submit call is in
-	// flight. The reply decides whether native acceptance happened, so a
-	// transport failure settled in that window leaves the reservation to the
-	// Submit goroutine instead of aborting it: aborting would race the reply
-	// and drop an already-opened turn's evidence.
+
 	accepted      bool
 	openSeen      bool
 	submitting    bool
@@ -78,9 +62,7 @@ type runState struct {
 	messageID     protocol.MessageID
 	final         *native.MessageCompletePayload
 	terminalKind  string
-	// deferred holds an absorbing settlement that arrived while a gate
-	// resolution was in flight; Resolve flushes it after publishing the
-	// canonical resolution event.
+
 	deferred    *native.MessageCompletePayload
 	subscribers []chan base.Result
 	startResult chan error
@@ -98,20 +80,16 @@ type toolState struct {
 	terminal  bool
 }
 
-// inputState is one native gate (approval/clarify/sudo/secret) surfaced as an
-// OAP input interaction.
 type inputState struct {
 	id        protocol.InteractionID
-	kind      string // approval | clarify | sudo | secret
-	requestID string // native _block request_id (empty for approvals)
+	kind      string
+	requestID string
 	run       *runState
 	questions []protocol.InputQuestion
 	resolved  bool
-	// settling is set while Resolve is issuing the native answer and before the
-	// canonical resolution event is published. An absorbing settlement is
-	// parked behind a settling gate so the resolution cannot lose to terminality.
+
 	settling bool
-	// answers maps question id → native answer member.
+
 	answers   map[string]string
 	requested protocol.EnvelopeID
 }
@@ -128,8 +106,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// promptMu and reduceMu make reservation, response settlement, and the
-	// message.start ownership handshake one serialization domain.
+
 	s.promptMu.Lock()
 	s.reduceMu.Lock()
 	s.mu.Lock()
@@ -165,15 +142,11 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	}()
 	err = <-callDone
 	s.reduceMu.Lock()
-	// The call is no longer in flight: from here the reservation is settled
-	// below or handed back to the reducer, and a transport failure settled
-	// after this point aborts it directly (transportFailed).
+
 	run.submitting = false
 	if err != nil || result.Status != native.SubmitStreaming {
 		if err == nil {
-			// A busy status (steered/redirected/queued), voice stop, or
-			// turn-isolation surprise: the adapter never requests any of
-			// these, so the native state diverged from the contract.
+
 			err = fmt.Errorf("%w: prompt.submit returned status %q", ErrNativeProtocol, result.Status)
 		}
 		s.abortPreStartUnlocked(run, err)
@@ -181,8 +154,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.promptMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	// The response barriers behind wire-earlier events, so everything the
-	// gateway emitted before answering has already been reduced.
+
 	s.mu.Lock()
 	run.accepted = true
 	openSeen := run.openSeen
@@ -192,11 +164,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.startRun(run)
 	}
 	if transportDead {
-		// The transport died while the call was in flight and the reducer
-		// left the reservation to this goroutine; nothing more will be
-		// observed. An opened turn projects its buffered evidence and fails
-		// as a process exit; an unopened reservation aborts with the
-		// transport error.
+
 		s.failTransport(run)
 	}
 	s.reduceMu.Unlock()
@@ -209,12 +177,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	case <-ctx.Done():
 		s.reduceMu.Lock()
 		if !run.started && !run.terminal {
-			// The gateway already answered prompt.submit with status streaming, so
-			// native acceptance is confirmed and the run is authoritative.
-			// Cancellation is now ambiguous to this caller; keep the reservation
-			// alive for the reducer to settle rather than reverting the session to
-			// idle while the accepted native turn may still execute. The call is
-			// no longer in flight, so a later transport failure aborts it.
+
 			s.reduceMu.Unlock()
 			return protocol.MessageSubmitResponse{}, nil, ctx.Err()
 		}
@@ -227,14 +190,8 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(run.messageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, MessageIDs: []protocol.MessageID{run.messageID}}, stream, nil
 }
 
-// submitText validates the conservative v1 surface: one user message whose
-// content is text or text parts.
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
-	// prompt.submit carries only the session id and text: no per-run model,
-	// instructions, tool policy, or output schema has a native surface, and
-	// Hermes fixes a model at session creation.
-	// Each is refused under its own capability key before admission, so a
-	// caller learns which control to stop sending (decision 0005).
+
 	if err := base.RefuseUnadvertisedControls(req); err != nil {
 		return "", err
 	}
@@ -273,11 +230,7 @@ func (s *Session) dispatch() {
 			s.reduce(in)
 			s.reduceMu.Unlock()
 		case <-s.client.Done():
-			// The inbound stream's owner (the factory relay on the process
-			// path, the harness fake in tests) closes the channel once every
-			// already-routed observation is forwarded. Draining to that close
-			// before settling makes transport-death ordering deterministic:
-			// the failure terminal always follows the full ordered evidence.
+
 			for {
 				var in rpc.InboundMessage
 				var ok bool
@@ -323,16 +276,14 @@ func (s *Session) reduce(in rpc.InboundMessage) {
 
 func (s *Session) applyEvent(event *native.Event) {
 	if event.SessionID == "" {
-		// Session-less frames (globals, ready echoes) carry no seq and no
-		// per-session semantics; they are ignorable by contract.
+
 		return
 	}
 	if event.SessionID != s.nativeID {
 		s.foreignActivity(fmt.Sprintf("event for foreign session %q", event.SessionID))
 		return
 	}
-	// The dedicated stream must be contiguous: the seq is stamped under one
-	// lock at the gateway's single write choke point.
+
 	if event.Seq != s.lastSeq+1 {
 		s.foreignActivity(fmt.Sprintf("non-contiguous seq %d after %d", event.Seq, s.lastSeq))
 		return
@@ -352,22 +303,15 @@ func (s *Session) applyEvent(event *native.Event) {
 	}
 	if run == nil {
 		if !native.IsRunScoped(event.Type) {
-			// Post-settlement corroboration (settled session.info, status
-			// update, usage ticks, trailing subagent frames): the pin
-			// guarantees these after message.complete, and the terminal
-			// cleanup already released the run, so an idle session may
-			// legitimately observe them.
+
 			return
 		}
-		// The only remaining session-scoped observations on a dedicated
-		// session with no reserved run are turns the native opened on its own
-		// (queued drain, auto-continue, loop wakeup) — foreign activity.
+
 		s.foreignActivity(fmt.Sprintf("session event %q without a reserved run", event.Type))
 		return
 	}
 	if terminal {
-		// Post-terminal frames (settled session.info, status.update) are
-		// corroboration; anything run-scoped is impossible after settlement.
+
 		return
 	}
 	if !run.started {
@@ -377,9 +321,6 @@ func (s *Session) applyEvent(event *native.Event) {
 	s.applyRunEvent(run, event)
 }
 
-// reserveObservation applies one run-scoped observation against a reserved,
-// not-yet-started run: message.start converges the opening handshake, every
-// other observation buffers in wire order for replay at startRun.
 func (s *Session) reserveObservation(run *runState, event *native.Event) {
 	if event.Type == native.EventMessageStart {
 		s.mu.Lock()
@@ -399,9 +340,6 @@ func (s *Session) reserveObservation(run *runState, event *native.Event) {
 	run.buffered = append(run.buffered, *event)
 }
 
-// applyRunEvent reduces one run-scoped observation for a started run. The
-// per-session seq fence and run lookup happen in applyEvent; replayed buffer
-// entries re-enter here without re-fencing.
 func (s *Session) applyRunEvent(run *runState, event *native.Event) {
 	switch event.Type {
 	case native.EventMessageStart:
@@ -452,10 +390,9 @@ func (s *Session) applyRunEvent(run *runState, event *native.Event) {
 		}
 		s.expireInteraction(run, &payload)
 	case native.EventError:
-		// Generic, non-settlement error surface: observed only.
+
 	default:
-		// Observed-only types (interim commentary, usage ticks, session.info,
-		// subagent parent frames, status updates) carry no run projection.
+
 	}
 }
 
@@ -481,8 +418,7 @@ func (s *Session) startRun(run *runState) {
 		return
 	}
 	run.signalStart(nil)
-	// Observations buffered before the convergence point reduce now, in wire
-	// order. A replayed settlement is terminal: stop draining.
+
 	for _, event := range replay {
 		if run.terminal {
 			return
@@ -536,12 +472,9 @@ func (s *Session) endTool(run *runState, payload *native.ToolCompletePayload) {
 	t.terminal = true
 	p := s.toolPayload(t)
 	p.ArgumentsJSON = nil
-	// The pinned gateway has no tool failure frame: failure rides in the
-	// free-form result without a discriminator, so every completion projects
-	// as completed (recorded as a ledger mismatch).
+
 	p.Result = payload.Result
-	// The pinned shape allows result to be omitted; action.call.completed
-	// requires it, so a missing value is normalized to JSON null.
+
 	if p.Result == nil {
 		p.Result = json.RawMessage("null")
 	}
@@ -554,7 +487,6 @@ func (s *Session) toolPayload(t *toolState) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: "agent", ExecutionOwner: "hermes", Name: t.name, ArgumentsJSON: cloneRaw(t.args)}
 }
 
-// openInteraction surfaces one native gate as an OAP input interaction.
 func (s *Session) openInteraction(run *runState, event *native.Event) {
 	if !run.started || run.terminal {
 		s.failRun(run, "hermes_interaction", "gate outside the owned run")
@@ -595,8 +527,7 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 				}
 				var options []protocol.InputOption
 				if len(question.Choices) == 0 {
-					// A choice-less clarify is open-ended; OAP choice questions
-					// require at least one option, so it surfaces as text.
+
 					kind = protocol.InputText
 				} else {
 					options = make([]protocol.InputOption, len(question.Choices))
@@ -672,10 +603,6 @@ func (s *Session) expireInteraction(run *runState, payload *native.ExpirePayload
 	}
 }
 
-// Resolve answers one open gate through its native respond method. The
-// resolution must carry exactly one answer per surfaced question (option or
-// text form per the schema); batch clarify becomes one native respond per
-// question, carrying the batch question selector.
 func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -694,9 +621,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInteractionNotFound
 	}
-	// Validate the caller-supplied ownership before touching the native gate: a
-	// mismatched participant or scope would otherwise resolve it and leave a
-	// semantically invalid ownership trail.
+
 	if resolution.RunID != "" && resolution.RunID != run.id {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
@@ -717,9 +642,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}
-	// The pending gate was emitted with requester "agent"; a nested request that
-	// names a different requester is ownership-inconsistent and must not reach the
-	// native gate (the resolved event also hardcodes the stored requester).
+
 	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != "agent" {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
@@ -735,9 +658,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		}
 		approval = &native.ApprovalRespondParams{SessionID: s.nativeID, Choice: answers[0].SelectedOptionIDs[0]}
 	case "clarify":
-		// Exactly one answer per surfaced question; each must satisfy the OAP
-		// answer shape, which the shared validator enforces (one form, offered
-		// and unique options, non-empty text).
+
 		if len(answers) != len(binding.questions) {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
@@ -754,9 +675,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 			case protocol.InputText:
 				value = answer.Text
 			case protocol.InputMultiChoice:
-				// The native clarify answer field is a single string; the pinned
-				// tool decodes a JSON array (or comma list) back into the full
-				// selection set.
+
 				encoded, err := json.Marshal(answer.SelectedOptionIDs)
 				if err != nil {
 					s.reduceMu.Unlock()
@@ -773,9 +692,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 			calls = append(calls, respond)
 		}
 	case "sudo", "secret":
-		// The gate surfaces exactly one required text question ("password" or
-		// "value"); the shared validator requires the text form and that the
-		// answer names it.
+
 		if len(answers) != 1 || len(binding.questions) != 1 || base.ValidateInputAnswer(binding.questions[0], answers[0]) != nil {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
@@ -791,9 +708,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		s.reduceMu.Unlock()
 		return errUnavailable
 	}
-	// Mark the gate settling, not resolved: a settlement that arrives while the
-	// native answer is in flight must be parked (see settleRun) rather than
-	// settled with the resolution still unpublished.
+
 	binding.settling = true
 	s.reduceMu.Unlock()
 
@@ -802,9 +717,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		binding.settling = false
 		binding.resolved = false
 		if run.deferred != nil && !run.terminal {
-			// The answer could not be delivered but a settlement is parked
-			// behind this gate; withdraw the gate so the terminal does not
-			// strand a pending interaction.
+
 			binding.resolved = true
 			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
 		}
@@ -829,9 +742,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 				remoteErr = fmt.Errorf("%w: %s returned status %q", ErrNativeProtocol, respondMethod(binding.kind), result.Status)
 			}
 			if remoteErr != nil {
-				// A mid-batch failure leaves earlier answers delivered
-				// natively; the error lets the client retry, and re-sending
-				// an earlier answer is the native registry's to judge.
+
 				unresolve()
 				return remoteErr
 			}
@@ -848,17 +759,12 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, binding.requested)
 		_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	}
-	// A settlement the gateway emitted around the answer was parked behind this
-	// resolution; now that the canonical event is published, project it.
+
 	s.flushDeferred(run)
 	s.reduceMu.Unlock()
 	return nil
 }
 
-// gatesSettling reports whether any gate on the run is mid-resolution. The
-// canonical user.input.resolved event must precede the run's absorbing
-// terminal, so a settlement arriving in that window is parked until Resolve
-// flushes it.
 func (s *Session) gatesSettling(run *runState) bool {
 	for _, binding := range s.interactions {
 		if binding.run == run && binding.settling {
@@ -868,8 +774,6 @@ func (s *Session) gatesSettling(run *runState) bool {
 	return false
 }
 
-// flushDeferred projects a settlement parked behind an in-flight resolution,
-// once no gate on the run is still settling.
 func (s *Session) flushDeferred(run *runState) {
 	if run.deferred == nil || s.gatesSettling(run) {
 		return
@@ -893,21 +797,14 @@ func respondMethod(kind string) string {
 	return ""
 }
 
-// settleRun projects the one absorbing settlement frame.
 func (s *Session) settleRun(run *runState, payload *native.MessageCompletePayload) {
 	if !run.started {
-		// A settlement for a turn whose opening frame never arrived: the
-		// reserved run has no started trace to fail. Release the reservation
-		// with the native error; this is a protocol-order violation.
+
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: settlement before the turn opened", ErrNativeProtocol))
 		return
 	}
 	if s.gatesSettling(run) {
-		// A gate resolution is mid-flight. Emitting the absorbing terminal now
-		// would make the canonical user.input.resolved event unemittable
-		// (terminality wins) and strand a pending interaction at terminality.
-		// Park the settlement; the resolving Resolve flushes it after its own
-		// emissions.
+
 		run.deferred = payload
 		return
 	}
@@ -963,8 +860,7 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	if err := s.client.Call(ctx, native.MethodSessionInterrupt, native.InterruptParams{SessionID: s.nativeID}, &result); err != nil {
 		return protocol.RunCancelResponse{}, err
 	}
-	// not_interrupted means the native saw no live turn; the owned run's
-	// settlement is then missing and the failure surfaces via arbitration.
+
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 
@@ -996,8 +892,7 @@ func (s *Session) Close(ctx context.Context) error {
 	subs := s.allSubscribersLocked()
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
-	// Teardown is stdin EOF; the transport owns the drain bounds. Dispatch
-	// stays alive through it so late frames reduce before the process exits.
+
 	err := s.client.Close()
 	s.stopOnce.Do(func() { close(s.stop) })
 	for _, c := range subs {
@@ -1046,10 +941,6 @@ func (s *Session) failRun(run *runState, code, msg string) {
 	s.failRunSettled(run, code, msg, "")
 }
 
-// failRunSettled fails a run with explicit terminal provenance. An empty
-// settledBy omits the member, which asserts observation and is right wherever
-// the gateway's own frames carried the failure; the transport-death path
-// passes protocol.SettledByInferred, having observed no terminal for the run.
 func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 	if run == nil {
 		return
@@ -1077,18 +968,12 @@ func (s *Session) transportFailed() {
 		return
 	}
 	if !run.started && run.submitting {
-		// The reservation's prompt.submit call is in flight, so whether the
-		// native accepted the turn is the reply's to say. The Submit
-		// goroutine observes transportDead after the reply and settles the
-		// reservation itself; aborting here would race that reply and drop
-		// an already-opened turn's evidence.
+
 		return
 	}
 	s.failTransport(run)
 }
 
-// failTransport settles one run against the dead transport: a started run
-// fails as a process exit, an unstarted reservation aborts with the error.
 func (s *Session) failTransport(run *runState) {
 	if run.started {
 		s.failRunSettled(run, "hermes_process_exit", fmt.Sprint(s.client.Err()), protocol.SettledByInferred)

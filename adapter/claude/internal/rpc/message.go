@@ -13,7 +13,6 @@ var (
 	ErrInvalidControl = errors.New("claude rpc: invalid control-plane message")
 )
 
-// The frame types of the pinned stream-json boundary (CLI 2.1.263).
 const (
 	TypeUser              = "user"
 	TypeAssistant         = "assistant"
@@ -33,57 +32,39 @@ const (
 type MessageKind uint8
 
 const (
-	// KindObservation covers every message-stream frame: the modeled
-	// vocabulary above, and unknown types — the boundary is documented as
-	// forward-compatible and both reference hosts ignore unrecognized types,
-	// so the adapter records them as observations instead of failing.
 	KindObservation MessageKind = iota + 1
-	// KindControlRequest is a reverse control_request from the CLI (the
-	// permission ask) that must be answered with exactly one control_response.
+
 	KindControlRequest
-	// KindControlResponse answers a control_request this side issued.
+
 	KindControlResponse
-	// KindControlCancel withdraws an in-flight reverse request the CLI
-	// originated; there is no reply to the cancel itself.
+
 	KindControlCancel
 )
 
-// ControlResponseEnvelope is the parsed `response` member of a
-// control_response frame.
 type ControlResponseEnvelope struct {
 	Success   bool
 	RequestID string
-	Response  json.RawMessage // success payload (may be absent)
-	Error     string          // error payload
+	Response  json.RawMessage
+	Error     string
 }
 
-// Message is one decoded stream-json frame. Observations keep their full raw
-// bytes for the typed vocabulary layer; control frames carry their parsed
-// correlation state.
 type Message struct {
 	Kind      MessageKind
 	Type      string
 	Subtype   string
-	RequestID string // control_request / control_cancel_request
+	RequestID string
 	Response  *ControlResponseEnvelope
-	Raw       json.RawMessage // full frame bytes (observations and control requests)
+	Raw       json.RawMessage
 }
 
-// UserTurnMessage wraps a complete inbound user frame
-// ({"type":"user","message":{...},...}) for writing.
 func UserTurnMessage(frame json.RawMessage) Message {
 	return Message{Kind: KindObservation, Type: TypeUser, Raw: append(json.RawMessage(nil), frame...)}
 }
 
-// ControlRequestMessage builds a host-originated control_request envelope.
-// request is the request object ({"subtype":...,...}).
 func ControlRequestMessage(id string, request json.RawMessage) Message {
 	return Message{Kind: KindControlRequest, RequestID: id, Raw: append(json.RawMessage(nil), request...)}
 }
 
-// ControlResponseMessage builds a control_response envelope. response is the
-// complete response object ({"subtype":"success"|"error","request_id":...,
-// ["response"|"error"]:...}).
 func ControlResponseMessage(response json.RawMessage) Message {
 	return Message{Kind: KindControlResponse, Response: &ControlResponseEnvelope{}, Raw: append(json.RawMessage(nil), response...)}
 }
@@ -204,8 +185,7 @@ func (message Message) MarshalJSON() ([]byte, error) {
 			"response": response,
 		})
 	case KindObservation:
-		// The only observation this side writes is a user turn; the frame is
-		// validated as one so a malformed submit never reaches the wire.
+
 		if message.Type != TypeUser {
 			return nil, fmt.Errorf("%w: only user frames are written as observations", ErrInvalidMessage)
 		}
@@ -222,10 +202,6 @@ func (message Message) MarshalJSON() ([]byte, error) {
 	}
 }
 
-// parseObject validates the envelope framing: exactly one JSON object, no
-// surrounding whitespace, no duplicate keys. Deliberately narrower than the
-// native reader, which strips lines, skips blank and non-JSON output, and
-// drops a truncated tail at EOF.
 func parseObject(data []byte) (map[string]json.RawMessage, error) {
 	if len(data) == 0 || data[0] != '{' || data[len(data)-1] != '}' {
 		return nil, fmt.Errorf("%w: frame must be exactly one JSON object", ErrInvalidMessage)

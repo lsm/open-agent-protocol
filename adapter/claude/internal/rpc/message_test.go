@@ -96,8 +96,7 @@ func TestMarshalCanonicalFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Top-level members marshal sorted; nested raw values pass through
-	// verbatim, so the form is deterministic for any given input frame.
+
 	want := `{"message":{"role":"user","content":"hi"},"origin":{"kind":"human"},"parent_tool_use_id":null,"session_id":"default","type":"user","uuid":"u1"}`
 	if !bytes.Equal(encoded, []byte(want)) {
 		t.Fatalf("user frame = %s", encoded)

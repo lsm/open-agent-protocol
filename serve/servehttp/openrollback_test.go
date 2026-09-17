@@ -15,9 +15,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve"
 )
 
-// unencodableAdapter opens successfully and then reports a session state this
-// frontend cannot encode, which is the window where the hub has already
-// registered the session and the route has no answer to give.
 type unencodableAdapter struct {
 	mu      sync.Mutex
 	session *unencodableSession
@@ -92,14 +89,6 @@ func (s *unencodableSession) isClosed() bool {
 	return s.closed
 }
 
-// TestOpenRollsBackWhenItsResponseCannotEncode holds this route to the policy
-// servestdio's open op takes for the same fact, because the two answering one
-// situation differently is a thing a caller would have to learn twice.
-//
-// The session is registered before the response is built, so an encode failure
-// is not the open failing: it is the open succeeding and the answer being
-// lost. A caller handed a 500 for a session it never saw the id of cannot
-// close what it does not know exists.
 func TestOpenRollsBackWhenItsResponseCannotEncode(t *testing.T) {
 	t.Run("a minted id is rolled back", func(t *testing.T) {
 		adapter := &unencodableAdapter{}
@@ -140,9 +129,6 @@ func TestOpenRollsBackWhenItsResponseCannotEncode(t *testing.T) {
 	})
 }
 
-// postOpenTo opens on the broken adapter and returns the status and raw body.
-// It builds the envelope directly rather than through openSessionWith, which
-// probes for a revision this test does not need.
 func postOpenTo(t *testing.T, server *httptest.Server, request protocol.SessionOpenRequest) (int, []byte) {
 	t.Helper()
 	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "open-broken", request)

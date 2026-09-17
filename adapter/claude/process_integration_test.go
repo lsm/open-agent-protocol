@@ -19,14 +19,10 @@ import (
 
 const (
 	claudeMockSecret = "fixture-claude-key"
-	// claudeLoopbackModel is forwarded verbatim by the CLI; the loopback mock
-	// echoes whatever model the request carries, so any non-empty id works.
+
 	claudeLoopbackModel = "claude-sonnet-4-5"
 )
 
-// verifiedClaudeCLI resolves and authenticates the pinned CLI binary. Binding
-// the digest (optional) makes the evidence exact-artifact against the frozen
-// pin; without it the run is runtime evidence only.
 func verifiedClaudeCLI(t *testing.T) string {
 	t.Helper()
 	binary := os.Getenv("OAP_CLAUDE_BIN")
@@ -65,9 +61,6 @@ func verifiedClaudeCLI(t *testing.T) string {
 	return binary
 }
 
-// newPinnedClaude builds the adapter around the pinned binary. Readiness on
-// this boundary is the initialize control exchange, which the default
-// process factory issues at open; no frame precedes the first submit.
 func newPinnedClaude(t *testing.T, environment []string, workDir string) *Adapter {
 	t.Helper()
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
@@ -86,11 +79,6 @@ func newPinnedClaude(t *testing.T, environment []string, workDir string) *Adapte
 	return implementation
 }
 
-// TestClaudeProcessSmoke is credential-free runtime evidence that the pinned
-// CLI starts over stdio, answers the initialize control exchange before any
-// input is submitted, and exits cleanly on stdin EOF within the bounded
-// grace. No submit happens, so no provider traffic is possible; the child
-// environment contains no credentials at all and every proxy is dead.
 func TestClaudeProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_CLAUDE_SMOKE") != "1" {
 		t.Skip("set OAP_CLAUDE_SMOKE=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.263 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
@@ -119,21 +107,13 @@ func TestClaudeProcessSmoke(t *testing.T) {
 	if state.SessionID != "claude-smoke-session" || state.Status != protocol.SessionIdle {
 		t.Fatalf("state=%+v", state)
 	}
-	// Teardown is stdin EOF by the pin: Close returns nil only after the
-	// process exited within the bounded grace, and the exit code never fails
-	// Close.
+
 	if err := session.Close(ctx); err != nil {
 		t.Fatalf("close claude smoke session: %v", err)
 	}
 	closed = true
 }
 
-// TestClaudeProcessAgainstMessagesMock is the hermetic behavioral gate. The
-// only configured provider endpoint is an in-process loopback speaking
-// streaming Anthropic Messages; the child receives a fixed allowlisted
-// environment whose single credential is the test-owned fixture key.
-// Credential presence alone never enables this gate — the explicit env var
-// does.
 func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping opt-in Claude Code process integration in short mode")
@@ -168,8 +148,7 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Admission converged on the CLI's echo of the submitted turn uuid —
-	// ownership by construction, not by receipt.
+
 	if admission.Admission != protocol.AdmissionStarted || admission.RunID == "" {
 		t.Fatalf("admission=%+v", admission)
 	}
@@ -201,9 +180,7 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 	if text, ok := completed.FinalResponse.Content.Text(); !ok || !strings.Contains(text, providertest.FixtureText) {
 		t.Fatalf("final response=%s", completed.FinalResponse.Content)
 	}
-	// Structural request assertions (the pin forbids byte-exact bodies): the
-	// CLI authenticates with the API key header plus the version header and
-	// carries no bearer token.
+
 	requests := mock.RequestsFor(providertest.AnthropicMessages)
 	if len(requests) == 0 {
 		t.Fatal("loopback provider received no messages request")
@@ -234,12 +211,6 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 	closed = true
 }
 
-// claudeEnvironment fully replaces the child environment: isolated HOME and
-// CLAUDE_CONFIG_DIR under the test-owned root so the CLI's session files and
-// caches never touch the operator's, dead-loopback proxies with loopback-only
-// NO_PROXY so nothing but the loopback mock is reachable, telemetry and
-// non-essential traffic disabled, and no ambient credentials. The loopback
-// gate injects only the test-owned fixture key and base URL.
 func claudeEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 	t.Helper()
 	home := filepath.Join(root, "home")
@@ -275,9 +246,6 @@ func claudeEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 	return environment
 }
 
-// TestClaudeProcessEnvironmentIsAllowlisted guards the gate itself: the child
-// environment builder must never inherit ambient variables, so no ambient
-// credential can reach the CLI.
 func TestClaudeProcessEnvironmentIsAllowlisted(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "ambient-must-not-leak")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ambient-must-not-leak")

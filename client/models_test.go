@@ -11,8 +11,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The catalog a client reads is the one the endpoint's model gate enforces, so
-// a picker built on it offers exactly the ids a submission may select.
 func TestSessionModels(t *testing.T) {
 	server := newDaemon(t, memoryRegistry(0))
 	session := openMemorySession(t, dial(t, server), "models")
@@ -26,9 +24,7 @@ func TestSessionModels(t *testing.T) {
 	if listing.Models.SessionID != session.ID() {
 		t.Fatalf("catalog names session %q, want %q", listing.Models.SessionID, session.ID())
 	}
-	// The catalog is valid for exactly one descriptor snapshot, so the caller
-	// is handed the revision to cache it against; without it a client cannot
-	// tell which models.list promise it just read.
+
 	if listing.Revision != base.CapabilityRevision {
 		t.Fatalf("catalog cites revision %q, want %q", listing.Revision, base.CapabilityRevision)
 	}
@@ -44,7 +40,6 @@ func TestSessionModels(t *testing.T) {
 		t.Fatalf("catalog: %+v", listing.Models.Models)
 	}
 
-	// Every listed id is selectable, which is the promise a catalog makes.
 	for _, id := range ids {
 		admission, err := session.Submit(ctx, protocol.MessageSubmitRequest{
 			SessionID: session.ID(), Delivery: protocol.DeliveryAuto,
@@ -62,9 +57,6 @@ func TestSessionModels(t *testing.T) {
 		}
 	}
 
-	// And an id the catalog omits is refused under the code that names it,
-	// never as an unsupported feature: the capability is advertised and the
-	// request was understood.
 	_, err = session.Submit(ctx, protocol.MessageSubmitRequest{
 		SessionID: session.ID(), Delivery: protocol.DeliveryAuto,
 		ModelID:  protocol.ControlValue("absent-model"),
@@ -79,12 +71,6 @@ func TestSessionModels(t *testing.T) {
 	}
 }
 
-// A catalog with no revision is refused rather than returned with an empty
-// one. The schema requires the field and the daemon refuses to serve a listing
-// without it, but a client validates envelopes only on request, so a
-// third-party endpoint that honours neither reaches an unvalidating client
-// intact — and a listing nothing can bind to a descriptor cannot be cached
-// against one or invalidated when it moves.
 func TestModelsRejectsAnUnlabelledCatalog(t *testing.T) {
 	response, err := protocol.NewEnvelope(protocol.TypeModelsResponse, protocol.EnvelopeID("resp-1"), protocol.ModelsResponse{
 		SessionID: "wire", Models: []protocol.ModelDescriptor{{ID: "m1"}},
@@ -109,8 +95,6 @@ func TestModelsRejectsAnUnlabelledCatalog(t *testing.T) {
 	}
 }
 
-// The option is what makes a degraded catalog readable, and a call without it
-// sends nothing extra: the parameter appears only when it is asked for.
 func TestModelsOptionAddsTheDegradedOptin(t *testing.T) {
 	plain := &Session{id: "s1"}
 	if got := plain.modelsPath(); got != "/sessions/s1/models" {

@@ -24,8 +24,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The DeepSeek Harness evidence corpus pins the exact repository, commit, tree,
-// and source blobs frozen in research/deepseek-harness-47f9438-mapping.md.
 const (
 	dshCorpusRepository = "https://github.com/deepseek-ai/deepseek-harness"
 	dshCorpusTag        = "fb2c4b9"
@@ -48,7 +46,6 @@ const (
 	dshBlobCoreSessionSurface   = "5d8ce74fe2461cb2f777a7bc7556795f337f0c03"
 )
 
-// Every label required by the ledger's "Required evidence corpus" section.
 var dshLedgerFixtures = map[string]bool{
 	"initialize-minimal": true, "initialize-repeat-rejected": true, "initialize-before-prompt": true,
 	"message-enqueued": true, "owned-start": true, "overlap-rejected": true,
@@ -142,13 +139,12 @@ type dshCorpusOmission struct {
 	Reason string `json:"reason"`
 }
 
-// dshDecodedFrame carries the production-codec result for one native frame.
 type dshDecodedFrame struct {
 	Message       *rpc.Message
-	Notification  any // typed value from native.DecodeNotification
+	Notification  any
 	Event         *native.Event
 	Control       *dshControl
-	Invalid       error // production rejection, for decode-error / observe-invalid frames
+	Invalid       error
 	RequestMethod string
 }
 
@@ -237,10 +233,6 @@ func runDSHCorpusCase(t *testing.T, root string, entry dshCorpusManifestCase) {
 	assertDSHExpected(t, filepath.Join(dir, definition.ExpectedOAP), execution.envelopes)
 }
 
-// runDSHFakeCase drives the production reducer through the public adapter with
-// a deterministic in-process fake client, replaying the fixture frames in wire
-// order. Every observation is barrier-acknowledged so the execution is
-// deterministic without sleeps.
 func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, decoded []dshDecodedFrame) dshExecution {
 	t.Helper()
 	execution := dshExecution{}
@@ -265,9 +257,7 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 	var pending chan submitResult
 	var settled []submitResult
 	submits := 0
-	// waitReap waits for the in-flight submission to return WITHOUT draining
-	// its stream: draining waits for run terminality, which would deadlock a
-	// mid-run wait-submit barrier because later frames are yet to be delivered.
+
 	waitReap := func() {
 		if pending == nil {
 			return
@@ -362,9 +352,7 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 			}
 			execution.controlsUnavailable = true
 		case "wait-submit":
-			// Deterministic barrier: the fake client delivers the prompt reply
-			// out of band from the notification stream, so the harness must
-			// wait for the submission to settle before later observations.
+
 			waitReap()
 		case "process-exit":
 			client.transportClose(errors.New(decoded[i].Control.Error))
@@ -388,9 +376,6 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 	return execution
 }
 
-// runDSHProcessCase exercises the production process transport: the adapter
-// spawns a re-exec of the test binary as a pinned-protocol fixture server, and
-// the case transcript records both wire directions.
 func runDSHProcessCase(t *testing.T, dir string, definition dshCorpusCase, frames []dshFrame, decoded []dshDecodedFrame) dshExecution {
 	t.Helper()
 	execution := dshExecution{}
@@ -477,8 +462,7 @@ func runDSHProcessCase(t *testing.T, dir string, definition dshCorpusCase, frame
 			execution.closed = true
 			session = nil
 		case "auto":
-			// Emitted by the fixture server and already validated through the
-			// production codec at load time.
+
 		default:
 			t.Fatalf("frame %d: action %q is not valid for the process harness", i+1, frame.Action)
 		}
@@ -488,7 +472,6 @@ func runDSHProcessCase(t *testing.T, dir string, definition dshCorpusCase, frame
 		t.Fatal("process case ended without a shutdown frame")
 	}
 
-	// The server's wire log must be exactly the host-to-dsh transcript.
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -519,7 +502,6 @@ func runDSHProcessCase(t *testing.T, dir string, definition dshCorpusCase, frame
 	return execution
 }
 
-// dshExecution records what the behavioral run actually proved.
 type dshExecution struct {
 	descriptor          base.Descriptor
 	admissions          []protocol.MessageSubmitResponse
@@ -551,17 +533,11 @@ func (e *dshExecution) record(t *testing.T, admission protocol.MessageSubmitResp
 	e.envelopes = append(e.envelopes, events...)
 }
 
-// validate runs the shared protocol assertion over one admitted run with the
-// adapter's live descriptor prefixed.
 func (e *dshExecution) validate(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, e.descriptor, events)
 }
 
-// corpusClient is the deterministic in-process DeepSeek client used by the
-// corpus. It records every native prompt call, answers through an explicit
-// reply queue, and mirrors the production client's fail-closed transport
-// closure for observations the pinned codec rejects.
 type corpusClient struct {
 	in      chan rpc.InboundMessage
 	done    chan struct{}
@@ -780,7 +756,7 @@ func dshLoadFrames(t *testing.T, filename string) ([]dshFrame, []dshDecodedFrame
 		frames = append(frames, frame)
 		decoded = append(decoded, entry)
 	}
-	// Response frames are typed by the method of the request they answer.
+
 	for i := range decoded {
 		if frames[i].Direction != "dsh-to-host" || decoded[i].Message == nil || decoded[i].Notification != nil {
 			continue
@@ -793,9 +769,6 @@ func dshLoadFrames(t *testing.T, filename string) ([]dshFrame, []dshDecodedFrame
 	return frames, decoded
 }
 
-// dshWireBytes returns the exact native wire bytes for a fixture raw value.
-// String raws carry byte-exact frames (whitespace, CR, scalars, tails);
-// object, array, and scalar raws are used verbatim.
 func dshWireBytes(t *testing.T, raw json.RawMessage, filename string, index int) []byte {
 	t.Helper()
 	trimmed := bytes.TrimSpace(raw)
@@ -962,8 +935,7 @@ func hasDSHTurnEndKind(decoded []dshDecodedFrame, kind string) bool {
 		if decoded[i].Event == nil || decoded[i].Event.Type != "turn/end" {
 			continue
 		}
-		// Reason payloads carry variant-specific members (failure facts, cancel
-		// causes), so read the discriminator from raw objects, not a struct.
+
 		var data map[string]json.RawMessage
 		if native.DecodeStrict(decoded[i].Event.Data, &data) != nil {
 			continue
@@ -1026,8 +998,6 @@ func dshResponseReceipts(decoded []dshDecodedFrame) []string {
 	return receipts
 }
 
-// assertDSHLedgerEvidence requires each ledger label to have executable
-// evidence in the fixture transcript and the behavioral execution record.
 func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpusCase, frames []dshFrame, decoded []dshDecodedFrame, execution *dshExecution) {
 	t.Helper()
 	for _, label := range labels {
@@ -1046,7 +1016,7 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 					}
 				}
 			}
-			// The pinned serverInfo identity is enforced by production validation.
+
 			pinned := native.ValidateInitializeResult(native.InitializeResult{ServerInfo: native.ServerInfo{Name: native.ServerName, Version: native.ServerVersion}}) == nil
 			foreign := native.ValidateInitializeResult(native.InitializeResult{ServerInfo: native.ServerInfo{Name: "other-runtime", Version: native.ServerVersion}}) != nil
 			ok = ok && pinned && foreign && execution.openErr == nil
@@ -1126,9 +1096,7 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 			}
 			ok = hasDSHTurnEndKind(decoded, "error") && hasDSHTurnEndKind(decoded, "aborted") && failedRuns >= 2
 		case "streaming-chunks":
-			// Streaming now settles per attempt: the packed text/reasoning runs
-			// and raw chunk ride in the assistant/message stream and project as
-			// content deltas before the completed terminal.
+
 			records, mapped := 0, true
 			for i := range decoded {
 				if decoded[i].Event == nil || decoded[i].Event.Type != "assistant/message" {
@@ -1300,11 +1268,6 @@ func assertDSHExpected(t *testing.T, filename string, events []protocol.Envelope
 	}
 }
 
-// dshEqualEvents compares two traces after dropping interleaving-dependent
-// adapter artifacts. Admission may be proven either by the dispatch side (at
-// the entered user message) or by the submission side (at the prompt reply);
-// both are correct and emit identical event sequences, but wall-clock stamps
-// and generator id allocation order can differ between the two paths.
 func dshEqualEvents(a, b []protocol.Envelope) bool {
 	return bytes.Equal(dshNormalizeTrace(a), dshNormalizeTrace(b))
 }
@@ -1423,9 +1386,6 @@ func TestDSHCorpusPinConstants(t *testing.T) {
 	}
 }
 
-// TestMain lets the corpus re-exec the test binary as a pinned-protocol DeepSeek
-// Harness fixture server over stdio, so the initialize and shutdown evidence
-// drives the production process transport without any download.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "--dsh-fixture-server" {
 		dshServeFixture()
@@ -1439,12 +1399,6 @@ const (
 	dshServerModePreObserve = "pre-observe"
 )
 
-// dshServeFixture speaks the pinned JSON-RPC runtime surface for corpus process
-// cases. It logs every received host frame verbatim, answers initialize with
-// the exact pinned serverInfo, replays the case's notification transcript
-// before the first prompt response, answers later prompts with the fixture
-// error, and performs the shutdown handshake. In pre-observe mode it emits a
-// foreign observation before the initialize response and never settles.
 func dshServeFixture() {
 	mode := os.Getenv("OAP_DSH_FIXTURE_MODE")
 	logPath := os.Getenv("OAP_DSH_FIXTURE_LOG")
@@ -1489,8 +1443,7 @@ func dshServeFixture() {
 		switch request.Method {
 		case native.MethodInitialize:
 			if mode == dshServerModePreObserve {
-				// Foreign activity before the handshake completes: the runtime
-				// owns no sessions before initialize returns.
+
 				if len(notifications) > 0 {
 					writeLine(notifications[0])
 				}
@@ -1520,8 +1473,6 @@ func dshServeFixture() {
 	}
 }
 
-// dshServerNotifications extracts the byte-exact notification frames the
-// fixture server must replay from a case transcript.
 func dshServerNotifications(script string) []string {
 	data, err := os.ReadFile(script)
 	if err != nil {

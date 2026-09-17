@@ -73,15 +73,9 @@ func (request *IncomingRequest) respond(ctx context.Context, message Message) er
 type NotificationMessage struct {
 	Method string
 	Params json.RawMessage
-	Value  any // *native.Event from native.DecodeNotification
+	Value  any
 }
 
-// InboundMessage preserves the reader's native receive order across reverse
-// requests, notifications, and outbound-call responses. Exactly one field is
-// set. A Barrier must be acknowledged after all earlier messages have been
-// semantically reduced; only then is the corresponding call response
-// delivered. This is what makes the pinned gateway's response/event write
-// race reduce deterministically.
 type InboundMessage struct {
 	Request      *IncomingRequest
 	Notification *NotificationMessage
@@ -98,7 +92,7 @@ type writeRequest struct {
 	message Message
 	started chan struct{}
 	result  chan error
-	encoded chan struct{} // closed when this frame leaves Encode
+	encoded chan struct{}
 }
 
 type Client struct {
@@ -114,8 +108,8 @@ type Client struct {
 	incoming  map[RequestID]*IncomingRequest
 	backlog   []InboundMessage
 	closed    bool
-	decoding  bool // the reader is inside Decode
-	routing   bool // the reader holds a decoded frame it has not finished routing
+	decoding  bool
+	routing   bool
 	err       error
 	readerErr error
 
@@ -139,13 +133,8 @@ type ClientOptions struct {
 	CloseReadWriter    io.Closer
 }
 
-// NewClient starts exactly one reader and one serialized writer. A non-nil
-// CloseReadWriter is required if Close or cancellation must interrupt
-// blocked I/O; plain io.Reader/io.Writer values have no portable interrupt
-// operation.
 func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Client {
-	// Unmatched response ids are fatal: the pinned gateway only answers
-	// requests this client issued.
+
 	capacity := options.QueueCapacity
 	if capacity <= 0 {
 		capacity = 64
@@ -177,10 +166,7 @@ func (client *Client) Notifications() <-chan NotificationMessage {
 	return client.notifications
 }
 func (client *Client) Inbound() <-chan InboundMessage {
-	// Once the ordered stream is active the channel is stable. Taking the route
-	// lock here would deadlock against the reader: a response routed under that
-	// lock blocks in barrier() until the relay acknowledges it, so a relay that
-	// acquires the channel lazily would wait on the very goroutine it unblocks.
+
 	if client.routeMode.Load() == 2 {
 		return client.inbound
 	}
@@ -217,19 +203,12 @@ func (client *Client) activateLegacy() {
 func (client *Client) Diagnostics() <-chan error { return client.diagnostics }
 func (client *Client) Done() <-chan struct{}     { return client.done }
 
-// ReadDone closes once the reader goroutine has stopped, after every frame
-// already buffered on the input has been decoded and routed. A process owner
-// must wait for it before reaping the child: Cmd.Wait closes the stdout pipe,
-// so a response written immediately before exit would otherwise be lost to a
-// closed read end and reported as a process-exit failure.
 func (client *Client) ReadDone() <-chan struct{} { return client.readDone }
 
 func (client *Client) Err() error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	// A reader error is the specific wire truth (malformed frame, EOF) and
-	// wins over the concurrent process-exit or close error: whichever
-	// shutdown raced first must not decide the surfaced cause.
+
 	if client.readerErr != nil {
 		return client.readerErr
 	}
@@ -240,8 +219,6 @@ func (client *Client) Call(ctx context.Context, method string, params any, resul
 	return client.callID(ctx, IntegerID(client.nextID.Add(1)), method, params, result)
 }
 
-// CallID supports peers and tests that require either JSON-RPC string or
-// integer IDs. The ID must not already identify a pending outbound call.
 func (client *Client) CallID(ctx context.Context, id RequestID, method string, params any, result any) error {
 	return client.callID(ctx, id, method, params, result)
 }
@@ -271,11 +248,7 @@ func (client *Client) callID(ctx context.Context, id RequestID, method string, p
 	if err := client.write(ctx, Request(id, method, paramsJSON)); err != nil {
 		select {
 		case <-client.done:
-			// The client retired while the frame was in the pump, so whether
-			// the frame reached the wire is unknowable here — but the response
-			// channel is authoritative: shutdown settles every registered call
-			// through it, and a response the reader parsed off the ordered
-			// stream before the death wins over the write's verdict.
+
 			select {
 			case outcome := <-response:
 				return decodeCallResult(method, outcome, result)
@@ -292,25 +265,18 @@ func (client *Client) callID(ctx context.Context, id RequestID, method string, p
 	case outcome := <-response:
 		return decodeCallResult(method, outcome, result)
 	case <-ctx.Done():
-		// Cancellation and response delivery can race; a response already
-		// buffered is authoritative and must win over the local deadline.
+
 		select {
 		case outcome := <-response:
 			return decodeCallResult(method, outcome, result)
 		default:
 		}
 		client.removePending(id)
-		// The request was fully written. Without a protocol response, its
-		// remote outcome is ambiguous; retire the connection so a late
-		// response cannot contaminate later correlation.
+
 		client.closeWith(ctx.Err())
 		return ctx.Err()
 	}
-	// There is deliberately no done case. shutdown settles every registered
-	// call through its channel — at once, or as soon as the reader has routed
-	// the frame it held when the transport died — so waiting here is what
-	// lets a response parsed off the ordered stream before the death win
-	// over it.
+
 }
 
 func (client *Client) Notify(ctx context.Context, method string, params any) error {
@@ -336,9 +302,6 @@ func (client *Client) closeWith(reason error) {
 	})
 }
 
-// closeTransport closes the supplied CloseReadWriter at most once per client:
-// io.Closer does not promise idempotence, and a retirement can reach the
-// closer both from closeWith and from a direct shutdown.
 func (client *Client) closeTransport() {
 	client.closerOnce.Do(func() {
 		if client.closer != nil {
@@ -350,9 +313,7 @@ func (client *Client) closeTransport() {
 func (client *Client) readLoop() {
 	defer close(client.readDone)
 	for {
-		// Flag the reader's state before every blocking step, for shutdown: a
-		// reader parked in Decode can be woken only through the closer, and a
-		// reader holding a decoded frame always routes it to completion.
+
 		client.mu.Lock()
 		client.decoding = true
 		client.mu.Unlock()
@@ -379,9 +340,6 @@ func (client *Client) readLoop() {
 	}
 }
 
-// settleReader releases whatever the reader had in hand and, when the client
-// closed while shutdown was deferring to the reader, fails the pending calls it
-// left behind.
 func (client *Client) settleReader() {
 	client.mu.Lock()
 	client.routing = false
@@ -390,8 +348,6 @@ func (client *Client) settleReader() {
 	client.failPending(pending, client.closeError())
 }
 
-// retirePendingLocked takes the pending map once the client is closed. The
-// caller holds client.mu.
 func (client *Client) retirePendingLocked() map[RequestID]chan callResult {
 	if !client.closed {
 		return nil
@@ -492,13 +448,6 @@ func (client *Client) enqueueInbound(message InboundMessage, overflow error) boo
 	}
 }
 
-// barrier orders a response behind every wire-earlier observation and reports
-// whether the response may be delivered. Delivery is refused only when the
-// barrier could not be enqueued: the client is retiring on queue overflow with
-// earlier observations still unreduced, so the response must not overtake
-// them. A barrier that was enqueued but never acknowledged because the
-// transport retired first still releases the response — the frame was decoded
-// from the wire, and there are no later frames to order against.
 func (client *Client) barrier() bool {
 	ack := make(chan struct{})
 	if !client.enqueueInbound(InboundMessage{Barrier: ack}, ErrNotificationQueue) {
@@ -524,13 +473,10 @@ func (client *Client) deliver(id RequestID, outcome callResult) bool {
 		return false
 	}
 	if closed {
-		// A concurrent shutdown, or a call that gave up on its context,
-		// retired the id. The response is correlated evidence that lost the
-		// race with the transport's death, not an unmatched correlation, so
-		// it must not raise ErrResponseNotFound over the real cause.
+
 		return true
 	}
-	// Unmatched response ids are fatal on this pinned boundary.
+
 	client.closeWith(fmt.Errorf("%w: %s", ErrResponseNotFound, id))
 	return true
 }
@@ -561,8 +507,7 @@ func (client *Client) write(ctx context.Context, message Message) error {
 		return err
 	}
 	request := writeRequest{ctx: ctx, message: message, started: make(chan struct{}), encoded: make(chan struct{}), result: make(chan error, 1)}
-	// Check shutdown first: a closed client must never accept new writes, and
-	// a random select could otherwise enqueue into a pump that already exited.
+
 	select {
 	case <-client.done:
 		return client.closeError()
@@ -581,10 +526,7 @@ func (client *Client) write(ctx context.Context, message Message) error {
 	case err := <-request.result:
 		return err
 	case <-ctx.Done():
-		// Dequeue and cancellation can race. Once accepted by the bounded
-		// pump, absence of a write result cannot prove that no bytes were
-		// written, so retire the transport rather than risk a partial frame
-		// followed by unrelated traffic.
+
 		client.closeWith(ctx.Err())
 		return ctx.Err()
 	case <-client.done:
@@ -592,11 +534,7 @@ func (client *Client) write(ctx context.Context, message Message) error {
 		case err := <-request.result:
 			return err
 		case <-request.started:
-			// The pump took the frame before the close, so the bytes may
-			// already be on the wire. Its result is waited for whenever it is
-			// sure to arrive: the pump is past Encode, or the closer will
-			// unblock an Encode still in progress. Without a closer a blocked
-			// Encode could hold the caller forever, so the death is reported.
+
 			if !client.pumpSettles(request) {
 				return client.closeError()
 			}
@@ -613,17 +551,13 @@ func (client *Client) write(ctx context.Context, message Message) error {
 	}
 }
 
-// pumpSettles reports whether this frame's result is sure to arrive. The
-// question is per request, not per pump: a later frame blocked in Encode says
-// nothing about a frame that already left it.
 func (client *Client) pumpSettles(request writeRequest) bool {
 	select {
 	case <-request.encoded:
-		// Past Encode: the pump publishes this frame's result next.
+
 		return true
 	default:
-		// Still inside this frame's Encode, which only the closer can
-		// interrupt. closer is fixed at construction, so reading it is safe.
+
 		return client.closer != nil
 	}
 }
@@ -638,14 +572,10 @@ func (client *Client) writeLoop() {
 			}
 			close(request.started)
 			err := client.encoder.Encode(request.message)
-			// Signal this frame's completion before the retirement below, so
-			// its caller can tell "past Encode" from "blocked in Encode".
+
 			close(request.encoded)
 			if err != nil {
-				// Retire before publishing the failure. A caller that sees the
-				// write error with done already closed settles on its response
-				// channel, so a reply the peer managed to send for the frame
-				// is not discarded along with the pending id.
+
 				client.closeWith(err)
 			}
 			request.result <- err
@@ -653,8 +583,7 @@ func (client *Client) writeLoop() {
 				return
 			}
 		case <-client.done:
-			// Drain queued writes so no caller is left waiting on a result and
-			// no byte is emitted after logical shutdown.
+
 			for {
 				select {
 				case request := <-client.writes:
@@ -678,23 +607,14 @@ func (client *Client) shutdown(reason error) {
 	client.closed = true
 	client.err = reason
 	close(client.done)
-	// A response parsed off the ordered stream before the transport died must
-	// win over the death, so the calls are settled by the reader whenever
-	// shutdown can force it to a settle point: a frame in hand is always
-	// routed to completion (nothing in route blocks once done is closed), and
-	// a reader parked in Decode is woken by the closer, which shutdown closes
-	// below. Without a closer nothing can wake a parked reader, so the calls
-	// fail here instead; the only window left is a frame decoded in the
-	// instant before this lock was taken, and no client without a closer can
-	// close it.
+
 	deferToReader := client.routing || (client.decoding && client.closer != nil)
 	var pending map[RequestID]chan callResult
 	if !deferToReader {
 		pending = client.retirePendingLocked()
 	}
 	client.mu.Unlock()
-	// Done implies the transport is closed: that is what wakes a reader
-	// parked in Decode or a pump blocked in Encode.
+
 	client.closeTransport()
 	client.failPending(pending, reason)
 }

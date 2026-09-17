@@ -22,10 +22,6 @@ import (
 
 const piMockSecret = "fixture-pi-key"
 
-// TestPiProcessSmoke is credential-free runtime evidence that a supplied
-// version-matched executable starts in RPC mode and completes the adapter
-// readiness handshake. Set OAP_PI_SHA256 to bind the evidence to an exact
-// artifact; the semver check alone does not prove PinnedCommit.
 func TestPiProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_PI_SMOKE") != "1" {
 		t.Skip("set OAP_PI_SMOKE=1 and absolute OAP_PI_BIN pointing to Pi v0.85.1 to run; optionally set OAP_PI_SHA256 for exact-artifact evidence")
@@ -62,10 +58,6 @@ func TestPiProcessSmoke(t *testing.T) {
 	closed = true
 }
 
-// TestPiProcessAgainstResponsesMock is the hermetic behavioral gate. The only
-// configured provider endpoint is an in-process loopback server, and the child
-// receives a fixed allowlisted environment containing no ambient secrets. This
-// is runtime-version evidence unless OAP_PI_SHA256 binds the exact artifact.
 func TestPiProcessAgainstResponsesMock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping opt-in Pi process integration in short mode")

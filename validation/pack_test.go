@@ -18,9 +18,6 @@ func packDir(t *testing.T, names ...string) []string {
 	return dirs
 }
 
-// Every refusal the loader can make, against the pack that makes it. A pack is
-// refused rather than diagnosed: the validator never ran, so it has said
-// nothing about any trace.
 func TestPackLoadRefusals(t *testing.T) {
 	cases := []struct {
 		dirs  []string
@@ -67,9 +64,6 @@ func TestPackLoadRefusals(t *testing.T) {
 	}
 }
 
-// A dependency is satisfied only by a loaded pack of that exact id and version.
-// Loaded alone, the dependent pack is refused; loaded together, the reference
-// into the declared dependency resolves.
 func TestPackDependencyIsExactAndDeclared(t *testing.T) {
 	if _, err := LoadPacks(packDir(t, "client")); err == nil {
 		t.Fatal("a pack loaded without its declared dependency")
@@ -79,8 +73,6 @@ func TestPackDependencyIsExactAndDeclared(t *testing.T) {
 	}
 }
 
-// Containment is what makes two vendors' packs composable: their names cannot
-// overlap, so loading both together is safe by construction.
 func TestPacksComposeWhenPrefixFree(t *testing.T) {
 	packs, err := LoadPacks(packDir(t, "storage", "decoy"))
 	if err != nil {
@@ -95,9 +87,6 @@ func TestPacksComposeWhenPrefixFree(t *testing.T) {
 	}
 }
 
-// The core claim is unchanged by a pack: the whole core corpus passes
-// identically with and without one loaded, run against a pack whose declared
-// type is deliberately close to a core one.
 func TestCoreClaimUnchangedWithPackLoaded(t *testing.T) {
 	manifest := filepath.Join(repositoryRoot(t), "fixtures", "manifest.json")
 	packs, err := LoadPacks(packDir(t, "decoy"))
@@ -130,9 +119,6 @@ func TestCoreClaimUnchangedWithPackLoaded(t *testing.T) {
 	}
 }
 
-// Loading a pack turns tolerance into conformance for its vocabulary: the same
-// envelope is accepted on the common fields alone without the pack and judged
-// against the pack's own branch with it.
 func TestPackTurnsToleranceIntoConformance(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), "fixtures", "valid", "ext-unpacked-type-tolerated.json"))
 	if err != nil {
@@ -161,9 +147,6 @@ func TestPackTurnsToleranceIntoConformance(t *testing.T) {
 	}
 }
 
-// A pack adds vocabulary, not a second lifecycle: a packed run-scoped event
-// takes part in the run bookkeeping its wire scope implies, so it advances the
-// cursor instead of leaving a gap for the next core event to be blamed for.
 func TestPackedRunEventAdvancesTheCursor(t *testing.T) {
 	packs, err := LoadPacks(packDir(t, "storage"))
 	if err != nil {
@@ -188,10 +171,6 @@ func TestPackedRunEventAdvancesTheCursor(t *testing.T) {
 	}
 }
 
-// A pack may not amend the protocol. The core pass judges the core projection,
-// so a core rule on a core member is neither relaxed nor tightened by a pack:
-// an undeclared member is still refused and a missing required member is still
-// missing, while the declared member is judged by its own subschema.
 func TestCoreProjectionKeepsCoreRules(t *testing.T) {
 	packs, err := LoadPacks(packDir(t, "storage"))
 	if err != nil {
@@ -204,8 +183,7 @@ func TestCoreProjectionKeepsCoreRules(t *testing.T) {
 	valid := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",` +
 		`"type":"session.message.submit.request","id":"req1","session_id":"s1","payload":{"delivery":"auto",` +
 		`"session_id":"s1","messages":[{"role":"user","content":"go"}],"com.example.storage.workspace":{"bucket":"reports"}}}`
-	// The lone request draws missing_response either way; the schema phase is
-	// what the projection decides.
+
 	if result := v.ValidateBytes([]byte(valid), "member"); result.HasCode(CodeSchemaInvalid) {
 		t.Fatalf("a declared member was refused: %v", result.Diagnostics)
 	}
@@ -215,9 +193,6 @@ func TestCoreProjectionKeepsCoreRules(t *testing.T) {
 	}
 }
 
-// An $id rebases the references beneath it, and the compiler registers the
-// resource there; the allowlist walk follows both, so a nested identifier
-// under another pack is refused along with the reference it rebased.
 func TestDocumentReferencesFollowSchemaIDs(t *testing.T) {
 	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/"}
 	p.Descriptor.ID = "com.example.a"
@@ -233,15 +208,13 @@ func TestDocumentReferencesFollowSchemaIDs(t *testing.T) {
 	if !strings.Contains(refusals[0].Message, "schema identifier") || !strings.Contains(refusals[1].Message, packBaseURI+"com.example.b/1.0.0/y.json") {
 		t.Fatalf("refusals = %v", refusals)
 	}
-	// Under the pack's own base an $id is a local alias and constrains nothing.
+
 	doc = map[string]any{"$id": "alias.json", "properties": map[string]any{"y": map[string]any{"$ref": "y.json"}}}
 	if refusals := checkDocumentReferences(p, p.Base+"types.schema.json", doc, allowed); len(refusals) != 0 {
 		t.Fatalf("in-pack identifier refused: %v", refusals)
 	}
 }
 
-// A pack's corpus proves its own term only: with a sibling loaded, a fixture
-// claiming the sibling's term is refused rather than counted.
 func TestPackFixtureClaimsItsOwnTermOnly(t *testing.T) {
 	_, err := LoadPacks(packDir(t, "storage", "bad-fixture-claims-sibling"))
 	refusal, ok := err.(*PackLoadError)
@@ -250,8 +223,6 @@ func TestPackFixtureClaimsItsOwnTermOnly(t *testing.T) {
 	}
 }
 
-// A packed member on capabilities.response is gated on a key that very
-// response advertises, so it must be judged after the descriptor is installed.
 func TestPackedMemberOnCapabilitiesResponseIsJudgedAfterInstall(t *testing.T) {
 	packs, err := LoadPacks(packDir(t, "descriptor-member"))
 	if err != nil {
@@ -276,8 +247,6 @@ func TestPackedMemberOnCapabilitiesResponseIsJudgedAfterInstall(t *testing.T) {
 	}
 }
 
-// The reference walk has no depth cutoff: a reference buried under any amount
-// of nesting is still judged, since the compiler would still resolve it.
 func TestDocumentReferencesHaveNoDepthCutoff(t *testing.T) {
 	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/"}
 	p.Descriptor.ID = "com.example.a"
@@ -291,8 +260,6 @@ func TestDocumentReferencesHaveNoDepthCutoff(t *testing.T) {
 	}
 }
 
-// An owned fixture path is resolved and verified beneath the pack root before
-// it is opened: a symlink out of the pack is refused, never followed.
 func TestPackFixturePathIsContainedBeforeOpen(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink fixture")
@@ -345,8 +312,6 @@ func TestPackFixturePathIsContainedBeforeOpen(t *testing.T) {
 	}
 }
 
-// writeTempPack writes a pack directory from file name to JSON value and
-// returns its symlink-resolved path.
 func writeTempPack(t *testing.T, files map[string]any) string {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())
@@ -369,8 +334,6 @@ func writeTempPack(t *testing.T, files map[string]any) string {
 	return dir
 }
 
-// negativeCorpus is a pack fixture manifest covering both aspects of each key;
-// the files need not exist for the load, which judges the manifest only.
 func negativeCorpus(unit string, keys ...string) map[string]any {
 	var entries []any
 	for _, key := range keys {
@@ -384,8 +347,6 @@ func negativeCorpus(unit string, keys ...string) map[string]any {
 	return map[string]any{"version": 1, "fixtures": entries}
 }
 
-// A pack's own unit is checked whether or not its corpus claims it: keys
-// with an empty fixture manifest are refused as uncovered.
 func TestPackKeysAreCheckedWithEmptyCorpus(t *testing.T) {
 	dir := writeTempPack(t, map[string]any{
 		"pack.json": map[string]any{
@@ -404,8 +365,6 @@ func TestPackKeysAreCheckedWithEmptyCorpus(t *testing.T) {
 	}
 }
 
-// One error.response settles every gate its request carried: a request gated
-// on two unadvertised keys is rightly refused by naming either of them.
 func TestRefusalSettlesEveryUnadvertisedGateAtOnce(t *testing.T) {
 	unit := "ext:com.example.twin/1.0.0"
 	dir := writeTempPack(t, map[string]any{
@@ -454,8 +413,6 @@ func TestRefusalSettlesEveryUnadvertisedGateAtOnce(t *testing.T) {
 	}
 }
 
-// A resource a document binds with an in-pack $id is referable by the pack's
-// other schemas, as the compiler registers it.
 func TestInPackIdentifiersAreReferable(t *testing.T) {
 	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/", documents: map[string]any{}}
 	p.Descriptor.ID, p.Descriptor.Version = "com.example.a", "1.0.0"
@@ -470,8 +427,6 @@ func TestInPackIdentifiersAreReferable(t *testing.T) {
 	}
 }
 
-// A packed key is matched exactly: the core shorthand aliases never apply, so
-// a descriptor advertising only an alias does not admit the packed vocabulary.
 func TestPackedKeyIsMatchedExactly(t *testing.T) {
 	packs, err := LoadPacks(packDir(t, "storage"))
 	if err != nil {
@@ -503,8 +458,6 @@ func TestPackedKeyIsMatchedExactly(t *testing.T) {
 	}
 }
 
-// A payload member's inline schema is its own resource: a local reference
-// inside it resolves to the member's generated URI and is allowed.
 func TestPayloadMemberLocalReferencesAreAllowed(t *testing.T) {
 	p := &Pack{Base: packBaseURI + "com.example.a/1.0.0/", documents: map[string]any{}}
 	p.Descriptor.ID, p.Descriptor.Version = "com.example.a", "1.0.0"
@@ -517,9 +470,6 @@ func TestPayloadMemberLocalReferencesAreAllowed(t *testing.T) {
 	}
 }
 
-// A request is judged under the descriptor it was made under. A descriptor
-// that changes before the response neither excuses the typed refusal the
-// request was owed nor condemns a declared refusal it was entitled to.
 func TestGateAdvertisementIsSnapshottedWithTheRequest(t *testing.T) {
 	packs, err := LoadPacks(packDir(t, "storage"))
 	if err != nil {
@@ -542,20 +492,16 @@ func TestGateAdvertisementIsSnapshottedWithTheRequest(t *testing.T) {
 			head + `"type":"error.response","id":"err1","in_reply_to":"read1","session_id":"s1","payload":{"error":{"code":"com.example.storage.object_not_found","message":"no such object"}}}`,
 		}, ",") + "]"
 	}
-	// Unadvertised when made: the declared refusal does not stand in for the
-	// typed refusal the request was owed, however the descriptor moved since.
+
 	if result := v.ValidateBytes([]byte(trace("", advertised)), "later-advertised"); !result.HasCode(CodeUnavailableCapability) {
 		t.Fatalf("a request made under an unadvertised key was excused by a later descriptor: %v", result.Diagnostics)
 	}
-	// Advertised when made: the declared refusal is honoured even though the
-	// key has since been withdrawn.
+
 	if result := v.ValidateBytes([]byte(trace(advertised, "")), "later-withdrawn"); !result.Valid() {
 		t.Fatalf("a declared refusal was condemned by a later descriptor: %v", result.Diagnostics)
 	}
 }
 
-// A pack reached through a symlink runs its own corpus: containment is judged
-// against the resolved root, so the pack's own files never look like escapes.
 func TestPackBehindSymlinkRunsItsCorpus(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink fixture")

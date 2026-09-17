@@ -1,5 +1,3 @@
-// Package native contains the deliberately reduced Codex app-server wire model
-// pinned by research/codex-app-server-8d7cc24-mapping.md.
 package native
 
 import "encoding/json"

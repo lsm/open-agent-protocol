@@ -15,8 +15,6 @@ var (
 	ErrInvalidID      = errors.New("acp rpc: id must be a string or integer")
 )
 
-// RequestID preserves the string and integer identity domains allowed by ACP.
-// IDs are correlation values only; their String representation is diagnostic.
 type RequestID struct {
 	text    string
 	integer int64
@@ -132,8 +130,7 @@ func ParseMessage(data []byte) (Message, error) {
 	if !utf8.Valid(data) {
 		return Message{}, fmt.Errorf("%w: frame is not UTF-8", ErrInvalidMessage)
 	}
-	// Decoding into a map would silently collapse a repeated id/result/method
-	// with last-value-wins, so reject duplicates on the raw frame first.
+
 	if err := rejectDuplicateKeys(data); err != nil {
 		return Message{}, fmt.Errorf("%w: %v", ErrInvalidMessage, err)
 	}
@@ -273,8 +270,6 @@ func rawObjectOrArray(raw json.RawMessage) bool {
 	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
 }
 
-// rejectDuplicateKeys walks every object in the frame and fails on a repeated
-// key, which encoding/json would otherwise collapse with last-value-wins.
 func rejectDuplicateKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var walk func() error

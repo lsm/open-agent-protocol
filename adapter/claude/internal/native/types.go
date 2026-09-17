@@ -1,8 +1,3 @@
-// Package native models the pinned Claude Code 2.1.263 stream-json frame
-// vocabulary: the typed subset the adapter reduces, plus tolerant holders for
-// the documented forward-compatible surface (unknown types and system
-// subtypes are observations, not violations — both reference hosts ignore
-// them by design).
 package native
 
 import (
@@ -13,7 +8,6 @@ import (
 
 const ReleaseTag = "v2.1.263"
 
-// Message-stream frame types (see rpc.Type* constants for the full set).
 const (
 	TypeUser             = "user"
 	TypeAssistant        = "assistant"
@@ -27,8 +21,6 @@ const (
 	TypeRateLimit        = "rate_limit_event"
 )
 
-// Modeled system subtypes. Everything else reduces as a generic system
-// observation.
 const (
 	SystemInit              = "init"
 	SystemStatus            = "status"
@@ -43,7 +35,6 @@ const (
 	SystemBackgroundChanged = "background_tasks_changed"
 )
 
-// Result subtypes (SDKResultSuccess | SDKResultError).
 const (
 	ResultSuccess               = "success"
 	ResultErrorDuringExecution  = "error_during_execution"
@@ -52,8 +43,6 @@ const (
 	ResultErrorStructuredOutput = "error_max_structured_output_retries"
 )
 
-// Terminal reasons that prove cancellation (the interrupt receipt never
-// settles anything by itself).
 const (
 	TerminalAbortedStreaming = "aborted_streaming"
 	TerminalAbortedTools     = "aborted_tools"
@@ -61,15 +50,10 @@ const (
 	TerminalMaxTurns         = "max_turns"
 )
 
-// Terminal task statuses span both lifecycle vocabularies:
-// task_notification reports "stopped" (the CLI's mapped form of a killed
-// task) while task_updated reports the raw "killed".
 var TerminalTaskStatuses = map[string]bool{
 	"completed": true, "failed": true, "stopped": true, "killed": true,
 }
 
-// Command lifecycle states observed on the pinned build (the family is
-// untyped in both reference SDKs; states beyond these are still recorded).
 const (
 	CommandQueued    = "queued"
 	CommandStarted   = "started"
@@ -77,7 +61,6 @@ const (
 	CommandCancelled = "cancelled"
 )
 
-// Control request subtypes this adapter exercises.
 const (
 	ControlInitialize = "initialize"
 	ControlInterrupt  = "interrupt"
@@ -86,16 +69,11 @@ const (
 
 var ErrInvalidFrame = errors.New("claude native: invalid frame for a known type")
 
-// Origin is message provenance. Only kind is always present; absent origin
-// or a non-string kind means unattributed (parsed as nil, like the
-// reference _parse_origin).
 type Origin struct {
 	Kind string `json:"kind"`
 	From string `json:"from,omitempty"`
 }
 
-// ContentBlock is one Messages-API content block. Exactly the members the
-// adapter reduces are typed; the rest stay in Raw for evidence.
 type ContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -108,12 +86,10 @@ type ContentBlock struct {
 	IsError   *bool           `json:"is_error,omitempty"`
 }
 
-// UserFrame is the CLI's own user-role output (tool results, synthetic
-// interrupt markers, injected turns).
 type UserFrame struct {
 	Message struct {
 		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"` // string or []ContentBlock
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	ParentToolUseID *string         `json:"parent_tool_use_id"`
 	ToolUseResult   json.RawMessage `json:"tool_use_result"`
@@ -122,8 +98,6 @@ type UserFrame struct {
 	SessionID       string          `json:"session_id"`
 }
 
-// Blocks decodes the content as a block list; ok is false for plain string
-// content.
 func (frame *UserFrame) Blocks() ([]ContentBlock, bool) {
 	var blocks []ContentBlock
 	if json.Unmarshal(frame.Message.Content, &blocks) != nil {
@@ -132,7 +106,6 @@ func (frame *UserFrame) Blocks() ([]ContentBlock, bool) {
 	return blocks, true
 }
 
-// TextContent decodes plain string content.
 func (frame *UserFrame) TextContent() (string, bool) {
 	var text string
 	if json.Unmarshal(frame.Message.Content, &text) != nil {
@@ -141,8 +114,6 @@ func (frame *UserFrame) TextContent() (string, bool) {
 	return text, true
 }
 
-// AssistantFrame is one completed content block (or a synthetic
-// API-error message).
 type AssistantFrame struct {
 	Message struct {
 		ID         string          `json:"id"`
@@ -160,7 +131,6 @@ type AssistantFrame struct {
 	SessionID         string   `json:"session_id"`
 }
 
-// Usage is the turn usage block on result frames.
 type Usage struct {
 	InputTokens              int64 `json:"input_tokens"`
 	OutputTokens             int64 `json:"output_tokens"`
@@ -168,7 +138,6 @@ type Usage struct {
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 }
 
-// ResultFrame is the one turn-terminal candidate.
 type ResultFrame struct {
 	Subtype           string          `json:"subtype"`
 	DurationMS        int64           `json:"duration_ms"`
@@ -192,18 +161,14 @@ type ResultFrame struct {
 	UUID              string          `json:"uuid"`
 }
 
-// Cancelled is the frozen cancellation rule: only terminal_reason proves it.
 func (frame *ResultFrame) Cancelled() bool {
 	return frame.TerminalReason == TerminalAbortedStreaming || frame.TerminalReason == TerminalAbortedTools
 }
 
-// MaxTurns is the native error subtype this contract projects as a graceful
-// limit stop rather than a failure.
 func (frame *ResultFrame) MaxTurns() bool {
 	return frame.Subtype == ResultErrorMaxTurns || frame.TerminalReason == TerminalMaxTurns
 }
 
-// StreamEventFrame wraps one raw Anthropic streaming event.
 type StreamEventFrame struct {
 	Event            json.RawMessage `json:"event"`
 	ParentToolUseID  *string         `json:"parent_tool_use_id"`
@@ -213,9 +178,6 @@ type StreamEventFrame struct {
 	SessionID        string          `json:"session_id"`
 }
 
-// StreamDelta extracts a projected text or thinking delta from the wrapped
-// event, if this event carries one. The two delta kinds carry their payload
-// under different members (text vs thinking), per the Messages streaming API.
 func (frame *StreamEventFrame) StreamDelta() (kind, text string, ok bool) {
 	var event struct {
 		Type  string `json:"type"`
@@ -238,7 +200,6 @@ func (frame *StreamEventFrame) StreamDelta() (kind, text string, ok bool) {
 	}
 }
 
-// InitFrame is the per-turn capability truth refresh.
 type InitFrame struct {
 	SessionID  string   `json:"session_id"`
 	Model      string   `json:"model"`
@@ -255,29 +216,24 @@ type InitFrame struct {
 	UUID              string   `json:"uuid"`
 }
 
-// StatusFrame is the compacting/requesting liveness signal.
 type StatusFrame struct {
 	Status    *string `json:"status"`
 	SessionID string  `json:"session_id"`
 	UUID      string  `json:"uuid"`
 }
 
-// SessionStateFrame carries the authoritative idle/running/requires_action
-// signal.
 type SessionStateFrame struct {
 	State     string `json:"state"`
 	SessionID string `json:"session_id"`
 	UUID      string `json:"uuid"`
 }
 
-// TaskUsage is the task lifecycle usage block.
 type TaskUsage struct {
 	TotalTokens int64 `json:"total_tokens"`
 	ToolUses    int   `json:"tool_uses"`
 	DurationMS  int64 `json:"duration_ms"`
 }
 
-// TaskStartedFrame marks a background task in flight.
 type TaskStartedFrame struct {
 	TaskID         string `json:"task_id"`
 	Description    string `json:"description"`
@@ -289,7 +245,6 @@ type TaskStartedFrame struct {
 	IsBackgrounded *bool  `json:"is_backgrounded"`
 }
 
-// TaskProgressFrame reports interim task usage.
 type TaskProgressFrame struct {
 	TaskID      string    `json:"task_id"`
 	Description string    `json:"description"`
@@ -299,7 +254,6 @@ type TaskProgressFrame struct {
 	ToolUseID   string    `json:"tool_use_id"`
 }
 
-// TaskNotificationFrame is one legal child terminal shape.
 type TaskNotificationFrame struct {
 	TaskID     string     `json:"task_id"`
 	Status     string     `json:"status"`
@@ -311,7 +265,6 @@ type TaskNotificationFrame struct {
 	Usage      *TaskUsage `json:"usage"`
 }
 
-// TaskUpdatedFrame is the second legal child terminal shape.
 type TaskUpdatedFrame struct {
 	TaskID    string `json:"task_id"`
 	SessionID string `json:"session_id"`
@@ -325,12 +278,10 @@ type TaskUpdatedFrame struct {
 	} `json:"patch"`
 }
 
-// Terminal reports whether the patch settles the task.
 func (frame *TaskUpdatedFrame) Terminal() bool {
 	return TerminalTaskStatuses[frame.Patch.Status]
 }
 
-// CommandLifecycleFrame is the untyped admission corroboration family.
 type CommandLifecycleFrame struct {
 	CommandUUID string `json:"command_uuid"`
 	State       string `json:"state"`
@@ -338,7 +289,6 @@ type CommandLifecycleFrame struct {
 	UUID        string `json:"uuid"`
 }
 
-// ToolProgressFrame is the long-running tool heartbeat.
 type ToolProgressFrame struct {
 	ToolUseID          string  `json:"tool_use_id"`
 	ToolName           string  `json:"tool_name"`
@@ -349,14 +299,12 @@ type ToolProgressFrame struct {
 	UUID               string  `json:"uuid"`
 }
 
-// ConversationResetFrame reports a replaced conversation.
 type ConversationResetFrame struct {
 	NewConversationID string `json:"new_conversation_id"`
 	UUID              string `json:"uuid"`
 	SessionID         string `json:"session_id"`
 }
 
-// SystemNotice is any unmodeled system subtype.
 type SystemNotice struct {
 	Subtype   string          `json:"subtype"`
 	SessionID string          `json:"session_id"`
@@ -364,15 +312,11 @@ type SystemNotice struct {
 	Raw       json.RawMessage `json:"-"`
 }
 
-// UnknownFrame is a tolerated forward-compatibility holder.
 type UnknownFrame struct {
 	Type    string
 	Subtype string
 }
 
-// DecodeObservation types one message-stream frame. Known types validate the
-// fields the reference parser requires (a known discriminator with a
-// violated shape is fatal there); unknown types decode tolerantly.
 func DecodeObservation(frameType, subtype string, raw []byte) (any, error) {
 	switch frameType {
 	case TypeUser:
@@ -398,9 +342,7 @@ func DecodeObservation(frameType, subtype string, raw []byte) (any, error) {
 		if err := unmarshal(raw, &frame); err != nil {
 			return nil, err
 		}
-		// The reference hosts type the result subtype as success-or-string;
-		// an unknown error subtype arbitrates as a failure, never a
-		// transport violation.
+
 		if frame.Subtype == "" {
 			return nil, fmt.Errorf("%w: result frame requires subtype", ErrInvalidFrame)
 		}
@@ -460,8 +402,7 @@ func decodeSystem(subtype string, raw []byte) (any, error) {
 		if err := unmarshal(raw, &frame); err != nil {
 			return nil, err
 		}
-		// Narrower than the reference parser (which types init as a generic
-		// system message): the descriptor refresh projects these three.
+
 		if frame.SessionID == "" || frame.Model == "" || frame.Tools == nil {
 			return nil, fmt.Errorf("%w: init frame requires session_id, model, and tools", ErrInvalidFrame)
 		}
@@ -530,7 +471,6 @@ func decodeSystem(subtype string, raw []byte) (any, error) {
 	}
 }
 
-// CanUseToolRequest is the CLI's permission ask (reverse control request).
 type CanUseToolRequest struct {
 	ToolName              string          `json:"tool_name"`
 	Input                 json.RawMessage `json:"input"`
@@ -544,8 +484,6 @@ type CanUseToolRequest struct {
 	AgentID               string          `json:"agent_id"`
 }
 
-// DecodeControlRequest types one reverse control request. The raw bytes are
-// the complete control_request frame.
 func DecodeControlRequest(subtype string, raw []byte) (any, error) {
 	switch subtype {
 	case ControlCanUseTool:
@@ -561,50 +499,36 @@ func DecodeControlRequest(subtype string, raw []byte) (any, error) {
 		}
 		return &request, nil
 	default:
-		// Every other reverse subtype is unconfigured in v1 (no hooks, no
-		// SDK MCP servers, no dialogs); keep the frame as evidence.
+
 		return &UnknownFrame{Type: "control_request", Subtype: subtype}, nil
 	}
 }
 
-// Host write and result shapes -------------------------------------------------
-
-// InitializeRequest is the minimal verified initialize payload.
 type InitializeRequest struct {
 	Subtype string `json:"subtype"`
 	Hooks   any    `json:"hooks"`
 }
 
-// InterruptRequest aborts the running turn. cancel_queued stays unset in v1:
-// the adapter renders no per-uuid queue control.
 type InterruptRequest struct {
 	Subtype string `json:"subtype"`
 }
 
-// InterruptResult is the interrupt_receipt_v1 receipt.
 type InterruptResult struct {
 	StillQueued []string `json:"still_queued"`
 	Cancelled   []string `json:"cancelled,omitempty"`
 }
 
-// PermissionAllow answers a can_use_tool ask with allow; the updated input
-// becomes what the tool executes.
 type PermissionAllow struct {
 	Behavior     string          `json:"behavior"`
 	UpdatedInput json.RawMessage `json:"updatedInput"`
 }
 
-// PermissionDeny answers a can_use_tool ask with deny.
 type PermissionDeny struct {
 	Behavior  string `json:"behavior"`
 	Message   string `json:"message"`
 	Interrupt bool   `json:"interrupt,omitempty"`
 }
 
-// NewUserTurn builds one inbound user frame: the host-minted uuid is the
-// submission identity the CLI echoes, the logical stream label is the
-// reference SDK's "default", and origin is stamped human because absent
-// origin is treated as unattributed at trust gates.
 func NewUserTurn(uuid, text string) (json.RawMessage, error) {
 	frame := map[string]any{
 		"type":               TypeUser,
@@ -621,8 +545,6 @@ func NewUserTurn(uuid, text string) (json.RawMessage, error) {
 	return data, nil
 }
 
-// ValidateTurnUUID rejects degenerate submission identities before they are
-// written to the wire.
 func ValidateTurnUUID(uuid string) error {
 	if len(uuid) == 0 || len(uuid) > 128 {
 		return fmt.Errorf("%w: turn uuid must be 1-128 bytes", ErrInvalidFrame)
@@ -637,8 +559,6 @@ func ValidateTurnUUID(uuid string) error {
 	return nil
 }
 
-// unmarshal decodes leniently: the CLI vocabulary grows over time and the
-// reference parser tolerates unknown members on known types.
 func unmarshal(raw []byte, value any) error {
 	if err := json.Unmarshal(raw, value); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidFrame, err)

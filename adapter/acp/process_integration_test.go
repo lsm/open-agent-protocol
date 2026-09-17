@@ -18,32 +18,17 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The gate drives an independently built, open-source ACP *agent* through the
-// OAP ACP client adapter. docker/cagent (module github.com/docker/docker-agent)
-// is Apache-2.0 and speaks the same coder/acp-go-sdk v1 surface the adapter
-// targets, so it is a real cross-implementation peer rather than a fixture
-// written against our own reducer.
 const (
 	acpMockSecret = "fixture-acp-key"
 	acpRouteModel = "fixture-model"
-	// acpTokenEnv is the environment variable name the agent config references
-	// through token_key; only its test-owned value is ever supplied to the child.
+
 	acpTokenEnv = "OAP_ACP_TOKEN"
 )
 
-// acpArgs is the pinned launch contract: `--data-dir` isolates the SQLite
-// session store inside the temporary root, and `serve acp` runs the stdio ACP
-// server over the generated agent file.
 func acpArgs(root string) []string {
 	return []string{"--data-dir", filepath.Join(root, "data"), "serve", "acp", filepath.Join(root, "agent.yaml")}
 }
 
-// TestACPProcessSmoke is credential-free evidence that a supplied open-source
-// ACP agent binary starts as a standards-conforming ACP v1 server: the adapter
-// completes `initialize`, negotiates protocol version 1, opens a native session
-// through `session/new`, and tears the process down. Set OAP_ACP_SHA256 to bind
-// the evidence to an exact artifact; the reported agent version alone does not
-// prove the pinned source commit.
 func TestACPProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_ACP_SMOKE") != "1" {
 		t.Skip("set OAP_ACP_SMOKE=1 and absolute OAP_ACP_BIN pointing to a pinned open-source ACP agent server (docker/cagent `docker-agent serve acp`) to run; optionally set OAP_ACP_SHA256 (64 hex characters) for exact-artifact evidence")
@@ -89,11 +74,6 @@ func TestACPProcessSmoke(t *testing.T) {
 	closed = true
 }
 
-// TestACPProcessAgainstChatCompletionsMock is the hermetic behavioral gate. The
-// only configured provider endpoint is an in-process loopback server, and the
-// child receives a fixed allowlisted environment containing no ambient secrets.
-// This is runtime-version evidence unless OAP_ACP_SHA256 binds the exact
-// artifact.
 func TestACPProcessAgainstChatCompletionsMock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping opt-in ACP process integration in short mode")
@@ -131,8 +111,7 @@ func TestACPProcessAgainstChatCompletionsMock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ACP v1 keeps session/prompt pending for the whole turn, so admission is
-	// synthesized once the complete request frame has been written.
+
 	if admission.Admission != protocol.AdmissionStarted {
 		t.Fatalf("admission=%+v", admission)
 	}
@@ -248,9 +227,6 @@ func newPinnedACP(t *testing.T, binary, root string, environment []string) *Adap
 	return implementation
 }
 
-// writeACPAgentConfig generates the isolated agent file. The provider is either
-// the loopback mock or a dead loopback address; no checked-in real-provider
-// configuration or ambient credential is ever reused.
 func writeACPAgentConfig(t *testing.T, root, baseURL string) {
 	t.Helper()
 	config := `providers:
@@ -275,10 +251,6 @@ agents:
 	}
 }
 
-// acpEnvironment fully replaces the child environment: isolated HOME and config
-// directories, telemetry disabled, dead-loopback proxies with loopback-only
-// NO_PROXY so nothing but the loopback mock is reachable, and only the fixed
-// non-secret placeholder token. No ambient credential is forwarded.
 func acpEnvironment(t *testing.T, root string) []string {
 	t.Helper()
 	home := filepath.Join(root, "home")

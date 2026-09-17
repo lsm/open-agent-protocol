@@ -141,9 +141,6 @@ func openTestSession(t *testing.T, capacity int, sessionID protocol.SessionID) (
 	return s, f
 }
 
-// The participant is the recorded responder for every permission gate; an empty
-// identity would emit schema-invalid events that no valid resolution could
-// satisfy, so the open must be refused before any process is started.
 func TestOpenRejectsEmptyParticipant(t *testing.T) {
 	f := newFake()
 	started := 0
@@ -218,9 +215,6 @@ func testDescriptor(t *testing.T) base.Descriptor {
 	return descriptor
 }
 
-// assertValidTrace runs the shared protocol assertion with the adapter's live
-// descriptor. assertCancelledTrace is the variant for runs the test itself
-// cancelled: it splices the harness-side exchange the cancellation implies.
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
@@ -529,10 +523,6 @@ func TestProbeIsConservative(t *testing.T) {
 	}
 }
 
-// A sparse tool patch (no status) that arrives while the call is still pending
-// must not emit action.call.progress: no started event has occurred, and the
-// progress payload requires a progress member. The patch is retained and
-// surfaces on action.call.started.
 func TestSparseToolUpdateBeforeStartEmitsNoProgress(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -561,8 +551,6 @@ func TestSparseToolUpdateBeforeStartEmitsNoProgress(t *testing.T) {
 	assertValidTrace(t, admission, events)
 }
 
-// ACP may omit rawInput; the requested event must still carry arguments_json,
-// normalized to the JSON null value.
 func TestToolCallWithoutInputCarriesNullArguments(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -595,8 +583,6 @@ func TestToolCallWithoutInputCarriesNullArguments(t *testing.T) {
 	assertValidTrace(t, admission, events)
 }
 
-// A native snapshot may first report a tool terminal. The adapter must still
-// emit an action.call.started boundary, which the validator requires.
 func TestToolTerminalWithoutProgressSynthesizesStart(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -612,8 +598,6 @@ func TestToolTerminalWithoutProgressSynthesizesStart(t *testing.T) {
 	assertValidTrace(t, admission, events)
 }
 
-// action.call.completed requires result; a completion without native output is
-// normalized to the JSON null value.
 func TestToolCompletionWithoutOutputCarriesNullResult(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -646,12 +630,6 @@ func TestToolCompletionWithoutOutputCarriesNullResult(t *testing.T) {
 	assertValidTrace(t, admission, events)
 }
 
-// A permission request whose tool is rejected (empty title) must settle the run
-// without dereferencing the missing tool entry.
-// A sparse patch that arrives while a tool is executing emits progress; the
-// callProgress schema forbids the request-only and terminal-only members, so
-// the projection must strip them even though the retained tool state carries
-// both the input and any output observed so far.
 func TestSparsePatchInProgressEmitsBareProgress(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -717,12 +695,6 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	return out
 }
 
-// None of the four run controls has a native mapping in ACP's session/prompt,
-// and this adapter performs no session configuration mutation. Each must be
-// refused under its own capability key with the typed unsupported-control
-// error, so the caller learns which control to stop sending; a generic invalid
-// submission names none of them, and echoing a requested model back as
-// effective would attribute the run to a model the agent never used.
 func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	s, f := openTest(t, 64)
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}}
@@ -744,11 +716,7 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 			t.Fatalf("%s: the refusal does not unwrap to the shared sentinel: %v", feature, err)
 		}
 	}
-	// The ladder ranks a capability refusal above ordinary validation, so the
-	// gate runs first: a request that is malformed and carries an unadvertised
-	// control is answered with the control, the same ordering every adapter
-	// here uses. Answering "invalid submission" would send the caller round
-	// again to be refused for a control it was never told about.
+
 	for name, request := range map[string]protocol.MessageSubmitRequest{
 		"no messages":      {SessionID: "session", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse")},
 		"no session":       {Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
@@ -761,8 +729,6 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 		}
 	}
 
-	// Every refusal precedes admission, so no run was reserved: a clean
-	// submission still runs and still validates as a complete protocol trace.
 	admission, stream := submit(t, s)
 	<-f.promptStarted
 	f.update(t, native.AgentMessageChunk{SessionUpdate: "agent_message_chunk", Content: native.ContentBlock{Type: "text", Text: "hi"}, MessageID: "m1"})
@@ -771,9 +737,6 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	assertValidTrace(t, admission, collect(t, stream))
 }
 
-// A completed prompt write is authoritative even when the caller's context
-// expires at the same instant: the run start boundary must not be discarded in
-// favour of the cancellation arm.
 func TestAwaitAdmissionPrefersCompletedWrite(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		started := make(chan error, 1)
@@ -787,9 +750,6 @@ func TestAwaitAdmissionPrefersCompletedWrite(t *testing.T) {
 	}
 }
 
-// The pending permission was emitted with requester "agent"; a resolution that
-// names a different requester is ownership-inconsistent and must not resolve
-// the native gate.
 func TestPermissionResolveRejectsForeignRequester(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -818,10 +778,6 @@ func TestPermissionResolveRejectsForeignRequester(t *testing.T) {
 	}
 }
 
-// ACP v1 declares session/new's mcpServers as a required array. A nil Go slice
-// marshals to null, which the official client SDK's own param validator rejects
-// ("mcpServers is required") with -32602 Invalid params; the real docker/cagent
-// server did exactly that. Assert the encoded wire shape, not the Go value.
 func TestSessionNewSendsRequiredMCPServersArray(t *testing.T) {
 	_, f := openTest(t, 64)
 	f.mu.Lock()
@@ -839,10 +795,6 @@ func TestSessionNewSendsRequiredMCPServersArray(t *testing.T) {
 	}
 }
 
-// ACP defines more stable session updates than carry run lifecycle. A
-// conforming agent may interleave the presentation-affordance variants with an
-// active run; they must be observed-only, not fatal. docker/cagent emits
-// available_commands_update immediately after session/prompt is written.
 func TestDefinedNonLifecycleUpdatesAreObservedOnly(t *testing.T) {
 	updates := []map[string]any{
 		{"sessionUpdate": "available_commands_update", "availableCommands": []any{}},
@@ -863,8 +815,7 @@ func TestDefinedNonLifecycleUpdatesAreObservedOnly(t *testing.T) {
 		f.update(t, update)
 	}
 	f.update(t, native.AgentMessageChunk{SessionUpdate: "agent_message_chunk", Content: native.ContentBlock{Type: "text", Text: "hello"}})
-	// Only run.started and one content delta are OAP-visible, so reaching cursor
-	// 2 proves every observed-only update was already reduced.
+
 	waitCursor(t, s, "2")
 	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
 	events := collect(t, stream)
@@ -889,12 +840,6 @@ func TestDefinedNonLifecycleUpdatesAreObservedOnly(t *testing.T) {
 	}
 }
 
-// A consumer may resolve a permission gate the instant it observes the gate on
-// its stream, and the resolution correlates to the gate's request event through
-// in_reply_to. The correlation must therefore exist before the gate is visible:
-// recording it after publication let a fast Resolve read an empty correlation
-// and emit an uncorrelated action.permission.resolved, the
-// tool-lifecycle-permission corpus flake in issue #10.
 func TestPermissionGateIsCorrelatedWhenPublished(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
@@ -916,7 +861,7 @@ func TestPermissionGateIsCorrelatedWhenPublished(t *testing.T) {
 			}
 		}
 	}
-	// The correlation is recorded by the time the gate can be observed.
+
 	impl := s.(*session)
 	impl.mu.Lock()
 	recorded := impl.interactions[requested.InteractionID].requestEventID
@@ -924,7 +869,7 @@ func TestPermissionGateIsCorrelatedWhenPublished(t *testing.T) {
 	if recorded != gate.ID {
 		t.Fatalf("gate observed with request event id %q, want %q", recorded, gate.ID)
 	}
-	// Resolving immediately carries it.
+
 	if err := s.Resolve(context.Background(), base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "allow", Granted: true}}); err != nil {
 		t.Fatal(err)
 	}
@@ -941,8 +886,6 @@ func TestPermissionGateIsCorrelatedWhenPublished(t *testing.T) {
 	assertValidTrace(t, admission, events)
 }
 
-// countingFactory reports how many times an open reached the child process, so
-// a test can require that a refused attachment never paid for one.
 func countingFactory(f *fakeClient, started *int) ClientFactoryFunc {
 	return func(context.Context) (Client, rpc.InitializeResponse, error) {
 		*started++
@@ -950,13 +893,6 @@ func countingFactory(f *fakeClient, started *int) ClientFactoryFunc {
 	}
 }
 
-// ACP names each MCP server by the attachment's id, and the native schema does
-// not require those names to be unique. Two entries under one id would leave
-// both the catalog's attribution and the native routing ambiguous — a call
-// naming that source could have come from either server — so a colliding id is
-// refused by name rather than appended. The collision is refused whichever
-// side it comes from: another attachment in the same open, or a server the
-// operator configured.
 func TestAttachRefusesACollidingSourceID(t *testing.T) {
 	files := protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}
 	for _, testCase := range []struct {
@@ -993,11 +929,6 @@ func TestAttachRefusesACollidingSourceID(t *testing.T) {
 	}
 }
 
-// Admission depends only on the request and this adapter's own configuration,
-// so it is decided before the child is started: an open that cannot be
-// honoured should not pay a process spawn and an initialize round trip, nor
-// leave a started child behind for the refusal path to clean up. Every
-// attachment refusal this adapter owes takes the same placement.
 func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string
@@ -1006,10 +937,7 @@ func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
 		{"an unsupported transport", protocol.ToolSourceAttachment{ID: "hosted-tools", Kind: protocol.ToolSourceRemote, Endpoint: "https://tools.example"}},
 		{"a process source with no command", protocol.ToolSourceAttachment{ID: "files", Kind: protocol.ToolSourceProcess}},
 		{"a source with no id", protocol.ToolSourceAttachment{Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem"}},
-		// Two entries, one variable. uniqueItems compares strings, so the wire
-		// admits this and the child would receive both with no defined winner.
-		// The daemon refuses it on the operator's entries and drops a caller's
-		// colliding one, but this API is reachable without the daemon at all.
+
 		{"one environment variable named twice", protocol.ToolSourceAttachment{
 			ID: "files", Kind: protocol.ToolSourceProcess, Command: "/usr/local/bin/mcp-filesystem",
 			Environment: []string{"TOKEN=first", "TOKEN=second"},
@@ -1039,18 +967,6 @@ func TestAttachmentIsAdmittedBeforeTheChildStarts(t *testing.T) {
 	}
 }
 
-// TestConfiguredServersAreDeclaredBeforeTheyAreReserved closes the loop the
-// collision refusal left open. attachToolSources reserves every configured MCP
-// server's name, and ACP routes by that name, so the reservation is real — but
-// until the descriptor declared them a caller could not see it: a `process`
-// attachment within every disclosed limit, carrying no defect any rule names,
-// came back unsatisfiable against a source nothing had published. That is a
-// refusal no disclosure covers, which this unit's own validator reports as
-// undisclosed_attach_limit.
-//
-// Declared in the descriptor and in the session's sources both, because the two
-// are held to each other: a snapshot publishing only the attachments would
-// contradict the descriptor it was opened under.
 func TestConfiguredServersAreDeclaredBeforeTheyAreReserved(t *testing.T) {
 	configured := []native.MCPServer{{Name: "files", Command: "/opt/mcp-files"}}
 	a, err := New(Config{
@@ -1071,8 +987,7 @@ func TestConfiguredServersAreDeclaredBeforeTheyAreReserved(t *testing.T) {
 	if len(declared) != 1 || declared[0].ID != "files" || declared[0].Kind != protocol.ToolSourceProcess {
 		t.Fatalf("descriptor declares %+v, want the configured server as a process source", declared)
 	}
-	// The projection carries no attachment-only member: the operator's command
-	// is not something a client may read back out of the descriptor.
+
 	if declared[0].Endpoint != "" {
 		t.Fatalf("descriptor invented an endpoint for a configured server: %+v", declared[0])
 	}
@@ -1098,10 +1013,6 @@ func TestConfiguredServersAreDeclaredBeforeTheyAreReserved(t *testing.T) {
 	}
 }
 
-// TestNewRefusesAnUnusableConfiguredServer holds a configured name to what a
-// published source id must be, because it is now one: present, and one per
-// source. These are the two defects an attachment is refused for, at the other
-// place a name enters this adapter.
 func TestNewRefusesAnUnusableConfiguredServer(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
@@ -1123,17 +1034,6 @@ func TestNewRefusesAnUnusableConfiguredServer(t *testing.T) {
 	}
 }
 
-// TestAttachRefusesASourceWithNoID is the id half of admission, and the one
-// that otherwise produces a schema-invalid session rather than a wrong one.
-// Everything this adapter does with an attachment is done by its id: it is the
-// collision key, the name ACP routes the MCP server by, and the id the session
-// publishes the source under. An empty id passes the collision check on its
-// first use, so an open carrying one would reach the child as an MCP server
-// nothing can address and reach a client as a descriptor whose required `id`
-// is empty — this adapter emitting a document its own validator rejects.
-//
-// It is refused where the kind and the command are, for the reason they are:
-// the decision needs nothing but the request and this adapter's configuration.
 func TestAttachRefusesASourceWithNoID(t *testing.T) {
 	started := 0
 	a, err := New(Config{
@@ -1163,8 +1063,6 @@ func TestAttachRefusesASourceWithNoID(t *testing.T) {
 	}
 }
 
-// The admitted path still reaches the child with the attachment in place: the
-// pre-spawn gate moved the decision, not the effect.
 func TestAdmittedAttachmentReachesSessionNew(t *testing.T) {
 	f := newFake()
 	started := 0

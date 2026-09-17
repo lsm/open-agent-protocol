@@ -14,9 +14,7 @@ import (
 )
 
 func TestPiProcessHelper(t *testing.T) {
-	// Activated either by environment (fixtures that inherit or set an env) or
-	// by an explicit argument, so the empty-allowlist fixture can be spawned
-	// with no environment at all.
+
 	envless := strings.Contains(strings.Join(os.Args, "\x00"), "--pi-emptyenv")
 	mode := os.Getenv("PI_HELPER_MODE")
 	if mode == "" && !envless {
@@ -64,13 +62,12 @@ func TestPiProcessHelper(t *testing.T) {
 		if json.Unmarshal(scanner.Bytes(), &probe) != nil {
 			os.Exit(10)
 		}
-		// A frame far larger than the pipe buffer keeps the reader busy past the
-		// child's exit, which is the window this exercises.
+
 		blob := strings.Repeat("x", 1<<20)
 		os.Stdout.WriteString(`{"id":"` + probe.ID + `","type":"response","command":"` + string(probe.Type) + `","success":true,"data":{"ok":true,"blob":"` + blob + `"}}` + "\n")
 		os.Exit(0)
 	case "emptyenv":
-		// A parent-inherited probe means the empty allowlist collapsed to nil.
+
 		if os.Getenv("PI_ENV_PROBE") != "" {
 			os.Exit(13)
 		}
@@ -104,8 +101,6 @@ func helperConfig(mode string) ProcessConfig {
 	return ProcessConfig{Path: os.Args[0], Args: []string{"-test.run=TestPiProcessHelper", "--"}, Env: append(os.Environ(), "GO_WANT_PI_HELPER=1", "PI_HELPER_MODE="+mode), ShutdownTimeout: 2 * time.Second, StderrLimit: 64}
 }
 
-// envlessHelperConfig spawns the helper with an explicitly empty allowlist, so
-// the child sees no parent variables at all.
 func envlessHelperConfig() ProcessConfig {
 	return ProcessConfig{Path: os.Args[0], Args: []string{"-test.run=TestPiProcessHelper", "--", "--pi-emptyenv"}, Env: []string{}, ShutdownTimeout: 2 * time.Second, StderrLimit: 64}
 }
@@ -190,10 +185,6 @@ func TestProcessNilEnvironmentInheritsParent(t *testing.T) {
 	}
 }
 
-// The helper writes its response and then exits immediately. The reader must be
-// allowed to drain the buffered frame before the process owner reaps the child,
-// otherwise this call races the exit and reports a process-exit error for a
-// response that was already written.
 func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	for iteration := range 10 {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -202,8 +193,7 @@ func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: start: %v", iteration, err)
 		}
-		// A response is ordered behind an inbound barrier the consumer must
-		// acknowledge, so model the adapter's own draining loop.
+
 		go func() {
 			for {
 				select {
@@ -232,8 +222,6 @@ func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	}
 }
 
-// An explicitly empty allowlist must reach the child as an empty environment,
-// not collapse to nil and inherit the parent's variables.
 func TestProcessEmptyEnvironmentStaysEmpty(t *testing.T) {
 	t.Setenv("PI_ENV_PROBE", "ambient-value")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

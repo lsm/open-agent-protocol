@@ -14,19 +14,6 @@ import (
 
 const schemaBase = "https://open-agent-protocol.local/v0.1/"
 
-// Mode selects how the bundled schemas are compiled.
-//
-// ModeStrict compiles the bundle exactly as published: every payload object is
-// closed, every enum is exact, and the envelope oneOf admits only the types it
-// names. It is what fixtures are held to, so a misspelled member or an unknown
-// type fails rather than passes.
-//
-// ModeTolerant compiles the same bundle under the layered draft's extension
-// rules (unknown fields are ignored, unknown enum values surface as strings,
-// unknown envelope types satisfy the common fields only), so a validator built
-// from this revision accepts the additive fields and types a later revision or
-// an extension pack introduces. It is what a live client's dev-mode validation
-// and `oap validate -mode tolerant` use.
 type Mode string
 
 const (
@@ -34,7 +21,6 @@ const (
 	ModeTolerant Mode = "tolerant"
 )
 
-// ParseMode maps a command-line spelling onto a Mode.
 func ParseMode(s string) (Mode, error) {
 	switch Mode(strings.ToLower(strings.TrimSpace(s))) {
 	case ModeStrict, "":
@@ -45,34 +31,17 @@ func ParseMode(s string) (Mode, error) {
 	return "", fmt.Errorf("unsupported validation mode %q (strict or tolerant)", s)
 }
 
-// CompileOptions configures CompileSchemasWith.
-//
-// Packs are the second seam: zero or more loaded extension packs are registered
-// as additional resources under their own base URI and contribute branches to
-// the envelope union, so their envelope types are validated against their own
-// schemas instead of taking the tolerant unknown path. The core bundle is never
-// modified to get there — a pack adds vocabulary, it does not amend the
-// protocol.
 type CompileOptions struct {
 	Mode  Mode
 	Packs []*Pack
 }
 
-// metaSchemas describe the bundle and its extensions rather than an envelope,
-// so they stay exact in every mode: tolerating a descriptor's vocabulary would
-// make a malformed pack declaration load.
 var metaSchemas = map[string]bool{"manifest.schema.json": true, "pack.schema.json": true}
 
-// CompileSchemas compiles the embedded v0.1 bundle strictly. It is unchanged
-// from before the tolerance step: existing callers keep the exact bundle.
 func CompileSchemas() (*jsonschema.Schema, error) {
 	return CompileSchemasWith(CompileOptions{Mode: ModeStrict})
 }
 
-// CompileSchemasWith compiles the embedded v0.1 bundle in the requested mode,
-// with any loaded packs composed in. The tolerant mode transforms each schema
-// document in memory before it is registered; the files on disk and the strict
-// compile are untouched.
 func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 	bundle, err := compileBundle(opts)
 	if err != nil {
@@ -81,22 +50,11 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 	return bundle.root, nil
 }
 
-// compiledBundle is the compiled envelope schema plus, keyed by core payload
-// type and member name, the subschema each loaded pack declared for a member it
-// adds. The member schemas are separate because composition never patches a
-// core branch: validation is two passes over the same envelope instead.
 type compiledBundle struct {
 	root    *jsonschema.Schema
 	members map[string]map[string]*jsonschema.Schema
 }
 
-// refusingLoader answers every reference the registered resources do not
-// already satisfy with a refusal, and records what was asked for. A
-// third-party pack is a document a user loads from someone else, and a
-// submitted output_schema is one the caller sends, so compiling either with
-// the engine's default loader would let a `$ref` read a path or fetch a URL on
-// the loading machine; the draft 2020-12 metaschema is embedded in the engine,
-// so nothing legitimate needs a loader at all.
 type refusingLoader struct{ attempted []string }
 
 func (l *refusingLoader) Load(url string) (any, error) {
@@ -202,9 +160,6 @@ func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 	return bundle, nil
 }
 
-// packCompileError reports a compile failure that a pack caused. A reference
-// the refusing loader was asked for is an external reference, which is a load
-// refusal rather than a compile error surfaced later.
 func packCompileError(packs []*Pack, loader *refusingLoader, err error) error {
 	if len(packs) == 0 {
 		return fmt.Errorf("compile schema bundle: %w", err)
@@ -219,7 +174,6 @@ func packCompileError(packs []*Pack, loader *refusingLoader, err error) error {
 	return fmt.Errorf("compile schema bundle with packs: %w", err)
 }
 
-// declaredMember returns the descriptor entry behind an indexed member.
 func (p *Pack) declaredMember(payloadType, name string) PackPayloadMember {
 	for _, member := range p.Descriptor.PayloadMembers {
 		if member.PayloadType == payloadType && member.Member == name {
@@ -229,14 +183,6 @@ func (p *Pack) declaredMember(payloadType, name string) PackPayloadMember {
 	return PackPayloadMember{}
 }
 
-// composeEnvelope adds each loaded pack's branches to the envelope union. In
-// strict mode they join the `oneOf`, where the verified `type` const makes
-// branch selection a dispatch: a core envelope can never reach a pack branch,
-// so no core envelope becomes invalid because a pack was loaded. In tolerant
-// mode the union is already an `anyOf` with a fallback for unknown types, and
-// the packed types are removed from what that fallback accepts — otherwise a
-// malformed packed envelope would be caught by its own branch and then excused
-// by the fallback, and loading the pack would change nothing.
 func composeEnvelope(document any, packs []*Pack) any {
 	if len(packs) == 0 {
 		return document
@@ -278,9 +224,6 @@ func composeEnvelope(document any, packs []*Pack) any {
 	return out
 }
 
-// excludeFromFallback narrows the tolerant union's fallback branch so it no
-// longer accepts a type a loaded pack claims. Any other member is returned as
-// is.
 func excludeFromFallback(member any, types []any) any {
 	branch, ok := member.(map[string]any)
 	if !ok {
@@ -314,32 +257,6 @@ func excludeFromFallback(member any, types []any) any {
 	}
 }
 
-// tolerate rewrites one decoded schema document into its tolerant form. The
-// rules are the layered draft's extension rules made mechanical:
-//
-//   - `additionalProperties: false` is lifted from every object schema, so an
-//     unknown member is ignored rather than rejected — on a payload, on a
-//     nested object, and on a known branch of a discriminated union alike, so
-//     a later revision's optional member on a known content kind passes.
-//   - An extensible leaf `enum` of strings is widened to `type: string`, so an
-//     unknown value surfaces as a string instead of failing the message.
-//   - A `const` is never lifted. It is a fixed semantic value, not a vocabulary:
-//     `run.started.status` is `const: "running"` and a `run.started` carrying
-//     `status: "failed"` is malformed under any revision, and the same holds
-//     for `protocol`, `version`, `profile`, and every `type` discriminator.
-//   - Nothing inside an `if` guard is changed. Those enums and consts decide
-//     which conditional branch applies; widening one would make both branches
-//     match and require and forbid the same members at once.
-//   - A `oneOf`/`anyOf` whose every member pins a `const` on one property is
-//     a discriminated union; it gains a fallback branch that accepts an object
-//     whose discriminator is a string outside the known set and that carries
-//     only the members every branch requires. A known branch keeps its
-//     discriminator const, required members, and member types exact, which
-//     is what rejects a known kind with a malformed body; closedness adds
-//     nothing to that and is lifted like everywhere else. An unknown kind
-//     is tolerated by the fallback, which excludes every known discriminator.
-//     The envelope root's oneOf over `type` is the largest instance; the
-//     content-part union is the other.
 func tolerate(document any) any {
 	t := &tolerator{doc: document}
 	return t.walk(document, walkContext{})
@@ -375,8 +292,7 @@ func (t *tolerator) walkObject(m map[string]any, ctx walkContext) map[string]any
 	}
 	rewroteUnion := false
 	if !ctx.inIf {
-		// Discriminated unions first, so the fallback is built from the
-		// members before they are walked.
+
 		for _, key := range []string{"oneOf", "anyOf"} {
 			members, ok := out[key].([]any)
 			if !ok || len(members) == 0 {
@@ -408,8 +324,7 @@ func (t *tolerator) walkObject(m map[string]any, ctx walkContext) map[string]any
 		case "enum", "const", "type", "required", "additionalProperties":
 			continue
 		case "anyOf":
-			// A union rewritten above already holds walked members plus the
-			// fallback; an ordinary anyOf is walked like any other list.
+
 			if rewroteUnion {
 				continue
 			}
@@ -423,9 +338,6 @@ func (t *tolerator) walkObject(m map[string]any, ctx walkContext) map[string]any
 	return out
 }
 
-// discriminated reports whether every member of a union pins the same property
-// to a const, and if so the property, the known consts, and the required
-// members common to every branch.
 func (t *tolerator) discriminated(members []any) (string, []any, []string, bool) {
 	var discriminator string
 	known := make([]any, 0, len(members))
@@ -445,7 +357,7 @@ func (t *tolerator) discriminated(members []any) (string, []any, []string, bool)
 			}
 			if c, has := s["const"]; has {
 				if found != "" {
-					// Two consts on one branch: not a single discriminator.
+
 					return "", nil, nil, false
 				}
 				found, value = name, c
@@ -482,8 +394,6 @@ func (t *tolerator) discriminated(members []any) (string, []any, []string, bool)
 	return discriminator, known, names, true
 }
 
-// resolve follows a same-document `#/$defs/...` reference; any other member
-// is returned as is, and a member that is not an object schema is nil.
 func (t *tolerator) resolve(member any) map[string]any {
 	m, ok := member.(map[string]any)
 	if !ok {

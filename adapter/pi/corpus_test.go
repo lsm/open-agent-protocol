@@ -267,7 +267,7 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 			if _, err := session.State(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-		case "outbound-only": // already checked through the production encoder
+		case "outbound-only":
 		default:
 			t.Fatalf("unsupported frame action %q", frame.Action)
 		}
@@ -626,10 +626,6 @@ func TestPiCorpusPinConstants(t *testing.T) {
 	}
 }
 
-// validatePiTrace runs the shared protocol assertion over a corpus run. The
-// injectable-client extension case cannot pass capability-aware validation —
-// production truthfully advertises user input unavailable — so its canonical
-// resolve exchange is checked structurally instead.
 func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, descriptor base.Descriptor, events []protocol.Envelope, cancelled bool, resolutionTrace []protocol.Envelope) {
 	t.Helper()
 	if len(resolutionTrace) == 0 {

@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// A resolution carries exactly one arm, and Arm reports which. A request
-// carrying none or several has no arm to name rather than a guessed one: the
-// schema rejects both shapes, and a validator that guessed would judge the
-// wrong rule.
 func TestResolveRequestArm(t *testing.T) {
 	cases := map[string]struct {
 		request ActionCallResolveRequest
@@ -30,10 +26,6 @@ func TestResolveRequestArm(t *testing.T) {
 	}
 }
 
-// The ladder is total and ordered. One request can satisfy several conditions
-// and one response carries one reason, so the highest wins — and an
-// unrecognized name never does, or a later revision's reason would silently
-// outrank this one's.
 func TestHighestResolveReason(t *testing.T) {
 	cases := map[string]struct {
 		reasons []ResolveReason
@@ -82,9 +74,6 @@ func TestHighestResolveReason(t *testing.T) {
 	}
 }
 
-// An acknowledgement serializes as an empty object, and an absent arm as no
-// member at all: presence is what the arm means, so a nil pointer must not
-// reach the wire as `"started": null`.
 func TestResolveRequestEncoding(t *testing.T) {
 	encoded, err := json.Marshal(ActionCallResolveRequest{
 		InteractionID: "i-1", SessionID: "s-1", RunID: "r-1", ToolCallID: "t-1",

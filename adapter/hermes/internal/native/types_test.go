@@ -190,9 +190,7 @@ func TestResultShapesDecode(t *testing.T) {
 	if err := DecodeStrict([]byte(`{"status":"ok","remaining":["q2"]}`), &RespondResult{}); err != nil {
 		t.Fatal(err)
 	}
-	// The v1-unavailable native surfaces keep their pinned shapes typed here,
-	// so the corpus rules stay behavioral: steer (queued|rejected),
-	// registry-scoped subagent control, and the replay window contract.
+
 	var steer SteerResult
 	if err := DecodeStrict([]byte(`{"status":"rejected"}`), &steer); err != nil || steer.Status != "rejected" {
 		t.Fatalf("steer = %+v err=%v", steer, err)
@@ -224,10 +222,6 @@ func TestResultShapesDecode(t *testing.T) {
 	}
 }
 
-// TestMessageCompleteUsageToleratesExtensibleReadouts pins the live gateway
-// behavior: the usage dict is an extensible status-bar readout, so unknown
-// keys inside it (active_subagents, avg_latency_s, avg_tps, ...) must not
-// fail a run, while the rest of message.complete stays strict.
 func TestMessageCompleteUsageToleratesExtensibleReadouts(t *testing.T) {
 	frame := `{"type":"message.complete","session_id":"s","seq":3,"payload":{"text":"hi","usage":{"model":"m","input":1,"output":2,"reasoning":0,"prompt":1,"completion":2,"total":3,"calls":1,"active_subagents":2,"avg_latency_s":1.4,"avg_tps":9.2,"future_readout":true},"status":"complete"}}`
 	event, err := decodeEvent(t, frame)
@@ -241,15 +235,12 @@ func TestMessageCompleteUsageToleratesExtensibleReadouts(t *testing.T) {
 	if payload.Usage.ActiveSubagents == nil || *payload.Usage.ActiveSubagents != 2 {
 		t.Fatalf("active_subagents = %v", payload.Usage.ActiveSubagents)
 	}
-	// The outer payload stays strict: an unknown sibling of usage still fails.
+
 	if _, err := decodeEvent(t, `{"type":"message.complete","session_id":"s","seq":3,"payload":{"text":"hi","usage":{"model":"m","input":1,"output":2,"reasoning":0,"prompt":1,"completion":2,"total":3,"calls":1},"status":"complete","surprise":1}}`); err == nil {
 		t.Fatal("unknown field on message.complete accepted")
 	}
 }
 
-// TestErrorSurfaceCarriesProviderIdentity pins the pinned error_surface
-// fields: build_error_surface_* captures the failing session's provider and
-// model (error_surface.py:145-151), present only when non-empty.
 func TestErrorSurfaceCarriesProviderIdentity(t *testing.T) {
 	frame := `{"type":"message.complete","session_id":"s","seq":9,"payload":{"text":"Error: boom","usage":{},"status":"error","error":"boom","recoverable":true,"error_surface":{"layer":"provider","code":"auth","retryable":false,"provider":"openai","model":"gpt-5.6-sol"}}}`
 	event, err := decodeEvent(t, frame)

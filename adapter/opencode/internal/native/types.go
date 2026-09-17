@@ -1,5 +1,3 @@
-// Package native contains the reduced, pinned OpenCode v1.18.29 server wire
-// types. It intentionally does not contain OAP semantics.
 package native
 
 import (
@@ -11,7 +9,6 @@ import (
 	"regexp"
 )
 
-// Pinned revision of the OpenCode server this wire model tracks.
 const PinnedTag = "v1.18.29"
 
 var (
@@ -34,8 +31,6 @@ type EventID string
 
 func (id EventID) Valid() bool { return eventIDPattern.MatchString(string(id)) }
 
-// Delivery is the OpenCode input delivery vocabulary. There is no "auto":
-// an omitted delivery defaults to steer at the server.
 type Delivery string
 
 const (
@@ -45,11 +40,8 @@ const (
 
 func (d Delivery) Valid() bool { return d == DeliverySteer || d == DeliveryQueue }
 
-// FinishReason labels step termination; the pinned vocabulary is open at the
-// server, so only the empty value is invalid.
 type FinishReason string
 
-// ModelRef is the pinned wire shape of a model selection.
 type ModelRef struct {
 	ID         string          `json:"id"`
 	ProviderID string          `json:"providerID"`
@@ -57,7 +49,6 @@ type ModelRef struct {
 	Raw        json.RawMessage `json:"-"`
 }
 
-// TokenAccounting is the per-step cost and token summary on step.ended.
 type TokenAccounting struct {
 	Input     float64 `json:"input"`
 	Output    float64 `json:"output"`
@@ -68,21 +59,17 @@ type TokenAccounting struct {
 	} `json:"cache"`
 }
 
-// UnknownErrorBlock is the typed error value carried by step.failed and
-// tool.failed events.
 type UnknownErrorBlock struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
 }
 
-// Prompt is the admitted input payload. Attachments are preserved verbatim.
 type Prompt struct {
 	Text  string          `json:"text"`
 	Files json.RawMessage `json:"files,omitempty"`
 	Agent json.RawMessage `json:"agents,omitempty"`
 }
 
-// PromptRequest is the POST /api/session/:id/prompt body.
 type PromptRequest struct {
 	ID       MessageID `json:"id,omitempty"`
 	Prompt   Prompt    `json:"prompt"`
@@ -90,7 +77,6 @@ type PromptRequest struct {
 	Resume   *bool     `json:"resume,omitempty"`
 }
 
-// Admitted is the durable admission receipt returned by the prompt route.
 type Admitted struct {
 	AdmittedSeq int64     `json:"admittedSeq"`
 	ID          MessageID `json:"id"`
@@ -108,7 +94,6 @@ func (a Admitted) Validate() error {
 	return nil
 }
 
-// SessionInfo is the projected session record returned by create and get.
 type SessionInfo struct {
 	ID        SessionID `json:"id"`
 	ParentID  string    `json:"parentID,omitempty"`
@@ -143,16 +128,11 @@ func (i SessionInfo) Validate() error {
 	return nil
 }
 
-// HistoryPage is one bounded page of durable events from session.history.
 type HistoryPage struct {
 	Events  []Event `json:"data"`
 	HasMore bool    `json:"hasMore"`
 }
 
-// Type enumerates the durable session-event discriminants plus step.failed,
-// which the pinned durable inventory omits even though the event is defined
-// durable. Receiving a live-only delta type on this stream is a protocol
-// violation.
 type Type string
 
 const (
@@ -200,8 +180,6 @@ func (t Type) Supported() bool {
 	}
 }
 
-// Durable reports whether the pinned durable inventory carries this type.
-// step.failed is deliberately false: the pinned inventory omits it.
 func (t Type) Durable() bool {
 	switch t {
 	case TypeStepFailed:
@@ -219,15 +197,12 @@ func (t Type) Durable() bool {
 	}
 }
 
-// DurablePosition marks the durable ordering metadata on an event.
 type DurablePosition struct {
 	AggregateID string `json:"aggregateID"`
 	Seq         int64  `json:"seq"`
 	Version     int    `json:"version"`
 }
 
-// Event is one durable session event envelope. Data is decoded strictly per
-// type; Raw preserves the exact data object for evidence.
 type Event struct {
 	ID      EventID          `json:"id"`
 	Type    Type             `json:"type"`
@@ -262,9 +237,6 @@ func DecodeEvent(data []byte) (Event, error) {
 
 var ErrUnsupportedType = errors.New("opencode native: unsupported event type")
 
-// Payload structs decode a typed data object.
-
-// PromptedData serves both session.next.prompted and prompt.admitted.
 type PromptedData struct {
 	Timestamp int64     `json:"timestamp"`
 	SessionID SessionID `json:"sessionID"`
@@ -426,8 +398,6 @@ type ToolFailedData struct {
 	} `json:"provider"`
 }
 
-// ToolContent is the pinned tool display-content block union. The display
-// text is extracted; unknown block shapes are preserved verbatim.
 type ToolContent struct {
 	Type string          `json:"type"`
 	Text string          `json:"text,omitempty"`
@@ -494,8 +464,6 @@ type RevertCommittedData struct {
 	MessageID MessageID `json:"messageID"`
 }
 
-// APIError is a decoded HTTP error response. The pinned server serializes
-// tagged errors as {"_tag": ..., fields...}.
 type APIError struct {
 	Status int
 	Tag    string
@@ -509,7 +477,6 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("opencode native: HTTP %d %s", e.Status, e.Tag)
 }
 
-// IsNotFound reports a 404 tagged SessionNotFoundError.
 func (e *APIError) IsSessionNotFound() bool {
 	return e.Tag == "SessionNotFoundError"
 }
@@ -537,7 +504,6 @@ func DecodeAPIError(status int, body []byte) *APIError {
 	return err
 }
 
-// DecodeData strictly decodes a typed data object into dst.
 func DecodeData(e Event, dst any) error {
 	if err := decodeStrict(e.Data, dst, true); err != nil {
 		return fmt.Errorf("%w: %s data: %v", ErrInvalidWire, e.Type, err)
@@ -566,9 +532,6 @@ func decodeStrict(data []byte, dst any, unknown bool) error {
 	return nil
 }
 
-// RejectDuplicateKeys walks data and rejects any object that repeats a key.
-// encoding/json would otherwise silently keep the last occurrence, so callers
-// that require strict decoding invoke this before json.Decode.
 func RejectDuplicateKeys(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	var walk func() error

@@ -12,7 +12,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// openWithSources opens one reference session, attaching the given sources.
 func openWithSources(t *testing.T, sources ...protocol.ToolSourceAttachment) adapter.Session {
 	t.Helper()
 	implementation := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}})
@@ -26,10 +25,6 @@ func openWithSources(t *testing.T, sources ...protocol.ToolSourceAttachment) ada
 	return session
 }
 
-// TestReferenceCatalogResolvesEverySource drives the served catalog through
-// the real validator rather than reading the descriptor: every tool's source
-// resolves to a declared descriptor, the ids are unique, and the attachment
-// the open made is listed with the members it was attached with.
 func TestReferenceCatalogResolvesEverySource(t *testing.T) {
 	attachment := protocol.ToolSourceAttachment{
 		ID: "workspace-files", Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
@@ -55,8 +50,6 @@ func TestReferenceCatalogResolvesEverySource(t *testing.T) {
 		SessionID: "tool-sources", ToolSources: []protocol.ToolSourceAttachment{attachment},
 	}, request, catalog)
 
-	// The published projection is the point: the attachment's command and its
-	// environment allowlist never reach a client.
 	for _, source := range catalog.Tools.Sources {
 		if source.ID != attachment.ID {
 			continue
@@ -77,11 +70,6 @@ func TestReferenceCatalogResolvesEverySource(t *testing.T) {
 	}
 }
 
-// TestAttachmentRefusalsNameTheSource pins every refusal the reference
-// adapter owes: each names the offending source, so a caller and the
-// validator agree on which entry to change, and each violates a limit the
-// descriptor actually discloses — an endpoint that refused an array within
-// every disclosed limit would honour nothing it advertised.
 func TestAttachmentRefusalsNameTheSource(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -144,10 +132,6 @@ func TestAttachmentRefusalsNameTheSource(t *testing.T) {
 	}
 }
 
-// TestSessionStatePublishesTheSourceUnion pins the state surface: the union
-// of the descriptor's declared sources and the open's attachments, in the
-// descriptor shape, so an attachment-only member cannot reach a client
-// through state any more than through a catalog.
 func TestSessionStatePublishesTheSourceUnion(t *testing.T) {
 	session := openWithSources(t, protocol.ToolSourceAttachment{
 		ID: "workspace-files", Kind: protocol.ToolSourceLocal, Command: "/bin/true", Environment: []string{"TOKEN=secret"},
@@ -167,10 +151,6 @@ func TestSessionStatePublishesTheSourceUnion(t *testing.T) {
 	}
 }
 
-// TestCatalogRefusesAnotherSessionsScope pins that a session's catalog is its
-// own: a request naming another session is refused rather than answered with
-// this session's tools under that session's id, which is the shape the
-// validator reads as a scope mismatch.
 func TestCatalogRefusesAnotherSessionsScope(t *testing.T) {
 	session := openWithSources(t)
 	lister := session.(adapter.ToolLister)
@@ -179,14 +159,6 @@ func TestCatalogRefusesAnotherSessionsScope(t *testing.T) {
 	}
 }
 
-// TestUnscopedCatalogPublishesNoAttachment pins what an unscoped list means on
-// an attached session. A request naming no session asks for the endpoint's own
-// catalog, so it gets the declared sources alone: an attachment belongs to one
-// session and is not part of what the endpoint publishes to everyone. The
-// answer also carries no session id, which is what makes the leak invisible if
-// it happens — the validator's lifetime rule ties an attached source to the
-// session that attached it, and an unscoped response never reaches it, so a
-// source presented as endpoint-wide here would be checked by nothing.
 func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 	attachment := protocol.ToolSourceAttachment{
 		ID: "workspace-files", Kind: protocol.ToolSourceProcess, Protocol: protocol.ToolSourceMCP,
@@ -206,8 +178,7 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 			t.Fatalf("the endpoint catalog publishes a source one session attached: %+v", catalog.Tools.Sources)
 		}
 	}
-	// It is the endpoint's own catalog, not an empty one: what the descriptor
-	// declares is exactly what an unscoped list answers with.
+
 	implementation := adapter.NewMemory(adapter.Config{})
 	descriptor, err := implementation.Probe(context.Background())
 	if err != nil {
@@ -225,8 +196,7 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 			t.Fatalf("source %q differs from the descriptor's: %+v", source.ID, source)
 		}
 	}
-	// Every tool still resolves, which is the property an endpoint catalog
-	// owes whatever its scope: dropping the attachments must not orphan one.
+
 	for _, tool := range catalog.Tools.Tools {
 		if tool.Source == "" {
 			continue
@@ -236,8 +206,6 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 		}
 	}
 
-	// The same session, asked in its own scope, still answers with the
-	// attachment: the unscoped answer narrowed the question, not the session.
 	scoped, err := lister.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "tool-sources"})
 	if err != nil {
 		t.Fatalf("scoped tools: %v", err)
@@ -253,16 +221,6 @@ func TestUnscopedCatalogPublishesNoAttachment(t *testing.T) {
 	}
 }
 
-// TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows holds the test kit to
-// the standard it exists to enforce. A helper whose whole purpose is to certify
-// conforming adapters convicting one is worse than a helper that certifies
-// nothing: the adapter's author reads a defect the endpoint does not have, and
-// the honest fix looks like a regression.
-//
-// Neither shape below is exercised by any adapter in this repository — none is
-// a degraded-attachment endpoint and none declares its sources under a layer —
-// which is exactly why the suite passed over both. The cases are synthetic for
-// that reason, not for convenience.
 func TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows(t *testing.T) {
 	const revision = "kit-fixture-v1"
 	files := protocol.ToolSourceDescriptor{
@@ -291,11 +249,7 @@ func TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows(t *testing.T) {
 	list := protocol.ToolsListRequest{SessionID: "kit"}
 
 	t.Run("a degraded attachment the caller consented to", func(t *testing.T) {
-		// The open the caller actually made carries the consent. The helper
-		// used to synthesize an open from the attachments alone, so it could
-		// not carry one, and every conforming degraded-attachment endpoint
-		// failed here for degraded_without_optin — a defect belonging to the
-		// synthetic trace and not to the adapter.
+
 		features := base()
 		features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
 			Level: protocol.SupportDegraded, Reason: "sources are attached on a best-effort basis",
@@ -313,10 +267,7 @@ func TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows(t *testing.T) {
 	})
 
 	t.Run("sources declared under a layer alone", func(t *testing.T) {
-		// A valid descriptor may publish its sources under a layer, exactly as
-		// it may publish its catalog there, and the validator reads both that
-		// way. The helper read the top level alone, so it expected a union it
-		// had itself truncated and reported its own trace invalid.
+
 		features := base()
 		features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
 			Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen},
@@ -334,13 +285,7 @@ func TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows(t *testing.T) {
 	})
 
 	t.Run("an open response that filled a member the attachment left blank", func(t *testing.T) {
-		// The third instance of the same pattern, found by auditing for it:
-		// an attachment states an id and a kind and may state nothing else, and
-		// the endpoint fills the rest — which the unit invites, because over the
-		// daemon the operator's registry supplies them. The reconstructed open
-		// response therefore publishes the catalog's own descriptor for an
-		// attached id, not the bare attachment, or every later catalog would be
-		// held to a description the endpoint never published.
+
 		features := base()
 		features[protocol.FeatureToolSourcesAttach] = protocol.FeatureSupport{
 			Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen},
@@ -349,20 +294,13 @@ func TestToolCatalogTraceCertifiesTheShapesTheProtocolAllows(t *testing.T) {
 			Endpoint: protocol.EndpointDescriptor{ID: "kit.fixture", Name: "Kit fixture endpoint"},
 			Features: features, Sources: []protocol.ToolSourceDescriptor{native},
 		}}
-		// The attachment names the id and the kind; the catalog publishes the
-		// display name, protocol, and endpoint the endpoint filled in.
+
 		adaptertest.AssertToolCatalog(t, descriptor, protocol.SessionOpenRequest{
 			SessionID: "kit", ToolSources: []protocol.ToolSourceAttachment{{ID: "files", Kind: protocol.ToolSourceProcess}},
 		}, list, catalog)
 	})
 }
 
-// TestReferenceAdapterRefusesOneVariableNamedTwice keeps the reference honest.
-// It runs no client, so no child could be confused by the duplicate — but an
-// attachment naming one variable twice is ill-formed wherever it is sent, and
-// an endpoint the unit's rules are read off should not admit what they refuse.
-// The same check runs in ACP, where a child really does receive the pair, and
-// in the daemon's registry for the operator's own entries.
 func TestReferenceAdapterRefusesOneVariableNamedTwice(t *testing.T) {
 	implementation := adapter.NewMemory(adapter.Config{})
 	_, err := implementation.Open(context.Background(), adapter.OpenRequest{

@@ -77,9 +77,6 @@ func TestParseMessageRejectsAmbiguousOrForeignFrames(t *testing.T) {
 	}
 }
 
-// A repeated key would otherwise be collapsed with last-value-wins before any
-// shape check runs, which can route or decode a response differently from the
-// sender's interpretation, so the raw frame must be rejected first.
 func TestParseMessageRejectsDuplicateKeys(t *testing.T) {
 	t.Parallel()
 	inputs := []string{

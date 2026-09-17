@@ -82,8 +82,7 @@ type fakeClient struct {
 	interrupts       int
 	actives          int
 	activeErr        error
-	// activeFor reports the session as natively active for this many leading
-	// polls, modelling an agent loop whose drain is still running.
+
 	activeFor    int
 	historyErr   error
 	historyPage  native.HistoryPage
@@ -91,20 +90,12 @@ type fakeClient struct {
 	subscribeCtx context.Context
 	prompts      []native.PromptRequest
 	closed       bool
-	// promptGate, when set, holds every Prompt call until it is closed, and
-	// promptEntry reports that one has arrived. The real prompt is a round
-	// trip to the server, which is the window a state read can land in between
-	// a run taking its slot and its admission existing.
+
 	promptGate  <-chan struct{}
 	promptEntry chan struct{}
-	// idleGate, when set, reports the session as natively active until it is
-	// closed, holding settlement until the corpus has delivered the whole
-	// native stream. The real active set holds a session for one whole agent
-	// loop drain, which implies every step event of the turn is already
-	// durable; reporting idle immediately would let settlement race the
-	// not-yet-delivered later steps.
+
 	idleGate <-chan struct{}
-	// model is the native session model CreateSession echoes to the adapter.
+
 	model *native.ModelRef
 }
 
@@ -217,11 +208,6 @@ func (f *fakeClient) emit(t *testing.T, seq int64, typ native.Type, payload any)
 	f.events <- native.Event{ID: native.EventID(fmt.Sprintf("evt_fake%04d", seq)), Type: typ, Durable: &native.DurablePosition{AggregateID: string(f.session), Seq: seq, Version: 1}, Data: data}
 }
 
-// The queue graduated on SessionInput.Admitted{delivery:"queue", promotedSeq},
-// so it is advertised and applied; steer has no unit yet and is still refused
-// under its own key. The queue's disclosure comes with it: advertising the key
-// is a claim that some submission will be queued, and the bound is what makes
-// the claim checkable.
 func TestProbeAdvertisesQueueAndRefusesSteer(t *testing.T) {
 	a, err := New(Config{Endpoint: "http://127.0.0.1:1"})
 	if err != nil {
@@ -268,11 +254,6 @@ func submitTest(t *testing.T, session base.Session) (protocol.MessageSubmitRespo
 	return response, stream
 }
 
-// None of the four run controls has a per-run native surface: the session's
-// model is fixed at creation and the prompt request carries content only. Each
-// must be refused under its own capability key with the typed
-// unsupported-control error rather than a generic rejection that names none of
-// them or an echoed effective model.
 func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	session, _ := openTest(t, newFakeClient(), 32)
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
@@ -293,9 +274,6 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 	}
 }
 
-// The validator accepts the zero-value delivery as auto, so the response must
-// report the canonical value; an empty requested_delivery violates the schema
-// enum and fails canonical trace validation.
 func TestSubmitNormalizesOmittedDelivery(t *testing.T) {
 	session, _ := openTest(t, newFakeClient(), 32)
 	response, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
@@ -310,8 +288,6 @@ func TestSubmitNormalizesOmittedDelivery(t *testing.T) {
 	}
 }
 
-// A per-submit override is rejected, so the adapter must retain the native
-// session model instead of clearing attribution with the empty request value.
 func TestSessionRetainsNativeModel(t *testing.T) {
 	client := newFakeClient()
 	client.model = &native.ModelRef{ID: "claude-sonnet", ProviderID: "anthropic"}
@@ -365,8 +341,7 @@ func TestCompletedRunDerivesTerminalFromQuiescence(t *testing.T) {
 	if completed.StopReason != "stop" || completed.Usage == nil || completed.Usage.InputTokens != 2 || completed.Usage.OutputTokens != 5 {
 		t.Fatalf("completed=%+v", completed)
 	}
-	// A loop that has already drained is observed idle on the first poll, so
-	// settlement corroborates exactly once and never sleeps.
+
 	client.mu.Lock()
 	actives := client.actives
 	client.mu.Unlock()
@@ -402,8 +377,7 @@ func TestToolLifecycleSettlesBeforeTerminal(t *testing.T) {
 	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "answer"})
 	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
 	events := adaptertest.Drain(t, stream, time.Second)
-	// The action lifecycle is validated against a capability-bearing
-	// canonical trace in the corpus; here adapter-owned invariants suffice.
+
 	_ = response
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
 	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
@@ -424,11 +398,7 @@ func TestToolLifecycleSettlesBeforeTerminal(t *testing.T) {
 func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
-	// Real wait-idle returns only once the run is quiescent, which implies the
-	// second step is already durable. Hold the fake's wait-idle until the whole
-	// stream is enqueued: an immediate return let the first step's settlement
-	// fence before the producer had enqueued the second step, completing a
-	// one-step run and dropping its text (issue #10).
+
 	delivered := make(chan struct{})
 	client.idleGate = delivered
 	session, _ := openTest(t, client, 32)
@@ -437,8 +407,7 @@ func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
-	// The second step is enqueued while the first step's settlement waits for
-	// idle; the settlement drain must fold it in, not double-settle.
+
 	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 5, native.TypeTextEnded, native.TextEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "final"})
 	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
@@ -451,11 +420,6 @@ func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	}
 }
 
-// The agent loop's drain is still running when the step ends, so settlement
-// must poll the active set out rather than deriving a terminal from its first
-// look. The pinned server has no blocking idle call to lean on: its wait route
-// is declared but unimplemented and answers 503, so this poll is the whole
-// corroboration.
 func TestSettlementPollsActiveUntilLoopDrains(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -480,10 +444,6 @@ func TestSettlementPollsActiveUntilLoopDrains(t *testing.T) {
 	}
 }
 
-// Settlement corroboration that cannot be read must fail the run rather than
-// invent a terminal. This is the shape the adapter used to take on every turn:
-// it settled through the unimplemented wait route, whose 503 failed each run
-// and left the session unusable.
 func TestSettlementFailsWhenQuiescenceUnreadable(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -598,9 +558,6 @@ func TestForeignSessionEventFailsRun(t *testing.T) {
 	}
 }
 
-// TestPreStartFailuresReportReservation pins the decision 0002 contract on
-// every reserved-run failure path: Submit never pairs an error with a
-// non-nil stream; the accepted queued reservation settles pre-start instead.
 func TestPreStartFailuresReportReservation(t *testing.T) {
 	cases := map[string]func(*fakeClient){
 		"foreign admission": func(client *fakeClient) { client.foreignAdmission = true },
@@ -636,8 +593,7 @@ func TestAdmissionFailureRetiresSession(t *testing.T) {
 	client := newFakeClient()
 	client.promptErr = errors.New("HTTP 409")
 	session, _ := openTest(t, client, 32)
-	// Decision 0002: the reserved run settles pre-start on its stream and the
-	// response reports the accepted queued reservation — no error return.
+
 	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
 	if err != nil {
 		t.Fatal(err)
@@ -716,11 +672,6 @@ func TestReplayGapAndTerminalReplay(t *testing.T) {
 	}
 }
 
-// TestOpenSubscriptionSurvivesOpenContextCancel pins that the durable
-// subscription owns its context instead of borrowing the Open call's. A caller
-// doing `ctx, cancel := context.WithTimeout(...); defer cancel()` must not tear
-// the SSE request down when Open returns. Before the fix the subscription
-// reused the Open context and the returned session became unusable.
 func TestOpenSubscriptionSurvivesOpenContextCancel(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -744,7 +695,7 @@ func TestOpenSubscriptionSurvivesOpenContextCancel(t *testing.T) {
 	if subCtx.Err() != nil {
 		t.Fatalf("subscription reused the cancelled Open context: %v", subCtx.Err())
 	}
-	// The returned session is still usable end to end.
+
 	response, stream := submitTest(t, session)
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepEnded, native.StepEndedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
@@ -754,8 +705,6 @@ func TestOpenSubscriptionSurvivesOpenContextCancel(t *testing.T) {
 	}
 }
 
-// gatedPromptClient blocks Prompt until release, letting a test deliver the
-// prompted SSE event before the prompt HTTP response returns.
 type gatedPromptClient struct {
 	*fakeClient
 	entered chan struct{}
@@ -771,12 +720,6 @@ func (g *gatedPromptClient) Prompt(ctx context.Context, session native.SessionID
 	return g.fakeClient.Prompt(ctx, session, request)
 }
 
-// TestPromptedEventBeforePromptResponseStartsRun pins that the pending mapping
-// is installed before Prompt is issued. The server may publish
-// session.next.prompted before the prompt HTTP response arrives; that event
-// must still resolve to the reserved run and emit run.started. Before the fix
-// the mapping was installed only after Prompt returned and the early event was
-// discarded, so no run.started was ever emitted.
 func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = false
@@ -803,14 +746,11 @@ func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
 			err      error
 		}{response, stream, err}
 	}()
-	<-gated.entered // Prompt is in flight; the response has not returned
+	<-gated.entered
 	client.mu.Lock()
 	messageID := client.lastPromptID
 	client.mu.Unlock()
-	// Deliver the prompted event, then a sentinel no-op event. If the prompted
-	// event is handled by its own turn (before the fix) the sentinel's sequence
-	// is reduced promptly; after the fix the handler blocks on admission, so
-	// the sentinel is not reduced until the prompt response arrives.
+
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeAgentSwitched, nil)
 	concrete := sess.(*session)
@@ -836,7 +776,6 @@ func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
 	}
 }
 
-// queueRequest is an explicit queue submission on the shared test session.
 func queueRequest(text string) protocol.MessageSubmitRequest {
 	return protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}}}
 }
@@ -858,9 +797,6 @@ func testAdapterDescriptor(t *testing.T) base.Descriptor {
 	return descriptor
 }
 
-// An explicit queue while the started run is live reserves the second run,
-// publishes nothing for it, and promotes it only after the first run's derived
-// settlement — so one run domain executes at a time, in admission order.
 func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -880,8 +816,7 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	if queued.RequestedDelivery != protocol.DeliveryQueue {
 		t.Fatalf("requested_delivery = %q", queued.RequestedDelivery)
 	}
-	// Both nonterminal runs are listed in admission order, the reservation
-	// with its 1-based position; active_run_id still names the started run.
+
 	state, err := session.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -895,14 +830,11 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	if state.ActiveRunID != first.RunID {
 		t.Fatalf("active_run_id = %q", state.ActiveRunID)
 	}
-	// A third submission exceeds the disclosed queue bound of one.
+
 	if _, _, err := session.Submit(context.Background(), autoRequest("too much")); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("third submit = %v, want ErrRunActive", err)
 	}
 
-	// The server finishes the first turn and only then promotes the
-	// reservation; the promotion waits for that run's terminal to reach the
-	// wire before any of its own envelopes do.
 	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
 	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
 	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
@@ -910,7 +842,7 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
 		t.Fatalf("first run = %v", types(firstEvents))
 	}
-	// The reservation starts only now, and its own turn settles normally.
+
 	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
 	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
@@ -924,10 +856,6 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
 }
 
-// A busy session turns an auto submission into a reservation and says so, and
-// cancelling that reservation settles it pre-start: its first and only
-// run-scoped event is the terminal, published while the started run is still
-// nonterminal so the freed slot is observable at the moment it is released.
 func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -951,9 +879,7 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	if len(queuedEvents) != 1 || queuedEvents[0].Type != protocol.TypeRunCancelled {
 		t.Fatalf("cancelled reservation = %v", types(queuedEvents))
 	}
-	// Nothing is sent for this reservation and nothing is heard about it: the
-	// server still holds the input and may yet promote it, so this terminal is
-	// the adapter's own conclusion and has to say so.
+
 	var cancelled protocol.RunCancelledPayload
 	if err := queuedEvents[0].DecodePayload(&cancelled); err != nil {
 		t.Fatal(err)
@@ -961,7 +887,7 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	if cancelled.SettledBy != protocol.SettledByInferred {
 		t.Fatalf("settled_by = %q, want %q", cancelled.SettledBy, protocol.SettledByInferred)
 	}
-	// The slot is free again while the first run is still running.
+
 	state, err := session.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -972,25 +898,17 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
 	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
-	// The reservation's terminal is delivered where it happened: before the
-	// earlier run's own terminal.
+
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
 		{Request: autoRequest("later"), Admission: queued, Cancelled: true},
 	}, descriptor, append(append([]protocol.Envelope(nil), queuedEvents...), firstEvents...))
 }
 
-// Once the server promotes a reservation, every native event after it belongs
-// to the promoted turn. Reducing those steps and text into the run that is
-// still finishing would attribute one run's output to another and leave the
-// promoted run unable to settle, so routing moves at the promotion while only
-// publication waits for the earlier terminal.
 func TestPromotedReservationTakesItsOwnNativeEvents(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
-	// Hold the first run's derived settlement open, so the promotion is
-	// observed while that run is still nonterminal — the window the routing
-	// has to be right in.
+
 	gate := make(chan struct{})
 	client.mu.Lock()
 	client.idleGate = gate
@@ -1008,14 +926,11 @@ func TestPromotedReservationTakesItsOwnNativeEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The promotion, and then the promoted turn's own output, all while the
-	// first run's settlement is still gated.
+
 	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
 	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
 
-	// Nothing of the promoted run has been published yet: the reservation is
-	// still what a state read sees, at its queue position.
 	state, err := session.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1046,9 +961,6 @@ func TestPromotedReservationTakesItsOwnNativeEvents(t *testing.T) {
 	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
 }
 
-// An explicit queue keeps the reservation shape even when the server schedules
-// it at once. A queue request answered `started` is an illegal transition, and
-// the caller asked for a boundary it is entitled to be told it got.
 func TestExplicitQueueOnIdleSessionStaysQueued(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1070,8 +982,7 @@ func TestExplicitQueueOnIdleSessionStaysQueued(t *testing.T) {
 	if len(collected) == 0 || collected[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("promotion = %v", types(collected))
 	}
-	// The reservation promotes immediately, so a state read between the
-	// admission and the start reports a run that is running, not queued.
+
 	state, err := session.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1093,12 +1004,6 @@ func deltaText(t *testing.T, envelope protocol.Envelope) string {
 	return payload.Part.Text
 }
 
-// Between the started run's terminal and the server's promotion of the
-// reservation, the reservation is the session's only nonterminal run and the
-// started slot is empty. A close that looked only at that slot would succeed
-// and take the reservation's stream down with it, dropping an accepted
-// submission without publishing anything for it. It is admitted work, so it
-// refuses the close exactly as a started run does.
 func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1111,7 +1016,7 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The first run settles and nothing has promoted the reservation yet.
+
 	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
 	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
@@ -1121,7 +1026,7 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	if err := session.Close(context.Background()); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("close with a live reservation = %v, want ErrRunActive", err)
 	}
-	// Cancelling it settles it pre-start, and the close then succeeds.
+
 	if _, err := session.Cancel(context.Background(), queued.RunID); err != nil {
 		t.Fatal(err)
 	}
@@ -1134,20 +1039,13 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	}
 }
 
-// A run that has taken its slot but has no admission response yet exists only
-// inside this adapter. The prompt call that settles the admission is a round
-// trip to the server, and a state read landing in that window used to name the
-// run — a run the trace would carry no admission for, so the snapshot spoke of
-// a run nobody had been told was accepted.
 func TestProvisionalRunIsNotProjectedBeforeItsAdmission(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
 	gate, entered := make(chan struct{}), make(chan struct{}, 1)
 	var once sync.Once
 	release := func() { once.Do(func() { close(gate) }) }
-	// A failed assertion must not leave the submission parked on the gate:
-	// Fatalf runs this goroutine's defers, and the parked one would otherwise
-	// hold the test binary open past its deadline.
+
 	defer release()
 	client.mu.Lock()
 	client.promptGate, client.promptEntry = gate, entered
@@ -1163,10 +1061,6 @@ func TestProvisionalRunIsNotProjectedBeforeItsAdmission(t *testing.T) {
 		}
 	}()
 
-	// The prompt is in flight, so the run has its slot and its identity and
-	// nothing else. Submit holds its own lock for the whole call, so a second
-	// submission cannot observe the slot from here — what a caller can reach
-	// in this window is exactly the state read.
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):
@@ -1194,11 +1088,6 @@ func TestProvisionalRunIsNotProjectedBeforeItsAdmission(t *testing.T) {
 	}
 }
 
-// A state read taken mid-run has to survive the validator like any other
-// snapshot. Nothing else in the kit reads State, so the projection this adapter
-// hands out never entered the trace its own rules judge: a session listing a
-// started run beside a reservation is exactly the shape the queue unit's state
-// rules are about, and it was going unchecked here.
 func TestStateDuringARunValidates(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1216,7 +1105,6 @@ func TestStateDuringARunValidates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The session as it stands: one started run and one reservation behind it.
 	snapshot, err := session.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1246,11 +1134,6 @@ func TestStateDuringARunValidates(t *testing.T) {
 	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange))
 }
 
-// A snapshot handed to a caller owns its own backing array. active_runs is a
-// slice of entries carrying pointers, so a by-value copy of the session state
-// shares both with the session: a caller editing what it was given would reach
-// into the reducer's own projection, and the recovery snapshot is handed out
-// the same way State's is.
 func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1306,12 +1189,6 @@ func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 	}
 }
 
-// An explicit queue on an idle session is a reservation, and the session state
-// has to say so until the server's prompted event begins the turn. Naming it in
-// active_run_id and listing it without a queue position would describe a
-// started run the trace has been told nothing about — the shape this unit's own
-// state rules reject — and would spend the queue slot on a run that is in the
-// queue, letting a second submission past a bound of one.
 func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1347,12 +1224,10 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 		t.Fatalf("a reservation holds its place in the queue: %+v", entry)
 	}
 
-	// One reservation is the disclosed bound, and it is taken.
 	if _, _, err := session.Submit(context.Background(), autoRequest("second")); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("second submission behind a reservation = %v, want run_active", err)
 	}
 
-	// The server begins the turn, and only then is there a started run.
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
 	started := adaptertest.Next(t, stream, 2*time.Second)
 	if started.Type != protocol.TypeRunStarted {
@@ -1378,11 +1253,6 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 	}, descriptor, append([]protocol.Envelope{started}, rest...))
 }
 
-// A session that cannot be read from again owes a terminal on everything it
-// accepted. Settling only the started run leaves the reservation nonterminal,
-// which keeps Close refusing while Cancel and State answer session_closed: the
-// caller can neither settle the run nor close the session, and the child
-// process outlives both.
 func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1398,8 +1268,6 @@ func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A durable event belonging to another session: this subscription cannot
-	// be trusted again, so the session stops being usable.
 	client.events <- native.Event{
 		ID:      "evt_fake0003",
 		Type:    native.TypeStepEnded,
@@ -1423,7 +1291,6 @@ func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
 		t.Fatalf("reservation failure = %q, want the code for a slot lost before promotion", failure.Error.Code)
 	}
 
-	// Nothing is outstanding now, so the session closes and the client with it.
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatalf("close after an unusable session settled its runs: %v", err)
 	}
@@ -1433,10 +1300,6 @@ func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
 	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
 }
 
-// A run the trace has seen start is running, and the projection a State call
-// reads has to say so from that envelope onwards — not from whatever envelope
-// happens to rebuild it next. The status moves inside the publication of
-// run.started for exactly that reason.
 func TestActiveRunsFollowThePublishedStart(t *testing.T) {
 	client := newFakeClient()
 	session, _ := openTest(t, client, 64)
@@ -1449,8 +1312,6 @@ func TestActiveRunsFollowThePublishedStart(t *testing.T) {
 		t.Fatalf("first envelope = %s, want run.started", started.Type)
 	}
 
-	// Nothing else has been emitted yet: this is the window the projection
-	// used to spend describing a started run as queued.
 	state, err := session.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1481,21 +1342,12 @@ func TestActiveRunsFollowThePublishedStart(t *testing.T) {
 	}, descriptor, append([]protocol.Envelope{started}, rest...))
 }
 
-// A promoted reservation can finish natively while the earlier run is still
-// open. Its own status is terminal then, but nothing of it has reached the
-// trace, so active_runs — a list of the session's nonterminal runs — must
-// still describe it as the reservation the trace knows. Copying the internal
-// status would put a settled run there and make this adapter emit a state its
-// own validator rejects.
 func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
-	// The first run is left mid-turn with its step open — the server moved on
-	// to the promoted input without closing it — so the reservation's whole
-	// turn runs and settles while the earlier run is still outstanding.
 	first, firstStream := submitTest(t, session)
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
@@ -1510,9 +1362,6 @@ func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
 	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
 
-	// Wait out the reservation's derived settlement: its terminal is held, so
-	// the only way to see it happen from here is that the reducer polled the
-	// native active set and then went quiet.
 	state := waitQuiet(t, session, client)
 	if len(state.ActiveRuns) != 2 || state.ActiveRuns[1].RunID != queued.RunID {
 		t.Fatalf("active_runs while the terminal is held = %+v", state.ActiveRuns)
@@ -1531,10 +1380,7 @@ func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 	if entry.QueuePosition == nil || *entry.QueuePosition != 1 {
 		t.Fatalf("held entry keeps its queue position: %+v", entry)
 	}
-	// And the other half of the same rule: a run the projection still lists
-	// is not one the snapshot says it let go. The settlement claim is
-	// recorded where the envelope becomes history, so a held terminal —
-	// journalled, unpublished — makes none.
+
 	if state.AsOf != nil {
 		for _, claim := range state.AsOf.Settled {
 			if claim.RunID == queued.RunID {
@@ -1543,9 +1389,6 @@ func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 		}
 	}
 
-	// Settling the first run releases the held turn. That it completes rather
-	// than failing with the transport is what proves it had already settled
-	// while the snapshot above described it as outstanding.
 	client.subscription.fail(errors.New("stream gone"))
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
 	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
@@ -1562,15 +1405,6 @@ func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
 }
 
-// A state read is answered synchronously; a terminal leaves through a buffered
-// channel. Rebuilding the projection after the publication it describes orders
-// this adapter's own two steps, and it is right to — but sent is not
-// delivered, so a snapshot can still be on the wire before the terminal that
-// removed the run from it, and one that drops a run silently reads as erasing
-// a run the trace still holds. Measured on this adapter: with nothing reading
-// the stream the snapshot was idle in 300 of 300 settlements, and with a
-// consumer draining as fast as the reducer wrote, in 155 of 300. The claim is
-// what makes the drop legible either way.
 func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1586,8 +1420,6 @@ func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
 
-	// Nothing reads firstStream from here, so the terminal is history the
-	// trace has not been told about. Wait for the reducer to reach it.
 	snapshot := waitIdle(t, session)
 	if snapshot.ActiveRunID != "" || len(snapshot.ActiveRuns) != 0 {
 		t.Fatalf("snapshot still holds the run: %+v", snapshot)
@@ -1605,8 +1437,6 @@ func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
 		t.Fatalf("settlement anchor = %+v, want %s at sequence %d", claim, first.RunID, *terminal.Sequence)
 	}
 
-	// The order the race produces: the snapshot reaches the wire, then the
-	// terminal it already reflects.
 	exchange, err := adaptertest.StateExchange(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -1616,7 +1446,6 @@ func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
 	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange))
 }
 
-// waitIdle returns the projection once the session no longer holds a run.
 func waitIdle(t *testing.T, session base.Session) protocol.SessionState {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -1635,7 +1464,6 @@ func waitIdle(t *testing.T, session base.Session) protocol.SessionState {
 	}
 }
 
-// describeSequence spells an optional capture position for a failure message.
 func describeSequence(value *uint64) string {
 	if value == nil {
 		return "absent"
@@ -1643,11 +1471,6 @@ func describeSequence(value *uint64) string {
 	return fmt.Sprintf("%d", *value)
 }
 
-// waitQuiet returns the projection once the reducer has consulted the native
-// active set and then stopped emitting. The fake clock advances once per
-// envelope, so a session updated_at that stops moving is the reducer going
-// quiet — including for envelopes that are buffered rather than published,
-// which is the only sign a held terminal leaves.
 func waitQuiet(t *testing.T, session base.Session, client *fakeClient) protocol.SessionState {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -1674,20 +1497,12 @@ func waitQuiet(t *testing.T, session base.Session, client *fakeClient) protocol.
 	return protocol.SessionState{}
 }
 
-// The pin has no route that withdraws a queued input, so the server executing
-// one this adapter cancelled is expected. Its turn has no OAP run to own it —
-// the reservation's run already settled — and falling back on the started run
-// would give that run another turn's output and could keep it from settling.
-// The turn is quarantined instead. Any other native turn with no OAP run to
-// own it, a foreign input among them, takes the same path.
 func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
-	// The first run is left mid-turn, with its step still open, so nothing
-	// about its settlement is in flight while the quarantined turn arrives.
 	first, firstStream := submitTest(t, session)
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
@@ -1705,17 +1520,11 @@ func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
 		t.Fatalf("cancelled reservation = %v", types(cancelled))
 	}
 
-	// The server runs the withdrawn input anyway. None of it may reach the
-	// first run: a quarantined step.started would reopen its step accounting,
-	// a quarantined text would become its content, and the quarantined turn's
-	// boundary would settle it on a turn it never ran.
 	client.emit(t, 4, native.TypePrompted, native.PromptedData{Timestamp: 4, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
 	client.emit(t, 5, native.TypeStepStarted, native.StepStartedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "abandoned"})
 	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
 
-	// Losing the stream is the only thing left that can settle the first run,
-	// which is the point: the quarantined boundary did not.
 	client.subscription.fail(errors.New("stream gone"))
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
 	if fmt.Sprint(types(firstEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunFailed}) {
@@ -1730,10 +1539,6 @@ func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
 	}, descriptor, append(append([]protocol.Envelope(nil), cancelled...), firstEvents...))
 }
 
-// Held means held from everyone. A journalled envelope is replayable, so a
-// caller resuming the reserved run while its buffer is unreleased would read
-// its start before the earlier run's terminal and then be handed the same
-// envelopes again when the buffer flushed.
 func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
@@ -1757,8 +1562,6 @@ func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
 	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
 
-	// Resume the reserved run while its buffer is unreleased: nothing has been
-	// published for it, so nothing replays and a cursor past zero is future.
 	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: queued.RunID, AfterSequence: 0})
 	if err != nil {
 		t.Fatalf("resume a held run: %v", err)
@@ -1777,8 +1580,6 @@ func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
 	}
 	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
 
-	// Both the original stream and the resumed one see the promoted run's
-	// envelopes exactly once, in order.
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
 	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
 	if fmt.Sprint(types(queuedEvents)) != fmt.Sprint(want) {

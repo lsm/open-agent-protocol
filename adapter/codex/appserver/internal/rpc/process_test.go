@@ -15,14 +15,12 @@ import (
 )
 
 func TestHelperProcess(t *testing.T) {
-	// The descendant that inherits the pipes and outlives the direct child only
-	// needs to hold them open for longer than the shutdown timeout.
+
 	if os.Getenv("OAP_CODEX_RPC_HOLDER") == "1" {
 		time.Sleep(5 * time.Second)
 		os.Exit(0)
 	}
-	// Activated either by environment or by an explicit argument, so the
-	// empty-allowlist fixture can be spawned with no environment at all.
+
 	mode := os.Getenv("OAP_CODEX_RPC_HELPER")
 	if strings.Contains(strings.Join(os.Args, "\x00"), "--codex-emptyenv") {
 		if os.Getenv("CODEX_ENV_PROBE") != "" {
@@ -63,8 +61,7 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(12)
 	}
 	if mode == "hold-stdout" {
-		// Spawn a descendant that inherits stdout and stderr and outlives this
-		// process, so the pipes stay open after the direct child exits.
+
 		descendant := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--")
 		descendant.Env = append(os.Environ(), "OAP_CODEX_RPC_HOLDER=1")
 		descendant.Stdout = os.Stdout
@@ -84,8 +81,7 @@ func TestHelperProcess(t *testing.T) {
 		}
 		if message.Kind == MessageRequest {
 			if mode == "large-response" {
-				// A frame far larger than the pipe buffer keeps the reader busy
-				// past the child's exit, which is the window this exercises.
+
 				blob := strings.Repeat("x", 1<<20)
 				_ = NewEncoder(os.Stdout).Encode(Response(message.ID, json.RawMessage(`{"ok":true,"blob":"`+blob+`"}`)))
 				os.Exit(0)
@@ -109,8 +105,6 @@ func helperConfig(mode string) ProcessConfig {
 	}
 }
 
-// envlessHelperConfig spawns the helper with an explicitly empty allowlist, so
-// the child sees no parent variables at all.
 func envlessHelperConfig() ProcessConfig {
 	return ProcessConfig{
 		Path:            os.Args[0],
@@ -121,8 +115,6 @@ func envlessHelperConfig() ProcessConfig {
 	}
 }
 
-// An explicitly empty allowlist must reach the child as an empty environment,
-// not collapse to nil and inherit the parent's variables.
 func TestProcessEmptyEnvAllowlistStaysEmpty(t *testing.T) {
 	t.Setenv("CODEX_ENV_PROBE", "ambient-value")
 	process, err := Start(context.Background(), envlessHelperConfig())
@@ -156,10 +148,6 @@ func TestStartPerformsHandshakeAndCalls(t *testing.T) {
 	}
 }
 
-// The helper writes each response and then exits immediately. The reader must
-// be allowed to drain the buffered frame before the process owner fails
-// pending calls, otherwise this call races the child's exit and intermittently
-// reports a process-exit error for a response that was already written.
 func TestCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	for iteration := range 10 {
 		process, err := Start(context.Background(), helperConfig("large-response"))
@@ -180,9 +168,6 @@ func TestCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	}
 }
 
-// A descendant that inherited stdout/stderr keeps the pipes open after the
-// direct child exits, so the reader drains never observe EOF. Forced shutdown
-// must still return within its bound instead of blocking forever on waitDone.
 func TestCloseBoundsForcedShutdownWhenDescendantHoldsPipes(t *testing.T) {
 	config := helperConfig("hold-stdout")
 	config.ShutdownTimeout = 300 * time.Millisecond

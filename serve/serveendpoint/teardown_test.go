@@ -16,8 +16,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve"
 )
 
-// parkingWriter accepts a few writes and then blocks forever, which is what a
-// pipe does once the host stops reading it and the buffer fills.
 type parkingWriter struct {
 	mu       sync.Mutex
 	accepted int
@@ -38,14 +36,6 @@ func (w *parkingWriter) Write(p []byte) (int, error) {
 	select {}
 }
 
-// TestTeardownStopsWhenAWriteParksForever is the hung-up host the binding
-// describes: alive, stdin closed, no longer reading stdout.
-//
-// The run pump parks inside its write holding the writer lock, so a teardown
-// that then took that lock to flush would wait on a pump it had just given up
-// on — turning the bounded wait into the very hang the bound exists to
-// prevent. Signals are captured by the caller, so nothing but SIGKILL would
-// recover, and that skips the session sweep.
 func TestTeardownStopsWhenAWriteParksForever(t *testing.T) {
 	registry, err := serve.DefaultRegistry()
 	if err != nil {
@@ -65,7 +55,6 @@ func TestTeardownStopsWhenAWriteParksForever(t *testing.T) {
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 		}, "parked")
 
-	// The two responses are let through; the run's first event is what parks.
 	out := &parkingWriter{limit: 2, parked: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
@@ -102,17 +91,6 @@ func requestLine(t *testing.T, typ protocol.EnvelopeType, id string, payload any
 	return fmt.Sprintf("%s", data)
 }
 
-// TestPipelinedRequestsStayCancellableWhileTheWriterIsParked is the case a
-// mutex-guarded writer could not survive.
-//
-// Requests may be pipelined, so more of them arrive while a run pump is
-// already parked writing to a pipe nobody is draining. Serialising writes
-// behind a lock meant the next handler blocked on the lock the parked pump
-// held, the read loop never came back round, and stdin EOF and SIGINT alike
-// went unseen — leaving SIGKILL, which skips the session sweep. Handing lines
-// to a writer goroutine instead means a producer waits on a channel it can
-// select against, so the loop stays answerable to its context no matter how
-// wedged the pipe is.
 func TestPipelinedRequestsStayCancellableWhileTheWriterIsParked(t *testing.T) {
 	registry, err := serve.DefaultRegistry()
 	if err != nil {
@@ -132,8 +110,7 @@ func TestPipelinedRequestsStayCancellableWhileTheWriterIsParked(t *testing.T) {
 			SessionID: "wedged", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 		}, "wedged") + "\n")
-	// Comfortably more than the write queue holds, so the loop is forced to
-	// wait on a send rather than slipping every answer into the buffer.
+
 	for i := 0; i < writeQueue*4; i++ {
 		input.WriteString(requestLine(t, protocol.TypeSessionStateRequest,
 			fmt.Sprintf("state-%d", i),
@@ -152,7 +129,6 @@ func TestPipelinedRequestsStayCancellableWhileTheWriterIsParked(t *testing.T) {
 		t.Fatal("the endpoint never reached a parked write, so this test proved nothing")
 	}
 
-	// Stand in for the signal the operator sends when the host has wedged.
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 
@@ -163,8 +139,6 @@ func TestPipelinedRequestsStayCancellableWhileTheWriterIsParked(t *testing.T) {
 	}
 }
 
-// syncBuffer collects stdout from the writer goroutine while the test reads
-// it afterwards.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf []byte
@@ -183,16 +157,6 @@ func (b *syncBuffer) String() string {
 	return string(b.buf)
 }
 
-// TestASecondSubmitDoesNotDuplicateTheStream pins what a hub subscription
-// actually is: session-wide. publish fans every envelope to every subscriber,
-// so a second subscription does not mean a second run's events — it means the
-// same events twice.
-//
-// An ordinary queued submit produces exactly that. `auto` resolves to `queue`
-// while a run is streaming, and a per-submit subscription then delivers the
-// running run's tail and the queued run's events a second time. Filtering
-// each pump to the run it was started for is what keeps one delivery per
-// envelope.
 func TestASecondSubmitDoesNotDuplicateTheStream(t *testing.T) {
 	registry, err := serve.DefaultRegistry()
 	if err != nil {
@@ -245,18 +209,6 @@ func TestASecondSubmitDoesNotDuplicateTheStream(t *testing.T) {
 	}
 }
 
-// TestHungUpHostExitsWithoutASignal is the host the binding names: it
-// pipelines a batch, closes stdin, and stops reading.
-//
-// It sends no signal, so nothing cancels the context. The writer parks on the
-// full pipe, the queue fills, and a handler parks in its send — at which
-// point the loop can no longer reach the frame carrying stdin EOF, because
-// handlers run inline in it. Without a clock of its own, end of input is
-// never observed and the bounded teardown never starts, leaving SIGKILL as
-// the only exit and skipping the session sweep.
-//
-// The binding promises this host a bounded non-zero exit, so that is what is
-// asserted, with no cancellation anywhere in the test.
 func TestHungUpHostExitsWithoutASignal(t *testing.T) {
 	registry, err := serve.DefaultRegistry()
 	if err != nil {
@@ -303,8 +255,6 @@ func TestHungUpHostExitsWithoutASignal(t *testing.T) {
 	}
 }
 
-// refusalFor returns the typed code of the error.response answering one
-// request in the captured output.
 func refusalFor(t *testing.T, out string, request protocol.EnvelopeID) string {
 	t.Helper()
 	for _, raw := range strings.Split(out, "\n") {
@@ -328,14 +278,6 @@ func refusalFor(t *testing.T, out string, request protocol.EnvelopeID) string {
 	return ""
 }
 
-// TestPayloadScopeIsRefusedUnderItsOwnCode covers what a caller keys on.
-//
-// A payload naming a different session than the envelope addresses is a fault
-// the caller can correct, and both other codecs say so with scope_mismatch. An
-// endpoint answering "internal" tells a host its own request was fine and the
-// server broke, which is the opposite of actionable — and for cancel the hub
-// checks nothing at all, since Session.Cancel takes only a run id, so an
-// unchecked codec accepts a cancel for a session the caller did not name.
 func TestPayloadScopeIsRefusedUnderItsOwnCode(t *testing.T) {
 	registry, err := serve.DefaultRegistry()
 	if err != nil {
@@ -369,18 +311,6 @@ func TestPayloadScopeIsRefusedUnderItsOwnCode(t *testing.T) {
 	}
 }
 
-// TestALostStreamNamesItsOwnRun pins which run a dead stream reports.
-//
-// A hub subscription is session-wide, so the run that filled a pump's mailbox
-// is routinely not the run that pump serves. A second submit's pump has
-// delivered nothing of its own run yet, so reporting the overflow's run would
-// tell the host to replay a run it already has while never mentioning the one
-// that stopped arriving — and this binding has no subscribe request, so that
-// run would reach nobody with nothing said about it.
-//
-// Driving a real overflow needs the mailbox backed up by more envelopes than
-// the reference adapter's scripted run produces, so the reporting is checked
-// directly.
 func TestALostStreamNamesItsOwnRun(t *testing.T) {
 	server := &Server{
 		lines:      make(chan []byte, 4),

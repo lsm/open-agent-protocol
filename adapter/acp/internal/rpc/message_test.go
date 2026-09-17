@@ -87,9 +87,6 @@ func TestParseMessageRejectsInvalidShapes(t *testing.T) {
 	}
 }
 
-// A repeated key would otherwise be collapsed with last-value-wins before any
-// shape check runs, which can change response correlation, so the raw frame
-// must be rejected first.
 func TestParseMessageRejectsDuplicateKeys(t *testing.T) {
 	t.Parallel()
 	inputs := []string{

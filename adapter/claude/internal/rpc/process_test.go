@@ -12,9 +12,6 @@ import (
 	"time"
 )
 
-// TestClaudeProcessHelper is the spawned child for the drain regression: it
-// answers one control_request with an oversized frame and exits immediately,
-// leaving the response buffered in the pipe when the reader is still busy.
 func TestClaudeProcessHelper(t *testing.T) {
 	if os.Getenv("OAP_CLAUDE_RPC_HELPER") == "" {
 		return
@@ -40,14 +37,6 @@ func claudeHelperConfig() ProcessConfig {
 	}
 }
 
-// awaitChildRunning blocks until the child has run far enough to write its
-// first frame. Unlike every sibling transport, Start returns before any
-// handshake — readiness on this boundary is the initialize control exchange
-// the adapter layer issues afterwards — so a Close issued straight after Start
-// spends its exit grace on process startup instead of on the EOF teardown it
-// means to bound. On a loaded machine that startup alone outlasts a short
-// grace, so a test that is not about the bound synchronises on the child
-// first, the way a sibling's handshake does for free.
 func awaitChildRunning(t *testing.T, process *Process) {
 	t.Helper()
 	select {
@@ -99,8 +88,7 @@ func TestProcessExitCodeIsNotACloseError(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	dir := t.TempDir()
-	// The CLI exits non-zero on purpose after an error result; settlement is
-	// owned by wire evidence, so Close must not convert the exit code.
+
 	script := writeScript(t, dir, `printf '%s\n' '{"type":"keep_alive"}'
 while IFS= read -r line; do :; done
 exit 1
@@ -133,7 +121,7 @@ while IFS= read -r line; do :; done
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The frame also orders the probe write before the read below.
+
 	awaitChildRunning(t, process)
 	if err := process.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -176,8 +164,7 @@ func TestProcessMalformedFrameSurfacesReaderError(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	dir := t.TempDir()
-	// The native reader tolerates non-JSON lines; the adapter codec is
-	// deliberately narrower and fails closed (recorded mismatch).
+
 	script := writeScript(t, dir, `printf '%s\n' '[SandboxDebug] not json'
 while IFS= read -r line; do :; done
 `)
@@ -210,11 +197,7 @@ while IFS= read -r line; do :; done
 		t.Fatal(err)
 	}
 	defer process.Close(context.Background()) //nolint:errcheck
-	// The script writes the secret line and the overflowing line as two
-	// separate writes, and the buffer marks truncation only once a write
-	// overflows the limit. Waiting for any stderr at all can observe the
-	// first line alone on a slow runner; wait for the state the assertions
-	// need, bounded by the deadline so a regression still fails.
+
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(process.Stderr(), "[truncated]") && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -234,18 +217,13 @@ func TestProcessRequiresExecutable(t *testing.T) {
 	}
 }
 
-// The helper writes its response and then exits immediately. The reader must be
-// allowed to drain the buffered frame before the process owner reaps the child,
-// otherwise this call races the exit and reports a process-exit error for a
-// response that was already written.
 func TestProcessCallSurvivesChildExitImmediatelyAfterResponse(t *testing.T) {
 	for iteration := range 10 {
 		process, err := Start(context.Background(), claudeHelperConfig())
 		if err != nil {
 			t.Fatalf("iteration %d: start: %v", iteration, err)
 		}
-		// A matched response is ordered behind an inbound barrier the consumer
-		// must acknowledge, so model the adapter's own draining loop.
+
 		go func() {
 			for {
 				select {

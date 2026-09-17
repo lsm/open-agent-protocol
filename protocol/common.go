@@ -25,7 +25,6 @@ const (
 	ContentToolResult ContentPartType = "tool_result"
 )
 
-// MessageContent is either a JSON string or a list of structured content parts.
 type MessageContent json.RawMessage
 
 func (c *MessageContent) UnmarshalJSON(data []byte) error {

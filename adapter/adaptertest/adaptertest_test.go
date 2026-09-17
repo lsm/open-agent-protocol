@@ -9,10 +9,6 @@ import (
 	"github.com/lsm/open-agent-protocol/validation"
 )
 
-// A non-auto delivery (steer, queue, btw) makes the fabricated submit request
-// an optional-feature envelope: the validator requires it to cite the active
-// descriptor revision and the response to repeat it, exactly like a real
-// harness-side exchange.
 func TestProtocolTraceRepeatsRevisionForNonAutoDelivery(t *testing.T) {
 	descriptor := adapter.Descriptor{
 		Capabilities: protocol.CapabilityDescriptor{
@@ -54,10 +50,6 @@ func TestProtocolTraceRepeatsRevisionForNonAutoDelivery(t *testing.T) {
 	AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
 }
 
-// A run.cancelled terminal is not itself evidence of a cancellation: without
-// the caller's exchange the strict trace must leave the unsolicited terminal
-// for the state machine to reject, and only the caller-evidenced variant may
-// splice the accepted cancellation that legitimizes it.
 func TestProtocolTraceRequiresCancelEvidence(t *testing.T) {
 	descriptor := adapter.Descriptor{
 		Capabilities:            protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "adaptertest.fixture"}},
