@@ -583,6 +583,43 @@ refuses an explicit `queue` with `unsupported_feature` naming the key; that
 refusal is the discipline, and claiming the unit is not required to make it
 conforming.
 
+### `+compound-open`
+
+`+compound-open` is executable, and
+[Decision 0009](../decisions/0009-compound-open.md) froze it. An
+implementation conforms if it:
+
+- accepts `subscribe` and `message` as optional members of
+  `session.open.request`, and serves an open that sets neither exactly as it
+  does without this unit;
+- advertises `session.open.subscribe` above `unavailable`, refuses an open
+  electing it against a descriptor that does not with `unsupported_feature`
+  naming the key, and refuses one electing it against a `degraded` disclosure
+  with `capability_degraded` unless the request consents through
+  `allow_degraded_features`;
+- registers the subscription before admitting the message, so a subscription
+  the open carries cannot miss the run's opening envelopes — which is the
+  race the unit exists to remove, and the only one it removes;
+- reports the message's admission in the open response's `active_runs`, whose
+  entry names the run, its status, its `admitted_submit_requests` citing the
+  open request itself, and `queue_position` where the admission was a
+  reservation. It adds no member to `session.open.response`, which this unit
+  leaves unchanged;
+- fails atomically: an open whose message cannot be admitted admits nothing
+  and opens nothing, and a `session_id` the request named is free to open
+  again afterwards;
+- answers every election one open carries with a single refusal. An open may
+  elect `subscribe`, attach tool sources, and carry a message whose controls
+  each take their own ladder; a refusal conforming to any one of them answers
+  the open, and no other rung is owed a second refusal it could not send.
+
+An endpoint that cannot subscribe at open advertises the capability
+`unavailable` and refuses the flag with `unsupported_feature` naming the key;
+that refusal is the discipline, and claiming the unit is not required to make
+it conforming. `message` is gated by `session.message.submit` rather than by
+this unit's key, so an endpoint may admit a message at open while advertising
+no subscription there at all.
+
 ### `+steer` And `+btw`
 
 Delivery mode units are independent. An implementation conforms to one of these

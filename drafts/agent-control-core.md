@@ -476,6 +476,7 @@ Common optional core features:
 - `capabilities.updates`
 - `models.list` (executable; [Decision 0006](../decisions/0006-models-catalog.md))
 - `session.list`
+- `session.open.subscribe` (executable; [Decision 0009](../decisions/0009-compound-open.md))
 - `transcript.load`
 - `transcript.delta`
 - `session.message.delivery.queue`
