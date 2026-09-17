@@ -56,6 +56,26 @@ matters, because by the time anyone is weighing it someone has already written
 the decision and the cost of not accepting it is a rewrite. A rule that only
 binds when it is cheap does not bind.
 
+### An absence is evidence only when it is suppression, not disinterest
+
+"Nobody else has this" is available as an argument in both directions, and
+this decision makes the wrong one easier to reach, so the test goes here.
+
+`+control-tools` graduated partly on absence: two independent integrations
+declared empty tool catalogues *because* the protocol had nowhere to put a
+caller-executed tool. That is suppression, and it is pointable — the empty
+array is in the source, and removing the wall changed the behaviour. An
+absence of that kind is evidence the capability is wanted and blocked.
+
+The other kind is disinterest: one implementation wants a capability and the
+rest have not asked for it. That is evidence about the one, not about the gap.
+It may still be a real need and a later harness may prove it, but it cannot
+carry a unit on its own, and reading it as suppression is how a protocol
+acquires features its implementers did not ask for.
+
+The distinction is not always clean and the record should say which it is
+claiming and why, rather than leaving a reader to infer it from enthusiasm.
+
 ### The asymmetry is written down rather than held as practice
 
 This project has followed the rule without stating it. `+control-tools`

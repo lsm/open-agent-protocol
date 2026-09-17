@@ -233,8 +233,16 @@ belongs to no run would be the protocol's third identity domain. That is the
 part worth designing rather than assuming. No adapter in this repository has a credential path at all; an expired
 provider credential becomes `run.failed` like any other provider error.
 
-Three facts from the one harness that exposes it natively, recorded so whoever
-writes that unit inherits them as constraints rather than rediscovering them:
+The evidence is one harness, and it is the weaker kind of one. Seven others
+have not asked for this, which is disinterest rather than the suppression that
+carried `+control-tools` — there is no empty array anywhere to point at, no
+integration declining the capability because the protocol had nowhere to put
+it. Under [Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)
+that cannot carry a unit alone, and it would not become able to by the
+implementation becoming first-party.
+
+The constraints below are recorded anyway, because they are what a second
+harness's arrival would otherwise cost someone to rediscover:
 
 - **The waiting condition is endpoint-scoped, not run- or session-scoped.** One
   run blocks on exactly one provider, because a run carries a single model
