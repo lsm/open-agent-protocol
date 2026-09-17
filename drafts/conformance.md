@@ -474,7 +474,13 @@ An implementation:
   its request in `request_id`;
 - counts unresolved control-owned calls among each `active_runs` entry's
   `pending_interactions`, and reports in `acknowledged_interactions` the subset
-  whose `started` it accepted.
+  whose `started` it accepted;
+- settles a call a reattach recovered on the same terms as any other, even
+  though what authorized it is behind the cursor. Its terminal is where it
+  leaves the pending set, so a run that terminates after it is not carrying a
+  pending interaction and a snapshot taken after it does not list one; an
+  acknowledgement accepted after the reattach is reported like any other, and
+  one accepted before it is neither known nor required.
 
 Per-submit provisioning, runtime attach and detach of provided tools, and
 deadlines on an unanswered call are outside this unit.

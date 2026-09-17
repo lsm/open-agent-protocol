@@ -331,6 +331,36 @@ rather than by the run's sequence domain, because a resolve response consumes
 no sequence and so has no position in it; what `as_of_sequence` anchors is the
 pending set, and the acknowledged subset is read at the snapshot itself.
 
+### A recovered call is judged on what the trace can still see
+
+A reattach names a control-owned call as pending and says nothing else about
+it. Which resolution authorized it, what that resolution stated, which request
+it named, whether it was acknowledged before the cursor — all of it is behind
+the disconnect, and no envelope for any of it will arrive. Every check above
+that reads one of those facts therefore stands down, exactly as the permission
+and user-input rules stand down for a recovered gate.
+
+What does not stand down is what this trace can still see. That the call
+terminated here, and therefore left the pending set here, are facts of this
+trace whatever is unknown about its history — the same two facts Decision 0001's
+recovery rule already keeps for a recovered permission gate. Dropping them
+would convict the one endpoint that answered the reattach honestly: its run
+would terminate with an interaction the validator still believes pending, and
+its truthful post-resolution snapshot would be judged as omitting one.
+
+An acknowledgement accepted *after* the reattach is the same kind of fact, and
+is kept on the same terms. It is what `acknowledged_interactions` projects, so
+an entry beside it must report it; one accepted before the cursor stays
+unknown and stays unrequired, and the two are distinguished by whether this
+trace saw the acceptance rather than by whether the interaction is recovered.
+
+Which of these an event is allowed to settle is read from the event, not from
+the interaction: the `execution_owner` on the call says whether the control
+layer owns it. A recovered interaction cannot say — its kind is among the
+things behind the cursor — and a recovered harness-owned call is settled by its
+own lifecycle and its gate by the permission resolution, neither of which is
+this unit's to settle.
+
 ## Evidence
 
 Makai's `tool_execute`/`tool_result` bridge is exactly this boundary. The

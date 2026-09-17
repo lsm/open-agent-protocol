@@ -136,7 +136,31 @@ func (s *state) controlCallEvent(i, line int, e protocol.Envelope, r *runState, 
 	var p protocol.ActionCallPayload
 	_ = e.DecodePayload(&p)
 	x := s.callInteraction(r, p)
-	if x == nil || !x.controlCall() || x.opaque {
+	if x == nil {
+		return
+	}
+	if x.opaque {
+		// A call the trace never saw requested: a recovery named it as
+		// pending and said nothing else about it. Which resolution authorized
+		// it, what that resolution stated, and which request it named are all
+		// behind the cursor, so every check below stands down — but that the
+		// call terminated here, and therefore left the pending set here, are
+		// facts of this trace, exactly as they are for a recovered permission
+		// gate. Keeping them is what stops a run that answered a reattach
+		// honestly from being convicted of a pending interaction at its
+		// terminal, and a truthful later snapshot from being convicted of
+		// omitting one.
+		//
+		// The event's own execution_owner is what says this is a control-owned
+		// call, since the interaction cannot: a recovered harness-owned call
+		// is settled by its own lifecycle and its gate by the permission
+		// resolution, and neither is this unit's to settle.
+		if s.controlOwned(p.ExecutionOwner) && toolTerminal(next) {
+			s.settleControlCall(x, e.ID, e.Sequence)
+		}
+		return
+	}
+	if !x.controlCall() {
 		return
 	}
 	switch next {
@@ -415,10 +439,35 @@ func (s *state) controlResolveResponse(i, line int, e protocol.Envelope) {
 	}
 	s.feature(i, line, e, "tools")
 	pending := s.pendingResolves[e.InReplyTo]
-	if pending == nil || pending.opaque {
+	if pending == nil {
 		return
 	}
 	x := s.lookupInteraction(pending.run, pending.interaction)
+	if x != nil && x.opaque {
+		// The interaction's state is behind the cursor, so no reason can be
+		// required of a refusal and no arm of an acceptance. One fact is still
+		// this trace's: an acknowledgement the endpoint accepted here was
+		// accepted here, and acknowledged_interactions is exactly the
+		// projection of that. Keeping it is what lets a later snapshot be held
+		// to reporting it, and costs nothing — an acknowledgement accepted
+		// before the cursor stays unknown and stays unjudged.
+		//
+		// This has to precede the pending.opaque return below, which the same
+		// recovery sets, or the fact is dropped on the one path that produces
+		// it.
+		if p.Accepted && pending.arm == protocol.ResolveArmAcknowledge {
+			x.acked = true
+		}
+		return
+	}
+	if pending.opaque {
+		// The request already failed for a reason of its own — it answered an
+		// interaction of another kind — and was diagnosed there. Nothing is
+		// required of the response, and `acked` is not recorded, because the
+		// interaction it names is not a call and an acknowledgement is not a
+		// fact about it.
+		return
+	}
 	if x == nil {
 		// The request named no pending interaction, so unknown_interaction is
 		// the only answer it can have. There is no interaction state to
@@ -431,9 +480,6 @@ func (s *state) controlResolveResponse(i, line int, e protocol.Envelope) {
 		case p.Reason != protocol.ReasonUnknownInteraction:
 			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/reason", "a refusal names a condition other than the highest one the request satisfies", string(protocol.ReasonUnknownInteraction), string(p.Reason), string(e.InReplyTo))
 		}
-		return
-	}
-	if x.opaque {
 		return
 	}
 	if p.Accepted {
@@ -860,7 +906,12 @@ func (s *state) checkEntryAcknowledged(i, line int, e protocol.Envelope, pointer
 	}
 	for id := range want {
 		x := r.interactions[id]
-		if x == nil || x.opaque || !x.acked || acknowledged[id] {
+		// x.acked carries the whole condition, including for a recovered
+		// interaction: it is set only where this trace saw an acknowledgement
+		// accepted, so an opaque one whose acknowledgement is behind the
+		// cursor is still unknown and still unjudged, while one acknowledged
+		// after the reattach is a fact the entry must report like any other.
+		if x == nil || !x.acked || acknowledged[id] {
 			continue
 		}
 		s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/acknowledged_interactions", "an entry omits an interaction whose acknowledgement the endpoint accepted", string(id), describeIDs(acknowledged), string(r.id))
