@@ -50,6 +50,20 @@ type ContentDeltaPayload struct {
 	Part      ContentPart `json:"part"`
 }
 
+// SettledBy values say how an endpoint learned a run reached its terminal.
+// SettledByObserved is a run-scoped native terminal the endpoint saw;
+// SettledByInferred is one the endpoint concluded from other evidence, such as
+// a session-scoped stop or transport loss, having never observed a terminal for
+// the run itself. The member is optional on all three terminals and its
+// omission asserts observation, so an endpoint that always observes its
+// terminals never writes it. It is provenance about the endpoint's own
+// knowledge, not a second status: an inferred terminal is as absorbing and as
+// final as an observed one.
+const (
+	SettledByObserved = "observed"
+	SettledByInferred = "inferred"
+)
+
 // RunCompletedPayload reports a completed run. ModelID names the model that
 // produced the final response, so a consumer need not correlate back to the
 // admission to see it; under an admitted model_id it may not name another
@@ -65,6 +79,7 @@ type RunCompletedPayload struct {
 	Result        json.RawMessage `json:"result,omitempty"`
 	Usage         *Usage          `json:"usage,omitempty"`
 	DurationMS    int64           `json:"duration_ms,omitempty"`
+	SettledBy     string          `json:"settled_by,omitempty"`
 }
 
 type RunFailedPayload struct {
@@ -74,6 +89,7 @@ type RunFailedPayload struct {
 	Usage      *Usage            `json:"usage,omitempty"`
 	DurationMS int64             `json:"duration_ms,omitempty"`
 	Recovery   *RecoveryMetadata `json:"recovery,omitempty"`
+	SettledBy  string            `json:"settled_by,omitempty"`
 }
 
 type RunCancelledPayload struct {
@@ -82,6 +98,7 @@ type RunCancelledPayload struct {
 	Reason     string    `json:"reason,omitempty"`
 	Usage      *Usage    `json:"usage,omitempty"`
 	DurationMS int64     `json:"duration_ms,omitempty"`
+	SettledBy  string    `json:"settled_by,omitempty"`
 }
 
 // ToolDefinition is one catalog entry. Source names the ToolSourceDescriptor

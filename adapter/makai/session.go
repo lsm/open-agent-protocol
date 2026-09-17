@@ -484,9 +484,15 @@ func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		reason := "Makai confirmed session-destructive cancellation"
+		// agent_end carried stop_reason "cancelled", so this terminal is an
+		// observed native fact on both branches and neither sets settled_by.
+		// The two reasons differ only in cause — whether the host asked for
+		// the cancellation or Makai took it unprompted — now that terminal
+		// provenance is carried by settled_by rather than by the choice
+		// between "confirmed" and "reported".
+		reason := "cancelled at the host's request"
 		if !cancelRequested {
-			reason = "Makai reported cancellation"
+			reason = "cancelled by Makai without a host request"
 		}
 		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: reason}, true)
 		return
@@ -621,8 +627,11 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	// execution publishes its final agent_end. That publish is then discarded.
 	// The correlated agent_stopped response is therefore the last observable
 	// cancellation evidence and must be normalized into adapter settlement.
+	// Normalizing a session-scoped stop into a run terminal the adapter never
+	// observed is exactly settled_by "inferred", so the reason is free to name
+	// the cause instead of claiming Makai confirmed the run's own settlement.
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "Makai confirmed destructive session stop"}, true)
+	_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "destructive session stop", SettledBy: protocol.SettledByInferred}, true)
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelled}, nil
 }
 func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.Recovery, base.EventStream, error) {

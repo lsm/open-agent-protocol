@@ -4639,6 +4639,9 @@
     {"id":"queue-state-lead-executes-a-run-that-never-starts","path":"semantic-invalid/queue-state-lead-executes-a-run-that-never-starts.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {"id":"queue-state-lead-executes-a-run-whose-start-follows","path":"valid/queue-state-lead-executes-a-run-whose-start-follows.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
     {"id":"queue-refusal-after-an-answered-sibling","path":"semantic-invalid/queue-refusal-after-an-answered-sibling.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-refusal-among-unanswered-siblings","path":"valid/queue-refusal-among-unanswered-siblings.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]}
+    {"id":"queue-refusal-among-unanswered-siblings","path":"valid/queue-refusal-among-unanswered-siblings.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
+
+    {"id":"terminal-provenance-inferred","path":"valid/terminal-provenance-inferred.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core"],"provenance":["decisions/0010-terminal-provenance.md"]},
+    {"id":"terminal-provenance-bad-enum","path":"schema-invalid/terminal-provenance-bad-enum.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core"],"provenance":["decisions/0010-terminal-provenance.md"]}
   ]
 }

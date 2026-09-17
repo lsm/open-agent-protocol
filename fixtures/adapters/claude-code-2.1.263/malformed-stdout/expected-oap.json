@@ -51,7 +51,8 @@
       "error": {
         "code": "claude_process_exit",
         "message": "claude rpc: invalid stream-json message: frame must be exactly one JSON object"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 3,
     "timestamp_ms": 5,
