@@ -2969,10 +2969,14 @@ names the choice. One shape below did change: `action.tool_sources.attach`
 discloses its application modes in the plural `modes`, not the scalar `mode` the
 vocabulary table names, because the key has two things to say at once and a
 scalar can carry only one. Decision 0008 records the reasoning. `control-tools` (T3c) stays staged and is not graduated by
-that decision: `session.open.request.tools`, `action.call.resolve.*`, the
+that decision. Decision
+[0011](../decisions/0011-control-layer-provided-tools.md) is the record that
+would graduate it, and is still proposed:
+`session.open.request.tools`, `action.call.resolve.*`, the
 `action.tools.provide` key, and the diagnostics `wrong_tool_owner`,
-`undisclosed_provide_limit`, and `resolution_payload_mismatch` are unregistered
-and unimplemented. The shared `Validator`, `Reference adapter`, `Surfaces`,
+`undisclosed_provide_limit`, and `resolution_payload_mismatch` are registered
+in the schema and enforced by the validator, but no adapter provisions a tool
+or answers a call, so steps 1 and 3 of the graduation gate are open. The shared `Validator`, `Reference adapter`, `Surfaces`,
 `Fixtures`, and `Exit criteria` sections below cover all three sub-units
 together; the exit criteria apply per sub-unit, so the graduated claim is over
 the T3a and T3b halves alone.
