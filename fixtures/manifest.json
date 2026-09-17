@@ -4651,6 +4651,16 @@
       "provenance": ["decisions/0009-compound-open.md"]
     },
     {
+      "id": "compound-open-refused-on-another-election",
+      "path": "valid/compound-open-refused-on-another-election.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
       "id": "compound-open-subscribe-unadvertised-refused",
       "path": "valid/compound-open-subscribe-unadvertised-refused.json",
       "kind": "positive",

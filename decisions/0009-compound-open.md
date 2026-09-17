@@ -117,6 +117,39 @@ No partial-failure vocabulary is introduced, because no partial outcome is
 reachable. A host that receives a refusal holds no session id it must clean
 up, and one that receives a success holds a session and a run.
 
+### One refusal answers one election
+
+A compound open is the only request in this profile that carries several
+independently gated elections: tool source attachments, `subscribe`, and the
+controls its message carries. Each takes the ladder on its own. Because
+failure is atomic, the endpoint answers all of them with a single
+`error.response`.
+
+That refusal answers one of those elections. A refusal conforming to any
+retained expectation discharges the whole set, and no other rung reports the
+endpoint as having failed to answer it.
+
+No order between features is mandated. An open electing a degraded
+`subscribe` while attaching an unsatisfiable source owes a refusal under
+either key, and the endpoint may answer under whichever it evaluates first;
+requiring a particular one would legislate wire behaviour this decision has
+no reason to fix. Within a single feature the ladder still orders itself, and
+a higher rung still discharges the rungs below it.
+
+A refusal that answers the open itself rather than any election discharges
+them all: an open naming a session that already exists is refused
+`session_exists`, and the message's controls were never reached, so nothing
+about them was left unanswered. Only a determinate condition of the open
+qualifies — `session_exists`, `unknown_adapter`, `session_closed`,
+`stale_capabilities`. An indeterminate refusal does not, because an endpoint
+that owes a typed refusal does not discharge it by answering
+`internal_error`.
+
+The converse rules — that an endpoint refused a capability it advertised and
+this request satisfied — are read only when no expectation was answered. A
+rung that legitimately owed the refusal is not evidence that another rung was
+reneged on.
+
 ### A subscription reports where it joined
 
 Alongside the members above, a successful subscription reports the sequence it

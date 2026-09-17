@@ -16,9 +16,6 @@ func (s *state) compoundOpenRequest(i, line int, e protocol.Envelope, p protocol
 	submission := p.Message.Submit(p.SessionID)
 
 	s.submitControls(i, line, e, submission)
-	if pending := s.pendingControls[e.ID]; pending != nil {
-		pending.fromOpen = true
-	}
 	if submission.Delivery != protocol.DeliveryAuto && submission.Delivery != protocol.DeliveryQueue &&
 		!(s.tolerant && foreignRequestedDelivery(submission.Delivery)) {
 
@@ -71,11 +68,15 @@ func (s *state) settleSubscribeRefusal(i, line int, e protocol.Envelope) {
 	if pending == nil {
 		return
 	}
-	delete(s.pendingSubscribes, e.InReplyTo)
 	var payload protocol.ErrorResponse
 	_ = e.DecodePayload(&payload)
+	attribution := s.attributeRefusal(e.InReplyTo, payload.Error)
+	delete(s.pendingSubscribes, e.InReplyTo)
+	if attribution.discharged() {
+		return
+	}
 	if pending.expectation != nil {
-		if !conformingRefusal(payload.Error, pending.expectation) {
+		if attribution.owns(pending.expectation) {
 			s.addExpected(pending.expectation.diagnostic, i, line, e, "/payload/error",
 				"refusal does not tell the caller what to change",
 				pending.expectation.describe(), describeRefusal(payload.Error), string(e.InReplyTo))
@@ -83,7 +84,6 @@ func (s *state) settleSubscribeRefusal(i, line int, e protocol.Envelope) {
 		return
 	}
 	if !pending.honour || !refusesSubscribe(payload.Error) {
-
 		return
 	}
 	s.addExpected(CodeUnhonouredCapability, i, line, e, "/payload/error",
