@@ -233,8 +233,13 @@ loud is a subscription that beats the open's response but loses to the run.
   admitted links to it the way a run links to its submit request today.
 - A new capability key, `session.open.subscribe`, joins the descriptor.
 - `+compound-open` joins the conformance units.
-- The reference adapter implements both members, so the corpus and the golden
-  transcript carry a compound open.
+- The reference adapter advertises `session.open.subscribe`; it does not
+  implement either member, because neither is an adapter's to implement. The
+  hub composes the open, the subscription and the submission, and each
+  frontend delivers the subscription in the shape its transport allows. No
+  adapter corpus case and no golden transcript carries a compound open: the
+  unit is covered by the validator fixtures under `+compound-open` and by the
+  frontend tests on both routes.
 
 ## What this unit does not admit
 
