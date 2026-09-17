@@ -150,22 +150,36 @@ this request satisfied — are read only when no expectation was answered. A
 rung that legitimately owed the refusal is not evidence that another rung was
 reneged on.
 
-### A subscription reports where it joined
+### A transport whose response carries no stream holds the subscription
 
-Alongside the members above, a successful subscription reports the sequence it
-begins at, so a host that subscribed separately can see that it joined mid-run
-and resubscribe with a cursor. This converts the silence into information
-without changing what a live subscription delivers.
+Over stdio the open's reply and the run's envelopes share one pipe, correlated
+by the request's id, so a subscribing open answers and then pumps. The SSE
+route has no such shape: `POST /sessions` answers with one response body and
+cannot also carry a stream.
 
-It is a named signal on both transports — `oap-subscribed`, emitted first —
-and not a response member. The SSE route answers with the stream and no body,
-so a named event is the only place the fact can live there at all; putting it
-on the stdio response instead would put one fact in two places depending on
-which pipe carried it, which is the divergence `serve/servestdio/parity_test.go`
-exists to prevent.
+Refusing `subscribe` there was considered and rejected. The disclosure is the
+adapter's, and `capability_revision` binds an envelope to one descriptor
+snapshot, so a route that served a different effective level for the same
+revision would make one revision describe two capability sets. Refusing an
+advertised key is also exactly what `unhonoured_capability` exists to
+diagnose, so the daemon's own HTTP surface would have emitted traces this
+unit rejects.
 
-A compound open does not emit it: its subscription begins before the session
-has a run, so there is no position to have joined after.
+So the route registers the subscription during the open and holds it for the
+`events` request that follows, which adopts it instead of subscribing anew.
+The host sees what stdio's host sees: a stream that begins at the run's first
+envelope, because the subscription existed before the message was submitted.
+
+A held subscription is bounded. It is released if no `events` request adopts
+it within `SubscriptionHold`, if the open's own response cannot be delivered
+and the session is rolled back, or if the adopting request ends. An `events`
+request carrying a cursor does not adopt it — that host is resuming a stream
+it already had, and says so by naming a position — so the held subscription
+is released and the cursor is served as it always was.
+
+What the host buffers while holding is the hub's ordinary bounded mailbox, so
+a host that opens and never connects overflows exactly as a slow consumer
+does, and the adopter reads `oap-overflow` with the cursor to resume from.
 
 ### An endpoint that cannot subscribe at open says so
 
@@ -179,7 +193,7 @@ disclosure is refused unless the request consents through
 An adapter whose event stream does not exist until the first run is the case
 this exists for. It discloses `degraded` and a host that consents gets a
 subscription that begins when the stream does — which is still ahead of any
-separate `events` request, and which the joined-at signal describes.
+separate `events` request.
 
 ### A compound open must cite the active revision
 
@@ -231,6 +245,16 @@ loud is a subscription that beats the open's response but loses to the run.
   the one sequence with a *silent* failure is the one this unit covers.
 - **A cursor on `subscribe`.** Named above.
 - **Restructuring the open response.** Named above.
+- **Reporting where a separate subscription joined.** A successful
+  subscription could report the sequence it begins at, as a named
+  `oap-subscribed` signal emitted first on both transports, so a host that
+  subscribed separately can see that it joined mid-run and resubscribe with a
+  cursor. This unit specified it and does not implement it, so it is deferred
+  to [#61](https://github.com/lsm/open-agent-protocol/issues/61) rather than
+  left as a claim no code answers. It is separable because a compound open
+  would never emit it: its subscription begins before the session has a run,
+  so there is no position to have joined after. What it needs is a hub
+  accessor for a run's current sequence, which nothing exposes today.
 - **Ending one subscription on request.** The stdio pipe has no per-stream
   hangup, which [#53](https://github.com/lsm/open-agent-protocol/issues/53)
   records. A unit that lets a host subscribe inside an open is where the

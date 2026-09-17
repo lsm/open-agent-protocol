@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +49,10 @@ type Options struct {
 	// unauthenticated loopback bind; an operator binding a non-loopback
 	// address opts out by leaving it empty.
 	HostAllowlist []string
+	// SubscriptionHold bounds how long a subscription opened by a compound
+	// open waits to be adopted by the events request that follows it. Zero
+	// takes DefaultSubscriptionHold.
+	SubscriptionHold time.Duration
 }
 
 // Server serves one hub over local HTTP + SSE. OAP operations exchange
@@ -58,6 +63,9 @@ type Server struct {
 	schema      *jsonschema.Schema
 	allowHosts  map[string]bool
 	nextIDValue atomic.Uint64
+	holdFor     time.Duration
+	mu          sync.Mutex
+	held        map[protocol.SessionID]*heldSubscription
 }
 
 // New compiles the request gate and returns a server over the hub.
@@ -70,7 +78,12 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	for _, host := range options.HostAllowlist {
 		allowHosts[strings.ToLower(strings.TrimSpace(host))] = true
 	}
-	return &Server{hub: hub, schema: schema, allowHosts: allowHosts}, nil
+	holdFor := options.SubscriptionHold
+	if holdFor <= 0 {
+		holdFor = DefaultSubscriptionHold
+	}
+	return &Server{hub: hub, schema: schema, allowHosts: allowHosts, holdFor: holdFor,
+		held: map[protocol.SessionID]*heldSubscription{}}, nil
 }
 
 // Hub returns the hub the server serves.
@@ -260,13 +273,6 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			revision = subscribeRevision
 		}
 	}
-	if refusal == nil && request.Subscribe {
-		refusal = &base.UnsupportedControlError{
-			Feature: protocol.FeatureOpenSubscribe,
-			Reason:  base.ControlUnsatisfiable,
-			Detail:  "this route answers an open with one response body and cannot also carry its event stream; open without subscribe, then GET the session's events",
-		}
-	}
 	if refusal != nil {
 		var stale *serve.StaleRevisionError
 		if errors.As(refusal, &stale) {
@@ -305,10 +311,20 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			open.Metadata[key] = value
 		}
 	}
-	opened, err := serve.OpenCompound(r.Context(), s.hub, name, open, serve.CompoundOpen{
-		Message:   request.Message,
-		RequestID: envelope.ID,
-	})
+	compound := serve.CompoundOpen{Message: request.Message, RequestID: envelope.ID}
+	var cancelHold context.CancelFunc
+	holdTaken := false
+	if request.Subscribe {
+		stream, cancel := context.WithCancel(context.Background())
+		cancelHold = cancel
+		compound.Subscribe, compound.Stream = true, stream
+		defer func() {
+			if !holdTaken {
+				cancel()
+			}
+		}()
+	}
+	opened, err := serve.OpenCompound(r.Context(), s.hub, name, open, compound)
 	entry, state := opened.Session, opened.State
 	if err != nil {
 		// A capability the open elected and the adapter refused is reported
@@ -353,8 +369,15 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		// case it is theirs to close and the message says it is there. This is
 		// the policy servestdio's open takes for the same fact; the two routes
 		// answer one situation the same way or a caller has to learn both.
+		if opened.Subscription != nil {
+			opened.Subscription.Close()
+		}
 		s.writeError(w, http.StatusInternalServerError, "internal", rollbackOpen(entry, request.SessionID != ""), envelope)
 		return
+	}
+	if opened.Subscription != nil {
+		s.holdSubscription(state.SessionID, opened.Subscription, cancelHold)
+		holdTaken = true
 	}
 	response.InReplyTo = envelope.ID
 	response.SessionID = state.SessionID
@@ -761,7 +784,23 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		// Last-Event-ID reconnects.
 		options = append(options, serve.After("", after))
 	}
-	subscription, err := s.hub.Subscribe(r.Context(), entry.ID(), options...)
+	var subscription *serve.Subscription
+	if held := s.takeHeld(entry.ID()); held != nil {
+		if cursor == "" {
+			subscription = held.subscription
+			defer held.cancel()
+			go func() {
+				<-r.Context().Done()
+				held.cancel()
+			}()
+		} else {
+			held.discard()
+		}
+	}
+	var err error
+	if subscription == nil {
+		subscription, err = s.hub.Subscribe(r.Context(), entry.ID(), options...)
+	}
 	var gap *base.ReplayGap
 	if errors.As(err, &gap) {
 		startSSE(w, flusher)

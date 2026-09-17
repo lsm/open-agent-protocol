@@ -91,22 +91,68 @@ func TestOpenCarryingAMessageThatCannotBeAdmittedOpensNothing(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesSubscribeOnThisRoute(t *testing.T) {
-	_, server := newServer(t, memoryRegistry(64), Options{})
-	status, envelope := openSessionWith(t, server, "subscribing", protocol.SessionOpenRequest{Subscribe: true})
-	if status != http.StatusBadRequest {
-		t.Fatalf("open status %d, want 400: %s", status, envelope.Payload)
-	}
-	var failure protocol.ErrorResponse
-	if err := envelope.DecodePayload(&failure); err != nil {
+func TestOpenSubscriptionIsAdoptedByTheEventsRequest(t *testing.T) {
+	hub, server := newServer(t, memoryRegistry(64), Options{})
+	descriptor, err := hub.Probe(context.Background(), "memory")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if failure.Error.Code != "unsupported_feature" {
-		t.Fatalf("refusal code %q", failure.Error.Code)
+	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-adopt", protocol.SessionOpenRequest{
+		SessionID: "adopt",
+		Subscribe: true,
+		Message:   openMessage(),
+	}, "adopt", "", string(descriptor.CapabilityRevision))
+	status, response := postEnvelope(t, server, "/adapters/memory/sessions", request)
+	if status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, response.Payload)
 	}
-	if failure.Error.Details["feature"] != protocol.FeatureOpenSubscribe ||
-		failure.Error.Details["reason"] != base.ControlUnsatisfiable {
-		t.Fatalf("refusal details %+v", failure.Error.Details)
+
+	stream := connectSSE(t, server, "/sessions/adopt/events", "")
+	defer stream.close()
+	first := stream.drainUntil(protocol.TypeActionPermissionRequested)
+	if len(first) == 0 || first[0].Sequence == nil || *first[0].Sequence != 1 {
+		t.Fatalf("the adopted stream starts at %v, want the run's first envelope: the subscription was registered at the open so that it could not miss one", first[0].Sequence)
+	}
+}
+
+func TestOpenSubscriptionNotAdoptedIsReleased(t *testing.T) {
+	hub := serve.New(memoryRegistry(64), serve.Options{})
+	daemon, err := New(hub, Options{SubscriptionHold: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(daemon.Handler())
+	t.Cleanup(server.Close)
+	descriptor, err := hub.Probe(context.Background(), "memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-abandon", protocol.SessionOpenRequest{
+		SessionID: "abandon",
+		Subscribe: true,
+		Message:   openMessage(),
+	}, "abandon", "", string(descriptor.CapabilityRevision))
+	if status, response := postEnvelope(t, server, "/adapters/memory/sessions", request); status != http.StatusOK {
+		t.Fatalf("open status %d: %s", status, response.Payload)
+	}
+	daemon.mu.Lock()
+	holding := len(daemon.held)
+	daemon.mu.Unlock()
+	if holding != 1 {
+		t.Fatalf("the open held %d subscriptions, want 1", holding)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		daemon.mu.Lock()
+		remaining := len(daemon.held)
+		daemon.mu.Unlock()
+		if remaining == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("an unadopted subscription was never released")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
