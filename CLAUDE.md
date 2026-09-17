@@ -151,12 +151,12 @@ Adding an adapter means all of the above plus: a `case` in `serve/registry.go`'s
   directive-shaped comments the stripper treats as load-bearing (`//line`,
   `//extern`, `//export`, and `//tool:check` forms such as `//nolint:errcheck`),
   and what the toolchain makes unremovable *where it is load-bearing*: an
-  example's `// Output:` block inside an `Example` function body, a
-  `Code generated ... DO NOT EDIT.` header before the package clause, a
-  canonical import comment on the package clause, and a cgo preamble. Those
-  would otherwise strand a file on the list with no edit that could clear it.
-  The position is part of the test: prose that merely opens with "Output:" or
-  "import" is counted like any other sentence.
+  example's `// Output:` block as the last comment group in an `Example`
+  function body, a `Code generated ... DO NOT EDIT.` header before the package
+  clause, a canonical import comment on the package clause, and a cgo preamble.
+  Those would otherwise strand a file on the list with no edit that could clear
+  it. The position is part of the test: prose that merely opens with "Output:"
+  or "import" is counted like any other sentence, and `--write` removes it.
   The two modes are not otherwise identical, and the difference is deliberate.
   `--write` removes a comment group whole or keeps it whole, and refuses a file
   outright when a `//go:generate` would move, so prose sharing a group with a

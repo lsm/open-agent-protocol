@@ -243,17 +243,39 @@ func unremovableGroup(fset *token.FileSet, f *ast.File, g *ast.CommentGroup) boo
 }
 
 func inExampleBody(fset *token.FileSet, f *ast.File, g *ast.CommentGroup) bool {
-	start, end := fset.Position(g.Pos()).Offset, fset.Position(g.End()).Offset
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "Example") {
+		if !ok || fn.Recv != nil || fn.Body == nil || !exampleName(fn.Name.Name) {
 			continue
 		}
-		if start > fset.Position(fn.Body.Lbrace).Offset && end < fset.Position(fn.Body.Rbrace).Offset {
+		if last := lastGroupIn(fset, f, fn.Body); last != nil && last == g {
 			return true
 		}
 	}
 	return false
+}
+
+func exampleName(name string) bool {
+	rest, ok := strings.CutPrefix(name, "Example")
+	if !ok {
+		return false
+	}
+	if rest == "" {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	return !unicode.IsLower(r)
+}
+
+func lastGroupIn(fset *token.FileSet, f *ast.File, body *ast.BlockStmt) *ast.CommentGroup {
+	open, close := fset.Position(body.Lbrace).Offset, fset.Position(body.Rbrace).Offset
+	var last *ast.CommentGroup
+	for _, g := range f.Comments {
+		if fset.Position(g.Pos()).Offset > open && fset.Position(g.End()).Offset < close {
+			last = g
+		}
+	}
+	return last
 }
 
 func cgoGroups(f *ast.File) []*ast.CommentGroup {
