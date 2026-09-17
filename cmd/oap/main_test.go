@@ -11,7 +11,7 @@ import (
 
 func TestCheck(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"check"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"check"}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("check: %v\nstderr: %s", err, stderr.String())
 	}
 	for _, want := range []string{"PASS schemas", "PASS fixtures", "PASS golden", "PASS cancellation", "PASS check"} {
@@ -24,7 +24,7 @@ func TestCheck(t *testing.T) {
 func TestValidateJSON(t *testing.T) {
 	file := filepath.Join(repositoryRoot(), "fixtures", "valid", "core-completed.json")
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"validate", "--format=json", file}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"validate", "--format=json", file}, nil, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	var reports []struct {
@@ -40,7 +40,7 @@ func TestValidateJSON(t *testing.T) {
 
 func TestProvidersZAICN(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"providers", "zai-cn", "--format=json"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"providers", "zai-cn", "--format=json"}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("providers: %v\nstderr: %s", err, stderr.String())
 	}
 	var presets []struct {
@@ -59,7 +59,7 @@ func TestProvidersZAICN(t *testing.T) {
 func TestValidateInvalidReturnsError(t *testing.T) {
 	file := filepath.Join(repositoryRoot(), "fixtures", "schema-invalid", "missing-envelope-id.json")
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"validate", file}, &stdout, &stderr); err == nil {
+	if err := run(context.Background(), []string{"validate", file}, nil, &stdout, &stderr); err == nil {
 		t.Fatal("invalid fixture succeeded")
 	}
 	if !strings.Contains(stdout.String(), "FAIL ") {

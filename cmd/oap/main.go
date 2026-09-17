@@ -22,19 +22,21 @@ import (
 )
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "oap:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// stdin is threaded through because serve --stdio reads the protocol from
+// it; every other subcommand ignores it.
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return usage(stderr)
 	}
 	switch args[0] {
 	case "serve":
-		return runServe(ctx, args[1:], stdout, stderr)
+		return runServe(ctx, args[1:], stdin, stdout, stderr)
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)
 	case "fixtures":
