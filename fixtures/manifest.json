@@ -4651,6 +4651,16 @@
       "provenance": ["decisions/0009-compound-open.md"]
     },
     {
+      "id": "compound-open-anonymous-model-reconciled",
+      "path": "semantic-invalid/compound-open-anonymous-model-reconciled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["model_not_in_catalog"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
       "id": "compound-open-session-exists-discharges-elections",
       "path": "valid/compound-open-session-exists-discharges-elections.json",
       "kind": "positive",

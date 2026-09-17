@@ -107,6 +107,7 @@ func (s *state) compoundOpenResponse(i, line int, e protocol.Envelope, p protoco
 	if req.session == "" {
 		req.session = p.SessionID
 	}
+	s.bindOpenSubmission(e.InReplyTo, p.SessionID)
 	entry, ok := s.soleAdmittedRun(p)
 	if !ok {
 
@@ -126,6 +127,27 @@ func (s *state) compoundOpenResponse(i, line int, e protocol.Envelope, p protoco
 		Status:            entry.Status,
 		ModelID:           admittedModel(requestedSubmission(req), p),
 	})
+}
+
+func (s *state) bindOpenSubmission(request protocol.EnvelopeID, session protocol.SessionID) {
+	pending := s.pendingControls[request]
+	if pending == nil || pending.session == session {
+		return
+	}
+	previous := pending.session
+	pending.session = session
+	queue := s.openSubmits[previous]
+	for i, entry := range queue {
+		if entry == pending {
+			s.openSubmits[previous] = append(queue[:i:i], queue[i+1:]...)
+			break
+		}
+	}
+	if len(s.openSubmits[previous]) == 0 {
+		delete(s.openSubmits, previous)
+	}
+	s.openSubmits[session] = append(s.openSubmits[session], pending)
+	s.refreshQueueWindows(session)
 }
 
 func (s *state) soleAdmittedRun(p protocol.SessionOpenResponse) (protocol.ActiveRun, bool) {
