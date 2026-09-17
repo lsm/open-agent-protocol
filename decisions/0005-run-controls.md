@@ -1,6 +1,10 @@
 # Decision 0005: Run Controls
 
-Status: proposed
+Status: accepted 2026-09-16 (63 `run-controls` fixtures; Codex and Makai
+advertise `model_id` natively per run. The three remaining controls graduate by
+amendment as ledgers pin their evidence, which extends the executable surface
+without reopening what this decision settled — the fail-closed, per-submit
+discipline)
 Date: 2026-09-15
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

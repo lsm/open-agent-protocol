@@ -1,0 +1,17 @@
+[
+  {
+    "index": 1,
+    "reason": "message_start opens the portable message lifecycle; the adapter allocates its own message identity and emits nothing for the frame.",
+    "type": "agent_event"
+  },
+  {
+    "index": 3,
+    "reason": "message_end closes the provider message and restates the turn's stop reason; it is not a run terminal and carries no OAP envelope.",
+    "type": "agent_event"
+  },
+  {
+    "index": 4,
+    "reason": "turn_end is a per-turn provider-scoped diagnostic (spec 13.4.2, 3.5); the run terminal is arbitrated from agent_result and agent_end only.",
+    "type": "agent_event"
+  }
+]

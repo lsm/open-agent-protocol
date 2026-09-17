@@ -53,6 +53,13 @@
       "path": "agent-error"
     },
     {
+      "id": "provider-error-result",
+      "ledger_fixtures": [
+        "provider-error-result"
+      ],
+      "path": "provider-error-result"
+    },
+    {
       "id": "confirmed-destructive-cancel",
       "ledger_fixtures": [
         "cancel-confirmed"
