@@ -233,11 +233,13 @@ belongs to no run would be the protocol's third identity domain. That is the
 part worth designing rather than assuming. No adapter in this repository has a credential path at all; an expired
 provider credential becomes `run.failed` like any other provider error.
 
-The evidence is one harness, and it is the weaker kind of one. Seven others
-have not asked for this, which is disinterest rather than the suppression that
-carried `+control-tools` — there is no empty array anywhere to point at, no
-integration declining the capability because the protocol had nowhere to put
-it. Under [Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)
+The evidence is one harness, and it is the weaker kind of one. It is
+disinterest rather than the suppression that carried `+control-tools`, and the
+test is the artifact rather than the absence: the tool case had
+`"tools": []any{}` written into the wire, a decision recorded at the wall. The
+credential case has nothing — the pinned adapter does not model the auth
+namespace at all, though the harness it adapts hosts a full auth protocol, and
+an unmodelled namespace is indistinguishable from one nobody got to. Under [Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)
 that cannot carry a unit alone, and it would not become able to by the
 implementation becoming first-party.
 

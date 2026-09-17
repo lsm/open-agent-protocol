@@ -73,8 +73,24 @@ It may still be a real need and a later harness may prove it, but it cannot
 carry a unit on its own, and reading it as suppression is how a protocol
 acquires features its implementers did not ask for.
 
-The distinction is not always clean and the record should say which it is
-claiming and why, rather than leaving a reader to infer it from enthusiasm.
+**The discriminator is an artifact, not a missing capability.** Both kinds look
+identical from the outside — the capability is not there either way — so the
+test is whether the integration left something behind showing it *declined*.
+`"tools": []any{}` is such an artifact: something considered the capability,
+concluded it could not be carried, and wrote the conclusion into the wire. So
+is a typed refusal, or a branch that fails the run with a named reason. Each is
+pointable, and each changes when the wall comes down.
+
+An unmodelled namespace is not. The pinned Makai adapter carries no
+credential path — not a refusal, not an empty structure, nothing — while the
+harness it adapts hosts a full auth protocol on its own identity domain. That
+looks like a wall until you notice there is no artifact at it, and silence is
+what disinterest looks like too. An integration that never modelled a
+capability is indistinguishable from one that never got to it.
+
+So a record claiming suppression must cite the artifact. "The integration does
+not do X" is not the claim; "the integration wrote down that it would not do X,
+here, and this is the line" is.
 
 ### The asymmetry is written down rather than held as practice
 
