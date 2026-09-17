@@ -9,8 +9,9 @@ Unit: `models` (claim term `+models`) — an additive extension of the unit
 Amends: nothing. Extends
 [Decision 0006](0006-models-catalog.md) additively: one optional member on an
 existing payload, whose absence means exactly what the catalog meant before it
-existed. The caller-supplied `endpoint` member is separately gated on a
-capability key and is the one part with no native evidence yet
+existed. Caller-supplied provider provisioning is not part of this record; it
+is an attachment at session open, symmetric to tool sources, and is deferred to
+its own decision
 Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 
 ## Context
@@ -55,7 +56,16 @@ request shape the endpoint speaks to that provider, from the closed set the
 `provider` package already names: `openai-responses`, `anthropic-messages`,
 `openai-chat-completions`. `kind` distinguishes a provider the endpoint
 reaches directly from one reached through a gateway or proxy. `endpoint` is
-the destination, optional and gated — see the layering below.
+the destination the endpoint reaches, published so a client can tell a direct
+provider from a gateway.
+
+It is read-only, and a caller does not supply one. Provisioning a provider is
+an attachment at session open, symmetric to `tool_sources`, and belongs in its
+own decision — see [the composition draft](../drafts/composition.md). Putting a
+writable destination on a descriptor, as an earlier version of this record did,
+conflated two different things: a descriptor is what an endpoint publishes
+about itself and is fixed for a capability revision, while an attachment is
+what a caller asks for and is judged at admission.
 
 Every member but `id` is optional, and the list itself is optional. An endpoint
 that publishes no `providers[]` is exactly as conformant as it is today, and a
@@ -76,50 +86,29 @@ provider list that omitted the providers its models actually name, and a
 consumer would be no better off than with the bare string. The rule is what
 makes the join reliable enough to build on.
 
-### The vocabulary is layered, and only credentials are forbidden outright
+### Layering, and what is not here
 
-A first version of this decision refused wire-carried provider configuration
-in every form, and argued that "this is the rule this repository already
-enforces one layer down", citing tool sources. That argument was wrong on a
-checkable fact. `protocol.ToolSourceAttachment` carries `command`, `args`,
-`environment` and `endpoint`, and `schema/v0.1/session.schema.json` admits all
-four. It is `oap serve` that refuses them — `serve/attach.go` returns "the
-daemon does not accept a command or arguments from the wire; name an
-operator-configured source by id" — while an in-process embedder passes them
-straight to the adapter. A deployment policy was cited as though it were a
-protocol decision.
+An earlier version of this record refused wire-carried provider configuration
+in every form, citing tool sources as precedent. That was wrong on a checkable
+fact: `protocol.ToolSourceAttachment` carries `command`, `args`, `environment`
+and `endpoint`, and the v0.1 schema admits all four. It is `oap serve` that
+refuses them — "the daemon does not accept a command or arguments from the
+wire; name an operator-configured source by id" — while an in-process embedder
+passes them to the adapter. A deployment policy was cited as a protocol
+decision.
 
-The shape tool sources actually have is four layers, and providers take the
-same four:
+The correction is that provisioning is expressible and belongs in a different
+shape from this one. It is an attachment at session open beside `tool_sources`,
+inheriting that unit's rules — gated on a capability key, whole or nothing,
+refusals naming the entry at fault, the daemon accepting an id rather than a
+destination, and credentials never travelling in any deployment.
+[The composition draft](../drafts/composition.md) sets that out, and it is its
+own decision to write.
 
-1. **The protocol carries the vocabulary**, base URL included. An optional
-   `endpoint` on `ProviderDescriptor`, exactly as `ToolSourceAttachment`
-   carries one.
-2. **A capability key gates it.** An endpoint that does not advertise
-   caller-supplied provider endpoints refuses one with the typed
-   `unsupported_feature`, and its surface does not grow.
-3. **`oap serve` refuses it as local policy** and resolves provider ids against
-   the operator's configuration, exactly as it does for sources. The daemon's
-   trust model is unchanged: loopback, single-user, nothing from the wire that
-   names a program or a destination.
-4. **Credentials never travel.** This is the one absolute, and it already has
-   its shape: the daemon accepts only the bare `NAME` allowlist form in an
-   attachment's `environment`. Variable names, never values. The wire says
-   which secret to use; the operator supplies it.
-
-Layer 4 is not a deployment choice and no capability key unlocks it. Layers 1
-through 3 are, and separating them is what lets an embedder or a hosted
-control layer do bring-your-own-key and per-session gateways while `oap serve`
-stays as strict as it is today.
-
-The exfiltration concern that motivated the first version is real and is
-answered by layer 2 rather than by refusing the vocabulary. An endpoint that
-lets its control layer choose a destination can have every prompt, tool result
-and file the agent has read sent to a host of the caller's choosing. That is a
-reason to make it an advertised, refusable capability that most endpoints never
-offer — the same answer OAP gives every other dangerous affordance — not a
-reason to make it inexpressible for the deployments where the control layer and
-the operator are the same party.
+This record is the read direction only: what an endpoint publishes about the
+providers it reaches. Separating them is what lets this one graduate on the
+evidence it has, while provisioning waits for an implementation that accepts a
+caller-supplied destination — which no pinned harness does today.
 
 ### The `provider` package is the model, not the payload
 

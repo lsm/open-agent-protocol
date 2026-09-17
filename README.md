@@ -14,7 +14,9 @@ resource provider, and binding can live in one process or across multiple
 transports while preserving the same protocol semantics. Adapters for existing
 SDKs or protocols are implementation shims, not a separate semantic layer.
 
-Two of those boundaries have profiles. `agent-control-core` is the control
+[**drafts/composition.md**](drafts/composition.md) sets out how the layers
+compose and what a client may choose about the layers below the one it talks
+to. Two of those boundaries have profiles. `agent-control-core` is the control
 layer talking to an agent loop — sessions, runs, tools — and is what this
 repository executes today.
 [Decision 0016](decisions/0016-model-provider-profile.md) proposes
