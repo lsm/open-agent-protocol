@@ -88,10 +88,16 @@ exactly this hazard:
 - Gated on a capability key; an endpoint that does not advertise it refuses
   with a typed `unsupported_feature`.
 - Refused whole or admitted whole, with the refusal naming the entry at fault.
-- `oap serve` accepts an **id** naming operator configuration and refuses a
-  command, arguments or a destination arriving on the wire — the rule at
-  `serve/attach.go` today, for the same reason: a control layer that may not
-  choose which binary runs a tool may not choose which host receives a prompt.
+- `oap serve` accepts an **id** naming operator configuration. `serve/attach.go`
+  today refuses a command or arguments outright, refuses a process source whose
+  id is not configured, and refuses any wire member — `endpoint` among them —
+  that contradicts the configured source it names. A non-process attachment
+  whose id is unconfigured still passes through carrying its own endpoint, so
+  the destination is governed for configured sources rather than forbidden
+  everywhere. A unit extending this shape to prompts would have to close that
+  gap deliberately, for the reason the rule exists: a control layer that may
+  not choose which binary runs a tool may not choose which host receives a
+  prompt.
 - Credentials never travel. Environment carries the bare `NAME` allowlist
   form; the operator supplies values.
 

@@ -165,9 +165,12 @@ between watching and killing, which is the single most requested thing a
 control layer can do and the reason three of eight harnesses built it natively
 before any protocol asked them to.
 
-`+queue` and `+steer` become the two explicit delivery modes, with `auto`
-resolving to neither. Decision 0007's rule that an explicit mode never changes
-meaning extends to `steer` unchanged.
+`+queue` and `+steer` become the two explicit delivery modes, and `auto` never
+resolves to `steer`. Decision 0002 resolves `auto` to `start` or `queue` and
+Decision 0007 turns a busy session's `auto` into a reservation, so `auto`
+already reaches one of the two; adding `steer` does not change which. A caller
+that wants a turn interrupted asks for it. Decision 0007's rule that an
+explicit mode never changes meaning extends to `steer` unchanged.
 
 Three adapters gain a capability they currently classify as unavailable
 despite native support: Pi's ledger records steering and follow-up queues as

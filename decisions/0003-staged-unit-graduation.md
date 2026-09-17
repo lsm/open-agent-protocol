@@ -60,13 +60,14 @@ in this order:
    fixtures under a new conformance-unit name, and every existing fixture
    still validates unchanged.
 3. **Native evidence.** At least one native adapter *this project does not
-   control* executes the unit through its production codec and reducer
-   ([Decision 0015](0015-evidence-from-implementations-we-do-not-control.md)
-   makes that requirement explicit and says why), with a corpus case pinned to the
-   adapter's existing ledger commit and a live gate where the adapter has one.
-   The adapter's capability descriptor advertises the unit at the level the
-   evidence supports; nothing advertised without evidence, nothing applied
-   without being advertised.
+   control* executes the unit through its production codec and reducer, with a
+   corpus case pinned to the adapter's existing ledger commit and a live gate
+   where the adapter has one. The adapter's capability descriptor advertises
+   the unit at the level the evidence supports; nothing advertised without
+   evidence, nothing applied without being advertised.
+   [Decision 0015](0015-evidence-from-implementations-we-do-not-control.md)
+   proposes making "does not control" explicit and says why; until it is
+   accepted, this step binds on the wording above and nothing 0015 adds.
 4. **Decision record.** A decision document graduates the unit, citing the
    fixtures and the corpus case, and records what stays deferred.
 

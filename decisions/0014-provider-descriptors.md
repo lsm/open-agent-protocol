@@ -36,9 +36,10 @@ Harnesses already treat the provider as client-visible. Hermes's
 `info: {model[, provider], ...}`, so a Hermes client both chooses and observes
 one. ACP is "provider-neutral via a `base_url`/`token_key` provider block".
 Codex pins a `wire_api` per provider. This repository has a whole package for
-it — `provider/`, whose doc comment says it "describes model-provider
-compatibility surfaces independently from OAP harness adapters", carrying
-`Wire`, `BaseURL`, `Path` and an evidence classification.
+it — `provider/`, whose package doc described it as modelling "model-provider
+compatibility surfaces independently from OAP harness adapters" until the
+comment sweep in #64 removed the sentence (`git show 88186c8:provider/zai.go`),
+carrying `Wire`, `BaseURL`, `Path` and an evidence classification.
 
 ## Decisions
 
@@ -48,7 +49,7 @@ A list of `ProviderDescriptor`, parallel to `sources[]` on
 `action.tools.list.response` and for the same reason:
 
 ```
-{ "id", "display_name"?, "wire"?, "kind"? }
+{ "id", "display_name"?, "wire"?, "kind"?, "endpoint"? }
 ```
 
 `id` is what a `ModelDescriptor.provider_id` resolves to. `wire` is the
@@ -100,8 +101,9 @@ decision.
 The correction is that provisioning is expressible and belongs in a different
 shape from this one. It is an attachment at session open beside `tool_sources`,
 inheriting that unit's rules — gated on a capability key, whole or nothing,
-refusals naming the entry at fault, the daemon accepting an id rather than a
-destination, and credentials never travelling in any deployment.
+refusals naming the entry at fault, the daemon governing the destination
+through operator configuration rather than accepting one from the wire, and
+credentials never travelling in any deployment.
 [The composition draft](../drafts/composition.md) sets that out, and it is its
 own decision to write.
 
@@ -163,11 +165,11 @@ arriving from a harness that already reports it per run, and it is the
 strongest single piece of evidence here: a harness volunteering the fact
 unprompted, with nowhere for it to go.
 
-What remains genuinely unproven is the caller-supplied `endpoint` of layer 1.
-No pinned harness accepts a provider endpoint from its client — ACP, Codex and
-Hermes all take it from operator configuration — so that member graduates on a
-native implementation or not at all, and the gate's step 3 is where that is
-decided.
+What remains genuinely unproven is `endpoint` itself. No pinned harness
+publishes the destination it reaches for a provider — ACP, Codex and Hermes
+all take it from operator configuration and never report it back — so that one
+member graduates on a native implementation or not at all, and the gate's step
+3 is where that is decided. The rest of the descriptor does not wait on it.
 
 ## Consequences
 
@@ -192,9 +194,11 @@ Credentials over the wire, in any form, under any capability key, for any
 deployment. Not a token, not a header, not an environment value. A name that
 the operator resolves is the only form a secret takes on this wire.
 
-A caller-supplied `endpoint` from an endpoint that has not advertised it. The
-member existing does not make it offerable; layer 2 is what makes it offered,
-and an endpoint that stays silent refuses it typed.
+A caller-supplied `endpoint`, in any form. This record is the read direction
+only: `providers[]` is what an endpoint publishes about itself. Naming a
+destination from the wire is provisioning, it belongs to the attachment shape
+[the composition draft](../drafts/composition.md) sets out, and it is that
+decision's to admit or refuse — not this one's.
 
 Provider selection as a run control. `model_id` already selects, and Decision
 0005 made it per-run; a model resolves to its provider through the catalog. A
@@ -205,12 +209,16 @@ that is fixed for a capability revision, and a descriptor that went stale
 between two reads would be worse than no descriptor.
 
 Authentication state, for the same reason and against a real request for it.
-Makai's `auth_providers_response` carries `provider_id`, `name` and
-`auth_status` together, and a client that cannot tell "logged into one vendor,
-not the other" cannot render a model picker honestly — which is true of any
-multi-provider harness. But `auth_status` changes the moment someone logs in,
-and a revision-fixed descriptor is the wrong carrier for something that moves
-without the descriptor moving. Provider *identity* is stable and belongs here;
+Makai's maintainers report an `auth_providers_response` carrying `provider_id`,
+`name` and `auth_status` together — reported from their live tree, not pinned
+here: the adapter at `makai-agent-67ad514` models no auth namespace and its
+ledger records none, so this is not evidence under Decision 0003's step 3, the
+same standing Decision 0013 gives Codex's `turn/steer`. A client that cannot
+tell "logged into one vendor, not the other" cannot render a model picker
+honestly — which is true of any multi-provider harness. But `auth_status`
+changes the moment someone logs in, and a revision-fixed descriptor is the
+wrong carrier for something that moves without the descriptor moving. Provider
+*identity* is stable and belongs here;
 provider *usability* is dynamic and belongs with whatever covers credential
 acquisition, which the core draft records as an open question. Splitting them
 is the cost of getting identity right; carrying both here would make the

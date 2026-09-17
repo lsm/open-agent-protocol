@@ -61,9 +61,12 @@ binds when it is cheap does not bind.
 "Nobody else has this" is available as an argument in both directions, and
 this decision makes the wrong one easier to reach, so the test goes here.
 
-`+control-tools` graduated partly on absence: two independent integrations
-declared empty tool catalogues *because* the protocol had nowhere to put a
-caller-executed tool. That is suppression, and it is pointable — the empty
+`+control-tools` graduated partly on absence: one implementation, integrated
+two ways, declared empty tool catalogues *because* the protocol had nowhere to
+put a caller-executed tool. Makai's adapter marshals `"tools": []any{}`
+(`adapter/makai/session.go:179` at `fd7a392`) and Makai's native OAP mode
+declares empty in both payloads. That is suppression, and it is pointable — the
+empty
 array is in the source, and removing the wall changed the behaviour. An
 absence of that kind is evidence the capability is wanted and blocked.
 
@@ -102,16 +105,19 @@ the people currently applying it.
 
 ## Evidence
 
-Every accepted unit already meets it. Decisions 0004 through 0008 and 0011 each
+Every accepted unit already meets it. Decisions 0005 through 0008 and 0011 each
 cite at least one third-party adapter with a pinned corpus case, and Decision
 0011's own acceptance was held until the Makai adapter executed it — the
-reference adapter implementing the unit was explicitly not enough.
+reference adapter implementing the unit was explicitly not enough. It was
+assessed and held on 2026-09-17 for want of exactly that, and accepted the same
+day once the adapter and the `tool-bridge-roundtrip` case landed.
 
-The one apparent exception proves the rule's shape rather than breaking it.
-Decision 0009's step 3 is satisfied vacuously because compound open composes in
-the hub and produces no harness frame to pin. That is a unit with no native
-surface to evidence, not a unit evidenced by ourselves, and this decision does
-not disturb it.
+Two apparent exceptions prove the rule's shape rather than breaking it.
+Decision 0004 records "No harness adapter changes" and Decision 0009's step 3
+is satisfied vacuously, because extension packs and compound open both specify
+the protocol's own seam and produce no harness frame to pin. Those are units
+with no native surface to evidence, not units evidenced by ourselves, and this
+decision does not disturb either.
 
 The gap this closes is prospective. No unit has graduated on first-party
 evidence, which is why the wording has never been tested.

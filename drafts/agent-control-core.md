@@ -206,6 +206,16 @@ leaves the second homeless:
   anywhere in the exchange — and it is the case users hit first, because you
   log in and then start working.
 
+Everything this section says about that harness — Makai — is **reported by its
+maintainers from their live tree, not pinned here**. The adapter at
+`makai-agent-67ad514` models no auth namespace, its mapping ledger in
+`research/` records none, and no corpus case exercises one, so none of it is
+evidence under
+[Decision 0003](../decisions/0003-staged-unit-graduation.md)'s step 3 — the
+same standing [Decision 0013](../decisions/0013-steer.md) gives Codex's
+`turn/steer`. It is recorded as a constraint to design against, not as a fact
+the repository can check.
+
 Proactive acquisition arrives with provider *discovery*, because they are one
 surface: an endpoint that tells a client which providers exist and which are
 usable has told it what to authenticate against, and a client that can see it
@@ -216,7 +226,7 @@ fixed for a capability revision and an auth state is not.
 
 **The usability surface and the waiting condition are one object seen from two
 angles, and a unit that treats them as two mechanisms will have to reconcile
-them.** The harness that exposes this natively has a seven-value status enum,
+them.** That harness is reported to carry a seven-value status enum,
 and two of those values — refreshing, and login in progress — describe an
 operation in flight rather than a property of a provider. That is why they
 cannot live on a descriptor: a cached one would report a transition that has
@@ -242,7 +252,9 @@ enumerating providers without a session invents nothing. What has no precedent
 is a session-less *stateful exchange* — every multi-turn thing in v0.1 hangs off
 a run through an interaction — so a flow identity that outlives no session and
 belongs to no run would be the protocol's third identity domain. That is the
-part worth designing rather than assuming. No adapter in this repository has a credential path at all; an expired
+part worth designing rather than assuming.
+
+No adapter in this repository has a credential path at all; an expired
 provider credential becomes `run.failed` like any other provider error.
 
 The evidence is one harness, and it is the weaker kind of one. It is
@@ -261,9 +273,10 @@ harness's arrival would otherwise cost someone to rediscover:
 - **The waiting condition is endpoint-scoped, not run- or session-scoped.** One
   run blocks on exactly one provider, because a run carries a single model
   reference and nothing inside it introduces a second. The sharing is entirely
-  across runs, and across sessions: Makai's refresh lock is one object per
-  process keyed on provider and user, so N runs in M sessions wait on the same
-  thing. This is why the pattern of the three existing resolve pairs does not
+  across runs, and across sessions: Makai's maintainers report a refresh lock
+  that is one object per process keyed on provider and user, so N runs in M
+  sessions wait on the same thing. This is why the pattern of the three
+  existing resolve pairs does not
   fit. An interaction carries a `run_id`, is resolved once by its declared
   responder, and never outlives its run; two runs blocked on one expired
   credential is one real-world event that model can only express as two, which
@@ -276,8 +289,9 @@ harness's arrival would otherwise cost someone to rediscover:
 - **Abandonment and failure are indistinguishable to a waiter**, after a
   bounded wait. That is a choice a unit would have to name rather than inherit.
   The existing bound is 30 seconds, chosen for non-interactive token refresh
-  and never tuned against a human completing a browser flow; it is evidence
-  that a bound is needed, not evidence of what it should be.
+  and never tuned against a human completing a browser flow; it is reported,
+  like the rest of this list, and argues that a bound is needed rather than
+  fixing what it should be.
 
 ## Request And Stream Semantics
 
