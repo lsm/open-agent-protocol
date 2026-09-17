@@ -339,6 +339,7 @@ const samples: PayloadSample[] = [
     result: { answer: 42 },
     usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
     duration_ms: 1200,
+    settled_by: 'observed',
   }),
   sample<protocol.RunFailedPayload>('RunFailedPayload', 'run.schema.json', 'failed', {
     session_id: 's-1',
@@ -347,6 +348,7 @@ const samples: PayloadSample[] = [
     usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
     duration_ms: 1200,
     recovery: { recovered: false, reason: 'nothing to resume' },
+    settled_by: 'inferred',
   }),
   sample<protocol.RunCancelledPayload>('RunCancelledPayload', 'run.schema.json', 'cancelled', {
     session_id: 's-1',
@@ -354,6 +356,7 @@ const samples: PayloadSample[] = [
     reason: 'user asked',
     usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
     duration_ms: 1200,
+    settled_by: 'inferred',
   }),
 
   // action.schema.json

@@ -217,8 +217,16 @@ func (s *session) settlePrompt(run *runState, result native.PromptResult, callEr
 			_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "ACP prompt cancellation confirmed"}, true)
 			return
 		}
+		// A RemoteError is the agent answering this run's prompt with a
+		// failure, which is run-scoped evidence and stays observed. Any other
+		// call error means no answer ever came back, so the terminal is
+		// concluded from the silence.
+		settledBy := protocol.SettledByInferred
+		if remote != nil {
+			settledBy = ""
+		}
 		s.settleChildren(run, true)
-		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "acp_prompt_error", Message: callErr.Error()}}, true)
+		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "acp_prompt_error", Message: callErr.Error()}, SettledBy: settledBy}, true)
 		return
 	}
 	switch result.StopReason {
@@ -643,8 +651,10 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	}
 	s.mu.Unlock()
 	if err := p.request.Respond(ctx, native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "selected", OptionID: option.OptionID}}); err != nil {
+		// The permission answer never reached the agent, so nothing was ever
+		// reported back about how this run ended.
 		s.settleChildren(p.run, true)
-		_ = s.emit(p.run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: p.run.id, Error: protocol.ProtocolError{Code: "acp_permission_response_failed", Message: err.Error()}}, true)
+		_ = s.emit(p.run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: p.run.id, Error: protocol.ProtocolError{Code: "acp_permission_response_failed", Message: err.Error()}, SettledBy: protocol.SettledByInferred}, true)
 		return err
 	}
 	s.mu.Lock()
@@ -846,7 +856,9 @@ func (s *session) transportFailed() {
 	if !closed && r != nil {
 		s.opMu.Lock()
 		s.settleChildren(r, true)
-		_ = s.emit(r, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: r.id, Error: protocol.ProtocolError{Code: "acp_transport_failure", Message: fmt.Sprint(s.client.Err())}}, true)
+		// The transport died with the run open: this terminal is concluded
+		// from the loss, never observed on the wire.
+		_ = s.emit(r, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: r.id, Error: protocol.ProtocolError{Code: "acp_transport_failure", Message: fmt.Sprint(s.client.Err())}, SettledBy: protocol.SettledByInferred}, true)
 		s.opMu.Unlock()
 	}
 }

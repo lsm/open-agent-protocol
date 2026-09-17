@@ -1,0 +1,117 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.request",
+    "id": "submit",
+    "session_id": "s1",
+    "payload": {
+      "session_id": "s1",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        }
+      ],
+      "delivery": "auto"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.response",
+    "id": "admit",
+    "in_reply_to": "submit",
+    "session_id": "s1",
+    "payload": {
+      "session_id": "s1",
+      "accepted": true,
+      "submission_id": "sub1",
+      "requested_delivery": "auto",
+      "effective_delivery": "start",
+      "admission": "started",
+      "run_id": "r1",
+      "status": "running"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "start",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 1,
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "status": "running"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancel.request",
+    "id": "cancel-req",
+    "session_id": "s1",
+    "run_id": "r1",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancel.response",
+    "id": "cancel-resp",
+    "in_reply_to": "cancel-req",
+    "session_id": "s1",
+    "run_id": "r1",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "accepted": true,
+      "status": "cancelling"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancelled",
+    "id": "cancelled",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 2,
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "reason": "cancelled on request"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "done",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 3,
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "final_response": {
+        "role": "assistant",
+        "content": "done"
+      },
+      "stop_reason": "end_turn"
+    }
+  }
+]

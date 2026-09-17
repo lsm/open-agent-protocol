@@ -634,6 +634,15 @@ export interface ContentDeltaPayload {
   part: ContentPart;
 }
 
+/**
+ * How the endpoint learned a run reached its terminal. `observed` is a
+ * run-scoped native terminal the endpoint saw; `inferred` is one it concluded
+ * from other evidence, such as a session-scoped stop or transport loss. Absent
+ * asserts observation. It is provenance about the endpoint's knowledge, not a
+ * second status: an inferred terminal is as absorbing as an observed one.
+ */
+export type SettledBy = 'observed' | 'inferred';
+
 export interface RunCompletedPayload {
   session_id: string;
   run_id: string;
@@ -644,6 +653,7 @@ export interface RunCompletedPayload {
   result?: Record<string, unknown>;
   usage?: Usage;
   duration_ms?: number;
+  settled_by?: SettledBy;
 }
 
 export interface RunFailedPayload {
@@ -653,6 +663,7 @@ export interface RunFailedPayload {
   usage?: Usage;
   duration_ms?: number;
   recovery?: RecoveryMetadata;
+  settled_by?: SettledBy;
 }
 
 export interface RunCancelledPayload {
@@ -661,6 +672,7 @@ export interface RunCancelledPayload {
   reason?: string;
   usage?: Usage;
   duration_ms?: number;
+  settled_by?: SettledBy;
 }
 
 // --- action.schema.json ---

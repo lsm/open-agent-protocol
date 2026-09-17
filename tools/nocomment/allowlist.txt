@@ -108,10 +108,15 @@ client/scope_test.go
 client/session.go
 client/sse.go
 client/sse_test.go
+cmd/oap/conformance.go
+cmd/oap/endpoint.go
 cmd/oap/main.go
 cmd/oap/serve.go
 cmd/oap/serve_test.go
 cmd/oap/stdio_e2e_test.go
+conformance/client.go
+conformance/conformance_test.go
+conformance/runner.go
 internal/providertest/server.go
 protocol/codec.go
 protocol/common.go
@@ -127,6 +132,11 @@ serve/config_test.go
 serve/hub_test.go
 serve/registry.go
 serve/serve.go
+serve/serveendpoint/dispatch.go
+serve/serveendpoint/endpoint.go
+serve/serveendpoint/errors.go
+serve/serveendpoint/replay.go
+serve/serveendpoint/teardown_test.go
 serve/servehttp/lifecycle_test.go
 serve/servehttp/models_test.go
 serve/servehttp/openrollback_test.go

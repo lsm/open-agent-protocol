@@ -179,7 +179,12 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	client.idleGate = fed
 	client.mu.Unlock()
 	if definition.AdmissionRejected {
-		client.promptErr = errors.New("HTTP 409 ConflictError")
+		// The rejection this case is named for is a definite HTTP answer the
+		// server chose to send, so deliver the *native.APIError the production
+		// client decodes from it rather than a bare error. Since Decision 0010
+		// the two are no longer equivalent: only a bare one means the prompt
+		// got no answer at all.
+		client.promptErr = &native.APIError{Status: 409, Tag: "ConflictError", Fields: map[string]json.RawMessage{}}
 		client.promoted = true
 	} else {
 		client.promoted = !strings.Contains(entry.ID, "queued")

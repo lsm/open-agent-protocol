@@ -51,7 +51,8 @@
       "error": {
         "code": "hermes_process_exit",
         "message": "gateway died"
-      }
+      },
+      "settled_by": "inferred"
     },
     "sequence": 3,
     "timestamp_ms": 5,

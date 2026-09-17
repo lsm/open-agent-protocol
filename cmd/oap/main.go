@@ -28,8 +28,8 @@ func main() {
 	}
 }
 
-// stdin is threaded through because serve --stdio reads the protocol from
-// it; every other subcommand ignores it.
+// stdin is threaded through because serve --stdio and endpoint read the
+// protocol from it; every other subcommand ignores it.
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return usage(stderr)
@@ -37,6 +37,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	switch args[0] {
 	case "serve":
 		return runServe(ctx, args[1:], stdin, stdout, stderr)
+	case "endpoint":
+		return runEndpoint(ctx, args[1:], stdin, stdout, stderr)
+	case "conformance":
+		return runConformance(ctx, args[1:], stdout, stderr)
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)
 	case "fixtures":
@@ -53,7 +57,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func usage(w io.Writer) error {
-	fmt.Fprintln(w, "usage: oap <serve|validate|fixtures|demo|check|providers> [arguments]")
+	fmt.Fprintln(w, "usage: oap <serve|endpoint|conformance|validate|fixtures|demo|check|providers> [arguments]")
 	return errors.New("invalid command")
 }
 
