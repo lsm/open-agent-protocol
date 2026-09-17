@@ -242,3 +242,61 @@ func TestASecondSubmitDoesNotDuplicateTheStream(t *testing.T) {
 		}
 	}
 }
+
+// TestHungUpHostExitsWithoutASignal is the host the binding names: it
+// pipelines a batch, closes stdin, and stops reading.
+//
+// It sends no signal, so nothing cancels the context. The writer parks on the
+// full pipe, the queue fills, and a handler parks in its send — at which
+// point the loop can no longer reach the frame carrying stdin EOF, because
+// handlers run inline in it. Without a clock of its own, end of input is
+// never observed and the bounded teardown never starts, leaving SIGKILL as
+// the only exit and skipping the session sweep.
+//
+// The binding promises this host a bounded non-zero exit, so that is what is
+// asserted, with no cancellation anywhere in the test.
+func TestHungUpHostExitsWithoutASignal(t *testing.T) {
+	registry, err := serve.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	server, err := New(hub, Options{
+		Adapter: "memory", Shutdown: 100 * time.Millisecond, WriteStall: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var input strings.Builder
+	input.WriteString(requestLine(t, protocol.TypeSessionOpenRequest, "open-1",
+		protocol.SessionOpenRequest{SessionID: "hungup"}, "hungup") + "\n")
+	input.WriteString(requestLine(t, protocol.TypeSessionMessageSubmitRequest, "submit-1",
+		protocol.MessageSubmitRequest{
+			SessionID: "hungup", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+		}, "hungup") + "\n")
+	for i := 0; i < writeQueue*4; i++ {
+		input.WriteString(requestLine(t, protocol.TypeSessionStateRequest,
+			fmt.Sprintf("state-%d", i),
+			protocol.SessionStateRequest{SessionID: "hungup"}, "hungup") + "\n")
+	}
+
+	out := &parkingWriter{limit: 2, parked: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), strings.NewReader(input.String()), out) }()
+
+	select {
+	case <-out.parked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the endpoint never reached a parked write, so this test proved nothing")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownStalled) {
+			t.Fatalf("Run returned %v, want ErrShutdownStalled", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Run never returned: end of input went unobserved behind a parked handler, so only SIGKILL would exit")
+	}
+}

@@ -34,6 +34,13 @@ import (
 // so the endpoint reports it and stops instead of truncating.
 const DefaultFrameLimit = 1 << 20
 
+// DefaultWriteStall bounds how long a line waits for a writer that is making
+// no progress at all. It is deliberately far longer than any pause a reading
+// host would cause, because the queue only fills when nothing is being
+// consumed; it exists so a host that has gone away ends the process instead
+// of parking it forever.
+const DefaultWriteStall = 2 * time.Minute
+
 // writeQueue bounds how far the endpoint runs ahead of a host that is reading
 // slowly. Past it, producers wait — which is backpressure rather than a
 // fault, and is cancellable.
@@ -59,7 +66,10 @@ type Options struct {
 	// Shutdown bounds the teardown's wait for run pumps. Zero takes
 	// serve.DefaultShutdownTimeout.
 	Shutdown time.Duration
-	Logger   *log.Logger
+	// WriteStall bounds how long a line may wait for a writer that is making
+	// no progress. Zero takes DefaultWriteStall.
+	WriteStall time.Duration
+	Logger     *log.Logger
 }
 
 // Server is one endpoint over one adapter.
@@ -68,6 +78,7 @@ type Server struct {
 	adapter    string
 	frameLimit int
 	shutdown   time.Duration
+	writeStall time.Duration
 	logger     *log.Logger
 
 	ids atomic.Uint64
@@ -106,7 +117,11 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if shutdown <= 0 {
 		shutdown = serve.DefaultShutdownTimeout
 	}
-	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, logger: logger}, nil
+	stall := options.WriteStall
+	if stall <= 0 {
+		stall = DefaultWriteStall
+	}
+	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, writeStall: stall, logger: logger}, nil
 }
 
 // Run reads request envelopes from in and writes response and event envelopes
@@ -217,16 +232,31 @@ func (s *Server) runWriter(out io.Writer) error {
 	return writer.Flush()
 }
 
-// send hands one framed line to the writer, or gives up when the context
-// ends. Giving up is the point: a peer that has stopped reading must not be
-// able to wedge the read loop, which is what keeps signals and stdin EOF
-// observable while the pipe is full.
+// send hands one framed line to the writer, giving up when the context ends
+// or when the queue has stayed full for longer than a host could plausibly
+// still be reading.
+//
+// Both bounds are needed and neither covers the other. The context carries
+// the operator's signal. The stall bound carries the case no signal reaches:
+// a host that closed stdin and stopped reading its stdout. Handlers run
+// inline in the read loop, so once the queue fills behind a parked writer the
+// loop cannot reach the frame carrying stdin EOF either — end of input is
+// unobservable precisely when it matters, because the reader is parked
+// handing over the frame before it. Bounding the handoff is what turns that
+// into the exit the binding promises rather than a wait for SIGKILL.
+//
+// The bound is generous because a slow host is not a gone one: it governs a
+// queue that has not moved at all, not the pace of a host keeping up.
 func (s *Server) send(ctx context.Context, data []byte) error {
+	stall := time.NewTimer(s.writeStall)
+	defer stall.Stop()
 	select {
 	case s.lines <- data:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-stall.C:
+		return ErrShutdownStalled
 	}
 }
 

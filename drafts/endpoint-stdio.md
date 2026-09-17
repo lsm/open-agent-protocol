@@ -102,6 +102,14 @@ is the session's lifetime:
   its stdin but stopped reading its stdout, so the pipe fills and the last
   events cannot be written. Exiting 0 there would report a clean end for a
   session whose host is missing events it was acknowledged for.
+- An endpoint stops if its output has made **no progress at all** for long
+  enough that no host could still be reading. This bound is what makes the
+  previous one reachable: once the pipe is full, an endpoint whose request
+  handling writes its own answers cannot observe stdin closing either, because
+  it is already blocked before the frame that would carry it. The bound
+  governs an output that has not moved, not the pace of a host that is keeping
+  up, so it is long — the reference endpoint uses two minutes. A slow host is
+  not a gone one.
 - A **malformed line** — not JSON, not an envelope, or over the length bound —
   is the host's framing defect. The endpoint writes one bounded diagnostic to
   stderr and exits **non-zero**. It does not attempt to resynchronise, because
