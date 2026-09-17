@@ -14,6 +14,17 @@ resource provider, and binding can live in one process or across multiple
 transports while preserving the same protocol semantics. Adapters for existing
 SDKs or protocols are implementation shims, not a separate semantic layer.
 
+Two of those boundaries have profiles. `agent-control-core` is the control
+layer talking to an agent loop — sessions, runs, tools — and is what this
+repository executes today.
+[Decision 0016](decisions/0016-model-provider-profile.md) proposes
+`model-provider-core` for the boundary below it: an agent loop talking to a
+model provider, normalizing OpenAI-compatible and Anthropic-compatible
+endpoints behind one vocabulary. An agent loop that wraps a vendor SDK and one
+that speaks to inference endpoints directly both expose `agent-control-core`
+upward; the lower profile is what they speak downward, and it is the boundary
+every multi-vendor loop re-solves privately today.
+
 Implementing OAP natively? [**STABILITY.md**](STABILITY.md) is what this
 project commits to about the v0.1 core surface: what is frozen, what may still
 be added, how conformance is defined and answered, how long a deprecation runs,

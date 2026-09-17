@@ -138,7 +138,11 @@ no run — is not agent control, and no envelope here carries it. Every executio
 path begins at a session and a submission and mints a run, because a run is the
 thing whose lifecycle there is anything to normalize.
 
-This is a statement about the wire, not about the layers. The model provider is
+This is a statement about this profile's wire, not about the layers, and not
+about OAP. The provider boundary gets a protocol of its own:
+[Decision 0016](../decisions/0016-model-provider-profile.md) proposes
+`open-agent-protocol.model-provider-core` for the agent loop's downward
+boundary, which is where an inference call belongs. The model provider is
 one of OAP's own layers, named as such in this repository's README beside the
 control layer, the agent loop and the tool executor, and that README says those
 layers may live in one process. An endpoint that speaks to a vendor API
