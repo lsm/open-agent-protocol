@@ -577,3 +577,130 @@ func waitForNewCall(t *testing.T, open base.Session, runID protocol.RunID, previ
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// TestAcknowledgedCallClosesAsCancelled is the path decision 0011's timeout
+// sentence describes and the validator forbids. An acknowledged call that the
+// run ends without resolving cannot settle as action.call.failed: that
+// terminal must derive from an accepted error-arm resolution, and an
+// acknowledgement is not one. Cancelled is what the transition table admits
+// from started without a resolution behind it, and the assertion is the real
+// validator rather than the event name, so the rule and the test cannot drift.
+func TestAcknowledgedCallClosesAsCancelled(t *testing.T) {
+	session, client := openProviding(t, providedTool())
+	admission, stream := submitTest(t, session)
+	toolExecute(t, client, "lookup")
+	call := pendingCall(t, session, admission.RunID)
+
+	acknowledge := callRequest(call, admission.RunID)
+	acknowledge.Result, acknowledge.Started = nil, &protocol.ResolveArmStarted{}
+	if answer := resolveCall(t, session, "resolve-ack", acknowledge); !answer.Accepted {
+		t.Fatalf("acknowledgement refused %q", answer.Reason)
+	}
+
+	endRun(t, client)
+	events := adaptertest.Drain(t, stream, time.Second)
+	var closed protocol.EnvelopeType
+	for _, event := range events {
+		switch event.Type {
+		case protocol.TypeActionCallCancelled, protocol.TypeActionCallFailed, protocol.TypeActionCallCompleted:
+			closed = event.Type
+		}
+	}
+	if closed != protocol.TypeActionCallCancelled {
+		t.Fatalf("an acknowledged unresolved call closed as %s, want action.call.cancelled", closed)
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, probe(t), events)
+}
+
+// TestResolutionLosingTheRaceIsRefused pins the window between the ladder's
+// checks under mu and the transition mutex this call then takes. A run settled
+// in that window has already closed the call, so committing would write a
+// result back for a call that is over, publish nothing, and hand the resolver
+// accepted=true with a settlement the trace does not carry. The refusal names
+// the settlement the close produced, which is the answer the ladder owes.
+func TestResolutionLosingTheRaceIsRefused(t *testing.T) {
+	session, client := openProviding(t, providedTool())
+	admission, stream := submitTest(t, session)
+	toolExecute(t, client, "lookup")
+	call := pendingCall(t, session, admission.RunID)
+
+	endRun(t, client)
+	events := adaptertest.Drain(t, stream, time.Second)
+
+	answer := resolveCall(t, session, "resolve-late", callRequest(call, admission.RunID))
+	if answer.Accepted || answer.Reason != protocol.ReasonAlreadyResolved {
+		t.Fatalf("a resolution for a closed call got accepted=%v reason=%q", answer.Accepted, answer.Reason)
+	}
+	if answer.Details == nil || answer.Details.SettlementID == "" {
+		t.Fatalf("details = %+v, want the settlement the close published", answer.Details)
+	}
+	var found bool
+	for _, event := range events {
+		if event.ID == answer.Details.SettlementID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the refusal names %q, which the trace does not carry", answer.Details.SettlementID)
+	}
+	client.mu.Lock()
+	writes := 0
+	for _, envelope := range client.sends {
+		if envelope.Type == native.TypeToolResult {
+			writes++
+		}
+	}
+	client.mu.Unlock()
+	if writes != 0 {
+		t.Fatal("a refused resolution wrote a tool_result back to the harness")
+	}
+}
+
+// TestResolutionSettledInsideTheTransitionWindowIsRefused drives the window
+// itself rather than its ladder-visible shadow. The ladder is judged under mu
+// and the transition mutex is taken after, so a resolution can pass every
+// check and then wait while the dispatch goroutine's agent_end settles the run
+// and closes the call. Committing there would write a result back for a call
+// that is over, publish nothing because every emit answers errTerminalWon, and
+// hand the resolver accepted=true.
+//
+// The window is forced by holding transitionMu the way handleEnvelope does,
+// letting the resolution block on it, and leaving behind exactly the state a
+// close leaves: the run terminal and the call carrying its settlement.
+func TestResolutionSettledInsideTheTransitionWindowIsRefused(t *testing.T) {
+	open, client := openProviding(t, providedTool())
+	admission, _ := submitTest(t, open)
+	toolExecute(t, client, "lookup")
+	call := pendingCall(t, open, admission.RunID)
+	inner := open.(*session)
+
+	inner.transitionMu.Lock()
+	answers := make(chan protocol.ActionCallResolveResponse, 1)
+	go func() {
+		answers <- resolveCall(t, open, "resolve-racing", callRequest(call, admission.RunID))
+	}()
+	// Long enough for the goroutine to clear the ladder and park on the mutex
+	// this test holds; it cannot proceed past that point whatever happens.
+	time.Sleep(50 * time.Millisecond)
+
+	inner.mu.Lock()
+	inner.runs[admission.RunID].terminal = true
+	call.settlementID = "closed-by-the-run"
+	inner.mu.Unlock()
+	inner.transitionMu.Unlock()
+
+	answer := <-answers
+	if answer.Accepted || answer.Reason != protocol.ReasonAlreadyResolved {
+		t.Fatalf("a resolution that lost the transition race got accepted=%v reason=%q", answer.Accepted, answer.Reason)
+	}
+	if answer.Details == nil || answer.Details.SettlementID != "closed-by-the-run" {
+		t.Fatalf("details = %+v, want the settlement the close left", answer.Details)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, envelope := range client.sends {
+		if envelope.Type == native.TypeToolResult {
+			t.Fatal("a resolution that lost the race still wrote a tool_result back")
+		}
+	}
+}

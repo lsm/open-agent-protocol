@@ -681,6 +681,27 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 
+	// Taking the mutex is not the same as having held it. The ladder was
+	// judged under mu, and handleEnvelope holds transitionMu alone, so an
+	// agent_end can have settled the run and closed this call in between.
+	// Committing anyway would write back a result for a call that is over,
+	// publish nothing because every emit answers errTerminalWon, and then
+	// overwrite the settlement the close published with the zero id of an
+	// envelope that was never sent — leaving the resolver holding
+	// accepted=true and a settlement no validator can match. So the state is
+	// read again, and a resolution that lost the race is refused with the
+	// settlement the close produced, which is the answer it was owed.
+	s.mu.Lock()
+	lost := run.terminal || call.settlementID != ""
+	if lost {
+		settlement := call.settlementID
+		call.settledArm, call.settledRequestID = "", ""
+		call.settledResult, call.settledError = nil, nil
+		s.mu.Unlock()
+		return refuse(protocol.ReasonAlreadyResolved, settlement)
+	}
+	s.mu.Unlock()
+
 	if err := s.writeToolResult(ctx, call, sequence); err != nil {
 		// The harness never got the answer, so this endpoint did not accept
 		// the resolution and must not keep a record saying it did: the caller
@@ -735,7 +756,10 @@ func (s *session) settleControlCall(run *runState, call *callState, acknowledged
 	if !acknowledged {
 		started := s.callPayload(run, call, call.settledRequestID)
 		started.ArgumentsJSON = cloneRaw(call.args)
-		event, _ := s.emitEnvelope(run, protocol.TypeActionCallStarted, started, false, "")
+		event, err := s.emitEnvelope(run, protocol.TypeActionCallStarted, started, false, "")
+		if err != nil {
+			return
+		}
 		s.mu.Lock()
 		call.startedEvent = event.ID
 		s.mu.Unlock()
@@ -751,7 +775,13 @@ func (s *session) settleControlCall(run *runState, call *callState, acknowledged
 			terminal.Result = json.RawMessage("null")
 		}
 	}
-	event, _ := s.emitEnvelope(run, typ, terminal, false, call.startedEvent)
+	event, err := s.emitEnvelope(run, typ, terminal, false, call.startedEvent)
+	if err != nil {
+		// Nothing was published, so there is no settlement to record. Writing
+		// the zero id of an envelope that never existed would name a
+		// settlement the trace does not carry.
+		return
+	}
 	s.mu.Lock()
 	call.settlementID = event.ID
 	s.mu.Unlock()
@@ -1038,7 +1068,7 @@ func (s *session) Close(ctx context.Context) error {
 }
 
 func (s *session) settleTools(run *runState, cancel bool) {
-	s.closeControlCall(run, cancel)
+	s.closeControlCall(run)
 	s.mu.Lock()
 	var tools []*toolState
 	for _, tool := range s.tools {
@@ -1065,11 +1095,11 @@ func (s *session) settleTools(run *runState, cancel bool) {
 // before its parent run terminates. A run may not end with an interaction
 // pending, and nobody is going to answer this one: the harness is gone.
 //
-// Cancellation closes it as cancelled whether or not it was acknowledged —
-// the transition table admits both, and neither is a resolution the
-// participant gave. Any other settlement is a failure, because the run ended
-// with the call's answer still owed.
-func (s *session) closeControlCall(run *runState, cancel bool) {
+// It closes as cancelled however the run ended and whether or not the
+// participant acknowledged: nothing resolved the call, and cancelled is the
+// one terminal the transition table admits from both requested and started
+// without an accepted resolution behind it.
+func (s *session) closeControlCall(run *runState) {
 	s.mu.Lock()
 	call := run.call
 	// The test is whether the trace carries a settlement, not whether this
@@ -1081,19 +1111,22 @@ func (s *session) closeControlCall(run *runState, cancel bool) {
 		return
 	}
 	call.settledArm = protocol.ResolveArmError
-	started, acknowledged := call.startedEvent, call.acknowledged
+	started := call.startedEvent
 	s.mu.Unlock()
+	// Cancelled, whether or not the participant acknowledged. Decision 0011's
+	// timeout sentence says an acknowledged call settles as failed, and that
+	// sentence cannot be honoured: the same decision requires
+	// action.call.failed to derive from an accepted error-arm resolution, an
+	// acknowledgement is not one, and validation/controltools.go enforces it —
+	// so the failed terminal would be illegal_tool_transition on every trace
+	// that emitted it. The transition table admits cancelled from both
+	// requested and started, and nothing here was resolved, so cancelled is
+	// both legal and true. The record carries the correction.
 	payload := s.callPayload(run, call, "")
-	// An unacknowledged call goes from requested to cancelled and an
-	// acknowledged one to failed — the same split decision 0011 gives a
-	// harness-side timeout, and the only one the transition table admits: a
-	// call that never started cannot fail.
-	typ := protocol.TypeActionCallCancelled
-	if acknowledged && !cancel {
-		typ = protocol.TypeActionCallFailed
-		payload.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "Makai run settled with a control-owned call still pending"}
+	event, err := s.emitEnvelope(run, protocol.TypeActionCallCancelled, payload, false, started)
+	if err != nil {
+		return
 	}
-	event, _ := s.emitEnvelope(run, typ, payload, false, started)
 	s.mu.Lock()
 	call.settlementID = event.ID
 	s.mu.Unlock()

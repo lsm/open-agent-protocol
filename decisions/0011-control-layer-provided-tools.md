@@ -136,8 +136,22 @@ Run cancel closes pending control-owned calls with `action.call.cancelled`
 before the run terminal, as the memory adapter already does for permission
 gates; an unacknowledged call goes from `requested` to `cancelled`, which the
 transition table already permits. Deadlines remain deferred (PF-2); a
-harness-side timeout settles an unacknowledged call as `cancelled` and an
-acknowledged one as `failed`, with the harness's code as the reason.
+harness-side timeout settles the call as `cancelled`, acknowledged or not,
+with the harness's code as the reason.
+
+**Correction, 2026-09-17.** This paragraph first said an acknowledged call
+times out as `failed`, and that sentence was never satisfiable. The rule three
+sections below requires `action.call.failed` to derive from an accepted
+`error`-arm resolution; an acknowledgement is not one, and
+`validation/controltools.go` enforces it, so a `failed` terminal on that path
+is `illegal_tool_transition` on every trace that carries it. Nothing ever
+emitted it, because nothing could emit it and pass. `cancelled` is what the
+transition table admits from both `requested` and `started` with no resolution
+behind it, and it is also the truer statement: the call was not resolved.
+
+The correction changes no wire behaviour and invalidates no trace — it replaces
+a sentence describing an unreachable state with one describing the reachable
+one, and the executable rule was always the other section's.
 
 ### The resolution is a request/response pair with three arms
 
