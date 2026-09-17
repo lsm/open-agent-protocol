@@ -133,6 +133,166 @@ Bindings must preserve event type, IDs, scoped ordering, request correlation,
 fields. Connection setup, heartbeats, reconnection, batching, authentication
 handshakes, and backpressure are binding concerns.
 
+## What This Protocol Is Not
+
+The scope line above says what this profile covers. This section says what it
+excludes, because an unstated boundary reads as an unfilled gap, and an
+implementer deciding whether they can move entirely onto OAP needs the
+difference.
+
+**Direct model inference is not carried on this wire.** A call that sends a
+prompt to a model and streams tokens back — no agent loop, no turns, no tools,
+no run — is not agent control, and no envelope here carries it. Every execution
+path begins at a session and a submission and mints a run, because a run is the
+thing whose lifecycle there is anything to normalize.
+
+This is a statement about this profile's wire, not about the layers, and not
+about OAP. The provider boundary gets a protocol of its own:
+[Decision 0016](../decisions/0016-model-provider-profile.md) proposes
+`open-agent-protocol.model-provider-core` for the agent loop's downward
+boundary, which is where an inference call belongs. The model provider is
+one of OAP's own layers, named as such in this repository's README beside the
+control layer, the agent loop and the tool executor, and that README says those
+layers may live in one process. An endpoint that speaks to a vendor API
+directly — normalizing the OpenAI and Anthropic request and streaming shapes
+behind one agent loop, with no third-party harness in between — is an ordinary
+OAP endpoint. It has a session, runs and tools like any other, and how it
+obtains its tokens is below this boundary and nobody else's business.
+
+What is excluded is exposing that inference call *through* OAP to the control
+layer as its own operation. The distinction matters because the two get
+confused: a provider layer under an endpoint is in scope by the README's own
+model, and a `provider.complete` envelope on the control wire is not.
+
+The reason is what OAP is for. Eight harnesses disagree about terminals,
+sequences, cancellation and admission, and this profile exists to make those
+comparable. They do not disagree about inference: the vendor wire formats
+already settled it, and this repository models that separately and
+deliberately in `provider/`, as compatibility surfaces rather than protocol.
+A profile that grew to cover inference would be re-normalizing something
+already normalized, and would have to answer what run identity means for an
+execution with no agent semantics — a question with no good answer.
+
+The practical consequence, stated plainly so nobody discovers it late: **a
+harness whose wire exposes direct provider access to its clients cannot move
+that surface onto OAP.** It runs OAP for the agent boundary and keeps its own
+surface, or a vendor's, for direct inference. That is a boundary rather than a
+shortfall, and it is deliberate.
+
+It constrains what the wire exposes and not what an endpoint is built on. An
+implementer free to drop their passthrough surface, or one who never had it,
+can put the provider layer under an OAP endpoint and have no second wire at
+all.
+
+Emulating inference as a tool-less single-submit session is possible and is not
+recommended. It buys a session and a run the caller did not want, and the
+stream it produces does not resemble what an inference API promises.
+
+**Transport-level authentication is out of scope**, and is named in Bindings
+above as a binding concern: how a control layer proves itself to an endpoint
+belongs to the transport that carries them. ACP's `authenticate` and
+OpenCode's daemon password are both this kind.
+
+Whether *provider* credential acquisition belongs here is a separate and open
+question — it is agent-loop state, not transport state — and no unit covers it
+today. It has **two** open cases, not one, and a unit designed for the first
+leaves the second homeless:
+
+- **Reactive.** A run blocks because a credential is missing or expired. This
+  is the case the constraints below are drawn from.
+- **Proactive.** A user authenticates with nothing running: no session, no
+  run, no blocked execution. In the one harness that exposes this natively it
+  is a distinct identity domain — a flow id, with no session or run appearing
+  anywhere in the exchange — and it is the case users hit first, because you
+  log in and then start working.
+
+Everything this section says about that harness — Makai — is **reported by its
+maintainers from their live tree, not pinned here**. The adapter at
+`makai-agent-67ad514` models no auth namespace, its mapping ledger in
+`research/` records none, and no corpus case exercises one, so none of it is
+evidence under
+[Decision 0003](../decisions/0003-staged-unit-graduation.md)'s step 3 — the
+same standing [Decision 0013](../decisions/0013-steer.md) gives Codex's
+`turn/steer`. It is recorded as a constraint to design against, not as a fact
+the repository can check.
+
+Proactive acquisition arrives with provider *discovery*, because they are one
+surface: an endpoint that tells a client which providers exist and which are
+usable has told it what to authenticate against, and a client that can see it
+is logged out and cannot act on it is worse served than one told nothing.
+Discovery of provider identity is [Decision 0014](../decisions/0014-provider-descriptors.md);
+the usability half is not, for the reason that record gives — a descriptor is
+fixed for a capability revision and an auth state is not.
+
+**The usability surface and the waiting condition are one object seen from two
+angles, and a unit that treats them as two mechanisms will have to reconcile
+them.** That harness is reported to carry a seven-value status enum,
+and two of those values — refreshing, and login in progress — describe an
+operation in flight rather than a property of a provider. That is why they
+cannot live on a descriptor: a cached one would report a transition that has
+already finished. But it is also what makes the surface load-bearing. A client
+asking whether it can use a provider and learning that a login is already
+running knows to wait on that flow rather than start a second one, which is
+the endpoint-scoped coalescing rule showing at the discovery layer instead of
+only inside the waiting layer.
+
+The consequence is a design constraint rather than an observation. If a client
+can observe that an acquisition is in flight, it can wait on it; if it cannot,
+every client races to start its own and the endpoint is left collapsing them
+silently. The harness above does the silent collapse today because its status
+surface and its refresh lock were built years apart and never told each other
+anything — which is the outcome a unit designing the two separately would
+reproduce.
+
+Two facts about expressibility, since the proactive case looks harder than it
+is and is harder in a different place than it looks. Session-less *queries* are
+already precedented: `capabilities.request` carries no session at all and
+`action.tools.list.request` makes one optional for an endpoint-wide listing, so
+enumerating providers without a session invents nothing. What has no precedent
+is a session-less *stateful exchange* — every multi-turn thing in v0.1 hangs off
+a run through an interaction — so a flow identity that outlives no session and
+belongs to no run would be the protocol's third identity domain. That is the
+part worth designing rather than assuming.
+
+No adapter in this repository has a credential path at all; an expired
+provider credential becomes `run.failed` like any other provider error.
+
+The evidence is one harness, and it is the weaker kind of one. It is
+disinterest rather than the suppression that carried `+control-tools`, and the
+test is the artifact rather than the absence: the tool case had
+`"tools": []any{}` written into the wire, a decision recorded at the wall. The
+credential case has nothing — the pinned adapter does not model the auth
+namespace at all, though the harness it adapts hosts a full auth protocol, and
+an unmodelled namespace is indistinguishable from one nobody got to. Under [Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)
+that cannot carry a unit alone, and it would not become able to by the
+implementation becoming first-party.
+
+The constraints below are recorded anyway, because they are what a second
+harness's arrival would otherwise cost someone to rediscover:
+
+- **The waiting condition is endpoint-scoped, not run- or session-scoped.** One
+  run blocks on exactly one provider, because a run carries a single model
+  reference and nothing inside it introduces a second. The sharing is entirely
+  across runs, and across sessions: Makai's maintainers report a refresh lock
+  that is one object per process keyed on provider and user, so N runs in M
+  sessions wait on the same thing. This is why the pattern of the three
+  existing resolve pairs does not
+  fit. An interaction carries a `run_id`, is resolved once by its declared
+  responder, and never outlives its run; two runs blocked on one expired
+  credential is one real-world event that model can only express as two, which
+  is why every implementation needs a coalescing rule to put it back together.
+- **An abandoned acquisition must not wedge the endpoint.** A timed-out entry
+  is recovered rather than poisoned, so the next acquirer starts a fresh
+  attempt instead of inheriting a dead one. Whatever shape this takes, that
+  property belongs in the rule: a login nobody finished should not disable the
+  credential for the endpoint's lifetime.
+- **Abandonment and failure are indistinguishable to a waiter**, after a
+  bounded wait. That is a choice a unit would have to name rather than inherit.
+  The existing bound is 30 seconds, chosen for non-interactive token refresh
+  and never tuned against a human completing a browser flow; it is reported,
+  like the rest of this list, and argues that a bound is needed rather than
+  fixing what it should be.
+
 ## Request And Stream Semantics
 
 Core does not require a transport-level RPC mechanism. It does require semantic

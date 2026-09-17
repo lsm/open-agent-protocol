@@ -4181,6 +4181,18 @@ ledger records that the event is not a comprehensive feed of persisted writes.
 
 ## T4. Steer
 
+**Status: [Decision 0013](../decisions/0013-steer.md) is proposed and adopts
+this section as its shape.** The record names one prerequisite that has not
+landed: `adapter.Session.Submit` still takes a bare
+`protocol.MessageSubmitRequest`, so no adapter can populate `request_id` on a
+steer settlement. This section assigned that change to T2, which graduated
+without it. It is a compile-time break across all nine `adapter.Session`
+implementations and should land on its own.
+
+The record also defers the `settled_steers` session-state surface below to its
+own decision, rather than graduating it inside this unit.
+
+
 Unit name: `steer`. Planned decision: 0009. This section is a pre-design for
 that decision, not a settled shape: it is the one unit that adds a new
 pending lifecycle inside a run, and its decision must be written from a pi
