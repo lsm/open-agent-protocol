@@ -211,14 +211,7 @@ func preserved(src []byte) map[int]bool {
 		}
 	}
 	for _, g := range f.Comments {
-		carries := false
-		for _, c := range g.List {
-			if toolchainMarker(c.Text) {
-				carries = true
-				break
-			}
-		}
-		if !carries {
+		if !unremovableGroup(fset, f, g) {
 			continue
 		}
 		for _, c := range g.List {
@@ -226,6 +219,41 @@ func preserved(src []byte) map[int]bool {
 		}
 	}
 	return kept
+}
+
+func unremovableGroup(fset *token.FileSet, f *ast.File, g *ast.CommentGroup) bool {
+	pkg := fset.Position(f.Package)
+	for _, c := range g.List {
+		switch {
+		case generatedHeader(c.Text):
+			if fset.Position(c.End()).Offset <= pkg.Offset {
+				return true
+			}
+		case canonicalImportComment(c.Text):
+			if fset.Position(c.Pos()).Line == pkg.Line {
+				return true
+			}
+		case exampleOutputMarker(c.Text):
+			if inExampleBody(fset, f, g) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func inExampleBody(fset *token.FileSet, f *ast.File, g *ast.CommentGroup) bool {
+	start, end := fset.Position(g.Pos()).Offset, fset.Position(g.End()).Offset
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "Example") {
+			continue
+		}
+		if start > fset.Position(fn.Body.Lbrace).Offset && end < fset.Position(fn.Body.Rbrace).Offset {
+			return true
+		}
+	}
+	return false
 }
 
 func cgoGroups(f *ast.File) []*ast.CommentGroup {
@@ -577,32 +605,43 @@ func protectedIn(offs []int, start, end int) bool {
 }
 
 func toolchainMarker(text string) bool {
+	return generatedHeader(text) || exampleOutputMarker(text) || canonicalImportComment(text)
+}
+
+func generatedHeader(text string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(line, "// Code generated ") && strings.HasSuffix(line, " DO NOT EDIT.") {
 			return true
 		}
 	}
+	return false
+}
+
+func markerBody(text string) string {
 	body := text
 	if strings.HasPrefix(body, "/*") {
 		body = strings.TrimSuffix(strings.TrimPrefix(body, "/*"), "*/")
 	} else if strings.HasPrefix(body, "//") {
 		body = body[2:]
 	}
-	trimmed := strings.TrimSpace(body)
-	lower := strings.ToLower(trimmed)
-	if strings.HasPrefix(lower, "output:") || strings.HasPrefix(lower, "unordered output:") {
+	return strings.TrimSpace(body)
+}
+
+func exampleOutputMarker(text string) bool {
+	lower := strings.ToLower(markerBody(text))
+	return strings.HasPrefix(lower, "output:") || strings.HasPrefix(lower, "unordered output:")
+}
+
+func canonicalImportComment(text string) bool {
+	rest, ok := strings.CutPrefix(markerBody(text), "import")
+	if !ok {
+		return false
+	}
+	if rest == "" {
 		return true
 	}
-	if rest, ok := strings.CutPrefix(trimmed, "import"); ok {
-		if rest == "" {
-			return true
-		}
-		r, _ := utf8.DecodeRuneInString(rest)
-		if !(unicode.IsLetter(r) || '0' <= r && r <= '9' || r == '_') {
-			return true
-		}
-	}
-	return false
+	r, _ := utf8.DecodeRuneInString(rest)
+	return !(unicode.IsLetter(r) || '0' <= r && r <= '9' || r == '_')
 }
 
 type cgoPreamble struct {
