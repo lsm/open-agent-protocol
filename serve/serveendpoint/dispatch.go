@@ -80,7 +80,7 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 		return s.submit(ctx, streams, e)
 	case protocol.TypeRunCancelRequest:
 		return plain(s.cancel(ctx, e))
-	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest:
+	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest, protocol.TypeActionCallResolveRequest:
 		return plain(s.resolve(ctx, e))
 	case protocol.TypeModelsRequest:
 		return plain(s.models(ctx, e))
@@ -131,6 +131,7 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 		SessionID:             request.SessionID,
 		Participant:           protocol.Participant{ID: serve.DefaultParticipant},
 		AllowDegradedFeatures: request.AllowDegradedFeatures,
+		Tools:                 request.Tools,
 	}
 	entry, state, err := s.hub.Open(ctx, s.adapter, open)
 	if err != nil {
@@ -326,6 +327,9 @@ func (s *Server) resolve(ctx context.Context, e protocol.Envelope) (protocol.Env
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
+	if e.Type == protocol.TypeActionCallResolveRequest {
+		return s.resolveCall(ctx, entry, e)
+	}
 	var resolution base.InteractionResolution
 	var answer protocol.Envelope
 	if e.Type == protocol.TypeActionPermissionResolveRequest {
@@ -363,6 +367,31 @@ func (s *Server) resolve(ctx context.Context, e protocol.Envelope) (protocol.Env
 	// one descriptor snapshot: the request cites the revision it was made
 	// under and the response repeats it. Dropping it here makes an otherwise
 	// conformant exchange fail validation as a stale revision.
+	answer.CapabilityRevision = e.CapabilityRevision
+	return answer, nil
+}
+
+// resolveCall answers a control-owned call's resolution. A refusal is carried
+// in the response rather than raised as a refusal envelope: the five ranked
+// reasons are the endpoint's answer to a well-formed request, and turning one
+// into an error.response would leave the resolver unable to tell a rejected
+// resolution from a broken one.
+func (s *Server) resolveCall(ctx context.Context, entry *serve.Session, e protocol.Envelope) (protocol.Envelope, error) {
+	var request protocol.ActionCallResolveRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	result, err := entry.ResolveCall(ctx, base.CallResolution{RequestID: e.ID, Request: request})
+	if err != nil {
+		return protocol.Envelope{}, err
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeActionCallResolveResponse, s.nextID("response"), result)
+	if err != nil {
+		return protocol.Envelope{}, err
+	}
+	answer.InReplyTo = e.ID
+	answer.SessionID = entry.ID()
+	answer.RunID = request.RunID
 	answer.CapabilityRevision = e.CapabilityRevision
 	return answer, nil
 }

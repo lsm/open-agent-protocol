@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +38,33 @@ const (
 	scriptedSource     = "reference-native"
 	syntheticMCPSource = "reference-mcp"
 )
+
+// The provisioning limits the descriptor discloses for
+// action.tools.provide. They are declared because the unit's rule is that a
+// constraint must be advertised to be exercised: an adapter permitted to
+// refuse any well-formed array could advertise the key, refuse everything,
+// and pass conformance while honouring nothing. Refusing an array that
+// satisfies every one of these is undisclosed_provide_limit.
+const (
+	maxProvidedTools    = 2
+	providedNamePattern = "^[a-z][a-z0-9_]*$"
+	providedDialect     = "https://json-schema.org/draft/2020-12/schema"
+)
+
+var providedNameRE = regexp.MustCompile(providedNamePattern)
+
+// provideSupport is this adapter's one disclosure for action.tools.provide.
+// Probe publishes it and admitProvidedTools gates on it, so the descriptor a
+// caller reads and the admission its open meets are the same value.
+var provideSupport = protocol.FeatureSupport{
+	Level: protocol.SupportEmulated,
+	Limits: map[string]json.RawMessage{
+		protocol.LimitMaxTools: json.RawMessage(strconv.Itoa(maxProvidedTools)),
+		"name_pattern":         mustJSON(providedNamePattern),
+		"schema_dialect":       mustJSON(providedDialect),
+	},
+	Reason: "provided tools are called by the script and executed by the control layer through the resolve pair",
+}
 
 // scriptedCatalog is the reference adapter's effective tool catalog: the one
 // tool its script calls, and the one a tool_choice policy can name. The
@@ -114,7 +142,12 @@ var attachSupport = protocol.FeatureSupport{
 // one that merges second takes the number after what it finds. This descriptor
 // is neither of theirs: it says everything both of them say and the queue
 // besides, so it is new again.
-const CapabilityRevision = "reference-memory-v7"
+//
+// v8 advertises action.tools.provide with the limits that make a refusal
+// checkable in both directions. A descriptor that publishes a provided tool's
+// catalog entry is a different descriptor from one that cannot provision at
+// all, so the revision moves.
+const CapabilityRevision = "reference-memory-v8"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -186,6 +219,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		// arrays are honoured, so a refusal is checkable in both directions.
 		protocol.FeatureToolsList:         {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
 		protocol.FeatureToolSourcesAttach: attachSupport,
+		protocol.FeatureToolsProvide:      provideSupport,
 		"action.permissions":              {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		"user_input":                      {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		// The run controls, executed deterministically. Each disclosure is
@@ -255,6 +289,13 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	if err != nil {
 		return nil, err
 	}
+	// Provisioning is judged in the same place and on the same terms: whole
+	// or not at all, before any identity exists, so a refused open leaves no
+	// session holding a catalog it silently trimmed.
+	provided, err := admitProvidedTools(request, attached)
+	if err != nil {
+		return nil, err
+	}
 	id := request.SessionID
 	if id == "" {
 		id = protocol.SessionID(m.ids.NewID("session"))
@@ -265,6 +306,7 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 		participant: request.Participant.ID,
 		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached)},
 		attached:    attached,
+		provided:    provided,
 		runs:        make(map[protocol.RunID]*memoryRun),
 	}, nil
 }
@@ -329,6 +371,79 @@ func sessionSources(attached []protocol.ToolSourceAttachment) []protocol.ToolSou
 	return sources
 }
 
+// admitProvidedTools judges one open's `tools` array against what Probe
+// advertises. Every refusal names the offending entry, so a caller and the
+// validator agree on which one to change, and every refusal cites a condition
+// some rule names: an array that violates nothing disclosed must be admitted,
+// or the advertisement promises nothing.
+//
+// The order is the order of the unit's rules rather than convenience.
+// Ownership and a dangling source are refused first because both are defects
+// visible in the request itself; the ceiling and the name and dialect shapes
+// follow, and each is a limit this descriptor discloses.
+func admitProvidedTools(request OpenRequest, attached []protocol.ToolSourceAttachment) ([]protocol.ToolDefinition, error) {
+	if err := RefuseUnadvertisedTools(request, provideSupport); err != nil {
+		return nil, err
+	}
+	if len(request.Tools) == 0 {
+		return nil, nil
+	}
+	refuse := func(tool, detail string) error {
+		return &UnsupportedControlError{Feature: protocol.FeatureToolsProvide, Reason: ControlUnsatisfiable, Tool: tool, Detail: detail}
+	}
+	resolvable := map[string]bool{}
+	for _, source := range sessionSources(attached) {
+		resolvable[source.ID] = true
+	}
+	taken := map[string]bool{}
+	for _, tool := range scriptedCatalog() {
+		taken[tool.Name] = true
+	}
+	if len(request.Tools) > maxProvidedTools {
+		return nil, refuse(request.Tools[maxProvidedTools].Name, fmt.Sprintf("at most %d tools may be provided", maxProvidedTools))
+	}
+	for _, tool := range request.Tools {
+		switch {
+		case tool.Name == "":
+			return nil, refuse("", "a provided tool needs a name")
+		case tool.ExecutionOwner != request.Participant.ID:
+			// Checked where it is stated rather than where it fails: an open
+			// admitting a tool owned by anyone else has taken on a routing
+			// decision it cannot make, since no envelope carries a sender to
+			// compare against later.
+			return nil, refuse(tool.Name, "execution_owner must be the opening participant")
+		case tool.Source != "" && !resolvable[tool.Source]:
+			return nil, refuse(tool.Name, "source "+tool.Source+" resolves to no declared or attached source")
+		case taken[tool.Name]:
+			return nil, refuse(tool.Name, "the name already resolves to a catalog entry")
+		case !providedNameRE.MatchString(tool.Name):
+			return nil, refuse(tool.Name, "the name is outside the disclosed name_pattern "+providedNamePattern)
+		case !admissibleDialect(tool.InputSchema):
+			// A schema naming no $schema elects this endpoint's dialect, so a
+			// disclosed dialect binds only a definition that declared a
+			// different one.
+			return nil, refuse(tool.Name, "the input schema declares a dialect outside the disclosed "+providedDialect)
+		}
+		taken[tool.Name] = true
+	}
+	return append([]protocol.ToolDefinition(nil), request.Tools...), nil
+}
+
+// admissibleDialect reports whether a provided tool's input schema elects a
+// dialect this adapter accepts. An absent $schema elects the endpoint's.
+func admissibleDialect(schema json.RawMessage) bool {
+	if len(schema) == 0 {
+		return true
+	}
+	var declared struct {
+		Schema string `json:"$schema"`
+	}
+	if err := json.Unmarshal(schema, &declared); err != nil {
+		return false
+	}
+	return declared.Schema == "" || declared.Schema == providedDialect
+}
+
 // mustJSON encodes a disclosed limit. The values are package constants, so a
 // failure here is a programming error rather than an input defect.
 func mustJSON(value any) json.RawMessage {
@@ -349,8 +464,12 @@ type memorySession struct {
 	participant protocol.ParticipantID
 	state       protocol.SessionState
 	attached    []protocol.ToolSourceAttachment
-	closed      bool
-	active      *memoryRun
+	// provided is the control layer's own tool catalog for this session,
+	// fixed at open for the session's lifetime. Its presence is what makes
+	// the script call a control-owned tool instead of executing its own.
+	provided []protocol.ToolDefinition
+	closed   bool
+	active   *memoryRun
 	// reserved is the one queued reservation this adapter admits beside a
 	// started run, per its disclosed max_queued_runs_per_session of 1. It
 	// promotes when the started run settles, and can settle pre-start itself.
@@ -372,6 +491,12 @@ type scriptStage uint8
 
 const (
 	stagePermission scriptStage = iota
+	// stageCall is the control-owned call's stage: the run has published a
+	// call it does not own and is waiting for the participant to execute it.
+	// It replaces the permission stage rather than following it — gating the
+	// control layer's own tool behind the control layer's own approval adds
+	// nothing the trace can read.
+	stageCall
 	stageInput
 	stageTerminal
 )
@@ -403,9 +528,26 @@ type memoryRun struct {
 	permissionID       protocol.InteractionID
 	inputID            protocol.InteractionID
 	toolCallID         protocol.ToolCallID
-	requestedBy        protocol.ParticipantID
-	respondedBy        protocol.ParticipantID
-	subscribers        []chan Result
+	// The control-owned call's bookkeeping. callID is its interaction;
+	// providedTool the definition the script calls. acknowledged records an
+	// accepted `started`, and settled the accepted resolution — with the
+	// arm, the payload it carried, and the request that authorized it, all of
+	// which the derived terminal must repeat. settlementID is the envelope an
+	// already_resolved refusal points at: the terminal where one exists, and
+	// otherwise the acceptance that settled the call, because the window
+	// between them is the one a retry lands in and it may not be left without
+	// a conforming answer.
+	callID           protocol.InteractionID
+	providedTool     protocol.ToolDefinition
+	acknowledged     bool
+	settledArm       string
+	settledResult    json.RawMessage
+	settledError     *protocol.ProtocolError
+	settledRequestID protocol.EnvelopeID
+	settlementID     protocol.EnvelopeID
+	requestedBy      protocol.ParticipantID
+	respondedBy      protocol.ParticipantID
+	subscribers      []chan Result
 }
 
 func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, EventStream, error) {
@@ -464,6 +606,14 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		// call and its permission gate: the script goes straight to the
 		// input stage.
 		run.stage = stageInput
+	} else if len(s.provided) > 0 {
+		// The session was opened with a control-owned catalog, so the call
+		// the script makes is one this endpoint does not execute. It is an
+		// interaction rather than a gate: the participant runs the tool and
+		// answers with the outcome.
+		run.stage = stageCall
+		run.callID = protocol.InteractionID(s.ids.NewID("call"))
+		run.providedTool = s.provided[0]
 	}
 	stream := make(chan Result, 32)
 	run.subscribers = append(run.subscribers, stream)
@@ -637,6 +787,7 @@ func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.Activ
 	entry := protocol.ActiveRun{
 		RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary,
 		AsOfSequence: &sequence, PendingInteractions: pendingInteractions(run),
+		AcknowledgedInteractions: acknowledgedInteractions(run),
 	}
 	if position > 0 {
 		entry.QueuePosition = &position
@@ -653,6 +804,25 @@ func pendingInteractions(run *memoryRun) []protocol.InteractionID {
 		return nil
 	}
 	return []protocol.InteractionID{run.pendingInteraction}
+}
+
+// acknowledgedInteractions is the subset of the pending set whose `started`
+// acknowledgement this endpoint accepted. It exists because presence alone
+// cannot answer the question a resolver that lost its response is asking: an
+// accepted acknowledgement does not settle the call and a refused request
+// changes nothing, so both outcomes leave the interaction listed. A resolver
+// reading only the pending set would either resend an acknowledgement, be
+// refused already_resolved, and misread that as the call having settled — or
+// never send one the harness is still waiting for.
+//
+// It is read at the snapshot rather than anchored to as_of_sequence: a resolve
+// response consumes no sequence, so acceptance has no position in the run's
+// sequence domain to be anchored to.
+func acknowledgedInteractions(run *memoryRun) []protocol.InteractionID {
+	if !run.acknowledged || run.pendingInteraction == "" || run.pendingInteraction != run.callID {
+		return nil
+	}
+	return []protocol.InteractionID{run.callID}
 }
 
 func (s *memorySession) emitInitial(run *memoryRun) error {
@@ -686,6 +856,19 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	}
 	if !run.controls.callsTool {
 		return s.requestInput(run)
+	}
+	if run.callID != "" {
+		// A control-owned call carries its interaction and its responder, or
+		// no control layer could resolve it. It stays `requested` until
+		// execution is evidenced by the participant's own acknowledgement or
+		// result — never on this endpoint's initiative.
+		provided := protocol.ActionCallPayload{
+			InteractionID: run.callID, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID,
+			Name: run.providedTool.Name, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`),
+			RequestedBy: run.requestedBy, RespondedBy: run.respondedBy,
+			ExecutionOwner: run.providedTool.ExecutionOwner, Source: run.providedTool.Source,
+		}
+		return s.emit(run, protocol.TypeActionCallRequested, provided, false)
 	}
 	call := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Name: scriptedTool, ArgumentsJSON: json.RawMessage(`{"operation":"golden"}`), RequestedBy: run.requestedBy, ExecutionOwner: scriptedToolOwner, Source: scriptedSource}
 	if err := s.emit(run, protocol.TypeActionCallRequested, call, false); err != nil {
@@ -944,10 +1127,18 @@ func (s *memorySession) Tools(ctx context.Context, request protocol.ToolsListReq
 	// The revision travels with the listing because only the session knows
 	// which descriptor it served this one under; this adapter's never moves,
 	// which is exactly why saying so costs nothing.
+	tools := scriptedCatalog()
+	if request.SessionID != "" {
+		// A provided tool joins the session's catalog next to the harness's
+		// own, listed with the opener as execution_owner. It is a session
+		// fact rather than a descriptor one, so an endpoint-wide listing does
+		// not carry it.
+		tools = append(tools, s.provided...)
+	}
 	return ToolCatalog{Revision: CapabilityRevision, Tools: protocol.ToolsListResponse{
 		SessionID: request.SessionID,
 		Sources:   sources,
-		Tools:     scriptedCatalog(),
+		Tools:     tools,
 	}}, nil
 }
 
@@ -1020,6 +1211,12 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 			return ErrInvalidResolution
 		}
 		run.stage = stageTerminal
+	} else if stage == stageCall {
+		// The run's only pending interaction is a control-owned call, which
+		// is resolved through ResolveCall. A permission or input resolution
+		// here names an interaction the run does not have.
+		s.mu.Unlock()
+		return ErrInteractionNotFound
 	} else {
 		s.mu.Unlock()
 		return ErrInteractionResolved
@@ -1095,6 +1292,160 @@ func (s *memorySession) resolveInput(run *memoryRun, request protocol.UserInputR
 	return nil
 }
 
+// ResolveCall answers one resolution of a control-owned call. Every refusal is
+// a conforming outcome rather than an error: the reason is the highest of the
+// five the request satisfies, and an empty set means the request is valid,
+// which obliges acceptance. Refusing a valid resolution under any reason at
+// all would let an endpoint emit nothing, let a later cancellation settle the
+// call and the run, and pass conformance on a trace that answered nobody.
+func (s *memorySession) ResolveCall(ctx context.Context, resolution CallResolution) (protocol.ActionCallResolveResponse, error) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return protocol.ActionCallResolveResponse{}, err
+	}
+	request := resolution.Request
+	answer := protocol.ActionCallResolveResponse{
+		InteractionID: request.InteractionID, SessionID: request.SessionID,
+		RunID: request.RunID, ToolCallID: request.ToolCallID,
+	}
+	refuse := func(reason protocol.ResolveReason, settlement protocol.EnvelopeID) (protocol.ActionCallResolveResponse, error) {
+		answer.Accepted, answer.Reason = false, reason
+		if reason == protocol.ReasonAlreadyResolved {
+			answer.Details = &protocol.ActionCallResolveDetails{SettlementID: settlement}
+		}
+		return answer, nil
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return protocol.ActionCallResolveResponse{}, ErrSessionClosed
+	}
+	run := s.runs[request.RunID]
+	// Whether the interaction exists is asked first, because nothing else is
+	// answerable without it. A run this session never admitted, a run with no
+	// control-owned call, and a mismatched interaction id are the same answer.
+	if run == nil || run.callID == "" || request.InteractionID != run.callID || request.SessionID != s.state.SessionID {
+		s.mu.Unlock()
+		return refuse(protocol.ReasonUnknownInteraction, "")
+	}
+	// Then whether this sender may speak for the call at all. A foreign
+	// responder is refused for being foreign however the call stands: the
+	// state of an interaction it does not own is not its business, and
+	// reporting a more advanced reason would leak that state.
+	if request.RespondedBy != run.respondedBy || request.RequestedBy != run.requestedBy || request.ToolCallID != run.toolCallID {
+		s.mu.Unlock()
+		return refuse(protocol.ReasonWrongResponder, "")
+	}
+	arm := request.Arm()
+	if arm == "" {
+		s.mu.Unlock()
+		return refuse(protocol.ReasonUnknownInteraction, "")
+	}
+	// Only then how far the call has progressed, most advanced first. A
+	// settled call refuses every arm, and the settlement it names is the
+	// terminal where the trace carries one and otherwise the acceptance that
+	// settled it — the window between the two is where a lost response's
+	// retry lands, and it may not be left without a conforming answer.
+	if run.settledArm != "" {
+		settlement := run.settlementID
+		if settlement == "" {
+			settlement = run.settledRequestID
+		}
+		if arm == protocol.ResolveArmAcknowledge && run.settlementID == "" {
+			// The acknowledgement arm has a more specific answer here: the
+			// resolution was accepted but its terminal has not been
+			// published, so this acknowledgement is late rather than
+			// answering a call that is finished on the wire.
+			s.mu.Unlock()
+			return refuse(protocol.ReasonLateAcknowledgement, "")
+		}
+		s.mu.Unlock()
+		return refuse(protocol.ReasonAlreadyResolved, settlement)
+	}
+	if run.terminal || run.stage != stageCall {
+		s.mu.Unlock()
+		return refuse(protocol.ReasonAlreadyResolved, run.settlementID)
+	}
+	if arm == protocol.ResolveArmAcknowledge && run.acknowledged {
+		// A repeat is the more specific of the two acknowledgement answers,
+		// so it outranks late where both could hold.
+		s.mu.Unlock()
+		return refuse(protocol.ReasonRepeatedAcknowledgement, "")
+	}
+
+	answer.Accepted = true
+	if arm == protocol.ResolveArmAcknowledge {
+		run.acknowledged = true
+		s.mu.Unlock()
+		// An acknowledgement is not a resolution: it releases the started
+		// event and nothing else. The call stays pending.
+		call := s.callPayload(run, resolution.RequestID)
+		call.ArgumentsJSON = json.RawMessage(`{"operation":"golden"}`)
+		if err := s.emit(run, protocol.TypeActionCallStarted, call, false); err != nil && err != errTerminalWon {
+			return protocol.ActionCallResolveResponse{}, err
+		}
+		return answer, nil
+	}
+	// The accepted payload is stored with the acceptance because the terminal
+	// must carry it: authorization and payload are separate facts, and an
+	// endpoint that forwarded something other than what the participant said
+	// would otherwise pass with an authorized terminal nobody stated.
+	run.settledArm = arm
+	run.settledRequestID = resolution.RequestID
+	run.settledResult = request.Result
+	run.settledError = request.Error
+	acknowledged := run.acknowledged
+	run.stage = stageInput
+	s.mu.Unlock()
+
+	if err := s.settleCall(run, acknowledged); err != nil && err != errTerminalWon {
+		return protocol.ActionCallResolveResponse{}, err
+	}
+	return answer, nil
+}
+
+// callPayload is the control-owned call's identity, repeated on every event
+// derived from a resolution. request_id names the resolve request the event
+// came from: two resolutions of one call can be outstanding at once — a result
+// and its retry — so tool_call_id alone cannot say which one released it.
+func (s *memorySession) callPayload(run *memoryRun, requestID protocol.EnvelopeID) protocol.ActionCallPayload {
+	return protocol.ActionCallPayload{
+		InteractionID: run.callID, RequestID: requestID,
+		SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID,
+		Name: run.providedTool.Name, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy,
+		ExecutionOwner: run.providedTool.ExecutionOwner, Source: run.providedTool.Source,
+	}
+}
+
+// settleCall publishes the terminal an accepted resolution authorized, and the
+// started event it implies when the participant resolved without having
+// acknowledged: the result is itself the evidence execution began, so the
+// start is emitted immediately before the terminal rather than invented
+// earlier on the endpoint's own initiative.
+func (s *memorySession) settleCall(run *memoryRun, acknowledged bool) error {
+	if !acknowledged {
+		started := s.callPayload(run, run.settledRequestID)
+		started.ArgumentsJSON = json.RawMessage(`{"operation":"golden"}`)
+		if err := s.emit(run, protocol.TypeActionCallStarted, started, false); err != nil {
+			return err
+		}
+	}
+	terminal := s.callPayload(run, run.settledRequestID)
+	typ := protocol.TypeActionCallCompleted
+	if run.settledArm == protocol.ResolveArmError {
+		typ = protocol.TypeActionCallFailed
+		terminal.Error = run.settledError
+	} else {
+		terminal.Result = run.settledResult
+	}
+	if err := s.emit(run, typ, terminal, false); err != nil {
+		return err
+	}
+	return s.requestInput(run)
+}
+
 func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -1141,7 +1492,17 @@ func (s *memorySession) Cancel(ctx context.Context, runID protocol.RunID) (proto
 	if err := s.emit(run, protocol.TypeRunStatusUpdated, status, false); err != nil && err != errTerminalWon {
 		return protocol.RunCancelResponse{}, err
 	}
-	// Close pending child lifecycles before settling their parent run.
+	// Close pending child lifecycles before settling their parent run. An
+	// unacknowledged call goes from requested to cancelled and an
+	// acknowledged one does too: the transition table already permits both,
+	// and neither is a resolution the participant gave.
+	if run.stage == stageCall {
+		// The cancellation payload carries no error and no request_id: no
+		// resolution authorized it, and the schema's closed cancelled shape
+		// admits neither.
+		cancelled := s.callPayload(run, "")
+		_ = s.emit(run, protocol.TypeActionCallCancelled, cancelled, false)
+	}
 	if run.stage == stagePermission {
 		reason := protocol.ProtocolError{Code: "run_cancelled", Message: "run cancellation closed the permission request"}
 		resolved := protocol.PermissionResolvedPayload{InteractionID: run.permissionID, RequestedBy: run.requestedBy, RespondedBy: run.respondedBy, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: run.toolCallID, Outcome: protocol.InteractionCancelled, Reason: &reason}
@@ -1338,6 +1699,19 @@ func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, paylo
 		run.pendingInteraction = run.inputID
 	case protocol.TypeActionPermissionResolved, protocol.TypeUserInputResolved:
 		run.pendingInteraction = ""
+	case protocol.TypeActionCallRequested:
+		if run.callID != "" {
+			run.pendingInteraction = run.callID
+		}
+	case protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
+		if run.callID != "" && run.pendingInteraction == run.callID {
+			// The terminal leaves the call's pending set and becomes the
+			// settlement an already_resolved refusal points at: it is the
+			// most advanced thing the trace carries for this interaction, so
+			// it supersedes the acceptance that authorized it.
+			run.pendingInteraction = ""
+			run.settlementID = envelope.ID
+		}
 	}
 	var promoted *memoryRun
 	if terminal {
@@ -1418,3 +1792,5 @@ var _ ToolLister = (*memorySession)(nil)
 // executable units define, so a unit's wire shape is executable rather than
 // prose before any native adapter proves it.
 var _ ModelLister = (*memorySession)(nil)
+
+var _ CallResolver = (*memorySession)(nil)

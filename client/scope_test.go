@@ -69,7 +69,7 @@ func stateResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionID)
 	// response without one would make every scope case pass for the wrong
 	// reason. TestClientRejectsACatalogItCannotBindToADescriptor covers the
 	// missing revision on its own.
-	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v7"
+	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v8"
 	return response
 }
 
@@ -86,7 +86,7 @@ func catalogResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionI
 	// response without one would make every scope case pass for the wrong
 	// reason. TestClientRejectsACatalogItCannotBindToADescriptor covers the
 	// missing revision on its own.
-	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v7"
+	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v8"
 	return response
 }
 
@@ -171,7 +171,7 @@ func TestClientRejectsACatalogItCannotBindToADescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a bound catalog was rejected: %v", err)
 	}
-	if listing.Revision != "reference-memory-v7" {
+	if listing.Revision != "reference-memory-v8" {
 		t.Fatalf("catalog revision %q, want the envelope's", listing.Revision)
 	}
 }

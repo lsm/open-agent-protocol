@@ -207,6 +207,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
+	// The same gate for control-layer-provided tools: this adapter advertises
+	// no action.tools.provide, so an open supplying its own tool definitions
+	// is refused rather than returning a session whose provided catalog was
+	// silently discarded.
+	if err := base.RefuseUnadvertisedTools(req); err != nil {
+		return nil, err
+	}
 	// Extension dialogs are emitted with the participant as the responder, so an
 	// empty identity would produce schema-invalid events that no valid resolution
 	// could satisfy. Reject before starting a process.
