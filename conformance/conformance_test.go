@@ -151,6 +151,13 @@ func helperCommand(t *testing.T, mode string) []string {
 // wrong.
 func runHelperEndpoint(mode string) int {
 	const revision = "helper-v1"
+	if mode == "closes-stdout" {
+		// Closes its output and stays alive, which is not the same as
+		// leaving — and is a shape a harness for arbitrary binaries meets.
+		os.Stdout.Close()
+		time.Sleep(time.Hour)
+		return 0
+	}
 	if mode == "mute" {
 		// Starts, says nothing, and never leaves — not even on EOF. A sleep
 		// rather than a bare block, so the runtime does not notice every
@@ -458,5 +465,41 @@ func TestClientKillsAnEndpointThatNeitherSpeaksNorExits(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > deadline/2 {
 		t.Fatalf("a second wait took %s, so it paid the deadline again", elapsed)
+	}
+}
+
+// TestClientDoesNotWaitForeverOnAnEndpointThatClosesStdout separates two
+// things a runner must not conflate: closing stdout and leaving.
+//
+// A binary can do the first and never the second. Reaping it unbounded would
+// hand this run's lifetime to the binary being judged, which is the one thing
+// a harness for arbitrary binaries must not do — and the deferred cleanup
+// never runs, because the run is inside the wait.
+func TestClientDoesNotWaitForeverOnAnEndpointThatClosesStdout(t *testing.T) {
+	const deadline = 300 * time.Millisecond
+	client, err := SpawnWithDeadline(context.Background(), helperCommand(t, "closes-stdout")[0], nil, io.Discard, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, waitErr := client.Wait()
+		done <- waitErr
+	}()
+	select {
+	case waitErr := <-done:
+		if waitErr == nil {
+			t.Fatal("waiting on an endpoint that never exited reported success")
+		}
+		if !strings.Contains(waitErr.Error(), "not exited") {
+			t.Fatalf("unexpected error %v", waitErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait never returned: the runner is waiting on a binary that closed stdout and stayed alive")
+	}
+	if client.cmd.ProcessState == nil {
+		t.Fatal("the endpoint was left running after the runner gave up on it")
 	}
 }

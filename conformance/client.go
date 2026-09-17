@@ -35,6 +35,23 @@ import (
 // bounded, because a deadlocked endpoint has to end the run somehow.
 const DefaultLineDeadline = 5 * time.Minute
 
+// maxExitGrace caps the wait for a process to leave after its stdout has
+// closed. A conformant endpoint has already settled whatever it admitted by
+// then, so this is generous rather than tight: it exists so a binary that
+// closes its output and stays alive ends this run instead of owning it.
+const maxExitGrace = 30 * time.Second
+
+// exitGrace is that cap, or the caller's own line deadline when it is
+// shorter. A caller who asked for a snappy runner gets one here too, and a
+// caller who asked for patience does not get to wait longer for an exit than
+// for a line.
+func (c *Client) exitGrace() time.Duration {
+	if c.deadline > 0 && c.deadline < maxExitGrace {
+		return c.deadline
+	}
+	return maxExitGrace
+}
+
 // ErrEndpointGone reports that the endpoint's stdout ended before the line
 // this client was waiting for.
 var ErrEndpointGone = errors.New("conformance: the endpoint produced no more lines")
@@ -339,7 +356,28 @@ func (c *Client) Wait() (int, error) {
 			return -1, err
 		}
 	}
-	err := c.reapProcess()
+	// The reap is bounded too. Closing stdout is not leaving: an endpoint can
+	// do the first and never the second, and waiting on it unbounded would
+	// hand this run's lifetime to the binary it is judging — which is the one
+	// thing a harness for arbitrary binaries must not do.
+	reaped := make(chan error, 1)
+	go func() { reaped <- c.reapProcess() }()
+	var err error
+	select {
+	case err = <-reaped:
+	case <-time.After(c.exitGrace()):
+		// Killed directly rather than through Close, which funnels into the
+		// same sync.Once the reap is already inside and would therefore wait
+		// on the very cmd.Wait this is bounding.
+		if c.cancel != nil {
+			c.cancel()
+		}
+		select {
+		case <-reaped:
+		case <-time.After(c.exitGrace()):
+		}
+		return -1, fmt.Errorf("conformance: the endpoint closed its stdout but had still not exited %s later", c.exitGrace())
+	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		return exit.ExitCode(), nil
