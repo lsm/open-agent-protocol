@@ -160,3 +160,85 @@ func TestPipelinedRequestsStayCancellableWhileTheWriterIsParked(t *testing.T) {
 		t.Fatal("Run ignored its cancelled context: a handler is blocked behind the parked writer")
 	}
 }
+
+// syncBuffer collects stdout from the writer goroutine while the test reads
+// it afterwards.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+// TestASecondSubmitDoesNotDuplicateTheStream pins what a hub subscription
+// actually is: session-wide. publish fans every envelope to every subscriber,
+// so a second subscription does not mean a second run's events — it means the
+// same events twice.
+//
+// An ordinary queued submit produces exactly that. `auto` resolves to `queue`
+// while a run is streaming, and a per-submit subscription then delivers the
+// running run's tail and the queued run's events a second time. Filtering
+// each pump to the run it was started for is what keeps one delivery per
+// envelope.
+func TestASecondSubmitDoesNotDuplicateTheStream(t *testing.T) {
+	registry, err := serve.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	server, err := New(hub, Options{Adapter: "memory", Shutdown: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	message := func(text string) protocol.MessageSubmitRequest {
+		return protocol.MessageSubmitRequest{
+			SessionID: "twice", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}},
+		}
+	}
+	input := strings.Join([]string{
+		requestLine(t, protocol.TypeSessionOpenRequest, "open-1", protocol.SessionOpenRequest{SessionID: "twice"}, "twice"),
+		requestLine(t, protocol.TypeSessionMessageSubmitRequest, "submit-1", message("one"), "twice"),
+		requestLine(t, protocol.TypeSessionMessageSubmitRequest, "submit-2", message("two"), "twice"),
+	}, "\n") + "\n"
+
+	out := &syncBuffer{}
+	_ = server.Run(context.Background(), strings.NewReader(input), out)
+
+	seen := map[protocol.EnvelopeID]int{}
+	events := 0
+	for _, raw := range strings.Split(out.String(), "\n") {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		var envelope protocol.Envelope
+		if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+			continue
+		}
+		if envelope.InReplyTo != "" || envelope.Sequence == nil {
+			continue
+		}
+		events++
+		seen[envelope.ID]++
+	}
+	if events == 0 {
+		t.Fatal("no run events were streamed, so this test proved nothing")
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Errorf("envelope %s was delivered %d times", id, count)
+		}
+	}
+}

@@ -106,7 +106,7 @@ func (s *Server) replay(streams context.Context, frame controlFrame) error {
 	s.pumps.Add(1)
 	go func() {
 		defer s.pumps.Done()
-		s.pump(streams, subscription)
+		s.pump(streams, subscription, runID)
 	}()
 	return nil
 }

@@ -206,15 +206,25 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 		s.pumps.Add(1)
 		go func() {
 			defer s.pumps.Done()
-			s.pump(streams, subscription)
+			s.pump(streams, subscription, admission.RunID)
 		}()
 	}
 	return answer, start, nil
 }
 
-// pump writes one run's events as they are produced. A clean end at the run's
-// terminal needs no signal of its own: the terminal envelope is the marker,
-// exactly as it is on every other binding.
+// pump writes one run's events as they are produced.
+//
+// A hub subscription is session-wide: publish fans every envelope to every
+// subscriber. So a pump must deliver only the run it was started for, or a
+// session with two subscriptions sends the host each envelope twice — which
+// is what an ordinary queued submit produces, since `auto` resolves to
+// `queue` while a run is streaming and the second submit attaches a second
+// subscription. A replay makes it three. The stream is run-scoped by
+// construction — publish keys all of its bookkeeping on the envelope's run —
+// so filtering on that run loses nothing.
+//
+// A clean end at the run's terminal needs no signal of its own: the terminal
+// envelope is the marker, exactly as it is on every other binding.
 //
 // Every other ending does need one. This transport's pipe stays open after a
 // run stream dies, so a host that simply stopped receiving envelopes cannot
@@ -223,9 +233,8 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 // stream.lost control frame carrying the position the host actually reached,
 // which is a cursor it can replay from — the recovery this binding already
 // defines.
-func (s *Server) pump(ctx context.Context, subscription *serve.Subscription) {
+func (s *Server) pump(ctx context.Context, subscription *serve.Subscription, run protocol.RunID) {
 	defer subscription.Close()
-	var run protocol.RunID
 	var delivered uint64
 	for {
 		envelope, err := subscription.Next()
@@ -233,8 +242,8 @@ func (s *Server) pump(ctx context.Context, subscription *serve.Subscription) {
 			s.reportLostStream(ctx, run, delivered, err)
 			return
 		}
-		if envelope.RunID != "" {
-			run = envelope.RunID
+		if run != "" && envelope.RunID != run {
+			continue
 		}
 		if writeErr := s.write(ctx, envelope); writeErr != nil {
 			s.reportLostStream(ctx, run, delivered, writeErr)
