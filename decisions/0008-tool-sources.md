@@ -3,8 +3,9 @@
 Status: accepted 2026-09-16 (64 `tool-sources` fixtures; T3a and T3b are
 executable with Claude and ACP evidence. T3c control-layer tools stays staged as
 a named deferral, now carried by
-[Decision 0011](0011-control-layer-provided-tools.md), which is itself still
-proposed pending the adapter evidence)
+[Decision 0011](0011-control-layer-provided-tools.md), which discharged it and
+was accepted 2026-09-17 once the reference and Makai adapters both executed the
+unit)
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
