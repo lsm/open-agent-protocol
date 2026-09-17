@@ -159,9 +159,37 @@ stream it produces does not resemble what an inference API promises.
 
 **Transport-level authentication is out of scope**, and is named in Bindings
 above as a binding concern: how a control layer proves itself to an endpoint
-belongs to the transport that carries them. Whether *provider* credential
-acquisition belongs here is a separate and open question — it is agent-loop
-state, not transport state — and no unit covers it today.
+belongs to the transport that carries them. ACP's `authenticate` and
+OpenCode's daemon password are both this kind.
+
+Whether *provider* credential acquisition belongs here is a separate and open
+question — it is agent-loop state, not transport state — and no unit covers it
+today. No adapter in this repository has a credential path at all; an expired
+provider credential becomes `run.failed` like any other provider error.
+
+Three facts from the one harness that exposes it natively, recorded so whoever
+writes that unit inherits them as constraints rather than rediscovering them:
+
+- **The waiting condition is endpoint-scoped, not run- or session-scoped.** One
+  run blocks on exactly one provider, because a run carries a single model
+  reference and nothing inside it introduces a second. The sharing is entirely
+  across runs, and across sessions: Makai's refresh lock is one object per
+  process keyed on provider and user, so N runs in M sessions wait on the same
+  thing. This is why the pattern of the three existing resolve pairs does not
+  fit. An interaction carries a `run_id`, is resolved once by its declared
+  responder, and never outlives its run; two runs blocked on one expired
+  credential is one real-world event that model can only express as two, which
+  is why every implementation needs a coalescing rule to put it back together.
+- **An abandoned acquisition must not wedge the endpoint.** A timed-out entry
+  is recovered rather than poisoned, so the next acquirer starts a fresh
+  attempt instead of inheriting a dead one. Whatever shape this takes, that
+  property belongs in the rule: a login nobody finished should not disable the
+  credential for the endpoint's lifetime.
+- **Abandonment and failure are indistinguishable to a waiter**, after a
+  bounded wait. That is a choice a unit would have to name rather than inherit.
+  The existing bound is 30 seconds, chosen for non-interactive token refresh
+  and never tuned against a human completing a browser flow; it is evidence
+  that a bound is needed, not evidence of what it should be.
 
 ## Request And Stream Semantics
 
