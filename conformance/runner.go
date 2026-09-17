@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/lsm/open-agent-protocol/protocol"
@@ -74,6 +76,13 @@ func (r *runner) pass(name string) {
 	r.report.Checks = append(r.report.Checks, Check{Name: name, Passed: true})
 }
 func (r *runner) fail(name, detail string) {
+	// A check that failed only because an earlier wait expired and this
+	// runner killed the endpoint says so. Left alone it reports "file already
+	// closed", which reads as the endpoint having died and sends an
+	// implementer looking for a teardown bug that is not there.
+	if closed := r.client.ClosedByRunner(); closed != nil && strings.Contains(detail, "file already closed") {
+		detail = "not exercised: this runner closed the endpoint after an earlier check timed out (" + closed.Error() + ")"
+	}
 	r.report.Checks = append(r.report.Checks, Check{Name: name, Detail: detail})
 }
 
@@ -579,6 +588,15 @@ func (r *runner) replayRun() {
 		return
 	}
 	answer, err := r.client.Control(frame.ID)
+	if errors.Is(err, ErrControlUnanswered) {
+		// A control the endpoint does not implement must still be answered:
+		// the binding says so, and answering is what keeps the control
+		// vocabulary extensible. Silence is therefore a real failure — but
+		// only of this check. The endpoint is alive and owes answers to
+		// everything after it, so it is left running.
+		r.fail(accepted, "the endpoint answered nothing; a control it does not implement must still be answered with unsupported_control")
+		return
+	}
 	if err != nil {
 		r.fail(accepted, err.Error())
 		return

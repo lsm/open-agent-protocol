@@ -231,7 +231,27 @@ func (c *Client) send(envelope protocol.Envelope, record bool) error {
 // pull reads one more line from the endpoint, records it, and files it under
 // its kind. A response is any envelope correlated to a request; everything
 // else is an event.
-func (c *Client) pull() error {
+func (c *Client) pull() error { return c.pullWithin(c.deadline, true) }
+
+// ErrControlUnanswered is a control frame the endpoint never answered. It is
+// distinct from a dead endpoint because it is not one: a control is not an
+// envelope, the binding lets an endpoint implement none of them, and the
+// endpoint that answers nothing is still there and still owes answers to
+// everything else. Waiting for it must therefore not be fatal.
+var ErrControlUnanswered = errors.New("conformance: the endpoint answered no control frame")
+
+// pullWithin reads one more line, waiting at most budget. A fatal wait that
+// expires kills the endpoint; a non-fatal one leaves it alone.
+//
+// The distinction matters more than it looks. An endpoint that owes a
+// correlated response and sends nothing is neither talking nor leaving, and
+// killing it there is right. An endpoint that ignores a control frame has
+// done something the binding forbids but is otherwise alive and answering, and
+// killing it turns one defect into a failure for every later check — which
+// then reports the closed pipe rather than anything about the endpoint, and
+// reads as though the endpoint died. That cost a maintainer a wrong diagnosis:
+// six derived failures hid which one was real.
+func (c *Client) pullWithin(budget time.Duration, fatal bool) error {
 	c.mu.Lock()
 	dead := c.dead
 	c.mu.Unlock()
@@ -262,8 +282,11 @@ func (c *Client) pull() error {
 		}
 		c.mu.Unlock()
 		return nil
-	case <-time.After(c.deadline):
-		err := fmt.Errorf("conformance: the endpoint produced no line within %s", c.deadline)
+	case <-time.After(budget):
+		if !fatal {
+			return ErrControlUnanswered
+		}
+		err := fmt.Errorf("conformance: the endpoint produced no line within %s", budget)
 		c.mu.Lock()
 		c.dead = err
 		c.mu.Unlock()
@@ -336,10 +359,41 @@ func (c *Client) Control(id string) (ControlFrame, error) {
 			}
 		}
 		c.mu.Unlock()
-		if err := c.pull(); err != nil {
+		if err := c.pullWithin(c.controlBudget(), false); err != nil {
+			if errors.Is(err, ErrControlUnanswered) {
+				return ControlFrame{}, ErrControlUnanswered
+			}
 			return ControlFrame{}, fmt.Errorf("waiting for the control answer to %s: %w", id, err)
 		}
 	}
+}
+
+// ControlAnswerBudget bounds the wait for a control answer.
+//
+// It is an absolute cap rather than a fraction of the line deadline, because
+// the two bound different things. The line deadline is generous — five minutes
+// — because a response can be behind a model call, and an endpoint that is
+// working is not a hung one. Answering a control is neither: an endpoint
+// either implements the control or does not, and either answer is a local
+// decision it can make immediately. A fraction of five minutes would make the
+// runner sit for well over a minute to learn something no conformant endpoint
+// needs a second to say.
+const ControlAnswerBudget = 10 * time.Second
+
+func (c *Client) controlBudget() time.Duration {
+	if c.deadline > 0 && c.deadline < ControlAnswerBudget {
+		return c.deadline
+	}
+	return ControlAnswerBudget
+}
+
+// ClosedByRunner reports whether this runner killed the endpoint after a wait
+// expired, so a later failure can say who closed the pipe. "file already
+// closed" on its own reads as the endpoint having died.
+func (c *Client) ClosedByRunner() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dead
 }
 
 // CloseInput closes the endpoint's stdin, which on this binding is the
