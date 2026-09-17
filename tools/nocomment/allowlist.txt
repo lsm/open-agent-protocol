@@ -39,6 +39,7 @@ adapter/codex/appserver/internal/rpc/process.go
 adapter/codex/appserver/internal/rpc/process_test.go
 adapter/codex/appserver/session.go
 adapter/codex/appserver/session_test.go
+adapter/controltools_test.go
 adapter/deepseek/adapter.go
 adapter/deepseek/adapter_test.go
 adapter/deepseek/corpus_test.go
@@ -66,6 +67,7 @@ adapter/hermes/relay_test.go
 adapter/hermes/session.go
 adapter/hermes/session_test.go
 adapter/makai/adapter.go
+adapter/makai/controltools_test.go
 adapter/makai/corpus_test.go
 adapter/makai/internal/native/types.go
 adapter/makai/internal/native/types_test.go
