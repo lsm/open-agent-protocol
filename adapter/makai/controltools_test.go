@@ -656,6 +656,48 @@ func TestResolutionLosingTheRaceIsRefused(t *testing.T) {
 	}
 }
 
+// TestAcknowledgementSettledInsideTheTransitionWindowIsRefused is the same
+// window on the acknowledgement arm. It committed under opMu alone, so its
+// action.call.started could land between closeControlCall's
+// action.call.cancelled and the run terminal — a started-after-cancelled
+// transition the validator rejects, meaning the endpoint emitted a trace its
+// own validator refuses.
+func TestAcknowledgementSettledInsideTheTransitionWindowIsRefused(t *testing.T) {
+	open, client := openProviding(t, providedTool())
+	admission, _ := submitTest(t, open)
+	toolExecute(t, client, "lookup")
+	call := pendingCall(t, open, admission.RunID)
+	inner := open.(*session)
+
+	acknowledge := callRequest(call, admission.RunID)
+	acknowledge.Result, acknowledge.Started = nil, &protocol.ResolveArmStarted{}
+
+	inner.transitionMu.Lock()
+	answers := make(chan protocol.ActionCallResolveResponse, 1)
+	go func() { answers <- resolveCall(t, open, "ack-racing", acknowledge) }()
+	time.Sleep(50 * time.Millisecond)
+
+	inner.mu.Lock()
+	inner.runs[admission.RunID].terminal = true
+	call.settlementID = "closed-by-the-run"
+	inner.mu.Unlock()
+	inner.transitionMu.Unlock()
+
+	answer := <-answers
+	if answer.Accepted || answer.Reason != protocol.ReasonAlreadyResolved {
+		t.Fatalf("an acknowledgement that lost the race got accepted=%v reason=%q", answer.Accepted, answer.Reason)
+	}
+	if answer.Details == nil || answer.Details.SettlementID != "closed-by-the-run" {
+		t.Fatalf("details = %+v, want the settlement the close left", answer.Details)
+	}
+	inner.mu.Lock()
+	acked := call.acknowledged
+	inner.mu.Unlock()
+	if acked {
+		t.Fatal("a refused acknowledgement was recorded, so the resend it owes would be refused as a repeat")
+	}
+}
+
 // TestResolutionSettledInsideTheTransitionWindowIsRefused drives the window
 // itself rather than its ladder-visible shadow. The ladder is judged under mu
 // and the transition mutex is taken after, so a resolution can pass every

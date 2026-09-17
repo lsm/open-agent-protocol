@@ -651,12 +651,51 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	}
 
 	answer.Accepted = true
+	s.mu.Unlock()
+
+	// Committing an acceptance and publishing what it releases is one
+	// transition, for both arms, so it is taken against the same mutex every
+	// terminal arbiter here takes. The lock order is the one Cancel already
+	// uses — opMu, held by this call, then transitionMu — so it cannot invert
+	// against handleEnvelope, which takes transitionMu alone.
+	//
+	// Both arms need it and for the same reason. Without it on the resolution
+	// arm the dispatch goroutine's agent_end settles the run inside the
+	// window, every emit answers errTerminalWon, and the run ends carrying an
+	// interaction the trace still reads as pending. Without it on the
+	// acknowledgement arm the action.call.started lands between
+	// closeControlCall's action.call.cancelled and the run terminal, which is
+	// a started-after-cancelled transition the validator rejects — the
+	// endpoint would emit a trace its own validator refuses.
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+
+	// Taking the mutex is not the same as having held it. The ladder was
+	// judged under mu, so an agent_end can have settled the run and closed
+	// this call in between, and nothing is committed until that is ruled out.
+	// A resolution that lost the race is refused with the settlement the
+	// close produced, which is the answer the ladder owes it.
+	s.mu.Lock()
+	if run.terminal || call.settlementID != "" {
+		settlement := call.settlementID
+		s.mu.Unlock()
+		return refuse(protocol.ReasonAlreadyResolved, settlement)
+	}
 	if arm == protocol.ResolveArmAcknowledge {
 		call.acknowledged = true
 		s.mu.Unlock()
 		started := s.callPayload(run, call, resolution.RequestID)
 		started.ArgumentsJSON = cloneRaw(call.args)
-		event, _ := s.emitEnvelope(run, protocol.TypeActionCallStarted, started, false, "")
+		event, err := s.emitEnvelope(run, protocol.TypeActionCallStarted, started, false, "")
+		if err != nil {
+			// Nothing was published, so the acknowledgement this endpoint was
+			// about to record never happened: leaving it set would refuse the
+			// resend that is now owed as a repeat.
+			s.mu.Lock()
+			call.acknowledged = false
+			s.mu.Unlock()
+			return protocol.ActionCallResolveResponse{}, err
+		}
 		s.mu.Lock()
 		call.startedEvent = event.ID
 		s.mu.Unlock()
@@ -668,38 +707,6 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	call.settledError = request.Error
 	acknowledged := call.acknowledged
 	sequence := s.nativeSequence + 1
-	s.mu.Unlock()
-
-	// Accepting, writing back and publishing the derived terminal is one
-	// transition, so it is taken against the same mutex every other terminal
-	// arbiter here takes. Without it the dispatch goroutine's agent_end can
-	// settle the run inside this window, the terminal is dropped as
-	// errTerminalWon, and the run ends carrying an interaction the trace
-	// still reads as pending. The lock order is the one Cancel already uses —
-	// opMu, held by this call, then transitionMu — so it cannot invert
-	// against handleEnvelope, which takes transitionMu alone.
-	s.transitionMu.Lock()
-	defer s.transitionMu.Unlock()
-
-	// Taking the mutex is not the same as having held it. The ladder was
-	// judged under mu, and handleEnvelope holds transitionMu alone, so an
-	// agent_end can have settled the run and closed this call in between.
-	// Committing anyway would write back a result for a call that is over,
-	// publish nothing because every emit answers errTerminalWon, and then
-	// overwrite the settlement the close published with the zero id of an
-	// envelope that was never sent — leaving the resolver holding
-	// accepted=true and a settlement no validator can match. So the state is
-	// read again, and a resolution that lost the race is refused with the
-	// settlement the close produced, which is the answer it was owed.
-	s.mu.Lock()
-	lost := run.terminal || call.settlementID != ""
-	if lost {
-		settlement := call.settlementID
-		call.settledArm, call.settledRequestID = "", ""
-		call.settledResult, call.settledError = nil, nil
-		s.mu.Unlock()
-		return refuse(protocol.ReasonAlreadyResolved, settlement)
-	}
 	s.mu.Unlock()
 
 	if err := s.writeToolResult(ctx, call, sequence); err != nil {
