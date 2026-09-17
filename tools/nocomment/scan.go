@@ -205,16 +205,20 @@ func preserved(src []byte) map[int]bool {
 			kept[fset.Position(c.Pos()).Offset] = true
 		}
 	}
+	for _, c := range found {
+		if protectedIn(protected, c.span.start, c.span.end) {
+			kept[c.span.start] = true
+		}
+	}
 	for _, g := range f.Comments {
-		marked := false
+		carries := false
 		for _, c := range g.List {
-			start := fset.Position(c.Pos()).Offset
-			if kept[start] || toolchainMarker(c.Text) || protectedIn(protected, start, fset.Position(c.End()).Offset) {
-				marked = true
+			if toolchainMarker(c.Text) {
+				carries = true
 				break
 			}
 		}
-		if !marked {
+		if !carries {
 			continue
 		}
 		for _, c := range g.List {
