@@ -62,15 +62,20 @@ For **providers**, it is a third of that:
 
 | Concern | Surface | Status |
 | --- | --- | --- |
-| Where inference comes from | — | **missing** |
+| Where inference comes from | `session.open.request.providers` — id, wire, kind, endpoint, environment | proposed in 0017 |
 | What exists | `models.list`, with `provider_id` as a bare label | 0006; descriptors proposed in 0014 |
 | Which model this run uses | `submit.model_id` | 0005 |
 
-The missing row is the one a client notices. It can say "use this MCP server
-over stdio" and cannot say "use this provider" — and "use this SDK with that
-provider" is the same request seen from the loop's side.
+That row is the one a client notices, and until 0017 it was empty. A client can
+say "use this MCP server over stdio" and could not say "use this provider" —
+and "use this SDK with that provider" is the same request seen from the loop's
+side.
 
 ## The shape the missing row should take
+
+[Decision 0017](../decisions/0017-provider-provisioning.md) now writes this
+row. What follows is the frame it was written against, kept because the
+reasoning is the draft's and not that record's.
 
 Tool sources answer it already, and the provider case should mirror them
 rather than invent a second pattern.
@@ -99,7 +104,10 @@ exactly this hazard:
   not choose which binary runs a tool may not choose which host receives a
   prompt.
 - Credentials never travel. Environment carries the bare `NAME` allowlist
-  form; the operator supplies values.
+  form; the operator supplies values. A `NAME` allowlist is necessary and not
+  sufficient: any member passing caller text through to the upstream request is
+  a credential channel whatever it is called, which is why 0017 excludes
+  headers rather than relying on having declared no credential field.
 
 An in-process embedder whose control layer *is* the operator may accept more,
 which is what makes bring-your-own-key and per-session gateways expressible
@@ -115,7 +123,9 @@ individually hides it:
 2. **Discovery** — what is available here. `action.tools.list`; `models.list`
    plus 0014's provider descriptors.
 3. **Provision and selection by the client** — attach a source, supply a tool,
-   choose a model. Complete for tools; missing its first row for providers.
+   choose a model. Complete for tools; proposed but not executable for
+   providers, since 0014 and 0017 are both proposed and neither has an
+   implementation outside this repository.
 
 A capability absent from one column is not a small gap. It is the layer below
 becoming something the client cannot see or steer, which is the thing layering
