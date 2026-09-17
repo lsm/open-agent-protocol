@@ -62,7 +62,7 @@ func (s *Server) expireHeld(id protocol.SessionID, held *heldSubscription) {
 	}
 }
 
-func (s *Server) releaseHeld() {
+func (s *Server) Close() {
 	s.mu.Lock()
 	held := s.held
 	s.held = map[protocol.SessionID]*heldSubscription{}
