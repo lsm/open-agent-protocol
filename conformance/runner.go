@@ -190,6 +190,8 @@ func (r *runner) drive() {
 
 	r.consumeRun()
 
+	r.replayRun()
+
 	if _, err := r.request(protocol.TypeSessionStateRequest, protocol.SessionStateRequest{SessionID: r.session}, "", ""); err != nil {
 		r.fail("session.state.request is answered after the run settles", err.Error())
 	} else {
@@ -323,4 +325,68 @@ func framingContract(ctx context.Context, options Options) Check {
 		return Check{Name: name, Detail: "the endpoint exited 0 after a line that is not an OAP envelope"}
 	}
 	return Check{Name: name, Passed: true}
+}
+
+// replayRun asks for the settled run again from its first event.
+//
+// Replaying after the terminal rather than mid-run is deliberate: it is the
+// case with a known answer. The runner holds every envelope the run produced,
+// so it can check that what comes back is the same run from its own
+// beginning, which a mid-run replay racing live delivery could not pin.
+//
+// The cursor names its run. Sequences are per-run, so an unqualified cursor
+// means something different once a newer run has been admitted, and a
+// conformance runner should model the shape hosts ought to use.
+func (r *runner) replayRun() {
+	const accepted = "a cursor replay is accepted and re-delivers the run"
+	if r.runID == "" {
+		return
+	}
+	from := uint64(0)
+	frame := ControlFrame{Control: "replay", ID: "conformance-replay-1", SessionID: r.session, RunID: r.runID, After: &from}
+	if err := r.client.SendControl(frame); err != nil {
+		r.fail(accepted, err.Error())
+		return
+	}
+	answer, err := r.client.Control(frame.ID)
+	if err != nil {
+		r.fail(accepted, err.Error())
+		return
+	}
+	switch answer.Control {
+	case "replay.accepted":
+	case "replay.gap":
+		r.fail(accepted, fmt.Sprintf("the endpoint retains nothing at %d; its window is %d..%d",
+			answer.RequestedAfter, answer.OldestAvailable, answer.LatestAvailable))
+		return
+	default:
+		r.fail(accepted, fmt.Sprintf("%s: %s", answer.Code, answer.Message))
+		return
+	}
+
+	// The replayed stream ends at the run's terminal, exactly as the live one
+	// did, so the terminal is what this waits for rather than a count.
+	var first uint64
+	for {
+		event, err := r.client.Event()
+		if err != nil {
+			r.fail(accepted, err.Error())
+			return
+		}
+		if event.RunID != r.runID {
+			continue
+		}
+		if first == 0 && event.Sequence != nil {
+			first = *event.Sequence
+		}
+		switch event.Type {
+		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+			if first != 1 {
+				r.fail(accepted, fmt.Sprintf("a replay from 0 began at sequence %d, not the run's first event", first))
+				return
+			}
+			r.pass(accepted)
+			return
+		}
+	}
 }

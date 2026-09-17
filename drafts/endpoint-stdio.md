@@ -32,7 +32,12 @@ them, and it carries the envelopes themselves — the payload `servestdio` puts
 
 ## Framing
 
-- One OAP envelope per line, encoded as UTF-8 JSON, terminated by `\n`.
+- One JSON object per line, encoded as UTF-8 and terminated by `\n`.
+- A line is either an **OAP envelope** — carrying `protocol`, `version`,
+  `profile`, `type` and `id` — or a **binding control frame**, carrying a
+  `control` member and no `protocol` member. Envelopes are the protocol;
+  control frames are this transport's own business, and the only one defined
+  here is cursor replay. A host that never replays sees nothing but envelopes.
 - The host writes request envelopes to the endpoint's **stdin**. The endpoint
   writes response and event envelopes to its **stdout**.
 - A line contains exactly one envelope and no literal newline inside it. JSON
@@ -111,17 +116,65 @@ can distinguish a clean end from a framing fault without parsing stderr.
 
 - **No adapter dimension.** One endpoint is one agent loop. There is nothing to
   name and nothing to select.
-- **No cursor replay.** Replay exists for transports that reconnect: an SSE
-  client resumes with `Last-Event-ID` after the connection drops. A pipe pair
-  does not reconnect — if it breaks, the process is gone and so is the session.
-  A host that needs to re-establish agreement after a gap uses
-  `session.state.request`, which is reconciliation and returns authoritative
-  state rather than a journal suffix. The three are distinct in v0.1 and this
-  binding offers the one that its transport can honour.
 - **No multiplexed subscriptions.** One consumer, already attached.
 
-An endpoint that is reached over a transport which *does* reconnect should
-expose replay there. This binding says nothing about that case.
+
+## Cursor replay
+
+A host that has fallen behind, or that wants a run's events again, asks for
+them from a cursor.
+
+Replay is a **transport control frame**, not an OAP envelope. This is the same
+place the HTTP binding puts it: `GET /sessions/{id}/events?after=5` carries its
+cursor in the query string, and a reconnecting SSE client carries it in
+`Last-Event-ID`. Neither is an envelope, because a cursor is a fact about one
+consumer's position in a stream rather than about the agent loop's state. v0.1
+defines no replay envelope, and this binding does not invent one.
+
+A control frame is a JSON object carrying a `control` member and no `protocol`
+member, which is what distinguishes it from an envelope on the same line. A
+host that never replays never sends one and never sees one.
+
+**Requesting a replay.** The host writes:
+
+```json
+{"control":"replay","id":"r1","session_id":"s1","run_id":"run-1","after":5}
+```
+
+`after` is the last sequence the host already holds; delivery resumes at
+`after + 1`. `after: 0` replays the run from its first event. `run_id` may be
+omitted, in which case the endpoint resolves the cursor onto the session's
+current run — the same resolution the HTTP binding applies to a bare
+`Last-Event-ID`. Naming the run is better and hosts should: sequences are
+per-run, so an unqualified cursor means something different once a newer run
+has been admitted.
+
+**Answering it.** The endpoint writes exactly one control frame in reply,
+correlated by `id`:
+
+```json
+{"control":"replay.accepted","id":"r1","run_id":"run-1","after":5}
+{"control":"replay.gap","id":"r1","requested_after":5,"oldest_available":9,"latest_available":21}
+{"control":"replay.error","id":"r1","code":"run_not_found","message":"..."}
+```
+
+After `replay.accepted`, the run's retained envelopes after the cursor follow
+as ordinary envelope lines, and the stream then continues live. `replay.gap`
+reports a cursor the endpoint no longer retains and carries the window that is
+still available, so the host can ask again from `oldest_available - 1` rather
+than guess. A gap is never papered over with a partial stream: an endpoint
+that cannot honour a cursor says so instead of inventing continuity.
+
+**Replay re-delivers envelopes the host already has.** That is the point of a
+cursor, but it means a host assembling a trace across a replay must deduplicate
+by envelope `id`, because the same envelope arriving twice is one event
+delivered twice and not two events. A trace that keeps both copies is invalid
+for a reason that has nothing to do with the endpoint.
+
+Replay is distinct from reconciliation. `session.state.request` returns
+authoritative state — what is true now — while replay returns a journal suffix
+— what happened. v0.1 keeps resume, reconciliation, and replay separate, and a
+host that wants the first should not be handed the third.
 
 ## Conformance
 

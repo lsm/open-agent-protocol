@@ -17,6 +17,24 @@ import (
 // correlated envelope, because the binding promises a request is never left
 // without an answer.
 func (s *Server) handle(ctx context.Context, streams context.Context, line []byte) error {
+	// A line is an envelope or a binding control frame, told apart by which
+	// members it carries. Routing on shape keeps the two vocabularies
+	// separate: a control frame is this transport's business and never
+	// reaches the hub as protocol.
+	var shape struct {
+		Protocol string `json:"protocol"`
+		Control  string `json:"control"`
+	}
+	if err := json.Unmarshal(line, &shape); err != nil {
+		return fmt.Errorf("%w: %v", ErrMalformedLine, err)
+	}
+	if shape.Protocol == "" && shape.Control != "" {
+		var frame controlFrame
+		if err := json.Unmarshal(line, &frame); err != nil {
+			return fmt.Errorf("%w: %v", ErrMalformedLine, err)
+		}
+		return s.handleControl(streams, frame)
+	}
 	var envelope protocol.Envelope
 	if err := json.Unmarshal(line, &envelope); err != nil {
 		return fmt.Errorf("%w: %v", ErrMalformedLine, err)

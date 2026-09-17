@@ -245,3 +245,48 @@ func handleHelperRequest(request protocol.Envelope, revision string, emit func(p
 		}, reply)
 	}
 }
+
+// TestReplayRefusesACursorItCannotHonour pins the other half of the replay
+// control. A cursor the endpoint cannot serve must be refused in a frame that
+// says why, because the alternative — starting the stream wherever the
+// endpoint happens to still retain — hands the host a sequence hole it has no
+// way to detect.
+func TestReplayRefusesACursorItCannotHonour(t *testing.T) {
+	oap := oapBinary(t)
+	client, err := Spawn(context.Background(), oap, []string{"endpoint", "--adapter", "memory"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseInput()
+
+	open, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "open-1", protocol.SessionOpenRequest{SessionID: "replay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open.SessionID = "replay"
+	if err := client.Send(open); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Response(open.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	after := uint64(0)
+	frame := ControlFrame{Control: "replay", ID: "replay-1", SessionID: "replay", RunID: "no-such-run", After: &after}
+	if err := client.SendControl(frame); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := client.Control(frame.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Control == "replay.accepted" {
+		t.Fatal("the endpoint accepted a replay for a run it does not have")
+	}
+	if answer.Control != "replay.error" && answer.Control != "replay.gap" {
+		t.Fatalf("unexpected control %q: %+v", answer.Control, answer)
+	}
+	if answer.Control == "replay.error" && answer.Code == "" {
+		t.Fatal("a replay.error carries no code, so the host is told nothing it can act on")
+	}
+}

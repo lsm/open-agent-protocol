@@ -44,6 +44,7 @@ type Client struct {
 	mu        sync.Mutex
 	responses []protocol.Envelope
 	events    []protocol.Envelope
+	controls  []ControlFrame
 
 	transcript []protocol.Envelope
 	deadline   time.Duration
@@ -51,8 +52,27 @@ type Client struct {
 
 type line struct {
 	envelope protocol.Envelope
+	control  *ControlFrame
 	raw      string
 	err      error
+}
+
+// ControlFrame is one binding control line. Control frames are this
+// transport's own business — cursor replay is the only one the binding
+// defines — so they never enter the trace the validator judges.
+type ControlFrame struct {
+	Control   string             `json:"control"`
+	ID        string             `json:"id,omitempty"`
+	SessionID protocol.SessionID `json:"session_id,omitempty"`
+	RunID     protocol.RunID     `json:"run_id,omitempty"`
+	After     *uint64            `json:"after,omitempty"`
+
+	RequestedAfter  uint64 `json:"requested_after,omitempty"`
+	OldestAvailable uint64 `json:"oldest_available,omitempty"`
+	LatestAvailable uint64 `json:"latest_available,omitempty"`
+
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // Spawn starts the endpoint command and begins reading its stdout.
@@ -84,11 +104,26 @@ func (c *Client) read(stdout io.Reader) {
 	for {
 		text, err := reader.ReadString('\n')
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			var envelope protocol.Envelope
-			if decodeErr := json.Unmarshal([]byte(trimmed), &envelope); decodeErr != nil {
-				c.lines <- line{raw: trimmed, err: fmt.Errorf("stdout carried a line that is not an OAP envelope: %v", decodeErr)}
+			var shape struct {
+				Protocol string `json:"protocol"`
+				Control  string `json:"control"`
+			}
+			if decodeErr := json.Unmarshal([]byte(trimmed), &shape); decodeErr != nil {
+				c.lines <- line{raw: trimmed, err: fmt.Errorf("stdout carried a line that is not JSON: %v", decodeErr)}
+			} else if shape.Protocol == "" && shape.Control != "" {
+				var frame ControlFrame
+				if decodeErr := json.Unmarshal([]byte(trimmed), &frame); decodeErr != nil {
+					c.lines <- line{raw: trimmed, err: fmt.Errorf("stdout carried a malformed control frame: %v", decodeErr)}
+				} else {
+					c.lines <- line{control: &frame, raw: trimmed}
+				}
 			} else {
-				c.lines <- line{envelope: envelope, raw: trimmed}
+				var envelope protocol.Envelope
+				if decodeErr := json.Unmarshal([]byte(trimmed), &envelope); decodeErr != nil {
+					c.lines <- line{raw: trimmed, err: fmt.Errorf("stdout carried a line that is not an OAP envelope: %v", decodeErr)}
+				} else {
+					c.lines <- line{envelope: envelope, raw: trimmed}
+				}
 			}
 		}
 		if err != nil {
@@ -125,6 +160,11 @@ func (c *Client) pull() error {
 			return l.err
 		}
 		c.mu.Lock()
+		if l.control != nil {
+			c.controls = append(c.controls, *l.control)
+			c.mu.Unlock()
+			return nil
+		}
 		c.transcript = append(c.transcript, l.envelope)
 		if l.envelope.InReplyTo != "" {
 			c.responses = append(c.responses, l.envelope)
@@ -174,6 +214,37 @@ func (c *Client) Event() (protocol.Envelope, error) {
 	}
 }
 
+// SendControl writes one binding control frame. It is not recorded in the
+// transcript: a control frame is transport, not protocol, and a trace is
+// protocol.
+func (c *Client) SendControl(frame ControlFrame) error {
+	data, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	_, err = c.stdin.Write(append(data, '\n'))
+	return err
+}
+
+// Control returns the control frame answering one request, holding envelopes
+// and responses that arrive first.
+func (c *Client) Control(id string) (ControlFrame, error) {
+	for {
+		c.mu.Lock()
+		for i, candidate := range c.controls {
+			if candidate.ID == id {
+				c.controls = append(c.controls[:i], c.controls[i+1:]...)
+				c.mu.Unlock()
+				return candidate, nil
+			}
+		}
+		c.mu.Unlock()
+		if err := c.pull(); err != nil {
+			return ControlFrame{}, fmt.Errorf("waiting for the control answer to %s: %w", id, err)
+		}
+	}
+}
+
 // CloseInput closes the endpoint's stdin, which on this binding is the
 // session's close.
 func (c *Client) CloseInput() error {
@@ -209,9 +280,25 @@ func (c *Client) Wait() (int, error) {
 }
 
 // Transcript is every envelope sent and received, in the order it crossed the
-// pipe. It is what becomes the trace the validator judges.
+// pipe, with each envelope id kept once. It is what becomes the trace the
+// validator judges.
+//
+// The deduplication is required rather than tidy, and it is the binding's own
+// rule: a replay re-delivers envelopes the host already holds, so the same
+// envelope crossing the pipe twice is one event delivered twice and not two
+// events. A trace that kept both copies would fail on duplicate envelope ids
+// for a reason that has nothing to do with the endpoint being judged.
 func (c *Client) Transcript() []protocol.Envelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]protocol.Envelope(nil), c.transcript...)
+	seen := make(map[protocol.EnvelopeID]bool, len(c.transcript))
+	trace := make([]protocol.Envelope, 0, len(c.transcript))
+	for _, envelope := range c.transcript {
+		if envelope.ID != "" && seen[envelope.ID] {
+			continue
+		}
+		seen[envelope.ID] = true
+		trace = append(trace, envelope)
+	}
+	return trace
 }

@@ -592,6 +592,10 @@ oap conformance                   # drive that reference endpoint and judge it
 oap conformance --command "makai --oap"   # drive somebody else's
 ```
 
+The binding carries cursor replay as a transport control frame — the same
+place the HTTP binding puts it, where `?after=` and `Last-Event-ID` are not
+envelopes either.
+
 `oap conformance` spawns the command as a process, drives a scripted session
 over the binding, assembles every envelope it sent and received into a trace,
 and hands that trace to the same validator `oap validate` uses. The runner
