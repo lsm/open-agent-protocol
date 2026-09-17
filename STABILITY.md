@@ -19,8 +19,9 @@ promises nothing.
 
 The **v0.1 core surface** is exactly three things:
 
-1. The envelope set defined by `schema/v0.1/envelope.schema.json` — 41 typed
-   envelopes — together with the payload schemas it references.
+1. The envelope types defined by `schema/v0.1/envelope.schema.json` — 41 of
+   them today — together with the payload schemas they reference. Section 1
+   says what is fixed about them, and on what condition the set may grow.
 2. The lifecycle rules those envelopes obey, as decided in
    [Decision 0001](decisions/0001-agent-control-v0.1-executable-core.md) and
    [Decision 0002](decisions/0002-admission-before-start.md).
@@ -65,17 +66,33 @@ position this project may still change.
 
 ---
 
-## 1. The core envelope set is frozen and grows only additively
+## 1. Existing envelopes never change, and the set grows only for units you have adopted
 
 **Binding: now.**
 
-The 41 envelope types in the v0.1 core set are the complete set. No type will
-be added to it, removed from it, or renamed within version `0.1`. New protocol
-vocabulary arrives as a conformance unit or an extension pack
-([Decision 0004](decisions/0004-extension-packs.md)), never as a new core
-envelope.
+Every envelope type in the bundle today keeps its name, its required members,
+and its meaning for the life of `0.1`. None is removed or renamed.
 
-Within that set, these changes may happen in `0.1` and are not breaking:
+The set itself is not closed, and saying it were would already be false rather
+than merely restrictive: `models.request` and `models.response` entered the
+core bundle with [Decision 0006](decisions/0006-models-catalog.md), and
+`action.tools.list.*` with the tool catalog. A graduating unit may add envelope
+types. What is committed is the condition under which it may:
+
+- a new type arrives only as part of a conformance unit or an extension pack
+  ([Decision 0004](decisions/0004-extension-packs.md)), never on its own;
+- it is gated on a capability key, and an endpoint that does not advertise that
+  key neither sends nor receives it.
+
+An endpoint's own surface therefore does not grow when a unit graduates that it
+has not adopted, and that — not a count of types — is the guarantee. The
+reciprocal obligation falls on consumers: an envelope type you do not recognise
+is treated exactly as an unrecognised capability key under section 3, ignored
+rather than refused. `oap validate -mode tolerant` is that rule in executable
+form, accepting another unit's envelope type on the common fields alone.
+
+Within an existing type, these changes may happen in `0.1` and are not
+breaking:
 
 - adding an **optional** member to an existing payload, where its absence means
   exactly the behaviour that held before it existed;
@@ -92,6 +109,7 @@ unstated behaviour is not additive, and is treated as breaking.
 These changes are **breaking**, will not be made in `0.1`, and require the
 process in section 5:
 
+- removing or renaming an envelope type, or changing which members it requires;
 - removing a member, or making an optional member required;
 - changing the type, meaning, or permitted values of an existing member;
 - adding a value to a closed enumeration on an existing member, because the
