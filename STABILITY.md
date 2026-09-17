@@ -25,12 +25,29 @@ The **v0.1 core surface** is exactly three things:
    [Decision 0001](decisions/0001-agent-control-v0.1-executable-core.md) and
    [Decision 0002](decisions/0002-admission-before-start.md).
 3. The Core Profile Requirements section of
-   [the conformance draft](drafts/conformance.md).
+   [the conformance draft](drafts/conformance.md), and in that same document
+   the per-unit requirements section of every unit marked covered below. Those
+   sections are covered despite living in a file headed `Status: draft`: the
+   heading describes the document's prose, not the standing of requirements the
+   validator already enforces.
 
-Conformance units beyond the core (`+run-controls`, `+queue`, `+models`,
-`+tool-sources`, `+extensions`) are covered from the moment their graduating
-decision is `accepted`, on the same terms, under the same additive rule. Units
-still staged are not covered; see "What this does not cover".
+Beyond the core, every conformance unit named in the conformance draft falls on
+one side of this line or the other. None is left unstated:
+
+| Unit | Covered | On what basis |
+| --- | --- | --- |
+| `+tools`, `+permissions`, `+user-input` | yes | Their requirements are part of the executable core frozen by Decision 0001, and `fixtures/manifest.json` carries fixtures under each name. |
+| `+extensions` | yes | [Decision 0004](decisions/0004-extension-packs.md), accepted. |
+| `+run-controls` | yes | [Decision 0005](decisions/0005-run-controls.md), accepted. |
+| `+models` | yes | [Decision 0006](decisions/0006-models-catalog.md), accepted. |
+| `+queue` | yes | [Decision 0007](decisions/0007-queue-delivery.md), accepted. |
+| `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
+| `+persistence` | **no** | Its envelope types — `session.list.*`, `transcript.load.*`, `transcript.delta` — exist in no schema file and no Go type. The conformance draft describes a unit that has never been built. |
+| `+steer`, `+btw` | **no** | Staged, not graduated. No decision has taken either through the gate. |
+
+A unit joins the covered set when its graduating decision becomes `accepted`,
+on the same terms and under the same additive rule. Until then it may change in
+any way, including disappearing.
 
 This document does not govern anything outside that surface. In particular it
 does not govern the adapters, the Go and TypeScript clients, or the daemon.
@@ -65,10 +82,12 @@ Within that set, these changes may happen in `0.1` and are not breaking:
 - adding a capability key, a conformance unit, or a diagnostic code.
 
 The worked shape for the first is an optional member whose omission carries a
-positive meaning rather than "unknown" — the form used for terminal provenance
-in Decision 0010. An optional addition whose absence would leave a consumer
-unable to tell old behaviour from unstated behaviour is not additive, and is
-treated as breaking.
+positive meaning rather than "unknown". `ToolDefinition.source`, added by
+[Decision 0008](decisions/0008-tool-sources.md), is one: it is absent from the
+schema's required list, and a tool that omits it is unattributed — which is
+exactly how every catalog read before sources existed. An optional addition
+whose absence would instead leave a consumer unable to tell old behaviour from
+unstated behaviour is not additive, and is treated as breaking.
 
 These changes are **breaking**, will not be made in `0.1`, and require the
 process in section 5:
@@ -213,11 +232,13 @@ record where the next reader sees it.
 
 Stated plainly, so the covered surface stays meaningful:
 
-- **Staged units.** A unit whose graduating decision is not `accepted` may
-  change in any way, including disappearing. The staged set is listed in
-  [the graduation plan](drafts/staged-units-graduation.md).
-- **Draft documents.** Everything in `drafts/` other than the Core Profile
-  Requirements section named in section 2 is working material.
+- **Units not marked covered above.** A unit whose graduating decision is not
+  `accepted` may change in any way, including disappearing. That covers both
+  the staged units in [the graduation plan](drafts/staged-units-graduation.md)
+  and `+persistence`, which the conformance draft describes but nothing in this
+  repository implements.
+- **Draft documents.** Everything in `drafts/` other than the requirement
+  sections named under "What is covered" is working material.
 - **The adapters.** They track third-party harnesses at pinned commits and
   change when those harnesses do. They are evidence that the protocol is
   implementable, not part of the protocol.
