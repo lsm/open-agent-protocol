@@ -430,7 +430,12 @@ func (r *runner) consumeRun() {
 			r.fail("the run reaches a terminal event", err.Error())
 			return
 		}
-		if event.Sequence != nil {
+		// The per-run sequence is one ordering domain for its run_id, so only
+		// events carrying that run_id belong to it. A session-scoped frame
+		// such as session.state.updated has a sequence of its own in the
+		// session's domain, and comparing it against the run's reports a
+		// collision between two numbers that were never in the same space.
+		if event.Sequence != nil && event.RunID == r.runID {
 			if *event.Sequence <= lastSequence {
 				r.fail("run events carry an advancing per-run sequence",
 					fmt.Sprintf("sequence %d did not advance past %d", *event.Sequence, lastSequence))

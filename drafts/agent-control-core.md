@@ -96,7 +96,15 @@ become portable OAP identities.
 
 Every run-scoped event carries a positive, contiguous `sequence` in one ordering
 domain for its `run_id`. Request and response envelopes do not consume that
-sequence. Deltas append; snapshots replace the state they identify; terminal
+sequence.
+
+A session-scoped event carries its own `sequence` in the session's domain,
+which is a different space from any run's. `session.state.updated` is the one
+in v0.1 core, and its schema requires the member for that reason. The two
+domains are never compared: a consumer that ordered a session frame against a
+run's counter would read a collision between numbers that were never in the
+same space, and one that ordered a run's events by the session counter would
+lose the per-run contiguity the previous paragraph promises. Deltas append; snapshots replace the state they identify; terminal
 values are final.
 
 Contiguity is an ordering guarantee at the OAP boundary, and nothing more. It is

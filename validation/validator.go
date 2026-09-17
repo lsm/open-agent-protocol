@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/lsm/open-agent-protocol/protocol"
+	"github.com/lsm/open-agent-protocol/schema"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -101,7 +102,11 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 			if errors.As(err, &member) {
 				prefix = member.pointer
 			}
-			diagnostics = append(diagnostics, schemaDiagnosticsAt(err, fixture, i, item.line, prefix)...)
+			// The envelope's own declared type selects which oneOf branch
+			// its diagnostics should come from. It is read from the raw
+			// value because the envelope has not been parsed yet — that is
+			// what failed.
+			diagnostics = append(diagnostics, schemaDiagnosticsFor(err, fixture, i, item.line, prefix, declaredType(item.raw))...)
 			continue
 		}
 		env, err := protocol.ParseEnvelope(item.raw)
@@ -364,6 +369,18 @@ func malformed(fixture string, err error) Diagnostic {
 	return Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Message: err.Error()}
 }
 
+// declaredType reads the `type` member of a raw envelope, or "" when the value
+// is not an object or carries no string type.
+func declaredType(raw []byte) string {
+	var shape struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &shape) != nil {
+		return ""
+	}
+	return shape.Type
+}
+
 func schemaDiagnostics(err error, fixture string, index, line int) []Diagnostic {
 	return schemaDiagnosticsAt(err, fixture, index, line, "")
 }
@@ -372,23 +389,124 @@ func schemaDiagnostics(err error, fixture string, index, line int) []Diagnostic 
 // The pack pass validates a member against its own subschema, whose instance
 // locations are relative to that member; the prefix puts them back where the
 // reader will look for them.
+// envelopeBranches maps an envelope type to the `$defs` name of the branch
+// that declares it. It is read from the schema rather than transcribed,
+// because a hand-written table that drifted would misattribute exactly the
+// diagnostics this exists to attribute correctly.
+var envelopeBranches = func() map[string]string {
+	var bundle struct {
+		Defs map[string]struct {
+			Properties struct {
+				Type struct {
+					Const string `json:"const"`
+				} `json:"type"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	branches := map[string]string{}
+	data, err := schema.V01.ReadFile("v0.1/envelope.schema.json")
+	if err != nil || json.Unmarshal(data, &bundle) != nil {
+		return branches
+	}
+	for name, def := range bundle.Defs {
+		if def.Properties.Type.Const != "" {
+			branches[def.Properties.Type.Const] = name
+		}
+	}
+	return branches
+}()
+
+// branchNames is the same set keyed by `$defs` name, for recognising a schema
+// location on the way down.
+var branchNames = func() map[string]bool {
+	names := make(map[string]bool, len(envelopeBranches))
+	for _, name := range envelopeBranches {
+		names[name] = true
+	}
+	return names
+}()
+
+// preferDeclaredBranch keeps only the leaves belonging to the branch the
+// envelope's own `type` selects.
+//
+// The bundle is one big `oneOf`, so a frame that fails its own branch also
+// fails all forty-two others, and the leaves from those are noise of the worst
+// kind: they are true statements about schemas the author never claimed. An
+// error.response missing `in_reply_to` was reported as "missing properties
+// 'capability_revision', 'sequence'" — both real requirements of branches it
+// was never trying to be, and neither the field actually missing. An
+// implementer reading that goes looking for the wrong defect.
+//
+// When the type matches no branch there is nothing to prefer and every leaf is
+// kept, which is right: an unrecognised type is itself the fault.
+func preferDeclaredBranch(leaves []*jsonschema.ValidationError, branches []string, declared string) []*jsonschema.ValidationError {
+	want, ok := envelopeBranches[declared]
+	if !ok {
+		return leaves
+	}
+	kept := make([]*jsonschema.ValidationError, 0, len(leaves))
+	for i, leaf := range leaves {
+		if branches[i] == want || branches[i] == "" {
+			kept = append(kept, leaf)
+		}
+	}
+	if len(kept) == 0 {
+		return leaves
+	}
+	return kept
+}
+
+// branchOf reports the typed `$defs` branch a schema location names, or "" for
+// a location that is not one — a shared base, the bundle root, a subschema
+// inside a branch.
+func branchOf(schemaURL string) string {
+	const marker = "#/$defs/"
+	at := strings.Index(schemaURL, marker)
+	if at < 0 {
+		return ""
+	}
+	rest := schemaURL[at+len(marker):]
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		rest = rest[:slash]
+	}
+	if _, ok := branchNames[rest]; ok {
+		return rest
+	}
+	return ""
+}
+
 func schemaDiagnosticsAt(err error, fixture string, index, line int, prefix string) []Diagnostic {
+	return schemaDiagnosticsFor(err, fixture, index, line, prefix, "")
+}
+
+func schemaDiagnosticsFor(err error, fixture string, index, line int, prefix, declared string) []Diagnostic {
 	var validationErr *jsonschema.ValidationError
 	if !errors.As(err, &validationErr) {
 		return []Diagnostic{{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: index, Line: line, Pointer: prefix, Message: err.Error()}}
 	}
+	// The branch a leaf belongs to is carried down from its ancestors, not
+	// readable off the leaf: a branch reaches its shared bases through $ref,
+	// and a $ref failure anchors at the target, which every branch that
+	// references it shares. So the nearest ancestor naming a typed branch is
+	// remembered on the way down.
 	var leaves []*jsonschema.ValidationError
-	var walk func(*jsonschema.ValidationError)
-	walk = func(e *jsonschema.ValidationError) {
+	var branches []string
+	var walk func(*jsonschema.ValidationError, string)
+	walk = func(e *jsonschema.ValidationError, branch string) {
+		if named := branchOf(e.SchemaURL); named != "" {
+			branch = named
+		}
 		if len(e.Causes) == 0 {
 			leaves = append(leaves, e)
+			branches = append(branches, branch)
 			return
 		}
 		for _, cause := range e.Causes {
-			walk(cause)
+			walk(cause, branch)
 		}
 	}
-	walk(validationErr)
+	walk(validationErr, "")
+	leaves = preferDeclaredBranch(leaves, branches, declared)
 	result := make([]Diagnostic, 0, len(leaves))
 	seen := map[string]bool{}
 	for _, leaf := range leaves {
