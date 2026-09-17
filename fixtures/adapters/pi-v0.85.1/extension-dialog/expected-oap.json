@@ -25,7 +25,7 @@
     "id": "event-7",
     "payload": {
       "interaction_id": "interaction-6",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-2",
@@ -84,7 +84,7 @@
     "id": "event-9",
     "payload": {
       "interaction_id": "interaction-6",
-      "requested_by": "agent",
+      "requested_by": "pi.rpc",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-2",

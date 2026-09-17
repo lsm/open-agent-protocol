@@ -26,7 +26,7 @@
     "id": "event-e",
     "payload": {
       "interaction_id": "interaction-d",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -94,7 +94,7 @@
     "id": "event-g",
     "payload": {
       "interaction_id": "interaction-d",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -142,7 +142,7 @@
     "id": "event-j",
     "payload": {
       "interaction_id": "interaction-i",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -201,7 +201,7 @@
     "id": "event-l",
     "payload": {
       "interaction_id": "interaction-i",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -249,7 +249,7 @@
     "id": "event-o",
     "payload": {
       "interaction_id": "interaction-n",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -298,7 +298,7 @@
     "id": "event-q",
     "payload": {
       "interaction_id": "interaction-n",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -344,7 +344,7 @@
     "id": "event-t",
     "payload": {
       "interaction_id": "interaction-s",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",
@@ -394,7 +394,7 @@
     "id": "event-v",
     "payload": {
       "interaction_id": "interaction-s",
-      "requested_by": "agent",
+      "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-b",

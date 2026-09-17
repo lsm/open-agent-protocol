@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	endpointID             = "deepseek.harness"
 	PinnedVersion          = native.ServerVersion
 	CapabilityRevision     = "deepseek-harness-47f9438-oap-v1"
 	defaultJournalCapacity = 256
@@ -174,7 +175,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute": {Level: protocol.SupportUnavailable, Reason: "Harness executes tools internally"},
 		"action.permissions":   {Level: protocol.SupportUnavailable, Reason: "selected SDK wire has no interaction channel"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "deepseek.harness", Name: "DeepSeek Harness SDK Adapter", Version: PinnedVersion, Adapter: "deepseek-harness-jsonrpc"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "none", CancellationImplementation: "unavailable"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "DeepSeek Harness SDK Adapter", Version: PinnedVersion, Adapter: "deepseek-harness-jsonrpc"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "none", CancellationImplementation: "unavailable"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {

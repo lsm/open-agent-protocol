@@ -562,7 +562,7 @@ func TestExtensionConfirmIsGenericInput(t *testing.T) {
 	if err := requested.DecodePayload(&payload); err != nil {
 		t.Fatal(err)
 	}
-	err := s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{{QuestionID: "value", SelectedOptionIDs: []string{"yes"}}}}})
+	err := s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{{QuestionID: "value", SelectedOptionIDs: []string{"yes"}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestExtensionInputRejectsMalformedTextAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolve := func(a protocol.InputAnswer) error {
-		return s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{a}}})
+		return s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{a}}})
 	}
 	if err := resolve(protocol.InputAnswer{QuestionID: "value", Text: ""}); !errors.Is(err, base.ErrInvalidResolution) {
 		t.Fatalf("empty text err = %v", err)
@@ -641,7 +641,7 @@ func TestExtensionChoiceRejectsAttachedText(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolve := func(a protocol.InputAnswer) error {
-		return s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: "agent", RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{a}}})
+		return s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{a}}})
 	}
 	if err := resolve(protocol.InputAnswer{QuestionID: "value", SelectedOptionIDs: []string{"yes"}, Text: "yes"}); !errors.Is(err, base.ErrInvalidResolution) {
 		t.Fatalf("mixed-form err = %v", err)

@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	endpointID             = "hermes.gateway"
 	PinnedVersion          = native.ReleaseTag
 	CapabilityRevision     = "hermes-v2026.8.31-oap-v1"
 	defaultJournalCapacity = 256
@@ -248,7 +249,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.permissions":             {Level: protocol.SupportDegraded, Reason: "approval gates surface as input interactions"},
 		"user_input":                     {Level: protocol.SupportNative, Reason: "approval/clarify/sudo/secret gates with expire siblings"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "hermes.gateway", Name: "Hermes Gateway Adapter", Version: PinnedVersion, Adapter: "hermes-tui-gateway"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "session.interrupt"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Hermes Gateway Adapter", Version: PinnedVersion, Adapter: "hermes-tui-gateway"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "session.interrupt"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {

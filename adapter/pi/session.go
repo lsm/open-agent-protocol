@@ -727,7 +727,7 @@ func (s *Session) endTool(run *runState, v toolEnd) {
 }
 func toolKey(r *runState, id string) string { return string(r.id) + "\x00" + id }
 func (s *Session) toolPayload(t *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: "agent", ExecutionOwner: "pi", Name: t.name, ArgumentsJSON: cloneRaw(t.args), Progress: cloneRaw(t.progress), Result: cloneRaw(t.result)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: endpointID, ExecutionOwner: "pi", Name: t.name, ArgumentsJSON: cloneRaw(t.args), Progress: cloneRaw(t.progress), Result: cloneRaw(t.result)}
 }
 
 func (s *Session) settleRun(run *runState) {
@@ -1048,11 +1048,11 @@ func (s *Session) applyExtension(r native.ExtensionUIRequest) {
 		question.Prompt = r.Message
 		question.Options = []protocol.InputOption{{ID: "yes", Label: "Yes"}, {ID: "no", Label: "No"}}
 	}
-	binding := &inputState{id: id, nativeID: r.ID, run: run, method: r.Method, requestedBy: "agent", respondedBy: s.participant, questions: []protocol.InputQuestion{question}}
+	binding := &inputState{id: id, nativeID: r.ID, run: run, method: r.Method, requestedBy: endpointID, respondedBy: s.participant, questions: []protocol.InputQuestion{question}}
 	s.interactions[id] = binding
 	run.status = protocol.RunWaitingForInput
 	s.state.Status = protocol.SessionWaitingForInput
-	_ = s.emit(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: r.Title, Description: r.Message, Questions: binding.questions, AllowCancel: true}, false)
+	_ = s.emit(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: r.Title, Description: r.Message, Questions: binding.questions, AllowCancel: true}, false)
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunWaitingForInput, PendingUserInputID: id, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 }
 

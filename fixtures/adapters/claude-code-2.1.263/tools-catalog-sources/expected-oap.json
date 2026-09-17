@@ -28,7 +28,7 @@
       "session_id": "session",
       "run_id": "run-3",
       "tool_call_id": "tool-call-5",
-      "requested_by": "agent",
+      "requested_by": "claude-code.cli",
       "execution_owner": "claude-code",
       "name": "mcp__files__read_file",
       "arguments_json": {
@@ -52,7 +52,7 @@
       "session_id": "session",
       "run_id": "run-3",
       "tool_call_id": "tool-call-5",
-      "requested_by": "agent",
+      "requested_by": "claude-code.cli",
       "execution_owner": "claude-code",
       "name": "mcp__files__read_file"
     },
@@ -74,7 +74,7 @@
       "session_id": "session",
       "run_id": "run-3",
       "tool_call_id": "tool-call-5",
-      "requested_by": "agent",
+      "requested_by": "claude-code.cli",
       "execution_owner": "claude-code",
       "name": "mcp__files__read_file",
       "result": "file contents"
@@ -140,7 +140,7 @@
       "session_id": "session",
       "run_id": "run-12",
       "tool_call_id": "tool-call-14",
-      "requested_by": "agent",
+      "requested_by": "claude-code.cli",
       "execution_owner": "claude-code",
       "source": "mcp:files",
       "name": "mcp__files__read_file",
@@ -165,7 +165,7 @@
       "session_id": "session",
       "run_id": "run-12",
       "tool_call_id": "tool-call-14",
-      "requested_by": "agent",
+      "requested_by": "claude-code.cli",
       "execution_owner": "claude-code",
       "source": "mcp:files",
       "name": "mcp__files__read_file"
@@ -188,7 +188,7 @@
       "session_id": "session",
       "run_id": "run-12",
       "tool_call_id": "tool-call-14",
-      "requested_by": "agent",
+      "requested_by": "claude-code.cli",
       "execution_owner": "claude-code",
       "source": "mcp:files",
       "name": "mcp__files__read_file",

@@ -377,7 +377,7 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	s.interactions[id] = ps
 	s.mu.Unlock()
 
-	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event protocol.Envelope) { ps.requestEventID = event.ID })
+	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event protocol.Envelope) { ps.requestEventID = event.ID })
 }
 
 func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
@@ -538,7 +538,7 @@ func (s *session) applyToolStatus(t *toolState, status string) {
 	_ = s.emit(t.run, typ, payload, false)
 }
 func (s *session) toolPayload(t *toolState) protocol.ActionCallPayload {
-	p := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: "agent", ExecutionOwner: "acp-agent", Name: t.title, ArgumentsJSON: rawClone(t.rawInput)}
+	p := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: endpointID, ExecutionOwner: "acp-agent", Name: t.title, ArgumentsJSON: rawClone(t.rawInput)}
 	if t.status == "failed" {
 		p.Error = &protocol.ProtocolError{Code: "tool_failed", Message: "ACP tool call failed"}
 		p.Result = rawClone(t.rawOutput)
@@ -598,7 +598,7 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 		return base.ErrWrongResponder
 	}
 
-	if res.Permission.RequestedBy != "" && res.Permission.RequestedBy != "agent" {
+	if res.Permission.RequestedBy != "" && res.Permission.RequestedBy != endpointID {
 		s.mu.Unlock()
 		return base.ErrInvalidResolution
 	}
@@ -632,7 +632,7 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	if granted {
 		out = protocol.InteractionResolved
 	}
-	_, err := s.emitEnvelope(p.run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: p.run.id, ToolCallID: p.tool.id, Outcome: out, ChoiceID: option.OptionID, Granted: &granted}, false, requestEventID)
+	_, err := s.emitEnvelope(p.run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: p.run.id, ToolCallID: p.tool.id, Outcome: out, ChoiceID: option.OptionID, Granted: &granted}, false, requestEventID)
 	return err
 }
 func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCancelResponse, error) {
@@ -787,7 +787,7 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		p := pending.gate
 		_ = p.request.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
 		reason := protocol.ProtocolError{Code: "run_settled", Message: "parent run settled the permission request"}
-		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID)
+		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID)
 	}
 	for _, t := range tools {
 		typ := protocol.TypeActionCallFailed

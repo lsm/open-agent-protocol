@@ -26,7 +26,7 @@
     "id": "event-07",
     "payload": {
       "interaction_id": "interaction-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "responded_by": "user",
       "session_id": "session-1",
       "run_id": "run-02",
@@ -91,7 +91,7 @@
     "id": "event-09",
     "payload": {
       "interaction_id": "interaction-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "responded_by": "user",
       "session_id": "session-1",
       "run_id": "run-02",

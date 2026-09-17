@@ -28,7 +28,7 @@
       "session_id": "session-1",
       "run_id": "run-02",
       "tool_call_id": "tool-call-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
       "name": "codex.command",
       "arguments_json": {
@@ -53,7 +53,7 @@
       "session_id": "session-1",
       "run_id": "run-02",
       "tool_call_id": "tool-call-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
       "name": "codex.command",
       "arguments_json": {
@@ -78,7 +78,7 @@
       "session_id": "session-1",
       "run_id": "run-02",
       "tool_call_id": "tool-call-06",
-      "requested_by": "agent",
+      "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
       "name": "codex.command",
       "result": {

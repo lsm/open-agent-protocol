@@ -484,7 +484,7 @@ func (s *Session) endTool(run *runState, payload *native.ToolCompletePayload) {
 func toolKey(r *runState, id string) string { return fmt.Sprintf("%p\x00%s", r, id) }
 
 func (s *Session) toolPayload(t *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: "agent", ExecutionOwner: "hermes", Name: t.name, ArgumentsJSON: cloneRaw(t.args)}
+	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: endpointID, ExecutionOwner: "hermes", Name: t.name, ArgumentsJSON: cloneRaw(t.args)}
 }
 
 func (s *Session) openInteraction(run *runState, event *native.Event) {
@@ -575,7 +575,7 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 		return
 	}
 	s.interactions[id] = binding
-	requestedEnvelope, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: binding.questions, AllowCancel: true}, false, "")
+	requestedEnvelope, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: binding.questions, AllowCancel: true}, false, "")
 	if emitErr != nil {
 		return
 	}
@@ -597,7 +597,7 @@ func (s *Session) expireInteraction(run *runState, payload *native.ExpirePayload
 			continue
 		}
 		binding.resolved = true
-		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
+		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
 		_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 		return
 	}
@@ -643,7 +643,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return base.ErrInvalidResolution
 	}
 
-	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != "agent" {
+	if resolution.Input.RequestedBy != "" && resolution.Input.RequestedBy != endpointID {
 		s.reduceMu.Unlock()
 		return base.ErrInvalidResolution
 	}
@@ -719,7 +719,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		if run.deferred != nil && !run.terminal {
 
 			binding.resolved = true
-			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
+			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
 		}
 		s.flushDeferred(run)
 		s.reduceMu.Unlock()
@@ -756,7 +756,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	}
 	if !run.terminal {
 		binding.resolved = true
-		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: "agent", RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, binding.requested)
+		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, binding.requested)
 		_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	}
 
