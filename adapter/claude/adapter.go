@@ -1,5 +1,3 @@
-// Package claude adapts the pinned Claude Code CLI (stream-json boundary) to
-// OAP per research/claude-code-agent-sdk-2.1.263-mapping.md.
 package claude
 
 import (
@@ -24,24 +22,6 @@ const (
 	initializeTimeout      = 60 * time.Second
 )
 
-// endpointSources is what this endpoint declares about its tool sources
-// without a session: it executes its own built-in tools, and that is a
-// standing fact rather than something a turn teaches it. The MCP servers a
-// session's operator configured are learned from that session's system/init
-// frame and belong to the session, so they are published through its catalog
-// and never here.
-//
-// Declaring it is what lets a call attributed natively resolve in a trace that
-// never lists tools. The catalog is advertised degraded and served only on
-// request, so a consumer may observe a whole run without asking for one; the
-// attribution on those calls has to resolve against something, and the
-// descriptor is the only thing published before the first list.
-//
-// That cuts both ways, and this list is therefore the exact set a call may
-// name: catalogSourceLocked stamps `source` only where this slice declares it.
-// Publishing and attributing are one decision — an endpoint may attribute to
-// what it has published, and to nothing else — so excluding a source here is
-// also a decision not to name it on a call.
 func endpointSources() []protocol.ToolSourceDescriptor {
 	return []protocol.ToolSourceDescriptor{
 		{ID: nativeToolSource, Kind: protocol.ToolSourceNative, DisplayName: "Claude Code built-in tools"},
@@ -50,7 +30,6 @@ func endpointSources() []protocol.ToolSourceDescriptor {
 
 var ErrNativeProtocol = errors.New("claude adapter: invalid native protocol observation")
 
-// Client is the stream-json surface consumed by Session.
 type Client interface {
 	Call(ctx context.Context, request any, result any) error
 	WriteUser(ctx context.Context, frame json.RawMessage) error
@@ -102,10 +81,7 @@ type Adapter struct {
 	config Config
 	clock  base.Clock
 	ids    base.IDGenerator
-	// initializeAtOpen marks adapters that own their process: readiness on
-	// this boundary is the initialize control exchange, which Open completes
-	// once the session's dispatch loop is live (the response's ordering
-	// barrier needs a reducer to acknowledge it).
+
 	initializeAtOpen bool
 }
 
@@ -133,9 +109,7 @@ func New(config Config) (*Adapter, error) {
 	}
 	initializeAtOpen := false
 	if config.Factory == nil {
-		// Ambient environments are never inherited by default: a nil
-		// Environment becomes an explicit empty allowlist, so no ambient
-		// credential can reach the CLI unless the caller lists it.
+
 		env := config.Environment
 		if env == nil {
 			env = []string{}
@@ -170,7 +144,6 @@ type rpcProcess struct{ *rpc.Process }
 
 func (p *rpcProcess) ClientHandle() Client { return p.Client }
 
-// sessionClient couples the transport client with its process bridge.
 type sessionClient struct {
 	Client
 	bridge ProcessBridge
@@ -210,11 +183,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"run.reconciliation":             {Level: protocol.SupportDegraded, Reason: "system/init and session state frames corroborate"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool_use/tool_result projection; started synthesized; tool_progress observed-only"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the CLI executes tools internally"},
-		// The catalog is the newest system/init frame's tools and MCP server
-		// list. It is degraded because the CLI publishes no init frame until
-		// it has been given input — so there is no catalog at all before the
-		// first turn — and republishes it on every turn afterwards, so a
-		// caller's snapshot can go stale between one turn and the next.
+
 		protocol.FeatureToolsList: {Level: protocol.SupportDegraded, Reason: "system/init republishes the tool and MCP server lists per turn; there is none before the first"},
 		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
 		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
@@ -226,17 +195,11 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// An open attaching tool sources to an endpoint that never advertised
-	// attachment is refused before a process starts: this adapter reads no
-	// ToolSources, so admitting the open would return a session that silently
-	// discarded them.
+
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
-	// The same gate for control-layer-provided tools: this adapter advertises
-	// no action.tools.provide, so an open supplying its own tool definitions
-	// is refused rather than returning a session whose provided catalog was
-	// silently discarded.
+
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
@@ -252,10 +215,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	s := &Session{client: client, clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	if a.initializeAtOpen {
-		// Readiness on this boundary is the initialize control exchange, not
-		// a pre-input frame: the CLI emits nothing before the first submit.
-		// The session's dispatch loop is already reducing, so the exchange's
-		// ordering barrier is acknowledged.
+
 		initCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
 		defer cancel()
 		if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: nil}, &struct{}{}); err != nil {
@@ -283,8 +243,6 @@ func (g *sequenceIDs) NewID(kind string) string {
 	return fmt.Sprintf("%s-%d", g.kindPrefix(kind), g.next.Add(1))
 }
 
-// kindPrefix rewrites OAP id kinds into turn-uuid-safe characters for the
-// native submission identity.
 func (g *sequenceIDs) kindPrefix(kind string) string {
 	safe := make([]byte, 0, len(kind))
 	for _, char := range kind {

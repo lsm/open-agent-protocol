@@ -11,10 +11,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// scopedSessionStub serves a valid open for session "s-1" and then answers
-// every GET with the canned envelope the test supplies, so a misrouted
-// response can be fed to the GET-style methods the real daemon never
-// misroutes.
 func scopedSessionStub(t *testing.T, canned protocol.Envelope) *Session {
 	t.Helper()
 	opened, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID("open-response"), protocol.SessionOpenResponse{
@@ -32,8 +28,7 @@ func scopedSessionStub(t *testing.T, canned protocol.Envelope) *Session {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if r.Method == http.MethodPost {
-			// The open must correlate with whatever id the client minted, or
-			// it is refused before any session exists to test with.
+
 			var request protocol.Envelope
 			data, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(data, &request)
@@ -52,10 +47,6 @@ func scopedSessionStub(t *testing.T, canned protocol.Envelope) *Session {
 	return session
 }
 
-// stateResponse and catalogResponse build one GET answer whose envelope and
-// payload scopes are set independently, which is the whole point: both
-// documents are individually schema-valid and only the protocol binds them to
-// one scope.
 func stateResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionID) protocol.Envelope {
 	t.Helper()
 	response, err := protocol.NewEnvelope(protocol.TypeSessionStateResponse, protocol.EnvelopeID("state-response"), protocol.SessionState{
@@ -64,11 +55,7 @@ func stateResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Stamped with a revision so these cases keep failing on the defect they
-	// name: the revision is checked before the payload is read, and a canned
-	// response without one would make every scope case pass for the wrong
-	// reason. TestClientRejectsACatalogItCannotBindToADescriptor covers the
-	// missing revision on its own.
+
 	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v8"
 	return response
 }
@@ -81,24 +68,11 @@ func catalogResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionI
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Stamped with a revision so these cases keep failing on the defect they
-	// name: the revision is checked before the payload is read, and a canned
-	// response without one would make every scope case pass for the wrong
-	// reason. TestClientRejectsACatalogItCannotBindToADescriptor covers the
-	// missing revision on its own.
+
 	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v8"
 	return response
 }
 
-// TestClientRejectsMisroutedGetResponses is the binding a GET cannot get from
-// exchange. Those routes carry no request envelope, so the request-based scope
-// check never runs, and without an explicit check the client would hand back
-// another session's state or catalog — after the tool-sources unit, including
-// the sources that session attached — as though it were this one's.
-//
-// Both GET-style methods are covered because both have the shape. A check on
-// one and not the other would be worse than one rule stated once: a caller
-// cannot reason about a guarantee that holds on some routes.
 func TestClientRejectsMisroutedGetResponses(t *testing.T) {
 	leaked := []protocol.ToolSourceDescriptor{{ID: "secret", Kind: protocol.ToolSourceProcess, Endpoint: "stdio:another-sessions-source"}}
 	for _, testCase := range []struct {
@@ -146,14 +120,6 @@ func TestClientRejectsMisroutedGetResponses(t *testing.T) {
 	}
 }
 
-// TestClientRejectsACatalogItCannotBindToADescriptor is the revision half of
-// the same binding. A tool catalog is valid for exactly one descriptor
-// snapshot: it is a function of the descriptor and of the sources this session
-// attached under it, and capabilities.updated is the only signal that a cached
-// listing has stopped describing the session. A listing arriving with no
-// revision cannot be bound to a snapshot, so it can be neither cached nor
-// invalidated, and it is refused here rather than handed back with an empty
-// field the caller has to notice. Session.Models refuses the same way.
 func TestClientRejectsACatalogItCannotBindToADescriptor(t *testing.T) {
 	unbound := catalogResponse(t, "s-1", "s-1", nil)
 	unbound.CapabilityRevision = ""
@@ -164,8 +130,6 @@ func TestClientRejectsACatalogItCannotBindToADescriptor(t *testing.T) {
 		t.Fatalf("error %q does not report the missing revision", err)
 	}
 
-	// The same catalog with a revision is accepted and hands the revision
-	// back, so the rule is about the pairing and not about the catalog.
 	session = scopedSessionStub(t, catalogResponse(t, "s-1", "s-1", nil))
 	listing, err := session.Tools(context.Background())
 	if err != nil {
@@ -176,15 +140,6 @@ func TestClientRejectsACatalogItCannotBindToADescriptor(t *testing.T) {
 	}
 }
 
-// TestClientRejectsAnUnscopedAnswerToItsScopedCatalogRequest is the other
-// corner of the scoping rule, and the one that reads backwards until the
-// question is named. `session_id` is optional on a catalog *payload*, because
-// an endpoint-level catalog belongs to no session — but it is the answer to an
-// unscoped request, and Session.Tools never sends one: it always names this
-// session. Accepting an unscoped answer would hand back a catalog missing
-// exactly the sources this session attached at open, reported as its effective
-// catalog. What an answer may omit is decided by the question asked, not by
-// the payload's own schema.
 func TestClientRejectsAnUnscopedAnswerToItsScopedCatalogRequest(t *testing.T) {
 	session := scopedSessionStub(t, catalogResponse(t, "s-1", "", nil))
 	_, err := session.Tools(context.Background())
@@ -195,8 +150,6 @@ func TestClientRejectsAnUnscopedAnswerToItsScopedCatalogRequest(t *testing.T) {
 		t.Fatalf("error %q does not report the missing payload scope", err)
 	}
 
-	// The same request answered in scope is accepted, so the rule is about the
-	// scope the answer carries and not about the catalog being served at all.
 	session = scopedSessionStub(t, catalogResponse(t, "s-1", "s-1", nil))
 	if _, err := session.Tools(context.Background()); err != nil {
 		t.Fatalf("a correctly scoped catalog was rejected: %v", err)

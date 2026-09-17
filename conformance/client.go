@@ -1,12 +1,3 @@
-// Package conformance drives an OAP endpoint over the stdio binding in
-// drafts/endpoint-stdio.md, assembles the exchange into a trace, and hands
-// that trace to the real validator.
-//
-// The verdict deliberately does not come from this package's own opinion.
-// This package drives; validation judges; they are different code, and the
-// validator is the one every adapter in this repository is already held to.
-// A runner that both drove and judged would be the fault the corpus review
-// criticised — authored artefacts agreeing with each other.
 package conformance
 
 import (
@@ -24,27 +15,10 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// DefaultLineDeadline bounds how long the runner waits for the endpoint's
-// next line.
-//
-// It is generous on purpose. The binding places no bound on inter-line
-// latency, and a real endpoint pauses for as long as its model or its tools
-// take — a gap of minutes between run events is ordinary, not a fault. A
-// tight deadline would report non-conformance for a conformant binary, which
-// is the runner's primary use failing in the worst direction. It is still
-// bounded, because a deadlocked endpoint has to end the run somehow.
 const DefaultLineDeadline = 5 * time.Minute
 
-// maxExitGrace caps the wait for a process to leave after its stdout has
-// closed. A conformant endpoint has already settled whatever it admitted by
-// then, so this is generous rather than tight: it exists so a binary that
-// closes its output and stays alive ends this run instead of owning it.
 const maxExitGrace = 30 * time.Second
 
-// exitGrace is that cap, or the caller's own line deadline when it is
-// shorter. A caller who asked for a snappy runner gets one here too, and a
-// caller who asked for patience does not get to wait longer for an exit than
-// for a line.
 func (c *Client) exitGrace() time.Duration {
 	if c.deadline > 0 && c.deadline < maxExitGrace {
 		return c.deadline
@@ -52,17 +26,8 @@ func (c *Client) exitGrace() time.Duration {
 	return maxExitGrace
 }
 
-// ErrEndpointGone reports that the endpoint's stdout ended before the line
-// this client was waiting for.
 var ErrEndpointGone = errors.New("conformance: the endpoint produced no more lines")
 
-// Client speaks the endpoint binding to a spawned process.
-//
-// Responses and events share one pipe and the binding promises no ordering
-// between them, so every read takes the kind it wants and holds the other.
-// A reader that discarded the kind it was not waiting for would drop a gate
-// event that happened to precede an acknowledgement, and would do it
-// intermittently — which is the failure this shape exists to prevent.
 type Client struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
@@ -79,12 +44,10 @@ type Client struct {
 	controls  []ControlFrame
 
 	transcript []protocol.Envelope
-	// probes are the ids of deliberately-wrong requests. Neither they nor
-	// their answers reach the trace: see Probe.
+
 	probes   map[protocol.EnvelopeID]bool
 	deadline time.Duration
-	// dead is sticky. Once the endpoint has stopped producing lines, every
-	// later wait would pay the full deadline again for the same answer.
+
 	dead error
 }
 
@@ -95,9 +58,6 @@ type line struct {
 	err      error
 }
 
-// ControlFrame is one binding control line. Control frames are this
-// transport's own business — cursor replay is the only one the binding
-// defines — so they never enter the trace the validator judges.
 type ControlFrame struct {
 	Control   string             `json:"control"`
 	ID        string             `json:"id,omitempty"`
@@ -113,19 +73,12 @@ type ControlFrame struct {
 	Message string `json:"message,omitempty"`
 }
 
-// Spawn starts the endpoint command and begins reading its stdout, waiting
-// DefaultLineDeadline for each line. SpawnWithDeadline takes another bound.
 func Spawn(ctx context.Context, name string, args []string, stderr io.Writer) (*Client, error) {
 	return SpawnWithDeadline(ctx, name, args, stderr, DefaultLineDeadline)
 }
 
-// SpawnWithDeadline is Spawn with an explicit per-line bound.
 func SpawnWithDeadline(ctx context.Context, name string, args []string, stderr io.Writer, deadline time.Duration) (*Client, error) {
-	// The command gets its own cancellable context rather than the caller's.
-	// The caller's is typically never cancelled, which would leave a spawned
-	// binary running after the runner gave up on it — and judging arbitrary
-	// third-party binaries is what this tool is for, so one that starts and
-	// then neither speaks nor exits is a primary input, not an edge case.
+
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stderr = stderr
@@ -151,9 +104,6 @@ func SpawnWithDeadline(ctx context.Context, name string, args []string, stderr i
 	return c, nil
 }
 
-// read turns the endpoint's stdout into decoded lines. A line that is not one
-// JSON envelope is reported rather than skipped: on this binding that is a
-// conformance failure, not noise to tolerate.
 func (c *Client) read(stdout io.Reader) {
 	defer close(c.lines)
 	reader := bufio.NewReaderSize(stdout, 1<<20)
@@ -188,20 +138,10 @@ func (c *Client) read(stdout io.Reader) {
 	}
 }
 
-// Send writes one request envelope and records it in the transcript.
 func (c *Client) Send(envelope protocol.Envelope) error {
 	return c.send(envelope, true)
 }
 
-// Probe writes one request that is deliberately wrong and keeps it, and its
-// answer, out of the trace.
-//
-// Some obligations can only be checked by sending something no conformant host
-// would send — a stale capability revision, a cancel for a settled run. The
-// endpoint's answer is the thing under test, and it is an answer a conformant
-// endpoint must give. But the exchange itself is not conformant traffic, and
-// folding it into the assembled trace would have the validator convict the
-// endpoint of the fault the runner committed on purpose.
 func (c *Client) Probe(envelope protocol.Envelope) error {
 	c.mu.Lock()
 	if c.probes == nil {
@@ -228,29 +168,10 @@ func (c *Client) send(envelope protocol.Envelope, record bool) error {
 	return nil
 }
 
-// pull reads one more line from the endpoint, records it, and files it under
-// its kind. A response is any envelope correlated to a request; everything
-// else is an event.
 func (c *Client) pull() error { return c.pullWithin(c.deadline, true) }
 
-// ErrControlUnanswered is a control frame the endpoint never answered. It is
-// distinct from a dead endpoint because it is not one: a control is not an
-// envelope, the binding lets an endpoint implement none of them, and the
-// endpoint that answers nothing is still there and still owes answers to
-// everything else. Waiting for it must therefore not be fatal.
 var ErrControlUnanswered = errors.New("conformance: the endpoint answered no control frame")
 
-// pullWithin reads one more line, waiting at most budget. A fatal wait that
-// expires kills the endpoint; a non-fatal one leaves it alone.
-//
-// The distinction matters more than it looks. An endpoint that owes a
-// correlated response and sends nothing is neither talking nor leaving, and
-// killing it there is right. An endpoint that ignores a control frame has
-// done something the binding forbids but is otherwise alive and answering, and
-// killing it turns one defect into a failure for every later check — which
-// then reports the closed pipe rather than anything about the endpoint, and
-// reads as though the endpoint died. That cost a maintainer a wrong diagnosis:
-// six derived failures hid which one was real.
 func (c *Client) pullWithin(budget time.Duration, fatal bool) error {
 	c.mu.Lock()
 	dead := c.dead
@@ -290,16 +211,12 @@ func (c *Client) pullWithin(budget time.Duration, fatal bool) error {
 		c.mu.Lock()
 		c.dead = err
 		c.mu.Unlock()
-		// It is neither talking nor leaving, so it is killed here rather
-		// than left for a later wait to discover at the cost of another
-		// full deadline — and rather than left running at all.
+
 		c.Close()
 		return err
 	}
 }
 
-// Response returns the correlated answer to one request, holding any events
-// that arrive first.
 func (c *Client) Response(inReplyTo protocol.EnvelopeID) (protocol.Envelope, error) {
 	for {
 		c.mu.Lock()
@@ -317,7 +234,6 @@ func (c *Client) Response(inReplyTo protocol.EnvelopeID) (protocol.Envelope, err
 	}
 }
 
-// Event returns the next run event, holding any responses that arrive first.
 func (c *Client) Event() (protocol.Envelope, error) {
 	for {
 		c.mu.Lock()
@@ -334,9 +250,6 @@ func (c *Client) Event() (protocol.Envelope, error) {
 	}
 }
 
-// SendControl writes one binding control frame. It is not recorded in the
-// transcript: a control frame is transport, not protocol, and a trace is
-// protocol.
 func (c *Client) SendControl(frame ControlFrame) error {
 	data, err := json.Marshal(frame)
 	if err != nil {
@@ -346,8 +259,6 @@ func (c *Client) SendControl(frame ControlFrame) error {
 	return err
 }
 
-// Control returns the control frame answering one request, holding envelopes
-// and responses that arrive first.
 func (c *Client) Control(id string) (ControlFrame, error) {
 	for {
 		c.mu.Lock()
@@ -368,16 +279,6 @@ func (c *Client) Control(id string) (ControlFrame, error) {
 	}
 }
 
-// ControlAnswerBudget bounds the wait for a control answer.
-//
-// It is an absolute cap rather than a fraction of the line deadline, because
-// the two bound different things. The line deadline is generous — five minutes
-// — because a response can be behind a model call, and an endpoint that is
-// working is not a hung one. Answering a control is neither: an endpoint
-// either implements the control or does not, and either answer is a local
-// decision it can make immediately. A fraction of five minutes would make the
-// runner sit for well over a minute to learn something no conformant endpoint
-// needs a second to say.
 const ControlAnswerBudget = 10 * time.Second
 
 func (c *Client) controlBudget() time.Duration {
@@ -387,17 +288,12 @@ func (c *Client) controlBudget() time.Duration {
 	return ControlAnswerBudget
 }
 
-// ClosedByRunner reports whether this runner killed the endpoint after a wait
-// expired, so a later failure can say who closed the pipe. "file already
-// closed" on its own reads as the endpoint having died.
 func (c *Client) ClosedByRunner() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.dead
 }
 
-// CloseInput closes the endpoint's stdin, which on this binding is the
-// session's close.
 func (c *Client) CloseInput() error {
 	if c.closed {
 		return nil
@@ -406,8 +302,6 @@ func (c *Client) CloseInput() error {
 	return c.stdin.Close()
 }
 
-// Close kills the endpoint if it is still running and reaps it. It is
-// idempotent and safe to defer alongside Wait.
 func (c *Client) Close() {
 	if c.cancel != nil {
 		c.cancel()
@@ -415,21 +309,11 @@ func (c *Client) Close() {
 	_ = c.reapProcess()
 }
 
-// reapProcess waits for the child exactly once, since os/exec forbids a
-// second Wait and both Close and Wait can reach it.
 func (c *Client) reapProcess() error {
 	c.reap.Do(func() { c.waitErr = c.cmd.Wait() })
 	return c.waitErr
 }
 
-// Wait drains whatever the endpoint still had to say and returns its exit
-// code. Draining first is required rather than tidy: the endpoint flushes its
-// last lines before exiting, and reading them after Wait is the ordering the
-// os/exec documentation calls incorrect.
-//
-// An endpoint that stops producing lines without exiting is killed rather
-// than waited on: there is no exit code coming, and leaving it running is
-// how a conformance run over several binaries accumulates orphans.
 func (c *Client) Wait() (int, error) {
 	for {
 		if err := c.pull(); err != nil {
@@ -440,19 +324,14 @@ func (c *Client) Wait() (int, error) {
 			return -1, err
 		}
 	}
-	// The reap is bounded too. Closing stdout is not leaving: an endpoint can
-	// do the first and never the second, and waiting on it unbounded would
-	// hand this run's lifetime to the binary it is judging — which is the one
-	// thing a harness for arbitrary binaries must not do.
+
 	reaped := make(chan error, 1)
 	go func() { reaped <- c.reapProcess() }()
 	var err error
 	select {
 	case err = <-reaped:
 	case <-time.After(c.exitGrace()):
-		// Killed directly rather than through Close, which funnels into the
-		// same sync.Once the reap is already inside and would therefore wait
-		// on the very cmd.Wait this is bounding.
+
 		if c.cancel != nil {
 			c.cancel()
 		}
@@ -472,28 +351,6 @@ func (c *Client) Wait() (int, error) {
 	return 0, nil
 }
 
-// Transcript is every envelope sent and received, each id once, ordered so a
-// run's events follow the response that admitted it.
-//
-// Two departures from pipe-arrival order, both required rather than tidy.
-//
-// Each envelope id is kept once, because a replay re-delivers envelopes the
-// host already holds: the same envelope crossing the pipe twice is one event
-// delivered twice, and a trace keeping both copies fails on duplicate ids for
-// a reason that has nothing to do with the endpoint.
-//
-// And a run's events are held until the response admitting that run has been
-// emitted. The binding promises no ordering between a response and an event —
-// an endpoint may emit a run's first events while still inside its submit
-// handling, and over HTTP the two arrive on genuinely separate connections —
-// but a trace is a logical record, and admission precedes started in it. A
-// host that recorded arrival order would flag a conformant endpoint with
-// illegal_run_transition, intermittently, depending on which side won a race.
-// Ordering here is what makes the wire free to be unordered.
-//
-// Events whose run is never admitted are emitted at the end rather than
-// dropped: that is an endpoint defect, and the validator should be the one to
-// say so.
 func (c *Client) Transcript() []protocol.Envelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -539,10 +396,6 @@ func (c *Client) Transcript() []protocol.Envelope {
 	return trace
 }
 
-// admittedRun reports the run a response admits, which is what a run's events
-// must follow. The run is read from the payload rather than the envelope
-// label, because labelling the envelope is this repository's convention and
-// not something the binding requires of anyone else.
 func admittedRun(envelope protocol.Envelope) protocol.RunID {
 	switch envelope.Type {
 	case protocol.TypeSessionMessageSubmitResponse:

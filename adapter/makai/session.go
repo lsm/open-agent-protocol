@@ -37,10 +37,7 @@ type session struct {
 	active         *runState
 	runs           map[protocol.RunID]*runState
 	tools          map[string]*toolState
-	// provided is the control layer's own catalog, fixed at open and written
-	// onto every agent_message. A tool_execute naming one of these is a call
-	// this endpoint routes to the control participant; anything else is a
-	// frame the adapter still has nowhere to send.
+
 	provided []protocol.ToolDefinition
 	journal  []protocol.Envelope
 	stop     chan struct{}
@@ -58,24 +55,12 @@ type runState struct {
 	result          *native.Result
 	admitted        chan struct{}
 	subscribers     []chan base.Result
-	// call is the control-owned call this run is waiting on, or nil. Makai
-	// admits one tool_execute at a time per run at this pin, and a second
-	// arriving while one is pending is a lifecycle fault rather than a
-	// second interaction.
+
 	call *callState
-	// calls is every control-owned call this run has opened, including the
-	// settled ones. A settled call keeps its identity because a resolver
-	// whose response was lost retries, and the ladder owes that retry
-	// already_resolved with the settlement rather than unknown_interaction.
-	// Reading only the pending call would turn the answer into a lie as soon
-	// as the next tool_execute arrived, and sequential calls are the ordinary
-	// multi-tool flow rather than an edge case.
+
 	calls map[protocol.InteractionID]*callState
 }
 
-// callState is one control-owned call: the interaction the harness opened by
-// asking the client to run a tool, and everything the resolution that answers
-// it must be judged against.
 type callState struct {
 	interaction      protocol.InteractionID
 	toolCallID       protocol.ToolCallID
@@ -134,10 +119,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.runs[run.id] = run
 	s.state.Status = protocol.SessionRunning
 	s.state.ActiveRunID = run.id
-	// model_ref is a per-run native parameter, so an admitted model_id is
-	// authoritative for its run and leaves the session default alone: writing
-	// it into current_model_id would make the next control-free submission
-	// inherit a selection the caller made once (decision 0005).
+
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	sequence := s.nativeSequence + 1
 	s.mu.Unlock()
@@ -151,10 +133,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.unusable = true
 		s.mu.Unlock()
 		close(run.admitted)
-		// The submission is a bare Send with no answer awaited, so a failure
-		// here means nothing was ever reported back about this run — not that
-		// Makai refused it. Whether the bytes reached the wire is unknowable
-		// from the error alone.
+
 		s.failRunSettled(run, "makai_admission_failed", err.Error(), protocol.SettledByInferred)
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
@@ -163,10 +142,7 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	s.mu.Unlock()
 	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
-		// The Send succeeded, so Makai holds the message and may well be
-		// executing the turn right now. This terminal is the adapter failing
-		// to project a run it never saw end, which is the strongest form of
-		// inference here, not the weakest.
+
 		s.failRunSettled(run, "makai_admission_projection_failed", err.Error(), protocol.SettledByInferred)
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
@@ -176,16 +152,11 @@ func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 }
 
 func (s *session) messageJSON(req protocol.MessageSubmitRequest) ([]byte, []protocol.MessageID, error) {
-	// model_ref is native per message; instructions, tool policy, and output
-	// schema have no per-run native surface at this pin.
-	// Each is refused under its own capability key before admission, so a
-	// caller learns which control to stop sending (decision 0005).
+
 	if err := base.RefuseUnadvertisedControls(req, protocol.FeatureModelSelection); err != nil {
 		return nil, nil, err
 	}
-	// A present-but-empty model id is a control, not an absent one: no catalog
-	// carries it, and substituting the native default would admit the run while
-	// reporting a model the caller never chose.
+
 	if req.ModelID != nil && *req.ModelID == "" {
 		return nil, nil, &base.ModelNotFoundError{}
 	}
@@ -212,16 +183,11 @@ func (s *session) messageJSON(req protocol.MessageSubmitRequest) ([]byte, []prot
 	if model == "" {
 		model = "default"
 	}
-	// The provided catalog is repeated verbatim on every message. Makai's
-	// surface is per-submit; the unit's is per-session, so the narrower one
-	// is what the wire carries and a submit can neither add nor drop a tool.
+
 	encoded, err := json.Marshal(map[string]any{"model_ref": model, "messages": messages, "tools": s.nativeTools()})
 	return encoded, ids, err
 }
 
-// nativeTools projects the session's provided catalog into the pinned native
-// definition shape. An empty catalog stays an empty array rather than becoming
-// absent: the pin's agent_message carries the key either way.
 func (s *session) nativeTools() []native.ToolDefinition {
 	s.mu.Lock()
 	provided := s.provided
@@ -256,8 +222,7 @@ func (s *session) dispatch() {
 				close(inbound.Barrier)
 			}
 		case <-s.client.Done():
-			// The reader may enqueue valid observations immediately before EOF.
-			// Reduce that ordered prefix before projecting transport failure.
+
 			for {
 				select {
 				case inbound := <-s.inbound:
@@ -337,11 +302,7 @@ func (s *session) handleEnvelope(env native.Envelope) {
 			return
 		}
 		payload, _ := native.DecodePayload[native.AgentError](env)
-		// A request-correlated agent_not_found is eviction evidence: the
-		// native session is gone server-side (idle-TTL sweep or a foreign
-		// teardown), so retire the mapped session too — later submissions
-		// are guaranteed to fail against the dead association. The run
-		// still settles through the ordinary failure terminal below.
+
 		if payload.Code == native.ErrorAgentNotFound {
 			s.mu.Lock()
 			s.unusable = true
@@ -355,9 +316,7 @@ func (s *session) handleEnvelope(env native.Envelope) {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		// agent_stopped is session-scoped: it says the session stopped, never
-		// that this run ended. The run terminal is concluded from it, exactly
-		// as on the requested-cancellation path.
+
 		s.failRunSettled(run, "makai_unsolicited_session_stop", "Makai stopped the native session without a pending cancellation", protocol.SettledByInferred)
 	case native.TypeToolStreaming, native.TypeToolResult, native.TypeSessionInfo, native.TypeAck, native.TypeNack, native.TypePong, native.TypeGoodbye:
 		return
@@ -516,13 +475,6 @@ func (s *session) endTool(run *runState, nativeID, name string, result json.RawM
 	}
 }
 
-// openControlCall turns a native tool_execute into a control-owned call.
-//
-// The frame is only routable when the named tool is one the control layer
-// provided: makai's bridge asks the client to run a tool it declared, and a
-// name the session never provided has no owner to route to. That case keeps
-// the refusal this adapter has always given, because the protocol now has a
-// place for the frames it can route and none for the frames it cannot.
 func (s *session) openControlCall(run *runState, payload native.ToolExecute) {
 	s.mu.Lock()
 	var definition *protocol.ToolDefinition
@@ -538,10 +490,7 @@ func (s *session) openControlCall(run *runState, payload native.ToolExecute) {
 		return
 	}
 	if run.call != nil && run.call.settledArm == "" {
-		// One pending call per run at this pin. A second is a lifecycle
-		// fault rather than a second interaction: the adapter would have no
-		// way to tell which tool_result answered which call, since the native
-		// correlation is the tool_call_id it is about to reuse.
+
 		s.mu.Unlock()
 		s.failRun(run, "makai_invalid_tool_lifecycle", "a second tool_execute arrived while one was pending")
 		return
@@ -571,14 +520,6 @@ func (s *session) openControlCall(run *runState, payload native.ToolExecute) {
 	_, _ = s.emitEnvelope(run, protocol.TypeActionCallRequested, requested, false, "")
 }
 
-// ResolveCall answers one resolution of a control-owned call. A refusal is a
-// conforming outcome carried in the response: the five reasons are ranked and
-// the highest one the request satisfies is what the endpoint reports.
-//
-// An accepted result or error is written back to the harness as the native
-// tool_result the bridge is waiting for, and only then does the OAP terminal
-// go out — an endpoint that published the terminal first would tell the
-// control layer its answer landed before it had.
 func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolution) (protocol.ActionCallResolveResponse, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -608,10 +549,7 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 		s.mu.Unlock()
 		return refuse(protocol.ReasonUnknownInteraction, "")
 	}
-	// Every call this run opened, not just the one it is waiting on: a
-	// settled call must still be able to answer a retry with the settlement
-	// it owes, and a later tool_execute must not turn that answer into
-	// unknown_interaction.
+
 	call := run.calls[request.InteractionID]
 	if call == nil {
 		s.mu.Unlock()
@@ -639,9 +577,7 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 		return refuse(protocol.ReasonAlreadyResolved, settlement)
 	}
 	if run.terminal || run.call != call {
-		// The run has ended, or a later call superseded this one, and either
-		// way this call is no longer accepting a resolution. Its settlement
-		// is what the trace carries for it.
+
 		s.mu.Unlock()
 		return refuse(protocol.ReasonAlreadyResolved, call.settlementID)
 	}
@@ -653,28 +589,9 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	answer.Accepted = true
 	s.mu.Unlock()
 
-	// Committing an acceptance and publishing what it releases is one
-	// transition, for both arms, so it is taken against the same mutex every
-	// terminal arbiter here takes. The lock order is the one Cancel already
-	// uses — opMu, held by this call, then transitionMu — so it cannot invert
-	// against handleEnvelope, which takes transitionMu alone.
-	//
-	// Both arms need it and for the same reason. Without it on the resolution
-	// arm the dispatch goroutine's agent_end settles the run inside the
-	// window, every emit answers errTerminalWon, and the run ends carrying an
-	// interaction the trace still reads as pending. Without it on the
-	// acknowledgement arm the action.call.started lands between
-	// closeControlCall's action.call.cancelled and the run terminal, which is
-	// a started-after-cancelled transition the validator rejects — the
-	// endpoint would emit a trace its own validator refuses.
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 
-	// Taking the mutex is not the same as having held it. The ladder was
-	// judged under mu, so an agent_end can have settled the run and closed
-	// this call in between, and nothing is committed until that is ruled out.
-	// A resolution that lost the race is refused with the settlement the
-	// close produced, which is the answer the ladder owes it.
 	s.mu.Lock()
 	if run.terminal || call.settlementID != "" {
 		settlement := call.settlementID
@@ -688,9 +605,7 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 		started.ArgumentsJSON = cloneRaw(call.args)
 		event, err := s.emitEnvelope(run, protocol.TypeActionCallStarted, started, false, "")
 		if err != nil {
-			// Nothing was published, so the acknowledgement this endpoint was
-			// about to record never happened: leaving it set would refuse the
-			// resend that is now owed as a repeat.
+
 			s.mu.Lock()
 			call.acknowledged = false
 			s.mu.Unlock()
@@ -710,20 +625,14 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	s.mu.Unlock()
 
 	if err := s.writeToolResult(ctx, call, sequence); err != nil {
-		// The harness never got the answer, so this endpoint did not accept
-		// the resolution and must not keep a record saying it did: the caller
-		// is returned an error, and a call left marked settled would be one
-		// no later close could reopen and no retry could re-resolve.
+
 		s.mu.Lock()
 		call.settledArm, call.settledRequestID = "", ""
 		call.settledResult, call.settledError = nil, nil
 		s.mu.Unlock()
 		return protocol.ActionCallResolveResponse{}, err
 	}
-	// The native frame is on the wire, so the sequence it consumed is spent.
-	// Submit and Cancel record theirs the same way and for the same reason:
-	// the pin allocates per frame, and a number reused by the next submit or
-	// resolution is a duplicate on the client-to-agent wire.
+
 	s.mu.Lock()
 	s.nativeSequence = sequence
 	s.mu.Unlock()
@@ -731,9 +640,6 @@ func (s *session) ResolveCall(ctx context.Context, resolution base.CallResolutio
 	return answer, nil
 }
 
-// writeToolResult sends the participant's outcome back over the native bridge.
-// is_error carries the failure arm, because makai's tool_result has one
-// channel and classifies by that flag rather than by frame type.
 func (s *session) writeToolResult(ctx context.Context, call *callState, sequence uint64) error {
 	result := call.settledResult
 	if call.settledArm == protocol.ResolveArmError {
@@ -755,10 +661,6 @@ func (s *session) writeToolResult(ctx context.Context, call *callState, sequence
 	return s.client.Send(ctx, env)
 }
 
-// settleControlCall publishes the terminal the accepted resolution authorized,
-// preceded by the start when the participant never acknowledged: the result is
-// itself the evidence execution began, so the start is emitted immediately
-// before the terminal rather than invented earlier.
 func (s *session) settleControlCall(run *runState, call *callState, acknowledged bool) {
 	if !acknowledged {
 		started := s.callPayload(run, call, call.settledRequestID)
@@ -784,9 +686,7 @@ func (s *session) settleControlCall(run *runState, call *callState, acknowledged
 	}
 	event, err := s.emitEnvelope(run, typ, terminal, false, call.startedEvent)
 	if err != nil {
-		// Nothing was published, so there is no settlement to record. Writing
-		// the zero id of an envelope that never existed would name a
-		// settlement the trace does not carry.
+
 		return
 	}
 	s.mu.Lock()
@@ -794,10 +694,6 @@ func (s *session) settleControlCall(run *runState, call *callState, acknowledged
 	s.mu.Unlock()
 }
 
-// callPayload is the control-owned call's identity. request_id names the
-// resolve request an event was derived from, because two resolutions of one
-// call can be outstanding at once and tool_call_id cannot say which released
-// the event.
 func (s *session) callPayload(run *runState, call *callState, requestID protocol.EnvelopeID) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{
 		InteractionID: call.interaction, RequestID: requestID,
@@ -844,12 +740,7 @@ func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
-		// agent_end carried stop_reason "cancelled", so this terminal is an
-		// observed native fact on both branches and neither sets settled_by.
-		// The two reasons differ only in cause — whether the host asked for
-		// the cancellation or Makai took it unprompted — now that terminal
-		// provenance is carried by settled_by rather than by the choice
-		// between "confirmed" and "reported".
+
 		reason := "cancelled at the host's request"
 		if !cancelRequested {
 			reason = "cancelled by Makai without a host request"
@@ -872,9 +763,7 @@ func (s *session) finishRun(run *runState, end native.AgentEndEvent) {
 		}
 		message.Content = content
 		usage = &protocol.Usage{InputTokens: result.Input, OutputTokens: result.Output, TotalTokens: result.Input + result.Output}
-		// The result travels raw so presence is preserved exactly as the
-		// adapter built it; an encoding failure leaves it absent rather than
-		// emitting a half-formed object.
+
 		resultJSON, _ = json.Marshal(map[string]any{"provider": result.Provider, "api": result.API, "model": result.Model, "cache_read": result.CacheRead, "cache_write": result.CacheWrite})
 	}
 	_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: message, StopReason: stopReason, Result: resultJSON, Usage: usage}, true)
@@ -983,13 +872,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	s.nativeSequence = sequence
 	s.mu.Unlock()
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
-	// At the pinned server, agent_stop removes the session before the detached
-	// execution publishes its final agent_end. That publish is then discarded.
-	// The correlated agent_stopped response is therefore the last observable
-	// cancellation evidence and must be normalized into adapter settlement.
-	// Normalizing a session-scoped stop into a run terminal the adapter never
-	// observed is exactly settled_by "inferred", so the reason is free to name
-	// the cause instead of claiming Makai confirmed the run's own settlement.
+
 	s.settleTools(run, true)
 	_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "destructive session stop", SettledBy: protocol.SettledByInferred}, true)
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelled}, nil
@@ -1098,21 +981,10 @@ func (s *session) settleTools(run *runState, cancel bool) {
 	}
 }
 
-// closeControlCall settles a control-owned call the run is still waiting on,
-// before its parent run terminates. A run may not end with an interaction
-// pending, and nobody is going to answer this one: the harness is gone.
-//
-// It closes as cancelled however the run ended and whether or not the
-// participant acknowledged: nothing resolved the call, and cancelled is the
-// one terminal the transition table admits from both requested and started
-// without an accepted resolution behind it.
 func (s *session) closeControlCall(run *runState) {
 	s.mu.Lock()
 	call := run.call
-	// The test is whether the trace carries a settlement, not whether this
-	// endpoint has decided on one. A call marked settled whose terminal was
-	// never published is exactly the case that must still be closed, or the
-	// run ends with an interaction the validator reads as pending.
+
 	if call == nil || call.settlementID != "" {
 		s.mu.Unlock()
 		return
@@ -1120,15 +992,7 @@ func (s *session) closeControlCall(run *runState) {
 	call.settledArm = protocol.ResolveArmError
 	started := call.startedEvent
 	s.mu.Unlock()
-	// Cancelled, whether or not the participant acknowledged. Decision 0011's
-	// timeout sentence says an acknowledged call settles as failed, and that
-	// sentence cannot be honoured: the same decision requires
-	// action.call.failed to derive from an accepted error-arm resolution, an
-	// acknowledgement is not one, and validation/controltools.go enforces it —
-	// so the failed terminal would be illegal_tool_transition on every trace
-	// that emitted it. The transition table admits cancelled from both
-	// requested and started, and nothing here was resolved, so cancelled is
-	// both legal and true. The record carries the correction.
+
 	payload := s.callPayload(run, call, "")
 	event, err := s.emitEnvelope(run, protocol.TypeActionCallCancelled, payload, false, started)
 	if err != nil {
@@ -1143,11 +1007,6 @@ func (s *session) failRun(run *runState, code, message string) {
 	s.failRunSettled(run, code, message, "")
 }
 
-// failRunSettled fails a run with explicit terminal provenance. An empty
-// settledBy omits the member, which asserts observation and is right wherever
-// Makai's own frames carried the failure; the transport-death and
-// ambiguous-cancellation paths pass protocol.SettledByInferred, having
-// observed no terminal for the run.
 func (s *session) failRunSettled(run *runState, code, message, settledBy string) {
 	s.settleTools(run, true)
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)

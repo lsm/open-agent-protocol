@@ -1,4 +1,3 @@
-// Package makai adapts the pinned Makai agent protocol to OAP.
 package makai
 
 import (
@@ -19,12 +18,7 @@ import (
 
 const (
 	PinnedCommit = "9f351fe12448f86b94498b4dfc4f6dfdaf5f1df5"
-	// endpointID is this endpoint's identity, and therefore the agent
-	// participant every interaction it raises is requested by. The two are
-	// one value because protocol.initialize.response declares the endpoint
-	// and nothing else declares the agent side: an adapter naming a different
-	// requester raises gates addressed to a participant the trace never saw
-	// declared.
+
 	endpointID             = "makai.agent"
 	CapabilityRevision     = "makai-agent-67ad514-oap-v2"
 	defaultJournalCapacity = 256
@@ -120,11 +114,6 @@ func (c *processClient) Close() error {
 	return c.Process.Close(ctx)
 }
 
-// The provisioning limits this adapter discloses. maxProvidedTools is a bound
-// on the native tools array rather than a protocol one; the dialect is the
-// one makai's parameters_schema_json carries at this pin. Both are declared
-// because a constraint must be advertised to be exercised: refusing an array
-// that satisfies every disclosed limit is undisclosed_provide_limit.
 const (
 	maxProvidedTools = 32
 	providedDialect  = "https://json-schema.org/draft/2020-12/schema"
@@ -139,14 +128,6 @@ var provideSupport = protocol.FeatureSupport{
 	Reason: "provided definitions are written onto every agent_message and executed through the native tool_execute/tool_result bridge",
 }
 
-// admitProvidedTools judges one open's control-owned catalog. Provisioning is
-// whole or not at all and is judged before a process starts, so a refused open
-// leaves no child behind and no session holding a catalog it silently trimmed.
-//
-// Makai provisions per message rather than per session, which is a wider
-// surface than this unit admits. The adapter narrows it rather than widening
-// the protocol: the array is fixed at open and repeated verbatim on every
-// agent_message, so the session's provided catalog cannot change under a run.
 func admitProvidedTools(req base.OpenRequest) ([]protocol.ToolDefinition, error) {
 	if err := base.RefuseUnadvertisedTools(req, provideSupport); err != nil {
 		return nil, err
@@ -168,13 +149,10 @@ func admitProvidedTools(req base.OpenRequest) ([]protocol.ToolDefinition, error)
 		case tool.ExecutionOwner != req.Participant.ID:
 			return nil, refuse(tool.Name, "execution_owner must be the opening participant")
 		case seen[tool.Name]:
-			// One name resolves to one definition. Makai routes tool_execute
-			// by name, so a collision would route a call to whichever entry
-			// happened to win.
+
 			return nil, refuse(tool.Name, "the name is provided twice")
 		case tool.Source != "":
-			// This adapter declares no sources and attaches none, so a
-			// provided tool naming one is dangling by construction.
+
 			return nil, refuse(tool.Name, "source "+tool.Source+" resolves to no declared or attached source")
 		case !admissibleDialect(tool.InputSchema):
 			return nil, refuse(tool.Name, "the input schema declares a dialect outside the disclosed "+providedDialect)
@@ -184,8 +162,6 @@ func admitProvidedTools(req base.OpenRequest) ([]protocol.ToolDefinition, error)
 	return append([]protocol.ToolDefinition(nil), req.Tools...), nil
 }
 
-// admissibleDialect reports whether a provided schema elects a dialect this
-// adapter accepts. An absent $schema elects the endpoint's.
 func admissibleDialect(schema json.RawMessage) bool {
 	if len(schema) == 0 {
 		return true
@@ -210,9 +186,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.state":                 {Level: protocol.SupportEmulated, Reason: "adapter-owned projection"},
 		"session.message.submit":        {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the complete agent_message frame is written"},
 		"session.message.delivery.auto": {Level: protocol.SupportEmulated, Reason: "auto is normalized to start"},
-		// agent_message carries model_ref per message, so a requested model is
-		// applied to exactly the run it was requested for and the session
-		// default is untouched (decision 0005).
+
 		protocol.FeatureModelSelection:   {Level: protocol.SupportNative, Mode: protocol.ModePerRun, Reason: "agent_message.model_ref selects the model for one message"},
 		protocol.FeatureInstructions:     {Level: protocol.SupportUnavailable, Reason: "agent_start.system_prompt is session-level; this pin exposes no per-run instructions"},
 		protocol.FeatureToolSelection:    {Level: protocol.SupportUnavailable, Reason: "the pinned agent protocol carries no per-run tool policy"},
@@ -225,12 +199,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded process-memory journal; gaps are explicit"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "observed native tool lifecycle; no portable authoritative catalog"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the pinned agent protocol has no harness-side executor this adapter can drive"},
-		// The tool_execute/tool_result bridge is exactly the control-layer
-		// boundary: the harness asks the client to run a tool and waits for
-		// the answer. The limits are disclosed because a refusal is only
-		// conforming where it violates one — max_tools is the native
-		// tools array this adapter writes onto every agent_message, and the
-		// dialect is what makai's parameters_schema_json carries.
+
 		protocol.FeatureToolsProvide: provideSupport,
 		"action.permissions":         {Level: protocol.SupportUnavailable, Reason: "Makai agent protocol exposes no permission interaction"},
 	}
@@ -241,10 +210,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// An open attaching tool sources to an endpoint that never advertised
-	// attachment is refused before a process starts: this adapter reads no
-	// ToolSources, so admitting the open would return a session that silently
-	// discarded them.
+
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
@@ -261,10 +227,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, errors.New("makai adapter: ID generator must produce a 21-character native session ID for kind makai-session")
 	}
-	// Dual-key emission per the v0.2.0 #198 transition: the canonical
-	// session_id key plus the permanent resume_session_id alias, same value —
-	// pre-rename servers keep binding the caller's id, dual-key servers take
-	// the canonical one.
+
 	request, err := a.envelope(native.TypeAgentStart, nativeAssociation, 1, native.AgentStart{ConfigJSON: string(a.config.AgentConfig), SystemPrompt: a.config.SystemPrompt, SessionID: &nativeAssociation, ResumeSessionID: &nativeAssociation})
 	if err != nil {
 		_ = client.Close()

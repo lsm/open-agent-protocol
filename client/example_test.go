@@ -13,11 +13,6 @@ import (
 	"github.com/lsm/open-agent-protocol/serve/servehttp"
 )
 
-// Example drives the canonical lifecycle against a local daemon: discover,
-// open, subscribe, submit, resolve both interactive gates, and consume the
-// run to its terminal event. Against a daemon started with `oap serve`, the
-// client is simply client.New("127.0.0.1:6270"); this example serves the
-// built-in memory adapter privately so it stays hermetic.
 func Example() {
 	registry := serve.NewRegistry()
 	if err := registry.Register("memory", base.NewMemory(base.Config{})); err != nil {
@@ -36,7 +31,6 @@ func Example() {
 	ctx := context.Background()
 	c := client.New(server.URL)
 
-	// Discovery: the adapter listing and one capability snapshot.
 	adapters, err := c.Adapters(ctx)
 	if err != nil {
 		fmt.Println("adapters:", err)
@@ -49,8 +43,6 @@ func Example() {
 	}
 	fmt.Println("adapter:", adapters[0].Name, "revision:", caps.Revision)
 
-	// One session, subscribed before submitting so the run's first envelope
-	// cannot be missed.
 	session, err := c.Open(ctx, adapters[0].Name, "demo")
 	if err != nil {
 		fmt.Println("open:", err)
@@ -65,11 +57,10 @@ func Example() {
 		return
 	}
 
-	// Consume the run, resolving the scripted gates as they arrive.
 	for {
 		envelope, err := stream.Next()
 		if err == io.EOF {
-			break // the run reached its terminal event
+			break
 		}
 		if err != nil {
 			fmt.Println("stream:", err)
@@ -136,9 +127,6 @@ func Example() {
 	// closed
 }
 
-// ExampleSession_EventsAfter resumes a completed run's stream from a cursor:
-// the replayed suffix first, then the stream's documented clean end at the
-// terminal event.
 func ExampleSession_EventsAfter() {
 	registry := serve.NewRegistry()
 	if err := registry.Register("memory", base.NewMemory(base.Config{})); err != nil {
@@ -161,8 +149,7 @@ func ExampleSession_EventsAfter() {
 		fmt.Println("open:", err)
 		return
 	}
-	// A helper consumes one full run so the journal holds a terminal run;
-	// see Example for the gate-resolving loop this elides.
+
 	runID, err := runGolden(ctx, session)
 	if err != nil {
 		fmt.Println("run:", err)
@@ -186,7 +173,6 @@ func ExampleSession_EventsAfter() {
 	// replayed: run.completed 12
 }
 
-// runGolden drives one scripted run to completion on a helper subscription.
 func runGolden(ctx context.Context, session *client.Session) (protocol.RunID, error) {
 	stream := session.Events(ctx)
 	admission, err := session.Submit(ctx, protocol.MessageSubmitRequest{

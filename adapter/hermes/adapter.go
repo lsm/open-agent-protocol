@@ -1,4 +1,3 @@
-// Package hermes adapts the pinned Hermes tui_gateway to OAP.
 package hermes
 
 import (
@@ -24,13 +23,11 @@ const (
 
 var ErrNativeProtocol = errors.New("hermes adapter: invalid native protocol observation")
 
-// Client is the ordered JSON-RPC surface consumed by Session.
 type Client interface {
 	Call(context.Context, string, any, any) error
 	Inbound() <-chan rpc.InboundMessage
 	Done() <-chan struct{}
-	// ReadDone closes once the reader has stopped routing decoded frames. A relay
-	// must wait for it before finishing so no already-decoded frame is dropped.
+
 	ReadDone() <-chan struct{}
 	Err() error
 	Close() error
@@ -104,8 +101,7 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	if config.Factory == nil {
-		// Preserve nil-ness: unset inherits the parent environment, any
-		// explicit slice (including empty) replaces it verbatim.
+
 		env := config.Environment
 		if env != nil {
 			env = append([]string{}, env...)
@@ -117,19 +113,10 @@ func New(config Config) (*Adapter, error) {
 				return nil, "", err
 			}
 			client := p.ClientHandle()
-			// The ordered inbound stream is active from the ready handshake
-			// on: responses release only after their ordering barrier is
-			// acknowledged by an inbound consumer. session.create is issued
-			// before the Session's dispatch exists, so a relay consumer owns
-			// the stream from factory time — barriers are acknowledged in
-			// wire order and observations are forwarded for the reducer. The
-			// reducer is dual-order convergent (response vs opening frames),
-			// so a call returning while wire-earlier events sit in the relay
-			// is a legal interleaving, not a reordering.
+
 			relay := make(chan rpc.InboundMessage, relayCapacity)
 			go relayInbound(client, relay)
-			// The runtime session id is native-minted by session.create; the
-			// ready handshake already completed inside the process start.
+
 			var created native.SessionCreateResult
 			if err := client.Call(ctx, native.MethodSessionCreate, native.SessionCreateParams{Model: config.Model}, &created); err != nil {
 				_ = p.Close(context.Background())
@@ -145,13 +132,6 @@ func New(config Config) (*Adapter, error) {
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
 }
 
-// relayInbound forwards the transport's ordered inbound stream into the session
-// relay, acknowledging ordering barriers in wire order. Closing the relay marks
-// the stream finished: the reducer drains it to completion before settling a
-// transport failure. On retirement the relay keeps forwarding until the reader
-// has stopped and the already-decoded frames are drained — the reader may still
-// be routing frames it decoded before death, and dropping them would let the
-// session settle without the ordered evidence the reducer requires.
 func relayInbound(client Client, relay chan rpc.InboundMessage) {
 	defer close(relay)
 	inbound := client.Inbound()
@@ -199,8 +179,6 @@ type rpcProcess struct{ *rpc.Process }
 
 func (p *rpcProcess) ClientHandle() Client { return p.Client }
 
-// sessionClient couples the transport client with its process bridge and the
-// native-minted session identity.
 type sessionClient struct {
 	Client
 	bridge  ProcessBridge
@@ -208,8 +186,6 @@ type sessionClient struct {
 	inbound chan rpc.InboundMessage
 }
 
-// Inbound returns the relay stream owned since factory time, not the
-// transport's raw ordered stream (its barriers are acknowledged by the relay).
 func (p *sessionClient) Inbound() <-chan rpc.InboundMessage { return p.inbound }
 
 func (p *sessionClient) Done() <-chan struct{} { return p.bridge.Done() }
@@ -256,22 +232,15 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// An open attaching tool sources to an endpoint that never advertised
-	// attachment is refused before a process starts: this adapter reads no
-	// ToolSources, so admitting the open would return a session that silently
-	// discarded them.
+
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
-	// The same gate for control-layer-provided tools: this adapter advertises
-	// no action.tools.provide, so an open supplying its own tool definitions
-	// is refused rather than returning a session whose provided catalog was
-	// silently discarded.
+
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
-	// The factory returns the native-minted runtime session id alongside the
-	// client; Open correlates the OAP session with it.
+
 	client, nativeID, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err

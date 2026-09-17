@@ -171,13 +171,84 @@ func comments(src []byte) []comment {
 }
 
 func scan(src []byte) []span {
+	kept := preserved(src)
 	var spans []span
 	for _, c := range comments(src) {
-		if c.name == "" && !c.load {
+		if !kept[c.span.start] {
 			spans = append(spans, c.span)
 		}
 	}
 	return spans
+}
+
+func preserved(src []byte) map[int]bool {
+	found := comments(src)
+	kept := map[int]bool{}
+	for _, c := range found {
+		if c.name != "" || c.load {
+			kept[c.span.start] = true
+		}
+	}
+	protected := generateLines(src)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		for _, c := range found {
+			if toolchainMarker(string(src[c.span.start:c.span.end])) || protectedIn(protected, c.span.start, c.span.end) {
+				kept[c.span.start] = true
+			}
+		}
+		return kept
+	}
+	for _, g := range cgoGroups(f) {
+		for _, c := range g.List {
+			kept[fset.Position(c.Pos()).Offset] = true
+		}
+	}
+	for _, c := range found {
+		if protectedIn(protected, c.span.start, c.span.end) {
+			kept[c.span.start] = true
+		}
+	}
+	for _, g := range f.Comments {
+		carries := false
+		for _, c := range g.List {
+			if toolchainMarker(c.Text) {
+				carries = true
+				break
+			}
+		}
+		if !carries {
+			continue
+		}
+		for _, c := range g.List {
+			kept[fset.Position(c.Pos()).Offset] = true
+		}
+	}
+	return kept
+}
+
+func cgoGroups(f *ast.File) []*ast.CommentGroup {
+	var groups []*ast.CommentGroup
+	ast.Inspect(f, func(n ast.Node) bool {
+		gd, ok := n.(*ast.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			return true
+		}
+		for _, spec := range gd.Specs {
+			imp, ok := spec.(*ast.ImportSpec)
+			if !ok || imp.Path == nil || imp.Path.Value != `"C"` {
+				continue
+			}
+			for _, g := range []*ast.CommentGroup{imp.Doc, imp.Comment, gd.Doc} {
+				if g != nil {
+					groups = append(groups, g)
+				}
+			}
+		}
+		return true
+	})
+	return groups
 }
 
 func plusBuildEnd(src []byte) int {
@@ -273,41 +344,16 @@ func strip(src []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	classified := map[int]bool{}
-	for _, c := range comments(src) {
-		if c.name != "" || c.load {
-			classified[c.span.start] = true
-		}
-	}
-	protected := generateLines(src)
+	classified := preserved(src)
 	keep := map[*ast.CommentGroup]bool{}
 	for _, g := range f.Comments {
 		for _, c := range g.List {
-			start := fset.Position(c.Pos()).Offset
-			if classified[start] || toolchainMarker(c.Text) || protectedIn(protected, start, fset.Position(c.End()).Offset) {
+			if classified[fset.Position(c.Pos()).Offset] {
 				keep[g] = true
 				break
 			}
 		}
 	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		gd, ok := n.(*ast.GenDecl)
-		if !ok || gd.Tok != token.IMPORT {
-			return true
-		}
-		for _, spec := range gd.Specs {
-			imp, ok := spec.(*ast.ImportSpec)
-			if !ok || imp.Path == nil || imp.Path.Value != `"C"` {
-				continue
-			}
-			for _, g := range []*ast.CommentGroup{imp.Doc, imp.Comment, gd.Doc} {
-				if g != nil {
-					keep[g] = true
-				}
-			}
-		}
-		return true
-	})
 	drop := func(g *ast.CommentGroup) *ast.CommentGroup {
 		if g == nil || keep[g] {
 			return g

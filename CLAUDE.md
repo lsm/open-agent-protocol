@@ -145,13 +145,21 @@ Adding an adapter means all of the above plus: a `case` in `serve/registry.go`'s
   because stripping another unit's rationale inside a merge commit destroys
   what its own commits never recorded. New and rewritten files are stripped and left off
   the allowlist; an allowlisted file loses its entry when its comments go.
-  Exempt are the build directives the toolchain honors (`//go:build`,
-  `//go:embed`, `//go:generate`) and the directive-shaped comments the stripper
-  treats as load-bearing (`//line`, `//extern`, `//export`, and `//tool:check`
-  forms such as `//nolint:errcheck`). `--check` and `--write` share one
-  classification, so a comment the stripper will never remove is never counted
-  against a file — otherwise an allowlisted file carrying one could never be
-  cleared. Never add a comment to a file that is not on the allowlist.
+  The list is empty today, so the floor is zero.
+  Exempt from both `--check` and `--write` are the build directives the
+  toolchain honors (`//go:build`, `//go:embed`, `//go:generate`), the
+  directive-shaped comments the stripper treats as load-bearing (`//line`,
+  `//extern`, `//export`, and `//tool:check` forms such as `//nolint:errcheck`),
+  and what the toolchain makes unremovable: an example's `// Output:` block and
+  the lines under it, a `Code generated ... DO NOT EDIT.` header, and a cgo
+  preamble. Those three would otherwise strand a file on the list with no edit
+  that could clear it.
+  The two modes are not otherwise identical, and the difference is deliberate.
+  `--write` removes a comment group whole or keeps it whole, and refuses a file
+  outright when a `//go:generate` would move, so prose sharing a group with a
+  directive survives a write while `--check` still counts it. That file wants a
+  hand edit, which is what deleting a sentence is.
+  Never add a comment to a file that is not on the allowlist.
 - Commit subjects are `<area>: <imperative sentence>` where area is a package or adapter name (`serve:`, `codex:`, `adapter:`, `fix:`).
 - Changing `schema/v0.1/*.json` requires matching edits to `protocol/`, the validator, a fixture, and `clients/ts/src/protocol.ts` (its `schema.test.ts` cross-checks the hand-written interfaces against the schema).
 - The hub, codecs, and clients never log envelope payloads or resolved environment values.

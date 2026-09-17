@@ -172,8 +172,7 @@ func TestResponseCorrelationCorrections(t *testing.T) {
 		}
 	})
 	t.Run("initialize response must select an offered version and profile", func(t *testing.T) {
-		// The response payload is schema-fixed to 0.1 / the core profile, so an
-		// unoffered selection is only observable when the request offers neither.
+
 		stream := `[
 			{` + core + `,"type":"protocol.initialize.request","id":"init","payload":{"protocol_versions":["9.9"],"profiles":["open-agent-protocol.other"]}},
 			{` + core + `,"type":"protocol.initialize.response","id":"initr","in_reply_to":"init","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"agent"}}}
@@ -226,9 +225,6 @@ func TestResponseCorrelationCorrections(t *testing.T) {
 	})
 }
 
-// Two recovered sessions may be opened before either reconciliation completes.
-// Each open declares its own replay-gap expectation, so providing authoritative
-// state for only one of them must still diagnose the other.
 func TestRecoveryExpectationsArePerSession(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -245,8 +241,6 @@ func TestRecoveryExpectationsArePerSession(t *testing.T) {
 	}
 }
 
-// A recovery expectation is satisfied by the first authoritative snapshot; an
-// ordinary later state update must not be re-checked against the old recovery.
 func TestRecoveryExpectationConsumedAfterSnapshot(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -263,7 +257,6 @@ func TestRecoveryExpectationConsumedAfterSnapshot(t *testing.T) {
 	}
 }
 
-// A prompt that declared allow_cancel:false may not be withdrawn.
 func TestCancelRejectedWhenNotAllowed(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -281,7 +274,6 @@ func TestCancelRejectedWhenNotAllowed(t *testing.T) {
 	}
 }
 
-// A permission resolution must select a choice the gate offered.
 func TestPermissionResolutionChoiceMustBeOffered(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -299,9 +291,6 @@ func TestPermissionResolutionChoiceMustBeOffered(t *testing.T) {
 	}
 }
 
-// The authoritative resolved event, not just the resolve request, must select
-// an offered choice; otherwise a valid request can be paired with a bogus
-// resolution and still certify.
 func TestPermissionResolutionEventChoiceMustBeOffered(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -320,9 +309,6 @@ func TestPermissionResolutionEventChoiceMustBeOffered(t *testing.T) {
 	}
 }
 
-// A permission request bound to one tool call must not be resolved by an event
-// that consistently names a different tool; both resolution-event tool-call
-// fields are compared against the request's binding.
 func TestPermissionResolutionMustKeepToolBinding(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -341,8 +327,6 @@ func TestPermissionResolutionMustKeepToolBinding(t *testing.T) {
 	}
 }
 
-// A state snapshot may not erase a run the trace admitted and has not
-// terminated, which would let a second overlapping admission through.
 func TestStateSnapshotCannotEraseLiveRun(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -357,9 +341,6 @@ func TestStateSnapshotCannotEraseLiveRun(t *testing.T) {
 	}
 }
 
-// run.started must not attribute the run to a model other than the admitted
-// one: the run was admitted under one model and started under another, which
-// is a control admitted and not applied.
 func TestRunStartedModelMustMatchAdmission(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -373,7 +354,6 @@ func TestRunStartedModelMustMatchAdmission(t *testing.T) {
 	}
 }
 
-// A resolution must answer the prompt's offered questions.
 func TestInputResolutionMustAnswerOfferedQuestions(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -391,7 +371,6 @@ func TestInputResolutionMustAnswerOfferedQuestions(t *testing.T) {
 	}
 }
 
-// A tool-bound user-input prompt must not contradict its own tool binding.
 func TestUserInputRequestToolBindingMustAgree(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -408,7 +387,6 @@ func TestUserInputRequestToolBindingMustAgree(t *testing.T) {
 	}
 }
 
-// The authoritative resolution event must answer the offered questions too.
 func TestInputResolutionEventAnswersMustBeOffered(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -426,8 +404,6 @@ func TestInputResolutionEventAnswersMustBeOffered(t *testing.T) {
 	}
 }
 
-// A resolution event must match the pending interaction's kind: a permission
-// event cannot resolve a pending input (or the converse).
 func TestCrossKindResolutionEventRejected(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -445,8 +421,6 @@ func TestCrossKindResolutionEventRejected(t *testing.T) {
 	}
 }
 
-// Reopening a session that still has a nonterminal run must not clear the
-// tracked run, or a second submission could be admitted over it.
 func TestSessionReopenKeepsNonterminalRun(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -468,8 +442,6 @@ func TestSessionReopenKeepsNonterminalRun(t *testing.T) {
 	}
 }
 
-// The execution owner required on every action-call payload must not change
-// across a tool's lifecycle.
 func TestToolExecutionOwnerMustStayStable(t *testing.T) {
 	v := MustNew()
 	const core = `"profile":"open-agent-protocol.agent-control-core","protocol":"open-agent-protocol","version":"0.1"`
@@ -577,16 +549,6 @@ func FuzzApplyEnvelopeNeverPanics(f *testing.F) {
 	})
 }
 
-// TestSchemaDiagnosticNamesTheDeclaredBranch pins that a schema failure is
-// reported against the branch the envelope's own type selects.
-//
-// The bundle is one oneOf, so a frame failing its own branch also fails the
-// other forty-two, and their leaves are true statements about schemas the
-// author never claimed. This envelope is an error.response missing
-// in_reply_to, and it was reported as "missing properties
-// 'capability_revision', 'sequence'" — neither of them the field actually
-// missing, both of them requirements of branches it was never trying to be.
-// An implementer reading that goes looking for the wrong defect, and one did.
 func TestSchemaDiagnosticNamesTheDeclaredBranch(t *testing.T) {
 	const trace = `[{"protocol":"open-agent-protocol","version":"0.1",` +
 		`"profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"e1",` +

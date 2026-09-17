@@ -67,8 +67,6 @@ func submitAdmission(t *testing.T, session adapter.Session) (protocol.MessageSub
 	return admission, stream
 }
 
-// testDescriptor probes the reference adapter's live capability descriptor so
-// the shared protocol assertion can certify optional-feature envelopes.
 func testDescriptor(t *testing.T) adapter.Descriptor {
 	t.Helper()
 	implementation := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 64})
@@ -173,10 +171,6 @@ func TestGoldenScript(t *testing.T) {
 	}
 }
 
-// The reference adapter advertises a non-empty capability revision, so every
-// envelope it publishes must repeat it. A consumer such as
-// adaptertest.AssertRunEvents binds events to the descriptor snapshot and
-// rejects a run whose envelopes omit the revision.
 func TestEmittedEnvelopesCarryAdvertisedRevision(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
@@ -199,9 +193,6 @@ func TestEmittedEnvelopesCarryAdvertisedRevision(t *testing.T) {
 	}
 }
 
-// The participant is the recorded responder for every permission and
-// user-input gate, so an empty identity must be refused rather than silently
-// producing schema-invalid events with an empty responded_by.
 func TestOpenRejectsEmptyParticipant(t *testing.T) {
 	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 8})
 	if _, err := memory.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1"}); !errors.Is(err, adapter.ErrInvalidParticipant) {
@@ -312,8 +303,7 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	wg.Wait()
 	events := drainAvailable(stream)
 	combined := append(append([]protocol.Envelope(nil), initial...), middle...)
-	// The raced cancel may or may not win; its acknowledgement is the
-	// caller-side evidence for the cancel exchange.
+
 	if ack := <-cancelAck; ack.Accepted {
 		adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), append(combined, events...))
 	} else {
@@ -330,9 +320,6 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	}
 }
 
-// action.call.completed has additionalProperties:false and does not permit the
-// request-only arguments_json, so the completion must not reuse the start
-// payload's arguments.
 func TestToolCompletionOmitsRequestOnlyArguments(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
@@ -365,9 +352,6 @@ func TestToolCompletionOmitsRequestOnlyArguments(t *testing.T) {
 	}
 }
 
-// A user-input request carries the run's tool binding in its payload; the
-// envelope must repeat it, or the validator rejects the trace as a
-// scope_mismatch between the envelope and payload.
 func TestUserInputRequestEnvelopeCarriesToolBinding(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
@@ -400,8 +384,6 @@ func TestUserInputRequestEnvelopeCarriesToolBinding(t *testing.T) {
 	}
 }
 
-// A consumer that rewrites a received payload must not corrupt the retained
-// replay journal.
 func TestPublishedPayloadDoesNotAliasTheJournal(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
@@ -434,8 +416,6 @@ func TestPublishedPayloadDoesNotAliasTheJournal(t *testing.T) {
 	t.Fatalf("sequence %d not replayed", sequence)
 }
 
-// A consumer that edits a replayed envelope must not corrupt retained history
-// (payload slice, sequence, or timestamp storage).
 func TestReplayedEnvelopeDoesNotAliasTheJournal(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
@@ -499,9 +479,7 @@ func TestResumeGapReturnsAuthoritativeState(t *testing.T) {
 	if recovery.RequestedAfter != 0 || recovery.ReplayedFrom != 0 || recovery.ReplayedThrough != 0 {
 		t.Fatalf("gap claimed replay bounds: %+v", recovery)
 	}
-	// The script stops at the permission gate, so the authoritative state the
-	// gap hands back is a session waiting on it — which is what the entry
-	// beside it says too.
+
 	if recovery.ReplayGap == nil || recovery.State.ActiveRunID != runID || recovery.State.Status != protocol.SessionWaitingForInput {
 		t.Fatalf("bad recovery: %+v", recovery)
 	}
@@ -512,7 +490,7 @@ func TestResumeGapReturnsAuthoritativeState(t *testing.T) {
 
 func TestNoDeadlockWithSlowSubscriber(t *testing.T) {
 	session := newTestSession(t, 64)
-	runID, _ := submit(t, session) // deliberately never consume the original stream
+	runID, _ := submit(t, session)
 	_, replay, err := session.Resume(context.Background(), adapter.ResumeRequest{RunID: runID, AfterSequence: 4})
 	if err != nil {
 		t.Fatal(err)
@@ -546,10 +524,6 @@ func TestSubmitRejectsInvalidRequestBeforeAdmission(t *testing.T) {
 	}
 }
 
-// A model id outside the advertised catalog is refused with the typed
-// model_not_found, and an id inside it is authoritative for its run alone: the
-// application is per_run, so current_model_id, the model the next control-free
-// submission would use, must not move.
 func TestSubmitAppliesModelPerRun(t *testing.T) {
 	session := newTestSession(t, 64)
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
@@ -558,8 +532,7 @@ func TestSubmitAppliesModelPerRun(t *testing.T) {
 	if _, _, err := session.Submit(context.Background(), unknown); !errors.As(err, &notFound) || !errors.Is(err, adapter.ErrModelNotFound) {
 		t.Fatalf("unknown model: got %v, want adapter.ErrModelNotFound", err)
 	}
-	// An empty id is a control the endpoint must judge, not an absent one, and
-	// no catalog can list it: it is a catalog miss like any other.
+
 	empty := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(""), Messages: message}
 	if _, _, err := session.Submit(context.Background(), empty); !errors.As(err, &notFound) || notFound.ModelID != "" {
 		t.Fatalf("empty model: got %v, want model_not_found naming the empty id", err)
@@ -587,8 +560,6 @@ func TestSubmitAppliesModelPerRun(t *testing.T) {
 	}
 }
 
-// Every control the reference adapter advertises is either applied or refused
-// with a typed error before admission; none is accepted and ignored.
 func TestSubmitJudgesEveryControl(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
 	for name, testCase := range map[string]struct {
@@ -654,9 +625,6 @@ func TestSubmitJudgesEveryControl(t *testing.T) {
 	}
 }
 
-// An admitted tool_choice selects whether the scripted tool runs at all, and
-// an admitted output_schema binds the completion to the disclosed fixed
-// result.
 func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		policy string
@@ -664,9 +632,7 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 	}{
 		"none":       {policy: `{"mode":"none"}`},
 		"disallowed": {policy: `{"mode":"auto","disallowed":["scripted_tool"]}`},
-		// An allowlist the caller sent empty permits no tool at all. Under
-		// "auto" that is empty rather than unsatisfiable — the run simply
-		// calls nothing — so the policy is admitted and then governs.
+
 		"empty allowlist":     {policy: `{"mode":"auto","allowed":[]}`},
 		"allowlist with tool": {policy: `{"mode":"auto","allowed":["scripted_tool"]}`, calls: 1},
 	} {
@@ -691,9 +657,6 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 		}
 	}
 
-	// "required" over an allowlist the caller sent empty has an empty
-	// filtered set, which no run can satisfy, so it is refused rather than
-	// admitted and quietly run against the whole catalog.
 	session0 := newTestSession(t, 64)
 	_, _, err0 := session0.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
@@ -741,8 +704,6 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
 }
 
-// A permission resolution must preserve the stored ownership and select a choice
-// the gate actually offered, with a grant value that agrees.
 func TestResolveRejectsInconsistentPermission(t *testing.T) {
 	session := newTestSession(t, 64)
 	runID, stream := submit(t, session)
@@ -765,7 +726,7 @@ func TestResolveRejectsInconsistentPermission(t *testing.T) {
 	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: runID, RespondedBy: "user", Permission: &valid}); err != nil {
 		t.Fatalf("offered resolution rejected: %v", err)
 	}
-	// The input stage enforces the same nested ownership and the offered answer.
+
 	middle := drainAvailable(stream)
 	var input protocol.UserInputRequestedPayload
 	_ = middle[3].DecodePayload(&input)
@@ -840,9 +801,7 @@ func TestDescriptorTruthful(t *testing.T) {
 	if descriptor.Journal.Persistence != "process_memory" || descriptor.Journal.Replay != protocol.SupportDegraded || descriptor.Journal.Capacity != 7 {
 		t.Fatalf("journal: %+v", descriptor.Journal)
 	}
-	// One started run beside one reservation, and the wire projection of that
-	// bound beside it: a descriptor advertising a queue with no reachable
-	// bound promises nothing.
+
 	if descriptor.MaxActiveRunsPerSession != 2 || !descriptor.InteractiveGates || descriptor.CancellationTarget != "run" || descriptor.CancellationImplementation != "session_emulated" {
 		t.Fatalf("descriptor: %+v", descriptor)
 	}
@@ -852,10 +811,6 @@ func TestDescriptorTruthful(t *testing.T) {
 	}
 }
 
-// The golden script emits action.call.* events, so the descriptor must
-// affirmatively advertise the feature key the state machine consults for them.
-// Advertising only "action.tools.execute" left the reference adapter's own
-// tool lifecycle rejected as an unadvertised optional feature.
 func TestDescriptorAdvertisesEmittedOptionalFeatures(t *testing.T) {
 	descriptor := testDescriptor(t)
 	for _, feature := range []string{"action.tools", "action.permissions", "user_input"} {
@@ -866,13 +821,6 @@ func TestDescriptorAdvertisesEmittedOptionalFeatures(t *testing.T) {
 	}
 }
 
-// A request can fail several controls at once and one error.response carries
-// one code, so the plan ranks the failures rather than conjoining them: within
-// the unsatisfiability rung the lower capability key wins. An endpoint that
-// answered with whichever defect it happened to find first would name a
-// different control than the validator names for the same request, and a
-// caller acting on that answer would fix a control and be refused again for
-// one it was never told about.
 func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 	unsatisfiableChoice := json.RawMessage(`{"mode":"named","name":"absent_tool"}`)
 	uncompilableSchema := json.RawMessage(`{"type":"object","required":"x"}`)
@@ -880,12 +828,12 @@ func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 		request protocol.MessageSubmitRequest
 		feature string
 	}{
-		// run.structured_output sorts below run.tool_selection.
+
 		"output schema and tool choice": {
 			request: protocol.MessageSubmitRequest{OutputSchema: uncompilableSchema, ToolChoice: unsatisfiableChoice},
 			feature: protocol.FeatureStructuredOutput,
 		},
-		// run.model_selection sorts below both.
+
 		"model, output schema, and tool choice": {
 			request: protocol.MessageSubmitRequest{ModelID: protocol.ControlValue("no-such-model"), OutputSchema: uncompilableSchema, ToolChoice: unsatisfiableChoice},
 			feature: protocol.FeatureModelSelection,
@@ -902,8 +850,7 @@ func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 		_, _, err := session.Submit(context.Background(), request)
 		switch testCase.feature {
 		case protocol.FeatureModelSelection:
-			// A catalog miss is the one unsatisfiability whose conforming
-			// refusal is model_not_found rather than unsupported_feature.
+
 			var missing *adapter.ModelNotFoundError
 			if !errors.As(err, &missing) {
 				t.Fatalf("%s: got %v, want the model refusal the lowest key owes", name, err)
@@ -923,13 +870,6 @@ func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 	}
 }
 
-// The refusal ladder ranks a control refusal above ordinary submission
-// validation, so the gate runs first: a request that is malformed *and*
-// carries a control the endpoint cannot honour is answered with the control.
-// A caller told only "invalid submission" would fix its messages, resubmit,
-// and be refused again for a control it was never told about. The reference
-// adapter has to answer the way every harness adapter here does, or the
-// conformant behaviour it demonstrates is not the one the plan describes.
 func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
 	unsatisfiable := json.RawMessage(`{"mode":"named","name":"absent_tool"}`)
@@ -949,7 +889,6 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 		}
 	}
 
-	// With no control at fault the ordinary refusal still answers.
 	session := newTestSession(t, 64)
 	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary),
@@ -958,19 +897,6 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 	}
 }
 
-// The catalog a tool_choice is judged against is the descriptor's, and the
-// validator treats every served descriptor as a known catalog — so an endpoint
-// that enforces a policy against a catalog it never published is judged
-// against an empty one. Its `auto` runs are diagnosed for calling a tool the
-// descriptor does not carry, and its `required` and `named` policies are
-// deemed unsatisfiable, both while the adapter itself accepts and executes
-// them. The reference adapter is the one endpoint that must not be able to
-// drift that way, so it publishes the scripted tool and reads that same
-// catalog at the gate.
-//
-// Proved end to end rather than by inspecting the descriptor: each policy is
-// submitted, the scripted call runs, and the whole trace — submit request
-// included, so the policy is in it — goes through the real validator.
 func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 	for name, policy := range map[string]string{
 		"named":    `{"mode":"named","name":"scripted_tool"}`,
@@ -1001,8 +927,6 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), trace)
 	}
 
-	// The descriptor and the gate read one catalog, so a name outside it is
-	// refused rather than admitted against a private list.
 	session := newTestSession(t, 64)
 	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
@@ -1012,15 +936,12 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 		t.Fatal("a tool outside the published catalog was admitted")
 	}
 
-	// And the descriptor publishes exactly what the gate enforces.
 	descriptor := testDescriptor(t)
 	if len(descriptor.Capabilities.Tools) != 1 || descriptor.Capabilities.Tools[0].Name != "scripted_tool" {
 		t.Fatalf("published catalog = %+v, want the one scripted tool", descriptor.Capabilities.Tools)
 	}
 }
 
-// runScriptedTool drives one admitted run through the scripted gates and
-// returns its whole event trace.
 func runScriptedTool(t *testing.T, session adapter.Session, admission protocol.MessageSubmitResponse, stream adapter.EventStream) []protocol.Envelope {
 	t.Helper()
 	trace := drainAvailable(stream)
@@ -1070,10 +991,6 @@ func runScriptedTool(t *testing.T, session adapter.Session, admission protocol.M
 	return append(trace, drainAvailable(stream)...)
 }
 
-// A session waiting for input and the run it is waiting on must say the same
-// thing. The entry is the surface a recovering caller reads the interaction id
-// from, and one that reported the run as running beside a session status of
-// waiting_for_input would describe a session that is not the one parked.
 func TestActiveRunEntryFollowsTheRunStatus(t *testing.T) {
 	session := newTestSession(t, 64)
 	run, stream := submit(t, session)
@@ -1117,12 +1034,6 @@ func TestActiveRunEntryFollowsTheRunStatus(t *testing.T) {
 	}
 }
 
-// A state read taken while a gate is open has to survive the validator like
-// any other snapshot. Nothing else in the kit reads State, so a projection
-// contradicting the very run the same trace carries passed every assertion
-// here: the permission gate blocks the run without moving its status, and the
-// session reported itself running beside an entry naming what it was blocked
-// on — the shape queue-state-running-beside-a-pending-interaction rejects.
 func TestStateDuringAGateValidates(t *testing.T) {
 	session := newTestSession(t, 64)
 	admission, stream := submitAdmission(t, session)
@@ -1141,8 +1052,6 @@ func TestStateDuringAGateValidates(t *testing.T) {
 		t.Fatalf("active_runs during the permission gate = %+v", snapshot.ActiveRuns)
 	}
 
-	// Resolve the gate and let the run finish, so the trace the snapshot is
-	// spliced into is a complete one.
 	var permission protocol.PermissionRequestedPayload
 	if err := requested.DecodePayload(&permission); err != nil {
 		t.Fatal(err)
@@ -1180,11 +1089,6 @@ func TestStateDuringAGateValidates(t *testing.T) {
 	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), adaptertest.SpliceAfter(t, events, requested.ID, exchange))
 }
 
-// A snapshot handed to a caller owns its own backing array. active_runs is a
-// slice of entries carrying pointers and slices of their own, so a by-value
-// copy shares all of it with the session: a caller editing what it was given
-// would reach into the adapter's own projection. The recovery snapshot is
-// handed out on the same terms as State's.
 func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 	session := newTestSession(t, 64)
 	run, stream := submit(t, session)
@@ -1233,9 +1137,6 @@ func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 	}
 }
 
-// gatedIDs is fixedIDs with one identifier held open, so a test can stop the
-// adapter at a named point inside a call and look at what the session shows
-// from outside while it is there.
 type gatedIDs struct {
 	mu      sync.Mutex
 	n       int
@@ -1265,20 +1166,8 @@ func (g *gatedIDs) NewID(kind string) string {
 
 func (g *gatedIDs) open() { g.once.Do(func() { close(g.release) }) }
 
-// TestStateOmitsARunUntilItsAdmissionIsHandedBack pins the boundary a
-// projection may cross. A run exists inside the adapter from the moment Submit
-// creates it, and Submit emits its opening events before it returns — but the
-// caller creates the submit response envelope afterwards, and until that
-// envelope exists the trace carries no admission this run could have been
-// anchored to. Nothing Submit publishes reaches the trace ahead of it either,
-// because the caller does not hold the stream yet. So a state read taken while
-// the call is still running must describe a session without the run, and one
-// taken after it must describe the run: the projection flips as the response
-// is handed back and not before.
 func TestStateOmitsARunUntilItsAdmissionIsHandedBack(t *testing.T) {
-	// The second message identifier is the opening delta's, which the adapter
-	// allocates after it has emitted run.started for the run — the deepest
-	// point inside Submit at which a state read could see anything at all.
+
 	ids := newGatedIDs(func(kind string, nth int) bool { return kind == "message" && nth == 2 })
 	defer ids.open()
 	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: ids, JournalCapacity: 64})
@@ -1324,14 +1213,6 @@ func TestStateOmitsARunUntilItsAdmissionIsHandedBack(t *testing.T) {
 	}
 }
 
-// A state read is answered synchronously while lifecycle reaches a consumer
-// through a buffered stream, so a snapshot taken at a settlement can be handed
-// out — and be on the wire — before the terminal it reflects. Dropping the run
-// and saying nothing made that snapshot read as erasing a live run. The
-// capture anchor is what the endpoint actually knows: this run is gone, and
-// here is the sequence of the event that ended it. The reservation is the
-// clean case to pin, because its terminal is the only envelope its domain
-// ever carries, so a stream holding it undelivered is exactly the window.
 func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
 	session := newTestSession(t, 64)
 	first, firstStream := submitAdmission(t, session)
@@ -1350,9 +1231,6 @@ func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Nothing has read the reservation's stream, so its terminal is admitted
-	// history the trace has not been told about. This is the read the race
-	// produces.
 	snapshot, err := session.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1374,16 +1252,13 @@ func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
 		t.Fatalf("reservation domain = %+v, want one run.cancelled at sequence 1", settled)
 	}
 
-	// Finish the started run, so the trace the snapshot is spliced into is a
-	// complete one.
 	rest := resolveScriptedGates(t, session, first.RunID, firstStream, events)
 
 	exchange, err := adaptertest.StateExchange(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The order the race produces: the snapshot reaches the wire, then the
-	// terminal it already reflects, then the started run's remainder.
+
 	trace := adaptertest.SpliceAfter(t, events, gate.ID, exchange)
 	trace = append(trace, settled[0])
 	trace = append(trace, rest...)
@@ -1393,8 +1268,6 @@ func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
 	}, testDescriptor(t), trace)
 }
 
-// The same anchor for the started run: once a run settles, every snapshot the
-// session hands out names it and the sequence its terminal carries.
 func TestStateAnchorsASettledStartedRun(t *testing.T) {
 	session := newTestSession(t, 64)
 	admission, stream := submitAdmission(t, session)
@@ -1417,8 +1290,6 @@ func TestStateAnchorsASettledStartedRun(t *testing.T) {
 	}
 }
 
-// resolveScriptedGates answers the permission and input gates of one run and
-// returns everything it published after the events already drained.
 func resolveScriptedGates(t *testing.T, session adapter.Session, run protocol.RunID, stream adapter.EventStream, drained []protocol.Envelope) []protocol.Envelope {
 	t.Helper()
 	requested := envelopeOfType(t, drained, protocol.TypeActionPermissionRequested)

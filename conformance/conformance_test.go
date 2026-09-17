@@ -18,11 +18,6 @@ import (
 	"github.com/lsm/open-agent-protocol/protocol"
 )
 
-// The runner is only worth anything if it separates a conformant endpoint
-// from one that is not. Testing it against the reference endpoint alone would
-// prove it says yes; the second test is the one that proves it can say no,
-// against the failure an endpoint is most likely to actually have.
-
 var (
 	buildOnce sync.Once
 	binary    string
@@ -41,8 +36,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// oapBinary builds ./cmd/oap once. A toolchain that is not on PATH skips
-// rather than fails, matching the other binary-driving suites.
 func oapBinary(t *testing.T) string {
 	t.Helper()
 	buildOnce.Do(func() {
@@ -81,8 +74,6 @@ func oapBinary(t *testing.T) string {
 	return binary
 }
 
-// TestRunnerAcceptsTheReferenceEndpoint drives the real binary, which is what
-// makes the reference endpoint the known-good target the binding claims it is.
 func TestRunnerAcceptsTheReferenceEndpoint(t *testing.T) {
 	oap := oapBinary(t)
 	report, err := Run(context.Background(), Options{
@@ -105,13 +96,6 @@ func TestRunnerAcceptsTheReferenceEndpoint(t *testing.T) {
 	}
 }
 
-// TestRunnerRejectsAnEndpointThatSettlesTwice is the negative half, and it
-// uses the failure the two settlement-path fixtures describe: an endpoint
-// whose normal completion and whose error path both believe they own the run,
-// so the run gets two different terminals.
-//
-// The runner must reject it, and must reject it through the validator rather
-// than through a rule of its own — the diagnostic is asserted for that reason.
 func TestRunnerRejectsAnEndpointThatSettlesTwice(t *testing.T) {
 	report, err := Run(context.Background(), Options{
 		Command: helperCommand(t, "double-settle"),
@@ -145,23 +129,16 @@ func helperCommand(t *testing.T, mode string) []string {
 	return []string{self}
 }
 
-// runHelperEndpoint is a deliberately non-conformant endpoint, re-executed
-// from this test binary the way the adapter rpc suites re-execute theirs. It
-// speaks just enough of the binding to be driven, and gets exactly one thing
-// wrong.
 func runHelperEndpoint(mode string) int {
 	const revision = "helper-v1"
 	if mode == "closes-stdout" {
-		// Closes its output and stays alive, which is not the same as
-		// leaving — and is a shape a harness for arbitrary binaries meets.
+
 		os.Stdout.Close()
 		time.Sleep(time.Hour)
 		return 0
 	}
 	if mode == "mute" {
-		// Starts, says nothing, and never leaves — not even on EOF. A sleep
-		// rather than a bare block, so the runtime does not notice every
-		// goroutine is parked and exit on its own.
+
 		time.Sleep(time.Hour)
 		return 0
 	}
@@ -200,12 +177,10 @@ func runHelperEndpoint(mode string) int {
 			}
 			if shape.Protocol == "" && shape.Control != "" {
 				if mode == "mute-controls" {
-					// The defect a real endpoint had: it ignores the control
-					// channel entirely rather than answering it.
+
 					continue
 				}
-				// An endpoint that serves no control must answer, not die: a
-				// host speaking a newer binding is not a framing fault.
+
 				frame, _ := json.Marshal(ControlFrame{
 					Control: "replay.error", ID: shape.ID, Code: "unsupported_control",
 					Message: "this helper serves no controls",
@@ -240,8 +215,7 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 			Endpoint: protocol.EndpointDescriptor{ID: "helper.double-settle", Name: "Double-settling helper endpoint"},
 		}, func(e *protocol.Envelope) { reply(e); e.CapabilityRevision = revision })
 	case protocol.TypeRunCancelRequest:
-		// This helper declares no run.cancel capability, so the conformant
-		// answer is the typed refusal rather than an acknowledgement.
+
 		emit(protocol.TypeErrorResponse, protocol.ErrorResponse{
 			Error: protocol.ProtocolError{Code: "unsupported_feature", Message: "this helper cannot cancel"},
 		}, reply)
@@ -291,8 +265,7 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		}
 
 		if mode == "early-events" {
-			// Legal on this binding and awkward for a host: the run's events
-			// reach the pipe before the response that admits it.
+
 			started()
 			completed()
 			acknowledge()
@@ -301,8 +274,7 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		acknowledge()
 		started()
 		completed()
-		// The defect: the error path settles the same run the completion path
-		// just settled. Two settlement paths, two different terminals.
+
 		emit(protocol.TypeRunFailed, protocol.RunFailedPayload{
 			SessionID: submit.SessionID, RunID: "helper-run",
 			Error: protocol.ProtocolError{Code: "internal_error", Message: "the other settlement path also settled this run"},
@@ -314,21 +286,13 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 			SessionID: state.SessionID, Status: protocol.SessionIdle, UpdatedAtMS: 2,
 		}, reply)
 	default:
-		// Every request gets one correlated answer, including a type this
-		// helper does not serve. Silence is not a conformant option and it is
-		// not a cheap one either: the runner waits out its full line deadline
-		// for an answer that never comes.
+
 		emit(protocol.TypeErrorResponse, protocol.ErrorResponse{
 			Error: protocol.ProtocolError{Code: "unsupported_request", Message: "this helper serves no " + string(request.Type)},
 		}, reply)
 	}
 }
 
-// TestReplayRefusesACursorItCannotHonour pins the other half of the replay
-// control. A cursor the endpoint cannot serve must be refused in a frame that
-// says why, because the alternative — starting the stream wherever the
-// endpoint happens to still retain — hands the host a sequence hole it has no
-// way to detect.
 func TestReplayRefusesACursorItCannotHonour(t *testing.T) {
 	oap := oapBinary(t)
 	client, err := Spawn(context.Background(), oap, []string{"endpoint", "--adapter", "memory"}, io.Discard)
@@ -369,14 +333,6 @@ func TestReplayRefusesACursorItCannotHonour(t *testing.T) {
 	}
 }
 
-// TestIdleEndpointStopsOnSignal pins the state an endpoint is in almost all
-// of the time: parked with nothing to read.
-//
-// The binding says SIGINT and SIGTERM behave as EOF. Installing a signal
-// context suppresses the default termination, so an endpoint whose loop only
-// noticed cancellation between lines would ignore both signals for exactly
-// as long as it was idle — leaving a supervisor no option but SIGKILL, which
-// skips the session sweep and orphans whatever children an adapter holds.
 func TestIdleEndpointStopsOnSignal(t *testing.T) {
 	oap := oapBinary(t)
 	cmd := exec.Command(oap, "endpoint", "--adapter", "memory")
@@ -393,12 +349,6 @@ func TestIdleEndpointStopsOnSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Readiness is established by a round trip rather than by sleeping. The
-	// signal handler is installed during startup, so a signal sent before
-	// then is handled by default and kills the process — which would make
-	// this test pass for the wrong reason, and fail intermittently under
-	// load. An answered request proves the loop is running and the handler
-	// is in place.
 	request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "ready-1", protocol.CapabilitiesRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -430,15 +380,6 @@ func TestIdleEndpointStopsOnSignal(t *testing.T) {
 	}
 }
 
-// TestRunnerAcceptsAnEndpointThatStreamsBeforeAcknowledging pins the ordering
-// the binding explicitly permits and the reference endpoint could once
-// produce by losing a race with its own writer.
-//
-// A trace is a logical record — admission precedes started in it — while the
-// wire is free to be unordered, so the host is what reconciles them. Recording
-// arrival order would flag a conformant endpoint with illegal_run_transition,
-// and would do it intermittently, which is the worst way for a conformance
-// runner to be wrong.
 func TestRunnerAcceptsAnEndpointThatStreamsBeforeAcknowledging(t *testing.T) {
 	report, err := Run(context.Background(), Options{
 		Command: helperCommand(t, "early-events"),
@@ -458,14 +399,6 @@ func TestRunnerAcceptsAnEndpointThatStreamsBeforeAcknowledging(t *testing.T) {
 	}
 }
 
-// TestClientKillsAnEndpointThatNeitherSpeaksNorExits pins what happens to a
-// binary the runner gives up on.
-//
-// Judging arbitrary third-party binaries is this tool's purpose, so one that
-// starts and then neither speaks nor exits is a primary input. Left alone it
-// would be waited on once per operation — the drive, the drain, and the
-// framing check's second process — and then left running, unreaped, after the
-// runner had already decided against it.
 func TestClientKillsAnEndpointThatNeitherSpeaksNorExits(t *testing.T) {
 	const deadline = 300 * time.Millisecond
 	client, err := SpawnWithDeadline(context.Background(), helperCommand(t, "mute")[0], nil, io.Discard, deadline)
@@ -481,8 +414,6 @@ func TestClientKillsAnEndpointThatNeitherSpeaksNorExits(t *testing.T) {
 		t.Fatal("the endpoint was left running after the runner gave up on it")
 	}
 
-	// The death is sticky: every later wait answers at once rather than
-	// paying the deadline again for the same conclusion.
 	start := time.Now()
 	if _, err := client.Response("never-answered-either"); err == nil {
 		t.Fatal("a second wait on a dead endpoint returned no error")
@@ -492,13 +423,6 @@ func TestClientKillsAnEndpointThatNeitherSpeaksNorExits(t *testing.T) {
 	}
 }
 
-// TestClientDoesNotWaitForeverOnAnEndpointThatClosesStdout separates two
-// things a runner must not conflate: closing stdout and leaving.
-//
-// A binary can do the first and never the second. Reaping it unbounded would
-// hand this run's lifetime to the binary being judged, which is the one thing
-// a harness for arbitrary binaries must not do — and the deferred cleanup
-// never runs, because the run is inside the wait.
 func TestClientDoesNotWaitForeverOnAnEndpointThatClosesStdout(t *testing.T) {
 	const deadline = 300 * time.Millisecond
 	client, err := SpawnWithDeadline(context.Background(), helperCommand(t, "closes-stdout")[0], nil, io.Discard, deadline)
@@ -528,14 +452,6 @@ func TestClientDoesNotWaitForeverOnAnEndpointThatClosesStdout(t *testing.T) {
 	}
 }
 
-// TestUnansweredControlDoesNotCascade pins that an endpoint ignoring the
-// control channel fails one check rather than six.
-//
-// The runner used to kill the endpoint whenever any wait expired, which was
-// right for a response it was owed and wrong for a control it was not. Every
-// later check then reported "file already closed" — the runner's own doing,
-// reading as though the endpoint had died. A maintainer spent a debugging pass
-// on a teardown bug that did not exist.
 func TestUnansweredControlDoesNotCascade(t *testing.T) {
 	report, err := Run(context.Background(), Options{
 		Command:      helperCommand(t, "mute-controls"),
@@ -560,8 +476,7 @@ func TestUnansweredControlDoesNotCascade(t *testing.T) {
 	if !strings.Contains(replay.Detail, "unsupported_control") {
 		t.Fatalf("the failure should say what the endpoint owed: %q", replay.Detail)
 	}
-	// The checks after replay must have run against a live endpoint. The
-	// helper answers state, so that one is the witness.
+
 	var state Check
 	for _, check := range report.Checks {
 		if strings.Contains(check.Name, "session.state.request is answered") {

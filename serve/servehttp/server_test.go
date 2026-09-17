@@ -31,8 +31,6 @@ func memoryRegistry(capacity int) *serve.Registry {
 	return registry
 }
 
-// newServer serves one hub over the real codec on loopback and returns both,
-// so tests can drive the HTTP surface and the hub's own sweep.
 func newServer(t *testing.T, registry *serve.Registry, options Options) (*serve.Hub, *httptest.Server) {
 	t.Helper()
 	hub := serve.New(registry, serve.Options{})
@@ -49,8 +47,6 @@ func newMemoryServer(t *testing.T, capacity int) *httptest.Server {
 	_, server := newServer(t, memoryRegistry(capacity), Options{})
 	return server
 }
-
-// --- HTTP helpers ---
 
 func requestEnvelope(t *testing.T, typ protocol.EnvelopeType, id string, payload any, sessionID, runID, revision string) protocol.Envelope {
 	t.Helper()
@@ -85,8 +81,6 @@ func post(t *testing.T, server *httptest.Server, path, contentType string, body 
 	return response, data
 }
 
-// postEnvelope posts one request envelope and asserts the response decodes as
-// an envelope (204 responses excepted).
 func postEnvelope(t *testing.T, server *httptest.Server, path string, envelope protocol.Envelope) (int, protocol.Envelope) {
 	t.Helper()
 	body, err := json.Marshal(envelope)
@@ -104,9 +98,6 @@ func postEnvelope(t *testing.T, server *httptest.Server, path string, envelope p
 	return response.StatusCode, parsed
 }
 
-// listSessions reads the session listing into a fresh value each call: a
-// reused destination would keep fields that an omitted (omitempty) JSON key
-// never overwrites.
 func listSessions(t *testing.T, server *httptest.Server) []sessionInfo {
 	t.Helper()
 	var listing struct {
@@ -208,8 +199,6 @@ func requireErrorResponse(t *testing.T, status, wantStatus int, envelope protoco
 	requireEnvelopeSchema(t, envelope)
 }
 
-// --- SSE helpers ---
-
 type sseEvent struct {
 	name string
 	id   string
@@ -290,7 +279,6 @@ func (stream *sseStream) next() sseEvent {
 	}
 }
 
-// expectEnd asserts the stream terminates (terminal run, signal, or close).
 func (stream *sseStream) expectEnd() {
 	stream.t.Helper()
 	for {
@@ -315,16 +303,13 @@ func (stream *sseStream) envelope() protocol.Envelope {
 	if err != nil {
 		stream.t.Fatalf("parse sse envelope: %v (%s)", err, event.data)
 	}
-	// The SSE id line is the cursor contract: it must carry the envelope's
-	// own sequence so Last-Event-ID reconnect maps onto Resume.AfterSequence.
+
 	if envelope.Sequence != nil && event.id != strconv.FormatUint(*envelope.Sequence, 10) {
 		stream.t.Fatalf("sse id %q does not match envelope sequence %d", event.id, *envelope.Sequence)
 	}
 	return envelope
 }
 
-// drainUntil reads envelope events until one of the wanted types arrives and
-// returns every envelope read, in order.
 func (stream *sseStream) drainUntil(want ...protocol.EnvelopeType) []protocol.Envelope {
 	stream.t.Helper()
 	var envelopes []protocol.Envelope
@@ -361,8 +346,6 @@ func requireSequence(t *testing.T, envelopes []protocol.Envelope, first uint64) 
 		}
 	}
 }
-
-// --- shared lifecycle driver ---
 
 func openSession(t *testing.T, server *httptest.Server, adapter, sessionID string) protocol.Envelope {
 	t.Helper()
@@ -467,9 +450,6 @@ func inputRequestAt(t *testing.T, envelopes []protocol.Envelope) protocol.UserIn
 	return protocol.UserInputRequestedPayload{}
 }
 
-// goldenRun drives the memory reference adapter's scripted interaction to
-// completion over HTTP and returns the run id plus every SSE envelope in
-// emission order. The stream is expected to close on the terminal event.
 func goldenRun(t *testing.T, server *httptest.Server, sessionID, requestID string) (protocol.RunID, []protocol.Envelope) {
 	t.Helper()
 	stream := connectSSE(t, server, "/sessions/"+sessionID+"/events", "")
@@ -502,8 +482,6 @@ func goldenRun(t *testing.T, server *httptest.Server, sessionID, requestID strin
 	}
 	return admission.RunID, envelopes
 }
-
-// --- management surfaces ---
 
 func TestAdaptersListing(t *testing.T) {
 	server := newMemoryServer(t, 0)
@@ -559,7 +537,6 @@ func TestCapabilitiesEndpoint(t *testing.T) {
 	}
 	requireEnvelopeSchema(t, envelope)
 
-	// An unknown adapter is still an envelope-surfaced error.
 	missing, err := server.Client().Get(server.URL + "/adapters/ghost/capabilities")
 	if err != nil {
 		t.Fatal(err)
@@ -594,13 +571,11 @@ func TestSessionsListingAcrossLifecycle(t *testing.T) {
 
 	stream := connectSSE(t, server, "/sessions/listing/events", "")
 	_, admission := submitRun(t, server, "listing", "submit-listing")
-	// The scripted run stops at its permission gate, so the listing reports a
-	// session waiting on it rather than one executing.
+
 	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "waiting_for_input" || entry.ActiveRunID != string(admission.RunID) {
 		t.Fatalf("running listing: %+v", entry)
 	}
 
-	// Settle the run through the scripted gates before re-reading the list.
 	initial := stream.drainUntil(protocol.TypeActionPermissionRequested)
 	resolvePermission(t, server, permissionRequestAt(t, initial), "resolve-listing-1")
 	middle := stream.drainUntil(protocol.TypeRunStatusUpdated)
@@ -621,8 +596,6 @@ func TestSessionsListingAcrossLifecycle(t *testing.T) {
 	}
 }
 
-// --- open, submit, resolve, cancel, state, close ---
-
 func TestOpenSession(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	response := openSession(t, server, "memory", "open-test")
@@ -638,8 +611,6 @@ func TestOpenSession(t *testing.T) {
 	}
 	requireEnvelopeSchema(t, response)
 
-	// Opening the same explicit id again is rejected, and the duplicate
-	// adapter session is not left behind.
 	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-dup", protocol.SessionOpenRequest{SessionID: "open-test"}, "open-test", "", "")
 	status, errorEnvelope := postEnvelope(t, server, "/adapters/memory/sessions", request)
 	requireErrorResponse(t, status, http.StatusConflict, errorEnvelope, "session_exists")
@@ -661,12 +632,6 @@ func TestOpenSessionAssignsIdentifier(t *testing.T) {
 	}
 }
 
-// The open response is the session state document — the schema defines it as
-// exactly that — and the daemon puts the state on the wire whole. Assembling
-// it member by member carried the id and the status and silently dropped the
-// rest, so an adapter that knows the session's model at open had it discarded:
-// the field existed on the wire type and in the validator's rules with nothing
-// on the daemon path to fill it, which reads as covered while covering nothing.
 func TestOpenResponseCarriesTheWholeState(t *testing.T) {
 	reported := protocol.SessionState{
 		Status:           protocol.SessionIdle,
@@ -692,19 +657,12 @@ func TestOpenResponseCarriesTheWholeState(t *testing.T) {
 	}
 	want := reported
 	want.SessionID = "stateful"
-	// Compared whole rather than member by member, so a member added to the
-	// state document later is covered without anyone remembering to extend
-	// this assertion. Enumerating members is the mistake being fixed; the
-	// test should not repeat it.
+
 	if !reflect.DeepEqual(payload, want) {
 		t.Fatalf("open response\n got %+v\nwant %+v", payload, want)
 	}
 }
 
-// statefulAdapter probes as the reference adapter but reports a session state
-// of its own, standing in for an adapter that knows more about a session at
-// open than its id and status — OpenCode, whose initial state names the model
-// the session runs.
 type statefulAdapter struct {
 	state protocol.SessionState
 }
@@ -736,7 +694,6 @@ func TestSubmitRejections(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "reject")
 
-	// Malformed JSON: the error response is still schema-valid and correlated.
 	response, data := post(t, server, "/sessions/reject/submit", "application/json", []byte(`{"adapters":`))
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("malformed status %d: %s", response.StatusCode, data)
@@ -747,17 +704,14 @@ func TestSubmitRejections(t *testing.T) {
 	}
 	requireErrorResponse(t, response.StatusCode, http.StatusBadRequest, envelope, "malformed_json")
 
-	// Schema-invalid envelope (missing required delivery).
 	invalid := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-invalid", map[string]any{"session_id": "reject", "messages": []any{map[string]any{"role": "user", "content": "x"}}}, "reject", "", "")
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/reject/submit", invalid)
 	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "schema_invalid")
 
-	// Wrong envelope type for the endpoint.
 	wrongType := requestEnvelope(t, protocol.TypeSessionOpenRequest, "submit-wrong", protocol.SessionOpenRequest{}, "", "", "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", wrongType)
 	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "type_mismatch")
 
-	// Payload addresses a different session than the URL.
 	mismatch := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-mismatch", protocol.MessageSubmitRequest{
 		SessionID: "other", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
@@ -765,7 +719,6 @@ func TestSubmitRejections(t *testing.T) {
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", mismatch)
 	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "scope_mismatch")
 
-	// Unknown session.
 	unknown := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-unknown", protocol.MessageSubmitRequest{
 		SessionID: "ghost", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
@@ -773,9 +726,6 @@ func TestSubmitRejections(t *testing.T) {
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/ghost/submit", unknown)
 	requireErrorResponse(t, status, http.StatusNotFound, errorEnvelope, "unknown_session")
 
-	// The adapter refuses one control of the submission itself, and the codec
-	// relays that refusal under its own typed code rather than flattening it
-	// to invalid_submission: a caller must learn what to stop sending.
 	rejected := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-refused", protocol.MessageSubmitRequest{
 		SessionID: "reject", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
@@ -790,9 +740,6 @@ func TestSubmitRejections(t *testing.T) {
 		t.Fatalf("control refusal details = %+v", refusal.Error.Details)
 	}
 
-	// A second submission while the run is active reserves the one queued
-	// slot the reference adapter discloses; the third exceeds the bound and
-	// conflicts, which is the wire's run_active.
 	_, admission := submitRun(t, server, "reject", "submit-active")
 	queued := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-second", protocol.MessageSubmitRequest{
 		SessionID: "reject", Delivery: protocol.DeliveryAuto,
@@ -828,7 +775,6 @@ func TestResolveRejections(t *testing.T) {
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/resolve-reject/resolve", unknownRun)
 	requireErrorResponse(t, status, http.StatusNotFound, errorEnvelope, "run_not_found")
 
-	// The scripted gate only resolves for the declared responder.
 	_, admission := submitRun(t, server, "resolve-reject", "submit-resolve")
 	wrongResponder := requestEnvelope(t, protocol.TypeActionPermissionResolveRequest, "resolve-wrong", protocol.PermissionResolveRequest{
 		InteractionID: "interaction-1", RequestedBy: "reference.memory", RespondedBy: "someone-else",
@@ -917,7 +863,6 @@ func TestCloseAfterCancellation(t *testing.T) {
 		t.Fatalf("close status %d: %s", response.StatusCode, data)
 	}
 
-	// State after close reports the closed status through the state endpoint.
 	stateResponse, err := server.Client().Get(server.URL + "/sessions/close-cancel/state")
 	if err != nil {
 		t.Fatal(err)
@@ -936,7 +881,6 @@ func TestCloseAfterCancellation(t *testing.T) {
 		t.Fatalf("state after close: %+v", state)
 	}
 
-	// Submitting to a closed session is rejected with the adapter's own error.
 	submit := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-closed", protocol.MessageSubmitRequest{
 		SessionID: "close-cancel", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
@@ -962,8 +906,6 @@ func TestCancelRejections(t *testing.T) {
 func TestHostAllowlist(t *testing.T) {
 	_, server := newServer(t, memoryRegistry(0), Options{HostAllowlist: []string{"localhost", "127.0.0.1", "::1"}})
 
-	// A rebinned or cross-origin request names a foreign Host and is
-	// refused before any route runs.
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/adapters", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -979,7 +921,6 @@ func TestHostAllowlist(t *testing.T) {
 		t.Fatalf("foreign host status %d: %s", response.StatusCode, data)
 	}
 
-	// The loopback names (with any port) still serve.
 	for _, host := range []string{"localhost", "127.0.0.1"} {
 		request, err := http.NewRequest(http.MethodGet, server.URL+"/adapters", nil)
 		if err != nil {
@@ -999,8 +940,7 @@ func TestHostAllowlist(t *testing.T) {
 }
 
 func TestCapabilitiesRequiresDescriptorRevision(t *testing.T) {
-	// A programmatically registered adapter that probes without a revision
-	// must not be relayed into a schema-invalid capabilities response.
+
 	registry := serve.NewRegistry()
 	if err := registry.Register("bare", bareAdapter{}); err != nil {
 		t.Fatal(err)
@@ -1039,9 +979,6 @@ func (bareAdapter) Open(context.Context, base.OpenRequest) (base.Session, error)
 	return nil, errors.New("not used")
 }
 
-// noControlsAdapter wraps the memory adapter as an endpoint that advertises no
-// per-submit run control, so an unadvertised-control refusal is reachable here
-// at all.
 type noControlsAdapter struct{ inner base.Adapter }
 
 func (a noControlsAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
@@ -1065,16 +1002,6 @@ func (s noControlsSession) Submit(ctx context.Context, request protocol.MessageS
 	return s.Session.Submit(ctx, request)
 }
 
-// Wire and schema validity are the floor beneath the refusal ladder, not a
-// rung of it: an envelope the protocol cannot read carries no controls to
-// judge, because the bytes in the control positions are not a policy or a
-// selection until the message is one at all. So the frontend validates before
-// it decodes, and a submit that is schema-invalid is answered schema_invalid
-// whatever sits in those positions — the endpoint is never reached, and could
-// not honestly answer about a control it never received. The ordering is
-// deliberate, and it is the same one the validator keeps: its semantic phase,
-// where every control rule lives, runs only on a trace whose decode and schema
-// phases were clean (decision 0005).
 func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 	registry := serve.NewRegistry()
 	if err := registry.Register("memory", noControlsAdapter{base.NewMemory(base.Config{})}); err != nil {
@@ -1083,8 +1010,6 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 	_, server := newServer(t, registry, Options{})
 	openSession(t, server, "memory", "floor")
 
-	// Schema-invalid (delivery is required) and carrying a control this
-	// endpoint advertises nowhere.
 	invalid := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-floor", map[string]any{
 		"session_id":   "floor",
 		"messages":     []any{map[string]any{"role": "user", "content": "x"}},
@@ -1093,8 +1018,6 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/floor/submit", invalid)
 	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "schema_invalid")
 
-	// Repair the envelope and the same control is refused under its own key,
-	// so the first answer was about the message and not about the control.
 	valid := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-floor-2", protocol.MessageSubmitRequest{
 		SessionID: "floor", Delivery: protocol.DeliveryAuto,
 		Instructions: protocol.ControlValue("be terse"),
@@ -1111,10 +1034,6 @@ func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
 	}
 }
 
-// A queued admission and the state that describes it must survive the wire:
-// the daemon relays the reservation, the state response lists both
-// nonterminal runs in admission order, and the management listing reports the
-// same set rather than the started run alone.
 func TestQueuedSubmissionRoundTrips(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "queue-http")

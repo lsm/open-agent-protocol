@@ -14,23 +14,14 @@ import (
 	"github.com/lsm/open-agent-protocol/validation"
 )
 
-// Check is one named obligation of the binding and whether the endpoint met
-// it. Naming them individually is the point: "not conformant" is not
-// actionable, and an implementer needs to know which obligation failed.
 type Check struct {
 	Name   string `json:"name"`
 	Passed bool   `json:"passed"`
 	Detail string `json:"detail,omitempty"`
-	// Skipped marks an obligation this endpoint does not carry, as opposed to
-	// one it failed. The distinction is the difference between a report that
-	// is actionable and one that reads as a failure for declining something
-	// optional — cursor replay is not among the Core Profile Requirements,
-	// and an endpoint that answers unsupported_control is doing what the
-	// binding tells it to.
+
 	Skipped bool `json:"skipped,omitempty"`
 }
 
-// Report is the outcome of one conformance run.
 type Report struct {
 	Checks      []Check                 `json:"checks"`
 	Diagnostics []validation.Diagnostic `json:"diagnostics,omitempty"`
@@ -38,16 +29,13 @@ type Report struct {
 	Passed      bool                    `json:"passed"`
 }
 
-// Options configures one run.
 type Options struct {
 	Command   []string
 	SessionID protocol.SessionID
 	Stderr    io.Writer
-	// LineDeadline bounds the wait for each line the endpoint writes. Zero
-	// takes DefaultLineDeadline.
+
 	LineDeadline time.Duration
-	// Model is the model id the scripted submission names. Empty lets the
-	// endpoint's own catalog decide, and falls back to naming none.
+
 	Model string
 }
 
@@ -58,12 +46,9 @@ type runner struct {
 	revision string
 	runID    protocol.RunID
 	ids      int
-	// descriptor is what the endpoint said about itself. The script reads it
-	// rather than assuming: an obligation that is conditional on a declared
-	// capability cannot be judged without one.
+
 	descriptor protocol.CapabilityDescriptor
-	// model is the operator's chosen model id, or "" to let the catalog
-	// decide. See electModel.
+
 	model string
 }
 
@@ -76,18 +61,13 @@ func (r *runner) pass(name string) {
 	r.report.Checks = append(r.report.Checks, Check{Name: name, Passed: true})
 }
 func (r *runner) fail(name, detail string) {
-	// A check that failed only because an earlier wait expired and this
-	// runner killed the endpoint says so. Left alone it reports "file already
-	// closed", which reads as the endpoint having died and sends an
-	// implementer looking for a teardown bug that is not there.
+
 	if closed := r.client.ClosedByRunner(); closed != nil && strings.Contains(detail, "file already closed") {
 		detail = "not exercised: this runner closed the endpoint after an earlier check timed out (" + closed.Error() + ")"
 	}
 	r.report.Checks = append(r.report.Checks, Check{Name: name, Detail: detail})
 }
 
-// skip records an obligation this endpoint does not carry. A skipped check
-// never fails the report, and the detail says why it was not asked.
 func (r *runner) skip(name, detail string) {
 	r.report.Checks = append(r.report.Checks, Check{Name: name, Passed: true, Skipped: true, Detail: detail})
 }
@@ -101,8 +81,6 @@ func (r *runner) record(name string, err error) bool {
 	return true
 }
 
-// request sends one request envelope and waits for its correlated answer,
-// refusing an answer that is an error.response where one was not expected.
 func (r *runner) request(typ protocol.EnvelopeType, payload any, runID protocol.RunID, revision string) (protocol.Envelope, error) {
 	envelope, err := protocol.NewEnvelope(typ, r.next("request"), payload)
 	if err != nil {
@@ -126,13 +104,6 @@ func (r *runner) request(typ protocol.EnvelopeType, payload any, runID protocol.
 	return answer, nil
 }
 
-// Run drives the scripted session and returns the report.
-//
-// The script is the smallest one that exercises every obligation the binding
-// states: discovery, a session, an admitted run, both scripted interaction
-// gates answered from the stream, a terminal, reconciliation, and the exit
-// contract. Everything it observes goes into one trace, and the validator
-// decides whether that trace is legal OAP.
 func Run(ctx context.Context, options Options) (*Report, error) {
 	if len(options.Command) == 0 {
 		return nil, fmt.Errorf("conformance: a command to run is required")
@@ -177,13 +148,8 @@ func Run(ctx context.Context, options Options) (*Report, error) {
 	return r.report, nil
 }
 
-// drive walks the script, stopping at the first step whose failure makes the
-// rest meaningless — there is nothing to learn from submitting to a session
-// that never opened.
 func (r *runner) drive() {
-	// Core requirement 2. It is first because it is the first thing a host
-	// sends, and because an endpoint that cannot answer it has told a host
-	// nothing about which version it speaks.
+
 	if initialized, err := r.request(protocol.TypeProtocolInitializeRequest, protocol.InitializeRequest{
 		Participant:      &protocol.Participant{ID: "conformance", Name: "OAP conformance runner"},
 		ProtocolVersions: []string{protocol.Version},
@@ -253,11 +219,6 @@ func (r *runner) drive() {
 	r.pass("the submission is admitted and names its run")
 	r.runID = admission.RunID
 
-	// Core requirement 6's second half, which the first half's check cannot
-	// see: an accepted auto submission repeats requested_delivery: auto and
-	// reports a concrete effective_delivery. Reporting auto back, or omitting
-	// the field, leaves the host unable to tell whether its message started or
-	// was queued — the one thing the response exists to say.
 	const delivery = "the admission repeats requested_delivery and reports a concrete effective_delivery"
 	switch {
 	case admission.RequestedDelivery != protocol.DeliveryAuto:
@@ -283,16 +244,6 @@ func (r *runner) drive() {
 	r.refuseAddressableEnvelope()
 }
 
-// refuseAddressableEnvelope drives the binding's case 3: an envelope that
-// declares `protocol` and carries an `id` but is otherwise wrong.
-//
-// Its framing is not in doubt, so the endpoint owes a correlated refusal and
-// must keep running. Both halves are checked, because each has been got wrong
-// independently: an endpoint that answers uncorrelated leaves a host unable to
-// match the refusal to the request that drew it, and one that treats the line
-// as a framing fault kills a stream over a recoverable protocol error.
-//
-// The probe is deliberately wrong, so it stays out of the assembled trace.
 func (r *runner) refuseAddressableEnvelope() {
 	const name = "an addressable envelope that is wrong draws a correlated refusal"
 	envelope, err := protocol.NewEnvelope(protocol.TypeSessionStateRequest, r.next("request"), protocol.SessionStateRequest{SessionID: r.session})
@@ -300,9 +251,7 @@ func (r *runner) refuseAddressableEnvelope() {
 		r.fail(name, err.Error())
 		return
 	}
-	// A type no v0.1 endpoint serves, on an envelope that is otherwise
-	// well-formed and addressable. Anything an endpoint might legitimately
-	// implement would make the check's meaning depend on what it implements.
+
 	envelope.Type = "conformance.not.a.real.request"
 	envelope.SessionID = r.session
 	envelope.CapabilityRevision = r.revision
@@ -323,8 +272,7 @@ func (r *runner) refuseAddressableEnvelope() {
 		r.fail(name, fmt.Sprintf("the refusal is correlated to %q, not to the request %q that drew it", answer.InReplyTo, envelope.ID))
 		return
 	}
-	// Still alive: the session request that follows proves the stream
-	// survived a recoverable protocol error.
+
 	if _, err := r.request(protocol.TypeSessionStateRequest, protocol.SessionStateRequest{SessionID: r.session}, "", r.revision); err != nil {
 		r.fail(name, "the endpoint stopped answering after a recoverable protocol error: "+err.Error())
 		return
@@ -332,14 +280,6 @@ func (r *runner) refuseAddressableEnvelope() {
 	r.pass(name)
 }
 
-// refuseStaleRevision drives core requirement 13. A revision the endpoint
-// never issued must be refused with the typed stale_capabilities code, because
-// a host that reads a success there has bound its request to a descriptor
-// snapshot the endpoint has moved past — the exact confusion the revision
-// exists to prevent.
-//
-// The request is one every conformant endpoint answers when the revision is
-// current, so a refusal here can only be about the revision.
 func (r *runner) refuseStaleRevision() {
 	const name = "a stale capability_revision is refused with stale_capabilities"
 	if r.revision == "" {
@@ -378,17 +318,6 @@ func (r *runner) refuseStaleRevision() {
 	r.pass(name)
 }
 
-// answerCancel drives core requirement 10, which is a disjunction rather than
-// a single obligation: an endpoint either supports run.cancel.request or
-// declares cancellation unavailable and refuses the call with a typed
-// unsupported-feature error. Which one applies is read from the descriptor,
-// so an endpoint is judged against what it claimed rather than against what
-// this runner would prefer.
-//
-// The run has already settled, so a supporting endpoint may legitimately
-// refuse this particular cancel as too late. What is being checked is that
-// the call is answered at all and that a declared-unavailable endpoint refuses
-// it for the declared reason — silence is the failure either way.
 func (r *runner) answerCancel() {
 	const name = "run.cancel.request is supported, or refused as unavailable"
 	if r.runID == "" {
@@ -440,20 +369,6 @@ func (r *runner) answerCancel() {
 	r.pass(name)
 }
 
-// electModel picks the model the scripted submission names, or "" to name
-// none.
-//
-// An endpoint is entitled to have no default model, and one that does refuses
-// a submission that names none — correctly, and at the first step that
-// actually exercises the lifecycle. Requiring a default would be a rule in the
-// harness that is in no document, and hard-coding an id would be the harness
-// guessing at a catalog it has not read. So the catalog is what answers it:
-// the operator's --model if given, otherwise the endpoint's own models.list
-// when it advertises one, preferring the entry that declares itself default.
-//
-// An endpoint advertising no catalog and holding no default cannot be driven
-// past submit by anyone, which is a fact about that endpoint rather than a
-// failure this runner can attribute, and the refusal says so in its own words.
 func (r *runner) electModel() string {
 	if r.model != "" {
 		return r.model
@@ -477,11 +392,6 @@ func (r *runner) electModel() string {
 	return catalog.Models[0].ID
 }
 
-// consumeRun reads the run's events, answering each scripted gate from what
-// the gate itself offers rather than from anything this runner knows about a
-// particular implementation: the first choice a permission lists, and the
-// first option of each question an input asks. An endpoint whose gates differ
-// is still driven correctly.
 func (r *runner) consumeRun() {
 	var lastSequence uint64
 	for {
@@ -490,11 +400,7 @@ func (r *runner) consumeRun() {
 			r.fail("the run reaches a terminal event", err.Error())
 			return
 		}
-		// The per-run sequence is one ordering domain for its run_id, so only
-		// events carrying that run_id belong to it. A session-scoped frame
-		// such as session.state.updated has a sequence of its own in the
-		// session's domain, and comparing it against the run's reports a
-		// collision between two numbers that were never in the same space.
+
 		if event.Sequence != nil && event.RunID == r.runID {
 			if *event.Sequence <= lastSequence {
 				r.fail("run events carry an advancing per-run sequence",
@@ -517,13 +423,7 @@ func (r *runner) consumeRun() {
 			}
 			r.pass("a user input gate is resolvable from the stream")
 		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
-			// Core requirement 9 is exactly one terminal, not a successful
-			// one. Demanding run.completed would make conformance depend on
-			// the endpoint having a working model and credentials for it,
-			// which is not a protocol property: an endpoint that admits a
-			// run and settles it as failed has done everything the lifecycle
-			// asks. The terminal is named in the detail so a reader can still
-			// see which one arrived.
+
 			r.report.Checks = append(r.report.Checks, Check{
 				Name: "the run reaches a terminal event", Passed: true,
 				Detail: "settled " + string(event.Type),
@@ -570,8 +470,6 @@ func (r *runner) answerInput(event protocol.Envelope) error {
 	return err
 }
 
-// validate hands the assembled exchange to the real validator. This is the
-// check the rest of the run exists to make possible.
 func (r *runner) validate() {
 	trace, err := json.Marshal(r.report.Trace)
 	if err != nil {
@@ -587,14 +485,6 @@ func (r *runner) validate() {
 	r.fail("the exchange validates as an OAP trace", fmt.Sprintf("%d diagnostic(s)", len(result.Diagnostics)))
 }
 
-// framingContract spawns a second endpoint and hands it a line that is not an
-// OAP envelope.
-//
-// The binding makes this an exit code rather than a message, so a host piping
-// an endpoint can tell a clean end from a framing fault without parsing
-// stderr. It needs its own process because the fault is terminal by
-// definition: an endpoint that kept reading after a broken frame would be
-// guessing where the next one starts.
 func framingContract(ctx context.Context, options Options) Check {
 	return fatalLineContract(ctx, options,
 		"a malformed line ends the endpoint non-zero",
@@ -602,21 +492,6 @@ func framingContract(ctx context.Context, options Options) Check {
 		"the endpoint exited 0 after a line that is not an OAP envelope")
 }
 
-// unaddressableContract drives the binding's case 4: an envelope that declares
-// `protocol` but carries no `id`.
-//
-// It is fatal for a different reason than a malformed line, and the difference
-// is why it is worth a check of its own. The framing is fine — the line said
-// what it is and its boundary was found — but every response this binding
-// defines is correlated by `in_reply_to`, so no refusal can be addressed to
-// it. An endpoint that answers anyway puts an uncorrelated envelope on a
-// stream the host reads by correlation; one that drops it silently leaves the
-// host waiting forever for a response to a request it believes it sent.
-//
-// A Makai maintainer shipped exactly that frame, passed this harness 18 for
-// 18, and found it only by reading the enumerated rule. A clean run should
-// mean the line classification was exercised, not that the five checks
-// touching it happened to agree.
 func unaddressableContract(ctx context.Context, options Options) Check {
 	line := `{"protocol":"open-agent-protocol","version":"0.1",` +
 		`"profile":"open-agent-protocol.agent-control-core","type":"capabilities.request"}`
@@ -626,18 +501,13 @@ func unaddressableContract(ctx context.Context, options Options) Check {
 		"the endpoint exited 0 after an envelope no response could be addressed to")
 }
 
-// fatalLineContract spawns its own endpoint, writes one line that the binding
-// says ends the process, and reports the exit code. Each case gets a fresh
-// endpoint because the fault is terminal by definition.
 func fatalLineContract(ctx context.Context, options Options, name, line, zeroExit string) Check {
 	client, err := SpawnWithDeadline(ctx, options.Command[0], options.Command[1:], io.Discard, options.LineDeadline)
 	if err != nil {
 		return Check{Name: name, Detail: err.Error()}
 	}
 	defer client.Close()
-	// A write failure here is not a test failure: an endpoint may already
-	// have refused the frame and exited, which is the behaviour being
-	// checked. The exit code is what decides.
+
 	_, _ = client.stdin.Write([]byte(line + "\n"))
 	_ = client.CloseInput()
 	code, waitErr := client.Wait()
@@ -650,16 +520,6 @@ func fatalLineContract(ctx context.Context, options Options, name, line, zeroExi
 	return Check{Name: name, Passed: true}
 }
 
-// replayRun asks for the settled run again from its first event.
-//
-// Replaying after the terminal rather than mid-run is deliberate: it is the
-// case with a known answer. The runner holds every envelope the run produced,
-// so it can check that what comes back is the same run from its own
-// beginning, which a mid-run replay racing live delivery could not pin.
-//
-// The cursor names its run. Sequences are per-run, so an unqualified cursor
-// means something different once a newer run has been admitted, and a
-// conformance runner should model the shape hosts ought to use.
 func (r *runner) replayRun() {
 	const accepted = "a cursor replay is accepted and re-delivers the run"
 	if r.runID == "" {
@@ -673,11 +533,7 @@ func (r *runner) replayRun() {
 	}
 	answer, err := r.client.Control(frame.ID)
 	if errors.Is(err, ErrControlUnanswered) {
-		// A control the endpoint does not implement must still be answered:
-		// the binding says so, and answering is what keeps the control
-		// vocabulary extensible. Silence is therefore a real failure — but
-		// only of this check. The endpoint is alive and owes answers to
-		// everything after it, so it is left running.
+
 		r.fail(accepted, "the endpoint answered nothing; a control it does not implement must still be answered with unsupported_control")
 		return
 	}
@@ -693,12 +549,7 @@ func (r *runner) replayRun() {
 		return
 	default:
 		if answer.Code == "unsupported_control" {
-			// The binding says an endpoint that does not recognise a control
-			// answers it and keeps going, and cursor replay is not among the
-			// Core Profile Requirements. Failing here would convict an
-			// endpoint for doing exactly what the binding tells it to, and
-			// would put a requirement in the harness that is in no document.
-			// The answer itself is the thing worth checking, and it arrived.
+
 			r.skip(accepted, "the endpoint does not implement the replay control, which the binding permits")
 			return
 		}
@@ -706,8 +557,6 @@ func (r *runner) replayRun() {
 		return
 	}
 
-	// The replayed stream ends at the run's terminal, exactly as the live one
-	// did, so the terminal is what this waits for rather than a count.
 	var first uint64
 	for {
 		event, err := r.client.Event()

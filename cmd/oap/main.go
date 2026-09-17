@@ -28,8 +28,6 @@ func main() {
 	}
 }
 
-// stdin is threaded through because serve --stdio and endpoint read the
-// protocol from it; every other subcommand ignores it.
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return usage(stderr)
@@ -73,16 +71,9 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "human", "output format: human or json")
-	// The mode is the caller's stated choice, never inferred from the input:
-	// a live envelope saved to a file is indistinguishable from a fixture, so
-	// inferring would either weaken the typo-catching the fixture path exists
-	// for or fail the forward compatibility the live path needs. strict is
-	// the default so every existing invocation is unchanged.
+
 	modeFlag := fs.String("mode", string(validation.ModeStrict), "validation mode: strict (the bundle as published) or tolerant (the extension rules: unknown fields, enum values, and envelope types are accepted)")
-	// Packs are opt-in on the command line for the same reason the mode is:
-	// which vocabulary is in force must be the caller's stated choice, not
-	// inferred from the input. With the pack loaded its envelopes are validated
-	// against its own branches; without it they take the tolerant unknown path.
+
 	var packs repeatedFlag
 	fs.Var(&packs, "pack", "load an extension pack from a directory containing pack.json; repeatable")
 	if err := fs.Parse(args); err != nil {
@@ -149,7 +140,6 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// repeatedFlag collects a flag given more than once, in the order it was given.
 type repeatedFlag []string
 
 func (f *repeatedFlag) String() string     { return strings.Join(*f, ",") }
@@ -443,11 +433,6 @@ func validateEventLifecycle(events []protocol.Envelope, runID protocol.RunID) er
 	return nil
 }
 
-// validateDemoTrace runs the executable OAP schema and state machine over the
-// demo's own adapter trace, assembling it with the same shared builder the
-// adapter test suite uses, so `oap check` certifies the reference adapter's
-// emission rather than only its lifecycle shape. The cancellation demo passes
-// the acknowledgement of the Cancel it actually issued as evidence.
 func validateDemoTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) error {
 	var trace []byte
 	var err error

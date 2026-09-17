@@ -15,14 +15,6 @@ import (
 	"github.com/lsm/open-agent-protocol/validation"
 )
 
-// runConformance drives an endpoint binary through the stdio binding and
-// reports whether it conformed.
-//
-// The command is spawned as a process rather than linked in, which is the
-// whole point: an implementer's endpoint is a binary in whatever language
-// they wrote it, and a runner only Go implementers can use would be half a
-// deliverable. With no --command it re-executes this binary as its own
-// reference endpoint, so the runner always has a known-good target.
 func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("conformance", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -83,10 +75,7 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 			}
 		}
 		for _, diagnostic := range report.Diagnostics {
-			// The anchor is the actionable half. A code and a message say what
-			// rule broke; the envelope index, id, type and JSON pointer say
-			// which frame broke it, and an implementer reading the report
-			// cannot see the assembled trace the way this runner can.
+
 			fmt.Fprintf(stdout, "     %s: %s\n", diagnostic.Code, diagnostic.Message)
 			fmt.Fprintf(stdout, "       at %s\n", diagnosticAnchor(diagnostic))
 		}
@@ -110,14 +99,6 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 	return nil
 }
 
-// diagnosticAnchor renders the envelope a diagnostic is about, as much of it
-// as the diagnostic carries.
-//
-// The index is always printed. It is a zero-based position in the assembled
-// trace, and every diagnostic the runner reports came from validating that
-// trace, so index 0 is the first envelope and not an absent field. Treating it
-// as absent would drop the anchor from exactly the frame nearest the start,
-// where an initialize or capabilities defect lands.
 func diagnosticAnchor(d validation.Diagnostic) string {
 	parts := []string{fmt.Sprintf("envelope %d", d.Index)}
 	if d.Type != "" {
@@ -132,9 +113,6 @@ func diagnosticAnchor(d validation.Diagnostic) string {
 	return strings.Join(parts, " · ")
 }
 
-// endpointCommand resolves the argv to spawn. Splitting on spaces is enough
-// for the shapes this is used with and keeps the flag readable; a command
-// needing more than that can be wrapped in a script.
 func endpointCommand(command, adapterName string) ([]string, error) {
 	if command != "" {
 		fields := strings.Fields(command)

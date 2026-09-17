@@ -1,4 +1,3 @@
-// Package opencode adapts the pinned OpenCode v1.18.29 server to OAP.
 package opencode
 
 import (
@@ -20,17 +19,11 @@ const (
 	endpointID   = "opencode.server"
 	PinnedTag    = native.PinnedTag
 	PinnedCommit = "16747470f976aca3d362ad730bcd3fe82ecc2c9a"
-	// A revision identifies exactly one descriptor, so a consumer holding the
-	// v1 snapshot must see this one as new rather than read the queued
-	// admissions it now carries against a descriptor that called the queue
-	// unavailable. v2 advertises session.message.delivery.queue with its
-	// bounds.
+
 	CapabilityRevision  = "opencode-v1.18.29-oap-v2"
 	defaultJournalCap   = 256
 	defaultHistoryLimit = 100
-	// Settlement polls session.active until the agent loop's drain releases
-	// the session. The backoff keeps a long provider turn from issuing one
-	// request per few milliseconds for its whole duration.
+
 	defaultSettlePollMin = 10 * time.Millisecond
 	defaultSettlePollMax = 500 * time.Millisecond
 )
@@ -40,7 +33,6 @@ var (
 	ErrUnsupported    = errors.New("opencode adapter: unsupported input")
 )
 
-// Subscription is the per-session durable event stream the reducer consumes.
 type Subscription interface {
 	Events() <-chan native.Event
 	Done() <-chan struct{}
@@ -48,15 +40,6 @@ type Subscription interface {
 	Close() error
 }
 
-// Client is the reduced server surface the adapter depends on.
-//
-// The pinned server's POST /api/session/:id/wait route is declared in the
-// OpenAPI document but not implemented: its handler resolves the session and
-// then always fails with ServiceUnavailableError, which the server returns as
-// HTTP 503 (upstream asserts this in its own httpapi-session test). So the
-// wait route is deliberately absent from this interface and quiescence is
-// corroborated with Active, whose set the run coordinator holds for the whole
-// agent-loop drain rather than per step.
 type Client interface {
 	CreateSession(ctx context.Context, request httpapi.CreateSessionRequest) (native.SessionInfo, error)
 	Prompt(ctx context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error)
@@ -67,7 +50,6 @@ type Client interface {
 	Close() error
 }
 
-// ClientFactory opens one client per OAP session.
 type ClientFactory interface {
 	Start(ctx context.Context) (Client, error)
 }
@@ -75,8 +57,6 @@ type ClientFactoryFunc func(context.Context) (Client, error)
 
 func (f ClientFactoryFunc) Start(ctx context.Context) (Client, error) { return f(ctx) }
 
-// Config wires the adapter. Credentials are caller-supplied only; ambient
-// environment is never read.
 type Config struct {
 	Factory         ClientFactory
 	Endpoint        string
@@ -91,10 +71,7 @@ type Config struct {
 	FrameLimit      int
 	QueueCapacity   int
 	HistoryLimit    int
-	// SettlePollMin and SettlePollMax bound the backoff between the
-	// session.active polls that corroborate settlement. The first poll is
-	// immediate, so a run whose loop has already drained settles without
-	// sleeping at all.
+
 	SettlePollMin time.Duration
 	SettlePollMax time.Duration
 }
@@ -165,24 +142,14 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools":                   {Level: protocol.SupportNative, Reason: "tool.called/progress/success/failed lifecycle observed natively"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "tools execute server-side; no client-hosted execution surface"},
 		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "durable stream carries no permission events; the polling surface is unexercised"},
-		// The pinned ledger names model.list and provider.list as native
-		// catalog routes but pins no response shape for either, and an adapter
-		// may not decode a shape no pin covers. What is pinned is what this
-		// session has run: the session record's model and the model each
-		// durable step names. That is served here, and it is why the key is
-		// degraded rather than native — it is this session's effective models,
-		// not the server's own list, and it grows as steps are observed.
+
 		protocol.FeatureModelsList: {Level: protocol.SupportDegraded, Reason: "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision"},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "OpenCode Server Adapter", Version: PinnedTag, Adapter: "opencode-http-sse"}
 	return base.Descriptor{
 		Capabilities: protocol.CapabilityDescriptor{
 			Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features,
-			// One started run beside one reservation. The server queues more
-			// than one natively, but this adapter derives settlement from
-			// quiescence over a single execution, so a second reservation is
-			// beyond what the pin's evidence supports. The bound is disclosed
-			// because a queue nothing could ever reach promises nothing.
+
 			Limits: &protocol.CapabilityLimits{
 				MaxActiveRunsPerSession: protocol.Limit(maxActiveRuns),
 				MaxQueuedRunsPerSession: protocol.Limit(maxQueuedRuns),
@@ -201,17 +168,11 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// An open attaching tool sources to an endpoint that never advertised
-	// attachment is refused before a process starts: this adapter reads no
-	// ToolSources, so admitting the open would return a session that silently
-	// discarded them.
+
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
 		return nil, err
 	}
-	// The same gate for control-layer-provided tools: this adapter advertises
-	// no action.tools.provide, so an open supplying its own tool definitions
-	// is refused rather than returning a session whose provided catalog was
-	// silently discarded.
+
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
@@ -224,11 +185,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("create OpenCode session: %w", err)
 	}
-	// The durable subscription outlives the Open call. If it reused the
-	// caller's ctx, a normal `defer cancel()` would tear down the SSE request
-	// as soon as Open returned, leaving the session unusable. Give it a
-	// session-owned context that Close cancels. One-shot calls such as
-	// CreateSession and Prompt keep the caller's ctx.
+
 	subCtx, subCancel := context.WithCancel(context.Background())
 	subscription, err := client.Subscribe(subCtx, info.ID, -1)
 	if err != nil {
@@ -241,8 +198,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	// The native session reports the model CreateSession selected; fall back to
-	// the configured value when the server echoes none.
+
 	model := normalizeModelRef(info.Model)
 	if model == "" {
 		model = normalizeModelRef(a.config.Model)
@@ -267,8 +223,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		stop:         make(chan struct{}),
 		subCancel:    subCancel,
 	}
-	// The session's own model is the first catalog evidence there is; durable
-	// steps add whatever else this session turns out to run.
+
 	s.observeModel(model)
 	go s.dispatch()
 	return s, nil
@@ -292,8 +247,6 @@ func (g *sequenceIDs) NewID(kind string) string {
 
 func formatSeq(seq int64) string { return strconv.FormatInt(seq, 10) }
 
-// clientBridge adapts the concrete subscription type to the adapter's
-// Subscription interface.
 type clientBridge struct {
 	*httpapi.Client
 }
@@ -308,6 +261,4 @@ func (b *clientBridge) Subscribe(ctx context.Context, session native.SessionID, 
 
 var _ base.Adapter = (*Adapter)(nil)
 
-// The graduating adapter for the models unit: it advertises models.list and
-// serves the catalog it advertises, at the fidelity the pinned ledger supports.
 var _ base.ModelLister = (*session)(nil)
