@@ -166,6 +166,7 @@ func Run(ctx context.Context, options Options) (*Report, error) {
 	r.report.Trace = client.Transcript()
 	r.validate()
 	r.report.Checks = append(r.report.Checks, framingContract(ctx, options))
+	r.report.Checks = append(r.report.Checks, unaddressableContract(ctx, options))
 
 	r.report.Passed = true
 	for _, check := range r.report.Checks {
@@ -279,6 +280,56 @@ func (r *runner) drive() {
 
 	r.refuseStaleRevision()
 	r.answerCancel()
+	r.refuseAddressableEnvelope()
+}
+
+// refuseAddressableEnvelope drives the binding's case 3: an envelope that
+// declares `protocol` and carries an `id` but is otherwise wrong.
+//
+// Its framing is not in doubt, so the endpoint owes a correlated refusal and
+// must keep running. Both halves are checked, because each has been got wrong
+// independently: an endpoint that answers uncorrelated leaves a host unable to
+// match the refusal to the request that drew it, and one that treats the line
+// as a framing fault kills a stream over a recoverable protocol error.
+//
+// The probe is deliberately wrong, so it stays out of the assembled trace.
+func (r *runner) refuseAddressableEnvelope() {
+	const name = "an addressable envelope that is wrong draws a correlated refusal"
+	envelope, err := protocol.NewEnvelope(protocol.TypeSessionStateRequest, r.next("request"), protocol.SessionStateRequest{SessionID: r.session})
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	// A type no v0.1 endpoint serves, on an envelope that is otherwise
+	// well-formed and addressable. Anything an endpoint might legitimately
+	// implement would make the check's meaning depend on what it implements.
+	envelope.Type = "conformance.not.a.real.request"
+	envelope.SessionID = r.session
+	envelope.CapabilityRevision = r.revision
+	if err := r.client.Probe(envelope); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	answer, err := r.client.Response(envelope.ID)
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	if answer.Type != protocol.TypeErrorResponse {
+		r.fail(name, fmt.Sprintf("an unserveable request was answered %s", answer.Type))
+		return
+	}
+	if answer.InReplyTo != envelope.ID {
+		r.fail(name, fmt.Sprintf("the refusal is correlated to %q, not to the request %q that drew it", answer.InReplyTo, envelope.ID))
+		return
+	}
+	// Still alive: the session request that follows proves the stream
+	// survived a recoverable protocol error.
+	if _, err := r.request(protocol.TypeSessionStateRequest, protocol.SessionStateRequest{SessionID: r.session}, "", r.revision); err != nil {
+		r.fail(name, "the endpoint stopped answering after a recoverable protocol error: "+err.Error())
+		return
+	}
+	r.pass(name)
 }
 
 // refuseStaleRevision drives core requirement 13. A revision the endpoint
@@ -545,7 +596,40 @@ func (r *runner) validate() {
 // definition: an endpoint that kept reading after a broken frame would be
 // guessing where the next one starts.
 func framingContract(ctx context.Context, options Options) Check {
-	const name = "a malformed line ends the endpoint non-zero"
+	return fatalLineContract(ctx, options,
+		"a malformed line ends the endpoint non-zero",
+		"this is not an envelope",
+		"the endpoint exited 0 after a line that is not an OAP envelope")
+}
+
+// unaddressableContract drives the binding's case 4: an envelope that declares
+// `protocol` but carries no `id`.
+//
+// It is fatal for a different reason than a malformed line, and the difference
+// is why it is worth a check of its own. The framing is fine — the line said
+// what it is and its boundary was found — but every response this binding
+// defines is correlated by `in_reply_to`, so no refusal can be addressed to
+// it. An endpoint that answers anyway puts an uncorrelated envelope on a
+// stream the host reads by correlation; one that drops it silently leaves the
+// host waiting forever for a response to a request it believes it sent.
+//
+// A Makai maintainer shipped exactly that frame, passed this harness 18 for
+// 18, and found it only by reading the enumerated rule. A clean run should
+// mean the line classification was exercised, not that the five checks
+// touching it happened to agree.
+func unaddressableContract(ctx context.Context, options Options) Check {
+	line := `{"protocol":"open-agent-protocol","version":"0.1",` +
+		`"profile":"open-agent-protocol.agent-control-core","type":"capabilities.request"}`
+	return fatalLineContract(ctx, options,
+		"an envelope with no id ends the endpoint non-zero",
+		line,
+		"the endpoint exited 0 after an envelope no response could be addressed to")
+}
+
+// fatalLineContract spawns its own endpoint, writes one line that the binding
+// says ends the process, and reports the exit code. Each case gets a fresh
+// endpoint because the fault is terminal by definition.
+func fatalLineContract(ctx context.Context, options Options, name, line, zeroExit string) Check {
 	client, err := SpawnWithDeadline(ctx, options.Command[0], options.Command[1:], io.Discard, options.LineDeadline)
 	if err != nil {
 		return Check{Name: name, Detail: err.Error()}
@@ -554,14 +638,14 @@ func framingContract(ctx context.Context, options Options) Check {
 	// A write failure here is not a test failure: an endpoint may already
 	// have refused the frame and exited, which is the behaviour being
 	// checked. The exit code is what decides.
-	_, _ = client.stdin.Write([]byte("this is not an envelope\n"))
+	_, _ = client.stdin.Write([]byte(line + "\n"))
 	_ = client.CloseInput()
 	code, waitErr := client.Wait()
 	switch {
 	case waitErr != nil:
 		return Check{Name: name, Detail: waitErr.Error()}
 	case code == 0:
-		return Check{Name: name, Detail: "the endpoint exited 0 after a line that is not an OAP envelope"}
+		return Check{Name: name, Detail: zeroExit}
 	}
 	return Check{Name: name, Passed: true}
 }
