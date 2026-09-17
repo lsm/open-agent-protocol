@@ -951,6 +951,16 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	if len(queuedEvents) != 1 || queuedEvents[0].Type != protocol.TypeRunCancelled {
 		t.Fatalf("cancelled reservation = %v", types(queuedEvents))
 	}
+	// Nothing is sent for this reservation and nothing is heard about it: the
+	// server still holds the input and may yet promote it, so this terminal is
+	// the adapter's own conclusion and has to say so.
+	var cancelled protocol.RunCancelledPayload
+	if err := queuedEvents[0].DecodePayload(&cancelled); err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.SettledBy != protocol.SettledByInferred {
+		t.Fatalf("settled_by = %q, want %q", cancelled.SettledBy, protocol.SettledByInferred)
+	}
 	// The slot is free again while the first run is still running.
 	state, err := session.State(context.Background())
 	if err != nil {

@@ -1178,8 +1178,12 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		// here would cancel the wrong work. The reservation is therefore
 		// dropped adapter-side and settles pre-start, and a later promotion
 		// for it is ignored — the terminal has already absorbed the run.
+		// Nothing is sent for this run and nothing is heard about it: the
+		// server still holds the input and may yet promote it, and this
+		// terminal is the adapter's own decision to stop listening. It
+		// asserts a cancellation no evidence reports, which is inferred.
 		<-run.admitted
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion"}, true)
+		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion", SettledBy: protocol.SettledByInferred}, true)
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
 	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
