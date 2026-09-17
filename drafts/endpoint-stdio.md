@@ -97,6 +97,11 @@ is the session's lifetime:
 - **stdin EOF** is the close. The endpoint stops accepting requests, settles
   what it already admitted, flushes stdout, and exits **0**.
 - **SIGINT / SIGTERM** behave as EOF.
+- A teardown that cannot deliver what the endpoint already admitted, within a
+  bounded window, exits **non-zero**. This is the hung-up host: one that closed
+  its stdin but stopped reading its stdout, so the pipe fills and the last
+  events cannot be written. Exiting 0 there would report a clean end for a
+  session whose host is missing events it was acknowledged for.
 - A **malformed line** — not JSON, not an envelope, or over the length bound —
   is the host's framing defect. The endpoint writes one bounded diagnostic to
   stderr and exits **non-zero**. It does not attempt to resynchronise, because
@@ -170,6 +175,21 @@ cursor, but it means a host assembling a trace across a replay must deduplicate
 by envelope `id`, because the same envelope arriving twice is one event
 delivered twice and not two events. A trace that keeps both copies is invalid
 for a reason that has nothing to do with the endpoint.
+
+**A run stream that dies says so.** The pipe stays open after a subscription
+fails, so a host that simply stopped receiving envelopes cannot tell a dead
+stream from a slow agent, and its trace would lack a terminal with nothing to
+explain why. Each abnormal ending emits one frame naming the position the host
+actually reached:
+
+```json
+{"control":"stream.lost","run_id":"run-1","after":12,"code":"overflow","message":"..."}
+```
+
+`code` is `overflow` when delivery fell behind, `frame_limit` when an envelope
+could not be framed, or `stream_failed` for anything else. `after` is a cursor:
+the host replays from it to continue. A clean end needs no such frame, because
+the run's terminal envelope is already the marker.
 
 Replay is distinct from reconciliation. `session.state.request` returns
 authoritative state — what is true now — while replay returns a journal suffix

@@ -126,6 +126,15 @@ type Subscription struct {
 	err       error
 }
 
+// RunID is the run a cursor subscription was bound to, which for a cursor
+// that named no run is the one the hub resolved it onto. A live subscription
+// has no run until it delivers one and reports empty.
+//
+// A caller acknowledging a replay needs this rather than the session's
+// active run: a settled run is no longer active, and replay is most useful
+// exactly then.
+func (s *Subscription) RunID() protocol.RunID { return s.run }
+
 // Next returns the next envelope. It returns io.EOF after the stream ends
 // cleanly at a run's terminal event, at the session's close, or after Close;
 // *OverflowError is the fell-behind signal carrying the resume cursor; the

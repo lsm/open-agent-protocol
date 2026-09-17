@@ -153,7 +153,7 @@ func (r *runner) drive() {
 		r.pass("capabilities.response carries a capability revision")
 	}
 
-	opened, err := r.request(protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: r.session}, "", "")
+	opened, err := r.request(protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: r.session}, "", r.revision)
 	if !r.record("session.open.request is answered", err) {
 		return
 	}
@@ -192,7 +192,7 @@ func (r *runner) drive() {
 
 	r.replayRun()
 
-	if _, err := r.request(protocol.TypeSessionStateRequest, protocol.SessionStateRequest{SessionID: r.session}, "", ""); err != nil {
+	if _, err := r.request(protocol.TypeSessionStateRequest, protocol.SessionStateRequest{SessionID: r.session}, "", r.revision); err != nil {
 		r.fail("session.state.request is answered after the run settles", err.Error())
 	} else {
 		r.pass("session.state.request is answered after the run settles")

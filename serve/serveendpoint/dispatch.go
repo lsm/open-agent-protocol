@@ -147,6 +147,7 @@ func (s *Server) state(ctx context.Context, e protocol.Envelope) (protocol.Envel
 	}
 	answer.InReplyTo = e.ID
 	answer.SessionID = entry.ID()
+	answer.CapabilityRevision = e.CapabilityRevision
 	return answer, nil
 }
 
@@ -195,20 +196,63 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 // pump writes one run's events as they are produced. A clean end at the run's
 // terminal needs no signal of its own: the terminal envelope is the marker,
 // exactly as it is on every other binding.
+//
+// Every other ending does need one. This transport's pipe stays open after a
+// run stream dies, so a host that simply stopped receiving envelopes cannot
+// tell a dead subscription from a slow agent, and its trace would be missing
+// a terminal with nothing to say why. Each abnormal ending therefore emits a
+// stream.lost control frame carrying the position the host actually reached,
+// which is a cursor it can replay from — the recovery this binding already
+// defines.
 func (s *Server) pump(subscription *serve.Subscription) {
 	defer subscription.Close()
+	var run protocol.RunID
+	var delivered uint64
 	for {
 		envelope, err := subscription.Next()
 		if err != nil {
-			if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
-				s.logger.Printf("serveendpoint: run stream: %v", err)
-			}
+			s.reportLostStream(run, delivered, err)
 			return
 		}
-		if err := s.write(envelope); err != nil {
-			s.logger.Printf("serveendpoint: writing a run event: %v", err)
+		if envelope.RunID != "" {
+			run = envelope.RunID
+		}
+		if writeErr := s.write(envelope); writeErr != nil {
+			s.reportLostStream(run, delivered, writeErr)
 			return
 		}
+		if envelope.Sequence != nil {
+			delivered = *envelope.Sequence
+		}
+	}
+}
+
+// reportLostStream names an ending the host could not otherwise observe. A
+// clean end and a teardown are not endings of this kind: the first carries
+// its own terminal envelope, and the second ends the whole process.
+func (s *Server) reportLostStream(run protocol.RunID, delivered uint64, err error) {
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		return
+	}
+	code := "stream_failed"
+	var overflow *serve.OverflowError
+	switch {
+	case errors.As(err, &overflow):
+		code = "overflow"
+		if overflow.RunID != "" {
+			run = overflow.RunID
+		}
+		delivered = overflow.LastSequence
+	case errors.Is(err, ErrFrameTooLarge):
+		code = "frame_limit"
+	}
+	after := delivered
+	s.logger.Printf("serveendpoint: run stream ended early (%s): %v", code, err)
+	if writeErr := s.writeControl(controlFrame{
+		Control: controlStreamLost, RunID: run, After: &after, Code: code,
+		Message: "this run's events stopped reaching the host; replay from after to continue",
+	}); writeErr != nil {
+		s.logger.Printf("serveendpoint: reporting the lost stream: %v", writeErr)
 	}
 }
 
@@ -232,6 +276,7 @@ func (s *Server) cancel(ctx context.Context, e protocol.Envelope) (protocol.Enve
 	answer.InReplyTo = e.ID
 	answer.SessionID = entry.ID()
 	answer.RunID = request.RunID
+	answer.CapabilityRevision = e.CapabilityRevision
 	return answer, nil
 }
 

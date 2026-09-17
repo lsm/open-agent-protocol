@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 	"github.com/lsm/open-agent-protocol/serve"
@@ -40,12 +41,20 @@ var ErrFrameTooLarge = errors.New("serveendpoint: line exceeds the frame limit")
 // ErrMalformedLine reports a line that is not one JSON OAP envelope.
 var ErrMalformedLine = errors.New("serveendpoint: line is not a JSON envelope")
 
+// ErrShutdownStalled reports that the endpoint could not deliver what it had
+// admitted before its teardown window expired, so the exit is not the clean
+// one stdin EOF otherwise promises.
+var ErrShutdownStalled = errors.New("serveendpoint: shutdown outlived its bounded window; the stalled run stream was abandoned")
+
 // Options configures the endpoint. Adapter names the single adapter this
 // endpoint is; there is no adapter dimension on the wire.
 type Options struct {
 	Adapter    string
 	FrameLimit int
-	Logger     *log.Logger
+	// Shutdown bounds the teardown's wait for run pumps. Zero takes
+	// serve.DefaultShutdownTimeout.
+	Shutdown time.Duration
+	Logger   *log.Logger
 }
 
 // Server is one endpoint over one adapter.
@@ -53,6 +62,7 @@ type Server struct {
 	hub        *serve.Hub
 	adapter    string
 	frameLimit int
+	shutdown   time.Duration
 	logger     *log.Logger
 
 	ids atomic.Uint64
@@ -82,7 +92,11 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, logger: logger}, nil
+	shutdown := options.Shutdown
+	if shutdown <= 0 {
+		shutdown = serve.DefaultShutdownTimeout
+	}
+	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, logger: logger}, nil
 }
 
 // Run reads request envelopes from in and writes response and event envelopes
@@ -105,37 +119,45 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	streams, stopStreams := context.WithCancel(ctx)
 	defer stopStreams()
 
-	reader := bufio.NewReaderSize(in, 64*1024)
+	// Reading happens on its own goroutine so the loop can select on the
+	// context. An endpoint spends almost all of its life parked waiting for
+	// the next request, and a loop that only checked the context between
+	// lines would ignore SIGINT and SIGTERM for exactly that whole time —
+	// which is every idle moment. The caller installs a signal context and
+	// thereby suppresses the default termination, so a loop that cannot see
+	// the cancellation leaves a supervisor no option but SIGKILL, skipping
+	// the session sweep and orphaning whatever children an adapter holds.
+	frames := make(chan readResult, 1)
+	go s.readFrames(bufio.NewReaderSize(in, 64*1024), frames)
+
 	var runErr error
+reading:
 	for {
-		line, err := s.readLine(reader)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				runErr = err
+		select {
+		case <-ctx.Done():
+			break reading
+		case result, open := <-frames:
+			if !open {
+				break reading
 			}
-			break
-		}
-		if strings.TrimSpace(string(line)) == "" {
-			continue
-		}
-		if ctx.Err() != nil {
-			break
-		}
-		if err := s.handle(ctx, streams, line); err != nil {
-			runErr = err
-			break
+			if result.err != nil {
+				if !errors.Is(result.err, io.EOF) {
+					runErr = result.err
+				}
+				break reading
+			}
+			if strings.TrimSpace(string(result.frame)) == "" {
+				continue
+			}
+			if err := s.handle(ctx, streams, result.frame); err != nil {
+				runErr = err
+				break reading
+			}
 		}
 	}
 
-	// The pumps are waited for rather than cancelled: their events are the
-	// answer to work the host was already acknowledged for, and a pump ends at
-	// its run's terminal on its own. A host that hung up has stopped reading,
-	// and the writer below will fail rather than block forever on a dead pipe.
-	if runErr == nil {
-		s.pumps.Wait()
-	} else {
-		stopStreams()
-		s.pumps.Wait()
+	if stalled := s.settle(stopStreams, runErr != nil); stalled && runErr == nil {
+		runErr = ErrShutdownStalled
 	}
 	s.mu.Lock()
 	flushErr := s.out.Flush()
@@ -144,6 +166,68 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		return runErr
 	}
 	return flushErr
+}
+
+// readResult is one frame or the error that ended the input.
+type readResult struct {
+	frame []byte
+	err   error
+}
+
+// readFrames feeds the loop. It may outlive Run, parked in a read on an input
+// that never closes; the process exit collects it, and it holds nothing the
+// teardown needs.
+func (s *Server) readFrames(reader *bufio.Reader, frames chan<- readResult) {
+	defer close(frames)
+	for {
+		frame, err := s.readLine(reader)
+		frames <- readResult{frame: frame, err: err}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// settle waits for the run pumps and reports whether it gave up on them.
+//
+// The wait is bounded rather than open-ended. A pump writes synchronously to
+// stdout, so a host that closed its stdin but stopped reading its stdout —
+// the hung-up host this binding describes — fills the pipe and parks the pump
+// inside the write. Waiting on that forever would turn the promised exit into
+// a hang, which is worse than either outcome the exit code is supposed to
+// distinguish. Cancelling first would be worse still in the ordinary case: it
+// would drop events the host was already acknowledged for, so cancellation is
+// what remains after the window rather than what starts the teardown.
+func (s *Server) settle(stopStreams context.CancelFunc, alreadyFailed bool) bool {
+	if alreadyFailed {
+		stopStreams()
+	}
+	done := make(chan struct{})
+	go func() {
+		s.pumps.Wait()
+		close(done)
+	}()
+	window := time.NewTimer(s.shutdown)
+	defer window.Stop()
+	select {
+	case <-done:
+		return false
+	case <-window.C:
+	}
+	stopStreams()
+	cancelled := time.NewTimer(s.shutdown)
+	defer cancelled.Stop()
+	select {
+	case <-done:
+		return false
+	case <-cancelled.C:
+		// The pumps outlived both windows, which a cancelled context cannot
+		// fix: a write parked on a full pipe is not waiting on the context.
+		// They are abandoned so the process can exit, and the non-zero exit
+		// says the endpoint could not deliver what it had admitted.
+		s.logger.Printf("serveendpoint: shutdown outlived its window; the stalled run stream was abandoned")
+		return true
+	}
 }
 
 // readLine reads one newline-terminated frame, failing closed over the limit

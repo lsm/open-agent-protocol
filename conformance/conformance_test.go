@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/protocol"
 )
@@ -288,5 +290,66 @@ func TestReplayRefusesACursorItCannotHonour(t *testing.T) {
 	}
 	if answer.Control == "replay.error" && answer.Code == "" {
 		t.Fatal("a replay.error carries no code, so the host is told nothing it can act on")
+	}
+}
+
+// TestIdleEndpointStopsOnSignal pins the state an endpoint is in almost all
+// of the time: parked with nothing to read.
+//
+// The binding says SIGINT and SIGTERM behave as EOF. Installing a signal
+// context suppresses the default termination, so an endpoint whose loop only
+// noticed cancellation between lines would ignore both signals for exactly
+// as long as it was idle — leaving a supervisor no option but SIGKILL, which
+// skips the session sweep and orphans whatever children an adapter holds.
+func TestIdleEndpointStopsOnSignal(t *testing.T) {
+	oap := oapBinary(t)
+	cmd := exec.Command(oap, "endpoint", "--adapter", "memory")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Readiness is established by a round trip rather than by sleeping. The
+	// signal handler is installed during startup, so a signal sent before
+	// then is handled by default and kills the process — which would make
+	// this test pass for the wrong reason, and fail intermittently under
+	// load. An answered request proves the loop is running and the handler
+	// is in place.
+	request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "ready-1", protocol.CapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Write(append(data, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReaderSize(stdout, 1<<20).ReadString('\n'); err != nil {
+		t.Fatalf("the endpoint never answered, so it was never ready: %v", err)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("an idle endpoint interrupted with SIGINT exited %v, want a clean stop", err)
+		}
+	case <-time.After(10 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("an idle endpoint ignored SIGINT; only SIGKILL would stop it, which skips the session sweep")
 	}
 }

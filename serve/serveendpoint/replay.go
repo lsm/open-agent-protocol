@@ -20,6 +20,7 @@ const (
 	controlReplayAccepted = "replay.accepted"
 	controlReplayGap      = "replay.gap"
 	controlReplayError    = "replay.error"
+	controlStreamLost     = "stream.lost"
 )
 
 // controlFrame is one binding control line in either direction. A frame is
@@ -93,14 +94,13 @@ func (s *Server) replay(streams context.Context, frame controlFrame) error {
 	if err != nil {
 		return s.writeControl(s.replayFailure(frame, err))
 	}
-	runID := frame.RunID
+	// The acknowledgement names the run the subscription actually resolved
+	// onto, not the session's active run. They differ exactly when replay
+	// matters most: a settled run is no longer active, so reading the state
+	// here would answer with no run at all for every replay after a terminal.
+	runID := subscription.RunID()
 	if runID == "" {
-		// The cursor named no run, so the endpoint resolved it onto the
-		// session's current one. The acknowledgement reports which, because a
-		// host that did not name a run still has to know what it got.
-		if state, stateErr := entry.State(context.Background()); stateErr == nil {
-			runID = state.ActiveRunID
-		}
+		runID = frame.RunID
 	}
 	if err := s.writeControl(controlFrame{
 		Control: controlReplayAccepted, ID: frame.ID, SessionID: entry.ID(), RunID: runID, After: &after,
