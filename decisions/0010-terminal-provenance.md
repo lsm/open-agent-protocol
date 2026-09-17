@@ -105,9 +105,13 @@ A terminal is **inferred** when the endpoint had no such evidence to rule on:
 - **A session-scoped stop.** The harness settled or destroyed the session and
   said nothing about this run, whose own settlement is never published or is
   discarded. It makes no difference whether the host asked for the stop.
-- **A control call that never landed.** A cancellation, an abort, or a
-  reverse-channel write failed, so nothing was ever reported back about how the
-  run ended.
+- **A control call that never landed.** A cancellation, an abort, a permission
+  answer, or another reverse-channel write failed, so nothing was ever reported
+  back about how the run ended. A call the harness *answered* with an error is
+  the opposite case: that answer is run-scoped evidence about this run, and the
+  terminal drawn from it is observed. The same call site can therefore produce
+  either, and an endpoint that cannot tell the two apart should not be emitting
+  the member at all.
 
 One case deliberately falls outside the member. A submission that fails before
 its run starts is not an inference: the endpoint watched its own request fail,

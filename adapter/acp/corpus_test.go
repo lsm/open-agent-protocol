@@ -274,7 +274,15 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 				prefix = append(prefix, adaptertest.Drain(t, stream, time.Second)...)
 			}
 		case "prompt-error":
-			client.prompt <- promptOutcome{err: errors.New("fixture prompt failure")}
+			// The pinned frame is a JSON-RPC error response, so the agent
+			// answered this run's prompt. Deliver the RemoteError the
+			// production client builds from exactly that frame rather than a
+			// bare error: since Decision 0010 the two are no longer
+			// equivalent, and only a bare one means no answer came back.
+			if message.Error == nil {
+				t.Fatal("prompt-error frame carries no JSON-RPC error object")
+			}
+			client.prompt <- promptOutcome{err: &rpc.RemoteError{ID: message.ID, Object: *message.Error}}
 		case "process-exit":
 			client.err = errors.New("fixture process exited")
 			close(client.done)
