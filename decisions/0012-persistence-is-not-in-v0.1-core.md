@@ -1,14 +1,15 @@
-# Decision 0012: Persistence Is Not In v0.1 Core
+# Decision 0012: Retire `+persistence`, and Stage Transcript Load
 
 Status: proposed
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
-Unit: `persistence` (claim term `+persistence`)
+Unit: `persistence` (claim term `+persistence`), retired; `transcript-load`
+(claim term `+transcript-load`), staged
 Amends: [the conformance draft](../drafts/conformance.md), by retiring a unit
-it describes. Amends no accepted decision: `+persistence` was never taken
-through [Decision 0003](0003-staged-unit-graduation.md)'s gate, so nothing
-accepted rests on it
+it describes and naming a narrower one in its place. Amends no accepted
+decision: `+persistence` was never taken through
+[Decision 0003](0003-staged-unit-graduation.md)'s gate
 Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 
 ## Context
@@ -20,110 +21,147 @@ claim it.
 
 None of those types exists. Not in `schema/v0.1/envelope.schema.json`, not in
 `protocol/`, not in the validator, not in a fixture, not in any adapter. The
-unit describes behaviour nothing in this repository has ever implemented, and
-`STABILITY.md` already says so in the row that excludes it.
+unit describes behaviour nothing in this repository has ever implemented.
 
-That would be a harmless piece of aspiration if nobody were reading it. Someone
-is. The Makai adapter maps a harness with session resume — `agent_start`
-carries `resume_session_id`, a permanent alias for `session_id` since their
-#198 — and a maintainer evaluating a native implementation reads the unit list
-to find out where resume goes. The answer today is that the unit which appears
-to cover it cannot be implemented, because there is nothing to implement
-against.
+That matters because people read it. A maintainer evaluating a native
+implementation reads the unit list to find out where session history goes, and
+finds a unit that cannot be implemented, because there is nothing to implement
+against. Leaving the listing up while nothing backs it is the fault this
+project criticises elsewhere: a document that describes a thing rather than a
+thing that exists.
 
-Leaving the listing in place while nothing backs it is the fault this project
-has criticised elsewhere: a document that describes a thing rather than a thing
-that exists.
+**A first version of this decision retired the unit outright, and its evidence
+paragraph was wrong.** It said "no adapter ledger in `research/` records a
+persistence mismatch, because no pinned harness has durable sessions... the
+Claude, ACP, Codex, DeepSeek, Hermes, OpenCode and Pi ledgers say the same or
+less." That claim came from grepping the tree for the three envelope type
+names and finding nothing, which establishes that OAP has no persistence
+vocabulary and says nothing whatever about what the harnesses have. Reading the
+ledgers for the capability rather than the spelling gives the opposite answer
+for one of them, and that one is enough to change what this decision should do.
 
 ## Decisions
 
-### `+persistence` is retired from the unit list
+### `+persistence` is retired
 
 The unit is removed from `drafts/conformance.md`: from the additive unit list,
 from the example claims, and its requirements section deleted. No endpoint may
-claim `+persistence` against v0.1, because the claim has no testable content.
+claim `+persistence` against v0.1.
 
-Retiring is not deferring. A deferred unit is one with a design, a place in the
-graduation plan, and an order; `+persistence` has a paragraph. Removing it says
-what is true — v0.1 core has no persistence vocabulary — instead of implying a
-plan that does not exist.
+It is retired rather than deferred because it was never one unit. It bundled
+three capabilities with three different evidence positions, and a claim term
+covering all three could not be earned by an endpoint that has one of them.
+Splitting it is what lets the part with evidence proceed and the parts without
+it wait.
 
-### Reattaching to a session is not persistence, and already works
+### `transcript-load` is staged, as one envelope pair
 
-The three recovery mechanisms Decision 0001 defines — resume, reconciliation,
-replay — are core and unaffected. An endpoint that can reattach a host to a
-running session, answer `session.state.request` with authoritative state, and
-serve a journal suffix from a cursor is doing everything v0.1 asks. Makai's
-adapter does all three today at `degraded`, and says so in its descriptor.
+`transcript.load.request` / `transcript.load.response`: a cursor-shaped read of
+a session's persisted entries. It enters
+[the graduation plan](../drafts/staged-units-graduation.md) as a staged unit
+and graduates through the ordinary gate — reference execution, validator rules
+and fixtures, native evidence, decision record — like `+queue`, `+models`,
+`+tool-sources` and `+control-tools` before it.
 
-What Makai's `resume_session_id` reaches is narrower than it looks: it is an
-association key on `agent_start`, and the adapter already normalizes it onto
-`session.open`. Opening with a session id the endpoint has seen before is the
-surface, and it needs no new envelope.
+It is staged and not decided here. This record establishes that the capability
+has native evidence and a shape worth designing; it does not design it. The
+open questions are named under Consequences so the unit's own decision has to
+answer them rather than inherit them.
 
-What v0.1 has no vocabulary for is the other half: **enumerating** sessions an
-endpoint holds, and **loading a transcript** for one the host has no journal
-of. Those are the two things `session.list` and `transcript.load` were
-gesturing at, and they are the two things this decision declines to invent
-without evidence.
+### `session.list` and `transcript.delta` are not staged
 
-### The path back is the ordinary gate, not this record
+Neither has native evidence in any pinned ledger, and the reason differs.
 
-If durable sessions become a unit, they arrive the way `+queue`, `+models`,
-`+tool-sources` and `+control-tools` did: a decision record with native
-evidence from at least one pinned harness, a reference execution in
-`adapter/memory.go`, validator rules, and fixtures covering the failure modes
-rather than a round trip. Until a harness in this repository has durable
-sessions worth mapping, there is nothing for such a record to be evidence of.
+**`session.list`** — enumerating the sessions an endpoint holds — is a
+capability no pinned harness exposes to a client over its control wire. Pi has
+a durable session store and discovers sessions from it, but that is the
+harness reading its own disk, not a client asking the harness what it holds.
 
-An implementation that needs listing or transcript loading before then has the
-extension pack seam ([Decision 0004](0004-extension-packs.md)), which exists
-for exactly this: a capability an endpoint really has, named in its own
-namespace, without the core pretending to standardize it.
+**`transcript.delta`** — live persisted-row sync — is specifically contradicted.
+Pi has the closest thing to it, `entry_appended`, and its ledger records that
+the event "is not a comprehensive feed of those writes": it is visibly emitted
+for extension custom-entry writes and not for every persisted entry. An endpoint
+implementing `transcript.delta` from it would advertise a sync that silently
+misses rows.
+
+Both may be proposed later by a decision that brings evidence. Neither is
+staged on the strength of the old bundle.
 
 ## Evidence
 
-The absence is checkable rather than asserted:
+**Pi is the counter-example the first version missed.**
+`research/pi-v0.85.1-mapping.md` records, in its session state and recovery
+section:
+
+> `get_entries` supports `since` — a genuine cursor-shaped transcript
+> reconstruction primitive, but reconstruction, not event replay: there is
+> no redelivery contract for the live stream.
+
+Its persisted entries carry stable `id`, `parentId` and `timestamp`; the
+adapter's `sessionFile` is a durable store; and the ledger classifies
+"transcript reconstruction" as `unavailable` **at the OAP boundary despite
+native codec evidence** — which is precisely a mismatch recorded for want of
+protocol vocabulary, the thing the first version said no ledger recorded.
+
+The distinction the ledger draws is the one this decision adopts.
+Reconstruction is a read of what was persisted; replay is redelivery of a live
+stream. OAP already has the second — resume, reconciliation and the bounded
+journal, all core under Decision 0001 — and has never had the first.
+
+Other harnesses corroborate the shape without matching the primitive. ACP,
+Claude and OpenCode ledgers all discuss transcripts; none exposes a cursored
+read of persisted entries over its control wire at its pin. One native
+implementation is enough to stage a unit and not enough to graduate it, which
+is why this stages it.
+
+**The absence of the vocabulary is still checkable:**
 
 ```sh
 grep -rl "session.list\|transcript.load\|transcript.delta" schema/ protocol/ validation/ fixtures/
 ```
 
-returns nothing. The three types appear only in `drafts/conformance.md`, in
-`STABILITY.md`'s row excluding them, and in
-`drafts/staged-units-graduation.md`'s inventory.
-
-No adapter ledger in `research/` records a persistence mismatch, because no
-pinned harness has durable sessions. Makai's ledger classifies "load, resume,
-replay, cross-process recovery" as unavailable and its journal as bounded
-process memory; the Claude, ACP, Codex, DeepSeek, Hermes, OpenCode and Pi
-ledgers say the same or less. A unit with no native evidence anywhere is one
-that could not pass step 3 of the gate if it were proposed today.
+returns nothing.
 
 ## Consequences
 
-`STABILITY.md`'s unit table loses a row rather than changing its verdict: the
-answer for `+persistence` was already **no**, and is now "there is no such
-unit". The covered surface does not move, and no trace valid today becomes
-invalid.
+`STABILITY.md`'s verdict for `+persistence` does not change — it was already
+**no** — but the row now points at a retirement rather than at a unit awaiting
+graduation, and the uncovered list names the capabilities instead of the term.
 
-A host that reads the conformance draft to find out whether it can list an
-endpoint's sessions now gets an answer instead of a requirements section it
-cannot test an endpoint against.
+A host that reads the conformance draft to find out whether it can read an
+endpoint's transcript gets an answer: not in v0.1 core, staged as
+`transcript-load`, and available today only as an extension pack
+([Decision 0004](0004-extension-packs.md)) for an endpoint that really has it.
 
-Nothing is lost that anyone had. There is no implementation to strand, no
-fixture to delete, and no endpoint that has claimed the unit — retiring it
-costs exactly the paragraph it removes.
+**Four questions `transcript-load`'s decision must answer**, recorded here so
+they are inherited as questions rather than as assumptions:
+
+1. What the cursor is. Pi's `since` takes an entry id from a tree, not a
+   sequence; OAP's run sequences are per-run and restart, and its transcript
+   cursor on `session.state` is an opaque string. A unit that conflates them
+   would be unimplementable on either side.
+2. What an entry is. Pi's entries include `branch_summary` and `custom_message`
+   kinds with `parentId` links — a tree, not a list. Core OAP has no tree
+   semantics, so the unit must either flatten, expose the parent links, or
+   refuse sessions that branch.
+3. Whether the read is bounded, and what a truncated read says. Every other
+   recovery surface in v0.1 reports its own limits rather than returning a
+   quiet prefix — `*adapter.ReplayGap` over a cursor, `complete` on a bounded
+   list — and a transcript read should be held to the same standard.
+4. What it means for a harness with no durable store. Most pinned harnesses
+   have none, so the unit must be declinable in the ordinary way, with the
+   capability key ungated and the refusal typed.
 
 ## What this decision does not admit
 
 That reattachment, reconciliation or replay are outside v0.1. They are core,
-Decision 0001 defines them, and this record does not touch them.
+Decision 0001 defines them, and this record does not touch them. Pi's own
+`resume` and bounded journal keep working exactly as they do.
 
-That durable sessions are outside OAP's scope permanently. This says the
-vocabulary is not in `0.1` core and that inventing it without evidence is the
-wrong order, not that the question is closed.
+That durable sessions are outside OAP's scope. This says the vocabulary is not
+in `0.1` core today and that the three capabilities the old unit bundled have
+to be earned separately.
 
-That an endpoint may not persist anything. What an endpoint stores is its own
-business; what this decision is about is whether v0.1 core gives a host a
-standard way to ask about it, and it does not.
+That `transcript-load` is approved. Staging is a place in a queue, not a
+verdict. If its decision cannot answer the four questions above, it does not
+graduate.

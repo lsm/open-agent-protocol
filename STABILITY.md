@@ -45,7 +45,7 @@ one side of this line or the other. None is left unstated:
 | `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
 | `+compound-open` | yes | [Decision 0009](decisions/0009-compound-open.md), accepted. |
 | `+control-tools` | yes | [Decision 0011](decisions/0011-control-layer-provided-tools.md), accepted. It was assessed and held earlier the same day for want of a reference execution and a pinned corpus case; both now exist, and the record says so. |
-| `+persistence` | **no** | Its envelope types exist in no schema file and no Go type; the conformance draft described a unit that had never been built. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md) proposes retiring it outright, and is `proposed` — so the unit is uncovered today on the same basis as every other ungraduated unit, and the retirement binds when that record is accepted. |
+| `+persistence` | **no** | Its envelope types exist in no schema file and no Go type; the conformance draft described a unit that had never been built. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md) proposes retiring it and staging the one capability with native evidence as `transcript-load`, and is `proposed` — so the unit is uncovered today on the same basis as every other ungraduated unit, and the retirement binds when that record is accepted. |
 | `+steer`, `+btw` | **no** | Staged, not graduated. No decision has taken either through the gate. |
 
 A unit joins the covered set when its graduating decision becomes `accepted`,
@@ -276,9 +276,11 @@ Stated plainly, so the covered surface stays meaningful:
   [the graduation plan](drafts/staged-units-graduation.md), and is the reason
   the table above states every unit rather than only the covered ones.
 - **Durable session listing and transcript loading.** v0.1 core has no
-  vocabulary for either, and [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md)
-  proposes saying so rather than carrying a unit that describes them. An
-  endpoint that has these today names them in an extension pack.
+  vocabulary for either. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md)
+  proposes retiring the unit that described them and staging transcript load
+  on its own, on Pi's native evidence; session listing and live transcript
+  deltas are staged for nothing, having none. An endpoint that has these today
+  names them in an extension pack.
 - **Draft documents.** Everything in `drafts/` other than the requirement
   sections named under "What is covered" is working material.
 - **The adapters.** They track third-party harnesses at pinned commits and

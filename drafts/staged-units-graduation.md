@@ -4154,6 +4154,31 @@ sub-unit; the profile draft's feature-gate row for
 the fixtures; the daemon README documents the credential rule for process
 sources.
 
+## T6. Transcript load
+
+Unit name: `transcript-load`. Planned decision: its own. Staged by
+[Decision 0012](../decisions/0012-persistence-is-not-in-v0.1-core.md), which
+retired the `+persistence` bundle and kept the one third of it with native
+evidence.
+
+One envelope pair, `transcript.load.request` / `transcript.load.response`: a
+cursored read of a session's persisted entries. Pi is the evidence —
+`get_entries { since }`, which its ledger calls "a genuine cursor-shaped
+transcript reconstruction primitive, but reconstruction, not event replay".
+That distinction is the unit's boundary: OAP already has replay, resume and
+reconciliation as core recovery, and has never had a read of what was
+persisted.
+
+Decision 0012 records four questions this unit's decision must answer rather
+than inherit — what the cursor is, what an entry is when the harness stores a
+tree, whether the read is bounded and what a truncated one says, and how an
+endpoint with no durable store declines. It is staged behind T4, which has
+older evidence and more of it.
+
+`session.list` and `transcript.delta` are not staged. Neither has native
+evidence, and Pi's `entry_appended` specifically contradicts the second: its
+ledger records that the event is not a comprehensive feed of persisted writes.
+
 ## T4. Steer
 
 Unit name: `steer`. Planned decision: 0009. This section is a pre-design for
