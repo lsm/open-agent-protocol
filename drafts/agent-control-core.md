@@ -125,6 +125,44 @@ Bindings must preserve event type, IDs, scoped ordering, request correlation,
 fields. Connection setup, heartbeats, reconnection, batching, authentication
 handshakes, and backpressure are binding concerns.
 
+## What This Protocol Is Not
+
+The scope line above says what this profile covers. This section says what it
+excludes, because an unstated boundary reads as an unfilled gap, and an
+implementer deciding whether they can move entirely onto OAP needs the
+difference.
+
+**Direct model inference is out of scope.** A call that sends a prompt to a
+model and streams tokens back — no agent loop, no turns, no tools, no run — is
+not agent control, and this profile does not carry it. Every execution path
+here begins at a session and a submission and mints a run, because a run is the
+thing whose lifecycle there is anything to normalize.
+
+The reason is what OAP is for. Eight harnesses disagree about terminals,
+sequences, cancellation and admission, and this profile exists to make those
+comparable. They do not disagree about inference: the vendor wire formats
+already settled it, and this repository models that separately and
+deliberately in `provider/`, as compatibility surfaces rather than protocol.
+A profile that grew to cover inference would be re-normalizing something
+already normalized, and would have to answer what run identity means for an
+execution with no agent semantics — a question with no good answer.
+
+The practical consequence, stated plainly so nobody discovers it late: **a
+harness whose wire carries both agent control and direct provider access
+cannot move entirely onto OAP.** It runs OAP for the agent boundary and keeps
+its own surface, or a vendor's, for direct inference. That is a boundary rather
+than a shortfall, and it is deliberate.
+
+Emulating inference as a tool-less single-submit session is possible and is not
+recommended. It buys a session and a run the caller did not want, and the
+stream it produces does not resemble what an inference API promises.
+
+**Transport-level authentication is out of scope**, and is named in Bindings
+above as a binding concern: how a control layer proves itself to an endpoint
+belongs to the transport that carries them. Whether *provider* credential
+acquisition belongs here is a separate and open question — it is agent-loop
+state, not transport state — and no unit covers it today.
+
 ## Request And Stream Semantics
 
 Core does not require a transport-level RPC mechanism. It does require semantic
