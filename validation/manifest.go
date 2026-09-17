@@ -147,11 +147,7 @@ var unitCapabilities = map[string][]string{
 	// The session-scoped model catalog. One key, and the two aspects every key
 	// owes: a catalog served without the key advertised, and a catalog query
 	// refused on an endpoint that advertises it.
-	"models": {protocol.FeatureModelsList},
-	// The compound open owns the subscription member's key. Its message
-	// member registers none: a message carried by an open is admitted under
-	// the delivery key it requests, which the delivery units already own, and
-	// registering it here would give one key two owners.
+	"models":        {protocol.FeatureModelsList},
 	"compound-open": {protocol.FeatureOpenSubscribe},
 }
 

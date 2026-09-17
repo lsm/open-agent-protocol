@@ -6,18 +6,6 @@ import (
 	"testing"
 )
 
-// TestOpenMessageMirrorsSubmitRequest holds the compound open's message to the
-// submit request it is admitted as.
-//
-// The two are stated separately — the schema defines openMessage and
-// messageSubmitRequest as their own objects, and Go declares two structs — so
-// nothing but this test would catch a member added to one and not the other.
-// A member that exists on a separate submit and not on an open's message is a
-// control a host silently cannot use at open, which is the kind of gap that is
-// found by a user rather than by CI.
-//
-// The one deliberate difference is SessionID: an open names or mints the
-// session itself, so a host proposing no id could not fill it in.
 func TestOpenMessageMirrorsSubmitRequest(t *testing.T) {
 	type member struct {
 		typ reflect.Type
@@ -45,8 +33,7 @@ func TestOpenMessageMirrorsSubmitRequest(t *testing.T) {
 			continue
 		}
 		if got.typ != want.typ {
-			// The pointer members carry present-or-absent meaning, so a
-			// flattened copy is not the same control.
+
 			t.Errorf("OpenMessage.%s is %s, MessageSubmitRequest.%s is %s", name, got.typ, name, want.typ)
 		}
 		if got.tag != want.tag {
@@ -60,11 +47,6 @@ func TestOpenMessageMirrorsSubmitRequest(t *testing.T) {
 	}
 }
 
-// TestOpenMessageSubmitCarriesEveryMember holds the projection to the same
-// line: Submit binds the message to a session, and must otherwise hand every
-// member through. A member added to both structs and forgotten here would be
-// accepted by the schema, pass the test above, and then be silently dropped on
-// the way to admission.
 func TestOpenMessageSubmitCarriesEveryMember(t *testing.T) {
 	instructions, model := "be brief", "model-1"
 	message := OpenMessage{

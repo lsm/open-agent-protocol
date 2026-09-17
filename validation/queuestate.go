@@ -777,18 +777,6 @@ const (
 	admissionPending
 )
 
-// namesSubmitRequest judges whether an envelope id names a request that
-// admitted a message on the session, and — when a run is named — for that run.
-//
-// A compound open counts. Its request is a session.open.request rather than a
-// submit, but it carried a message and the run it produced is admitted by it,
-// so an entry naming it as its capture anchor names the request that really
-// admitted the run. Reading only the submit type would have made every
-// compound open's own state report contradict itself.
-//
-// An open that carried no message does not count, and is not merely
-// uninteresting: it admitted nothing, so an entry naming it claims an
-// admission that never happened.
 func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.SessionID, run protocol.RunID) int {
 	req := s.requests[id]
 	if req == nil || req.session != session || !admitsMessages(req) {
@@ -810,8 +798,6 @@ func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.Sess
 	return admissionPending
 }
 
-// admitsMessages reports whether a request is one a run can be admitted by:
-// a submit, or an open that carried a first message.
 func admitsMessages(req *requestState) bool {
 	switch req.typ {
 	case protocol.TypeSessionMessageSubmitRequest:

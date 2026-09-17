@@ -116,10 +116,7 @@ type requestState struct {
 	session            protocol.SessionID
 	run                protocol.RunID
 	interaction        protocol.InteractionID
-	// carriesMessage marks a session.open.request that carried a first
-	// message, which makes it the admitting request for the run the open
-	// produced — the one request that is an admission without being a submit.
-	carriesMessage bool
+	carriesMessage     bool
 	// gates are the packed capability gates the request carried, with their
 	// advertisement under the descriptor current when it was made.
 	gates []packGate
@@ -226,12 +223,9 @@ type state struct {
 	// attaching open owe their correlated responses, for the same reason
 	// pendingControls does: the wire makes a typed refusal the required
 	// behaviour, so the gate is settled on the response.
-	pendingLists map[protocol.EnvelopeID]*pendingList
-	pendingOpens map[protocol.EnvelopeID]*pendingOpen
-	// pendingSubscribes are the opens that elected subscribe against an
-	// endpoint advertising it, held until the response says whether the
-	// endpoint honoured what it advertised.
-	pendingSubscribes map[protocol.EnvelopeID]bool
+	pendingLists      map[protocol.EnvelopeID]*pendingList
+	pendingOpens      map[protocol.EnvelopeID]*pendingOpen
+	pendingSubscribes map[protocol.EnvelopeID]*pendingSubscribe
 	// descriptorAttribution is the active descriptor's own tool-to-source
 	// mapping. A descriptor that publishes a catalog publishes an attribution
 	// with it, and until a session-scoped list supersedes it that mapping is
@@ -256,7 +250,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]bool{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -430,10 +424,6 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if p.Recovery != nil && p.Recovery.Recovered {
 			s.bootstrapRecoveredRuns(i, line, p, st)
 		}
-		// Before the state document is applied and judged, because this
-		// response is the admission: the run it names exists from here, and a
-		// capture check that ran first would diagnose the open for reporting a
-		// run the trace did not carry — a run this very envelope admits.
 		s.compoundOpenResponse(i, line, e, p)
 		s.applyStateDocument(i, line, e, p, st)
 		s.checkSessionCapture(i, line, e, p, st)
@@ -917,12 +907,22 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 	var p protocol.MessageSubmitResponse
 	_ = e.DecodePayload(&p)
+	s.admitSubmission(i, line, e, p)
+}
+
+// admitSubmission judges one admission and records the run it created.
+//
+// It takes the payload rather than decoding it, because a compound open
+// reaches it too: a message carried by an open is admitted under exactly the
+// rules a separate submit is, and the way to mean that is to run the same
+// code rather than to restate it. The envelope stays the real one either way,
+// so a diagnostic names the envelope the trace carries.
+func (s *state) admitSubmission(i, line int, e protocol.Envelope, p protocol.MessageSubmitResponse) {
 	s.checkScope(i, line, e, p.SessionID, p.RunID)
 	// requested_delivery must repeat the submission's request value; a response
 	// that silently changes it would misreport what the client asked for.
 	if req := s.requests[e.InReplyTo]; req != nil {
-		var request protocol.MessageSubmitRequest
-		_ = req.envelope.DecodePayload(&request)
+		request := requestedSubmission(req)
 		if p.RequestedDelivery != request.Delivery {
 			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/requested_delivery", "submit response must repeat the requested delivery", string(request.Delivery), string(p.RequestedDelivery), string(e.InReplyTo))
 		}
@@ -1019,6 +1019,27 @@ func (s *state) submitResponse(i, line int, e protocol.Envelope) {
 
 // applyModelControl moves the session's expected default for one admitted
 // model selection, in the way the disclosed mode says it moves.
+// requestedSubmission is the submission a request carried, whichever carrier
+// carried it: a submit request is one, and an open carrying a message projects
+// to one. A request that carried no submission yields the zero value, which is
+// what a caller comparing against a response's own members already expects.
+func requestedSubmission(req *requestState) protocol.MessageSubmitRequest {
+	switch req.typ {
+	case protocol.TypeSessionMessageSubmitRequest:
+		var request protocol.MessageSubmitRequest
+		_ = req.envelope.DecodePayload(&request)
+		return request
+	case protocol.TypeSessionOpenRequest:
+		var open protocol.SessionOpenRequest
+		_ = req.envelope.DecodePayload(&open)
+		if open.Message == nil {
+			return protocol.MessageSubmitRequest{}
+		}
+		return open.Message.Submit(req.session)
+	}
+	return protocol.MessageSubmitRequest{}
+}
+
 func (s *state) applyModelControl(st *sessionTrack, controls admittedControls) {
 	switch controls.mode {
 	case protocol.ModePerRun:

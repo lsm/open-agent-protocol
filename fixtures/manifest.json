@@ -4651,6 +4651,36 @@
       "provenance": ["decisions/0009-compound-open.md"]
     },
     {
+      "id": "compound-open-degraded-subscribe-refused-without-optin",
+      "path": "valid/compound-open-degraded-subscribe-refused-without-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-degraded-subscribe-with-optin",
+      "path": "valid/compound-open-degraded-subscribe-with-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
+      "id": "compound-open-degraded-subscribe-admitted-without-optin",
+      "path": "semantic-invalid/compound-open-degraded-subscribe-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["degraded_without_optin"],
+      "units": ["compound-open"],
+      "provenance": ["decisions/0009-compound-open.md"]
+    },
+    {
       "id": "compound-open-subscribe-unadvertised",
       "path": "semantic-invalid/compound-open-subscribe-unadvertised.json",
       "kind": "semantic-invalid",
