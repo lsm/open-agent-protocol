@@ -233,6 +233,24 @@ loud is a subscription that beats the open's response but loses to the run.
   admitted links to it the way a run links to its submit request today.
 - A new capability key, `session.open.subscribe`, joins the descriptor.
 - `+compound-open` joins the conformance units.
+- `serve` gains the composition both frontends call rather than each
+  assembling an open, a subscription and a submission for itself:
+  `SubscribeGate`, `OpenCompound`, and `Rollback`.
+- A rolled-back open frees its session id. Rollback previously closed the
+  session and left it registered, and the registry refuses any id already
+  present, so a host that named a session and was refused could never reuse
+  that id. `Rollback` is now the one operation meaning "this session must
+  never have existed", and it is shared by the compound path and by both
+  frontends' encode and frame-limit refusals — so this changes behaviour
+  those paths already had, not only the one this unit adds.
+- The SSE route holds a subscription between the open and the `events`
+  request that adopts it. `servehttp.Options` gains `SubscriptionHold` to
+  bound the wait, `Server.Close` releases whatever is still held, and
+  `oap serve` calls it on both exits.
+- Refusal attribution spans every election a request carries, so a rung no
+  longer reports an endpoint as having failed to answer it when another rung
+  legitimately owed the single refusal. Tool-source judging changes with it,
+  because attachment is one of the elections an open can carry.
 - The reference adapter advertises `session.open.subscribe`; it does not
   implement either member, because neither is an adapter's to implement. The
   hub composes the open, the subscription and the submission, and each
