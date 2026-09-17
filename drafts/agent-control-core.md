@@ -183,6 +183,26 @@ Discovery of provider identity is [Decision 0014](../decisions/0014-provider-des
 the usability half is not, for the reason that record gives — a descriptor is
 fixed for a capability revision and an auth state is not.
 
+**The usability surface and the waiting condition are one object seen from two
+angles, and a unit that treats them as two mechanisms will have to reconcile
+them.** The harness that exposes this natively has a seven-value status enum,
+and two of those values — refreshing, and login in progress — describe an
+operation in flight rather than a property of a provider. That is why they
+cannot live on a descriptor: a cached one would report a transition that has
+already finished. But it is also what makes the surface load-bearing. A client
+asking whether it can use a provider and learning that a login is already
+running knows to wait on that flow rather than start a second one, which is
+the endpoint-scoped coalescing rule showing at the discovery layer instead of
+only inside the waiting layer.
+
+The consequence is a design constraint rather than an observation. If a client
+can observe that an acquisition is in flight, it can wait on it; if it cannot,
+every client races to start its own and the endpoint is left collapsing them
+silently. The harness above does the silent collapse today because its status
+surface and its refresh lock were built years apart and never told each other
+anything — which is the outcome a unit designing the two separately would
+reproduce.
+
 Two facts about expressibility, since the proactive case looks harder than it
 is and is harder in a different place than it looks. Session-less *queries* are
 already precedented: `capabilities.request` carries no session at all and
