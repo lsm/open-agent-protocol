@@ -337,6 +337,16 @@ it. Should makai ever give it a producer, it is a tool-progress carrier
 overlapping `tool_execution_update`, and P0 #11's deduplication rule governs
 it.
 
+Where the two `lossy` observations go is now a decision rather than a silence.
+Neither has a core carrier and neither is getting one: per-segment prompt
+accounting is not a lifecycle fact, and inventing a core envelope for it would
+repeat the mistake [Decision 0012](../decisions/0012-persistence-is-not-in-v0.1-core.md)
+retires. An endpoint that wants to carry them names them in an extension pack
+([Decision 0004](../decisions/0004-extension-packs.md)), which is what the seam
+is for. This adapter carries neither, because a pack it invented on the
+harness's behalf would be a namespace nobody else reads. The classification
+below is the whole claim: produced, dropped, and recorded as dropped.
+
 `context_usage` and `prompt_segment_usage` are produced: both are `AgentEvent`
 union members in `zig/src/agent/types.zig`, emitted from `agent_loop.zig` and
 consumed by makai's own TUI. They reach this adapter inside `agent_event`, and
