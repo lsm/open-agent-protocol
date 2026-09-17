@@ -41,7 +41,9 @@ tree `27d32e64ff5efed88c1302de0e25c1acdb9373b2`.
 Normative inspected sources are:
 
 - `docs/v1-sdk-agent-provider-spec.md` §13 (session lifecycle, frame routing,
-  sequence discipline)
+  sequence discipline, admission/settlement and the single terminal arbiter in
+  §13.4) and §3.5 (stream lifecycle and error propagation, the event-stream
+  projection of §13.4.2's two failure shapes)
 - `docs/oap-alignment.md` (makai's deviations ledger against OAP, including
   the RESIDUAL-1..6 catalogue)
 - `zig/src/protocol/agent/types.zig`
@@ -121,13 +123,16 @@ Fixture names are requirements, not claims that captures already exist.
 | assistant text `message_update` | `content.delta` | normalized | native once exercised | `completed-text` |
 | assistant `message_end` | close/assemble message, not run terminal | normalized | degraded | `completed-text` |
 | `turn_start` / `turn_end` | internal provider-turn diagnostics | lossy/observed-only | no core claim | `multi-turn-tools` |
-| context/prompt usage | fold into bounded state or terminal metadata | normalized/optional | no streaming claim | `usage-fold` |
+| `context_usage` event | observed-only: discarded, not folded anywhere at this pin | lossy | no usage claim from events | `usage-fold` |
+| `prompt_segment_usage` event | observed-only: discarded, not folded anywhere at this pin | lossy | no usage claim from events | `usage-fold` |
+| `tool_streaming` envelope | observed-only: dead wire vocabulary, no producer at this pin | unsupported | no claim | n/a (unproducible) |
 | `tool_execution_start` | action requested then started | normalized | degraded | `tool-completed` |
 | `tool_execution_update` | action progress | normalized | degraded | `tool-progress` |
 | successful `tool_execution_end` | action completed | normalized | degraded | `tool-completed` |
 | failed `tool_execution_end` | action failed | normalized | degraded | `tool-failed` |
 | `tool_execute` / `tool_result` | private client-hosted execution bridge for the same action | normalized | degraded | `tool-bridge-roundtrip` |
 | successful `agent_result` | result evidence; settlement still awaits terminal arbitration | normalized | pending | `result-before-agent-end` |
+| `agent_result` with `stop_reason: "error"` | provider-originated failure arriving through the success shape (§13.4.2); one typed `run.failed`, never `run.completed` | normalized | degraded | `provider-error-result` |
 | normal `agent_end` | one `run.completed` after child settlement | normalized | terminal normalization | `completed-text` |
 | `agent_end` with `max_turns` | completed with explicit limit reason | normalized | terminal normalization | `max-turns` |
 | `agent_end` with cancellation | `run.cancelled` only after authoritative settlement | normalized, session-scoped intent | degraded | `cancel-confirmed` |
@@ -141,8 +146,18 @@ Fixture names are requirements, not claims that captures already exist.
 
 ### Terminal authority
 
-The host deliberately publishes `agent_result` before a trailing `agent_end`.
-`agent_error` provides another possible terminal signal. A single reducer must:
+Makai defines a single terminal arbiter of its own at this pin, and the adapter
+maps onto it rather than substituting for it. §13.4.3: a run that reaches its
+own outcome settles exactly once, via result XOR error, never both; children
+settle first; the trailing `agent_end` is an aggregate restatement of the same
+settlement for event-stream consumers, not a second settlement; and duplicate or
+late frames after settlement must not produce a second one. §13.4.2 names the
+settlement frames: `agent_result` for success, and for loop-internal failure the
+`agent_event` terminal `error` plus settlement `agent_error` envelope, which are
+ONE settlement delivered as two frames — a consumer terminates on whichever
+arrives first and must not count them twice.
+
+The adapter's reducer therefore must:
 
 1. retain result evidence without independently creating a second terminal;
 2. settle every open action before the parent terminal;
@@ -152,6 +167,43 @@ The host deliberately publishes `agent_result` before a trailing `agent_end`.
 
 A non-streaming TypeScript return becoming available at `agent_result` does not
 weaken the OAP terminal rule.
+
+Two run-terminal deviations survive the single arbiter at this pin. Neither is a
+multiplicity of terminal channels; both are the arbiter settling somewhere other
+than where OAP reads a run terminal.
+
+**Cancellation settles the session, not the run (§13.4.4).** A validated
+`agent_stop` removes the session mid-run and cancels the run, and the cancelled
+run's later result or error publications are discarded because the session no
+longer exists. A cancelled run therefore produces NO run settlement frame at
+all: the spec states plainly that makai has no run-scoped cancelled terminal,
+that OAP's `run.cancelled` is a ledger deviation, and that there is nothing for
+a consumer to wait on after `agent_stopped`. The correlated `agent_stopped`
+reply is the client's whole terminal observation, and even that has an exception
+— when the reply's own publication or direct synchronous write fails, teardown
+still completes and the client sees only an uncorrelated runtime error or a
+timeout. The adapter consequently synthesizes the run terminal: `Cancel` settles
+open tools and emits `run.cancelled` on the correlated `agent_stopped`
+(`adapter/makai/session.go`, `Cancel`), which is adapter-owned settlement
+standing in for a native frame that does not exist, not a normalization of one
+that does. Corpus: `confirmed-destructive-cancel`, plus
+`post-stop-stale-publication` for the trailing discarded frames.
+
+**Provider failures settle through the success shape (§13.4.2).** A provider
+turn that fails on auth, network, or an invalid URL is converted into a result
+message with `stop_reason: "error"` and the provider's own `error_message`; the
+loop then completes normally and the run settles through the SUCCESS path — an
+`agent_result` frame carrying `stop_reason: "error"`, followed by the trailing
+`agent_end`, which per §3.5 carries the same error detail. No `agent_error`
+envelope is emitted for these at all. The spec names the failure mode directly:
+an adapter that treats every `agent_result` as success will misreport them. Frame
+type is therefore not sufficient to classify a settlement here; the payload's
+`stop_reason` is load-bearing, and the two failure shapes (this one and the
+loop-internal `error`-event/`agent_error` pair) are not interchangeable. The
+adapter reads the payload: `finishRun` folds `result.StopReason` into the
+terminal decision, fails on a result/end `stop_reason` contradiction, and routes
+`error`, `aborted`, and `content_filter` to `run.failed`
+(`adapter/makai/session.go`, `finishRun`). Corpus: `provider-error-result`.
 
 ## Admission
 
@@ -179,7 +231,9 @@ routing problem tracked by Makai issue #201.
 
 `agent_stop` removes a session and indirectly raises the active agent's
 cancellation flag. It is session-scoped teardown, not native run-targeted
-cancellation. Therefore:
+cancellation, and §13.4.4 makes the consequence normative: a cancelled run
+produces no run settlement frame, so `agent_stopped` is the only terminal
+observation a client gets. Therefore:
 
 - natural completion or failure observed before the stop response may win the
   race;
@@ -229,6 +283,47 @@ A parent terminal closes any unfinished tool before settlement.
 The mapped agent protocol does not expose a general user permission
 interaction. Permission support remains unavailable rather than inferred from
 tool hosting.
+
+## Residual observation classification (P0 #12)
+
+P0 #12 requires every native observation to be classified. Three went unwritten
+and are recorded here. All three are `observed-only`: the reducer discards them
+(`adapter/makai/session.go`, the `tool_streaming` arm of the frame switch and
+the discard arm of `applyEvent`), and no OAP envelope depends on them.
+
+| Native observation | Where it lives | Classification | Basis |
+|---|---|---|---|
+| `tool_streaming` | top-level envelope payload | observed-only, `unsupported` | no producer anywhere in makai at this pin (see below) |
+| `context_usage` | agent event inside `agent_event.event_json` | observed-only, `lossy` | produced; deliberately unmapped — OAP usage is reported from `agent_result` totals only |
+| `prompt_segment_usage` | agent event inside `agent_event.event_json` | observed-only, `lossy` | produced; deliberately unmapped — per-segment prompt accounting has no core carrier |
+
+`tool_streaming` is dead wire vocabulary. It is fully serialized in both
+directions — a payload union member in `zig/src/protocol/agent/types.zig` with
+a deinit arm, plus a serializer arm and a parser arm in
+`zig/src/protocol/agent/envelope.zig` — and nothing produces one. Verified two
+ways: reading `types.zig`, `envelope.zig`, `server.zig`, `runtime.zig`, and
+`client.zig` at `9f351fe…` finds no construction site outside the codec, and a
+repository-wide search returns those two protocol files and nothing else — no
+agent or tool path, no SDK, no test. Being unproducible, it cannot be pinned by
+a corpus case without
+hand-fabricating a frame makai never sends; classifying it here is the whole
+obligation P0 #12 imposes on it. Our decoder must keep accepting it — a frame
+the codec rejects is a fail-closed transport error, and a type the wire
+vocabulary defines must not become one — and the reducer must keep discarding
+it. Should makai ever give it a producer, it is a tool-progress carrier
+overlapping `tool_execution_update`, and P0 #11's deduplication rule governs
+it.
+
+`context_usage` and `prompt_segment_usage` are produced: both are `AgentEvent`
+union members in `zig/src/agent/types.zig`, emitted from `agent_loop.zig` and
+consumed by makai's own TUI. They reach this adapter inside `agent_event`, and
+it drops them. The adapter's usage claim comes from `agent_result`'s `input`,
+`output`, `cache_read`, and `cache_write` totals on the terminal, never from
+these events, so the ledger makes no streaming-usage claim and advertises none.
+Their byte and estimated-token fields are provider-side estimates of prompt
+composition, not settled accounting, and folding an estimate into a terminal
+`usage` a consumer reads as authoritative would be exactly the silent
+compensation this ledger forbids.
 
 ## Re-pin to v0.2.0 (2026-09-12)
 
@@ -376,7 +471,31 @@ never silent adapter compensation.
    duplicates by `message_id`, renumbers from receive order, and emits
    adapter-owned contiguous OAP run sequence.
 8. **Frame identity is not transcript identity:** maintain typed registries.
-9. **Multiple terminal channels:** use one terminal arbiter.
+9. **Run settlement escapes the run (two deviations):** the "multiple terminal
+   channels" framing this entry carried through the v0.2.0 re-pin was already
+   stale when the re-pin landed, and claimed less than the truth. §13.4.3 —
+   present at `9f351fe…`, in the same spec section the re-pin gate's first item
+   named — defines a single terminal arbiter: result XOR error, never both,
+   children settled first, with the trailing `agent_end` an aggregate
+   restatement rather than a second settlement. Makai has one arbiter. What
+   survives is narrower and more consequential: the arbiter settles in two
+   places OAP does not read a run terminal.
+   (a) **A cancelled run produces no run-scoped settlement at all** (§13.4.4).
+   `agent_stop` removes the session, the cancelled run's later publications are
+   discarded, and makai has no run-scoped cancelled terminal; the correlated
+   `agent_stopped` is the client's entire terminal observation, and it can
+   itself go missing when its publication fails. OAP's `run.cancelled` is
+   adapter-synthesized settlement with no native counterpart — see Terminal
+   authority and Cancellation and teardown.
+   (b) **Provider failures settle through the success shape** (§13.4.2).
+   `agent_result` carrying `stop_reason: "error"` plus `error_message` is the
+   settlement, with no `agent_error` envelope emitted; the same frame type
+   settles successes and provider-originated failures, so classification is by
+   payload, not by frame type. The spec names the resulting defect for an
+   adapter that assumes otherwise.
+   The adapter satisfies both — it emits `run.cancelled` from the correlated
+   `agent_stopped`, and `finishRun` folds `result.StopReason` into the terminal
+   decision — and the corpus now pins the second (`provider-error-result`).
 10. **Server and SDK session models differ:** implement one explicit boundary.
 11. **Tool bridge and tool observations overlap:** deduplicate one action.
 12. **Unknown observations:** classify each as mapped, observed-only,
@@ -433,6 +552,9 @@ Required degradation and fault fixtures include:
 - stop before start, stop during processing, and stale stop;
 - completion-winning and cancellation-winning races;
 - result/end omission, contradiction, duplication, and error-plus-end;
+- a provider-originated failure arriving through the success shape — an
+  `agent_result` carrying `stop_reason: "error"` with no `agent_error` envelope
+  anywhere in the trace (`provider-error-result`);
 - tool update before start, duplicate terminal, unfinished child, and late result;
 - EOF before admission certainty and during settlement;
 - bounded frame/queue rejection and stdout contamination;
@@ -461,7 +583,9 @@ Makai's v1.1 proposal (PR #203) landed as spec §13 plus
 | `in_reply_to` | aligned (#201 routing landed) |
 | sequence | deviating: two-class per-registration allocation vs echo; zero for validation errors |
 | admission versus settlement | deviating: no explicit message admission response |
-| one terminal arbiter | deviating: result/end/error require normalization |
+| one terminal arbiter | aligned (§13.4.3: result XOR error, children first, trailing `agent_end` a restatement) |
+| cancelled-run settlement | deviating: no run-scoped terminal frame exists (§13.4.4); the adapter synthesizes `run.cancelled` from the correlated `agent_stopped` |
+| provider-originated failure | deviating: settles through the success shape (§13.4.2: `agent_result` with `stop_reason: "error"`, no `agent_error`); classified by payload, not frame type |
 | run-scoped cancellation | absent by design |
 | `agent_stop` | aligned only as session teardown/intention |
 | load/resume/reconciliation/replay | absent by design |
@@ -475,6 +599,30 @@ behavior — is fully met at `v0.2.0`, and this re-pin exercised it: pins
 recomputed, every mapped source diffed, all fixtures regenerated, capabilities
 unchanged (no new evidence requires a different claim). Retain the old-pin
 understanding as compatibility regression context.
+
+### Re-pin obligation: re-walk every P0, not the gate
+
+A re-pin must visit EVERY entry in the P0 mismatch list and record a verdict for
+each — resolved, still deviating, or reframed — not only the items its own gate
+names. A gate names what made the re-pin worth doing. It is not the scope of the
+review, and treating it as one lets a mismatch go stale in place: the list still
+reads as current, so nobody re-reads it, and the staleness compounds at the next
+re-pin.
+
+This rule exists because that happened here. P0 #9 claimed "multiple terminal
+channels" and survived the v0.2.0 re-pin unexamined, even though §13.4.3 — a
+single terminal arbiter, which contradicts the entry outright — landed inside
+the very specification the gate's first item required. Meanwhile the two
+deviations that actually survive at the pin (§13.4.4's cancelled run with no
+run-scoped settlement, §13.4.2's provider failure settling through the success
+shape) went unrecorded, so the ledger simultaneously overstated one mismatch and
+omitted two sharper ones. Four gate items were walked; the other eight P0
+entries were not. An external reader found the residue before we did.
+
+A verdict is cheap and the walk is bounded — twelve entries. Record the verdict
+even when it is "unchanged", because an unexamined entry and an entry confirmed
+unchanged are indistinguishable in the file afterwards, and only one of them is
+evidence.
 
 ## Deferred scope
 
