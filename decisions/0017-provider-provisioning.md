@@ -292,6 +292,17 @@ from the wire.
 The reference adapter can execute the unit, and executing it there proves the
 shape is implementable, which is step 1 of Decision 0003's gate and not step 3.
 
+**This record's account of Makai's tree was checked by its maintainers against
+source, on 2026-09-17**, after the first three drafts of this record had each
+been corrected by them. The characterization verified covers every claim made
+here: no tool registry in the multi-session host, tool definitions arriving as
+data in the frames that start an agent and a turn, one provider protocol server
+per process, named endpoints loaded at catalog build, base URLs from the
+environment, no session id anywhere in the resolution path, and lookup per
+request against registration only at startup. That raises those claims from
+reported to checked. It does not make them step-3 evidence, because nothing in
+that tree speaks this unit.
+
 **The hazard is verified even though the feature is not.** The two runs above
 are against merged code at `906b2a1`. They are why this record specifies a
 daemon rule that differs from the one it otherwise inherits, rather than

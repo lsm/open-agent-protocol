@@ -122,6 +122,19 @@ decision does not disturb either.
 The gap this closes is prospective. No unit has graduated on first-party
 evidence, which is why the wording has never been tested.
 
+**Why the rule is about structure and not about care.** Writing
+[Decision 0017](0017-provider-provisioning.md) produced an unplanned test of
+this. Four claims in successive drafts were wrong — a credential channel left
+open, a scope assumption imported from a surface that did not share it, a
+predicate that flagged the protocol's most-used selector — and each was found by
+a maintainer checking it against a tree this project does not have. None was a
+careless claim, and all four were held with the same confidence as the claims
+that were right. That is the point: a boundary specified from one side reads as
+finished exactly when it is least finished, and the author's confidence does not
+track the difference. Step 3 does not ask for an outside implementer because
+outsiders are more careful. It asks because the failure mode is structural, and
+no amount of care inside one repository detects it.
+
 ## Consequences
 
 A unit whose only implementation is ours stays staged however complete its
