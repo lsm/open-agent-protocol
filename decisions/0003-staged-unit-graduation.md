@@ -59,8 +59,10 @@ in this order:
    unit's invariants, `fixtures/manifest.json` lists positive and negative
    fixtures under a new conformance-unit name, and every existing fixture
    still validates unchanged.
-3. **Native evidence.** At least one native adapter executes the unit through
-   its production codec and reducer, with a corpus case pinned to the
+3. **Native evidence.** At least one native adapter *this project does not
+   control* executes the unit through its production codec and reducer
+   ([Decision 0015](0015-evidence-from-implementations-we-do-not-control.md)
+   makes that requirement explicit and says why), with a corpus case pinned to the
    adapter's existing ledger commit and a live gate where the adapter has one.
    The adapter's capability descriptor advertises the unit at the level the
    evidence supports; nothing advertised without evidence, nothing applied
