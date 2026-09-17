@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lsm/open-agent-protocol/validation"
 )
 
 func TestCheck(t *testing.T) {
@@ -64,5 +66,19 @@ func TestValidateInvalidReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "FAIL ") {
 		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestDiagnosticAnchorNamesTheFirstEnvelope(t *testing.T) {
+	anchor := diagnosticAnchor(validation.Diagnostic{
+		Index:      0,
+		Type:       "protocol.initialize.response",
+		EnvelopeID: "env_1",
+		Pointer:    "/payload",
+	})
+	for _, want := range []string{"envelope 0", "protocol.initialize.response", "id env_1", "/payload"} {
+		if !strings.Contains(anchor, want) {
+			t.Fatalf("anchor %q lacks %q", anchor, want)
+		}
 	}
 }

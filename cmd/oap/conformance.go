@@ -88,10 +88,7 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 			// which frame broke it, and an implementer reading the report
 			// cannot see the assembled trace the way this runner can.
 			fmt.Fprintf(stdout, "     %s: %s\n", diagnostic.Code, diagnostic.Message)
-			anchor := diagnosticAnchor(diagnostic)
-			if anchor != "" {
-				fmt.Fprintf(stdout, "       at %s\n", anchor)
-			}
+			fmt.Fprintf(stdout, "       at %s\n", diagnosticAnchor(diagnostic))
 		}
 		if *traceOut == "" && len(report.Diagnostics) > 0 {
 			fmt.Fprintf(stdout, "     (run again with --trace-out=trace.json to read the assembled trace)\n")
@@ -115,11 +112,14 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 
 // diagnosticAnchor renders the envelope a diagnostic is about, as much of it
 // as the diagnostic carries.
+//
+// The index is always printed. It is a zero-based position in the assembled
+// trace, and every diagnostic the runner reports came from validating that
+// trace, so index 0 is the first envelope and not an absent field. Treating it
+// as absent would drop the anchor from exactly the frame nearest the start,
+// where an initialize or capabilities defect lands.
 func diagnosticAnchor(d validation.Diagnostic) string {
-	var parts []string
-	if d.Index > 0 {
-		parts = append(parts, fmt.Sprintf("envelope %d", d.Index))
-	}
+	parts := []string{fmt.Sprintf("envelope %d", d.Index)}
 	if d.Type != "" {
 		parts = append(parts, d.Type)
 	}

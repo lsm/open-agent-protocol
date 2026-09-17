@@ -385,10 +385,6 @@ func schemaDiagnostics(err error, fixture string, index, line int) []Diagnostic 
 	return schemaDiagnosticsAt(err, fixture, index, line, "")
 }
 
-// schemaDiagnosticsAt reports a schema failure, rooting its pointer at prefix.
-// The pack pass validates a member against its own subschema, whose instance
-// locations are relative to that member; the prefix puts them back where the
-// reader will look for them.
 // envelopeBranches maps an envelope type to the `$defs` name of the branch
 // that declares it. It is read from the schema rather than transcribed,
 // because a hand-written table that drifted would misattribute exactly the
@@ -475,6 +471,10 @@ func branchOf(schemaURL string) string {
 	return ""
 }
 
+// schemaDiagnosticsAt reports a schema failure, rooting its pointer at prefix.
+// The pack pass validates a member against its own subschema, whose instance
+// locations are relative to that member; the prefix puts them back where the
+// reader will look for them.
 func schemaDiagnosticsAt(err error, fixture string, index, line int, prefix string) []Diagnostic {
 	return schemaDiagnosticsFor(err, fixture, index, line, prefix, "")
 }
