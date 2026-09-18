@@ -372,17 +372,64 @@
     "credentialGrantResponse": {
       "type": "object",
       "required": [
-        "credential_ref"
+        "accepted"
       ],
       "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
         "credential_ref": {
           "$ref": "common.schema.json#/$defs/nonEmptyString"
         },
         "expires_at_ms": {
           "type": "integer"
+        },
+        "error": {
+          "$ref": "common.schema.json#/$defs/protocolError"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "accepted": {
+              "const": true
+            }
+          },
+          "required": [
+            "credential_ref"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "accepted": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "credential_ref"
+                ]
+              },
+              {
+                "required": [
+                  "expires_at_ms"
+                ]
+              }
+            ]
+          }
+        }
+      ]
     }
   }
 }

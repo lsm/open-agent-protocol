@@ -971,7 +971,7 @@ tier is mandatory wherever it is achievable.**
 | Type | Direction | Carries |
 | --- | --- | --- |
 | `provider.credential.grant.request` | caller → implementation | `provider_id`, `nonce`, `ttl_ms?` (the credential's lifetime, not the arrival deadline), and the value *only* in the fallback tier |
-| `provider.credential.grant.response` | implementation → caller | `credential_ref`, `expires_at_ms?` |
+| `provider.credential.grant.response` | implementation → caller | `accepted`, then `credential_ref` and `expires_at_ms?`, or a typed `error` |
 
 #### Which tier, and whether at all: `credential_grant`
 
@@ -1639,7 +1639,15 @@ payload was required to repeat the envelope's `inference_id`, in eleven schema
 definitions and three of the draft's own tables.
 
 Of the twenty-two, twenty-one were places the draft was silent or wrong rather
-than merely incomplete. Three — the persistence rule, the grant advertisement and
+than merely incomplete. **Four were prose ahead of its machinery** — a rule stated in the draft that the
+schemas, the validator or the envelope set could not express: the grant gate
+with nowhere to be read, the terminal-assembly rule no validator had, the
+non-persistable rule no envelope could violate, and a grant refusal the prose
+required and the schema forbade. That is an argument for writing prose and
+schema in the same pass rather than the schema afterwards, and it is the reason
+this draft was wrong in the same way four times.
+
+Three of those — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk

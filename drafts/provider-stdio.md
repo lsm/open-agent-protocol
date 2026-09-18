@@ -104,10 +104,14 @@ only after the value arrives.
 
 ```
 → provider.credential.grant.request   { provider_id, nonce, ttl_ms? }
-← provider.credential.grant.channel   { nonce, channel }
+← provider.credential.grant.channel   { nonce, channel }          in_reply_to
       caller connects, writes  <nonce> \n <value>  , closes
-← provider.credential.grant.response  { credential_ref, expires_at_ms? }
+← provider.credential.grant.response  { accepted, credential_ref } in_reply_to
 ```
+
+Both answers carry `in_reply_to` naming the grant request. The `nonce` is the
+grant's identifier, not the frame's correlator, and a caller with two grants in
+flight routes on `in_reply_to` like every other response on this binding.
 
 A nonce already in flight is refused rather than opening a second channel for
 it.
@@ -168,8 +172,17 @@ implementer may decline. That is worse than the work.
   a silent channel would freeze its ability to answer anything — including the
   cancel a caller reaches for when a grant hangs.
 - On deadline or on a connection closed without a value, the grant is answered
-  with a typed refusal, **the nonce is burned**, and a value arriving afterwards
-  is discarded rather than bound.
+  with a **refused `grant.response`** — `accepted: false` and a typed `error` —
+  **the nonce is burned**, and a value arriving afterwards is discarded rather
+  than bound.
+
+A refusal is the same envelope type as an acceptance, discriminated by
+`accepted`, the way `inference.create.response` is. A caller sent one request
+and watches one type for its outcome. The alternative — a generic error envelope
+— would make a caller watch two types for one request, and the third
+alternative, letting a refusal be a channel that never arrives, makes a caller
+wait out a deadline to learn something the implementation already knows, which
+is the shape the close-without-write rule exists to remove.
 
 ### What the caller must not do
 
