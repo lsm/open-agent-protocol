@@ -316,11 +316,11 @@ over it rather than new plumbing, the same relationship its OAP bridge has to
 its agent loop. What does not exist anywhere is a mode that speaks this profile.
 The shape is there; the mode is not, and building it is the work.
 
-The binding is the same shape as
-[the endpoint stdio binding](endpoint-stdio.md) — raw OAP envelopes, one per
-line, the profile distinguishing which vocabulary is in play. That binding is
-written for agent control, a provider-profile binding is not yet specified, and
-nothing in it is agent-control-specific except the envelope set it carries.
+[The provider stdio binding](provider-stdio.md) is the transport, and it is the
+same shape as [the endpoint binding](endpoint-stdio.md) — raw OAP envelopes, one
+per line, the profile distinguishing which vocabulary is in play. What it adds
+is what a connection carrying many inferences at once needs, and the credential
+channel this profile leaves to a binding.
 
 ## Envelope Types
 
@@ -971,7 +971,7 @@ tier is mandatory wherever it is achievable.**
 | Type | Direction | Carries |
 | --- | --- | --- |
 | `provider.credential.grant.request` | caller → implementation | `provider_id`, `nonce`, `ttl_ms?` (the credential's lifetime, not the arrival deadline), and the value *only* in the fallback tier |
-| `provider.credential.grant.response` | implementation → caller | `credential_ref`, `expires_at_ms?` |
+| `provider.credential.grant.response` | implementation → caller | `accepted`, then `credential_ref` and `expires_at_ms?`, or a typed `error` |
 
 #### Which tier, and whether at all: `credential_grant`
 
@@ -995,8 +995,8 @@ has none.
 
 The grant envelope carries a **nonce and nothing secret**. It says a credential
 is arriving for this nonce, not here is a credential. The value crosses on a
-channel the binding defines, keyed by that nonce — an extra file descriptor on
-stdio, a second pipe locally. The response returns `credential_ref` and
+channel the binding defines, keyed by that nonce; on stdio that is
+[a per-grant listening socket](provider-stdio.md). The response returns `credential_ref` and
 `inference.create.request` is unchanged.
 
 The reason to prefer this is structural rather than aesthetic. A journal, a
@@ -1483,6 +1483,23 @@ built to be driven, and there is no counterpart here. Building one is the whole
 of the work, not a consequence of the profiles being independently servable —
 and an earlier version of this draft drew that conclusion too fast.
 
+**A harness that drives a binary from outside reaches a minority of the wire,
+and this is measured rather than estimated.** Of thirteen envelope types one
+implementation emits, five are reachable by spawning it and sending scripted
+envelopes with no credentials. The other eight — the tool-call part end, a
+snapshot carrying `arguments_partial`, the sync response, both grant refusals
+and the rest — exist only inside the implementation's own emitter, and were
+checked against the schemas only because their author temporarily printed every
+outbound frame from a test and piped it into a validator.
+
+So a green harness does not mean the wire is covered, and anyone reporting
+harness results has to say which frames were reached. Closing the gap needs
+either a provider the harness can drive or a way to make an implementation
+produce a named frame on demand, and neither exists. The second is the cheaper
+one and is worth considering as a conformance affordance rather than a hack: an
+implementation that can be asked to emit a specimen of each frame it supports is
+testable in a way one that cannot is not.
+
 Compatibility is a second, harder half, and the first implementation has drawn
 the line precisely. What a harness can do today: spawn a provider endpoint,
 drive discovery, drive a real inference against a **local, anonymous** provider
@@ -1639,7 +1656,15 @@ payload was required to repeat the envelope's `inference_id`, in eleven schema
 definitions and three of the draft's own tables.
 
 Of the twenty-two, twenty-one were places the draft was silent or wrong rather
-than merely incomplete. Three — the persistence rule, the grant advertisement and
+than merely incomplete. **Four were prose ahead of its machinery** — a rule stated in the draft that the
+schemas, the validator or the envelope set could not express: the grant gate
+with nowhere to be read, the terminal-assembly rule no validator had, the
+non-persistable rule no envelope could violate, and a grant refusal the prose
+required and the schema forbade. That is an argument for writing prose and
+schema in the same pass rather than the schema afterwards, and it is the reason
+this draft was wrong in the same way four times.
+
+Three of those — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk

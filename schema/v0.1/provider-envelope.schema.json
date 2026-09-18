@@ -68,6 +68,9 @@
       "$ref": "#/$defs/credentialGrantRequest"
     },
     {
+      "$ref": "#/$defs/credentialGrantChannel"
+    },
+    {
       "$ref": "#/$defs/credentialGrantResponse"
     },
     {
@@ -194,6 +197,21 @@
         },
         "payload": {
           "$ref": "provider.schema.json#/$defs/credentialGrantRequest"
+        }
+      }
+    },
+    "credentialGrantChannel": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "provider.credential.grant.channel"
+        },
+        "payload": {
+          "$ref": "provider.schema.json#/$defs/credentialGrantChannel"
         }
       }
     },

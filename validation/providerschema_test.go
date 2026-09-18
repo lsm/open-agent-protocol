@@ -38,6 +38,10 @@ func TestProviderSchemaAdmitsEachEnvelope(t *testing.T) {
 		{"tool call start", envelope("inference.part.started", `"inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"tool_call","tool_call_id":"t1","name":"search"}`)},
 		{"text start", envelope("inference.part.started", `"inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"text"}`)},
 		{"tool call end", envelope("inference.part.ended", `"inference_id":"i1","sequence":3,"payload":{"part_index":0,"part_kind":"tool_call","tool_call":{"tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}},"carry":"opaque"}`)},
+		{"grant request", envelope("provider.credential.grant.request", `"payload":{"provider_id":"anthropic","nonce":"n1","ttl_ms":3600000}`)},
+		{"grant channel", envelope("provider.credential.grant.channel", `"in_reply_to":"e0","payload":{"nonce":"n1","channel":"/tmp/oap-grant-n1.sock"}`)},
+		{"grant response", envelope("provider.credential.grant.response", `"in_reply_to":"e0","payload":{"accepted":true,"credential_ref":"c1","expires_at_ms":1790000000000}`)},
+		{"grant refused", envelope("provider.credential.grant.response", `"in_reply_to":"e0","payload":{"accepted":false,"error":{"code":"unsupported_feature","message":"this endpoint holds no caller credentials"}}`)},
 		{"delta with partial snapshot", envelope("inference.part.delta", `"inference_id":"i1","sequence":4,"payload":{"part_index":0,"delta":"\"zig\"}","snapshot":[{"role":"assistant","content":[{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_partial":"{\"q\":"}]}]}`)},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -63,6 +67,10 @@ func TestProviderSchemaRefusesWhatTheDraftForbids(t *testing.T) {
 		{"action on a protocol error", envelope("inference.failed", `"inference_id":"i1","sequence":9,"payload":{"error":{"code":"rate_limited","message":"slow down","action":"retry"}}`), "action"},
 		{"payload repeating the envelope scope", envelope("inference.started", `"inference_id":"i1","sequence":1,"payload":{"inference_id":"i1","model_ref":"p/other:x@m"}`), "inference_id"},
 		{"acceptance with no envelope scope", envelope("inference.create.response", `"in_reply_to":"e0","payload":{"accepted":true,"honoured":{"include_snapshot":"never"}}`), "inference_id"},
+		{"grant granting and refusing at once", envelope("provider.credential.grant.response", `"in_reply_to":"e0","payload":{"accepted":true,"credential_ref":"c1","error":{"code":"x","message":"y"}}`), "error"},
+		{"grant refusal carrying a ref", envelope("provider.credential.grant.response", `"in_reply_to":"e0","payload":{"accepted":false,"credential_ref":"c1","error":{"code":"x","message":"y"}}`), "credential_ref"},
+		{"grant channel carrying a value", envelope("provider.credential.grant.channel", `"in_reply_to":"e0","payload":{"nonce":"n1","channel":"/tmp/s.sock","value":"sk-abc"}`), "value"},
+		{"grant channel with no nonce", envelope("provider.credential.grant.channel", `"in_reply_to":"e0","payload":{"channel":"/tmp/s.sock"}`), "nonce"},
 		{"event without a sequence", envelope("inference.started", `"inference_id":"i1","payload":{"model_ref":"p/other:x@m"}`), "sequence"},
 		{"unknown wire", envelope("provider.describe.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"providers":[{"id":"p","wire":"google-generative-ai","framing":"sse"}]}`), "wire"},
 	} {
