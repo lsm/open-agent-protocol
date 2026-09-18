@@ -1594,6 +1594,7 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    serve.
 13. Accepts an operator-set destination override for every provider it
    describes, out of band and never from the wire.
+14. Can name, for every member of an inbound payload it accepts, what reads it.
 
 Streaming is required only if advertised. A unary-only implementation is
 conformant; a streaming implementation that skips `part.ended` is not.
@@ -1673,6 +1674,41 @@ redirected the provider — and that is inside the operator's trust boundary by
 construction, because the operator set the override. The harm that outlives the
 soft clause belongs to the party who caused it.
 
+### Consume what you accept
+
+Clause 14 is clause 12 one layer in. Twelve says serve what you claim; fourteen
+says read what you take. A receiver can decode a member, validate it, and drop
+it, and every frame in that exchange is correct — the caller's intent was
+parsed and discarded, and nothing on the wire distinguishes the endpoint that
+honoured a member from the one that threw it away, until the turn where the
+absence matters.
+
+Three members reached that state in this draft's first implementation: a
+compatibility mapping whose only callers were tests, a reasoning carry read out
+of a structure no provider populates, and a `credential_ref` checked at create
+and discarded, which left the host unable to tell which inference a grant
+belonged to. A fourth pair is `metadata` and the four reasoning options, decoded
+in full and then refused — the caller's intent parsed and dropped at two
+separate places for two different reasons.
+
+**Unlike clause 12, this one is mechanically checkable, inside an implementation
+rather than from a trace.** Strip test code, then ask whether anything outside
+the type and codec files reads each decoded member. That is the unreferenced-
+function sweep applied one level down, and the same instrument that finds a
+function nothing calls finds a field nothing reads.
+
+It needs one split to be usable, and the split is knowable from the profile
+rather than guessed: **a member on an inbound payload with no consumer is a
+defect; a member on an outbound payload with no consumer is normal**, because
+its consumer is at the other end of the wire. Without that distinction the check
+reports every descriptor member as dead — `round_trips_carry` has no local
+reader by design.
+
+So this is not an open question, and an earlier version of this draft recorded
+it as one. What was missing was not an instrument but the generalisation: the
+implementation that found all three already had the function-level sweep and had
+not turned it on fields.
+
 ### Under-claiming is non-conformance, and only one direction is checkable
 
 Over-claiming is caught by exercising the descriptor: ask for each advertised
@@ -1716,22 +1752,6 @@ that the test appears to run.
 ## Open Questions
 
 These are open, and naming them is better than a draft that reads settled.
-
-**Nothing checks that a member a receiver accepted is a member it reads.** A
-trace validates the frame and a mutation sweep tests the rules that judge it;
-both are about the envelope, and both pass while a receiver decodes a member,
-validates it and drops it. Three members reached exactly that state during this
-draft's first implementation — a compatibility mapping with only test callers, a
-reasoning carry read out of a structure nothing populates, and a `credential_ref`
-checked at create and discarded, leaving the host unable to tell which inference
-a grant belonged to. Every frame involved was correct.
-
-The defect is in the consumer rather than the wire, which is why the profile
-cannot state a rule that catches it and why conformance cannot either: an
-endpoint that ignores a member it accepted emits nothing distinguishable from
-one that honoured it, until the turn where the absence matters. All three were
-found by reading the consumer while looking for something else, which is not a
-method. Naming it is what this section is for.
 
 **How is a vendor API pinned?** Every harness adapter in this repository pins an
 upstream commit or tag, and its corpus is hermetic against that pin. A vendor
