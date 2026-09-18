@@ -1454,9 +1454,45 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
     `protocol_versions[]`.
 11. States a compatibility fact where the provider it reaches diverges from the
    wire it claims, or states none and claims nothing.
+12. Serves everything its descriptors claim, and claims everything it can
+   serve.
 
 Streaming is required only if advertised. A unary-only implementation is
 conformant; a streaming implementation that skips `part.ended` is not.
+
+### Under-claiming is non-conformance, and only one direction is checkable
+
+Over-claiming is caught by exercising the descriptor: ask for each advertised
+capability and see whether it is served. A suite can drive that mechanically,
+and a failure is a frame it can point at.
+
+The other direction has no such handle. An implementation that supports
+`every_delta` and lists no `snapshot_policies` refuses every request for it, and
+every one of those refusals is a well-formed `unsupported_feature` frame that
+validates against the schema. Nothing in the trace is wrong. The endpoint is
+simply lying about itself by omission, and a well-behaved caller never asks for
+what the descriptor did not list, so nothing ever discovers it.
+
+Clause 12 is therefore stated as a conformance requirement and not as a
+validator rule. No trace can carry the violation, so `validation/provider.go`
+will never grow a code for it; this is deliberate, not the class of gap where
+prose runs ahead of machinery. What the clause buys is a sentence a conformance
+suite can cite when it reports a divergence it found by other means — reading
+the implementation, or a maintainer answering "can you do X?" with yes while the
+catalogue says no.
+
+Both directions were found the same way, by building against this draft rather
+than reading it. Three descriptor divergences surfaced in one session of getting
+a first real completion out of an implementation: a host that ignored base-URL
+overrides so a conformance run silently addressed the vendor instead of the
+local endpoint under test, a catalogue advertising no `snapshot_policies` for
+policies the server had implemented all along, and a descriptor never setting
+`resolves_own_credentials`, which made every credentialed provider refuse at
+create. All three validate. All three are invisible from outside. The
+base-URL one matters beyond the implementation that had it: pointing a provider
+at a local endpoint is how anyone conformance-tests this profile at all, so an
+implementation that cannot be repointed cannot be tested, and the failure mode is
+that the test appears to run.
 
 ## Open Questions
 
