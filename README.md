@@ -20,9 +20,11 @@ to. Two of those boundaries have profiles. `agent-control-core` is the control
 layer talking to an agent loop — sessions, runs, tools — and is what this
 repository executes today.
 [Decision 0016](decisions/0016-model-provider-profile.md) proposes
-`model-provider-core` for the boundary below it: an agent loop talking to a
-model provider, normalizing OpenAI-compatible and Anthropic-compatible
-endpoints behind one vocabulary. An agent loop that wraps a vendor SDK and one
+`model-provider-core` for the boundary below it, and
+[**drafts/model-provider-core.md**](drafts/model-provider-core.md) is its
+specification: an agent loop talking to a model provider, normalizing
+OpenAI-compatible and Anthropic-compatible endpoints behind one vocabulary.
+Neither is executable — no implementation speaks it yet. An agent loop that wraps a vendor SDK and one
 that speaks to inference endpoints directly both expose `agent-control-core`
 upward; the lower profile is what they speak downward, and it is the boundary
 every multi-vendor loop re-solves privately today.
@@ -40,6 +42,7 @@ Current drafts:
 - [Presentation Control Profile](drafts/presentation-control-profile.md)
 - [Agent Control Core](drafts/agent-control-core.md)
 - [Agent Control Profile](drafts/agent-control-profile.md)
+- [Model Provider Core](drafts/model-provider-core.md)
 - [Layered Agent Protocol](drafts/layered-agent-protocol.md)
 - [Staged Units Graduation Plan](drafts/staged-units-graduation.md)
 

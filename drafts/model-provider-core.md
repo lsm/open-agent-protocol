@@ -1,0 +1,868 @@
+# Open Agent Protocol Model Provider Core
+
+Status: draft
+Profile ID: `open-agent-protocol.model-provider-core`
+Base protocol: `open-agent-protocol` version `0.1`
+License: CC0-1.0 public domain dedication, or the nearest legally valid equivalent in jurisdictions that do not recognize public domain dedication.
+Scope: the boundary between an agent loop and a model provider — one inference
+call, in both directions.
+
+This is the second profile, and a peer of
+[Agent Control Core](agent-control-core.md) rather than a unit inside it.
+[Decision 0016](../decisions/0016-model-provider-profile.md) establishes the
+boundary, argues why it is a profile, and defers the envelopes to a draft. This
+is that draft. [The composition draft](composition.md) places both profiles in
+the layering.
+
+Nothing here has a session, a run, a run sequence or an interaction. Admission,
+terminal arbitration and per-run ordering are agent-control concepts and have no
+referent below the loop.
+
+## Design Rule
+
+**Normalize the shape. Do not normalize away the disagreement.**
+
+Every agent loop that supports more than one vendor writes the same
+normalization: OpenAI and Anthropic disagree about request shape, streaming
+deltas, tool-call encoding, usage accounting and stop reasons. Presenting one
+vocabulary over them is the point of the profile.
+
+But a vendor that claims a wire and then breaks it in one place is the common
+case, not the exception, and an implementation that hides which place it is
+facing leaves its caller unable to work. So the profile carries a closed set of
+**compatibility facts** beside the descriptor, and an implementation states
+which it is facing rather than pretending uniformity it does not have.
+
+This is the rule that separates this profile from a lowest-common-denominator
+API. The vocabulary is uniform; the honesty about the endpoint is not optional.
+
+## What This Profile Is Not
+
+It is not an inference API. It does not replace a vendor's own SDK for anything
+beyond one call, and it takes no position on how a vendor should design theirs.
+
+It is not part of `agent-control-core`, and no envelope, rule or capability of
+that profile changes because this exists. An endpoint implementing only agent
+control is unaffected. The statement in that draft that direct inference is not
+carried on its wire remains exactly true.
+
+It is not a vendor API surface. Batching, embeddings, fine-tuning, files,
+assistants, and vendor server-side tools are not an agent loop's lower
+boundary. An implementation may use them directly; they do not cross here.
+
+It is not a commitment that this repository will ship an agent loop. The
+profile is what an agent loop speaks downward.
+
+It is not a credential channel. A caller-held credential crosses out of band
+wherever the binding allows it, and only on one envelope type where no side
+channel exists. Members that could carry one instead — header maps — are
+non-conformant for that use and policed as far as a validator can. See
+Credentials below.
+
+## Identity
+
+Three identifiers, deliberately distinct, because two of them are routinely
+conflated in speech:
+
+- **`provider_id`** — an opaque, implementation-scoped id naming a *configured
+  vendor endpoint*. Not a registry this project assigns meanings in.
+- **`wire`** — the *request shape* spoken to it, from a closed set.
+- **`model_id`** — the model, as the provider names it.
+
+A **model reference** carries all three: `provider_id/wire@model_id`.
+
+`provider_id` and `wire` are different layers. Two vendor endpoints may share a
+wire, and one vendor endpoint may offer more than one. An implementation that
+keys its providers by wire loses the distinction the moment a second endpoint
+speaks the same shape, which is
+[Decision 0017](../decisions/0017-provider-provisioning.md)'s reason for giving
+the descriptor both members.
+
+### Wire
+
+A closed set. The values are the three this repository's `provider` package
+already names and builds real requests for:
+
+- `openai-responses`
+- `anthropic-messages`
+- `openai-chat-completions`
+
+Adding a value is a protocol change, not configuration. A wire an
+implementation reaches but this set does not name is reported as `unavailable`
+rather than approximated to a neighbour.
+
+### Framing
+
+Streaming framing is a **separate member** from wire, from the closed set
+`sse`, `ndjson`, `unary`.
+
+The split is attested. Makai's provider layer serves six of eight APIs through
+one SSE parser and parses Ollama as newline-delimited JSON with no SSE parser at
+all, read from that tree on 2026-09-17. This repository's own prober assumes the
+other way: `provider.RunEvidence` fails any response whose media type is not
+`text/event-stream` (`provider/evidence.go`), which is correct for a
+compatibility prober and would be wrong for the profile. A profile that folded
+framing into wire would exclude a working provider while believing its set
+complete.
+
+**`sse` and `ndjson` are attested; `unary` is not.** All eight of Makai's APIs
+stream, and their non-streaming call is a facade that opens a stream, drains it
+and returns the result rather than a separate framing. This repository's prober
+always requests a stream. So `unary` is here because a non-streaming provider is
+an ordinary thing to build against, not because either source demonstrates one,
+and it must not be cited to Makai's finding — that finding supports the split
+and two of the three values.
+
+## Envelope
+
+The base envelope of the protocol, with `profile` set to
+`open-agent-protocol.model-provider-core`.
+
+Required: `protocol`, `version`, `profile`, `type`, `id`, `payload`.
+
+Optional: `timestamp_ms`, `in_reply_to`, `sequence`, `extensions`, and one scope
+field:
+
+- **`inference_id`** — the scope of one inference call, and a distinct identity
+  domain. It is not a session, run, turn, tool call or interaction id, and is
+  not interchangeable with any of them.
+
+`session_id`, `run_id`, `turn_id` and `interaction_id` do **not** appear on this
+wire. An agent loop that holds all of them keeps the correlation on its own
+side; carrying them down would make the provider boundary depend on concepts it
+has no use for, and would make a provider implementation harder to write than
+the vendor API it wraps.
+
+Every event scoped to one inference carries a positive, contiguous `sequence` in
+that inference's own ordering domain. Requests and responses do not consume it.
+The guarantee is the one agent control gives and no more: contiguity witnesses
+transport loss, never upstream loss.
+
+## Transport
+
+Transport agnostic, like the core. The same envelopes move over in-process
+calls, newline JSON over stdio, WebSocket, or HTTP plus SSE.
+
+Keepalives are a **binding concern and not an envelope**. Makai's event union
+carries a `keepalive` variant because their transport needs one; a binding that
+needs one emits it at the binding layer, where heartbeats already live for
+agent control.
+
+## Serving Modes
+
+The two profiles are **independently servable**. That is a property this profile
+permits, and it is the practical consequence of making it a peer profile rather
+than a unit. It is not a description of any implementation that exists.
+
+One binary may expose either. Started one way it serves `agent-control-core`: a
+client drives sessions and runs, and the agent loop is behind it. Started the
+other way it serves `model-provider-core`: a caller drives one inference call at
+a time, and inference endpoints are behind it. Same process, same transport,
+different profile in the envelope.
+
+```
+  client ──agent-control-core──▶ [ binary ] ──▶ agent loop ──▶ providers
+  caller ──model-provider-core─▶ [ binary ] ─────────────────▶ providers
+```
+
+The second mode is the smaller and more immediately useful deployment, and is
+why the profile is worth having before any agent loop adopts it. A caller that
+wants one vocabulary over many inference vendors, and does not want an agent
+loop, gets exactly that — one language to OpenAI-flavour, Anthropic-flavour and
+everything else behind it, without embedding a vendor SDK per vendor.
+
+An implementation may serve both at once, one, or neither. Serving one implies
+nothing about the other: a provider-profile implementation with no agent loop is
+conformant, and so is an agent-control endpoint that reaches its model through a
+vendor SDK and speaks this profile nowhere.
+
+### Nothing serves this profile today, and the gap is not plumbing
+
+Stated plainly because the diagram above invites the opposite reading.
+
+Makai is the closest, and the distance is instructive. Read from that tree on
+2026-09-17: `makai --oap` serves `agent-control-core` and refuses every other
+profile — a single profile constant, a hello that rejects anything else, a
+profile mismatch on any envelope mapped to a decode error, and no flag that
+widens it. Its other mode hosts auth, provider and agent protocol servers in one
+process over a line binding, but those speak that project's own native wire, and
+none of its OAP files is reachable from that path.
+
+So the **architecture** is already there — a provider protocol server behind a
+line binding — and a serving mode for this profile would be a translation layer
+over it rather than new plumbing, the same relationship its OAP bridge has to
+its agent loop. What does not exist anywhere is a mode that speaks this profile.
+The shape is there; the mode is not, and building it is the work.
+
+The binding is the same shape as
+[the endpoint stdio binding](endpoint-stdio.md) — raw OAP envelopes, one per
+line, the profile distinguishing which vocabulary is in play. That binding is
+written for agent control, a provider-profile binding is not yet specified, and
+nothing in it is agent-control-specific except the envelope set it carries.
+
+## Envelope Types
+
+Eighteen, in five groups.
+
+### Discovery
+
+| Type | Direction | Carries |
+| --- | --- | --- |
+| `provider.describe.request` | caller → implementation | nothing required |
+| `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision` |
+| `provider.models.list.request` | caller → implementation | `provider_id?` |
+| `provider.models.list.response` | implementation → caller | `models[]`, `capability_revision` |
+
+`capability_revision` is required on both responses, for the reason agent
+control requires it on `capabilities.response` and `models.response`: the whole
+content is bound to one descriptor snapshot.
+
+#### The model entry
+
+Each entry in `provider.models.list.response`:
+
+- `model_ref` — `provider_id/wire@model_id`.
+- `model_id`, `display_name?`, `provider_id`, `wire`
+- `context_window?`, `max_output_tokens?`
+- `capabilities` — from `chat`, `streaming`, `tools`, `vision`, `reasoning`,
+  `prompt_cache`, `audio_input`, `audio_output`.
+- `lifecycle` — `stable`, `preview`, `deprecated`.
+- `source` — `discovered` or `fallback`.
+- `reasoning_default?` — `off`, `minimal`, `low`, `medium`, `high`.
+- `auth_status` — below.
+
+`source` distinguishes a catalog the implementation read from the provider from
+one it fell back to from a built-in list. Merging the two silently is how a
+client confidently offers a model that no longer exists; a caller looking at a
+fallback catalog is looking at something that may be months stale and should be
+told.
+
+#### `auth_status`, and a correction
+
+`auth_status` is on the model entry, from five values: `authenticated`,
+`login_required`, `expired`, `failed`, `unknown`.
+
+An earlier version of this draft recorded it as homeless — following credential
+acquisition, owned by no profile. That came from a true finding read the wrong
+way. The finding is that a provider layer *consumes* a credential at request
+time and never learns its status, so it cannot compute one. The conclusion drawn
+was that it therefore does not belong on this boundary, and that does not
+follow: Makai carries it on their model descriptor, on this boundary, today. A
+caller listing models wants to know which it can actually call, and
+`login_required` against `authenticated` is exactly that. It is a property of
+the catalog entry, not of an in-flight request.
+
+Two of Makai's seven values are excluded: `refreshing` and `login_in_progress`
+are transient states of a flow happening elsewhere, and an answer that is stale
+before it is read is worse than no answer. The remaining five are stable enough
+to describe a model by.
+
+**`auth_status` is not bound to `capability_revision`.** It is read at the
+moment the response is built and may be false immediately after — which is
+precisely why
+[Decision 0014](../decisions/0014-provider-descriptors.md) refuses it on a
+*provider descriptor*, whose whole content is fixed for a revision. The
+resolution is that a response is generated per request while a descriptor is
+fixed per revision, so the volatile fact belongs on the entry in the response
+and not in the descriptor. That distinction is the whole of 0014's objection and
+it is satisfied, not overridden.
+
+### One inference call
+
+| Type | Direction | Carries |
+| --- | --- | --- |
+| `inference.create.request` | caller → implementation | the call (below) |
+| `inference.create.response` | implementation → caller | `inference_id`, `accepted`, `honoured`, or a typed refusal |
+| `inference.started` | implementation → caller | `model_ref`, `started_at_ms` |
+| `inference.part.started` | implementation → caller | `part_index`, `part_kind`, and for a tool call its `tool_call_id` and `name` |
+| `inference.part.delta` | implementation → caller | `part_index`, the increment |
+| `inference.part.ended` | implementation → caller | `part_index` |
+| `inference.completed` | implementation → caller | `message`, `stop_reason`, `usage?` |
+| `inference.failed` | implementation → caller | `error`, `usage?` |
+
+Exactly one terminal per inference: `inference.completed` or
+`inference.failed`. An aborted call ends as `inference.completed` with
+`stop_reason: aborted` — cancellation at this boundary is a stop reason, not a
+third terminal, because the vendor reports it that way and inventing a terminal
+would put the profile's arbitration above the provider's own.
+
+### Cancellation
+
+| Type | Direction | Carries |
+| --- | --- | --- |
+| `inference.cancel.request` | caller → implementation | `inference_id`, `reason?` |
+| `inference.cancel.response` | implementation → caller | `accepted` |
+
+As in agent control, the response is intent and not settlement. The terminal is
+the settlement.
+
+### Part kinds
+
+`part_kind` is a closed set: `text`, `reasoning`, `tool_call`.
+
+The started/delta/ended triple per part is taken from Makai's event union, which
+carries the same triple for text, thinking and tool calls. The `ended` event is
+load-bearing rather than decorative: without it a consumer cannot tell a
+finished part from a stalled one until the terminal arrives, and a tool call
+that is complete is dispatchable immediately.
+
+**The triple is not uniform across kinds, and the payloads are
+kind-discriminated.** An earlier version of this draft collapsed the nine
+variants into three envelopes with a flat payload and a kind tag. That is lossy,
+in two places their union makes explicit:
+
+- `inference.part.started` carries `tool_call_id` and `name` for a `tool_call`,
+  and neither for `text` or `reasoning`. A uniform start drops the tool call's
+  identity at the moment a consumer needs it to open a pending call.
+- `inference.part.ended` carries the complete tool call for a `tool_call`, and
+  the accumulated string for `text` and `reasoning`. Those are different types,
+  not different values of one type.
+
+`part_index` is the correlation, and maps onto their `content_index`.
+
+### The running snapshot: push and pull are different mechanisms
+
+Every one of Makai's ten part variants carries `partial`, the full running
+assistant message rather than the increment, with two modules existing only to
+move it. They *also* have a `sync_request`/`sync` pair by which a consumer asks
+for the current snapshot and gets it, or gets nothing if the stream is gone.
+
+Deltas alone oblige the consumer to be lossless: apply every increment, in
+order, without dropping one, or its reconstruction silently diverges. The
+per-inference `sequence` tells a consumer *that* it diverged. A snapshot is how
+it recovers.
+
+**Push and pull do not subsume each other and the profile carries both.**
+
+- **Push** costs bandwidth on every stream whether or not anyone diverged, and
+  is the only thing that helps a consumer that diverged *without noticing*.
+- **Pull** costs a round trip exactly when someone noticed, and requires the
+  producer still to be holding the state.
+
+#### Push: `include_snapshot`, per request
+
+`inference.create.request` carries `include_snapshot`, and
+`inference.part.delta` and `inference.part.ended` carry an optional `snapshot`
+when it is set.
+
+**It is per request, not per provider.** An earlier version of this draft put a
+`snapshot_policy` on the descriptor, and that is the wrong axis: what a consumer
+can afford to reconstruct is a property of the consumer, and two clients against
+one provider can reasonably differ. The descriptor *declares* which policies it
+supports — `snapshot_policies`, from `never`, `on_part_end`, `every_delta` — and
+the request picks one. Declaring the capability and choosing the value are
+different jobs, and the earlier version did both in the same place.
+
+`every_delta` is quadratic in the message, which is a real cost on a long
+completion and an obvious one on a slow link. That is why it is chosen rather
+than assumed.
+
+#### Pull: `inference.sync`
+
+| Type | Direction | Carries |
+| --- | --- | --- |
+| `inference.sync.request` | caller → implementation | `inference_id` |
+| `inference.sync.response` | implementation → caller | `snapshot`, or absent when the inference is no longer held |
+
+An absent snapshot is an answer, not a failure: the inference has ended or been
+released, and the consumer should stop waiting rather than retry.
+
+An implementation may support pull, push, both, or neither, and says which. A
+consumer with neither must be lossless, which is a legitimate thing to require
+of a consumer on a reliable local transport and a poor thing to require over a
+network.
+
+## The Call
+
+Split as the implementations split it, because per-call and per-provider are
+different sets and merging them makes both wrong.
+
+### What does not cross, from a real options struct
+
+Makai's `StreamOptions` carries twenty-five fields and is the closest thing
+either side has to a complete per-call list. Three are rejected outright and
+two are relocated, on their own reading as much as this draft's:
+
+- `cancel_token`, `on_payload_fn`, `on_payload_ctx` and
+  `requires_owned_stream_events` are in-process function pointers and
+  memory-ownership flags. They are in that struct because it doubles as an
+  internal call-options type, which is a design smell on their side rather than
+  a protocol shape.
+- `http_timeout_ms` and `ping_interval_ms` are transport-shaped and belong to a
+  binding.
+
+Naming them is worth the lines because a reader comparing the two lists will
+otherwise assume the profile forgot them.
+
+### Per call — `inference.create.request`
+
+- `model_ref` — provider, wire and model.
+- `messages` — shared `Message` and `ContentPart` shapes with agent control.
+- `tools` — shared `ToolDefinition`.
+- `tool_choice`.
+- `max_output_tokens`.
+- sampling controls — `temperature`, `top_p`.
+- `output_schema` — structured output.
+- `stream` — boolean.
+- `reasoning` — `{ enabled?, budget_tokens?, effort?, encrypted_carry? }`.
+- `include_snapshot` — `never`, `on_part_end`, `every_delta`.
+- `headers` — non-secret request headers, such as tenancy or routing. Never a
+  credential; see Credentials.
+- `credential_ref` — names a credential the implementation holds; never a value.
+- `metadata` — opaque, passed through.
+
+One `reasoning` object replaces what Makai carries as seven separate options —
+`thinking_enabled`, `thinking_budget_tokens`, `thinking_effort`,
+`reasoning_effort`, `reasoning_summary`, `include_reasoning_encrypted`,
+`reasoning_enabled`. Their own reading is that the `thinking_*`/`reasoning_*`
+split is vendor vocabulary leaking into an options struct rather than two
+concepts, and this draft takes it as one.
+
+`encrypted_carry` is the member that has no equivalent in the flattened set and
+is here because dropping it would be silent: some vendors return reasoning in an
+opaque encrypted form that must be handed back verbatim on the next call or the
+chain breaks. Google's thought signature is the same shape from a different
+vendor. It is carried as an opaque value and never inspected.
+
+### Per provider — `ProviderDescriptor`
+
+- `id`, `display_name?`
+- `wire`, `framing`
+- `endpoint` — the destination reached.
+- `headers` — what the implementation sends from its own configuration, so a
+  caller can see what accompanies its prompts. Never resolved from a credential
+  store.
+- `compatibility` — the twelve facts below.
+- `snapshot_policies` — which of `never`, `on_part_end`, `every_delta` the
+  request may ask for, and whether `inference.sync` is answered.
+- `allows_anonymous` — this provider needs no credential.
+- `context_window?`, `max_output_tokens?`
+
+`allows_anonymous` is not a nicety. A local Ollama needs no credential, and an
+implementation that treats absence-of-credential as an error state refuses a
+correctly configured provider.
+
+## Compatibility Facts
+
+The closed set an implementation states about a provider that claims a wire. It
+is Makai's `OpenAICompatOptions` — twelve fields, each one a vendor that broke a
+shape while claiming it — carried across whole.
+
+An earlier version of this draft promoted six of the twelve and sent the rest to
+`extensions`. That split does not survive its own test. The criterion for
+belonging in the protocol is that a caller must branch on the fact and cannot
+discover it from the endpoint, and all twelve meet it: all twelve appear in live
+branch conditions in that tree's OpenAI and Anthropic request builders, and
+`parseCapabilities` accepts all twelve from a user-written
+`~/.makai/providers.json`. A fact a human has to declare by hand is the
+definition of undiscoverable.
+
+| Fact | Values | Makai's name | Why a caller must know |
+| --- | --- | --- | --- |
+| `max_tokens_field` | `max_tokens`, `max_completion_tokens` | same | One semantic field, two names. |
+| `thinking_format` | `openai`, `zai`, `qwen` | same | Three mutually incompatible reasoning encodings behind one API name. A wrong guess silently drops reasoning. |
+| `usage_in_streaming` | `always`, `terminal_only`, `never` | `supports_usage_in_streaming` | Whether usage arrives at all changes what `inference.completed` can promise. |
+| `requires_assistant_after_tool_result` | boolean | same | A message-ordering constraint, not a capability. |
+| `requires_tool_result_name` | boolean | same | Same class. |
+| `requires_thinking_as_text` | boolean | same | Reasoning must be sent back as ordinary text or the request is rejected. |
+| `supports_strict_mode` | boolean | same | Whether `output_schema` is enforced or advisory. |
+| `supports_store` | boolean | same | Server-side retention of the request. |
+| `supports_developer_role` | boolean | same | Whether the `developer` role exists or must be folded into `system`. |
+| `supports_reasoning_effort` | boolean | same | Whether the effort control is accepted. |
+| `tool_call_id_format` | `opaque`, `constrained` | `requires_mistral_tool_ids` | Some endpoints reject tool-call ids that are not in their own format. |
+| `cache_ttl_control` | boolean | `supports_anthropic_cache_ttl` | Whether an explicit cache retention is accepted. |
+
+Two are renamed because the fact is general and the vendor is incidental. A
+protocol that names Mistral and Anthropic in its member names binds the
+vocabulary to two companies, and the next endpoint with a constrained id format
+has nowhere to say so. The renames are this draft's proposal and are the part of
+this table most likely to be wrong — the semantics are theirs, the names are
+mine.
+
+Every fact is optional and its absence means "the wire's own default," never
+"unknown." An implementation that states none is exactly as conformant as one
+that states all twelve — it has simply promised less.
+
+**There is no free-form quirks map.** The set grows by protocol change. A
+free-form map ships the problem to every caller at once: each one writes its own
+branch on a key nobody agreed on, and the divergence the profile exists to name
+becomes invisible again.
+
+## Credentials
+
+**No credential value crosses this wire.** Not a key, not a token, not a header,
+not an environment value. A `ProviderDescriptor` carries no credential member.
+
+This is the constraint
+[Decision 0017](../decisions/0017-provider-provisioning.md) sets for provider
+provisioning at the agent-control boundary, and it holds here for the same
+reason one layer down.
+
+### Selecting a credential
+
+An earlier version of this draft claimed the rule costs a real implementation
+nothing, because a provider is constructed without a credential and resolves one
+per request from its own store. The first half is right and the second half was
+wrong: Makai's per-call options carry `api_key` as well, and it is not
+vestigial — Vertex documents a per-call key as one of two accepted sources.
+
+So `inference.create.request` carries an optional **`credential_ref`**: a name
+the implementation resolves from its own configured store. The caller says
+*which* credential, never *what* it is. `allows_anonymous` on the descriptor
+says a provider needs none at all — a local Ollama is correctly configured with
+no credential, and an implementation that treats absence as an error refuses it.
+
+### Caller-held credentials: the grant
+
+`credential_ref` alone selects among credentials the implementation already
+holds. A caller holding a key the implementation has never seen — bring your own
+key, a per-tenant key, Vertex's documented per-call key — cannot introduce one.
+
+An implementation that keeps a native path beside this profile pays nothing for
+that gap: it expresses the case natively and lets OAP be the lossy outer wire.
+An implementation whose *only* inference wire is this profile cannot do what the
+profile cannot express, and dropping a documented provider path is a real loss.
+
+**The rule was always about the channel, not about who owns the key.** Values are
+kept off envelopes because envelopes are logged, assembled into traces,
+validated, journalled, replayed from a cursor, and persisted by intermediaries.
+That says nothing about whether the caller or the operator holds the key.
+
+So the profile admits a caller-held credential, in two tiers, and **the strong
+tier is mandatory wherever it is achievable.**
+
+| Type | Direction | Carries |
+| --- | --- | --- |
+| `provider.credential.grant.request` | caller → implementation | `provider_id`, `nonce`, `ttl_ms?`, and the value *only* in the fallback tier |
+| `provider.credential.grant.response` | implementation → caller | `credential_ref`, `expires_at_ms?` |
+
+#### Tier 1: out of band, and required where the binding allows it
+
+The grant envelope carries a **nonce and nothing secret**. It says a credential
+is arriving for this nonce, not here is a credential. The value crosses on a
+channel the binding defines, keyed by that nonce — an extra file descriptor on
+stdio, a second pipe locally. The response returns `credential_ref` and
+`inference.create.request` is unchanged.
+
+The reason to prefer this is structural rather than aesthetic. A journal, a
+trace assembler, a replay cursor and a proxy need to know nothing about the
+grant, because nothing they can see carries a secret. The obligation moves from
+*every intermediary that handles the stream* to *each binding specification* — a
+small number of documents, written once and reviewed — and the validator rule
+becomes unconditional: **any envelope carrying a credential value is invalid**,
+with no permitted-but-special case and no fixture for an exception.
+
+**A binding that can carry the value out of band must.** This is a requirement
+on bindings, not a preference.
+
+#### Tier 2: on the envelope, where no side channel exists
+
+HTTP has no clean side channel. A second request is still a request, and its
+body is logged by the same things that log everything else. So the fallback
+exists, and under it the value rides `provider.credential.grant.request` subject
+to four rules:
+
+1. **One type, one place.** No other payload member anywhere carries a
+   credential value, including the header maps described below.
+2. **Non-journalable.** Never written to a journal, assembled into a trace,
+   replayed from a cursor, or persisted.
+3. **The validator enforces it.** A trace containing the pair is invalid, with a
+   diagnostic and a fixture.
+4. **Gated and refusable.** A caller learns the capability is unavailable before
+   it sends a secret, not after.
+
+This tier is the floor and is known to be weaker: an exception that every
+intermediary must honour is honoured almost everywhere, and the ones that get it
+wrong are invisible. It exists so that an HTTP binding is possible at all, not
+because it is good.
+
+#### Both tiers: a granted credential must be marked non-persistable
+
+A grant is connection-scoped, expires at `expires_at_ms` if one is set, and does
+not survive a reconnect. A credential that survives a restart is one the
+operator never configured and cannot revoke.
+
+**That property does not follow from the profile alone, and an implementation
+must carry the mark in its own code.** A granted credential may be an OAuth
+refresh token rather than a static key — which is exactly what a per-tenant
+caller hands over — and an implementation that refreshes expired credentials
+during ordinary requests will persist it through a path that has no idea a grant
+happened. The bug is invisible: nothing in the profile is violated by any
+envelope, and the credential is in the platform store anyway.
+
+So it is a conformance requirement rather than a note. A granted credential is
+marked non-persistable at the point it enters the implementation, and every
+refresh, cache and storage path honours the mark. Every implementation with a
+refresh path has this bug waiting, and none of them will notice.
+
+#### Scope difference, on the record
+
+Makai's per-call `api_key` is per call; a grant is per connection. A caller
+grants once and references thereafter, and a per-tenant caller grants per
+connection. Nothing appears to be lost, and the difference is recorded here
+rather than discovered later.
+
+### `headers` is a credential channel and also a legitimate one
+
+`Authorization: Bearer` is a header, so a header map is a way to defeat every
+rule above while each explicitly credential-named field stays absent. An earlier
+version of this draft concluded that the map should not exist.
+
+That was wrong, and the argument against it is a configuration format that
+already separates the two things the removal assumed were one. Makai's custom
+provider file carries `auth` and `headers` as distinct members — `auth` is
+`{"env": "<VAR>"}`, or `"none"` for an anonymous endpoint, or absent so the
+credential resolves from the platform store by provider id — and the example its
+own test fixture reaches for is `X-Tenant`. That is the real case: a corporate
+gateway that needs tenancy or routing metadata alongside a credential it
+resolves separately. `endpoint` plus the compatibility facts does not express
+it, because the fact being expressed is not about the wire format. It is which
+tenant, which route, which deployment slot.
+
+**Removal does not close the channel; it moves those deployments off the
+profile.** A deployment that cannot be expressed does not stop existing. And
+nothing in that configuration format *enforces* the separation either — a user
+can write an `Authorization` header into it and it will work — so the property
+was always a convention rather than a structure, on both sides.
+
+So the profile keeps headers, in two places that are not the same kind of thing,
+and replaces removal with enforcement.
+
+#### On the descriptor: published, not supplied
+
+`ProviderDescriptor.headers` is what the implementation sends to that endpoint
+from its own configuration. It is **not caller text** — a descriptor is
+published by the implementation, and a caller reads it. Publishing it lets a
+caller see what accompanies its prompts, which is the same argument `endpoint`
+makes.
+
+An implementation must not publish a header whose value came from its credential
+store. That is a rule about what it publishes, not about what a caller may send.
+
+#### On the call: supplied, and policed
+
+`inference.create.request.headers` is caller text, and is where tenancy that
+varies per call belongs. Two rules:
+
+1. **A credential in `headers` is non-conformant.** A caller that needs a
+   credential uses the grant. An implementation that finds one in a header is
+   looking at a configuration error, not an alternative path.
+2. **The validator catches what it can.** A header named `Authorization`,
+   `Proxy-Authorization`, `X-Api-Key` or `Api-Key`, or any value matching a
+   bearer-token shape, is rejected.
+
+That check is **incomplete by construction** and cannot be otherwise: a
+credential can be called anything. It is worth having for the same reason rule 4
+is — it turns the common mistake into a caught one — and it must not be
+described as closing the channel. What closes the channel is that the grant
+exists, so a caller with a credential has somewhere correct to put it.
+
+**The general principle, restated correctly.** Any member that passes caller
+text through to the upstream request is a credential channel. The response is
+not to delete every such member, because some of them carry things a deployment
+genuinely needs. It is to make sure a correct path exists, make the incorrect
+path non-conformant, and catch the cases a validator can see.
+
+## Shared Vocabulary
+
+`ContentPart`, `ToolDefinition`, `Usage`, `ProtocolError` and the tool-call
+identity domain mean the same thing on both boundaries and are reused. An agent
+loop sitting between them must not translate a content part into a different
+content part.
+
+Nothing that mentions a session, a run or an interaction crosses down. Where the
+two profiles would otherwise diverge, this one yields: the boundary is younger
+and has no implementers to protect.
+
+### Stop reasons
+
+A closed set, taken from Makai's and shaped by what the vendors actually report:
+
+`stop`, `length`, `tool_use`, `content_filter`, `error`, `aborted`
+
+Agent control's `run.completed.stop_reason` is a free string, and an agent loop
+bridging the two may pass these through unchanged. That is a convenience, not a
+requirement — a loop's own stop reason is its own business.
+
+## Errors
+
+Every provider error maps to `ProtocolError`. The vendor's own status code,
+error type and message are preserved under `extensions`, never parsed into
+control flow by the caller.
+
+**The axis is what the recipient does next, not whether the request is
+retriable.** An earlier version of this draft defined six classes from what a
+caller needs in order to retry. Retriability is one question a caller asks and
+not the only one, and sorting Makai's sixteen codes by it collapses distinctions
+that need different responses. Retriability is derivable from the class below
+rather than primary.
+
+| Action | Codes | Why it is its own class |
+| --- | --- | --- |
+| **Retry** | `rate_limited`, `provider_unavailable` | Transient. Back off and send it again. |
+| **Refresh** | `credential_expired` | A credential aged out. A refresh may fix it with no human involved. |
+| **Authenticate** | `credential_missing`, `credential_rejected` | No usable credential. A human must log in, or the key is wrong and retrying the refresh loops. |
+| **Report** | `invalid_request`, `protocol_violation`, `unsupported_version`, `model_not_found` | The caller or the peer is broken. Fail loudly; someone reads a log. Retrying cannot help. |
+| **Accept** | `aborted` | A normal outcome that happens to travel as a terminal. Not a failure. |
+
+The three credential states are one retry class and three different actions,
+which is the clearest case for the change: "do not blindly retry" is a single
+bucket on the old axis and is useless to a caller deciding between prompting a
+human, refreshing silently, and giving up.
+
+`protocol_violation` covers what Makai splits into `invalid_sequence`,
+`duplicate_sequence` and `sequence_gap`. Those name which invariant broke, which
+matters to an implementer and not to a caller, so the invariant belongs in the
+error's message and `extensions` rather than in the code. An implementation that
+wants them as distinct codes is free to say so in `extensions`; a caller
+branching on them would be branching on somebody else's bug.
+
+**Stream-lifecycle errors are deliberately absent.** Makai carries
+`stream_not_found` and `stream_already_exists`, which are state errors on a
+multiplexing layer. Multiplexing is a binding concern here, so those are the
+binding's to report.
+
+## Version negotiation
+
+The envelope carries `version`, and an implementation states which versions it
+speaks in `provider.describe.response` as `protocol_versions[]`.
+
+**`provider.describe.request` must be answered at any version the
+implementation supports**, so discovery is never the thing that fails on a
+version mismatch. A caller describes first and speaks the highest version both
+sides carry.
+
+Makai negotiates the other way, through a rejection: there is no hello, a client
+sends at its preferred version, and a server that cannot speak it refuses with
+`version_mismatch` and a `supported_versions` list. Their own assessment is that
+this is adequate rather than good — it costs a round trip on every mismatch,
+gives a client no way to discover capabilities without attempting something, and
+populates `supported_versions` on one error code out of sixteen, which makes a
+special case wear a general field's clothing. This draft takes the requirement
+and not the mechanism.
+
+An envelope at an unsupported version is refused with `unsupported_version`,
+carrying `protocol_versions[]`, so the rejection path still works for a caller
+that skipped discovery.
+
+## Minimum Conformance
+
+An implementation claiming `open-agent-protocol.model-provider-core`:
+
+1. Answers `provider.describe.request` with at least one provider, naming its
+   `wire` and `framing`.
+2. Answers `provider.models.list.request`, and every `model_ref` it returns
+   resolves to a provider it described.
+3. Accepts `inference.create.request` and emits exactly one terminal per
+   inference.
+4. Emits contiguous per-inference `sequence` on every scoped event.
+5. Emits the started/delta/ended triple for every part it streams, with the
+   kind-discriminated payloads on start and end, or declares `stream`
+   unsupported and answers unary.
+6. Honours the `include_snapshot` value it accepted, and answers
+   `inference.sync.request` if it declared it.
+7. Carries a credential value out of band if its binding allows it, and only on
+   `provider.credential.grant.request` otherwise — never journalling, tracing or
+   replaying that pair.
+8. Marks a granted credential non-persistable at entry and honours the mark in
+   every refresh, cache and storage path.
+9. Refuses a grant with a typed `unsupported_feature` if it does not advertise
+   the capability, rather than accepting and ignoring it.
+10. Answers `provider.describe.request` at any version it supports, and lists
+    `protocol_versions[]`.
+11. States a compatibility fact where the provider it reaches diverges from the
+   wire it claims, or states none and claims nothing.
+
+Streaming is required only if advertised. A unary-only implementation is
+conformant; a streaming implementation that skips `part.ended` is not.
+
+## Open Questions
+
+These are open, and naming them is better than a draft that reads settled.
+
+**How is a vendor API pinned?** Every harness adapter in this repository pins an
+upstream commit or tag, and its corpus is hermetic against that pin. A vendor
+inference endpoint has neither. It changes without notice, under the same
+version string, and a captured stream is evidence of what one endpoint did once.
+[Decision 0016](../decisions/0016-model-provider-profile.md) says this has to be
+answered here rather than deferred, and this draft does not answer it. Recorded
+streams with a capture date and an evidence class are the obvious candidate, and
+`provider.EvidenceClass` is an existing attempt at the second half.
+
+**What drives conformance?** Serving Modes above settles the *shape* and
+nothing about readiness. Because a provider-profile implementation is
+independently servable, the harness can be the same one in outline: spawn a
+binary, drive a scripted inference over a line binding, hand the assembled trace
+to the validator. But the existing harness works because there is an endpoint
+built to be driven, and there is no counterpart here. Building one is the whole
+of the work, not a consequence of the profiles being independently servable —
+and an earlier version of this draft drew that conclusion too fast.
+
+Compatibility is a second, harder half. A loopback provider proves the envelopes
+and nothing about whether an endpoint honours the wire it claims; a live
+provider proves that on one day, for money. The two halves need different
+machinery, and only the first is cheap once something exists to drive.
+
+**Where does credential acquisition live?** `auth_status` now has a home — the
+model entry, five stable values, not revision-bound — but *acquiring* a
+credential still does not. The grant covers a caller handing one over. Nothing
+covers the flow that produces one: a device-code login, a browser redirect, a
+refresh that needs a human. Makai hosts a full auth protocol on its own identity
+domain for exactly this, above the provider layer. It is not in this profile and
+it is not in agent control, where the core draft also records it as open.
+
+**Is the grant the right shape for a caller-held credential?** The draft now
+admits one, on one envelope type, non-journalable, connection-scoped, validator-
+enforced and capability-gated. The reasoning is that the ban was always about
+the channel rather than about who owns the key. What is unproven is whether five
+rules are the right five: the non-journalable property in particular asks every
+binding and every intermediary to make an exception, and an exception that must
+be honoured everywhere is exactly the kind of rule that is honoured almost
+everywhere. A single binding that logs the grant makes the whole construction
+worthless, and the validator rule catches it only in traces this project
+assembles.
+
+**Is the compatibility set complete at twelve, and are the two renames right?** Twelve is one implementation's count, and a
+second implementation is as likely to add a thirteenth as to agree. The renames
+of `requires_mistral_tool_ids` and `supports_anthropic_cache_ttl` to
+`tool_call_id_format` and `cache_ttl_control` generalize away a vendor name on
+the belief that the underlying fact is general — plausible for both and checked
+against neither. The set wants a second implementation before it freezes, which
+is the standard
+[Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)
+applies to graduation.
+
+**Does `thinking_format` belong as a fact or a capability?** It is written here
+as a fact about the provider. It may be better as a declared support level, the
+way agent control reports `native`/`emulated`/`degraded`/`unavailable`.
+
+## Evidence And Standing
+
+This draft is written from two sources and neither makes it executable.
+
+**Makai's provider layer**, read from that tree on 2026-09-17, and read repeatedly against
+successive versions of this draft, which it corrected in ten places: the lossy
+part collapse, the missing snapshot, an unattested `unary`, a promoted-six
+compatibility split that failed its own test, a credential rule whose no-cost
+claim was false, a Serving Modes section that described software nobody has
+written, an exception-shaped grant where an out-of-band channel does better, a
+persistence path that would violate the grant's own rule, an error axis that
+collapsed three credential states into one, and an `auth_status` disposition
+that was wrong in the way its own earlier finding made it wrong. The facts
+below: the per-call and
+per-provider split, the event union and its triples, the stop reason set, the
+twelve compatibility divergences, the non-SSE framing, the credential-free
+construction, and `allows_anonymous`. It is not pinned in `adapter/makai/` and
+no Makai maintainer has asserted it, so it is not evidence under
+[Decision 0003](../decisions/0003-staged-unit-graduation.md)'s step 3. It is
+design input.
+
+**This repository's `provider` package**, which builds real requests for all
+three wires and parses each one's stream. It was written as a compatibility
+prober and its assumptions show — it requires `text/event-stream` — but the
+disagreements it had to encode are the ones the profile must carry.
+
+**No implementation speaks this profile**, because it did not exist until this
+draft. Under Decision 0015 it becomes executable when something outside this
+repository speaks it, and Makai doing so is the expected first case and is not
+sufficient alone if Makai becomes first-party.

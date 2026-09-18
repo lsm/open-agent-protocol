@@ -185,9 +185,14 @@ That `agent-control-core` gains an inference envelope. It does not, and the
 boundary section of its draft is unchanged.
 
 That the profile's envelope set is settled. This defines the boundary, the
-scope and the vocabulary-sharing rule. The envelopes, their schemas and the
-validator rules are the next decision, and it should be written against at
-least two wires implemented rather than from the shapes alone.
+scope and the vocabulary-sharing rule.
+[The model-provider-core draft](../drafts/model-provider-core.md) now proposes
+the envelopes — twelve, in three groups — and it is a draft rather than a
+decision for exactly the reason stated here: it is written from one
+implementation read and this repository's own prober, not from two wires
+implemented. Its schemas and validator rules remain the next decision, and its
+own Open Questions section names what the second implementation is expected to
+settle.
 
 That every provider feature is in scope. Batching, embeddings, fine-tuning,
 files, and vendor-specific server-side tools are not an agent loop's lower
