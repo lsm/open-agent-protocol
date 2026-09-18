@@ -74,10 +74,15 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 
 	modeFlag := fs.String("mode", string(validation.ModeStrict), "validation mode: strict (the bundle as published) or tolerant (the extension rules: unknown fields, enum values, and envelope types are accepted)")
 
+	provider := fs.Bool("provider", false, "validate against the model-provider-core profile instead of agent-control-core")
+
 	var packs repeatedFlag
 	fs.Var(&packs, "pack", "load an extension pack from a directory containing pack.json; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *provider && len(packs) > 0 {
+		return errors.New("extension packs are an agent-control-core mechanism and do not apply to the provider profile")
 	}
 	if *format != "human" && *format != "json" {
 		return fmt.Errorf("unsupported output format %q", *format)
@@ -93,7 +98,15 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	validator, err := validation.NewWith(validation.Options{Mode: mode, Packs: loaded})
+	type traceValidator interface {
+		Validate(io.Reader, string) validation.Result
+	}
+	var validator traceValidator
+	if *provider {
+		validator, err = validation.NewProviderValidatorWith(mode)
+	} else {
+		validator, err = validation.NewWith(validation.Options{Mode: mode, Packs: loaded})
+	}
 	if err != nil {
 		return err
 	}
