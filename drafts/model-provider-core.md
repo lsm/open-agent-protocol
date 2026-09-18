@@ -387,12 +387,57 @@ it is satisfied, not overridden.
 | `inference.create.request` | caller → implementation | the call (below) |
 | `inference.create.response` | implementation → caller | `inference_id`, `accepted`, `honoured`, or a typed refusal |
 | | | `honoured` is `{ include_snapshot }` — the effective values for every request member an implementation may downgrade, currently one |
-| `inference.started` | implementation → caller | `model_ref`, `started_at_ms` |
+| `inference.started` | implementation → caller | `model_ref`, `started_at_ms`, `endpoint?` |
 | `inference.part.started` | implementation → caller | `part_index`, `part_kind`, and for a tool call its `tool_call_id` and `name` |
-| `inference.part.delta` | implementation → caller | `part_index`, the increment |
-| `inference.part.ended` | implementation → caller | `part_index` |
+| `inference.part.delta` | implementation → caller | `part_index`, `delta`, `snapshot?` |
+| `inference.part.ended` | implementation → caller | `part_index`, the kind's content below, `carry?`, `snapshot?` |
 | `inference.completed` | implementation → caller | `message`, `stop_reason`, `usage?` |
 | `inference.failed` | implementation → caller | `error`, `usage?` |
+
+#### Member names
+
+An earlier version of this draft described the part payloads in prose — "the
+complete tool call", "the accumulated string" — and named no members. There was
+therefore nothing for a second implementation to agree with, and the first one
+invented names because it had to. Naming them is part of what the schemas are
+for, and the names belong here first.
+
+| Where | Member | Is |
+| --- | --- | --- |
+| `part.delta` | `delta` | the increment, a string for every kind |
+| `part.ended`, kind `text` or `reasoning` | `text` | the accumulated string |
+| `part.ended`, kind `tool_call` | `tool_call` | `{ tool_call_id, name, arguments_json }` |
+| `part.ended`, kinds `tool_call` and `reasoning` | `carry` | the opaque value handed back on the next call |
+| `part.delta`, `part.ended` | `snapshot` | the accumulated message, an array of `Message` |
+| any payload | `error` | a `ProtocolError` |
+
+`arguments_json` rather than `arguments`, because the member is a string
+containing JSON and a name that does not say so invites a decoder to treat it as
+an object.
+
+**No `action` member on a `ProtocolError`.** The first implementation emitted
+one — `retry`, `refresh`, `authenticate`, `report`, `accept` — derived entirely
+from `code`, and then argued for its own removal: a derived field on a wire is
+two sources of truth that can disagree, with nothing telling a caller which to
+believe, in exchange for what a caller gets from a lookup table. The error table
+above is that lookup table, and the profile forbids carrying its output.
+
+#### `endpoint` on `inference.started`
+
+Optional, and unset by an implementation that does not need it.
+
+It is derivable today: `model_ref` names a provider, the descriptor names an
+endpoint. It stops being derivable the moment an implementation routes
+dynamically — failover, regional routing, replicas — and the profile permits
+that without saying so, because `endpoint` is published *per descriptor* and
+nothing says it is the endpoint every call reaches.
+
+At that point it stops being a debugging convenience. A caller with
+data-residency obligations needs to know which region ran the inference, and
+"the descriptor said eu-west" is not an answer if the implementation failed over
+to us-east. No implementation routes dynamically today, so this is reasoning
+rather than evidence — but it is cheap now and cannot be retrofitted, because a
+caller cannot ask about a call that has already completed.
 
 #### The terminal agrees with its parts
 
@@ -610,10 +655,20 @@ where divergence is consequential, in both directions — push and pull have the
 same hole because they carry the same object.
 
 So a snapshot's tool-call part carries **either** `arguments_json`, when the
-part has ended and the arguments are complete, **or** `arguments_partial`: the
-accumulated fragment as an opaque string that is **explicitly not valid JSON**
-and must not be parsed. A part that is still open carries the second; a part
-that has ended carries the first. Both never appear together.
+arguments are complete, **or** `arguments_partial`: the accumulated fragment as
+an opaque string that is **explicitly not valid JSON** and must not be parsed.
+Exactly one, never both.
+
+**Within a snapshot, `arguments_partial` being present *is* the openness
+marker** — nothing else in an array of messages says a part is still open — so
+"only on an open part" is not a separate rule and cannot be written as one.
+
+**The rule that protects something is on the terminal.**
+`inference.completed.message` must not contain `arguments_partial` at all. That
+is where a fragment would do real damage: a terminal handing a caller
+unparseable arguments as if they were the finished call, which is the wrong tool
+invocation this whole section exists to prevent. It is also expressible without
+any notion of openness, which the snapshot rule is not.
 
 The two alternatives, and why they lose. Omitting in-flight parts and saying so
 is cheap and honest and leaves the recovery gap open for exactly the case that
@@ -945,6 +1000,19 @@ with no permitted-but-special case and no fixture for an exception.
 
 **A binding that can carry the value out of band must.** This is a requirement
 on bindings, not a preference.
+
+**One mechanism, not a mechanism plus an optimization.** A binding names one
+tier-1 channel. The alternative considered and rejected: a spawn binding could
+pass the value in an environment variable the nonce names, which needs no
+filesystem object and no new platform abstraction. It fails twice. A grant
+carries `ttl_ms` and expires *during* a connection, and a caller may hold
+credentials for several providers, so repeat mid-connection grants are the
+design rather than an edge case and a spawn-fixed channel cannot be the only
+form. And offering it *beside* another form moves the cost from one
+implementation to every caller, permanently: if an implementation may offer
+either, a portable caller implements both and can rely on neither without asking
+first. That is the wrong direction for a profile whose premise is that a caller
+speaks one language.
 
 **A binding must not assume numbered descriptors exist.** The obvious stdio form
 — open descriptor 3 — has no meaning on Windows, where an extra stdio slot is an
@@ -1509,7 +1577,7 @@ mid-stream cancel is seen, settled with one terminal. Against a local provider
 that is not running it answers `provider_unavailable`, a Retry-class error,
 which is the honest answer rather than a contrived one.
 
-**Twenty findings** from writing the vocabulary, codec, discovery, grants,
+**Twenty-one findings** from writing the vocabulary, codec, discovery, grants,
 admission, the wire mapping, the inference lifecycle, the compatibility facts
 and a spawnable endpoint are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
@@ -1553,16 +1621,19 @@ call, because `arguments_json` is complete JSON and a tool call in flight is a
 partial fragment — so the recovery mechanism was unavailable for the one part
 kind where divergence is consequential. And the profile had no way to say which
 revision of itself an implementation was built against, which costs nothing
-until one profile freezes and the other does not.
+until one profile freezes and the other does not. From the eleventh, which is
+the schema work starting: the draft named no payload members at all, describing
+them in prose, so there was nothing for a second implementation to agree with
+and the first invented names because it had to.
 
-Of the twenty, nineteen were places the draft was silent or wrong rather than
+Of the twenty-one, twenty were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
 produces a perfectly valid trace.
 
-**Four of the twenty corrected earlier findings from the same source rather
+**Four of the twenty-one corrected earlier findings from the same source rather
 than the draft**, and the pattern in them matters more than the count. Each
 superseded claim had been read off a call graph, a type name or a field's
 presence, and each correction came from reading the body: the persistence hazard
@@ -1600,7 +1671,7 @@ do not make a profile implementable; they make two implementations agree.**
 
 And the implementability it establishes is narrower than it looks: that
 implementation was written from this prose **with its author available**.
-Twenty findings are twenty places the prose alone was insufficient, each
+Twenty-one findings are twenty-one places the prose alone was insufficient, each
 resolved by asking. A second implementer gets none of that. So the standing is
 *implementable in conversation with the author*, and the findings are the
 measurement of the gap rather than a side effect of closing it.
