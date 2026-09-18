@@ -96,7 +96,7 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 			})
 			continue
 		}
-		for _, found := range credentialHeaders(e.Payload) {
+		for _, found := range credentialHeaders(e.Type, e.Payload) {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{
 				Fixture: fixture, Phase: PhaseSemantic, Code: CodeCredentialInHeaders, Index: i, Line: entry.line,
 				EnvelopeID: e.ID, Type: e.Type, Pointer: found.pointer,
@@ -173,35 +173,31 @@ var credentialHeaderNames = map[string]bool{
 	"api-key":             true,
 }
 
-func credentialHeaders(payload json.RawMessage) []headerFinding {
-	var document any
+func credentialHeaders(kind string, payload json.RawMessage) []headerFinding {
+	var document map[string]any
 	if err := json.Unmarshal(payload, &document); err != nil {
 		return nil
 	}
 	var found []headerFinding
-	scanHeaders(document, "/payload", &found)
-	sort.SliceStable(found, func(a, b int) bool { return found[a].pointer < found[b].pointer })
-	return found
-}
-
-func scanHeaders(node any, pointer string, found *[]headerFinding) {
-	switch typed := node.(type) {
-	case map[string]any:
-		for key, value := range typed {
-			at := pointer + "/" + escapePointer(key)
-			if key == "headers" {
-				if headers, ok := value.(map[string]any); ok {
-					collectCredentialHeaders(headers, at, found)
-					continue
-				}
-			}
-			scanHeaders(value, at, found)
+	switch kind {
+	case "inference.create.request":
+		if headers, ok := document["headers"].(map[string]any); ok {
+			collectCredentialHeaders(headers, "/payload/headers", &found)
 		}
-	case []any:
-		for i, value := range typed {
-			scanHeaders(value, fmt.Sprintf("%s/%d", pointer, i), found)
+	case "provider.describe.response":
+		descriptors, _ := document["providers"].([]any)
+		for i, entry := range descriptors {
+			descriptor, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			if headers, ok := descriptor["headers"].(map[string]any); ok {
+				collectCredentialHeaders(headers, fmt.Sprintf("/payload/providers/%d/headers", i), &found)
+			}
 		}
 	}
+	sort.SliceStable(found, func(a, b int) bool { return found[a].pointer < found[b].pointer })
+	return found
 }
 
 func collectCredentialHeaders(headers map[string]any, pointer string, found *[]headerFinding) {
