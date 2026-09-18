@@ -1500,10 +1500,11 @@ and an earlier version of this draft drew that conclusion too fast.
 **A harness that drives a binary from outside reaches a minority of the wire,
 and this is measured rather than estimated.** Of thirteen envelope types one
 implementation emits, five are reachable by spawning it and sending scripted
-envelopes with no credentials. The other eight — the tool-call part end, a
-snapshot carrying `arguments_partial`, the sync response, both grant refusals
-and the rest — exist only inside the implementation's own emitter, and were
-checked against the schemas only because their author temporarily printed every
+envelopes with no credentials: the two discovery responses, the two grant
+answers — which carry nonces and references, not secrets — and
+`inference.create.response`. The other eight are the whole of an inference's
+event stream, which exists only inside the implementation's own emitter and was
+checked against the schemas only because its author temporarily printed every
 outbound frame from a test and piped it into a validator.
 
 So a green harness does not mean the wire is covered, and anyone reporting
@@ -1520,14 +1521,17 @@ the line precisely. What a harness can do today: spawn a provider endpoint,
 drive discovery, drive a real inference against a **local, anonymous** provider
 with no credentials anywhere, and assemble a trace.
 
-That covers discovery, the inference lifecycle, the part triples, cancellation
-and the error classes. It does **not** cover four of the eighteen envelope
-types: the two `provider.credential.grant` envelopes, which a session with no
-credentials anywhere cannot reach by construction, and the `inference.sync`
-pair, which nothing described drives. The grant pair is the same gap the
-Evidence section names — the most argued part of the draft is the part nothing
-has run — arriving here as a hole in the harness rather than in the
-implementation.
+That covers the answers a request draws. What it does not cover is an
+inference's event stream — the part triple, a terminal that assembles, a
+snapshot mid-flight — which is the measurement above rather than a separate gap,
+and `inference.sync`, which nothing described drives.
+
+**The grant exchange is reachable, and an earlier version of this paragraph said
+it was not.** On a tier-1 binding the exchange carries a nonce, a channel and a
+reference and no secret, so a harness can drive a real one without holding a
+credential. What it cannot drive is the side channel the value crosses on, which
+is the thing the Evidence section names as the part nothing has run. Those are
+different gaps and conflating them made the harness look blinder than it is.
 
 What it cannot do is observe a single compatibility fact. The twelve are carried
 and mapped; none has been checked against the vendor it describes, because

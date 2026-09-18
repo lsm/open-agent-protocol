@@ -262,7 +262,7 @@ endpoint binding:
 ```json
 {"control":"specimen.accepted","id":"s1",
  "types":["inference.started","inference.part.started","..."],
- "excluded":["provider.credential.grant.request","provider.credential.grant.response"]}
+ "excluded":["provider.credential.grant.channel","provider.credential.grant.response"]}
 {"control":"specimen.error","id":"s1","code":"unsupported","message":"..."}
 ```
 
@@ -288,9 +288,19 @@ compatibility, one level down.
 - Each specimen is a real frame from the implementation's own emitter, not a
   literal an author wrote out. A specimen that does not come from the code that
   would emit it in earnest tests the specimen writer.
-- **The credential grant envelopes are excluded**, for the reason the profile
-  excludes them from traces: a specimen is a recording, and the exchange is not
-  recorded. They appear in `excluded`, never in `types`.
+- **The grant answers are excluded** — `provider.credential.grant.channel` and
+  `provider.credential.grant.response`. Not because they cannot be traced: on
+  this binding tier 1 is mandatory, so the exchange carries a nonce, a channel
+  and a reference and no secret, and a harness can drive a real one. They are
+  excluded because a **specimen** of either fabricates an exchange that did not
+  happen — a channel path nothing is listening on, and a `credential_ref`
+  naming a credential the implementation does not hold. A harness that could not
+  tell a specimen reference from a real one would be one confusion away from
+  using it. They appear in `excluded`, never in `types`.
+
+  `provider.credential.grant.request` is not in either list because the caller
+  sends it and the implementation never emits it. `types` and `excluded`
+  partition what an implementation *emits*.
 - A specimen run settles nothing and allocates nothing. No inference exists
   afterwards.
 
