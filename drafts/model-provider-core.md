@@ -316,11 +316,11 @@ over it rather than new plumbing, the same relationship its OAP bridge has to
 its agent loop. What does not exist anywhere is a mode that speaks this profile.
 The shape is there; the mode is not, and building it is the work.
 
-The binding is the same shape as
-[the endpoint stdio binding](endpoint-stdio.md) — raw OAP envelopes, one per
-line, the profile distinguishing which vocabulary is in play. That binding is
-written for agent control, a provider-profile binding is not yet specified, and
-nothing in it is agent-control-specific except the envelope set it carries.
+[The provider stdio binding](provider-stdio.md) is the transport, and it is the
+same shape as [the endpoint binding](endpoint-stdio.md) — raw OAP envelopes, one
+per line, the profile distinguishing which vocabulary is in play. What it adds
+is what a connection carrying many inferences at once needs, and the credential
+channel this profile leaves to a binding.
 
 ## Envelope Types
 
@@ -995,8 +995,8 @@ has none.
 
 The grant envelope carries a **nonce and nothing secret**. It says a credential
 is arriving for this nonce, not here is a credential. The value crosses on a
-channel the binding defines, keyed by that nonce — an extra file descriptor on
-stdio, a second pipe locally. The response returns `credential_ref` and
+channel the binding defines, keyed by that nonce; on stdio that is
+[a per-grant listening socket](provider-stdio.md). The response returns `credential_ref` and
 `inference.create.request` is unchanged.
 
 The reason to prefer this is structural rather than aesthetic. A journal, a

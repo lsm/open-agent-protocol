@@ -43,6 +43,7 @@ Current drafts:
 - [Agent Control Core](drafts/agent-control-core.md)
 - [Agent Control Profile](drafts/agent-control-profile.md)
 - [Model Provider Core](drafts/model-provider-core.md)
+- [Provider Binding: Inference Envelopes Over stdio](drafts/provider-stdio.md)
 - [Layered Agent Protocol](drafts/layered-agent-protocol.md)
 - [Staged Units Graduation Plan](drafts/staged-units-graduation.md)
 
