@@ -50,6 +50,7 @@ type providerPartEnded struct {
 	PartIndex int    `json:"part_index"`
 	PartKind  string `json:"part_kind"`
 	Text      string `json:"text"`
+	Carry     string `json:"carry"`
 	ToolCall  *struct {
 		ToolCallID    string          `json:"tool_call_id"`
 		Name          string          `json:"name"`
@@ -272,6 +273,13 @@ func partMismatch(fixture string, index, line int, e providerEnvelope, at int, e
 	}
 	if kind != ended.PartKind {
 		return defect(ended.PartKind, kind, "the terminal's content part is not the kind the part that ended declared")
+	}
+	var carry string
+	if raw, ok := terminal["carry"]; ok {
+		_ = json.Unmarshal(raw, &carry)
+	}
+	if carry != ended.Carry {
+		return defect(ended.Carry, carry, "the terminal's content part does not carry the opaque value the part ended with")
 	}
 	switch ended.PartKind {
 	case "text", "reasoning":

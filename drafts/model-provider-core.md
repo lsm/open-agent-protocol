@@ -331,7 +331,7 @@ Eighteen, in five groups.
 | Type | Direction | Carries |
 | --- | --- | --- |
 | `provider.describe.request` | caller → implementation | nothing required |
-| `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision`, `protocol_versions[]`, `profile_revision` |
+| `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision`, `protocol_versions[]`, `profile_revision?` |
 | `provider.models.list.request` | caller → implementation | `provider_id?` |
 | `provider.models.list.response` | implementation → caller | `models[]`, `capability_revision` |
 
@@ -582,7 +582,7 @@ in two places their union makes explicit:
 - `inference.part.ended` carries the complete tool call for a `tool_call`, and
   the accumulated string for `text` and `reasoning`. Those are different types,
   not different values of one type. Both `tool_call` and `reasoning` may also
-  carry an opaque `carry` — see `encrypted_carry` under The Call.
+  carry an opaque `carry` — see The Call.
 
 `part_index` is the correlation, and maps onto their `content_index`.
 
@@ -778,13 +778,35 @@ otherwise assume the profile forgot them.
 - sampling controls — `temperature`, `top_p`.
 - `output_schema` — structured output.
 - `stream` — boolean.
-- `reasoning` — `{ enabled?, budget_tokens?, effort?, encrypted_carry? }`.
+- `reasoning` — `{ enabled?, budget_tokens?, effort? }`. The carry is not here;
+  see below.
 - `include_snapshot` — `never`, `on_part_end`, `every_delta`.
 - `allow_degraded_features` — keys the caller will accept a downgrade on.
 - `headers` — non-secret request headers, such as tenancy or routing. Never a
   credential; see Credentials.
 - `credential_ref` — names a credential the implementation holds; never a value.
-- `metadata` — opaque, passed through.
+- `metadata` — opaque, and it stays with the endpoint. See below.
+
+**`metadata` does not reach the provider.** An earlier version of this draft
+said "opaque, passed through" and did not say through to *what*, which is two
+different implementations and an implementer asked rather than guessing. It is
+for the endpoint's own use — correlating an inference with the caller's request
+id, a tenant, a billing bucket, whatever the operator wants in its logs — and it
+is never written into the upstream request.
+
+The reason is the rule `headers` is already governed by: **any member that
+passes caller text through to the upstream request is a credential channel,
+whatever it is named.** `headers` is one and is kept, because tenancy and
+routing metadata genuinely have to accompany a request — so it is policed, with
+a named refusal and a validator diagnostic. `metadata` forwarded upstream would
+be a second such channel with none of that machinery, opaque by construction and
+therefore unpoliceable, and it would be one nobody would think to look at
+because the name suggests bookkeeping.
+
+A caller that needs a value to reach the provider uses `headers` and accepts the
+policing that comes with it. That is the whole difference between the two
+members, and it is why they are not interchangeable despite both being
+caller-supplied maps.
 
 One `reasoning` object replaces what Makai carries as seven separate options —
 `thinking_enabled`, `thinking_budget_tokens`, `thinking_effort`,
@@ -793,22 +815,52 @@ One `reasoning` object replaces what Makai carries as seven separate options —
 split is vendor vocabulary leaking into an options struct rather than two
 concepts, and this draft takes it as one.
 
-`encrypted_carry` is the member that has no equivalent in the flattened set and
-is here because dropping it would be silent: some vendors return reasoning in an
-opaque encrypted form that must be handed back verbatim on the next call or the
-chain breaks. Google's thought signature is the same shape from a different
-vendor. It is carried as an opaque value and never inspected.
+The carry has no equivalent in the flattened set and exists because dropping it
+would be silent: some vendors return reasoning in an opaque encrypted form that
+must be handed back verbatim on the next call or the chain breaks. Google's
+thought signature is the same shape from a different vendor. It is an opaque
+value and is never inspected.
 
 **It needs a return path, and an earlier version of this draft gave it none.** A
-caller could send an `encrypted_carry` and had no way to obtain one: no response
+caller could send a carry and had no way to obtain one: no response
 envelope carried it. A caller driving a multi-turn tool-calling conversation got
 a signature-less tool call on turn one, had nothing to send on turn two, and the
 chain broke — the exact failure the member exists to prevent. Half a mechanism
 is worse than none, because it reads as covered.
 
 So `inference.part.ended` carries an optional opaque `carry` for the `tool_call`
-and `reasoning` kinds, under the same contract as the request member: verbatim,
-never inspected, never interpreted.
+and `reasoning` kinds, and **the same member on the same kinds of content part
+in `messages[]` is how it goes back**: verbatim, never inspected, never
+interpreted, in both directions.
+
+**A request-level `reasoning.encrypted_carry` was the wrong shape and is
+removed.** It was one value per request against one carry per part, and an
+implementer building the inbound half asked the question that exposes it: with
+several reasoning parts in a conversation, which one does a single member belong
+to? Every answer is a placement rule the profile would have had to invent —
+attach it to the most recent reasoning block, or the last one replayed, or the
+first — and a vendor whose signature belongs to a *specific* block would break
+under any of them the moment two blocks are in play.
+
+Symmetry removes the question instead of answering it. A carry arrives on a
+part and goes back on the part it came from, so placement is not a rule anyone
+has to state and a conversation with six reasoning blocks carries six
+signatures, each where it belongs. The profile is proposed, so removing the
+request member costs an implementation that has not built the inbound half
+nothing — which is exactly the implementation that found this.
+
+This is the shape the outbound half already had. The asymmetry was invisible
+while only the outbound half existed, which is the general form: a return path
+added to a one-directional member is not finished until something sends one
+back.
+
+**The terminal assembly carries it too**, and the validator checks that: a
+terminal content part must repeat the carry its part ended with. Without that
+rule an implementation could stream signed parts and settle with an unsigned
+assembly, and a caller that replays the terminal message — which is the obvious
+thing to replay, being the complete one — would hand back a history with every
+signature stripped. That is the broken chain the member exists to prevent,
+arriving through the one envelope a caller trusts most.
 
 **On the part, not on the terminal.** A signature belongs to a specific part,
 and a message with three reasoning parts needs three of them. In the
@@ -833,9 +885,9 @@ fillable by nobody.
 The ambiguity is a *discovery* question, and the profile already puts those on
 the descriptor. `round_trips_carry` says whether a carry this implementation
 emits can be handed back and reach the provider, and two existing rules then do
-the work. Clause 12 binds it in both directions: an endpoint that round-trips
+the work. Clause 13 binds it in both directions: an endpoint that round-trips
 must say so, and one that says so must do it. And the create-time rule covers
-the caller, because sending `encrypted_carry` to an endpoint whose descriptor
+the caller, because sending a carry to an endpoint whose descriptor
 says `false` is decidable from the descriptor and the request alone — so it is
 refused at create, rather than discovered a turn later when the vendor rejects a
 replayed block.
@@ -843,8 +895,8 @@ replayed block.
 The member is added while nothing implements the round trip, which is the
 cheapest moment: no implementation has to change behaviour to comply, and the
 one that has this gap is obliged to advertise `false` rather than leave it
-silent. That silence is the under-claim shape clause 12 names, sitting in the
-implementation clause 12 was written against.
+silent. That silence is the under-claim shape clause 13 names, sitting in the
+implementation clause 13 was written against.
 
 This is one vendor's mechanism seen in one implementation, which is thin by this
 draft's own standard. It is in because the failure it prevents is silent and the
@@ -872,8 +924,8 @@ model error.
   credential it can hold without writing them down.
 - `allows_anonymous` — this provider needs no credential.
 - `round_trips_carry` — whether a `carry` this implementation emits on a
-  `tool_call` or `reasoning` part can be handed back as `encrypted_carry` on the
-  next call and reach the provider. Absent means no.
+  `tool_call` or `reasoning` part can be handed back on the matching content
+  part of the next call and reach the provider. Absent means no.
 
 `round_trips_carry` absent means no, and that is safe here for a reason worth
 stating rather than assuming: a caller that reads absent, a caller that reads
@@ -891,6 +943,15 @@ implementation that treats absence-of-credential as an error state refuses a
 correctly configured provider.
 
 ## Compatibility Facts
+
+**Provisional for 0.1.0.** Every other part of this profile is about frame
+shape, sequencing and ownership — things an implementation can be driven to
+demonstrate and a suite can check. These twelve are the only part that asserts
+something about the *world*: what a named vendor's endpoint actually does. None
+has been checked against the vendor it describes, and the one that met a real
+options struct needed an undecidable case added on first contact. Treat the
+table as a named annex that may change in a way the rest of the profile may not,
+and do not read a tagged release shipping alongside it as settling it.
 
 The closed set an implementation states about a provider that claims a wire. It
 is Makai's `OpenAICompatOptions` — twelve fields, each one a vendor that broke a
@@ -1156,6 +1217,35 @@ A grant is connection-scoped, expires at `expires_at_ms` if one is set, and does
 not survive a reconnect. A credential that survives a restart is one the
 operator never configured and cannot revoke.
 
+**`expires_at_ms` binds the implementation that issued it, and expiry destroys
+the material.** An implementation that publishes an expiry MUST refuse a
+`credential_ref` used past it — `credential_expired`, not
+`credential_missing` — and MUST discard the credential value at that moment
+rather than merely stop honouring the reference.
+
+Both halves are load-bearing and the second is the one an implementation
+forgets. **The argument for it is the published lifetime, not a hypothetical
+reader.** An implementation that refuses the reference while the plaintext sits
+in a table keyed by it has held a secret past the lifetime it announced — which
+is a fact about its own published claim, true whether or not anything ever reads
+that value again. It does not rest on someone later wiring up a new reader,
+which invites the answer that nobody did. An implementation was found in exactly
+this state, refusal added and material retained until connection teardown, and
+reported it rather than treating the refusal as sufficient.
+
+The code is pinned because the taxonomy is worth nothing if the same situation
+produces different codes in different implementations. An endpoint can tell
+expired from absent by consulting its own grant table, with no upstream attempt
+and no ambiguity, so the caller gets the distinction it can act on: **refresh**
+for an expiry it can renew without a human, **authenticate** for a reference
+that was never granted.
+
+Until this was written the member stated a fact nothing checked. An
+implementation could compute an expiry, return it, and consult it never — which
+one did, matching on reference alone, so a caller's own connection was the real
+lifetime. That is the `round_trips_carry` shape again: a published claim with no
+obligation attached to it.
+
 **That property does not follow from the profile alone, and it asks for more
 than a flag.** An earlier version of this draft said a granted credential is
 "marked non-persistable at the point it enters the implementation" and that
@@ -1354,8 +1444,9 @@ overlap each boundary carries codes the other has no referent for: agent control
 has `session_not_found`, `run_not_found`,
 `run_already_terminal`, `session_busy` and `stale_capabilities`, none of
 which has a referent below the loop; this profile has `credential_missing`,
-`credential_rejected`, `credential_expired`, `provider_unavailable` and
-`aborted`, none of which belongs above it. One type carrying both would be the union of
+`credential_rejected`, `credential_expired`, `provider_unavailable`,
+`resource_exhausted`, `endpoint_error` and `aborted`, none of which belongs
+above it. One type carrying both would be the union of
 everything, which is what an error code exists to avoid. So an implementation
 reuses the shape and defines its own enum, and a reader implementing both should
 expect exactly that.
@@ -1403,11 +1494,48 @@ rather than primary.
 
 | Action | Codes | Why it is its own class |
 | --- | --- | --- |
-| **Retry** | `rate_limited`, `provider_unavailable` | Transient. Back off and send it again. |
+| **Retry** | `rate_limited`, `provider_unavailable`, `resource_exhausted`, `endpoint_error` | Transient. Back off and send it again. |
 | **Refresh** | `credential_expired` | A credential aged out. A refresh may fix it with no human involved. |
 | **Authenticate** | `credential_missing`, `credential_rejected` | No usable credential. A human must log in, or the key is wrong and retrying the refresh loops. |
-| **Report** | `invalid_request`, `protocol_violation`, `unsupported_version`, `model_not_found` | The caller or the peer is broken. Fail loudly; someone reads a log. Retrying cannot help. |
+| **Report** | `invalid_request`, `protocol_violation`, `unsupported_version`, `unsupported_feature`, `model_not_found` | The caller or the peer is broken. Fail loudly; someone reads a log. Retrying cannot help. |
 | **Accept** | `aborted` | A normal outcome that happens to travel as a terminal. Not a failure. |
+
+**The set is closed and the schema enforces it.** An earlier version of this
+draft listed the codes in prose over an open `code` string, so an implementation
+could emit anything and a caller branching on the table was branching on a
+convention. `providerError` now constrains `code` to the enum above on every
+envelope this profile carries an error on, and a code outside it is
+`schema_invalid`. That is what makes the action axis a contract rather than a
+recommendation: a caller can exhaust the table.
+
+Two codes were missing from the table when it was only prose, and both were in
+use. `unsupported_feature` is named four other places in this draft — it is
+what an endpoint returns for a grant it does not accept — and appeared in no
+class. `resource_exhausted` is new, and it exists because a real implementation
+had nowhere to put it: both of its decoders mapped every JSON parse failure,
+including running out of memory, to `protocol_violation`, so a host under memory
+pressure told its peer that its frame was malformed. The caller is told to report
+a bug when the correct action is to back off. The code is the profile's half of
+that fix; whether an implementation can allocate the error frame at all, and so
+whether the honest behaviour is to send it or to drop the connection, is the
+binding's question and the stdio binding's exit contract is where it belongs.
+
+**`endpoint_error` is the endpoint's own failure, and it is a separate code
+inside the same action.** A code is not a member, and the test that keeps a
+member out — a caller that cannot act differently does not need it — does not
+keep a code out, or this class would collapse to one. Four codes share Retry
+because the action is the same and the *cause* is not, and the cause is what a
+log reader and an operator need.
+
+The reason it earns its own code rather than reusing `provider_unavailable` is
+that reuse is a false statement about a third party. An implementation whose
+pump fails to assemble a terminal, reporting the provider as unavailable, fills
+a trace with evidence against a vendor that did nothing wrong — and traces are
+exactly what someone reads when deciding whether a provider is flaky. An
+implementation found doing this had a local `internal_error` outside the
+profile's set, which is the same fact arriving the other way: the code existed
+because the taxonomy had no place for it, and nothing could catch the divergence
+while `code` was an open string.
 
 The three credential states are one retry class and three different actions,
 which is the clearest case for the change: "do not blindly retry" is a single
@@ -1420,6 +1548,23 @@ matters to an implementer and not to a caller, so the invariant belongs in the
 error's message and `extensions` rather than in the code. An implementation that
 wants them as distinct codes is free to say so in `extensions`; a caller
 branching on them would be branching on somebody else's bug.
+
+**Which code a closed payload's violation takes.** A frame carrying a member
+the payload does not define is `invalid_request`, not `protocol_violation`, and
+the rule that decides it is: **the code names whose mistake it is.** A caller
+that sent an unknown member sent a bad request, and `invalid_request` puts the
+fault where a log reader will look for it. `protocol_violation` is for the
+invariants an implementation breaks after a request was accepted — sequence
+gaps, duplicate terminals, an event after settlement. Both are Report and the
+caller does the same thing with either, which is again why the distinction is
+worth having: the action is for the caller, the code is for whoever has to fix
+it.
+
+This needs saying because `schema_invalid` is a validator diagnostic and not an
+error code, so an implementation refusing a closed payload has to pick a code
+with nothing in the profile telling it which. Two implementations picking
+differently for the same frame would make the code useless for exactly the
+person the code is for.
 
 **Stream-lifecycle errors are deliberately absent.** Makai carries
 `stream_not_found` and `stream_already_exists`, which are state errors on a
@@ -1472,6 +1617,23 @@ naming the revision of `model-provider-core` the implementation was built
 against. Only an unfrozen profile needs to populate it; a frozen profile is
 pinned by its version and has nothing to add.
 
+**It must name a state, not a stream.** An implementation that tracks this
+draft's main branch publishes the commit of the draft it was built against, not
+`"main"` — a branch name is the same string for every revision it ever held, so
+a field carrying one answers nothing and costs a round trip to discover that. A
+tag, a commit, or a dated revision all identify a state and are all acceptable;
+the opacity is about the format, not about whether it distinguishes anything. An
+implementation with nothing that identifies a state omits the member, which at
+least says so, rather than publishing a name that looks like an answer.
+
+**A stale value is the correct output, not a defect to avoid.** Once this draft
+moves and an implementation has not re-implemented against it, the commit it
+publishes is older than the draft — and that is precisely the fact a caller
+needs, because the member answers what the implementation was built against and
+never what exists. An implementation that keeps the value fresh by pointing it
+at a stream, or omits it to avoid looking behind, has removed the only signal
+that would have told a caller the two are out of step.
+
 This is cheap now and expensive later, because whatever expresses it is itself a
 schema change — which is the argument for settling it before schemas exist
 rather than after.
@@ -1492,35 +1654,39 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    kind-discriminated payloads on start and end, or declares `stream`
    unsupported and answers unary. Refuses a `tool_call` start missing its
    identity **and** a `text` or `reasoning` start carrying one.
-6. Refuses an `include_snapshot` it does not support unless the request allows
+6. Refuses a `credential_ref` past the `expires_at_ms` it published, with
+   `credential_expired`, and discards the credential value at that moment.
+7. Refuses an `include_snapshot` it does not support unless the request allows
    degradation, honours what it accepted, reports it in `honoured`, and answers
    `inference.sync.request` if it declared it.
-7. Carries a credential value out of band if its binding allows it, and only on
+8. Carries a credential value out of band if its binding allows it, and only on
    `provider.credential.grant.request` otherwise — never journalling, tracing or
    replaying that pair.
-8. Holds a granted credential in a representation from which durable storage is
+9. Holds a granted credential in a representation from which durable storage is
    unreachable, and refuses a grant whose kind it cannot hold that way —
    publishing which kinds it can in `grant_kinds`. Burns a nonce at its arrival
    deadline, discards a value arriving late or for a nonce never issued, and
    never blocks the envelope stream on the side channel.
-9. Publishes `credential_grant` on every descriptor, and refuses a grant with a
+10. Publishes `credential_grant` on every descriptor, and refuses a grant with a
    typed `unsupported_feature` where it says `none` rather than accepting and
    ignoring it.
-10. Answers `provider.describe.request` at any version it supports, and lists
+11. Answers `provider.describe.request` at any version it supports, and lists
     `protocol_versions[]`.
-11. States a compatibility fact where the provider it reaches diverges from the
+12. States a compatibility fact where the provider it reaches diverges from the
    wire it claims, or states none and claims nothing.
-12. Serves everything its descriptors claim, and claims everything it can
+13. Serves everything its descriptors claim, and claims everything it can
    serve.
-13. Accepts an operator-set destination override for every provider it
+14. Accepts an operator-set destination override for every provider it
    describes, out of band and never from the wire.
+15. Can name, for every member of an inbound payload it accepts, what reads it
+    on the path that acts on it.
 
 Streaming is required only if advertised. A unary-only implementation is
 conformant; a streaming implementation that skips `part.ended` is not.
 
 ### An implementation that cannot be repointed cannot be tested
 
-Clause 13 looks like a deployment convenience and is not. There is no way to
+Clause 14 looks like a deployment convenience and is not. There is no way to
 conformance-test this profile without pointing an implementation at a controlled
 endpoint, and no alternative route to one exists. A real vendor credential buys
 compatibility testing, not conformance: the frames are whatever the vendor sent,
@@ -1535,6 +1701,16 @@ implementation that builds its destination from a built-in literal and ignores
 the override does not fail: the suite runs, the frames validate, and every
 request went to the vendor. A green conformance report that tested nothing is
 worse than a red one.
+
+**The schema enforces this, and does not merely fail to provide it.**
+`inference.create.request` is a closed payload — the member list is fixed and
+`additionalProperties` is `false` — so a destination arriving on the wire under
+any name is `schema_invalid` at the validator rather than an unknown field an
+implementation happens to ignore. The difference matters: ignoring is a property
+of one decoder and can change without anyone noticing, while refusing is a
+property of the profile that every implementation inherits. A later revision
+that wanted a caller-supplied destination would have to add the member, in the
+open, against this clause.
 
 **The override is operator configuration, and must never be a member of the
 create request.** Every implementation resolves the destination first and
@@ -1573,7 +1749,7 @@ it, which is why the implementation that has this asks the operator with a
 separate flag rather than detecting it. So requiring the distinction would mean
 the profile specifying how an implementation is *told* which redirect it is
 looking at — and the only place that can live is operator configuration, which
-clause 13 has just put off the wire. The stronger form is in tension with 13,
+clause 14 has just put off the wire. The stronger form is in tension with 14,
 not merely later than it.
 
 The soft form also closes the objection it appears to leave open. A suite that
@@ -1582,6 +1758,58 @@ one. What survives is a non-suite caller trusting stale facts after an operator
 redirected the provider — and that is inside the operator's trust boundary by
 construction, because the operator set the override. The harm that outlives the
 soft clause belongs to the party who caused it.
+
+### Consume what you accept
+
+Clause 15 is clause 13 one layer in. Thirteen says serve what you claim;
+fifteen says read what you take. A receiver can decode a member, validate it, and drop
+it, and every frame in that exchange is correct — the caller's intent was
+parsed and discarded, and nothing on the wire distinguishes the endpoint that
+honoured a member from the one that threw it away, until the turn where the
+absence matters.
+
+Three members reached that state in this draft's first implementation: a
+compatibility mapping whose only callers were tests, a reasoning carry read out
+of a structure no provider populates, and a `credential_ref` checked at create
+and discarded, which left the host unable to tell which inference a grant
+belonged to. A fourth pair is `metadata` and the four reasoning options, decoded
+in full and then refused — the caller's intent parsed and dropped at two
+separate places for two different reasons.
+
+**Unlike clause 13, this one is mechanically checkable, inside an implementation
+rather than from a trace.** Strip test code, then ask whether anything outside
+the type and codec files reads each decoded member. That is the unreferenced-
+function sweep applied one level down, and the same instrument that finds a
+function nothing calls finds a field nothing reads.
+
+It needs one split to be usable, and the split is knowable from the profile
+rather than guessed: **a member on an inbound payload with no consumer is a
+defect; a member on an outbound payload with no consumer is normal**, because
+its consumer is at the other end of the wire. Without that distinction the check
+reports every descriptor member as dead — `round_trips_carry` has no local
+reader by design.
+
+So this is not an open question, and an earlier version of this draft recorded
+it as one. What was missing was not an instrument but the generalisation: the
+implementation that found all three already had the function-level sweep and had
+not turned it on fields.
+
+**The sweep proves a member is not dead. It does not prove the member reaches
+its destination, and the difference is a systematic blind spot rather than a
+gap in one implementation.** A member with a legitimate reader in cloning,
+serialization or tests passes the sweep while never reaching the provider — and
+every member of a type that round-trips through its own codec has such a reader.
+A fourth case was found this way and not by the probe: a replayed `reasoning`
+content part was decoded, cloned, serialized and asserted on, and then dropped
+by the one function that turns an OAP message into a provider request, whose
+switch handled `text` and fell through everything else. "Has a consumer" was
+true and useless.
+
+Reachability from a named sink is a much larger instrument than a reference
+sweep, and this draft does not pretend the smaller one covers it. Clause 15
+therefore asks an implementer a question rather than pointing at a tool: name
+what reads this member **on the path that carries it to the provider**. The
+sweep narrows the search and does not answer it.
 
 ### Under-claiming is non-conformance, and only one direction is checkable
 
@@ -1596,7 +1824,7 @@ validates against the schema. Nothing in the trace is wrong. The endpoint is
 simply lying about itself by omission, and a well-behaved caller never asks for
 what the descriptor did not list, so nothing ever discovers it.
 
-Clause 12 is therefore stated as a conformance requirement and not as a
+Clause 13 is therefore stated as a conformance requirement and not as a
 validator rule. No trace can carry the violation, so `validation/provider.go`
 will never grow a code for it; this is deliberate, not the class of gap where
 prose runs ahead of machinery. What the clause buys is a sentence a conformance
@@ -1821,7 +2049,7 @@ the text.
 
 From the sixth: `usage_in_streaming` was
 presented as a transcription of an existing fact and is a re-derivation of an
-adjacent one, and `encrypted_carry` could be sent and never obtained.
+adjacent one, and a reasoning carry could be sent and never obtained.
 
 From the seventh: `other` in a model reference is a
 constant, so the component that exists to distinguish carries the same value for
@@ -1915,13 +2143,19 @@ Two tiers, a nonce, a binding-defined side channel, a mandatory-where-achievable
 rule: all unexercised. Treat that section as the least tested thing in this
 draft rather than the most, whatever its density of argument suggests.
 
-The reason has changed once and is worth tracking. It was that the
-implementation had no way to hold a caller-granted credential without writing it
-down. That capability now exists (`lsm/makai#343`) — a second store no writer
-can reach, structural rather than flagged, about a day's work against an
-estimated re-architecture. The remaining reason is that **the stdio binding's
-side channel is unspecified**, so there is nothing for a grant to arrive on.
-That is this project's gap, not an implementation's.
+The reason has changed twice, and tracking it is the point. It was first that
+the implementation had no way to hold a caller-granted credential without
+writing it down. That capability now exists (`lsm/makai#343`) — a second store no
+writer can reach, structural rather than flagged. It was then that the stdio
+binding's side channel was unspecified, so there was nothing for a grant to
+arrive on. **That is no longer true**: [the stdio binding](provider-stdio.md)
+specifies the channel — a per-grant socket, the `provider.credential.grant.channel`
+envelope, a nonce, an arrival deadline and a burn rule.
+
+So both of this project's reasons are discharged, and what remains is that no
+implementation has exercised the path. The gap moved from the protocol to an
+implementation, which is a different thing to be waiting on and should not go on
+being described as a specification hole.
 
 **No compatibility fact has been observed.** All twelve are carried and mapped
 and none has been checked against the vendor it describes.

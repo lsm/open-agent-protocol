@@ -68,6 +68,16 @@ func TestProviderTerminalOfADifferentKindCarryingNothingToCompare(t *testing.T) 
 	}
 }
 
+func TestProviderTerminalDroppingACarryItsPartEndedWith(t *testing.T) {
+	signed := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"reasoning","text":"thinking","carry":"sig-1"}}`
+	if !hasCode(providerTrace(t, signed, completed(`[{"type":"reasoning","reasoning":"thinking"}]`)), validation.CodeTerminalNotAssembly) {
+		t.Fatal("a terminal that dropped its part's carry was admitted")
+	}
+	if result := providerTrace(t, signed, completed(`[{"type":"reasoning","reasoning":"thinking","carry":"sig-1"}]`)); len(result.Diagnostics) != 0 {
+		t.Fatalf("a terminal repeating its part's carry was rejected: %v", result.Diagnostics)
+	}
+}
+
 func TestProviderPartsEndingOutOfIndexOrder(t *testing.T) {
 	assembled := `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`
 	result := providerTrace(t, toolEnded, textEnded, completed(assembled))
@@ -165,7 +175,7 @@ func hasCode(result validation.Result, code string) bool {
 	return false
 }
 
-func TestProviderCredentialInCallerHeaders(t *testing.T) {
+func TestProviderNamedAndBearerShapedCallerHeadersAreRefused(t *testing.T) {
 	for _, testCase := range []struct{ name, headers string }{
 		{"authorization", `{"Authorization":"Basic abc"}`},
 		{"lowercased", `{"authorization":"Basic abc"}`},
@@ -209,7 +219,7 @@ func TestProviderHeadersCarryingTenancyAreAdmitted(t *testing.T) {
 	}
 }
 
-func TestProviderHeaderScanStaysInsideTheDocumentedLocations(t *testing.T) {
+func TestProviderToolSchemaDescribingAHeadersPropertyIsNotAHeader(t *testing.T) {
 	envelope := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"c1","payload":{"model_ref":"p1/m1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"http_request","input_schema":{"properties":{"headers":{"description":"Bearer auth is injected by the gateway"}}}}]}}`
 	if hasCode(providerTrace(t, envelope), validation.CodeCredentialInHeaders) {
 		t.Fatal("a tool's input_schema describing a headers property is not a credential in a header")

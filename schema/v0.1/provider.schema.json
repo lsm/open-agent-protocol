@@ -283,6 +283,37 @@
       "properties": {},
       "additionalProperties": false
     },
+    "providerError": {
+      "allOf": [
+        {
+          "$ref": "common.schema.json#/$defs/protocolError"
+        },
+        {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/errorCode"
+            }
+          }
+        }
+      ]
+    },
+    "errorCode": {
+      "enum": [
+        "rate_limited",
+        "provider_unavailable",
+        "resource_exhausted",
+        "endpoint_error",
+        "credential_expired",
+        "credential_missing",
+        "credential_rejected",
+        "invalid_request",
+        "protocol_violation",
+        "unsupported_version",
+        "unsupported_feature",
+        "model_not_found",
+        "aborted"
+      ]
+    },
     "describeResponse": {
       "type": "object",
       "required": [
@@ -388,7 +419,7 @@
           "type": "integer"
         },
         "error": {
-          "$ref": "common.schema.json#/$defs/protocolError"
+          "$ref": "#/$defs/providerError"
         }
       },
       "additionalProperties": false,

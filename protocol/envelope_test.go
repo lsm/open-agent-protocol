@@ -96,3 +96,37 @@ func TestNewEnvelopeAndTypedPayload(t *testing.T) {
 		t.Fatal("JSONL output lacks newline")
 	}
 }
+
+func TestContentPartCarrySurvivesARoundTrip(t *testing.T) {
+	for _, testCase := range []struct{ name, raw string }{
+		{"reasoning", `{"type":"reasoning","reasoning":"thinking","carry":"sig-1"}`},
+		{"tool call", `{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"},"carry":"sig-2"}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var part ContentPart
+			if err := json.Unmarshal([]byte(testCase.raw), &part); err != nil {
+				t.Fatal(err)
+			}
+			if part.Carry == "" {
+				t.Fatal("the carry was dropped on decode")
+			}
+			encoded, err := json.Marshal(part)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(encoded, []byte(`"carry":`)) {
+				t.Fatalf("the carry was dropped on encode: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestContentPartWithoutACarryEncodesNone(t *testing.T) {
+	encoded, err := json.Marshal(ContentPart{Type: ContentText, Text: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("carry")) {
+		t.Fatalf("a part with no carry encoded one: %s", encoded)
+	}
+}

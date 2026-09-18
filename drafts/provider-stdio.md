@@ -134,6 +134,30 @@ A binding for a platform genuinely without them would need another form. None of
 the platforms this has been built against is one, so that form is not specified
 here rather than guessed at.
 
+**An implementation that cannot open the channel advertises `none`.** Where a
+build cannot serve this tier, `credential_grant` is `none` and `grant_kinds` is
+empty for every provider it describes — not the tier advertised and every grant
+refused. A caller then reads the limit from the descriptor and declines, or
+reaches that implementation over a binding whose tier it can serve, instead of
+discovering the limit by being refused. It does not fall back to tier 2 here:
+this binding makes `on_envelope` non-conformant outright, so on stdio a
+`none` descriptor means no caller-held credential at all rather than a lesser
+one. This is the descriptor
+rule the profile applies to features, reaching a build's environment instead:
+publish what this build can do, never what the codebase can do.
+
+**The condition is a capability, never a platform name.** An implementation
+gating this on an operating system encodes its belief about that system into
+something that keeps applying after the belief stops being true — and the belief
+is usually about a toolchain rather than a platform. A first implementation of
+this section reported unix sockets unavailable on Windows; what was true is that
+the platform has them and that implementation's standard library exposed none
+for that target. The guard that says "not Windows and no unix sockets" keeps
+excluding the platform after its toolchain gains support, while the guard that
+asks only whether this build has a unix socket corrects itself. This binding
+therefore names no platform in the condition, and neither should an
+implementation.
+
 **Not a numbered descriptor.** The obvious spawn form — inherit descriptor 3 —
 has no meaning on Windows, where an extra stdio slot is an inherited handle
 rather than a numbered descriptor. A binding built on numbered descriptors would
@@ -220,6 +244,20 @@ The endpoint binding's contract, with inferences in place of runs.
   outlives it.
 - A malformed line is fatal as classified above, with one bounded diagnostic to
   stderr.
+- **An implementation that cannot build its own error frame terminates.** The
+  case is real rather than theoretical: a line that exhausts memory during
+  decoding is reported with `resource_exhausted`, and emitting that report also
+  allocates. So the rule is attempt the frame, and if building or writing it
+  fails, flush whatever is already queued, write one bounded diagnostic to
+  stderr and exit non-zero. **It must not retry the emission** — retrying an
+  allocation that has just failed is how exhaustion becomes a spin, and the
+  caller learns more from a closed connection than from a process that stops
+  answering while still holding one open.
+
+  The diagnostic must name exhaustion rather than the line. An implementation
+  that reports "undecodable input" here tells the caller its frame was
+  malformed, which is the same false attribution `resource_exhausted` exists to
+  prevent, arriving on the one channel the caller can still read.
 
 ## What this binding does not carry
 
@@ -332,14 +370,31 @@ An implementation claiming this binding:
 6. If it advertises `out_of_band`: creates a per-grant socket with
    owner-only permissions, accepts one connection, enforces the 30-second
    deadline, burns the nonce, and destroys the socket when the grant settles.
-7. Never blocks its envelope reader on the credential channel.
-8. Settles every accepted inference before exiting 0.
-9. If it supports a specimen request: answers it with one correlated
+7. If it publishes `expires_at_ms`: refuses that `credential_ref` past it with
+   `credential_expired`, and discards the value at that moment.
+8. Never blocks its envelope reader on the credential channel.
+9. Settles every accepted inference before exiting 0.
+10. If it supports a specimen request: answers it with one correlated
    `specimen.accepted` whose `types` are exactly the specimens that follow and
    whose `excluded` names what it supports but withholds, then emits one
    instance of each type in that order, each from its own emitter, allocating
    nothing. An implementation that does not support it answers `specimen.error`,
    because an unanswered control frame is indistinguishable from a stall.
+
+**Rule 7 is the one a harness can drive cheaply, and should.** Grant with a
+short `ttl_ms`, wait past it, send `inference.create` naming the reference, and
+require a refusal. It needs no credential worth protecting, no upstream, and no
+provider — a static value and a local socket are enough — and it separates an
+implementation that publishes an expiry from one that applies it. That
+distinction is invisible in every other exchange, because a grant that is
+honoured and a grant that is expired-but-still-honoured produce identical
+frames.
+
+The discard half is not observable from outside and is not checkable this way,
+so it is carried by implementers rather than by a harness — which is exactly
+when its justification has to stand without help. It does: an implementation
+that refuses the reference while the plaintext waits in a table keyed by it has
+held a secret past the lifetime it itself published.
 
 ## Open questions
 

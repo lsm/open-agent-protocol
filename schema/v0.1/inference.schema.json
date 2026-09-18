@@ -32,9 +32,6 @@
         },
         "effort": {
           "$ref": "provider.schema.json#/$defs/reasoningLevel"
-        },
-        "encrypted_carry": {
-          "type": "string"
         }
       },
       "additionalProperties": false
@@ -239,7 +236,7 @@
           "$ref": "#/$defs/honoured"
         },
         "error": {
-          "$ref": "common.schema.json#/$defs/protocolError"
+          "$ref": "provider.schema.json#/$defs/providerError"
         }
       },
       "additionalProperties": false,
@@ -507,7 +504,7 @@
       ],
       "properties": {
         "error": {
-          "$ref": "common.schema.json#/$defs/protocolError"
+          "$ref": "provider.schema.json#/$defs/providerError"
         },
         "usage": {
           "$ref": "common.schema.json#/$defs/usage"
