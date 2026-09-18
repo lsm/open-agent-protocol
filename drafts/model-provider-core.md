@@ -1454,9 +1454,118 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
     `protocol_versions[]`.
 11. States a compatibility fact where the provider it reaches diverges from the
    wire it claims, or states none and claims nothing.
+12. Serves everything its descriptors claim, and claims everything it can
+   serve.
+13. Accepts an operator-set destination override for every provider it
+   describes, out of band and never from the wire.
 
 Streaming is required only if advertised. A unary-only implementation is
 conformant; a streaming implementation that skips `part.ended` is not.
+
+### An implementation that cannot be repointed cannot be tested
+
+Clause 13 looks like a deployment convenience and is not. There is no way to
+conformance-test this profile without pointing an implementation at a controlled
+endpoint, and no alternative route to one exists. A real vendor credential buys
+compatibility testing, not conformance: the frames are whatever the vendor sent,
+and a suite cannot ask for the edge it wants to check. An anonymous local
+provider does not help either — reaching a mock still means overriding the
+built-in address, because the default is the real daemon's port, not the
+suite's. So the override is not a way to reach a test endpoint more
+conveniently. It is the only way to reach one at all.
+
+The failure mode is what makes this conformance rather than tooling. An
+implementation that builds its destination from a built-in literal and ignores
+the override does not fail: the suite runs, the frames validate, and every
+request went to the vendor. A green conformance report that tested nothing is
+worse than a red one.
+
+**The override is operator configuration, and must never be a member of the
+create request.** Every implementation resolves the destination first and
+attaches the credential to whatever came out, so a wire-level override is a
+caller redirecting a credentialed provider to an address it controls and having
+the host attach the real vendor key to it — a credential-exfiltration primitive
+handed to precisely the party the grant machinery exists to keep secrets away
+from. Environment variables or operator configuration satisfy the conformance
+prerequisite completely, and they sit at the same trust boundary that chose the
+provider in the first place. Scoping the clause this way costs nothing and not
+scoping it gives away everything. This is the same refusal
+[Decision 0014](../decisions/0014-provider-descriptors.md) makes of a
+caller-supplied `endpoint`, reaching it from the other end.
+
+**An overridden destination suspends the compatibility facts.** The facts
+describe a vendor's behaviour, and a mock does not have it. A descriptor that
+keeps advertising twelve facts while the destination is a local test server
+makes any check of facts-against-behaviour meaningless — the suite would be
+validating the mock against the vendor's claims and reporting the mock's gaps as
+the implementation's. For 0.1.0 the rule is that **the facts are undefined while
+a destination is overridden, and a conformance suite must not check them.** That
+is honest and costs no machinery.
+
+The better behaviour, which this draft does not require, is to distinguish the
+two kinds of redirect. Makai already does: a base-URL override alone means
+"different endpoint, assume nothing", while an explicit proxy assertion means
+"same vendor behind a proxy, the vendor's facts still hold" — and the
+distinction is load-bearing there, gating assertions about OpenAI's
+`max_completion_tokens` and developer role, DeepSeek's thinking-as-text
+requirement, and Anthropic's cache TTL. A conformance harness pointing at a mock
+is emphatically not a transparent proxy.
+
+The reason it stays a recommendation is stronger than "not yet decided": the
+distinction is not inferable. Nothing in a URL says whether the vendor is behind
+it, which is why the implementation that has this asks the operator with a
+separate flag rather than detecting it. So requiring the distinction would mean
+the profile specifying how an implementation is *told* which redirect it is
+looking at — and the only place that can live is operator configuration, which
+clause 13 has just put off the wire. The stronger form is in tension with 13,
+not merely later than it.
+
+The soft form also closes the objection it appears to leave open. A suite that
+must not check facts under an override cannot be misled by facts published under
+one. What survives is a non-suite caller trusting stale facts after an operator
+redirected the provider — and that is inside the operator's trust boundary by
+construction, because the operator set the override. The harm that outlives the
+soft clause belongs to the party who caused it.
+
+### Under-claiming is non-conformance, and only one direction is checkable
+
+Over-claiming is caught by exercising the descriptor: ask for each advertised
+capability and see whether it is served. A suite can drive that mechanically,
+and a failure is a frame it can point at.
+
+The other direction has no such handle. An implementation that supports
+`every_delta` and lists no `snapshot_policies` refuses every request for it, and
+every one of those refusals is a well-formed `unsupported_feature` frame that
+validates against the schema. Nothing in the trace is wrong. The endpoint is
+simply lying about itself by omission, and a well-behaved caller never asks for
+what the descriptor did not list, so nothing ever discovers it.
+
+Clause 12 is therefore stated as a conformance requirement and not as a
+validator rule. No trace can carry the violation, so `validation/provider.go`
+will never grow a code for it; this is deliberate, not the class of gap where
+prose runs ahead of machinery. What the clause buys is a sentence a conformance
+suite can cite when it reports a divergence it found by other means — reading
+the implementation, or a maintainer answering "can you do X?" with yes while the
+catalogue says no.
+
+Both directions were found the same way, by building against this draft rather
+than reading it. Three descriptor divergences surfaced in one session of getting
+a first real completion out of an implementation: a host that ignored base-URL
+overrides so a conformance run silently addressed the vendor instead of the
+local endpoint under test, a catalogue advertising no `snapshot_policies` for
+policies the server had implemented all along, and a descriptor whose
+credential members understated what the implementation did, so every
+credentialed provider refused at create. `providerDescriptor` is
+`additionalProperties: false`, and `credential_grant`, `grant_kinds` and
+`allows_anonymous` are the members that decide this — a descriptor cannot
+carry a member the schema does not name, so a divergence of this kind is
+always one of those three saying less than the implementation does.
+
+All three validate. All three are invisible from outside. The base-URL one
+matters beyond the implementation that had it: pointing a provider
+at a local endpoint is how anyone conformance-tests this profile at all, so an
+implementation that cannot be repointed cannot be tested, and the failure mode is
+that the test appears to run.
 
 ## Open Questions
 
