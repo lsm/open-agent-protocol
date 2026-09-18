@@ -260,24 +260,37 @@ endpoint binding:
 ```
 
 ```json
-{"control":"specimen.accepted","id":"s1","types":["inference.started", "..."]}
+{"control":"specimen.accepted","id":"s1",
+ "types":["inference.started","inference.part.started","..."],
+ "excluded":["provider.credential.grant.request","provider.credential.grant.response"]}
 {"control":"specimen.error","id":"s1","code":"unsupported","message":"..."}
 ```
 
-After `specimen.accepted`, one instance of each listed type follows as ordinary
-envelope lines, in the order listed, and the stream then continues as before.
-**`types` is what makes the affordance worth having**: a harness knows how many
+After `specimen.accepted`, one instance of each type in `types` follows as
+ordinary envelope lines, in the order listed, and the stream then continues as
+before.
+
+**`types` predicts the stream and must list only what specimens will follow
+for.** That is what makes the affordance worth having: a harness knows how many
 frames to expect and which, so a stall, a refusal and a completed run are three
 distinguishable outcomes rather than one silence. An implementation that emitted
 specimens with no accepted frame would leave a harness unable to tell any of
-them apart.
+them apart — and one that listed a type it will not emit a specimen for would
+reintroduce the same ambiguity through the list meant to remove it.
+
+**`excluded` names what the implementation supports and deliberately does not
+specimen**, which today is only the grant envelopes. Without it a harness cannot
+tell "this implementation does not support tool-call parts" from "it supports
+them and the specimen is withheld," and those are different conformance answers.
+A harness counts `types` and reports `excluded` as **covered by declaration
+rather than by specimen** — the same distinction as conformance against
+compatibility, one level down.
 - Each specimen is a real frame from the implementation's own emitter, not a
   literal an author wrote out. A specimen that does not come from the code that
   would emit it in earnest tests the specimen writer.
 - **The credential grant envelopes are excluded**, for the reason the profile
   excludes them from traces: a specimen is a recording, and the exchange is not
-  recorded. An implementation lists those types as supported and emits no
-  specimen for them.
+  recorded. They appear in `excluded`, never in `types`.
 - A specimen run settles nothing and allocates nothing. No inference exists
   afterwards.
 
@@ -306,10 +319,11 @@ An implementation claiming this binding:
 7. Never blocks its envelope reader on the credential channel.
 8. Settles every accepted inference before exiting 0.
 9. If it supports a specimen request: answers it with one correlated
-   `specimen.accepted` naming the types, then emits one instance of each in that
-   order, each from its own emitter, allocating nothing. An implementation that
-   does not support it answers `specimen.error`, because an unanswered control
-   frame is indistinguishable from a stall.
+   `specimen.accepted` whose `types` are exactly the specimens that follow and
+   whose `excluded` names what it supports but withholds, then emits one
+   instance of each type in that order, each from its own emitter, allocating
+   nothing. An implementation that does not support it answers `specimen.error`,
+   because an unanswered control frame is indistinguishable from a stall.
 
 ## Open questions
 
