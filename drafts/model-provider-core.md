@@ -439,7 +439,8 @@ in two places their union makes explicit:
   identity at the moment a consumer needs it to open a pending call.
 - `inference.part.ended` carries the complete tool call for a `tool_call`, and
   the accumulated string for `text` and `reasoning`. Those are different types,
-  not different values of one type.
+  not different values of one type. Both `tool_call` and `reasoning` may also
+  carry an opaque `carry` — see `encrypted_carry` under The Call.
 
 `part_index` is the correlation, and maps onto their `content_index`.
 
@@ -603,6 +604,28 @@ opaque encrypted form that must be handed back verbatim on the next call or the
 chain breaks. Google's thought signature is the same shape from a different
 vendor. It is carried as an opaque value and never inspected.
 
+**It needs a return path, and an earlier version of this draft gave it none.** A
+caller could send an `encrypted_carry` and had no way to obtain one: no response
+envelope carried it. A caller driving a multi-turn tool-calling conversation got
+a signature-less tool call on turn one, had nothing to send on turn two, and the
+chain broke — the exact failure the member exists to prevent. Half a mechanism
+is worse than none, because it reads as covered.
+
+So `inference.part.ended` carries an optional opaque `carry` for the `tool_call`
+and `reasoning` kinds, under the same contract as the request member: verbatim,
+never inspected, never interpreted.
+
+**On the part, not on the terminal.** A signature belongs to a specific part,
+and a message with three reasoning parts needs three of them. In the
+implementation this was found in, the value rides the tool call itself and the
+thinking part, which is the same placement.
+
+This is one vendor's mechanism seen in one implementation, which is thin by this
+draft's own standard. It is in because the failure it prevents is silent and the
+member is inert for every provider that does not use it — an opaque value nobody
+sends costs nothing, and its absence costs a broken chain that looks like a
+model error.
+
 ### Per provider — `ProviderDescriptor`
 
 - `id`, `display_name?`
@@ -630,7 +653,8 @@ correctly configured provider.
 
 The closed set an implementation states about a provider that claims a wire. It
 is Makai's `OpenAICompatOptions` — twelve fields, each one a vendor that broke a
-shape while claiming it — carried across whole.
+shape while claiming it — of which eleven are carried across whole and one is
+re-derived into an adjacent fact, marked below.
 
 An earlier version of this draft promoted six of the twelve and sent the rest to
 `extensions`. That split does not survive its own test. The criterion for
@@ -645,7 +669,7 @@ definition of undiscoverable.
 | --- | --- | --- | --- |
 | `max_tokens_field` | `max_tokens`, `max_completion_tokens` | same | One semantic field, two names. |
 | `thinking_format` | `openai`, `zai`, `qwen` | same | Three mutually incompatible reasoning encodings behind one API name. A wrong guess silently drops reasoning. |
-| `usage_in_streaming` | `always`, `terminal_only`, `never` | `supports_usage_in_streaming` | Whether usage arrives at all changes what `inference.completed` can promise. |
+| `usage_in_streaming` | `always`, `terminal_only`, `never` | *(re-derived — see below)* | Whether usage arrives at all changes what `inference.completed` can promise. |
 | `requires_assistant_after_tool_result` | boolean | same | A message-ordering constraint, not a capability. |
 | `requires_tool_result_name` | boolean | same | Same class. |
 | `requires_thinking_as_text` | boolean | same | Reasoning must be sent back as ordinary text or the request is rejected. |
@@ -655,6 +679,39 @@ definition of undiscoverable.
 | `supports_reasoning_effort` | boolean | same | Whether the effort control is accepted. |
 | `tool_call_id_format` | `unconstrained`, `constrained` | `requires_mistral_tool_ids` | Some endpoints reject tool-call ids that are not in their own format. |
 | `cache_ttl_control` | boolean | `supports_anthropic_cache_ttl` | Whether an explicit cache retention is accepted. |
+
+#### Eleven are transcribed; one is re-derived, and that is a weaker claim
+
+`usage_in_streaming` is not the fact the "Makai's name" column implied. Theirs —
+`supports_usage_in_streaming` — is a **request-shape** fact: whether an endpoint
+accepts the `include_usage` stream option, used in exactly one place, to decide
+whether to write that option into the request. This profile's is a
+**response-behaviour** fact: when usage arrives. Adjacent, not identical.
+
+The mapping is lossy in the direction nobody expects. It is not that three
+values do not fit in a boolean. It is that the boolean does not answer the
+question: `true` maps soundly to `always`, and `false` means "do not send the
+option," which cannot distinguish `never` from `terminal_only` — an endpoint
+that rejects `include_usage` may still report usage in its final chunk. An
+implementation holding that boolean must leave the fact unstated in the `false`
+case rather than guess, and under the absence rule a reader then assumes the
+wire's default.
+
+The response-behaviour fact is the right one to carry, because a caller never
+builds a vendor request and has no use for whether an option is accepted — what
+it needs to know is what `inference.completed` can promise. But the widening has
+a cost worth generalizing:
+
+> **A fact the profile widens has weaker attestation than one it copies, because
+> the added values are unattested by construction.**
+
+Two of `usage_in_streaming`'s three values have never been observed by anything.
+The other eleven facts are transcriptions of distinctions a real implementation
+already draws, and their attestation is exactly as strong as that implementation.
+A table cannot show the difference — a re-derived fact and a transcribed fact
+look identical in a row — so it is stated here.
+
+#### Two renames
 
 Two are renamed because the fact is general and the vendor is incidental. A
 protocol that names Mistral and Anthropic in its member names binds the
@@ -1165,9 +1222,9 @@ three wires and parses each one's stream. It was written as a compatibility
 prober and its assumptions show — it requires `text/event-stream` — but the
 disagreements it had to encode are the ones the profile must carry.
 
-**One implementation is being built against it**, and thirteen findings from
-writing the vocabulary, codec, discovery, grants, admission, the wire mapping
-and the inference lifecycle are already in this draft. From the first pass: `ProtocolError` and
+**One implementation is being built against it**, and fifteen findings from
+writing the vocabulary, codec, discovery, grants, admission, the wire mapping,
+the inference lifecycle and the compatibility facts are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
 had silently dropped a value, `opaque` is a reserved word in the implementation
 language, the envelope scope rule for `inference.create.response` was
@@ -1190,14 +1247,18 @@ the fifth: nothing said how `inference.completed.message` relates to the parts
 that preceded it, and three mutually inconsistent readings were all permitted by
 the text.
 
-Of the thirteen, twelve were places the draft was silent or wrong rather than
+From the sixth: `usage_in_streaming` was
+presented as a transcription of an existing fact and is a re-derivation of an
+adjacent one, and `encrypted_carry` could be sent and never obtained.
+
+Of the fifteen, fourteen were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
 produces a perfectly valid trace.
 
-**Two of the eleven corrected earlier findings from the same source rather than
+**Two of the fifteen corrected earlier findings from the same source rather than
 the draft.** The persistence hazard was first reported from a call graph and is
 real one step over from where it was placed; `auth_status` was first reported as
 belonging nowhere and belongs on the model entry. Both were caught by the
