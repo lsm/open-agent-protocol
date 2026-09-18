@@ -784,7 +784,28 @@ otherwise assume the profile forgot them.
 - `headers` — non-secret request headers, such as tenancy or routing. Never a
   credential; see Credentials.
 - `credential_ref` — names a credential the implementation holds; never a value.
-- `metadata` — opaque, passed through.
+- `metadata` — opaque, and it stays with the endpoint. See below.
+
+**`metadata` does not reach the provider.** An earlier version of this draft
+said "opaque, passed through" and did not say through to *what*, which is two
+different implementations and an implementer asked rather than guessing. It is
+for the endpoint's own use — correlating an inference with the caller's request
+id, a tenant, a billing bucket, whatever the operator wants in its logs — and it
+is never written into the upstream request.
+
+The reason is the rule `headers` is already governed by: **any member that
+passes caller text through to the upstream request is a credential channel,
+whatever it is named.** `headers` is one and is kept, because tenancy and
+routing metadata genuinely have to accompany a request — so it is policed, with
+a named refusal and a validator diagnostic. `metadata` forwarded upstream would
+be a second such channel with none of that machinery, opaque by construction and
+therefore unpoliceable, and it would be one nobody would think to look at
+because the name suggests bookkeeping.
+
+A caller that needs a value to reach the provider uses `headers` and accepts the
+policing that comes with it. That is the whole difference between the two
+members, and it is why they are not interchangeable despite both being
+caller-supplied maps.
 
 One `reasoning` object replaces what Makai carries as seven separate options —
 `thinking_enabled`, `thinking_budget_tokens`, `thinking_effort`,
