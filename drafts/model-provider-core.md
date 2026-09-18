@@ -91,6 +91,11 @@ one unnamed shape and optional otherwise. The reference then reads
 `ollama/other:ollama-chat@llama3`, and a parser takes the component up to the
 first `:` as the wire value.
 
+`wire_id` **must be absent when `wire` is named**, and an implementation refuses
+one that is not. Otherwise it becomes a shadow vocabulary: a second, unbounded
+label riding alongside the closed set, and callers start reading it because it
+is there.
+
 **This does not reintroduce the vendor enum, and the difference is the whole
 point.** `wire` is a closed set a caller may branch on: reading
 `anthropic-messages` tells it something portable about a behaviour family.
@@ -436,6 +441,41 @@ already says.
 
 Exactly one terminal per **accepted** inference: `inference.completed` or
 `inference.failed`.
+
+#### Refusal time against terminal time
+
+> **Anything decidable from the descriptor and the request alone is a
+> create-time refusal, never a terminal. The terminal is for what the provider
+> tells you.**
+
+A missing credential, an unsupported snapshot policy, an unknown model, a
+malformed reference — all knowable before the request leaves the building. A
+rate limit, a provider outage, a credential the store believed was good and
+was not — all discovered by attempting, and therefore terminals.
+
+This was found by an implementation writing the wrong one and nothing
+complaining. Checking credentials at stream-start produced this:
+
+```
+← inference.create.response   accepted=true
+← inference.failed    seq=1   credential_missing
+```
+
+which satisfies every other rule in this draft — one terminal, contiguous
+sequence, correct error class, correct derived action — and is plainly worse
+than refusing at create. It allocates an inference, opens a scope, burns a
+sequence number and settles it, to say something that was knowable without
+touching a provider. A caller that has to tear down a stream to learn its
+request was never viable has been told late for no reason.
+
+The rule generalizes what the snapshot ruling decided for one member: refuse
+before the tokens are spent, not after. It also puts `credential_missing` and
+`credential_expired` at different points in the lifecycle, which reads right —
+missing is knowable from configuration, expired is discovered by trying. Same
+Authenticate/Refresh split, arriving at different times.
+
+**The distinction is invisible to a conformance check and very visible to a
+caller**, which is why it is written down rather than left to taste.
 
 **A consequence worth naming, because it was not designed for and turns out to
 matter.** Since a refusal allocates nothing and owes no terminal, an
@@ -1204,10 +1244,22 @@ built to be driven, and there is no counterpart here. Building one is the whole
 of the work, not a consequence of the profiles being independently servable —
 and an earlier version of this draft drew that conclusion too fast.
 
-Compatibility is a second, harder half. A loopback provider proves the envelopes
-and nothing about whether an endpoint honours the wire it claims; a live
-provider proves that on one day, for money. The two halves need different
-machinery, and only the first is cheap once something exists to drive.
+Compatibility is a second, harder half, and the first implementation has now
+drawn the line precisely. What a harness can do today: spawn a provider
+endpoint, drive discovery, drive a real inference against a **local, anonymous**
+provider with no credentials anywhere, and assemble a trace. That covers every
+envelope in the profile.
+
+What it cannot do is observe a single compatibility fact. The twelve are carried
+and mapped; none has been checked against the vendor it describes, because
+checking means a real request to a real endpoint with a real credential. No
+amount of further implementation changes that — it is a different kind of
+evidence, requiring money and a live endpoint, and it expires, because the thing
+it tests moves without notice.
+
+So the profile can be conformance-tested and cannot yet be
+compatibility-tested, and those two words should not be used
+interchangeably about it.
 
 **Where does credential acquisition live?** `auth_status` now has a home — the
 model entry, five stable values, not revision-bound — but *acquiring* a
@@ -1281,7 +1333,13 @@ rather than argued: a caller reading that output knows what it can call, what
 needs a credential, what framing to expect and which catalog entries are stale,
 without knowing anything about Anthropic, OpenAI or Ollama.
 
-**Sixteen findings** from writing the vocabulary, codec, discovery, grants,
+As of the same date that endpoint runs **real inferences** — accepted,
+translated from a registered provider's stream, polled rather than drained so a
+mid-stream cancel is seen, settled with one terminal. Against a local provider
+that is not running it answers `provider_unavailable`, a Retry-class error,
+which is the honest answer rather than a contrived one.
+
+**Seventeen findings** from writing the vocabulary, codec, discovery, grants,
 admission, the wire mapping, the inference lifecycle, the compatibility facts
 and a spawnable endpoint are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
@@ -1314,7 +1372,11 @@ From the seventh: `other` in a model reference is a
 constant, so the component that exists to distinguish carries the same value for
 every unnamed wire.
 
-Of the sixteen, fifteen were places the draft was silent or wrong rather than
+From the eighth: nothing said whether a
+condition knowable before the request leaves the building is a refusal or a
+terminal, and the worse of the two answers satisfied every other rule.
+
+Of the seventeen, sixteen were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
