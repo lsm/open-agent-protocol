@@ -322,7 +322,7 @@ Eighteen, in five groups.
 | Type | Direction | Carries |
 | --- | --- | --- |
 | `provider.describe.request` | caller → implementation | nothing required |
-| `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision` |
+| `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision`, `protocol_versions[]`, `profile_revision` |
 | `provider.models.list.request` | caller → implementation | `provider_id?` |
 | `provider.models.list.response` | implementation → caller | `models[]`, `capability_revision` |
 
@@ -589,6 +589,38 @@ different jobs, and the earlier version did both in the same place.
 `every_delta` is quadratic in the message, which is a real cost on a long
 completion and an obvious one on a slow link. That is why it is chosen rather
 than assumed.
+
+#### A snapshot must be able to carry an in-flight tool call
+
+`snapshot` is the accumulated message, and a message's content is content parts.
+`ContentPart`'s tool call carries `arguments_json`, whose type says complete
+JSON. **Mid-stream a tool call's arguments are not complete JSON** — an
+implementation accumulates `{"q":` and then `"zig"}` as separate deltas, and no
+value of `arguments_json` expresses the first state.
+
+An earlier version of this draft did not notice, and the first implementation
+worked around it by building text-only snapshots — which silently omits a tool
+call in flight *and* a completed one earlier in the same message.
+
+**This defeats the snapshot for the part kind where divergence matters most.** A
+consumer that loses a text delta renders slightly wrong output. A consumer that
+loses a tool-call delta calls a function with the wrong arguments. The mechanism
+that exists so a diverged consumer can recover was unavailable for the only case
+where divergence is consequential, in both directions — push and pull have the
+same hole because they carry the same object.
+
+So a snapshot's tool-call part carries **either** `arguments_json`, when the
+part has ended and the arguments are complete, **or** `arguments_partial`: the
+accumulated fragment as an opaque string that is **explicitly not valid JSON**
+and must not be parsed. A part that is still open carries the second; a part
+that has ended carries the first. Both never appear together.
+
+The two alternatives, and why they lose. Omitting in-flight parts and saying so
+is cheap and honest and leaves the recovery gap open for exactly the case that
+needs it. Emitting snapshots only at part boundaries is what `on_part_end`
+already is, and it would make `every_delta` incoherent rather than merely
+expensive — a policy whose whole purpose is mid-part recovery cannot be defined
+to exclude mid-part state.
 
 #### Pull: `inference.sync`
 
@@ -1266,6 +1298,33 @@ An envelope at an unsupported version is refused with `unsupported_version`,
 carrying `protocol_versions[]`, so the rejection path still works for a caller
 that skipped discovery.
 
+#### `profile_revision`, and why the tag creates the need for it
+
+`version` is the base protocol and `profile` is which vocabulary is in play.
+Neither says **which revision of a profile** an implementation was built
+against, and while every profile moves together that costs nothing.
+
+Tagging `v0.1.0` ends that. It puts
+[the stability commitment](../STABILITY.md) sections 4 and 5 in force for
+`agent-control-core` and leaves this profile proposed and free to change shape —
+and both still travel as `version: "0.1"`. A client built against this draft as
+it stands today connects to an implementation built against it plus two changes,
+both say `0.1`, and nothing on the wire distinguishes them.
+
+`capability_revision` does not cover it. That is the implementation's own
+descriptor snapshot, and two implementations at different profile revisions can
+emit the same one — it answers "has this endpoint's configuration changed,"
+never "which spec is this."
+
+So `provider.describe.response` carries **`profile_revision`**: an opaque string
+naming the revision of `model-provider-core` the implementation was built
+against. Only an unfrozen profile needs to populate it; a frozen profile is
+pinned by its version and has nothing to add.
+
+This is cheap now and expensive later, because whatever expresses it is itself a
+schema change — which is the argument for settling it before schemas exist
+rather than after.
+
 ## Minimum Conformance
 
 An implementation claiming `open-agent-protocol.model-provider-core`:
@@ -1450,7 +1509,7 @@ mid-stream cancel is seen, settled with one terminal. Against a local provider
 that is not running it answers `provider_unavailable`, a Retry-class error,
 which is the honest answer rather than a contrived one.
 
-**Eighteen findings** from writing the vocabulary, codec, discovery, grants,
+**Twenty findings** from writing the vocabulary, codec, discovery, grants,
 admission, the wire mapping, the inference lifecycle, the compatibility facts
 and a spawnable endpoint are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
@@ -1488,16 +1547,22 @@ condition knowable before the request leaves the building is a refusal or a
 terminal, and the worse of the two answers satisfied every other rule. From the
 ninth: `ttl_ms` was doing duty for two different clocks — a credential's
 lifetime and a channel's arrival deadline — and the nonce had no stated
-lifecycle at all.
+lifecycle at all. From the tenth, found by an implementer reading their own code
+while answering a different question: a snapshot could not represent a tool
+call, because `arguments_json` is complete JSON and a tool call in flight is a
+partial fragment — so the recovery mechanism was unavailable for the one part
+kind where divergence is consequential. And the profile had no way to say which
+revision of itself an implementation was built against, which costs nothing
+until one profile freezes and the other does not.
 
-Of the eighteen, seventeen were places the draft was silent or wrong rather than
+Of the twenty, nineteen were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
 produces a perfectly valid trace.
 
-**Four of the eighteen corrected earlier findings from the same source rather
+**Four of the twenty corrected earlier findings from the same source rather
 than the draft**, and the pattern in them matters more than the count. Each
 superseded claim had been read off a call graph, a type name or a field's
 presence, and each correction came from reading the body: the persistence hazard
@@ -1527,6 +1592,22 @@ It is **first-party** under
 establishes that the profile is *implementable* and not that it is *right*.
 **Nothing this project does not control speaks this profile**, and under
 Decision 0015 that is what executable would require.
+
+### What the implementation does and does not establish
+
+It establishes implementability, and that was never the scarce thing. **Schemas
+do not make a profile implementable; they make two implementations agree.**
+
+And the implementability it establishes is narrower than it looks: that
+implementation was written from this prose **with its author available**.
+Twenty findings are twenty places the prose alone was insufficient, each
+resolved by asking. A second implementer gets none of that. So the standing is
+*implementable in conversation with the author*, and the findings are the
+measurement of the gap rather than a side effect of closing it.
+
+That is the real argument for schemas, and it says which shapes to specify
+hardest: **the ones a finding had to fix**, because each is a place the prose
+underdetermined and a stranger will underdetermine again.
 
 ### Two things the implementation is not evidence for
 
