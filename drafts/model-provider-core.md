@@ -1717,6 +1717,22 @@ that the test appears to run.
 
 These are open, and naming them is better than a draft that reads settled.
 
+**Nothing checks that a member a receiver accepted is a member it reads.** A
+trace validates the frame and a mutation sweep tests the rules that judge it;
+both are about the envelope, and both pass while a receiver decodes a member,
+validates it and drops it. Three members reached exactly that state during this
+draft's first implementation — a compatibility mapping with only test callers, a
+reasoning carry read out of a structure nothing populates, and a `credential_ref`
+checked at create and discarded, leaving the host unable to tell which inference
+a grant belonged to. Every frame involved was correct.
+
+The defect is in the consumer rather than the wire, which is why the profile
+cannot state a rule that catches it and why conformance cannot either: an
+endpoint that ignores a member it accepted emits nothing distinguishable from
+one that honoured it, until the turn where the absence matters. All three were
+found by reading the consumer while looking for something else, which is not a
+method. Naming it is what this section is for.
+
 **How is a vendor API pinned?** Every harness adapter in this repository pins an
 upstream commit or tag, and its corpus is hermetic against that pin. A vendor
 inference endpoint has neither. It changes without notice, under the same
