@@ -1264,8 +1264,9 @@ varies per call belongs. Two rules:
    looking at a configuration error, not an alternative path.
 2. **The validator catches what it can.** A header named `Authorization`,
    `Proxy-Authorization`, `X-Api-Key` or `Api-Key`, matched without regard to
-   case, or any value that begins with `Bearer ` after leading spaces and tabs
-   are trimmed, is rejected as `credential_in_headers`. The same predicate
+   case, or any value that begins with `Bearer ` — also without regard to case —
+   after leading spaces and tabs are trimmed, is rejected as
+   `credential_in_headers`. The same predicate
    applies to a descriptor's published `headers`, because a descriptor
    publishing `Authorization` is a credential in a trace by a different route.
 
