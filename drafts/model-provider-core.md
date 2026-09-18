@@ -1193,13 +1193,14 @@ the material.** An implementation that publishes an expiry MUST refuse a
 rather than merely stop honouring the reference.
 
 Both halves are load-bearing and the second is the one an implementation
-forgets. Refusing the reference while the plaintext sits in a table keyed by it
-means the secret outlived the lifetime it was granted under, which is the
-property this whole section exists to establish; whether anything currently
-reads that table is not the point, because the next reader is a code change
-away. An implementation was found in exactly this state — refusal added,
-material retained until connection teardown — and reported it rather than
-treating the refusal as sufficient.
+forgets. **The argument for it is the published lifetime, not a hypothetical
+reader.** An implementation that refuses the reference while the plaintext sits
+in a table keyed by it has held a secret past the lifetime it announced — which
+is a fact about its own published claim, true whether or not anything ever reads
+that value again. It does not rest on someone later wiring up a new reader,
+which invites the answer that nobody did. An implementation was found in exactly
+this state, refusal added and material retained until connection teardown, and
+reported it rather than treating the refusal as sufficient.
 
 The code is pinned because the taxonomy is worth nothing if the same situation
 produces different codes in different implementations. An endpoint can tell

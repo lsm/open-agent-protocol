@@ -386,11 +386,11 @@ distinction is invisible in every other exchange, because a grant that is
 honoured and a grant that is expired-but-still-honoured produce identical
 frames.
 
-The discard half is not observable from outside and is not checkable this way.
-It is stated as an obligation because the alternative is stating nothing: an
-implementation that refuses the reference while the plaintext waits in a table
-keyed by it has kept a secret past the lifetime it was granted under, and the
-next reader of that table is a code change away.
+The discard half is not observable from outside and is not checkable this way,
+so it is carried by implementers rather than by a harness — which is exactly
+when its justification has to stand without help. It does: an implementation
+that refuses the reference while the plaintext waits in a table keyed by it has
+held a secret past the lifetime it itself published.
 
 ## Open questions
 
