@@ -354,6 +354,41 @@ it is satisfied, not overridden.
 | `inference.completed` | implementation → caller | `message`, `stop_reason`, `usage?` |
 | `inference.failed` | implementation → caller | `error`, `usage?` |
 
+#### The terminal agrees with its parts
+
+The draft said `inference.part.ended` carries the accumulated string and
+`inference.completed` carries `message`, and said nothing about how the two
+relate. Three readings were consistent with it — the terminal is the
+concatenation of the deltas, or of the `part.ended` strings, or whatever the
+vendor's final message says — and they come apart the moment a vendor normalizes
+whitespace or emits an ended string that is not byte-identical to its own
+deltas.
+
+Two rules, in order of authority:
+
+1. **`part.ended` is authoritative over the deltas that preceded it.** A delta
+   stream is a transport detail; an ended part is a statement about what the
+   part was. A consumer that applied every delta and a consumer that took only
+   `part.ended` must land in the same place, which means the ended content
+   replaces the accumulated buffer for that part rather than being compared with
+   it.
+2. **`inference.completed.message` is the assembly of the ended parts, in
+   `part_index` order.** A terminal that disagrees with its own parts is
+   unreconstructible: a consumer holding the parts cannot tell whether it lost
+   something or the implementation changed its mind.
+
+A vendor's own final message that differs from what its parts already said does
+not override rule 2. Once a part is closed, its content is what the profile
+says it was; the vendor's variant is preserved under `extensions` and does not
+silently become `message`. An implementation that can reconcile before closing a
+part should — the right place for that is at `part.ended`, not at the terminal.
+
+**This one the validator can enforce**, unlike the credential rules: a trace
+whose `inference.completed.message` is not the assembly of its ended parts is
+invalid, checkable from the envelopes alone. It is the first rule in this draft
+that came from the build *and* falls inside the machinery this project already
+has.
+
 **A refusal allocates nothing.** `inference.create.response` carries
 `inference_id` only when `accepted` is true; a refused response carries the
 typed error and no id, and is correlated by `in_reply_to` alone. An inference
@@ -421,6 +456,14 @@ that catches it is a decoder that objects to a field being present.
 
 It costs four lines at the boundary, measured in an implementation rather than
 estimated, which is why it is a requirement and not a suggestion.
+
+**Enforce it at emission too, not only on decode.** An implementation that
+refuses to *build* an invalid frame stops a host from constructing one and
+discovering it in somebody else's decoder, which is where a wire bug becomes an
+interoperability incident rather than a failing test. The same applies to the
+other structural invariants here: a delta with no open part, a mismatched part
+index, a terminal with a part still open, a second terminal. All are cheap to
+refuse at the source and expensive to diagnose from the far end.
 
 ### The running snapshot: push and pull are different mechanisms
 
@@ -994,8 +1037,9 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    `wire` and `framing`.
 2. Answers `provider.models.list.request`, and every `model_ref` it returns
    resolves to a provider it described.
-3. Emits exactly one terminal per accepted inference, and allocates no
-   `inference_id` on a refusal.
+3. Emits exactly one terminal per accepted inference, allocates no
+   `inference_id` on a refusal, and emits a terminal `message` that is the
+   assembly of its ended parts.
 4. Emits contiguous per-inference `sequence` on every scoped event.
 5. Emits the started/delta/ended triple for every part it streams, with the
    kind-discriminated payloads on start and end, or declares `stream`
@@ -1035,7 +1079,21 @@ streams with a capture date and an evidence class are the obvious candidate, and
 `provider.EvidenceClass` is an existing attempt at the second half.
 
 **What drives conformance?** Serving Modes above settles the *shape* and
-nothing about readiness. Because a provider-profile implementation is
+nothing about readiness.
+
+One thing the build has settled: **it must be end-to-end, not envelope
+fixtures.** The first implementation produced a malformed line — a doubled JSON
+key — from a writer composition that no round-trip test could reach, because a
+test that serializes and deserializes one envelope constructs the payload itself
+and never exercises the composition. It appeared only when a full inference ran
+and every emitted line was decoded in order.
+
+A validator that checks envelopes one at a time cannot catch a malformed
+envelope produced only by a particular arrangement of writers. Spawning a
+binary, driving a scripted inference and handing the assembled trace to the
+validator does, because it decodes what an implementation actually emitted
+rather than what a test built. That is a stronger argument for the harness shape
+than the symmetry argument it was chosen on. Because a provider-profile implementation is
 independently servable, the harness can be the same one in outline: spawn a
 binary, drive a scripted inference over a line binding, hand the assembled trace
 to the validator. But the existing harness works because there is an endpoint
@@ -1107,9 +1165,9 @@ three wires and parses each one's stream. It was written as a compatibility
 prober and its assumptions show — it requires `text/event-stream` — but the
 disagreements it had to encode are the ones the profile must carry.
 
-**One implementation is being built against it**, and twelve findings from
-writing the vocabulary, codec, discovery, grants, admission and the wire mapping
-are already in this draft. From the first pass: `ProtocolError` and
+**One implementation is being built against it**, and thirteen findings from
+writing the vocabulary, codec, discovery, grants, admission, the wire mapping
+and the inference lifecycle are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
 had silently dropped a value, `opaque` is a reserved word in the implementation
 language, the envelope scope rule for `inference.create.response` was
@@ -1127,9 +1185,12 @@ representation, and the mechanism the rule was first justified by turned out not
 to exist.
 
 From the fourth: the closed wire set named five of eight registered APIs, and
-excluded the one provider two of the draft's own members were justified by.
+excluded the one provider two of the draft's own members were justified by. From
+the fifth: nothing said how `inference.completed.message` relates to the parts
+that preceded it, and three mutually inconsistent readings were all permitted by
+the text.
 
-Of the twelve, eleven were places the draft was silent or wrong rather than
+Of the thirteen, twelve were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
