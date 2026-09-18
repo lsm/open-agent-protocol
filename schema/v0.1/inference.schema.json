@@ -56,6 +56,9 @@
         "arguments_json": true,
         "arguments_partial": {
           "type": "string"
+        },
+        "carry": {
+          "type": "string"
         }
       },
       "additionalProperties": false,
