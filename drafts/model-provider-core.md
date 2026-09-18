@@ -127,6 +127,19 @@ field:
   domain. It is not a session, run, turn, tool call or interaction id, and is
   not interchangeable with any of them.
 
+The id is allocated by the implementation and first appears on
+`inference.create.response`. So the envelope scope field is **absent on
+`inference.create.request`**, where no id exists yet, and **present on every
+envelope after it** — the response included.
+
+Setting it on the response is deliberate: the envelope scope field is how a
+consumer routes a frame without decoding its payload, and leaving it off exactly
+one frame would make the first frame of every inference the special case. Where
+the id appears in both the envelope and the payload the values must agree, which
+is agent control's rule and is unchanged here. The response still consumes no
+`sequence` — carrying a scope and consuming an ordering number are different
+things.
+
 `session_id`, `run_id`, `turn_id` and `interaction_id` do **not** appear on this
 wire. An agent loop that holds all of them keeps the correlation on its own
 side; carrying them down would make the provider boundary depend on concepts it
@@ -228,7 +241,7 @@ Each entry in `provider.models.list.response`:
   `prompt_cache`, `audio_input`, `audio_output`.
 - `lifecycle` — `stable`, `preview`, `deprecated`.
 - `source` — `discovered` or `fallback`.
-- `reasoning_default?` — `off`, `minimal`, `low`, `medium`, `high`.
+- `reasoning_default?` — `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `auth_status` — below.
 
 `source` distinguishes a catalog the implementation read from the provider from
@@ -372,6 +385,34 @@ consumer with neither must be lossless, which is a legitimate thing to require
 of a consumer on a reliable local transport and a poor thing to require over a
 network.
 
+#### Asking for a policy the provider does not offer
+
+**The default is refusal, and downgrade is opt-in.**
+
+An `inference.create.request` whose `include_snapshot` the provider does not
+support is refused with `unsupported_feature`, naming the policy, unless the
+request also carries `allow_degraded_features` listing the snapshot key — in
+which case the implementation downgrades to the best it offers and reports what
+it did in `honoured`.
+
+This is agent control's existing mechanism, not a new one: `session.open`,
+`submit` and `action.tools.list` all carry `allow_degraded_features` for exactly
+this shape, and a caller that has met one has met this.
+
+The alternative — downgrade silently and report the truth in `honoured` — was
+the implementation's provisional choice and is defensible: the caller gets a
+working inference and can read what it actually got. It loses on one point that
+decides it. **The two behaviours are indistinguishable to a caller that does not
+read `honoured`, and a caller that does not read `honoured` is the common case.**
+A caller that asked for `every_delta` because it cannot be lossless over a bad
+link, and silently got `on_part_end`, finds out by diverging under load. It
+should find out before the tokens are spent.
+
+Refusal is also the direction this project's fail-closed discipline already
+runs: an adapter that cannot honour an attachment refuses rather than returning
+a session that looks like it worked. Opt-in degradation is how a caller that
+genuinely does not care says so, once, in the request.
+
 ## The Call
 
 Split as the implementations split it, because per-call and per-provider are
@@ -406,6 +447,7 @@ otherwise assume the profile forgot them.
 - `stream` — boolean.
 - `reasoning` — `{ enabled?, budget_tokens?, effort?, encrypted_carry? }`.
 - `include_snapshot` — `never`, `on_part_end`, `every_delta`.
+- `allow_degraded_features` — keys the caller will accept a downgrade on.
 - `headers` — non-secret request headers, such as tenancy or routing. Never a
   credential; see Credentials.
 - `credential_ref` — names a credential the implementation holds; never a value.
@@ -469,7 +511,7 @@ definition of undiscoverable.
 | `supports_store` | boolean | same | Server-side retention of the request. |
 | `supports_developer_role` | boolean | same | Whether the `developer` role exists or must be folded into `system`. |
 | `supports_reasoning_effort` | boolean | same | Whether the effort control is accepted. |
-| `tool_call_id_format` | `opaque`, `constrained` | `requires_mistral_tool_ids` | Some endpoints reject tool-call ids that are not in their own format. |
+| `tool_call_id_format` | `unconstrained`, `constrained` | `requires_mistral_tool_ids` | Some endpoints reject tool-call ids that are not in their own format. |
 | `cache_ttl_control` | boolean | `supports_anthropic_cache_ttl` | Whether an explicit cache retention is accepted. |
 
 Two are renamed because the fact is general and the vendor is incidental. A
@@ -665,10 +707,40 @@ path non-conformant, and catch the cases a validator can see.
 
 ## Shared Vocabulary
 
-`ContentPart`, `ToolDefinition`, `Usage`, `ProtocolError` and the tool-call
-identity domain mean the same thing on both boundaries and are reused. An agent
-loop sitting between them must not translate a content part into a different
-content part.
+An earlier version of this draft said `ContentPart`, `ToolDefinition`, `Usage`
+and `ProtocolError` "mean the same thing on both boundaries and are reused." Two
+of those four are wrong, found by writing the types rather than by reading the
+sentence again. Sharing has three degrees and the draft now names which applies.
+
+**Reused whole.** `ContentPart`, `Message`, `Usage`, and the tool-call identity
+domain. An agent loop sitting between the boundaries must not translate a
+content part into a different content part. These reuse verbatim, confirmed in
+an implementation.
+
+**Shape shared, code set profile-scoped: `ProtocolError`.** The structure — code,
+message, details — is common. The codes are disjoint and neither set is a subset
+of the other: agent control carries `session_not_found`, `run_not_found`,
+`run_already_terminal`, `session_busy`, `stale_capabilities`, none of which has a
+referent below the loop; this profile carries `credential_missing`,
+`credential_rejected`, `credential_expired`, `provider_unavailable`, `aborted`,
+none of which belongs above it. One type carrying both would be the union of
+everything, which is what an error code exists to avoid. So an implementation
+reuses the shape and defines its own enum, and a reader implementing both should
+expect exactly that.
+
+**A subset, and the subset is this profile's: `ToolDefinition`.** Agent control's
+carries `execution_owner`, `source`, `features` and `annotations` beside `name`,
+`description` and `input_schema`. Below the loop there is no participant to own
+execution, no tool source to attribute to, and no capability negotiation — a
+provider is handed tool definitions to put in a request and never dispatches
+one. So this profile carries `{ name, description?, input_schema }`, which is
+the intersection and not a reuse.
+
+That intersection is the part the two must keep agreeing on. Nothing enforces
+it today, and an agent-control implementation is free to carry tools as an
+opaque array and have no such type at all — one does. If either profile changes
+the three shared members, the other has to move with it, and this sentence is
+the only thing currently saying so.
 
 Nothing that mentions a session, a run or an interaction crosses down. Where the
 two profiles would otherwise diverge, this one yields: the boundary is younger
@@ -759,7 +831,8 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
 5. Emits the started/delta/ended triple for every part it streams, with the
    kind-discriminated payloads on start and end, or declares `stream`
    unsupported and answers unary.
-6. Honours the `include_snapshot` value it accepted, and answers
+6. Refuses an `include_snapshot` it does not support unless the request allows
+   degradation, honours what it accepted, reports it in `honoured`, and answers
    `inference.sync.request` if it declared it.
 7. Carries a credential value out of band if its binding allows it, and only on
    `provider.credential.grant.request` otherwise — never journalling, tracing or
@@ -862,7 +935,18 @@ three wires and parses each one's stream. It was written as a compatibility
 prober and its assumptions show — it requires `text/event-stream` — but the
 disagreements it had to encode are the ones the profile must carry.
 
-**No implementation speaks this profile**, because it did not exist until this
-draft. Under Decision 0015 it becomes executable when something outside this
+**One implementation is being built against it**, and six findings from writing
+the vocabulary and envelope codec are already in this draft: `ProtocolError` and
+`ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
+had silently dropped a value, `opaque` is a reserved word in the implementation
+language, the envelope scope rule for `inference.create.response` was
+unspecified, and nothing said what happens when a caller asks for a snapshot
+policy the provider does not offer. Five of the six were places the draft was
+silent or wrong rather than merely incomplete.
+
+That implementation is first-party under
+[Decision 0018](../decisions/0018-makai-becomes-first-party.md), so it
+establishes that the profile is implementable and not that it is right.
+**Nothing this project does not control speaks this profile.** Under Decision 0015 it becomes executable when something outside this
 repository speaks it, and Makai doing so is the expected first case and is not
 sufficient alone if Makai becomes first-party.
