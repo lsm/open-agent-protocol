@@ -514,6 +514,8 @@ vendor. It is carried as an opaque value and never inspected.
 - `credential_grant` — `none`, `out_of_band`, `on_envelope`. Whether this
   implementation accepts a caller-held credential for this provider, and by
   which tier.
+- `grant_kinds` — `static`, `refreshable`, or both. Which kinds of granted
+  credential it can hold without writing them down.
 - `allows_anonymous` — this provider needs no credential.
 - `context_window?`, `max_output_tokens?`
 
@@ -675,24 +677,74 @@ intermediary must honour is honoured almost everywhere, and the ones that get it
 wrong are invisible. It exists so that an HTTP binding is possible at all, not
 because it is good.
 
-#### Both tiers: a granted credential must be marked non-persistable
+#### Both tiers: a granted credential must be unable to reach durable storage
 
 A grant is connection-scoped, expires at `expires_at_ms` if one is set, and does
 not survive a reconnect. A credential that survives a restart is one the
 operator never configured and cannot revoke.
 
-**That property does not follow from the profile alone, and an implementation
-must carry the mark in its own code.** A granted credential may be an OAuth
-refresh token rather than a static key — which is exactly what a per-tenant
-caller hands over — and an implementation that refreshes expired credentials
-during ordinary requests will persist it through a path that has no idea a grant
-happened. The bug is invisible: nothing in the profile is violated by any
-envelope, and the credential is in the platform store anyway.
+**That property does not follow from the profile alone, and it asks for more
+than a flag.** An earlier version of this draft said a granted credential is
+"marked non-persistable at the point it enters the implementation" and that
+"every refresh, cache and storage path honours the mark." That underestimates
+what it demands of an implementation built the ordinary way, and the first
+implementation to attempt it says so.
 
-So it is a conformance requirement rather than a note. A granted credential is
-marked non-persistable at the point it enters the implementation, and every
-refresh, cache and storage path honours the mark. Every implementation with a
-refresh path has this bug waiting, and none of them will notice.
+The demand is structural, in three parts.
+
+**1. A representation with no path to storage, not a flag consulted at each
+write.** A mark presumes a field on something that already exists and a set of
+paths that can be taught to check it. What is actually required is that a
+granted credential be held in a form from which no write is reachable. A flag is
+remembered; a representation is checked by the compiler. The property this rule
+protects is worth the stronger form, because a single missed call site puts a
+caller's key on disk and nothing observable says so.
+
+Assume this mode does not exist in an implementation you are adding the profile
+to. A credential store's whole purpose is durability, and "hold this, refresh
+it, and never write it down" is a mode such a thing has no reason to have until
+a profile asks for it.
+
+**2. A per-call channel that bypasses the store satisfies the rule for what it
+can carry.** Where an implementation already passes a per-call credential
+straight to the provider without touching its store, that path is safe by
+construction rather than by discipline, and the rule is met for the kinds of
+credential it can carry. Makai's is one: a caller-supplied key short-circuits
+its refresh-and-persist path in the first three lines, so a granted static API
+key cannot reach storage there even in principle.
+
+An implementation in that position says which kinds its bypass carries, so a
+caller can tell.
+
+**3. A refreshable grant must be refused if refreshing means persisting.** This
+is the specific hazard and it is near-universal: refresh and persistence are
+usually the same code path, because the reason to refresh is to keep a durable
+credential usable.
+
+An implementation whose per-call channel carries only a static key has *no path*
+for a refresh token except its credential store — the one structure whose job is
+to write things down. Accepting a refreshable grant there and writing it down is
+a silent violation. Refusing it is conformant, immediately, with no
+re-architecture.
+
+So `ProviderDescriptor.credential_grant` is accompanied by **`grant_kinds`** —
+`static`, `refreshable`, or both — and a grant of an unlisted kind is refused.
+That is the same lesson as `credential_grant` itself: a rule that obliges a
+caller to know something must give it somewhere to read it, or the caller finds
+out by sending a secret.
+
+#### A correction about how this was found
+
+The first version of this rule cited a specific mechanism — that an
+implementation's refresh path would persist a granted credential during ordinary
+requests. That mechanism was reported from a call graph rather than a function
+body, and it is wrong: the path short-circuits before reaching storage.
+
+The hazard is real and sits one step over, which is the more interesting place:
+not that a granted credential takes a persisting path, but that for a refreshable
+credential there is no other path to take. The rule is stronger for the
+correction, and the correction is recorded because a reader who checks the
+original claim would find it false and reasonably distrust the rule built on it.
 
 #### Scope difference, on the record
 
@@ -895,8 +947,9 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
 7. Carries a credential value out of band if its binding allows it, and only on
    `provider.credential.grant.request` otherwise — never journalling, tracing or
    replaying that pair.
-8. Marks a granted credential non-persistable at entry and honours the mark in
-   every refresh, cache and storage path.
+8. Holds a granted credential in a representation from which durable storage is
+   unreachable, and refuses a grant whose kind it cannot hold that way —
+   publishing which kinds it can in `grant_kinds`.
 9. Publishes `credential_grant` on every descriptor, and refuses a grant with a
    typed `unsupported_feature` where it says `none` rather than accepting and
    ignoring it.
@@ -1009,10 +1062,25 @@ answer to whether it allocates an inference that owes a terminal; an empty
 both directions turned out to cost four lines, which moved it from suggestion to
 requirement.
 
-Nine of the ten were places the draft was silent or wrong rather than merely
-incomplete, and two — the persistence mark and the grant advertisement — were
-rules that no envelope could violate, which is the class this project's
-machinery is worst at catching.
+From the third: the persistence rule asked for a flag where it needed a
+representation, and the mechanism the rule was first justified by turned out not
+to exist.
+
+Of the eleven, ten were places the draft was silent or wrong rather than merely
+incomplete. Three — the persistence rule, the grant advertisement and
+`grant_kinds` — were rules that no envelope could violate, which is the class
+this project's machinery is worst at catching: the validator assembles traces
+and checks envelopes, and an implementation writing a caller's key to disk
+produces a perfectly valid trace.
+
+**Two of the eleven corrected earlier findings from the same source rather than
+the draft.** The persistence hazard was first reported from a call graph and is
+real one step over from where it was placed; `auth_status` was first reported as
+belonging nowhere and belongs on the model entry. Both were caught by the
+reporter, against source, and both made the rule stronger than the version built
+on the original claim. That is the collaboration working rather than failing,
+and it is recorded here because a reader who checks the superseded claims will
+find them false.
 
 That implementation is first-party under
 [Decision 0018](../decisions/0018-makai-becomes-first-party.md), so it
