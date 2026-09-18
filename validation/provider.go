@@ -68,6 +68,8 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 	}
 	result := Result{}
 	parts := map[string][]providerPartEnded{}
+	settled := map[string]string{}
+	var terminals []providerTerminal
 	for i, entry := range raw {
 		var document any
 		if err := json.Unmarshal(entry.raw, &document); err != nil {
@@ -96,6 +98,14 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: i, Line: entry.line, EnvelopeID: e.ID, Type: e.Type, Message: err.Error()})
 			continue
 		}
+		if e.InferenceID != "" && settled[e.InferenceID] != "" && scopedEvent(e.Type) {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{
+				Fixture: fixture, Phase: PhaseSemantic, Code: CodeEventAfterTerminal, Index: i, Line: entry.line,
+				EnvelopeID: e.ID, Type: e.Type, Pointer: "/type", RelatedIDs: []string{settled[e.InferenceID]},
+				Expected: "no scoped event after a terminal", Actual: e.Type,
+				Message: "an inference emitted a scoped event after it had already settled",
+			})
+		}
 		switch e.Type {
 		case "inference.part.ended":
 			var p providerPartEnded
@@ -110,13 +120,35 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodePayloadDecode, Index: i, Line: entry.line, EnvelopeID: e.ID, Type: e.Type, Message: err.Error()})
 				continue
 			}
-			if diag := assemblyDefect(fixture, i, entry.line, e, parts[e.InferenceID], p); diag != nil {
-				result.Diagnostics = append(result.Diagnostics, *diag)
-			}
+			terminals = append(terminals, providerTerminal{envelope: e, index: i, line: entry.line, payload: p})
+			settled[e.InferenceID] = e.ID
+		case "inference.failed":
+			settled[e.InferenceID] = e.ID
+		}
+	}
+	for _, t := range terminals {
+		if diag := assemblyDefect(fixture, t.index, t.line, t.envelope, parts[t.envelope.InferenceID], t.payload); diag != nil {
+			result.Diagnostics = append(result.Diagnostics, *diag)
 		}
 	}
 	sortDiagnostics(result.Diagnostics)
 	return result
+}
+
+type providerTerminal struct {
+	envelope providerEnvelope
+	index    int
+	line     int
+	payload  providerCompleted
+}
+
+func scopedEvent(kind string) bool {
+	switch kind {
+	case "inference.started", "inference.part.started", "inference.part.delta", "inference.part.ended",
+		"inference.completed", "inference.failed":
+		return true
+	}
+	return false
 }
 
 func assemblyDefect(fixture string, index, line int, e providerEnvelope, ended []providerPartEnded, p providerCompleted) *Diagnostic {
