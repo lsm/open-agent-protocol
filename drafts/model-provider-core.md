@@ -582,7 +582,7 @@ in two places their union makes explicit:
 - `inference.part.ended` carries the complete tool call for a `tool_call`, and
   the accumulated string for `text` and `reasoning`. Those are different types,
   not different values of one type. Both `tool_call` and `reasoning` may also
-  carry an opaque `carry` — see `encrypted_carry` under The Call.
+  carry an opaque `carry` — see The Call.
 
 `part_index` is the correlation, and maps onto their `content_index`.
 
@@ -887,7 +887,7 @@ the descriptor. `round_trips_carry` says whether a carry this implementation
 emits can be handed back and reach the provider, and two existing rules then do
 the work. Clause 13 binds it in both directions: an endpoint that round-trips
 must say so, and one that says so must do it. And the create-time rule covers
-the caller, because sending `encrypted_carry` to an endpoint whose descriptor
+the caller, because sending a carry to an endpoint whose descriptor
 says `false` is decidable from the descriptor and the request alone — so it is
 refused at create, rather than discovered a turn later when the vendor rejects a
 replayed block.
@@ -924,8 +924,8 @@ model error.
   credential it can hold without writing them down.
 - `allows_anonymous` — this provider needs no credential.
 - `round_trips_carry` — whether a `carry` this implementation emits on a
-  `tool_call` or `reasoning` part can be handed back as `encrypted_carry` on the
-  next call and reach the provider. Absent means no.
+  `tool_call` or `reasoning` part can be handed back on the matching content
+  part of the next call and reach the provider. Absent means no.
 
 `round_trips_carry` absent means no, and that is safe here for a reason worth
 stating rather than assuming: a caller that reads absent, a caller that reads
@@ -2049,7 +2049,7 @@ the text.
 
 From the sixth: `usage_in_streaming` was
 presented as a transcription of an existing fact and is a re-derivation of an
-adjacent one, and `encrypted_carry` could be sent and never obtained.
+adjacent one, and a reasoning carry could be sent and never obtained.
 
 From the seventh: `other` in a model reference is a
 constant, so the component that exists to distinguish carries the same value for

@@ -88,6 +88,7 @@ type ContentPart struct {
 	ArgumentsJSON json.RawMessage `json:"arguments_json,omitempty"`
 	Result        json.RawMessage `json:"result,omitempty"`
 	IsError       *bool           `json:"is_error,omitempty"`
+	Carry         string          `json:"carry,omitempty"`
 }
 
 type ImageContent struct {
