@@ -139,3 +139,64 @@ func TestProviderTraceOfAnOutOfBandGrant(t *testing.T) {
 		}
 	}
 }
+
+func createWithHeaders(headers string) string {
+	return `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"c1","payload":{"model_ref":"p1/m1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"headers":` + headers + `}}`
+}
+
+func describeWithHeaders(headers string) string {
+	return `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"provider.describe.response","id":"d1","in_reply_to":"d0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"providers":[{"id":"p1","wire":"openai-responses","framing":"sse","headers":` + headers + `}]}}`
+}
+
+func hasCode(result validation.Result, code string) bool {
+	for _, d := range result.Diagnostics {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProviderCredentialInCallerHeaders(t *testing.T) {
+	for _, testCase := range []struct{ name, headers string }{
+		{"authorization", `{"Authorization":"Basic abc"}`},
+		{"lowercased", `{"authorization":"Basic abc"}`},
+		{"proxy authorization", `{"Proxy-Authorization":"Basic abc"}`},
+		{"api key", `{"X-Api-Key":"sk-abc"}`},
+		{"bare api key", `{"Api-Key":"sk-abc"}`},
+		{"bearer under another name", `{"X-Custom":"Bearer sk-abc"}`},
+		{"bearer with leading space", `{"X-Custom":"  bearer sk-abc"}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if !hasCode(providerTrace(t, createWithHeaders(testCase.headers)), validation.CodeCredentialInHeaders) {
+				t.Fatalf("a credential in a header was admitted: %v", codes(providerTrace(t, createWithHeaders(testCase.headers))))
+			}
+		})
+	}
+}
+
+func TestProviderCredentialInAPublishedDescriptorHeader(t *testing.T) {
+	if !hasCode(providerTrace(t, describeWithHeaders(`{"Authorization":"Bearer sk-abc"}`)), validation.CodeCredentialInHeaders) {
+		t.Fatal("a descriptor publishing a credential header was admitted")
+	}
+	if result := providerTrace(t, describeWithHeaders(`{"X-Tenant":"acme"}`)); len(result.Diagnostics) != 0 {
+		t.Fatalf("a descriptor publishing a tenancy header was rejected: %v", result.Diagnostics)
+	}
+}
+
+func TestProviderHeadersCarryingTenancyAreAdmitted(t *testing.T) {
+	for _, testCase := range []struct{ name, headers string }{
+		{"tenant", `{"X-Tenant":"acme"}`},
+		{"opaque value", `{"X-Request-Signature":"sk-looking-but-unnamed"}`},
+		{"the word bearer alone", `{"X-Role":"bearer"}`},
+		{"bearer inside a value", `{"X-Note":"the bearer of this"}`},
+		{"no headers at all", `{}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := providerTrace(t, createWithHeaders(testCase.headers))
+			if len(result.Diagnostics) != 0 {
+				t.Fatalf("a legitimate header was rejected: %v", result.Diagnostics)
+			}
+		})
+	}
+}

@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 const (
 	CodeCredentialInTrace   = "credential_in_trace"
+	CodeCredentialInHeaders = "credential_in_headers"
 	CodeTerminalNotAssembly = "terminal_not_assembly"
 )
 
@@ -94,6 +96,14 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 			})
 			continue
 		}
+		for _, found := range credentialHeaders(e.Payload) {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{
+				Fixture: fixture, Phase: PhaseSemantic, Code: CodeCredentialInHeaders, Index: i, Line: entry.line,
+				EnvelopeID: e.ID, Type: e.Type, Pointer: found.pointer,
+				Expected: "a header carrying tenancy or routing metadata", Actual: found.name,
+				Message: "a credential must not travel in a header; a caller uses provider.credential.grant.request and an implementation resolves its own from configuration",
+			})
+		}
 		if err := v.schema.Validate(document); err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: i, Line: entry.line, EnvelopeID: e.ID, Type: e.Type, Message: err.Error()})
 			continue
@@ -149,6 +159,66 @@ func carriesCredentialValue(payload json.RawMessage) bool {
 	}
 	_, present := members["value"]
 	return present
+}
+
+type headerFinding struct {
+	pointer string
+	name    string
+}
+
+var credentialHeaderNames = map[string]bool{
+	"authorization":       true,
+	"proxy-authorization": true,
+	"x-api-key":           true,
+	"api-key":             true,
+}
+
+func credentialHeaders(payload json.RawMessage) []headerFinding {
+	var document any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		return nil
+	}
+	var found []headerFinding
+	scanHeaders(document, "/payload", &found)
+	sort.SliceStable(found, func(a, b int) bool { return found[a].pointer < found[b].pointer })
+	return found
+}
+
+func scanHeaders(node any, pointer string, found *[]headerFinding) {
+	switch typed := node.(type) {
+	case map[string]any:
+		for key, value := range typed {
+			at := pointer + "/" + escapePointer(key)
+			if key == "headers" {
+				if headers, ok := value.(map[string]any); ok {
+					collectCredentialHeaders(headers, at, found)
+					continue
+				}
+			}
+			scanHeaders(value, at, found)
+		}
+	case []any:
+		for i, value := range typed {
+			scanHeaders(value, fmt.Sprintf("%s/%d", pointer, i), found)
+		}
+	}
+}
+
+func collectCredentialHeaders(headers map[string]any, pointer string, found *[]headerFinding) {
+	for name, value := range headers {
+		text, _ := value.(string)
+		if credentialHeaderNames[strings.ToLower(name)] || bearerShaped(text) {
+			*found = append(*found, headerFinding{pointer: pointer + "/" + escapePointer(name), name: name})
+		}
+	}
+}
+
+func bearerShaped(value string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimLeft(value, " \t")), "bearer ")
+}
+
+func escapePointer(token string) string {
+	return strings.NewReplacer("~", "~0", "/", "~1").Replace(token)
 }
 
 func scopedEvent(kind string) bool {

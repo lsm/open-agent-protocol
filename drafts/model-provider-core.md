@@ -1263,11 +1263,22 @@ varies per call belongs. Two rules:
    credential uses the grant. An implementation that finds one in a header is
    looking at a configuration error, not an alternative path.
 2. **The validator catches what it can.** A header named `Authorization`,
-   `Proxy-Authorization`, `X-Api-Key` or `Api-Key`, or any value matching a
-   bearer-token shape, is rejected.
+   `Proxy-Authorization`, `X-Api-Key` or `Api-Key`, matched without regard to
+   case, or any value that begins with `Bearer ` after leading spaces and tabs
+   are trimmed, is rejected as `credential_in_headers`. The same predicate
+   applies to a descriptor's published `headers`, because a descriptor
+   publishing `Authorization` is a credential in a trace by a different route.
 
 That check is **incomplete by construction** and cannot be otherwise: a
-credential can be called anything. It is worth having for the same reason rule 4
+credential can be called anything. The value-shaped half is a floor rather than
+a detector, and deliberately so: it catches `X-Custom: Bearer sk-abc` and does
+not catch `X-Custom: sk-abc`, a bare key in a header nobody named. Anything more
+aggressive begins rejecting the opaque values a gateway legitimately carries —
+tenant ids, request signatures — and a validator that rejects valid frames is
+worse than one with a stated gap. So the rule is written as catching
+bearer-shaped values specifically, not as catching credentials. The overclaim
+would be easy to miss here precisely because this rule *is* mechanically
+checkable, and it would hide in the word "credential". It is worth having for the same reason rule 4
 is — it turns the common mistake into a caught one — and it must not be
 described as closing the channel. What closes the channel is that the grant
 exists, so a caller with a credential has somewhere correct to put it.
