@@ -206,8 +206,8 @@ leaves the second homeless:
   anywhere in the exchange — and it is the case users hit first, because you
   log in and then start working.
 
-Everything this section says about that harness — Makai — is **reported by its
-maintainers from their live tree, not pinned here**. The adapter at
+Everything this section says about that harness — Makai — is **read from its
+live tree, not pinned here, and asserted by no Makai maintainer**. The adapter at
 `makai-agent-67ad514` models no auth namespace, its mapping ledger in
 `research/` records none, and no corpus case exercises one, so none of it is
 evidence under
@@ -273,7 +273,7 @@ harness's arrival would otherwise cost someone to rediscover:
 - **The waiting condition is endpoint-scoped, not run- or session-scoped.** One
   run blocks on exactly one provider, because a run carries a single model
   reference and nothing inside it introduces a second. The sharing is entirely
-  across runs, and across sessions: Makai's maintainers report a refresh lock
+  across runs, and across sessions: the Makai tree carries a refresh lock
   that is one object per process keyed on provider and user, so N runs in M
   sessions wait on the same thing. This is why the pattern of the three
   existing resolve pairs does not

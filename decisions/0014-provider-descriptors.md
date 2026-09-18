@@ -159,11 +159,17 @@ its fixed entries.
 
 **Makai's native wire carries more than this decision proposes to expose.**
 `AgentEndEvent` has `provider_id` *and* `api`
-(`adapter/makai/internal/native/events.go:39`) — which provider served the run
-and over which wire — and the adapter maps neither. That is the `wire` member
-arriving from a harness that already reports it per run, and it is the
-strongest single piece of evidence here: a harness volunteering the fact
+(`adapter/makai/internal/native/events.go:38-39` at `906b2a1`) — which provider
+served the run and over which wire — and the adapter maps neither. That is the
+`wire` member arriving from a harness that already reports it per run, and it is
+the strongest single piece of evidence here: a harness volunteering the fact
 unprompted, with nowhere for it to go.
+
+Both are `omitempty`, and read against source in the Makai tree this is
+load-bearing rather than cosmetic: the fields are not members of the payload struct upstream
+but are written from the terminal assistant message, so an `agent_end` with no
+terminal assistant message carries neither. A consumer reads the pair as
+*present or absent per run*, never as a field guaranteed by the event.
 
 What remains genuinely unproven is `endpoint` itself. No pinned harness
 publishes the destination it reaches for a provider — ACP, Codex and Hermes
@@ -209,9 +215,8 @@ that is fixed for a capability revision, and a descriptor that went stale
 between two reads would be worse than no descriptor.
 
 Authentication state, for the same reason and against a real request for it.
-Makai's maintainers report an `auth_providers_response` carrying `provider_id`,
-`name` and `auth_status` together — reported from their live tree, not pinned
-here: the adapter at `makai-agent-67ad514` models no auth namespace and its
+The Makai tree carries an `auth_providers_response` with `provider_id`, `name`
+and `auth_status` together — read from that live tree, not pinned here: the adapter at `makai-agent-67ad514` models no auth namespace and its
 ledger records none, so this is not evidence under Decision 0003's step 3, the
 same standing Decision 0013 gives Codex's `turn/steer`. A client that cannot
 tell "logged into one vendor, not the other" cannot render a model picker

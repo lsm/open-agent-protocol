@@ -144,6 +144,41 @@ endpoint; a provider-profile implementation needs its own harness, and the
 question of how to pin a vendor API that has no commit hash — raised and
 unanswered for adapters — has to be answered here rather than deferred.
 
+## What the envelope set must not assume
+
+This decision defers the envelopes. The shape of Makai's provider layer was read
+from source against that deferral, and four constraints in it are cheap to
+record now and expensive to discover after a schema exists. Their standing is
+the same as every other live-tree reading in these records: taken from that
+working tree, not pinned in `adapter/makai/`, so not evidence under
+[Decision 0003](0003-staged-unit-graduation.md)'s step 3. They are design
+constraints, not graduation evidence.
+
+**"OpenAI-compatible" is not one wire.** Their `OpenAICompatOptions` is twelve
+fields, each recording a vendor that broke the shape while claiming it. Four
+are ones a profile must not normalize away rather than ones it should hide:
+the same semantic field has two names (`max_completion_tokens` against
+`max_tokens`), reasoning has three mutually incompatible encodings behind one
+API name, one vendor imposes a message-ordering constraint that is not a
+capability, and whether usage arrives during streaming at all varies — which
+changes what a terminal event can promise. A profile that presents one
+vocabulary must still let an implementation say which of these it is facing.
+
+**Streaming is not SSE everywhere.** Their SSE parser serves six of eight APIs;
+Ollama is newline-delimited JSON with no SSE parser at all. An envelope set
+that assumes SSE framing excludes a working provider, and the three wires named
+above are request shapes, not a transport commitment.
+
+**Per-call and per-provider are different sets.** Their split puts sampling,
+reasoning controls, tool choice and the credential on the per-call struct, and
+identity, base URL, cost, context window and compatibility flags on the
+per-provider one. The profile needs both and should not merge them.
+
+**Reasoning is not a uniform content kind.** Anthropic and Google carry a
+thinking budget; Google replays a thought signature with no OpenAI equivalent.
+Reasoning is in scope for the profile and is the member most likely to be
+specified from one vendor's shape by accident.
+
 ## What this decision does not admit
 
 That `agent-control-core` gains an inference envelope. It does not, and the
