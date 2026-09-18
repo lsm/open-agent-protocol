@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -73,6 +74,10 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: entry.line, Message: err.Error()})
 			continue
 		}
+		if key, duplicate := duplicateKey(entry.raw); duplicate {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeDuplicateKey, Index: i, Line: entry.line, Message: fmt.Sprintf("duplicate object key %q", key)})
+			continue
+		}
 		var e providerEnvelope
 		if err := json.Unmarshal(entry.raw, &e); err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodePayloadDecode, Index: i, Line: entry.line, Message: err.Error()})
@@ -118,6 +123,9 @@ func assemblyDefect(fixture string, index, line int, e providerEnvelope, ended [
 	if len(ended) == 0 {
 		return nil
 	}
+	ordered := append([]providerPartEnded(nil), ended...)
+	sort.SliceStable(ordered, func(a, b int) bool { return ordered[a].PartIndex < ordered[b].PartIndex })
+	ended = ordered
 	var terminal []map[string]json.RawMessage
 	if err := json.Unmarshal(p.Message.Content, &terminal); err != nil {
 		return &Diagnostic{

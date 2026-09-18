@@ -60,6 +60,36 @@ func TestProviderTerminalDisagreeingWithItsParts(t *testing.T) {
 	}
 }
 
+func TestProviderPartsEndingOutOfIndexOrder(t *testing.T) {
+	assembled := `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`
+	result := providerTrace(t, toolEnded, textEnded, completed(assembled))
+	if diags := codes(result); len(diags) != 0 {
+		t.Fatalf("a terminal in part_index order was judged against arrival order: %v", result.Diagnostics)
+	}
+}
+
+func TestProviderTerminalInArrivalOrderRatherThanIndexOrder(t *testing.T) {
+	byArrival := `[{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}},{"type":"text","text":"hello"}]`
+	result := providerTrace(t, toolEnded, textEnded, completed(byArrival))
+	for _, d := range result.Diagnostics {
+		if d.Code == validation.CodeTerminalNotAssembly {
+			return
+		}
+	}
+	t.Fatalf("a terminal ordered by arrival rather than part_index was admitted: %v", codes(result))
+}
+
+func TestProviderTraceWithADuplicateKey(t *testing.T) {
+	duplicate := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.started","id":"e1","id":"e2","inference_id":"i1","sequence":1,"payload":{"model_ref":"p/other:x@m"}}`
+	result := providerTrace(t, duplicate)
+	for _, d := range result.Diagnostics {
+		if d.Code == validation.CodeDuplicateKey {
+			return
+		}
+	}
+	t.Fatalf("a trace the agent-control validator rejects was admitted here: %v", codes(result))
+}
+
 func TestProviderTerminalWithNoStreamedPartsIsOutsideTheRule(t *testing.T) {
 	unary := completed(`[{"type":"text","text":"whatever the provider said"}]`)
 	if diags := codes(providerTrace(t, unary)); len(diags) != 0 {
