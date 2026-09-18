@@ -69,7 +69,38 @@ conflated in speech:
 - **`wire`** — the *request shape* spoken to it, from a closed set.
 - **`model_id`** — the model, as the provider names it.
 
-A **model reference** carries all three: `provider_id/wire@model_id`.
+A **model reference** carries all three: `provider_id/wire@model_id`, with the
+middle component written `other:<wire_id>` when the wire is unnamed.
+
+#### `wire_id`, and why `other` alone is not enough in a reference
+
+`wire` is in the reference because two endpoints may share a wire and **one
+endpoint may offer more than one**. For an unnamed wire the first half still
+works — `provider_id` disambiguates — and the second half fails completely: every
+provider saying `other` produces `<provider>/other@<model>`, so a provider
+offering two unnamed shapes emits `p/other@a` and `p/other@b` with nothing
+saying they speak differently.
+
+That is not hypothetical. A vendor with two distinct generative APIs under one
+provider is the case, and it exists in the registry this profile was mapped
+against.
+
+So a descriptor whose `wire` is `other` carries **`wire_id`**: an opaque,
+implementation-scoped label, required when an implementation offers more than
+one unnamed shape and optional otherwise. The reference then reads
+`ollama/other:ollama-chat@llama3`, and a parser takes the component up to the
+first `:` as the wire value.
+
+**This does not reintroduce the vendor enum, and the difference is the whole
+point.** `wire` is a closed set a caller may branch on: reading
+`anthropic-messages` tells it something portable about a behaviour family.
+`wire_id` is a discriminator, not a description — opaque, endpoint-scoped,
+assigned no meanings by this project, exactly like `provider_id`. **A caller must
+not branch on it.** Two providers emitting the same `wire_id` string say nothing
+to each other; one provider emitting two says only that they differ.
+
+That is the honest place for a vendor name to live: somewhere a caller can tell
+things apart and cannot pretend to understand them.
 
 `provider_id` and `wire` are different layers. Two vendor endpoints may share a
 wire, and one vendor endpoint may offer more than one. An implementation that
@@ -404,7 +435,15 @@ that may consist only of its own failure, to express something the response
 already says.
 
 Exactly one terminal per **accepted** inference: `inference.completed` or
-`inference.failed`. An aborted call ends as `inference.completed` with
+`inference.failed`.
+
+**A consequence worth naming, because it was not designed for and turns out to
+matter.** Since a refusal allocates nothing and owes no terminal, an
+implementation that answers discovery and refuses every inference is conformant
+against every rule except the streaming ones it does not claim. A
+discovery-only endpoint is a real endpoint, not a stub, and it is not lying
+about anything. That lets an implementation ship the profile in stages and be
+honest at each one, which is worth more than it cost. An aborted call ends as `inference.completed` with
 `stop_reason: aborted` — cancellation at this boundary is a stop reason, not a
 third terminal, because the vendor reports it that way and inventing a terminal
 would put the profile's arbitration above the provider's own.
@@ -631,6 +670,8 @@ model error.
 - `id`, `display_name?`
 - `wire`, `framing`
 - `endpoint` — the destination reached.
+- `wire_id` — when `wire` is `other`, an opaque label distinguishing this shape
+  from another unnamed shape at the same provider. Never branched on.
 - `headers` — what the implementation sends from its own configuration, so a
   caller can see what accompanies its prompts. Never resolved from a credential
   store.
@@ -1138,6 +1179,11 @@ streams with a capture date and an evidence class are the obvious candidate, and
 **What drives conformance?** Serving Modes above settles the *shape* and
 nothing about readiness.
 
+A discovery-only endpoint is now spawnable, so the first half of the harness has
+something to drive. Inference is still refused there, which is conformant and
+means the harness can be written against discovery before the streaming host
+exists.
+
 One thing the build has settled: **it must be end-to-end, not envelope
 fixtures.** The first implementation produced a malformed line — a doubled JSON
 key — from a writer composition that no round-trip test could reach, because a
@@ -1222,9 +1268,22 @@ three wires and parses each one's stream. It was written as a compatibility
 prober and its assumptions show — it requires `text/event-stream` — but the
 disagreements it had to encode are the ones the profile must carry.
 
-**One implementation is being built against it**, and fifteen findings from
-writing the vocabulary, codec, discovery, grants, admission, the wire mapping,
-the inference lifecycle and the compatibility facts are already in this draft. From the first pass: `ProtocolError` and
+**Something speaks this profile.** As of 2026-09-17 a spawnable endpoint answers
+`provider.describe` and `provider.models.list` over a line binding, on the same
+binary that serves agent control, and refuses inference. Driven by hand it
+returns three providers across three underlying wires — one `anthropic-messages`
+over SSE, one `openai-responses` over SSE, and one `other` over `ndjson` with
+`allows_anonymous` — with every `model_ref` resolving to a described provider.
+
+That last row is the case that forced `other` into the wire set, working. And
+the session as a whole is the first time the profile's premise has been observed
+rather than argued: a caller reading that output knows what it can call, what
+needs a credential, what framing to expect and which catalog entries are stale,
+without knowing anything about Anthropic, OpenAI or Ollama.
+
+**Sixteen findings** from writing the vocabulary, codec, discovery, grants,
+admission, the wire mapping, the inference lifecycle, the compatibility facts
+and a spawnable endpoint are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
 had silently dropped a value, `opaque` is a reserved word in the implementation
 language, the envelope scope rule for `inference.create.response` was
@@ -1251,7 +1310,11 @@ From the sixth: `usage_in_streaming` was
 presented as a transcription of an existing fact and is a re-derivation of an
 adjacent one, and `encrypted_carry` could be sent and never obtained.
 
-Of the fifteen, fourteen were places the draft was silent or wrong rather than
+From the seventh: `other` in a model reference is a
+constant, so the component that exists to distinguish carries the same value for
+every unnamed wire.
+
+Of the sixteen, fifteen were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
