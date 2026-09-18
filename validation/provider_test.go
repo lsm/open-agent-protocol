@@ -175,7 +175,7 @@ func hasCode(result validation.Result, code string) bool {
 	return false
 }
 
-func TestProviderCredentialInCallerHeaders(t *testing.T) {
+func TestProviderNamedAndBearerShapedCallerHeadersAreRefused(t *testing.T) {
 	for _, testCase := range []struct{ name, headers string }{
 		{"authorization", `{"Authorization":"Basic abc"}`},
 		{"lowercased", `{"authorization":"Basic abc"}`},
@@ -219,7 +219,7 @@ func TestProviderHeadersCarryingTenancyAreAdmitted(t *testing.T) {
 	}
 }
 
-func TestProviderHeaderScanStaysInsideTheDocumentedLocations(t *testing.T) {
+func TestProviderToolSchemaDescribingAHeadersPropertyIsNotAHeader(t *testing.T) {
 	envelope := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"c1","payload":{"model_ref":"p1/m1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"http_request","input_schema":{"properties":{"headers":{"description":"Bearer auth is injected by the gateway"}}}}]}}`
 	if hasCode(providerTrace(t, envelope), validation.CodeCredentialInHeaders) {
 		t.Fatal("a tool's input_schema describing a headers property is not a credential in a header")
