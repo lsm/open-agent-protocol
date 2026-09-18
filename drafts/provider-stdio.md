@@ -237,18 +237,24 @@ The endpoint binding's contract, with inferences in place of runs.
 
 A harness that spawns an implementation and drives scripted envelopes reaches
 only the frames a scripted exchange can provoke. Measured against the first
-implementation: **five of the thirteen envelope types it emits.** Those five are
-the ones a request draws an answer to — the two discovery responses, the two
-grant answers, and `inference.create.response`. The other eight are the whole of
-an inference's event stream: `inference.started`, the part triple,
-`inference.completed`, `inference.failed`, `inference.sync.response` carrying a
-mid-flight `arguments_partial`, and `inference.cancel.response`. They live
-inside the implementation's emitter and are reachable only by driving a real
-provider, or by temporarily printing every outbound frame, which is what
+implementation: **five of the thirteen envelope types it emits.** The line is
+not request against event — it is whether a **live inference** is needed. The
+five are the two discovery responses, the two grant answers and
+`inference.create.response`, none of which needs one. The eight that do are
+`inference.started`, the part triple, `inference.completed`, `inference.failed`,
+and the two responses that answer a request *about an inference already
+running* — `inference.sync.response` carrying a mid-flight `arguments_partial`,
+and `inference.cancel.response`. A harness can send those two requests; with
+nothing running, it gets a refusal rather than the frame.
+
+They live inside the implementation's emitter and are reachable only by driving
+a real provider, or by temporarily printing every outbound frame, which is what
 actually happened and was deleted each time.
 
 So an implementation **may** support a specimen request: asked for one, it emits
-one well-formed instance of every envelope type it would otherwise emit.
+one well-formed instance of every envelope type it would otherwise emit, **less
+what it declares in `excluded`** — which today is the two grant answers, for the
+reason below.
 
 **It is a binding control frame, not an envelope**, because it asks the
 implementation about itself rather than driving the protocol. It carries an

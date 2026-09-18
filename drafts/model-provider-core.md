@@ -1502,10 +1502,12 @@ and this is measured rather than estimated.** Of thirteen envelope types one
 implementation emits, five are reachable by spawning it and sending scripted
 envelopes with no credentials: the two discovery responses, the two grant
 answers — which carry nonces and references, not secrets — and
-`inference.create.response`. The other eight are the whole of an inference's
-event stream, which exists only inside the implementation's own emitter and was
-checked against the schemas only because its author temporarily printed every
-outbound frame from a test and piped it into a validator.
+`inference.create.response`. The other eight are the frames only a **live
+inference** produces, which is the event stream plus two responses that answer a
+request about an inference already running. They exist only inside the
+implementation's own emitter and were checked against the schemas only because
+its author temporarily printed every outbound frame from a test and piped it
+into a validator.
 
 So a green harness does not mean the wire is covered, and anyone reporting
 harness results has to say which frames were reached. Closing the gap needs
@@ -1513,7 +1515,8 @@ either a provider the harness can drive or a way to make an implementation
 produce a named frame on demand, and neither exists. The second is the cheaper
 one and is now specified as
 [the binding's specimen request](provider-stdio.md): an implementation that can
-be asked to emit a specimen of each frame it supports is testable in a way one
+be asked to emit a specimen of each frame it supports, less the few it declares
+it withholds, is testable in a way one
 that cannot is not. Nothing implements it yet.
 
 Compatibility is a second, harder half, and the first implementation has drawn
