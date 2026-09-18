@@ -1145,6 +1145,20 @@ key cannot reach storage there even in principle.
 An implementation in that position says which kinds its bypass carries, so a
 caller can tell.
 
+**A predicate written to simplify routing can disable a mechanism that exists
+for a reason, and that is a distinct hazard from missing a write.** In the
+implementation this rule was built against it happened three times, the last
+being the worst: a predicate written to keep routing simple reported
+not-expired for every ephemeral credential, so the refresh lock was never
+reached and a granted OAuth credential refreshed unlocked. Latent until
+something grants OAuth credentials, and then concurrent requests race on a
+rotating refresh token with nothing coalescing them.
+
+The general form is that adding a credential kind adds a *shape* the existing
+predicates were not written to classify, and the cheapest way to make them
+compile is to answer the question they were not asking. Each of the three was a
+convenience that silently removed a guarantee.
+
 **Find every predicate that routes on credential kind, not only every path that
 writes.** This is the part that catches an implementation out, reported from
 doing it. Having built the unreachable representation, its routing predicates —
@@ -1496,9 +1510,10 @@ So a green harness does not mean the wire is covered, and anyone reporting
 harness results has to say which frames were reached. Closing the gap needs
 either a provider the harness can drive or a way to make an implementation
 produce a named frame on demand, and neither exists. The second is the cheaper
-one and is worth considering as a conformance affordance rather than a hack: an
-implementation that can be asked to emit a specimen of each frame it supports is
-testable in a way one that cannot is not.
+one and is now specified as
+[the binding's specimen request](provider-stdio.md): an implementation that can
+be asked to emit a specimen of each frame it supports is testable in a way one
+that cannot is not. Nothing implements it yet.
 
 Compatibility is a second, harder half, and the first implementation has drawn
 the line precisely. What a harness can do today: spawn a provider endpoint,

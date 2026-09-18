@@ -231,6 +231,42 @@ The endpoint binding's contract, with inferences in place of runs.
 - **Keepalives are the binding's own.** An implementation that needs one emits a
   control frame, never an envelope, and it consumes no sequence.
 
+## The specimen request
+
+**Optional, and a harness is much weaker without it.**
+
+A harness that spawns an implementation and drives scripted envelopes reaches
+only the frames a scripted exchange can provoke. Measured against the first
+implementation: **five of the thirteen envelope types it emits.** The other
+eight — a tool-call part end, a snapshot carrying `arguments_partial`, the sync
+response, both grant refusals — live inside its emitter and are reachable only
+by driving a real provider, or by temporarily printing every outbound frame,
+which is what actually happened and was deleted each time.
+
+So an implementation **may** support a specimen request: asked for one, it emits
+one well-formed instance of every envelope type it would otherwise emit, and
+nothing else.
+
+- It is a **binding control frame**, not an envelope — `{"control":
+  "specimen"}` — because it asks the implementation about itself rather than
+  driving the protocol.
+- Each specimen is a real frame from the implementation's own emitter, not a
+  literal an author wrote out. A specimen that does not come from the code that
+  would emit it in earnest tests the specimen writer.
+- **The credential grant envelopes are excluded**, for the reason the profile
+  excludes them from traces: a specimen is a recording, and the exchange is not
+  recorded. An implementation lists those types as supported and emits no
+  specimen for them.
+- A specimen run settles nothing and allocates nothing. No inference exists
+  afterwards.
+
+**Why this is a conformance affordance and not a debugging hack.** Without it,
+"which frames did the harness reach" is answered by the implementation author's
+say-so. With it, a harness answers it by construction: the implementation
+declares what it emits, the harness demands one of each, and the validator
+judges them. An implementation that can be asked is testable in a way one that
+cannot is not, and the gap is eight frames out of thirteen rather than a corner.
+
 ## Conformance
 
 An implementation claiming this binding:
@@ -248,8 +284,16 @@ An implementation claiming this binding:
    deadline, burns the nonce, and destroys the socket when the grant settles.
 7. Never blocks its envelope reader on the credential channel.
 8. Settles every accepted inference before exiting 0.
+9. If it supports a specimen request: emits one instance of every type it
+   supports except the grant envelopes, each from its own emitter, allocating
+   nothing.
 
 ## Open questions
+
+**Nothing has implemented the specimen request.** It is specified here because
+a harness cannot rely on an affordance one implementation invented, and the
+measurement that motivates it — five of thirteen — comes from one implementation
+and may not generalize.
 
 **The 30-second deadline is a number nobody has measured.** It is long enough
 for a caller to read a path and connect, and short enough that a hung grant does
