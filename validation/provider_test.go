@@ -44,7 +44,7 @@ func TestProviderTerminalDisagreeingWithItsParts(t *testing.T) {
 	for _, testCase := range []struct{ name, content string }{
 		{"fewer parts", `[{"type":"text","text":"hello"}]`},
 		{"different text", `[{"type":"text","text":"hell"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`},
-		{"different kind", `[{"type":"reasoning","reasoning":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`},
+		{"different kind and payload with it", `[{"type":"reasoning","reasoning":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`},
 		{"different arguments", `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"rust"}}]`},
 		{"different tool", `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t2","name":"search","arguments_json":{"q":"zig"}}]`},
 	} {
@@ -57,6 +57,14 @@ func TestProviderTerminalDisagreeingWithItsParts(t *testing.T) {
 			}
 			t.Fatalf("a terminal disagreeing with its parts was admitted: %v", codes(result))
 		})
+	}
+}
+
+func TestProviderTerminalOfADifferentKindCarryingNothingToCompare(t *testing.T) {
+	emptyText := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"text","text":""}}`
+	result := providerTrace(t, emptyText, completed(`[{"type":"reasoning","reasoning":"thinking"}]`))
+	if !hasCode(result, validation.CodeTerminalNotAssembly) {
+		t.Fatalf("a terminal of the wrong kind was admitted because there was nothing left to compare: %v", codes(result))
 	}
 }
 
@@ -137,5 +145,73 @@ func TestProviderTraceOfAnOutOfBandGrant(t *testing.T) {
 		if diags := codes(providerTrace(t, frame)); len(diags) != 0 {
 			t.Fatalf("a tier-1 grant frame carrying no secret was rejected: %v", diags)
 		}
+	}
+}
+
+func createWithHeaders(headers string) string {
+	return `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"c1","payload":{"model_ref":"p1/m1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"headers":` + headers + `}}`
+}
+
+func describeWithHeaders(headers string) string {
+	return `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"provider.describe.response","id":"d1","in_reply_to":"d0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"providers":[{"id":"p1","wire":"openai-responses","framing":"sse","headers":` + headers + `}]}}`
+}
+
+func hasCode(result validation.Result, code string) bool {
+	for _, d := range result.Diagnostics {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProviderCredentialInCallerHeaders(t *testing.T) {
+	for _, testCase := range []struct{ name, headers string }{
+		{"authorization", `{"Authorization":"Basic abc"}`},
+		{"lowercased", `{"authorization":"Basic abc"}`},
+		{"proxy authorization", `{"Proxy-Authorization":"Basic abc"}`},
+		{"api key", `{"X-Api-Key":"sk-abc"}`},
+		{"bare api key", `{"Api-Key":"sk-abc"}`},
+		{"bearer under another name", `{"X-Custom":"Bearer sk-abc"}`},
+		{"bearer with leading space", `{"X-Custom":"  bearer sk-abc"}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if !hasCode(providerTrace(t, createWithHeaders(testCase.headers)), validation.CodeCredentialInHeaders) {
+				t.Fatalf("a credential in a header was admitted: %v", codes(providerTrace(t, createWithHeaders(testCase.headers))))
+			}
+		})
+	}
+}
+
+func TestProviderCredentialInAPublishedDescriptorHeader(t *testing.T) {
+	if !hasCode(providerTrace(t, describeWithHeaders(`{"Authorization":"Bearer sk-abc"}`)), validation.CodeCredentialInHeaders) {
+		t.Fatal("a descriptor publishing a credential header was admitted")
+	}
+	if result := providerTrace(t, describeWithHeaders(`{"X-Tenant":"acme"}`)); len(result.Diagnostics) != 0 {
+		t.Fatalf("a descriptor publishing a tenancy header was rejected: %v", result.Diagnostics)
+	}
+}
+
+func TestProviderHeadersCarryingTenancyAreAdmitted(t *testing.T) {
+	for _, testCase := range []struct{ name, headers string }{
+		{"tenant", `{"X-Tenant":"acme"}`},
+		{"opaque value", `{"X-Request-Signature":"sk-looking-but-unnamed"}`},
+		{"the word bearer alone", `{"X-Role":"bearer"}`},
+		{"bearer inside a value", `{"X-Note":"the bearer of this"}`},
+		{"no headers at all", `{}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := providerTrace(t, createWithHeaders(testCase.headers))
+			if len(result.Diagnostics) != 0 {
+				t.Fatalf("a legitimate header was rejected: %v", result.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestProviderHeaderScanStaysInsideTheDocumentedLocations(t *testing.T) {
+	envelope := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"c1","payload":{"model_ref":"p1/m1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"http_request","input_schema":{"properties":{"headers":{"description":"Bearer auth is injected by the gateway"}}}}]}}`
+	if hasCode(providerTrace(t, envelope), validation.CodeCredentialInHeaders) {
+		t.Fatal("a tool's input_schema describing a headers property is not a credential in a header")
 	}
 }
