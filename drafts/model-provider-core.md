@@ -874,7 +874,7 @@ tier is mandatory wherever it is achievable.**
 
 | Type | Direction | Carries |
 | --- | --- | --- |
-| `provider.credential.grant.request` | caller → implementation | `provider_id`, `nonce`, `ttl_ms?`, and the value *only* in the fallback tier |
+| `provider.credential.grant.request` | caller → implementation | `provider_id`, `nonce`, `ttl_ms?` (the credential's lifetime, not the arrival deadline), and the value *only* in the fallback tier |
 | `provider.credential.grant.response` | implementation → caller | `credential_ref`, `expires_at_ms?` |
 
 #### Which tier, and whether at all: `credential_grant`
@@ -913,6 +913,62 @@ with no permitted-but-special case and no fixture for an exception.
 
 **A binding that can carry the value out of band must.** This is a requirement
 on bindings, not a preference.
+
+**A binding must not assume numbered descriptors exist.** The obvious stdio form
+— open descriptor 3 — has no meaning on Windows, where an extra stdio slot is an
+inherited handle rather than a numbered descriptor. An implementation shipping
+both platforms from one binary would find the grant becoming a
+platform-conditional feature, which is not what "mandatory where the binding
+allows it" is supposed to mean. If a binding ends up POSIX-only for tier 1, it
+must say so, because the consequence is that a whole platform gets the weaker
+tier and the mandate quietly becomes optional in practice for anyone shipping
+cross-platform.
+
+#### The arrival deadline is not `ttl_ms`
+
+They are different clocks, and an earlier version of this draft had only one.
+
+`ttl_ms` becomes `expires_at_ms`: it is the **credential's** lifetime, and it
+starts when the grant succeeds. The deadline for the value to *arrive* runs from
+when the request is received, and it is the one that matters when a channel goes
+quiet. A caller asking for `ttl_ms: 3600000` because it wants a one-hour
+credential is not asking the implementation to wait an hour for the bytes.
+
+**The binding fixes the arrival deadline; a caller does not choose it.** A
+caller-chosen arrival deadline is a caller-chosen duration for an implementation
+to hold a half-open grant, which is a resource-exhaustion lever with no
+legitimate use.
+
+#### The side channel must never block the envelope stream
+
+An implementation whose reader is single-threaded and cooperative — which is an
+ordinary way to build one — freezes everything on a blocking read of a silent
+channel, **including its ability to answer a cancel**, which is exactly what a
+caller reaches for when a grant hangs. Whatever a binding specifies, this
+survives.
+
+#### Nonce lifecycle
+
+Four rules. They are grant semantics rather than channel mechanics, so they
+belong here and not in a binding.
+
+1. **On the arrival deadline, refuse and keep serving.** The grant request is
+   answered with a typed refusal — not a hang, not a silent drop. A caller
+   cannot otherwise distinguish a lost credential from a slow implementation.
+2. **Burn the nonce.** After the deadline the nonce is dead, and a value
+   arriving late for it is discarded rather than bound. This is a security
+   property rather than a robustness one, and it is the rule an implementation
+   gets wrong by doing the natural thing: leaving the nonce in the map, because
+   removing it looks like cleanup rather than correctness. Without it, a secret
+   written a second too late is attached to whatever grant claims that nonce
+   next.
+3. **A value for a nonce that was never issued is discarded silently.** No error
+   envelope — an error there answers a question the sender should not get
+   answered.
+4. **Closing the channel without writing is the deadline arriving early**, and
+   draws the same refusal immediately. That is a well-behaved caller saying it
+   changed its mind, and making it wait out a timeout punishes the only party
+   doing it right.
 
 #### Tier 2: on the envelope, where no side channel exists
 
@@ -1234,7 +1290,9 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    replaying that pair.
 8. Holds a granted credential in a representation from which durable storage is
    unreachable, and refuses a grant whose kind it cannot hold that way —
-   publishing which kinds it can in `grant_kinds`.
+   publishing which kinds it can in `grant_kinds`. Burns a nonce at its arrival
+   deadline, discards a value arriving late or for a nonce never issued, and
+   never blocks the envelope stream on the side channel.
 9. Publishes `credential_grant` on every descriptor, and refuses a grant with a
    typed `unsupported_feature` where it says `none` rather than accepting and
    ignoring it.
@@ -1392,7 +1450,7 @@ mid-stream cancel is seen, settled with one terminal. Against a local provider
 that is not running it answers `provider_unavailable`, a Retry-class error,
 which is the honest answer rather than a contrived one.
 
-**Seventeen findings** from writing the vocabulary, codec, discovery, grants,
+**Eighteen findings** from writing the vocabulary, codec, discovery, grants,
 admission, the wire mapping, the inference lifecycle, the compatibility facts
 and a spawnable endpoint are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
@@ -1427,16 +1485,19 @@ every unnamed wire.
 
 From the eighth: nothing said whether a
 condition knowable before the request leaves the building is a refusal or a
-terminal, and the worse of the two answers satisfied every other rule.
+terminal, and the worse of the two answers satisfied every other rule. From the
+ninth: `ttl_ms` was doing duty for two different clocks — a credential's
+lifetime and a channel's arrival deadline — and the nonce had no stated
+lifecycle at all.
 
-Of the seventeen, sixteen were places the draft was silent or wrong rather than
+Of the eighteen, seventeen were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
 produces a perfectly valid trace.
 
-**Four of the seventeen corrected earlier findings from the same source rather
+**Four of the eighteen corrected earlier findings from the same source rather
 than the draft**, and the pattern in them matters more than the count. Each
 superseded claim had been read off a call graph, a type name or a field's
 presence, and each correction came from reading the body: the persistence hazard
