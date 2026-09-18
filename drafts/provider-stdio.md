@@ -220,6 +220,20 @@ The endpoint binding's contract, with inferences in place of runs.
   outlives it.
 - A malformed line is fatal as classified above, with one bounded diagnostic to
   stderr.
+- **An implementation that cannot build its own error frame terminates.** The
+  case is real rather than theoretical: a line that exhausts memory during
+  decoding is reported with `resource_exhausted`, and emitting that report also
+  allocates. So the rule is attempt the frame, and if building or writing it
+  fails, flush whatever is already queued, write one bounded diagnostic to
+  stderr and exit non-zero. **It must not retry the emission** — retrying an
+  allocation that has just failed is how exhaustion becomes a spin, and the
+  caller learns more from a closed connection than from a process that stops
+  answering while still holding one open.
+
+  The diagnostic must name exhaustion rather than the line. An implementation
+  that reports "undecodable input" here tells the caller its frame was
+  malformed, which is the same false attribution `resource_exhausted` exists to
+  prevent, arriving on the one channel the caller can still read.
 
 ## What this binding does not carry
 

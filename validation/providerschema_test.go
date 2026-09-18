@@ -32,6 +32,7 @@ func TestProviderSchemaAdmitsEachEnvelope(t *testing.T) {
 	for _, testCase := range []struct{ name, raw string }{
 		{"describe request", envelope("provider.describe.request", `"payload":{}`)},
 		{"describe response", envelope("provider.describe.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"profile_revision":"draft-2026-09-17","providers":[{"id":"ollama","wire":"other","wire_id":"ollama-chat","framing":"ndjson","allows_anonymous":true,"credential_grant":"none"}]}`)},
+		{"the endpoint's own failure as a terminal", envelope("inference.failed", `"inference_id":"i1","sequence":9,"payload":{"error":{"code":"endpoint_error","message":"the pump could not assemble a terminal"}}`)},
 		{"resource exhaustion as a terminal", envelope("inference.failed", `"inference_id":"i1","sequence":9,"payload":{"error":{"code":"resource_exhausted","message":"out of memory decoding a frame"}}`)},
 		{"an unsupported feature refusal", envelope("provider.credential.grant.response", `"in_reply_to":"e0","payload":{"accepted":false,"error":{"code":"unsupported_feature","message":"this provider takes no grant"}}`)},
 		{"descriptor declining the carry round trip", envelope("provider.describe.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"providers":[{"id":"anthropic","wire":"anthropic-messages","framing":"sse","round_trips_carry":false}]}`)},

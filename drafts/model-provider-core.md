@@ -1412,7 +1412,7 @@ rather than primary.
 
 | Action | Codes | Why it is its own class |
 | --- | --- | --- |
-| **Retry** | `rate_limited`, `provider_unavailable`, `resource_exhausted` | Transient. Back off and send it again. |
+| **Retry** | `rate_limited`, `provider_unavailable`, `resource_exhausted`, `endpoint_error` | Transient. Back off and send it again. |
 | **Refresh** | `credential_expired` | A credential aged out. A refresh may fix it with no human involved. |
 | **Authenticate** | `credential_missing`, `credential_rejected` | No usable credential. A human must log in, or the key is wrong and retrying the refresh loops. |
 | **Report** | `invalid_request`, `protocol_violation`, `unsupported_version`, `unsupported_feature`, `model_not_found` | The caller or the peer is broken. Fail loudly; someone reads a log. Retrying cannot help. |
@@ -1437,6 +1437,23 @@ a bug when the correct action is to back off. The code is the profile's half of
 that fix; whether an implementation can allocate the error frame at all, and so
 whether the honest behaviour is to send it or to drop the connection, is the
 binding's question and the stdio binding's exit contract is where it belongs.
+
+**`endpoint_error` is the endpoint's own failure, and it is a separate code
+inside the same action.** A code is not a member, and the test that keeps a
+member out — a caller that cannot act differently does not need it — does not
+keep a code out, or this class would collapse to one. Four codes share Retry
+because the action is the same and the *cause* is not, and the cause is what a
+log reader and an operator need.
+
+The reason it earns its own code rather than reusing `provider_unavailable` is
+that reuse is a false statement about a third party. An implementation whose
+pump fails to assemble a terminal, reporting the provider as unavailable, fills
+a trace with evidence against a vendor that did nothing wrong — and traces are
+exactly what someone reads when deciding whether a provider is flaky. An
+implementation found doing this had a local `internal_error` outside the
+profile's set, which is the same fact arriving the other way: the code existed
+because the taxonomy had no place for it, and nothing could catch the divergence
+while `code` was an open string.
 
 The three credential states are one retry class and three different actions,
 which is the clearest case for the change: "do not blindly retry" is a single

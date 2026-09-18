@@ -302,6 +302,7 @@
         "rate_limited",
         "provider_unavailable",
         "resource_exhausted",
+        "endpoint_error",
         "credential_expired",
         "credential_missing",
         "credential_rejected",
