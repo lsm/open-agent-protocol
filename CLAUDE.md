@@ -126,7 +126,7 @@ Adding an adapter means all of the above plus: a `case` in `serve/registry.go`'s
 
 ### Fixtures and examples
 
-- `fixtures/manifest.json` is normative: positive traces plus `schema-invalid` and `semantic-invalid` traces with the exact diagnostic codes the validator must emit. The `provenance` field is optional and unenforced; about a third of entries link back to a decision, draft, or example and the rest are empty. Add a fixture whenever validator behavior changes, and cite the decision or draft that motivates it when one exists.
+- `fixtures/manifest.json` is normative: positive traces plus `schema-invalid` and `semantic-invalid` traces with the exact diagnostic codes the validator must emit. An entry with `"profile": "model-provider-core"` is run through `validation.ProviderValidator` instead, against `fixtures/provider/`, and its units are `provider-core`, `credentials` and `carry`; that corpus is deliberately invalid-first, because every provider defect found so far was a well-formed frame that a positive trace would have passed. The `provenance` field is optional and unenforced; about a third of entries link back to a decision, draft, or example and the rest are empty. Add a fixture whenever validator behavior changes, and cite the decision or draft that motivates it when one exists.
 - `examples/` is illustrative only; some files use staging vocabulary that is deliberately not in executable v0.1 (nested `scope`/`trace`, `model.content.delta`).
 - `drafts/` holds the prose protocol drafts; `drafts/conformance.md` defines profiles and `+unit` claims.
 

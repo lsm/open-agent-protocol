@@ -1,0 +1,18 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.credential.grant.response",
+    "id": "g3",
+    "in_reply_to": "g1",
+    "payload": {
+      "accepted": true,
+      "credential_ref": "cr1",
+      "error": {
+        "code": "credential_rejected",
+        "message": "no"
+      }
+    }
+  }
+]

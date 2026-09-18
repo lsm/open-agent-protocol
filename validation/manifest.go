@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -31,6 +32,8 @@ type FixtureEntry struct {
 
 	Mode Mode `json:"mode,omitempty"`
 
+	Profile string `json:"profile,omitempty"`
+
 	Packs []string `json:"packs,omitempty"`
 }
 
@@ -43,6 +46,23 @@ const (
 	AspectGate   = "gate"
 	AspectHonour = "honour"
 )
+
+const ProfileModelProvider = "model-provider-core"
+
+var providerUnits = map[string]bool{"provider-core": true, "credentials": true, "carry": true}
+
+func providerDiagnosticCodes() map[string]bool {
+	return map[string]bool{
+		CodeMalformedJSON:       true,
+		CodeDuplicateKey:        true,
+		CodePayloadDecode:       true,
+		CodeSchemaInvalid:       true,
+		CodeCredentialInTrace:   true,
+		CodeCredentialInHeaders: true,
+		CodeTerminalNotAssembly: true,
+		CodeEventAfterTerminal:  true,
+	}
+}
 
 const (
 	KindPositive        = "positive"
@@ -197,6 +217,45 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 		case KindPositive, KindSchemaInvalid, KindSemanticInvalid, KindLoadInvalid:
 		default:
 			return FixtureManifest{}, fmt.Errorf("fixture entry %d has invalid kind %q", i, e.Kind)
+		}
+		if e.Profile != "" && e.Profile != ProfileModelProvider {
+			return FixtureManifest{}, fmt.Errorf("fixture entry %d has unknown profile %q", i, e.Profile)
+		}
+		if e.Profile == ProfileModelProvider {
+			if e.Kind == KindLoadInvalid || e.Mode != "" || len(e.Packs) > 0 || len(e.Covers) > 0 {
+				return FixtureManifest{}, fmt.Errorf("fixture %q is a provider fixture and cannot carry packs, modes or capability coverage", e.ID)
+			}
+			if len(e.Units) == 0 {
+				return FixtureManifest{}, fmt.Errorf("fixture %q has no conformance units", e.ID)
+			}
+			for _, unit := range e.Units {
+				if !providerUnits[unit] {
+					return FixtureManifest{}, fmt.Errorf("fixture %q has unknown provider conformance unit %q", e.ID, unit)
+				}
+			}
+			if !e.Valid {
+				if e.Phase != PhaseDecode && e.Phase != PhaseSchema && e.Phase != PhaseSemantic {
+					return FixtureManifest{}, fmt.Errorf("invalid fixture %q lacks a valid phase", e.ID)
+				}
+				if len(e.Codes) == 0 {
+					return FixtureManifest{}, fmt.Errorf("invalid fixture %q lacks diagnostic codes", e.ID)
+				}
+				known := providerDiagnosticCodes()
+				for _, code := range e.Codes {
+					if !known[code] {
+						return FixtureManifest{}, fmt.Errorf("invalid fixture %q has a diagnostic code the provider validator cannot emit: %q", e.ID, code)
+					}
+				}
+			}
+			if ids[e.ID] {
+				return FixtureManifest{}, fmt.Errorf("duplicate fixture id %q", e.ID)
+			}
+			ids[e.ID] = true
+			if paths[filepath.Clean(e.Path)] {
+				return FixtureManifest{}, fmt.Errorf("duplicate fixture path %q", e.Path)
+			}
+			paths[filepath.Clean(e.Path)] = true
+			continue
 		}
 		if e.Valid {
 			if e.Kind != KindPositive || e.Phase != "" || len(e.Codes) != 0 {
@@ -384,6 +443,7 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 	listed := map[string]bool{}
 	out := make([]FixtureOutcome, 0, len(m.Fixtures))
 	validators := map[string]*Validator{}
+	var providerValidator *ProviderValidator
 	loaded := map[string][]*Pack{}
 	for _, entry := range m.Fixtures {
 		listed[filepath.Clean(entry.Path)] = true
@@ -395,7 +455,21 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 			}
 			continue
 		}
-		validator := v
+		if entry.Profile == ProfileModelProvider {
+			if providerValidator == nil {
+				providerValidator, err = NewProviderValidator()
+				if err != nil {
+					return out, fmt.Errorf("fixture %s: %w", entry.ID, err)
+				}
+			}
+			outcome, err := runTraceFixture(providerValidator, root, ownerRoot(opts.Owner), entry)
+			out = append(out, outcome)
+			if err != nil {
+				return out, err
+			}
+			continue
+		}
+		var validator traceValidator = v
 		if entry.Mode != "" || len(entry.Packs) > 0 || opts.Owner != nil {
 			key := string(entry.Mode) + "\x00" + strings.Join(entry.Packs, "\x00")
 			if validators[key] == nil {
@@ -491,7 +565,11 @@ func ownerRoot(owner *Pack) string {
 	return owner.Root
 }
 
-func runTraceFixture(v *Validator, root, packRoot string, entry FixtureEntry) (FixtureOutcome, error) {
+type traceValidator interface {
+	Validate(r io.Reader, fixture string) Result
+}
+
+func runTraceFixture(v traceValidator, root, packRoot string, entry FixtureEntry) (FixtureOutcome, error) {
 	path := filepath.Join(root, entry.Path)
 	if packRoot != "" {
 

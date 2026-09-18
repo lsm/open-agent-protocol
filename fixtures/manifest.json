@@ -8680,6 +8680,429 @@
       "provenance": [
         "decisions/0014-provider-descriptors.md"
       ]
+    },
+    {
+      "id": "provider-duplicate-key",
+      "path": "provider/decode-invalid/duplicate-key.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "decode",
+      "codes": [
+        "duplicate_key"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-malformed-json",
+      "path": "provider/decode-invalid/malformed-json.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "decode",
+      "codes": [
+        "malformed_json"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-both-argument-forms-in-a-snapshot",
+      "path": "provider/schema-invalid/both-argument-forms-in-a-snapshot.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-caller-supplied-destination",
+      "path": "provider/schema-invalid/caller-supplied-destination.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-carry-on-a-text-content-part",
+      "path": "provider/schema-invalid/carry-on-a-text-content-part.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "carry"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-error-code-outside-the-set",
+      "path": "provider/schema-invalid/error-code-outside-the-set.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-event-without-a-sequence",
+      "path": "provider/schema-invalid/event-without-a-sequence.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-grant-granting-and-refusing-at-once",
+      "path": "provider/schema-invalid/grant-granting-and-refusing-at-once.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "credentials"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-partial-arguments-in-a-terminal",
+      "path": "provider/schema-invalid/partial-arguments-in-a-terminal.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-payload-repeating-the-envelope-scope",
+      "path": "provider/schema-invalid/payload-repeating-the-envelope-scope.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-refusal-allocating-an-inference",
+      "path": "provider/schema-invalid/refusal-allocating-an-inference.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-text-start-carrying-identity",
+      "path": "provider/schema-invalid/text-start-carrying-identity.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-tool-call-start-without-identity",
+      "path": "provider/schema-invalid/tool-call-start-without-identity.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-wire-id-on-a-named-wire",
+      "path": "provider/schema-invalid/wire-id-on-a-named-wire.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-bearer-shaped-header-under-another-name",
+      "path": "provider/semantic-invalid/bearer-shaped-header-under-another-name.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "credential_in_headers"
+      ],
+      "units": [
+        "credentials"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-credential-header-on-a-call",
+      "path": "provider/semantic-invalid/credential-header-on-a-call.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "credential_in_headers"
+      ],
+      "units": [
+        "credentials"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-credential-header-on-a-descriptor",
+      "path": "provider/semantic-invalid/credential-header-on-a-descriptor.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "credential_in_headers"
+      ],
+      "units": [
+        "credentials"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-event-after-the-terminal",
+      "path": "provider/semantic-invalid/event-after-the-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "event_after_terminal"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-grant-carrying-a-credential-value",
+      "path": "provider/semantic-invalid/grant-carrying-a-credential-value.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "credential_in_trace"
+      ],
+      "units": [
+        "credentials"
+      ],
+      "provenance": [
+        "drafts/provider-stdio.md"
+      ],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-terminal-dropping-a-carry",
+      "path": "provider/semantic-invalid/terminal-dropping-a-carry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "terminal_not_assembly"
+      ],
+      "units": [
+        "carry"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-terminal-dropping-a-part",
+      "path": "provider/semantic-invalid/terminal-dropping-a-part.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "terminal_not_assembly"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-terminal-in-arrival-order",
+      "path": "provider/semantic-invalid/terminal-in-arrival-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "terminal_not_assembly"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-terminal-of-a-different-kind",
+      "path": "provider/semantic-invalid/terminal-of-a-different-kind.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "terminal_not_assembly"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-grant-naming-a-nonce",
+      "path": "provider/valid/grant-naming-a-nonce.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "credentials"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-refusal-allocates-no-inference",
+      "path": "provider/valid/refusal-allocates-no-inference.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-signed-reasoning-and-tool-call",
+      "path": "provider/valid/signed-reasoning-and-tool-call.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "provider-core",
+        "carry"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-text-inference",
+      "path": "provider/valid/text-inference.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-unary-completion",
+      "path": "provider/valid/unary-completion.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core"
     }
   ]
 }

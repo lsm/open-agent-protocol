@@ -1,0 +1,17 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.create.response",
+    "id": "c1",
+    "in_reply_to": "c0",
+    "payload": {
+      "accepted": false,
+      "error": {
+        "code": "model_not_found",
+        "message": "no such model"
+      }
+    }
+  }
+]

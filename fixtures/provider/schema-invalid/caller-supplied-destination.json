@@ -1,0 +1,14 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.create.request",
+    "id": "c0",
+    "payload": {
+      "model_ref": "anthropic/anthropic-messages@claude",
+      "messages": [],
+      "endpoint": "http://elsewhere.example"
+    }
+  }
+]

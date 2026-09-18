@@ -1,0 +1,25 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.completed",
+    "id": "t1",
+    "inference_id": "i1",
+    "sequence": 2,
+    "payload": {
+      "stop_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_call",
+            "tool_call_id": "tc1",
+            "name": "s",
+            "arguments_partial": "{"
+          }
+        ]
+      }
+    }
+  }
+]
