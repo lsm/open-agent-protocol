@@ -1,0 +1,17 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.started",
+    "id": "s0",
+    "inference_id": "i1",
+    "sequence": 2,
+    "payload": {
+      "part_index": 0,
+      "part_kind": "text",
+      "tool_call_id": "tc1",
+      "name": "lookup"
+    }
+  }
+]

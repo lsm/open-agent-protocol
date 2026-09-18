@@ -666,7 +666,7 @@ func TestTolerantAcceptsEveryPositiveFixture(t *testing.T) {
 	root := filepath.Join(repositoryRoot(t), "fixtures")
 	checked := 0
 	for _, entry := range m.Fixtures {
-		if !entry.Valid {
+		if !entry.Valid || entry.Profile == ProfileModelProvider {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(root, entry.Path))

@@ -1,0 +1,55 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.started",
+    "id": "e1",
+    "inference_id": "i1",
+    "sequence": 1,
+    "payload": {
+      "model_ref": "anthropic/anthropic-messages@claude",
+      "started_at_ms": 1
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.ended",
+    "id": "n0",
+    "inference_id": "i1",
+    "sequence": 2,
+    "payload": {
+      "part_index": 0,
+      "part_kind": "reasoning",
+      "text": "think",
+      "carry": "sig-1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.completed",
+    "id": "t1",
+    "inference_id": "i1",
+    "sequence": 3,
+    "payload": {
+      "stop_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "reasoning",
+            "reasoning": "think"
+          }
+        ]
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 3
+      }
+    }
+  }
+]

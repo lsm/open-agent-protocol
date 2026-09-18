@@ -1,0 +1,24 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.describe.response",
+    "id": "d1",
+    "in_reply_to": "d0",
+    "capability_revision": "r1",
+    "payload": {
+      "protocol_versions": [
+        "0.1"
+      ],
+      "providers": [
+        {
+          "id": "anthropic",
+          "wire": "anthropic-messages",
+          "wire_id": "shadow",
+          "framing": "sse"
+        }
+      ]
+    }
+  }
+]

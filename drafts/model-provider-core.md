@@ -1665,7 +1665,8 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
 3. Emits exactly one terminal per accepted inference, allocates no
    `inference_id` on a refusal, and — **where it streamed parts** — emits a
    terminal `message` that is the assembly of its ended parts.
-4. Emits contiguous per-inference `sequence` on every scoped event.
+4. Emits contiguous per-inference `sequence` on every scoped event, opening at
+   1 and never repeating or going back.
 5. Emits the started/delta/ended triple for every part it streams, with the
    kind-discriminated payloads on start and end, or declares `stream`
    unsupported and answers unary. Refuses a `tool_call` start missing its

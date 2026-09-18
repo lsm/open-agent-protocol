@@ -1,0 +1,153 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.started",
+    "id": "e1",
+    "inference_id": "i1",
+    "sequence": 1,
+    "payload": {
+      "model_ref": "anthropic/anthropic-messages@claude",
+      "started_at_ms": 1
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.started",
+    "id": "s0",
+    "inference_id": "i1",
+    "sequence": 2,
+    "payload": {
+      "part_index": 0,
+      "part_kind": "reasoning"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.delta",
+    "id": "d0-4",
+    "inference_id": "i1",
+    "sequence": 3,
+    "payload": {
+      "part_index": 0,
+      "delta": "think"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.ended",
+    "id": "n0",
+    "inference_id": "i1",
+    "sequence": 4,
+    "payload": {
+      "part_index": 0,
+      "part_kind": "reasoning",
+      "text": "think",
+      "carry": "sig-1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.started",
+    "id": "s1",
+    "inference_id": "i1",
+    "sequence": 5,
+    "payload": {
+      "part_index": 1,
+      "part_kind": "tool_call",
+      "tool_call_id": "tc1",
+      "name": "lookup"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.delta",
+    "id": "d1-7",
+    "inference_id": "i1",
+    "sequence": 6,
+    "payload": {
+      "part_index": 1,
+      "delta": "{\"city\":"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.delta",
+    "id": "d1-8",
+    "inference_id": "i1",
+    "sequence": 7,
+    "payload": {
+      "part_index": 1,
+      "delta": "\"Kyoto\"}"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.ended",
+    "id": "n1",
+    "inference_id": "i1",
+    "sequence": 8,
+    "payload": {
+      "part_index": 1,
+      "part_kind": "tool_call",
+      "tool_call": {
+        "tool_call_id": "tc1",
+        "name": "lookup",
+        "arguments_json": {
+          "city": "Kyoto"
+        }
+      },
+      "carry": "sig-2"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.completed",
+    "id": "t1",
+    "inference_id": "i1",
+    "sequence": 9,
+    "payload": {
+      "stop_reason": "tool_use",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "reasoning",
+            "reasoning": "think",
+            "carry": "sig-1"
+          },
+          {
+            "type": "tool_call",
+            "tool_call_id": "tc1",
+            "name": "lookup",
+            "arguments_json": {
+              "city": "Kyoto"
+            },
+            "carry": "sig-2"
+          }
+        ]
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 3
+      }
+    }
+  }
+]

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -43,6 +44,7 @@ type providerEnvelope struct {
 	Type        string          `json:"type"`
 	ID          string          `json:"id"`
 	InferenceID string          `json:"inference_id"`
+	Sequence    int             `json:"sequence"`
 	Payload     json.RawMessage `json:"payload"`
 }
 
@@ -72,6 +74,7 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 	result := Result{}
 	parts := map[string][]providerPartEnded{}
 	settled := map[string]string{}
+	sequences := map[string]int{}
 	var terminals []providerTerminal
 	for i, entry := range raw {
 		var document any
@@ -108,6 +111,35 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 		if err := v.schema.Validate(document); err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: i, Line: entry.line, EnvelopeID: e.ID, Type: e.Type, Message: err.Error()})
 			continue
+		}
+		if e.InferenceID != "" && scopedEvent(e.Type) {
+			last, seen := sequences[e.InferenceID]
+			switch {
+			case !seen && e.Sequence != 1:
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{
+					Fixture: fixture, Phase: PhaseSemantic, Code: CodeSequenceGap, Index: i, Line: entry.line,
+					EnvelopeID: e.ID, Type: e.Type, Pointer: "/sequence",
+					Expected: "1", Actual: strconv.Itoa(e.Sequence),
+					Message: "the first scoped event of an inference does not open its sequence at 1",
+				})
+			case seen && e.Sequence <= last:
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{
+					Fixture: fixture, Phase: PhaseSemantic, Code: CodeSequenceRegression, Index: i, Line: entry.line,
+					EnvelopeID: e.ID, Type: e.Type, Pointer: "/sequence",
+					Expected: strconv.Itoa(last + 1), Actual: strconv.Itoa(e.Sequence),
+					Message: "a scoped event repeats or goes back on the sequence its inference had reached",
+				})
+			case seen && e.Sequence != last+1:
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{
+					Fixture: fixture, Phase: PhaseSemantic, Code: CodeSequenceGap, Index: i, Line: entry.line,
+					EnvelopeID: e.ID, Type: e.Type, Pointer: "/sequence",
+					Expected: strconv.Itoa(last + 1), Actual: strconv.Itoa(e.Sequence),
+					Message: "an inference skipped a sequence, so a consumer cannot tell a gap from a lost frame",
+				})
+			}
+			if !seen || e.Sequence > last {
+				sequences[e.InferenceID] = e.Sequence
+			}
 		}
 		if e.InferenceID != "" && settled[e.InferenceID] != "" && scopedEvent(e.Type) {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{

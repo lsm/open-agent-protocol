@@ -1,0 +1,29 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.delta",
+    "id": "d1",
+    "inference_id": "i1",
+    "sequence": 2,
+    "payload": {
+      "part_index": 0,
+      "delta": "x",
+      "snapshot": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_call",
+              "tool_call_id": "tc1",
+              "name": "s",
+              "arguments_json": {},
+              "arguments_partial": "{"
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

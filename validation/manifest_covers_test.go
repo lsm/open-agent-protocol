@@ -199,3 +199,36 @@ func TestCorpusCompleteness(t *testing.T) {
 		}
 	})
 }
+
+func TestProviderCorpusIsInvalidFirst(t *testing.T) {
+	manifest, err := LoadManifest(filepath.Join("..", "fixtures", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := map[string]int{}
+	var positive, invalid int
+	for _, entry := range manifest.Fixtures {
+		if entry.Profile != ProfileModelProvider {
+			continue
+		}
+		if entry.Valid {
+			positive++
+		} else {
+			invalid++
+		}
+		for _, unit := range entry.Units {
+			units[unit]++
+		}
+	}
+	if positive == 0 || invalid == 0 {
+		t.Fatalf("the provider corpus has %d positive and %d invalid fixtures", positive, invalid)
+	}
+	if invalid <= positive {
+		t.Fatalf("the provider corpus is not invalid-first: %d invalid against %d positive", invalid, positive)
+	}
+	for _, unit := range []string{"provider-core", "credentials", "carry"} {
+		if units[unit] == 0 {
+			t.Fatalf("no provider fixture claims the %q unit", unit)
+		}
+	}
+}

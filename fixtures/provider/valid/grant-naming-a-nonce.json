@@ -1,0 +1,39 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.credential.grant.request",
+    "id": "g1",
+    "payload": {
+      "provider_id": "anthropic",
+      "nonce": "n1",
+      "ttl_ms": 60000
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.credential.grant.channel",
+    "id": "g2",
+    "in_reply_to": "g1",
+    "payload": {
+      "nonce": "n1",
+      "channel": "/tmp/oap-grant-n1.sock"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.credential.grant.response",
+    "id": "g3",
+    "in_reply_to": "g1",
+    "payload": {
+      "accepted": true,
+      "credential_ref": "cr1",
+      "expires_at_ms": 1760000000000
+    }
+  }
+]
