@@ -42,6 +42,17 @@ func CompileSchemas() (*jsonschema.Schema, error) {
 	return CompileSchemasWith(CompileOptions{Mode: ModeStrict})
 }
 
+func CompileProviderSchema() (*jsonschema.Schema, error) {
+	bundle, err := compileBundle(CompileOptions{Mode: ModeStrict})
+	if err != nil {
+		return nil, err
+	}
+	if bundle.provider == nil {
+		return nil, fmt.Errorf("compile schema bundle: provider envelope schema not found")
+	}
+	return bundle.provider, nil
+}
+
 func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 	bundle, err := compileBundle(opts)
 	if err != nil {
@@ -51,8 +62,9 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 }
 
 type compiledBundle struct {
-	root    *jsonschema.Schema
-	members map[string]map[string]*jsonschema.Schema
+	root     *jsonschema.Schema
+	provider *jsonschema.Schema
+	members  map[string]map[string]*jsonschema.Schema
 }
 
 type refusingLoader struct{ attempted []string }
@@ -130,7 +142,7 @@ func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 			}
 		}
 	}
-	var root *jsonschema.Schema
+	var root, provider *jsonschema.Schema
 	for _, entry := range entries {
 		if entry.IsDir() || path.Ext(entry.Name()) != ".json" {
 			continue
@@ -142,11 +154,14 @@ func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 		if entry.Name() == "envelope.schema.json" {
 			root = compiled
 		}
+		if entry.Name() == "provider-envelope.schema.json" {
+			provider = compiled
+		}
 	}
 	if root == nil {
 		return nil, fmt.Errorf("compile schema bundle: envelope schema not found")
 	}
-	bundle := &compiledBundle{root: root, members: map[string]map[string]*jsonschema.Schema{}}
+	bundle := &compiledBundle{root: root, provider: provider, members: map[string]map[string]*jsonschema.Schema{}}
 	for payloadType, members := range memberURIs {
 		bundle.members[payloadType] = map[string]*jsonschema.Schema{}
 		for name, uri := range members {

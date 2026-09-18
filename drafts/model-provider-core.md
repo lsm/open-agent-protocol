@@ -234,7 +234,16 @@ after an acceptance** — that response included.
 
 Setting it on the response is deliberate: the envelope scope field is how a
 consumer routes a frame without decoding its payload, and leaving it off exactly
-one frame would make the first frame of every inference the special case. Where
+one frame would make the first frame of every inference the special case.
+
+**No payload carries `inference_id`.** The envelope's scope field is the single
+place it appears, and a payload is not self-describing when detached from its
+envelope — a trace assembler holding a bare payload does not know which
+inference it belongs to, and is not meant to. An earlier version of this draft's
+tables listed it as payload content on three envelopes and the schemas required
+it on eleven, which is the `action` problem with a copied field instead of a
+derived one: two sources of truth, in more definitions, with nothing telling a
+consumer which to believe. Where
 the id appears in both the envelope and the payload the values must agree, which
 is agent control's rule and is unchanged here. The response still consumes no
 `sequence` — carrying a scope and consuming an ordering number are different
@@ -385,7 +394,7 @@ it is satisfied, not overridden.
 | Type | Direction | Carries |
 | --- | --- | --- |
 | `inference.create.request` | caller → implementation | the call (below) |
-| `inference.create.response` | implementation → caller | `inference_id`, `accepted`, `honoured`, or a typed refusal |
+| `inference.create.response` | implementation → caller | `accepted`, `honoured`, or a typed refusal |
 | | | `honoured` is `{ include_snapshot }` — the effective values for every request member an implementation may downgrade, currently one |
 | `inference.started` | implementation → caller | `model_ref`, `started_at_ms`, `endpoint?` |
 | `inference.part.started` | implementation → caller | `part_index`, `part_kind`, and for a tool call its `tool_call_id` and `name` |
@@ -545,7 +554,7 @@ would put the profile's arbitration above the provider's own.
 
 | Type | Direction | Carries |
 | --- | --- | --- |
-| `inference.cancel.request` | caller → implementation | `inference_id`, `reason?` |
+| `inference.cancel.request` | caller → implementation | `reason?` |
 | `inference.cancel.response` | implementation → caller | `accepted` |
 
 As in agent control, the response is intent and not settlement. The terminal is
@@ -681,7 +690,7 @@ to exclude mid-part state.
 
 | Type | Direction | Carries |
 | --- | --- | --- |
-| `inference.sync.request` | caller → implementation | `inference_id` |
+| `inference.sync.request` | caller → implementation | nothing beyond the scope |
 | `inference.sync.response` | implementation → caller | `snapshot`, or absent when the inference is no longer held |
 
 An absent snapshot is an answer, not a failure: the inference has ended or been
@@ -1577,7 +1586,7 @@ mid-stream cancel is seen, settled with one terminal. Against a local provider
 that is not running it answers `provider_unavailable`, a Retry-class error,
 which is the honest answer rather than a contrived one.
 
-**Twenty-one findings** from writing the vocabulary, codec, discovery, grants,
+**Twenty-two findings** from writing the vocabulary, codec, discovery, grants,
 admission, the wire mapping, the inference lifecycle, the compatibility facts
 and a spawnable endpoint are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
@@ -1624,16 +1633,19 @@ revision of itself an implementation was built against, which costs nothing
 until one profile freezes and the other does not. From the eleventh, which is
 the schema work starting: the draft named no payload members at all, describing
 them in prose, so there was nothing for a second implementation to agree with
-and the first invented names because it had to.
+and the first invented names because it had to. From the twelfth, found by
+running an encoder against the schemas rather than reading them: every scoped
+payload was required to repeat the envelope's `inference_id`, in eleven schema
+definitions and three of the draft's own tables.
 
-Of the twenty-one, twenty were places the draft was silent or wrong rather than
-merely incomplete. Three — the persistence rule, the grant advertisement and
+Of the twenty-two, twenty-one were places the draft was silent or wrong rather
+than merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
 produces a perfectly valid trace.
 
-**Four of the twenty-one corrected earlier findings from the same source rather
+**Four of the twenty-two corrected earlier findings from the same source rather
 than the draft**, and the pattern in them matters more than the count. Each
 superseded claim had been read off a call graph, a type name or a field's
 presence, and each correction came from reading the body: the persistence hazard
@@ -1671,7 +1683,7 @@ do not make a profile implementable; they make two implementations agree.**
 
 And the implementability it establishes is narrower than it looks: that
 implementation was written from this prose **with its author available**.
-Twenty-one findings are twenty-one places the prose alone was insufficient, each
+Twenty-two findings are twenty-two places the prose alone was insufficient, each
 resolved by asking. A second implementer gets none of that. So the standing is
 *implementable in conversation with the author*, and the findings are the
 measurement of the gap rather than a side effect of closing it.

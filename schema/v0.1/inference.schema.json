@@ -1,0 +1,554 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "inference.schema.json",
+  "title": "Open Agent Protocol model-provider-core inference call",
+  "$defs": {
+    "partKind": {
+      "enum": [
+        "text",
+        "reasoning",
+        "tool_call"
+      ]
+    },
+    "stopReason": {
+      "enum": [
+        "stop",
+        "length",
+        "tool_use",
+        "content_filter",
+        "error",
+        "aborted"
+      ]
+    },
+    "reasoning": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "budget_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "effort": {
+          "$ref": "provider.schema.json#/$defs/reasoningLevel"
+        },
+        "encrypted_carry": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshotToolCall": {
+      "type": "object",
+      "required": [
+        "type",
+        "tool_call_id",
+        "name"
+      ],
+      "properties": {
+        "type": {
+          "const": "tool_call"
+        },
+        "tool_call_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "name": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "arguments_json": true,
+        "arguments_partial": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "arguments_json"
+          ],
+          "not": {
+            "required": [
+              "arguments_partial"
+            ]
+          }
+        },
+        {
+          "required": [
+            "arguments_partial"
+          ],
+          "not": {
+            "required": [
+              "arguments_json"
+            ]
+          }
+        }
+      ]
+    },
+    "snapshotContent": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "common.schema.json#/$defs/contentPart"
+          },
+          {
+            "$ref": "#/$defs/snapshotToolCall"
+          }
+        ]
+      }
+    },
+    "snapshotMessage": {
+      "type": "object",
+      "required": [
+        "role",
+        "content"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "role": {
+          "$ref": "common.schema.json#/$defs/role"
+        },
+        "content": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/snapshotContent"
+            }
+          ]
+        },
+        "metadata": {
+          "$ref": "common.schema.json#/$defs/jsonObject"
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/snapshotMessage"
+      }
+    },
+    "toolDefinition": {
+      "type": "object",
+      "required": [
+        "name",
+        "input_schema"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "description": {
+          "type": "string"
+        },
+        "input_schema": true
+      },
+      "additionalProperties": false
+    },
+    "createRequest": {
+      "type": "object",
+      "required": [
+        "model_ref",
+        "messages"
+      ],
+      "properties": {
+        "model_ref": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/message"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolDefinition"
+          }
+        },
+        "tool_choice": true,
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "top_p": {
+          "type": "number"
+        },
+        "output_schema": true,
+        "stream": {
+          "type": "boolean"
+        },
+        "reasoning": {
+          "$ref": "#/$defs/reasoning"
+        },
+        "include_snapshot": {
+          "$ref": "provider.schema.json#/$defs/snapshotPolicy"
+        },
+        "allow_degraded_features": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/nonEmptyString"
+          }
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "credential_ref": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "metadata": {
+          "$ref": "common.schema.json#/$defs/jsonObject"
+        }
+      },
+      "additionalProperties": false
+    },
+    "honoured": {
+      "type": "object",
+      "required": [
+        "include_snapshot"
+      ],
+      "properties": {
+        "include_snapshot": {
+          "$ref": "provider.schema.json#/$defs/snapshotPolicy"
+        }
+      },
+      "additionalProperties": false
+    },
+    "createResponse": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "honoured": {
+          "$ref": "#/$defs/honoured"
+        },
+        "error": {
+          "$ref": "common.schema.json#/$defs/protocolError"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "accepted": {
+              "const": true
+            }
+          },
+          "required": [
+            "honoured"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "accepted": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "honoured"
+            ]
+          }
+        }
+      ]
+    },
+    "started": {
+      "type": "object",
+      "required": [
+        "model_ref"
+      ],
+      "properties": {
+        "model_ref": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "started_at_ms": {
+          "type": "integer"
+        },
+        "endpoint": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "partStarted": {
+      "type": "object",
+      "required": [
+        "part_index",
+        "part_kind"
+      ],
+      "properties": {
+        "part_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "part_kind": {
+          "$ref": "#/$defs/partKind"
+        },
+        "tool_call_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "name": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "part_kind": {
+              "const": "tool_call"
+            }
+          },
+          "required": [
+            "part_kind",
+            "tool_call_id",
+            "name"
+          ]
+        },
+        {
+          "properties": {
+            "part_kind": {
+              "enum": [
+                "text",
+                "reasoning"
+              ]
+            }
+          },
+          "required": [
+            "part_kind"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "tool_call_id"
+                ]
+              },
+              {
+                "required": [
+                  "name"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "partDelta": {
+      "type": "object",
+      "required": [
+        "part_index",
+        "delta"
+      ],
+      "properties": {
+        "part_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta": {
+          "type": "string"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/snapshot"
+        }
+      },
+      "additionalProperties": false
+    },
+    "partEnded": {
+      "type": "object",
+      "required": [
+        "part_index",
+        "part_kind"
+      ],
+      "properties": {
+        "part_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "part_kind": {
+          "$ref": "#/$defs/partKind"
+        },
+        "text": {
+          "type": "string"
+        },
+        "tool_call": {
+          "type": "object",
+          "required": [
+            "tool_call_id",
+            "name",
+            "arguments_json"
+          ],
+          "properties": {
+            "tool_call_id": {
+              "$ref": "common.schema.json#/$defs/opaqueID"
+            },
+            "name": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            "arguments_json": true
+          },
+          "additionalProperties": false
+        },
+        "carry": {
+          "type": "string"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/snapshot"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "part_kind": {
+              "const": "tool_call"
+            }
+          },
+          "required": [
+            "part_kind",
+            "tool_call"
+          ],
+          "not": {
+            "required": [
+              "text"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "part_kind": {
+              "const": "text"
+            }
+          },
+          "required": [
+            "part_kind",
+            "text"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "tool_call"
+                ]
+              },
+              {
+                "required": [
+                  "carry"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "part_kind": {
+              "const": "reasoning"
+            }
+          },
+          "required": [
+            "part_kind",
+            "text"
+          ],
+          "not": {
+            "required": [
+              "tool_call"
+            ]
+          }
+        }
+      ]
+    },
+    "completed": {
+      "type": "object",
+      "required": [
+        "message",
+        "stop_reason"
+      ],
+      "properties": {
+        "message": {
+          "$ref": "common.schema.json#/$defs/message"
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/stopReason"
+        },
+        "usage": {
+          "$ref": "common.schema.json#/$defs/usage"
+        }
+      },
+      "additionalProperties": false
+    },
+    "failed": {
+      "type": "object",
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "$ref": "common.schema.json#/$defs/protocolError"
+        },
+        "usage": {
+          "$ref": "common.schema.json#/$defs/usage"
+        }
+      },
+      "additionalProperties": false
+    },
+    "cancelRequest": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "cancelResponse": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "syncRequest": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "syncResponse": {
+      "type": "object",
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/snapshot"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
