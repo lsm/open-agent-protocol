@@ -92,15 +92,22 @@ rather than approximated to a neighbour.
 Streaming framing is a **separate member** from wire, from the closed set
 `sse`, `ndjson`, `unary`.
 
-This is not a hypothetical split. Makai's provider layer serves six of eight
-APIs through one SSE parser and parses Ollama as newline-delimited JSON with no
-SSE parser at all, read from that tree on 2026-09-17. This repository's own
-prober assumes the other way: `provider.RunEvidence` fails any response whose
-media type is not `text/event-stream` (`provider/evidence.go`), which is correct
-for a compatibility prober and would be wrong for the profile.
+The split is attested. Makai's provider layer serves six of eight APIs through
+one SSE parser and parses Ollama as newline-delimited JSON with no SSE parser at
+all, read from that tree on 2026-09-17. This repository's own prober assumes the
+other way: `provider.RunEvidence` fails any response whose media type is not
+`text/event-stream` (`provider/evidence.go`), which is correct for a
+compatibility prober and would be wrong for the profile. A profile that folded
+framing into wire would exclude a working provider while believing its set
+complete.
 
-A profile that folded framing into wire would exclude a working provider while
-believing its set complete.
+**`sse` and `ndjson` are attested; `unary` is not.** All eight of Makai's APIs
+stream, and their non-streaming call is a facade that opens a stream, drains it
+and returns the result rather than a separate framing. This repository's prober
+always requests a stream. So `unary` is here because a non-streaming provider is
+an ordinary thing to build against, not because either source demonstrates one,
+and it must not be cited to Makai's finding — that finding supports the split
+and two of the three values.
 
 ## Envelope
 
@@ -136,6 +143,39 @@ Keepalives are a **binding concern and not an envelope**. Makai's event union
 carries a `keepalive` variant because their transport needs one; a binding that
 needs one emits it at the binding layer, where heartbeats already live for
 agent control.
+
+## Serving Modes
+
+The two profiles are **independently servable**, and that is the practical
+consequence of making this a peer profile rather than a unit.
+
+One binary can expose either. Started one way it serves `agent-control-core`: a
+client drives sessions and runs, and the agent loop is behind it. Started the
+other way it serves `model-provider-core`: a caller drives one inference call at
+a time, and inference endpoints are behind it. Same process, same transport,
+different profile in the envelope.
+
+```
+  client ──agent-control-core──▶ [ binary ] ──▶ agent loop ──▶ providers
+  caller ──model-provider-core─▶ [ binary ] ─────────────────▶ providers
+```
+
+The second mode is worth naming because it is the smaller and more immediately
+useful deployment. A caller that wants one vocabulary over many inference
+vendors, and does not want an agent loop, gets exactly that — and every consumer
+of that interface speaks one language to OpenAI-flavour, Anthropic-flavour and
+everything else behind it, without embedding a vendor SDK per vendor.
+
+An implementation may serve both at once, one, or neither. Serving one implies
+nothing about the other: a provider-profile implementation with no agent loop is
+conformant, and so is an agent-control endpoint that reaches its model through a
+vendor SDK and speaks this profile nowhere.
+
+The binding is the same shape as
+[the endpoint stdio binding](endpoint-stdio.md) — raw OAP envelopes, one per
+line, the profile distinguishing which vocabulary is in play. That binding is
+written for agent control and a provider-profile binding is not yet specified,
+but nothing in it is agent-control-specific except the envelope set it carries.
 
 ## Envelope Types
 
@@ -187,15 +227,53 @@ the settlement.
 
 `part_kind` is a closed set: `text`, `reasoning`, `tool_call`.
 
-The started/delta/ended triple per part is taken directly from Makai's event
-union, which carries the same triple for text, thinking and tool calls. The
-`ended` event is load-bearing rather than decorative: without it a consumer
-cannot tell a finished part from a stalled one until the terminal arrives, and
-a tool call that is complete is dispatchable immediately.
+The started/delta/ended triple per part is taken from Makai's event union, which
+carries the same triple for text, thinking and tool calls. The `ended` event is
+load-bearing rather than decorative: without it a consumer cannot tell a
+finished part from a stalled one until the terminal arrives, and a tool call
+that is complete is dispatchable immediately.
 
-Their thirteen variants map here as nine parts collapsed into three
-part-scoped envelopes, plus start, done, error, and a keepalive that becomes a
-binding concern.
+**The triple is not uniform across kinds, and the payloads are
+kind-discriminated.** An earlier version of this draft collapsed the nine
+variants into three envelopes with a flat payload and a kind tag. That is lossy,
+in two places their union makes explicit:
+
+- `inference.part.started` carries `tool_call_id` and `name` for a `tool_call`,
+  and neither for `text` or `reasoning`. A uniform start drops the tool call's
+  identity at the moment a consumer needs it to open a pending call.
+- `inference.part.ended` carries the complete tool call for a `tool_call`, and
+  the accumulated string for `text` and `reasoning`. Those are different types,
+  not different values of one type.
+
+`part_index` is the correlation, and maps onto their `content_index`.
+
+### The running snapshot
+
+Every one of Makai's ten part variants carries `partial`, the full running
+assistant message rather than the increment. Two modules exist only to move it
+across their wire.
+
+Deltas alone oblige the consumer to be lossless: it must apply every increment,
+in order, without dropping one, or its reconstruction silently diverges from the
+provider's. That is a strong requirement to place on every consumer, and a
+snapshot is how an implementation lets a consumer resynchronize instead.
+
+So `inference.part.delta` and `inference.part.ended` carry an optional
+`snapshot`: the accumulated message as the implementation holds it. An
+implementation declares whether it emits one, and how often, through
+`snapshot_policy` on its descriptor — `never`, `on_part_end`, `every_delta`.
+
+It is optional because it is expensive: `every_delta` is quadratic in the
+message, which is a real cost on a long completion and an obvious one on a
+slow link. It is in the profile rather than left to implementations because a
+consumer cannot resynchronize against a mechanism that might not be there, and
+because an implementation that already computes the snapshot — as at least one
+does — should not have to discard it at the boundary and make every consumer
+rebuild it.
+
+**Contiguity does not substitute for this.** The per-inference `sequence`
+witnesses transport loss, so a consumer knows *that* it diverged. A snapshot is
+how it recovers.
 
 ## The Call
 
@@ -213,6 +291,7 @@ different sets and merging them makes both wrong.
 - `output_schema` — structured output.
 - `stream` — boolean.
 - `reasoning` — `{ enabled?, budget_tokens?, effort? }`.
+- `credential_ref` — names a credential the implementation holds; never a value.
 - `metadata` — opaque, passed through.
 
 ### Per provider — `ProviderDescriptor`
@@ -220,7 +299,8 @@ different sets and merging them makes both wrong.
 - `id`, `display_name?`
 - `wire`, `framing`
 - `endpoint` — the destination reached.
-- `compatibility` — the facts below.
+- `compatibility` — the twelve facts below.
+- `snapshot_policy` — `never`, `on_part_end`, `every_delta`.
 - `allows_anonymous` — this provider needs no credential.
 - `context_window?`, `max_output_tokens?`
 
@@ -231,50 +311,87 @@ correctly configured provider.
 ## Compatibility Facts
 
 The closed set an implementation states about a provider that claims a wire. It
-generalizes Makai's `OpenAICompatOptions`, which is twelve fields, each one a
-vendor that broke a shape while claiming it.
+is Makai's `OpenAICompatOptions` — twelve fields, each one a vendor that broke a
+shape while claiming it — carried across whole.
 
-| Fact | Values | Why it cannot be hidden |
-| --- | --- | --- |
-| `max_tokens_field` | `max_tokens`, `max_completion_tokens` | One semantic field, two names. A caller building a request must know which. |
-| `reasoning_encoding` | `none`, `openai`, `anthropic`, and named vendor encodings | Three mutually incompatible encodings sit behind one API name. A wrong guess silently drops reasoning. |
-| `usage_in_streaming` | `always`, `terminal_only`, `never` | Whether usage arrives at all changes what `inference.completed` can promise. |
-| `requires_assistant_after_tool_result` | boolean | A message-ordering constraint, not a capability. A caller that does not know it builds a request the provider rejects. |
-| `tool_result_requires_name` | boolean | Same class. |
-| `supports_strict_schema` | boolean | Whether `output_schema` is enforced or advisory. |
+An earlier version of this draft promoted six of the twelve and sent the rest to
+`extensions`. That split does not survive its own test. The criterion for
+belonging in the protocol is that a caller must branch on the fact and cannot
+discover it from the endpoint, and all twelve meet it: all twelve appear in live
+branch conditions in that tree's OpenAI and Anthropic request builders, and
+`parseCapabilities` accepts all twelve from a user-written
+`~/.makai/providers.json`. A fact a human has to declare by hand is the
+definition of undiscoverable.
+
+| Fact | Values | Makai's name | Why a caller must know |
+| --- | --- | --- | --- |
+| `max_tokens_field` | `max_tokens`, `max_completion_tokens` | same | One semantic field, two names. |
+| `thinking_format` | `openai`, `zai`, `qwen` | same | Three mutually incompatible reasoning encodings behind one API name. A wrong guess silently drops reasoning. |
+| `usage_in_streaming` | `always`, `terminal_only`, `never` | `supports_usage_in_streaming` | Whether usage arrives at all changes what `inference.completed` can promise. |
+| `requires_assistant_after_tool_result` | boolean | same | A message-ordering constraint, not a capability. |
+| `requires_tool_result_name` | boolean | same | Same class. |
+| `requires_thinking_as_text` | boolean | same | Reasoning must be sent back as ordinary text or the request is rejected. |
+| `supports_strict_mode` | boolean | same | Whether `output_schema` is enforced or advisory. |
+| `supports_store` | boolean | same | Server-side retention of the request. |
+| `supports_developer_role` | boolean | same | Whether the `developer` role exists or must be folded into `system`. |
+| `supports_reasoning_effort` | boolean | same | Whether the effort control is accepted. |
+| `tool_call_id_format` | `opaque`, `constrained` | `requires_mistral_tool_ids` | Some endpoints reject tool-call ids that are not in their own format. |
+| `cache_ttl_control` | boolean | `supports_anthropic_cache_ttl` | Whether an explicit cache retention is accepted. |
+
+Two are renamed because the fact is general and the vendor is incidental. A
+protocol that names Mistral and Anthropic in its member names binds the
+vocabulary to two companies, and the next endpoint with a constrained id format
+has nowhere to say so. The renames are this draft's proposal and are the part of
+this table most likely to be wrong — the semantics are theirs, the names are
+mine.
 
 Every fact is optional and its absence means "the wire's own default," never
 "unknown." An implementation that states none is exactly as conformant as one
-that states all six — it has simply promised less.
+that states all twelve — it has simply promised less.
 
-**Anything not in this set travels in `extensions`.** The set grows by protocol
-change, because a fact a caller must branch on and cannot discover is not a
-fact, and a free-form quirks map is a way of shipping the problem to every
-caller at once.
+**There is no free-form quirks map.** The set grows by protocol change. A
+free-form map ships the problem to every caller at once: each one writes its own
+branch on a key nobody agreed on, and the divergence the profile exists to name
+becomes invisible again.
 
 ## Credentials
 
 **No credential value crosses this wire.** Not a key, not a token, not a header,
-not an environment value.
+not an environment value. A `ProviderDescriptor` carries no credential member.
 
 This is the constraint
 [Decision 0017](../decisions/0017-provider-provisioning.md) sets for provider
 provisioning at the agent-control boundary, and it holds here for the same
-reason one layer down. A `ProviderDescriptor` carries no credential member, and
-an `inference.create.request` carries none either: the implementation resolves
-the credential on its own side, from its own configured store, at request time.
-
-That is how at least one real implementation already works — Makai constructs a
-provider with no credential and resolves it per request from a named store, read
-from that tree on 2026-09-17 — so the constraint costs nothing it was not
-already paying.
+reason one layer down.
 
 **`headers` is a credential channel and is excluded.** `Authorization: Bearer`
 is a header, so a caller-supplied header map defeats the rule while every
 explicitly credential-named field stays absent. The general form: **any member
 that passes caller text through to the upstream request is a credential
-channel, whatever it is named.** Nothing in this profile has that shape, and a
-later addition that needs one allowlists names rather than carrying values.
+channel, whatever it is named.** Nothing in this profile has that shape.
+
+### Selecting a credential, and the limit of that
+
+An earlier version of this draft claimed the rule costs a real implementation
+nothing, because a provider is constructed without a credential and resolves one
+per request from its own store. The first half is right and the second half was
+wrong: Makai's per-call options carry `api_key` as well, and it is not
+vestigial — Vertex documents a per-call key as one of two accepted sources. A
+caller there supplies a credential per call today.
+
+So the rule needs a selection form rather than an absence, and
+`inference.create.request` carries an optional **`credential_ref`**: a name the
+implementation resolves from its own configured store. The caller says *which*
+credential, never *what* it is. `allows_anonymous` on the descriptor says a
+provider needs none at all — a local Ollama is correctly configured with no
+credential, and an implementation that treats absence as an error refuses it.
+
+**This does not cover true bring-your-own-key.** `credential_ref` selects among
+credentials the implementation already holds. A caller holding a key the
+implementation has never seen cannot introduce it through this profile, and that
+is a deliberate limit rather than an oversight: admitting it means a credential
+value on the wire, which is the one thing this section exists to prevent. The
+cost is real and is recorded in the open questions.
 
 ## Shared Vocabulary
 
@@ -321,10 +438,12 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
 3. Accepts `inference.create.request` and emits exactly one terminal per
    inference.
 4. Emits contiguous per-inference `sequence` on every scoped event.
-5. Emits the started/delta/ended triple for every part it streams, or declares
-   `stream` unsupported and answers unary.
-6. Carries no credential value on any envelope.
-7. States a compatibility fact where the provider it reaches diverges from the
+5. Emits the started/delta/ended triple for every part it streams, with the
+   kind-discriminated payloads on start and end, or declares `stream`
+   unsupported and answers unary.
+6. Honours its declared `snapshot_policy`.
+7. Carries no credential value on any envelope.
+8. States a compatibility fact where the provider it reaches diverges from the
    wire it claims, or states none and claims nothing.
 
 Streaming is required only if advertised. A unary-only implementation is
@@ -343,11 +462,16 @@ answered here rather than deferred, and this draft does not answer it. Recorded
 streams with a capture date and an evidence class are the obvious candidate, and
 `provider.EvidenceClass` is an existing attempt at the second half.
 
-**What drives conformance?** `oap conformance` spawns an agent-control endpoint
-and drives a scripted session. The equivalent here has to drive an
-implementation against providers that cost money to call and cannot be pinned.
-A loopback provider proves the envelopes and nothing about compatibility; a live
-provider proves compatibility on one day.
+**What drives conformance?** Half of this is answered by Serving Modes above.
+Because a provider-profile implementation is independently servable, the harness
+is the same shape as the existing one: spawn a binary, drive a scripted
+inference over a line binding, hand the assembled trace to the validator. The
+envelope conformance story does not need inventing.
+
+What is not answered is compatibility. A loopback provider proves the envelopes
+and nothing about whether an endpoint honours the wire it claims; a live
+provider proves that on one day, for money. The two halves need different
+machinery, and only the first is cheap.
 
 **Where does credential acquisition live?** `auth_status` is deliberately
 homeless: [Decision 0014](../decisions/0014-provider-descriptors.md) keeps it
@@ -357,22 +481,41 @@ question. In Makai's tree it sits above the provider layer, not in it — the
 provider layer consumes a credential at request time and never learns its
 status. So it follows acquisition, and nothing owns acquisition yet.
 
-**Is the compatibility set the right six?** It is generalized from one
-implementation's twelve. Some of theirs are vendor-specific enough to belong in
-`extensions`; some of the six here may prove to be. This wants a second
-implementation before the set is frozen, which is the same standard
+**Should the profile carry a per-call credential value at all?**
+`credential_ref` selects among credentials the implementation holds, and that
+covers per-tenant and per-call *selection*. It does not cover a caller that
+holds a key the implementation has never seen. Two honest positions: keep the
+absolute rule and lose that path through the profile, so a caller needing it
+configures the implementation out of band; or admit a named-reference form that
+can also carry a value under some deployment condition, which reopens exactly
+the channel Decision 0017 closed. This draft takes the first and does not
+pretend the cost is zero. It is the one open question here with a real
+constituency — Vertex's per-call key — and it is a decision about what the
+protocol is for, not a detail.
+
+**Is the compatibility set complete at twelve, and are the two renames right?** Twelve is one implementation's count, and a
+second implementation is as likely to add a thirteenth as to agree. The renames
+of `requires_mistral_tool_ids` and `supports_anthropic_cache_ttl` to
+`tool_call_id_format` and `cache_ttl_control` generalize away a vendor name on
+the belief that the underlying fact is general — plausible for both and checked
+against neither. The set wants a second implementation before it freezes, which
+is the standard
 [Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)
 applies to graduation.
 
-**Does `reasoning_encoding` belong as a fact or a capability?** It is written
-here as a fact about the provider. It may be better as a declared support level,
-the way agent control reports `native`/`emulated`/`degraded`/`unavailable`.
+**Does `thinking_format` belong as a fact or a capability?** It is written here
+as a fact about the provider. It may be better as a declared support level, the
+way agent control reports `native`/`emulated`/`degraded`/`unavailable`.
 
 ## Evidence And Standing
 
 This draft is written from two sources and neither makes it executable.
 
-**Makai's provider layer**, read from that tree on 2026-09-17: the per-call and
+**Makai's provider layer**, read from that tree on 2026-09-17, and read a second
+time against this draft's first version, which it corrected in four places — the
+lossy part collapse and its missing snapshot, an unattested `unary`, a
+promoted-six compatibility split that failed its own test, and a credential rule
+whose no-cost claim was false. The facts below: the per-call and
 per-provider split, the event union and its triples, the stop reason set, the
 twelve compatibility divergences, the non-SSE framing, the credential-free
 construction, and `allows_anonymous`. It is not pinned in `adapter/makai/` and
