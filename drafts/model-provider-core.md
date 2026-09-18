@@ -127,10 +127,11 @@ field:
   domain. It is not a session, run, turn, tool call or interaction id, and is
   not interchangeable with any of them.
 
-The id is allocated by the implementation and first appears on
+The id is allocated by the implementation and first appears on an **accepted**
 `inference.create.response`. So the envelope scope field is **absent on
-`inference.create.request`**, where no id exists yet, and **present on every
-envelope after it** — the response included.
+`inference.create.request`**, where no id exists yet, **absent on a refused
+response**, where no inference exists at all, and **present on every envelope
+after an acceptance** — that response included.
 
 Setting it on the response is deliberate: the envelope scope field is how a
 consumer routes a frame without decoding its payload, and leaving it off exactly
@@ -293,7 +294,21 @@ it is satisfied, not overridden.
 | `inference.completed` | implementation → caller | `message`, `stop_reason`, `usage?` |
 | `inference.failed` | implementation → caller | `error`, `usage?` |
 
-Exactly one terminal per inference: `inference.completed` or
+**A refusal allocates nothing.** `inference.create.response` carries
+`inference_id` only when `accepted` is true; a refused response carries the
+typed error and no id, and is correlated by `in_reply_to` alone. An inference
+exists if and only if it was accepted.
+
+This follows agent control, where `MessageSubmitResponse.run_id` is present only
+on admission and a refused submission produces no run. The alternative — hand
+back an id with the refusal — creates an inference that owes a terminal it will
+never get, and a caller reading the terminal rule literally parks forever
+waiting for one. Delivering the refusal as `inference.failed` instead would work
+and was rejected for a different reason: it makes every caller handle a stream
+that may consist only of its own failure, to express something the response
+already says.
+
+Exactly one terminal per **accepted** inference: `inference.completed` or
 `inference.failed`. An aborted call ends as `inference.completed` with
 `stop_reason: aborted` — cancellation at this boundary is a stop reason, not a
 third terminal, because the vendor reports it that way and inventing a terminal
@@ -332,6 +347,20 @@ in two places their union makes explicit:
   not different values of one type.
 
 `part_index` is the correlation, and maps onto their `content_index`.
+
+**Both directions are enforced at the decode boundary, and the second direction
+is the load-bearing one.** A `tool_call` start without `tool_call_id` and `name`
+is refused, and a `text` or `reasoning` start *carrying* either is refused too.
+
+Refusing the first protects the consumer. Refusing the second protects the
+profile: it is how an encoder that kept a flat payload internally and stamped a
+kind onto it gets caught at its first frame, rather than shipping a wire that
+decodes cleanly and quietly means something else. That is the collapse this
+section removed, reappearing as an implementation detail — and the only thing
+that catches it is a decoder that objects to a field being present.
+
+It costs four lines at the boundary, measured in an implementation rather than
+estimated, which is why it is a requirement and not a suggestion.
 
 ### The running snapshot: push and pull are different mechanisms
 
@@ -379,6 +408,11 @@ than assumed.
 
 An absent snapshot is an answer, not a failure: the inference has ended or been
 released, and the consumer should stop waiting rather than retry.
+
+`never` is always supported and need not be declared: a request asking for no
+snapshot cannot fail for want of a capability, because it is the absence of one.
+An empty or absent `snapshot_policies` therefore means this provider offers no
+snapshots, not that every call is refused.
 
 An implementation may support pull, push, both, or neither, and says which. A
 consumer with neither must be lossless, which is a legitimate thing to require
@@ -477,6 +511,9 @@ vendor. It is carried as an opaque value and never inspected.
 - `compatibility` — the twelve facts below.
 - `snapshot_policies` — which of `never`, `on_part_end`, `every_delta` the
   request may ask for, and whether `inference.sync` is answered.
+- `credential_grant` — `none`, `out_of_band`, `on_envelope`. Whether this
+  implementation accepts a caller-held credential for this provider, and by
+  which tier.
 - `allows_anonymous` — this provider needs no credential.
 - `context_window?`, `max_output_tokens?`
 
@@ -578,6 +615,24 @@ tier is mandatory wherever it is achievable.**
 | `provider.credential.grant.request` | caller → implementation | `provider_id`, `nonce`, `ttl_ms?`, and the value *only* in the fallback tier |
 | `provider.credential.grant.response` | implementation → caller | `credential_ref`, `expires_at_ms?` |
 
+#### Which tier, and whether at all: `credential_grant`
+
+`ProviderDescriptor.credential_grant` says `none`, `out_of_band` or
+`on_envelope`.
+
+An earlier version of this draft required a caller to learn that grants were
+unsupported *before* sending a secret, and gave it nothing to read. The only way
+to find out was to send the grant request — which, under tier 2, is the secret.
+The rule was unsatisfiable by the envelope set carrying it, which is the same
+failure as the persistence rule above: right rule, nothing on the wire making it
+achievable, and no envelope violated by an implementation that gets it wrong.
+
+It also answers a question a tier-1 caller could not otherwise ask. A caller
+that does not know a side channel exists has no way to use it, and would put a
+value on the envelope — the exact thing tier 1 exists to prevent.
+`out_of_band` tells it to use the channel; `on_envelope` tells it the binding
+has none.
+
 #### Tier 1: out of band, and required where the binding allows it
 
 The grant envelope carries a **nonce and nothing secret**. It says a credential
@@ -611,7 +666,9 @@ to four rules:
 3. **The validator enforces it.** A trace containing the pair is invalid, with a
    diagnostic and a fixture.
 4. **Gated and refusable.** A caller learns the capability is unavailable before
-   it sends a secret, not after.
+   it sends a secret, not after — by reading `credential_grant` on the
+   descriptor, which is what makes that sentence achievable rather than
+   aspirational.
 
 This tier is the floor and is known to be weaker: an exception that every
 intermediary must honour is honoured almost everywhere, and the ones that get it
@@ -825,12 +882,13 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    `wire` and `framing`.
 2. Answers `provider.models.list.request`, and every `model_ref` it returns
    resolves to a provider it described.
-3. Accepts `inference.create.request` and emits exactly one terminal per
-   inference.
+3. Emits exactly one terminal per accepted inference, and allocates no
+   `inference_id` on a refusal.
 4. Emits contiguous per-inference `sequence` on every scoped event.
 5. Emits the started/delta/ended triple for every part it streams, with the
    kind-discriminated payloads on start and end, or declares `stream`
-   unsupported and answers unary.
+   unsupported and answers unary. Refuses a `tool_call` start missing its
+   identity **and** a `text` or `reasoning` start carrying one.
 6. Refuses an `include_snapshot` it does not support unless the request allows
    degradation, honours what it accepted, reports it in `honoured`, and answers
    `inference.sync.request` if it declared it.
@@ -839,8 +897,9 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    replaying that pair.
 8. Marks a granted credential non-persistable at entry and honours the mark in
    every refresh, cache and storage path.
-9. Refuses a grant with a typed `unsupported_feature` if it does not advertise
-   the capability, rather than accepting and ignoring it.
+9. Publishes `credential_grant` on every descriptor, and refuses a grant with a
+   typed `unsupported_feature` where it says `none` rather than accepting and
+   ignoring it.
 10. Answers `provider.describe.request` at any version it supports, and lists
     `protocol_versions[]`.
 11. States a compatibility fact where the provider it reaches diverges from the
@@ -935,14 +994,25 @@ three wires and parses each one's stream. It was written as a compatibility
 prober and its assumptions show — it requires `text/event-stream` — but the
 disagreements it had to encode are the ones the profile must carry.
 
-**One implementation is being built against it**, and six findings from writing
-the vocabulary and envelope codec are already in this draft: `ProtocolError` and
+**One implementation is being built against it**, and ten findings from writing
+the vocabulary, codec, discovery, grants and admission are already in this
+draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
 had silently dropped a value, `opaque` is a reserved word in the implementation
 language, the envelope scope rule for `inference.create.response` was
 unspecified, and nothing said what happens when a caller asks for a snapshot
-policy the provider does not offer. Five of the six were places the draft was
-silent or wrong rather than merely incomplete.
+policy the provider does not offer. From the second: the grant capability had no member to be
+read from, so the rule requiring a caller to learn before sending a secret was
+unsatisfiable by the envelope set carrying it; a refused create had no stated
+answer to whether it allocates an inference that owes a terminal; an empty
+`snapshot_policies` had two readings; and enforcing the part-start asymmetry in
+both directions turned out to cost four lines, which moved it from suggestion to
+requirement.
+
+Nine of the ten were places the draft was silent or wrong rather than merely
+incomplete, and two — the persistence mark and the grant advertisement — were
+rules that no envelope could violate, which is the class this project's
+machinery is worst at catching.
 
 That implementation is first-party under
 [Decision 0018](../decisions/0018-makai-becomes-first-party.md), so it
