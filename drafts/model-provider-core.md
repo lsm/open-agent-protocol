@@ -331,7 +331,7 @@ Eighteen, in five groups.
 | Type | Direction | Carries |
 | --- | --- | --- |
 | `provider.describe.request` | caller → implementation | nothing required |
-| `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision`, `protocol_versions[]`, `profile_revision` |
+| `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision`, `protocol_versions[]`, `profile_revision?` |
 | `provider.models.list.request` | caller → implementation | `provider_id?` |
 | `provider.models.list.response` | implementation → caller | `models[]`, `capability_revision` |
 
@@ -1467,6 +1467,23 @@ error's message and `extensions` rather than in the code. An implementation that
 wants them as distinct codes is free to say so in `extensions`; a caller
 branching on them would be branching on somebody else's bug.
 
+**Which code a closed payload's violation takes.** A frame carrying a member
+the payload does not define is `invalid_request`, not `protocol_violation`, and
+the rule that decides it is: **the code names whose mistake it is.** A caller
+that sent an unknown member sent a bad request, and `invalid_request` puts the
+fault where a log reader will look for it. `protocol_violation` is for the
+invariants an implementation breaks after a request was accepted — sequence
+gaps, duplicate terminals, an event after settlement. Both are Report and the
+caller does the same thing with either, which is again why the distinction is
+worth having: the action is for the caller, the code is for whoever has to fix
+it.
+
+This needs saying because `schema_invalid` is a validator diagnostic and not an
+error code, so an implementation refusing a closed payload has to pick a code
+with nothing in the profile telling it which. Two implementations picking
+differently for the same frame would make the code useless for exactly the
+person the code is for.
+
 **Stream-lifecycle errors are deliberately absent.** Makai carries
 `stream_not_found` and `stream_already_exists`, which are state errors on a
 multiplexing layer. Multiplexing is a binding concern here, so those are the
@@ -1517,6 +1534,15 @@ So `provider.describe.response` carries **`profile_revision`**: an opaque string
 naming the revision of `model-provider-core` the implementation was built
 against. Only an unfrozen profile needs to populate it; a frozen profile is
 pinned by its version and has nothing to add.
+
+**It must name a state, not a stream.** An implementation that tracks this
+draft's main branch publishes the commit of the draft it was built against, not
+`"main"` — a branch name is the same string for every revision it ever held, so
+a field carrying one answers nothing and costs a round trip to discover that. A
+tag, a commit, or a dated revision all identify a state and are all acceptable;
+the opacity is about the format, not about whether it distinguishes anything. An
+implementation with nothing that identifies a state omits the member, which at
+least says so, rather than publishing a name that looks like an answer.
 
 This is cheap now and expensive later, because whatever expresses it is itself a
 schema change — which is the argument for settling it before schemas exist
