@@ -854,6 +854,22 @@ while only the outbound half existed, which is the general form: a return path
 added to a one-directional member is not finished until something sends one
 back.
 
+**A snapshot carries it wherever it can express the part.** A completed tool
+call inside a snapshot is expressible two ways — the shared content part or the
+snapshot's own form, which exists for `arguments_partial` — and only one of them
+admitted a `carry`, so whether the signature survived depended on which encoding
+an implementation reached for. Both admit it now. A partial call has no
+signature yet and the member is simply absent there, which is what absent
+already means.
+
+This is the asymmetry this section removed from the request, reappearing one
+level down between two encodings of the same thing. An implementation found the
+same shape in its own decoder the same day: a rule refusing a carry where it
+cannot belong, enforced on the frame going out and not on the one coming back.
+A member that exists in one direction of a round trip and not the other is the
+recurring form of this defect, and looking for the other direction is the whole
+of the check.
+
 **The terminal assembly carries it too**, and the validator checks that: a
 terminal content part must repeat the carry its part ended with. Without that
 rule an implementation could stream signed parts and settle with an unsigned
