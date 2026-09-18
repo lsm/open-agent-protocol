@@ -109,13 +109,26 @@ only after the value arrives.
 ← provider.credential.grant.response  { credential_ref, expires_at_ms? }
 ```
 
+A nonce already in flight is refused rather than opening a second channel for
+it.
+
 `provider.credential.grant.channel` is the one envelope this binding adds to the
 profile's set, and it carries no secret.
 
-**A unix domain socket where the platform has them, a named pipe where it does
-not.** The `channel` member is an opaque string the caller passes to its
-platform's connect call; this binding does not define its grammar beyond that it
-is what the implementation was given by the operating system.
+**A unix domain socket.** The `channel` member is an opaque string the caller
+passes to its platform's connect call; this binding does not define its grammar
+beyond that it is what the implementation was given by the operating system.
+
+An earlier version of this binding said "a unix socket where the platform has
+them, a named pipe where it does not," implying a platform fork. The first
+implementation of this section did not have to write one: unix domain sockets
+are available on every target it ships, Windows included, from Windows 10 build
+17063. One mechanism, one code path, every release target — where a week of
+named-pipe work had been budgeted.
+
+A binding for a platform genuinely without them would need another form. None of
+the platforms this has been built against is one, so that form is not specified
+here rather than guessed at.
 
 **Not a numbered descriptor.** The obvious spawn form — inherit descriptor 3 —
 has no meaning on Windows, where an extra stdio slot is an inherited handle
@@ -126,6 +139,12 @@ implementer may decline. That is worse than the work.
 
 ### The channel's own rules
 
+- **A grant that cannot be announced is refused immediately, not left
+  pending.** The deadline below runs from the channel envelope, so a grant whose
+  socket could not be created has no deadline at all and nothing expires it.
+  That window — between an accepted request and a channel that exists — is where
+  a resource leak lives, and every implementation would otherwise invent its own
+  answer for it.
 - **The socket is created per grant and destroyed when the grant settles**,
   whether it settled with a value, a deadline or a closed connection. It is
   never reused for a second nonce.
@@ -140,7 +159,8 @@ implementer may decline. That is worse than the work.
 - **The value is everything after the first newline**, to the close. It is bytes,
   not JSON, and the implementation does not parse it.
 - **The arrival deadline is fixed by this binding at 30 seconds**, from when the
-  implementation emits the channel envelope. A caller does not choose it: a
+  implementation emits the channel envelope — which is why an unannounced grant
+  is refused rather than held. A caller does not choose it: a
   caller-chosen arrival deadline is a caller-chosen duration to hold a half-open
   grant.
 - **The envelope stream never blocks on the channel.** An implementation whose
@@ -222,8 +242,11 @@ An implementation claiming this binding:
 for a caller to read a path and connect, and short enough that a hung grant does
 not hold a socket for a session. Both halves are guesses.
 
-**Nothing has implemented this.** The profile's credential section is the part
-of that draft nothing has run, and this binding is why — it did not exist. The
-first implementation of this section is the first evidence any of it is right,
-and the socket rules above are the most likely place to be wrong, because they
-are the only part with no prior art in this repository.
+**One implementation has built the channel and nothing has driven it end to end
+over a spawn.** The socket round trip is proved — listen, connect, write
+`<nonce>\n<value>`, accept, read — and the grant is answered only after the
+value arrives, with the nonce burned however it settles. What has not happened
+is a caller spawning an implementation and granting across the pipe, which is
+the thing this binding exists for. Until then the socket rules above remain the
+likeliest place to be wrong, being the only part with no prior art in this
+repository.

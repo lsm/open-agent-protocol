@@ -3,116 +3,384 @@
   "$id": "provider.schema.json",
   "title": "Open Agent Protocol model-provider-core discovery and credentials",
   "$defs": {
-    "wire": { "enum": ["openai-responses", "anthropic-messages", "openai-chat-completions", "other"] },
-    "framing": { "enum": ["sse", "ndjson", "unary"] },
-    "snapshotPolicy": { "enum": ["never", "on_part_end", "every_delta"] },
-    "credentialGrantTier": { "enum": ["none", "out_of_band", "on_envelope"] },
-    "grantKind": { "enum": ["static", "refreshable"] },
+    "wire": {
+      "enum": [
+        "openai-responses",
+        "anthropic-messages",
+        "openai-chat-completions",
+        "other"
+      ]
+    },
+    "framing": {
+      "enum": [
+        "sse",
+        "ndjson",
+        "unary"
+      ]
+    },
+    "snapshotPolicy": {
+      "enum": [
+        "never",
+        "on_part_end",
+        "every_delta"
+      ]
+    },
+    "credentialGrantTier": {
+      "enum": [
+        "none",
+        "out_of_band",
+        "on_envelope"
+      ]
+    },
+    "grantKind": {
+      "enum": [
+        "static",
+        "refreshable"
+      ]
+    },
     "compatibility": {
       "type": "object",
       "properties": {
-        "max_tokens_field": { "enum": ["max_tokens", "max_completion_tokens"] },
-        "thinking_format": { "enum": ["openai", "zai", "qwen"] },
-        "usage_in_streaming": { "enum": ["always", "terminal_only", "never"] },
-        "requires_assistant_after_tool_result": { "type": "boolean" },
-        "requires_tool_result_name": { "type": "boolean" },
-        "requires_thinking_as_text": { "type": "boolean" },
-        "supports_strict_mode": { "type": "boolean" },
-        "supports_store": { "type": "boolean" },
-        "supports_developer_role": { "type": "boolean" },
-        "supports_reasoning_effort": { "type": "boolean" },
-        "tool_call_id_format": { "enum": ["unconstrained", "constrained"] },
-        "cache_ttl_control": { "type": "boolean" }
+        "max_tokens_field": {
+          "enum": [
+            "max_tokens",
+            "max_completion_tokens"
+          ]
+        },
+        "thinking_format": {
+          "enum": [
+            "openai",
+            "zai",
+            "qwen"
+          ]
+        },
+        "usage_in_streaming": {
+          "enum": [
+            "always",
+            "terminal_only",
+            "never"
+          ]
+        },
+        "requires_assistant_after_tool_result": {
+          "type": "boolean"
+        },
+        "requires_tool_result_name": {
+          "type": "boolean"
+        },
+        "requires_thinking_as_text": {
+          "type": "boolean"
+        },
+        "supports_strict_mode": {
+          "type": "boolean"
+        },
+        "supports_store": {
+          "type": "boolean"
+        },
+        "supports_developer_role": {
+          "type": "boolean"
+        },
+        "supports_reasoning_effort": {
+          "type": "boolean"
+        },
+        "tool_call_id_format": {
+          "enum": [
+            "unconstrained",
+            "constrained"
+          ]
+        },
+        "cache_ttl_control": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "providerDescriptor": {
       "type": "object",
-      "required": ["id", "wire", "framing"],
+      "required": [
+        "id",
+        "wire",
+        "framing"
+      ],
       "properties": {
-        "id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "display_name": { "type": "string" },
-        "wire": { "$ref": "#/$defs/wire" },
-        "wire_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "framing": { "$ref": "#/$defs/framing" },
-        "endpoint": { "type": "string" },
-        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
-        "compatibility": { "$ref": "#/$defs/compatibility" },
-        "snapshot_policies": { "type": "array", "items": { "$ref": "#/$defs/snapshotPolicy" } },
-        "answers_sync": { "type": "boolean" },
-        "credential_grant": { "$ref": "#/$defs/credentialGrantTier" },
-        "grant_kinds": { "type": "array", "items": { "$ref": "#/$defs/grantKind" } },
-        "allows_anonymous": { "type": "boolean" },
-        "context_window": { "type": "integer", "minimum": 1 },
-        "max_output_tokens": { "type": "integer", "minimum": 1 }
+        "id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "wire": {
+          "$ref": "#/$defs/wire"
+        },
+        "wire_id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "framing": {
+          "$ref": "#/$defs/framing"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "compatibility": {
+          "$ref": "#/$defs/compatibility"
+        },
+        "snapshot_policies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/snapshotPolicy"
+          }
+        },
+        "answers_sync": {
+          "type": "boolean"
+        },
+        "credential_grant": {
+          "$ref": "#/$defs/credentialGrantTier"
+        },
+        "grant_kinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/grantKind"
+          }
+        },
+        "allows_anonymous": {
+          "type": "boolean"
+        },
+        "context_window": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "additionalProperties": false,
-      "if": { "properties": { "wire": { "const": "other" } }, "required": ["wire"] },
-      "else": { "not": { "required": ["wire_id"] } }
+      "if": {
+        "properties": {
+          "wire": {
+            "const": "other"
+          }
+        },
+        "required": [
+          "wire"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "wire_id"
+          ]
+        }
+      }
     },
-    "authStatus": { "enum": ["authenticated", "login_required", "expired", "failed", "unknown"] },
-    "modelLifecycle": { "enum": ["stable", "preview", "deprecated"] },
-    "modelSource": { "enum": ["discovered", "fallback"] },
-    "modelCapability": { "enum": ["chat", "streaming", "tools", "vision", "reasoning", "prompt_cache", "audio_input", "audio_output"] },
-    "reasoningLevel": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh"] },
+    "authStatus": {
+      "enum": [
+        "authenticated",
+        "login_required",
+        "expired",
+        "failed",
+        "unknown"
+      ]
+    },
+    "modelLifecycle": {
+      "enum": [
+        "stable",
+        "preview",
+        "deprecated"
+      ]
+    },
+    "modelSource": {
+      "enum": [
+        "discovered",
+        "fallback"
+      ]
+    },
+    "modelCapability": {
+      "enum": [
+        "chat",
+        "streaming",
+        "tools",
+        "vision",
+        "reasoning",
+        "prompt_cache",
+        "audio_input",
+        "audio_output"
+      ]
+    },
+    "reasoningLevel": {
+      "enum": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
     "modelEntry": {
       "type": "object",
-      "required": ["model_ref", "model_id", "provider_id", "wire"],
+      "required": [
+        "model_ref",
+        "model_id",
+        "provider_id",
+        "wire"
+      ],
       "properties": {
-        "model_ref": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "model_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "display_name": { "type": "string" },
-        "provider_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "wire": { "$ref": "#/$defs/wire" },
-        "context_window": { "type": "integer", "minimum": 1 },
-        "max_output_tokens": { "type": "integer", "minimum": 1 },
-        "capabilities": { "type": "array", "items": { "$ref": "#/$defs/modelCapability" } },
-        "lifecycle": { "$ref": "#/$defs/modelLifecycle" },
-        "source": { "$ref": "#/$defs/modelSource" },
-        "reasoning_default": { "$ref": "#/$defs/reasoningLevel" },
-        "auth_status": { "$ref": "#/$defs/authStatus" }
+        "model_ref": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "model_id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "provider_id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "wire": {
+          "$ref": "#/$defs/wire"
+        },
+        "context_window": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelCapability"
+          }
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/modelLifecycle"
+        },
+        "source": {
+          "$ref": "#/$defs/modelSource"
+        },
+        "reasoning_default": {
+          "$ref": "#/$defs/reasoningLevel"
+        },
+        "auth_status": {
+          "$ref": "#/$defs/authStatus"
+        }
       },
       "additionalProperties": false
     },
-    "describeRequest": { "type": "object", "properties": {}, "additionalProperties": false },
+    "describeRequest": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
     "describeResponse": {
       "type": "object",
-      "required": ["providers", "protocol_versions"],
+      "required": [
+        "providers",
+        "protocol_versions"
+      ],
       "properties": {
-        "providers": { "type": "array", "items": { "$ref": "#/$defs/providerDescriptor" } },
-        "protocol_versions": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/nonEmptyString" }, "minItems": 1 },
-        "profile_revision": { "$ref": "common.schema.json#/$defs/nonEmptyString" }
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/providerDescriptor"
+          }
+        },
+        "protocol_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/nonEmptyString"
+          },
+          "minItems": 1
+        },
+        "profile_revision": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        }
       },
       "additionalProperties": false
     },
     "modelsListRequest": {
       "type": "object",
-      "properties": { "provider_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" } },
+      "properties": {
+        "provider_id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        }
+      },
       "additionalProperties": false
     },
     "modelsListResponse": {
       "type": "object",
-      "required": ["models"],
-      "properties": { "models": { "type": "array", "items": { "$ref": "#/$defs/modelEntry" } } },
+      "required": [
+        "models"
+      ],
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelEntry"
+          }
+        }
+      },
       "additionalProperties": false
     },
     "credentialGrantRequest": {
       "type": "object",
-      "required": ["provider_id", "nonce"],
+      "required": [
+        "provider_id",
+        "nonce"
+      ],
       "properties": {
-        "provider_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "nonce": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "ttl_ms": { "type": "integer", "minimum": 1 },
-        "value": { "type": "string" }
+        "provider_id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "nonce": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "ttl_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "credentialGrantChannel": {
+      "type": "object",
+      "required": [
+        "nonce",
+        "channel"
+      ],
+      "properties": {
+        "nonce": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "channel": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        }
       },
       "additionalProperties": false
     },
     "credentialGrantResponse": {
       "type": "object",
-      "required": ["credential_ref"],
+      "required": [
+        "credential_ref"
+      ],
       "properties": {
-        "credential_ref": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "expires_at_ms": { "type": "integer" }
+        "credential_ref": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "expires_at_ms": {
+          "type": "integer"
+        }
       },
       "additionalProperties": false
     }
