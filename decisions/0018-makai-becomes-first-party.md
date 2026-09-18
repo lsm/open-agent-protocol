@@ -116,6 +116,15 @@ already happened in code.
 **The first-party test is 0015's own words**, not a new standard invented here.
 This record applies an existing rule to a changed fact.
 
+**The condition has since arrived, and behaved as this record predicts.** An
+implementation now speaks [`model-provider-core`](../drafts/model-provider-core.md)
+end to end — `lsm/makai#341`. Under
+[Decision 0016](0016-model-provider-profile.md)'s wording that was the event
+that would make the profile executable, and it does not, because it is the
+implementation this record makes first-party. It establishes implementable and
+not right. The profile's own evidence section says so, and says which parts the
+implementation is not evidence for at all.
+
 **The absence of a second implementer is checkable.** `research/` carries a
 mapping ledger per pinned harness and none of the eight records a provider-
 profile surface, because the profile did not exist when they were written.
