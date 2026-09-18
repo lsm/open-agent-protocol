@@ -56,7 +56,7 @@ func stateResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionID)
 		t.Fatal(err)
 	}
 
-	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v8"
+	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v9"
 	return response
 }
 
@@ -69,7 +69,7 @@ func catalogResponse(t *testing.T, envelopeScope, payloadScope protocol.SessionI
 		t.Fatal(err)
 	}
 
-	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v8"
+	response.SessionID, response.InReplyTo, response.CapabilityRevision = envelopeScope, "someone-elses-request", "reference-memory-v9"
 	return response
 }
 
@@ -135,7 +135,7 @@ func TestClientRejectsACatalogItCannotBindToADescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a bound catalog was rejected: %v", err)
 	}
-	if listing.Revision != "reference-memory-v8" {
+	if listing.Revision != "reference-memory-v9" {
 		t.Fatalf("catalog revision %q, want the envelope's", listing.Revision)
 	}
 }
