@@ -1678,7 +1678,8 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    serve.
 14. Accepts an operator-set destination override for every provider it
    describes, out of band and never from the wire.
-15. Can name, for every member of an inbound payload it accepts, what reads it.
+15. Can name, for every member of an inbound payload it accepts, what reads it
+    on the path that acts on it.
 
 Streaming is required only if advertised. A unary-only implementation is
 conformant; a streaming implementation that skips `part.ended` is not.
@@ -1792,6 +1793,23 @@ So this is not an open question, and an earlier version of this draft recorded
 it as one. What was missing was not an instrument but the generalisation: the
 implementation that found all three already had the function-level sweep and had
 not turned it on fields.
+
+**The sweep proves a member is not dead. It does not prove the member reaches
+its destination, and the difference is a systematic blind spot rather than a
+gap in one implementation.** A member with a legitimate reader in cloning,
+serialization or tests passes the sweep while never reaching the provider — and
+every member of a type that round-trips through its own codec has such a reader.
+A fourth case was found this way and not by the probe: a replayed `reasoning`
+content part was decoded, cloned, serialized and asserted on, and then dropped
+by the one function that turns an OAP message into a provider request, whose
+switch handled `text` and fell through everything else. "Has a consumer" was
+true and useless.
+
+Reachability from a named sink is a much larger instrument than a reference
+sweep, and this draft does not pretend the smaller one covers it. Clause 15
+therefore asks an implementer a question rather than pointing at a tool: name
+what reads this member **on the path that carries it to the provider**. The
+sweep narrows the search and does not answer it.
 
 ### Under-claiming is non-conformance, and only one direction is checkable
 
