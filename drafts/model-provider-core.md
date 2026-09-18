@@ -183,7 +183,7 @@ implementation keying providers by wire loses the distinction the moment two
 endpoints share a shape. That was an argument; this is three endpoints where it
 happens, in one registry.
 
-### Framing### Framing
+### Framing
 
 Streaming framing is a **separate member** from wire, from the closed set
 `sse`, `ndjson`, `unary`.
@@ -199,10 +199,13 @@ complete.
 
 **`sse` and `ndjson` are attested; `unary` is not.** Until the wire set gained
 `other`, `ndjson` was also unreachable — the only provider attesting it was one
-the profile could not name. The implementation carries a test asserting that no
-expressible provider yields `ndjson`, written to start failing when that stops
-being true, which is the only reason to write such a test down. All eight of Makai's APIs
-stream, and their non-streaming call is a facade that opens a stream, drains it
+the profile could not name. The implementation carried a test asserting that no expressible
+provider yields `ndjson`, written to start failing when that stopped being true.
+It fired one change later: with `other` in the wire set, Ollama describes itself
+and the assertion inverted to one reachable `ndjson` source. The tripwire is
+recorded because it did its job, not because it still stands.
+
+All eight of Makai's APIs stream, and their non-streaming call is a facade that opens a stream, drains it
 and returns the result rather than a separate framing. This repository's prober
 always requests a stream. So `unary` is here because a non-streaming provider is
 an ordinary thing to build against, not because either source demonstrates one,
@@ -383,6 +386,7 @@ it is satisfied, not overridden.
 | --- | --- | --- |
 | `inference.create.request` | caller → implementation | the call (below) |
 | `inference.create.response` | implementation → caller | `inference_id`, `accepted`, `honoured`, or a typed refusal |
+| | | `honoured` is `{ include_snapshot }` — the effective values for every request member an implementation may downgrade, currently one |
 | `inference.started` | implementation → caller | `model_ref`, `started_at_ms` |
 | `inference.part.started` | implementation → caller | `part_index`, `part_kind`, and for a tool call its `tool_call_id` and `name` |
 | `inference.part.delta` | implementation → caller | `part_index`, the increment |
@@ -409,7 +413,9 @@ Two rules, in order of authority:
    replaces the accumulated buffer for that part rather than being compared with
    it.
 2. **`inference.completed.message` is the assembly of the ended parts, in
-   `part_index` order.** A terminal that disagrees with its own parts is
+   `part_index` order**, for an inference that streamed parts. A unary
+   implementation emits no part envelopes and its terminal is the whole answer;
+   the rule binds what was streamed, not what could have been. A terminal that disagrees with its own parts is
    unreconstructible: a consumer holding the parts cannot tell whether it lost
    something or the implementation changed its mind.
 
@@ -420,8 +426,9 @@ silently become `message`. An implementation that can reconcile before closing a
 part should — the right place for that is at `part.ended`, not at the terminal.
 
 **This one the validator can enforce**, unlike the credential rules: a trace
-whose `inference.completed.message` is not the assembly of its ended parts is
-invalid, checkable from the envelopes alone. It is the first rule in this draft
+that streams parts and whose `inference.completed.message` is not their assembly
+is invalid, checkable from the envelopes alone. A trace with no part envelopes
+is outside the rule rather than failing it. It is the first rule in this draft
 that came from the build *and* falls inside the machinery this project already
 has.
 
@@ -483,8 +490,9 @@ implementation that answers discovery and refuses every inference is conformant
 against every rule except the streaming ones it does not claim. A
 discovery-only endpoint is a real endpoint, not a stub, and it is not lying
 about anything. That lets an implementation ship the profile in stages and be
-honest at each one, which is worth more than it cost. An aborted call ends as `inference.completed` with
-`stop_reason: aborted` — cancellation at this boundary is a stop reason, not a
+honest at each one, which is worth more than it cost.
+
+An aborted call ends as `inference.completed` with `stop_reason: aborted` — cancellation at this boundary is a stop reason, not a
 third terminal, because the vendor reports it that way and inventing a terminal
 would put the profile's arbitration above the provider's own.
 
@@ -608,9 +616,19 @@ network.
 
 An `inference.create.request` whose `include_snapshot` the provider does not
 support is refused with `unsupported_feature`, naming the policy, unless the
-request also carries `allow_degraded_features` listing the snapshot key — in
-which case the implementation downgrades to the best it offers and reports what
-it did in `honoured`.
+request also carries `allow_degraded_features` listing
+`inference.snapshot` — in which case the implementation downgrades to the best
+it offers and reports the effective value in `honoured.include_snapshot`.
+
+`honoured` is an object of effective values, one member per request member an
+implementation may downgrade. Today that is `include_snapshot` alone, and it is
+an object rather than a bare value so that a later downgradeable member does not
+change the shape. It is present whenever the response is an acceptance, carrying
+what was asked for when nothing was downgraded — a caller reading it never has
+to know whether a downgrade happened to know what it got.
+
+`inference.snapshot` is the degrade key, in the same namespace as agent
+control's feature keys.
 
 This is agent control's existing mechanism, not a new one: `session.open`,
 `submit` and `action.tools.list` all carry `allow_degraded_features` for exactly
@@ -656,7 +674,8 @@ otherwise assume the profile forgot them.
 
 - `model_ref` — provider, wire and model.
 - `messages` — shared `Message` and `ContentPart` shapes with agent control.
-- `tools` — shared `ToolDefinition`.
+- `tools` — `{ name, description?, input_schema }`, the intersection with agent
+  control's `ToolDefinition` rather than a reuse of it; see Shared Vocabulary.
 - `tool_choice`.
 - `max_output_tokens`.
 - sampling controls — `temperature`, `top_p`.
@@ -1068,12 +1087,15 @@ content part into a different content part. These reuse verbatim, confirmed in
 an implementation.
 
 **Shape shared, code set profile-scoped: `ProtocolError`.** The structure — code,
-message, details — is common. The codes are disjoint and neither set is a subset
-of the other: agent control carries `session_not_found`, `run_not_found`,
-`run_already_terminal`, `session_busy`, `stale_capabilities`, none of which has a
-referent below the loop; this profile carries `credential_missing`,
-`credential_rejected`, `credential_expired`, `provider_unavailable`, `aborted`,
-none of which belongs above it. One type carrying both would be the union of
+message, details — is common. The code sets overlap without either being a
+subset of the other. `unsupported_feature` and `model_not_found` are defined by
+agent control and mandated here, and mean the same thing on both. Around that
+overlap each boundary carries codes the other has no referent for: agent control
+has `session_not_found`, `run_not_found`,
+`run_already_terminal`, `session_busy` and `stale_capabilities`, none of
+which has a referent below the loop; this profile has `credential_missing`,
+`credential_rejected`, `credential_expired`, `provider_unavailable` and
+`aborted`, none of which belongs above it. One type carrying both would be the union of
 everything, which is what an error code exists to avoid. So an implementation
 reuses the shape and defines its own enum, and a reader implementing both should
 expect exactly that.
@@ -1176,8 +1198,8 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
 2. Answers `provider.models.list.request`, and every `model_ref` it returns
    resolves to a provider it described.
 3. Emits exactly one terminal per accepted inference, allocates no
-   `inference_id` on a refusal, and emits a terminal `message` that is the
-   assembly of its ended parts.
+   `inference_id` on a refusal, and — **where it streamed parts** — emits a
+   terminal `message` that is the assembly of its ended parts.
 4. Emits contiguous per-inference `sequence` on every scoped event.
 5. Emits the started/delta/ended triple for every part it streams, with the
    kind-discriminated payloads on start and end, or declares `stream`
@@ -1219,10 +1241,10 @@ streams with a capture date and an evidence class are the obvious candidate, and
 **What drives conformance?** Serving Modes above settles the *shape* and
 nothing about readiness.
 
-A discovery-only endpoint is now spawnable, so the first half of the harness has
-something to drive. Inference is still refused there, which is conformant and
-means the harness can be written against discovery before the streaming host
-exists.
+A provider endpoint is now spawnable and answers discovery and real inferences,
+so the harness has something to drive. That it was conformant while it still
+refused every inference — a discovery-only endpoint is a real endpoint — is what
+let the harness be written against discovery first.
 
 One thing the build has settled: **it must be end-to-end, not envelope
 fixtures.** The first implementation produced a malformed line — a doubled JSON
@@ -1236,19 +1258,29 @@ envelope produced only by a particular arrangement of writers. Spawning a
 binary, driving a scripted inference and handing the assembled trace to the
 validator does, because it decodes what an implementation actually emitted
 rather than what a test built. That is a stronger argument for the harness shape
-than the symmetry argument it was chosen on. Because a provider-profile implementation is
-independently servable, the harness can be the same one in outline: spawn a
+than the symmetry argument it was chosen on.
+
+Because a provider-profile implementation is independently servable, the harness
+can be the same one in outline: spawn a
 binary, drive a scripted inference over a line binding, hand the assembled trace
 to the validator. But the existing harness works because there is an endpoint
 built to be driven, and there is no counterpart here. Building one is the whole
 of the work, not a consequence of the profiles being independently servable —
 and an earlier version of this draft drew that conclusion too fast.
 
-Compatibility is a second, harder half, and the first implementation has now
-drawn the line precisely. What a harness can do today: spawn a provider
-endpoint, drive discovery, drive a real inference against a **local, anonymous**
-provider with no credentials anywhere, and assemble a trace. That covers every
-envelope in the profile.
+Compatibility is a second, harder half, and the first implementation has drawn
+the line precisely. What a harness can do today: spawn a provider endpoint,
+drive discovery, drive a real inference against a **local, anonymous** provider
+with no credentials anywhere, and assemble a trace.
+
+That covers discovery, the inference lifecycle, the part triples, cancellation
+and the error classes. It does **not** cover four of the eighteen envelope
+types: the two `provider.credential.grant` envelopes, which a session with no
+credentials anywhere cannot reach by construction, and the `inference.sync`
+pair, which nothing described drives. The grant pair is the same gap the
+Evidence section names — the most argued part of the draft is the part nothing
+has run — arriving here as a hole in the harness rather than in the
+implementation.
 
 What it cannot do is observe a single compatibility fact. The twelve are carried
 and mapped; none has been checked against the vendor it describes, because
