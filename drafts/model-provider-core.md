@@ -854,7 +854,7 @@ fillable by nobody.
 The ambiguity is a *discovery* question, and the profile already puts those on
 the descriptor. `round_trips_carry` says whether a carry this implementation
 emits can be handed back and reach the provider, and two existing rules then do
-the work. Clause 12 binds it in both directions: an endpoint that round-trips
+the work. Clause 13 binds it in both directions: an endpoint that round-trips
 must say so, and one that says so must do it. And the create-time rule covers
 the caller, because sending `encrypted_carry` to an endpoint whose descriptor
 says `false` is decidable from the descriptor and the request alone — so it is
@@ -864,8 +864,8 @@ replayed block.
 The member is added while nothing implements the round trip, which is the
 cheapest moment: no implementation has to change behaviour to comply, and the
 one that has this gap is obliged to advertise `false` rather than leave it
-silent. That silence is the under-claim shape clause 12 names, sitting in the
-implementation clause 12 was written against.
+silent. That silence is the under-claim shape clause 13 names, sitting in the
+implementation clause 13 was written against.
 
 This is one vendor's mechanism seen in one implementation, which is thin by this
 draft's own standard. It is in because the failure it prevents is silent and the
@@ -1185,6 +1185,34 @@ because it is good.
 A grant is connection-scoped, expires at `expires_at_ms` if one is set, and does
 not survive a reconnect. A credential that survives a restart is one the
 operator never configured and cannot revoke.
+
+**`expires_at_ms` binds the implementation that issued it, and expiry destroys
+the material.** An implementation that publishes an expiry MUST refuse a
+`credential_ref` used past it — `credential_expired`, not
+`credential_missing` — and MUST discard the credential value at that moment
+rather than merely stop honouring the reference.
+
+Both halves are load-bearing and the second is the one an implementation
+forgets. Refusing the reference while the plaintext sits in a table keyed by it
+means the secret outlived the lifetime it was granted under, which is the
+property this whole section exists to establish; whether anything currently
+reads that table is not the point, because the next reader is a code change
+away. An implementation was found in exactly this state — refusal added,
+material retained until connection teardown — and reported it rather than
+treating the refusal as sufficient.
+
+The code is pinned because the taxonomy is worth nothing if the same situation
+produces different codes in different implementations. An endpoint can tell
+expired from absent by consulting its own grant table, with no upstream attempt
+and no ambiguity, so the caller gets the distinction it can act on: **refresh**
+for an expiry it can renew without a human, **authenticate** for a reference
+that was never granted.
+
+Until this was written the member stated a fact nothing checked. An
+implementation could compute an expiry, return it, and consult it never — which
+one did, matching on reference alone, so a caller's own connection was the real
+lifetime. That is the `round_trips_carry` shape again: a published claim with no
+obligation attached to it.
 
 **That property does not follow from the profile alone, and it asks for more
 than a flag.** An earlier version of this draft said a granted credential is
@@ -1593,36 +1621,38 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    kind-discriminated payloads on start and end, or declares `stream`
    unsupported and answers unary. Refuses a `tool_call` start missing its
    identity **and** a `text` or `reasoning` start carrying one.
-6. Refuses an `include_snapshot` it does not support unless the request allows
+6. Refuses a `credential_ref` past the `expires_at_ms` it published, with
+   `credential_expired`, and discards the credential value at that moment.
+7. Refuses an `include_snapshot` it does not support unless the request allows
    degradation, honours what it accepted, reports it in `honoured`, and answers
    `inference.sync.request` if it declared it.
-7. Carries a credential value out of band if its binding allows it, and only on
+8. Carries a credential value out of band if its binding allows it, and only on
    `provider.credential.grant.request` otherwise — never journalling, tracing or
    replaying that pair.
-8. Holds a granted credential in a representation from which durable storage is
+9. Holds a granted credential in a representation from which durable storage is
    unreachable, and refuses a grant whose kind it cannot hold that way —
    publishing which kinds it can in `grant_kinds`. Burns a nonce at its arrival
    deadline, discards a value arriving late or for a nonce never issued, and
    never blocks the envelope stream on the side channel.
-9. Publishes `credential_grant` on every descriptor, and refuses a grant with a
+10. Publishes `credential_grant` on every descriptor, and refuses a grant with a
    typed `unsupported_feature` where it says `none` rather than accepting and
    ignoring it.
-10. Answers `provider.describe.request` at any version it supports, and lists
+11. Answers `provider.describe.request` at any version it supports, and lists
     `protocol_versions[]`.
-11. States a compatibility fact where the provider it reaches diverges from the
+12. States a compatibility fact where the provider it reaches diverges from the
    wire it claims, or states none and claims nothing.
-12. Serves everything its descriptors claim, and claims everything it can
+13. Serves everything its descriptors claim, and claims everything it can
    serve.
-13. Accepts an operator-set destination override for every provider it
+14. Accepts an operator-set destination override for every provider it
    describes, out of band and never from the wire.
-14. Can name, for every member of an inbound payload it accepts, what reads it.
+15. Can name, for every member of an inbound payload it accepts, what reads it.
 
 Streaming is required only if advertised. A unary-only implementation is
 conformant; a streaming implementation that skips `part.ended` is not.
 
 ### An implementation that cannot be repointed cannot be tested
 
-Clause 13 looks like a deployment convenience and is not. There is no way to
+Clause 14 looks like a deployment convenience and is not. There is no way to
 conformance-test this profile without pointing an implementation at a controlled
 endpoint, and no alternative route to one exists. A real vendor credential buys
 compatibility testing, not conformance: the frames are whatever the vendor sent,
@@ -1685,7 +1715,7 @@ it, which is why the implementation that has this asks the operator with a
 separate flag rather than detecting it. So requiring the distinction would mean
 the profile specifying how an implementation is *told* which redirect it is
 looking at — and the only place that can live is operator configuration, which
-clause 13 has just put off the wire. The stronger form is in tension with 13,
+clause 14 has just put off the wire. The stronger form is in tension with 14,
 not merely later than it.
 
 The soft form also closes the objection it appears to leave open. A suite that
@@ -1697,8 +1727,8 @@ soft clause belongs to the party who caused it.
 
 ### Consume what you accept
 
-Clause 14 is clause 12 one layer in. Twelve says serve what you claim; fourteen
-says read what you take. A receiver can decode a member, validate it, and drop
+Clause 15 is clause 13 one layer in. Thirteen says serve what you claim;
+fifteen says read what you take. A receiver can decode a member, validate it, and drop
 it, and every frame in that exchange is correct — the caller's intent was
 parsed and discarded, and nothing on the wire distinguishes the endpoint that
 honoured a member from the one that threw it away, until the turn where the
@@ -1712,7 +1742,7 @@ belonged to. A fourth pair is `metadata` and the four reasoning options, decoded
 in full and then refused — the caller's intent parsed and dropped at two
 separate places for two different reasons.
 
-**Unlike clause 12, this one is mechanically checkable, inside an implementation
+**Unlike clause 13, this one is mechanically checkable, inside an implementation
 rather than from a trace.** Strip test code, then ask whether anything outside
 the type and codec files reads each decoded member. That is the unreferenced-
 function sweep applied one level down, and the same instrument that finds a
@@ -1743,7 +1773,7 @@ validates against the schema. Nothing in the trace is wrong. The endpoint is
 simply lying about itself by omission, and a well-behaved caller never asks for
 what the descriptor did not list, so nothing ever discovers it.
 
-Clause 12 is therefore stated as a conformance requirement and not as a
+Clause 13 is therefore stated as a conformance requirement and not as a
 validator rule. No trace can carry the violation, so `validation/provider.go`
 will never grow a code for it; this is deliberate, not the class of gap where
 prose runs ahead of machinery. What the clause buys is a sentence a conformance

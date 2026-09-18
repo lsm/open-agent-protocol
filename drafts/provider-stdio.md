@@ -366,14 +366,31 @@ An implementation claiming this binding:
 6. If it advertises `out_of_band`: creates a per-grant socket with
    owner-only permissions, accepts one connection, enforces the 30-second
    deadline, burns the nonce, and destroys the socket when the grant settles.
-7. Never blocks its envelope reader on the credential channel.
-8. Settles every accepted inference before exiting 0.
-9. If it supports a specimen request: answers it with one correlated
+7. If it publishes `expires_at_ms`: refuses that `credential_ref` past it with
+   `credential_expired`, and discards the value at that moment.
+8. Never blocks its envelope reader on the credential channel.
+9. Settles every accepted inference before exiting 0.
+10. If it supports a specimen request: answers it with one correlated
    `specimen.accepted` whose `types` are exactly the specimens that follow and
    whose `excluded` names what it supports but withholds, then emits one
    instance of each type in that order, each from its own emitter, allocating
    nothing. An implementation that does not support it answers `specimen.error`,
    because an unanswered control frame is indistinguishable from a stall.
+
+**Rule 7 is the one a harness can drive cheaply, and should.** Grant with a
+short `ttl_ms`, wait past it, send `inference.create` naming the reference, and
+require a refusal. It needs no credential worth protecting, no upstream, and no
+provider — a static value and a local socket are enough — and it separates an
+implementation that publishes an expiry from one that applies it. That
+distinction is invisible in every other exchange, because a grant that is
+honoured and a grant that is expired-but-still-honoured produce identical
+frames.
+
+The discard half is not observable from outside and is not checkable this way.
+It is stated as an obligation because the alternative is stating nothing: an
+implementation that refuses the reference while the plaintext waits in a table
+keyed by it has kept a secret past the lifetime it was granted under, and the
+next reader of that table is a code change away.
 
 ## Open questions
 
