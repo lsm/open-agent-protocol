@@ -1553,10 +1553,16 @@ than reading it. Three descriptor divergences surfaced in one session of getting
 a first real completion out of an implementation: a host that ignored base-URL
 overrides so a conformance run silently addressed the vendor instead of the
 local endpoint under test, a catalogue advertising no `snapshot_policies` for
-policies the server had implemented all along, and a descriptor never setting
-`resolves_own_credentials`, which made every credentialed provider refuse at
-create. All three validate. All three are invisible from outside. The
-base-URL one matters beyond the implementation that had it: pointing a provider
+policies the server had implemented all along, and a descriptor whose
+credential members understated what the implementation did, so every
+credentialed provider refused at create. `providerDescriptor` is
+`additionalProperties: false`, and `credential_grant`, `grant_kinds` and
+`allows_anonymous` are the members that decide this — a descriptor cannot
+carry a member the schema does not name, so a divergence of this kind is
+always one of those three saying less than the implementation does.
+
+All three validate. All three are invisible from outside. The base-URL one
+matters beyond the implementation that had it: pointing a provider
 at a local endpoint is how anyone conformance-tests this profile at all, so an
 implementation that cannot be repointed cannot be tested, and the failure mode is
 that the test appears to run.
