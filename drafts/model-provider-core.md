@@ -1456,9 +1456,62 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    wire it claims, or states none and claims nothing.
 12. Serves everything its descriptors claim, and claims everything it can
    serve.
+13. Accepts an operator-set destination override for every provider it
+   describes, out of band and never from the wire.
 
 Streaming is required only if advertised. A unary-only implementation is
 conformant; a streaming implementation that skips `part.ended` is not.
+
+### An implementation that cannot be repointed cannot be tested
+
+Clause 13 looks like a deployment convenience and is not. There is no way to
+conformance-test this profile without pointing an implementation at a controlled
+endpoint, and no alternative route to one exists. A real vendor credential buys
+compatibility testing, not conformance: the frames are whatever the vendor sent,
+and a suite cannot ask for the edge it wants to check. An anonymous local
+provider does not help either — reaching a mock still means overriding the
+built-in address, because the default is the real daemon's port, not the
+suite's. So the override is not a way to reach a test endpoint more
+conveniently. It is the only way to reach one at all.
+
+The failure mode is what makes this conformance rather than tooling. An
+implementation that builds its destination from a built-in literal and ignores
+the override does not fail: the suite runs, the frames validate, and every
+request went to the vendor. A green conformance report that tested nothing is
+worse than a red one.
+
+**The override is operator configuration, and must never be a member of the
+create request.** Every implementation resolves the destination first and
+attaches the credential to whatever came out, so a wire-level override is a
+caller redirecting a credentialed provider to an address it controls and having
+the host attach the real vendor key to it — a credential-exfiltration primitive
+handed to precisely the party the grant machinery exists to keep secrets away
+from. Environment variables or operator configuration satisfy the conformance
+prerequisite completely, and they sit at the same trust boundary that chose the
+provider in the first place. Scoping the clause this way costs nothing and not
+scoping it gives away everything. This is the same refusal
+[Decision 0014](../decisions/0014-provider-descriptors.md) makes of a
+caller-supplied `endpoint`, reaching it from the other end.
+
+**An overridden destination suspends the compatibility facts.** The facts
+describe a vendor's behaviour, and a mock does not have it. A descriptor that
+keeps advertising twelve facts while the destination is a local test server
+makes any check of facts-against-behaviour meaningless — the suite would be
+validating the mock against the vendor's claims and reporting the mock's gaps as
+the implementation's. For 0.1.0 the rule is that **the facts are undefined while
+a destination is overridden, and a conformance suite must not check them.** That
+is honest and costs no machinery.
+
+The better behaviour, which this draft does not require, is to distinguish the
+two kinds of redirect. Makai already does: a base-URL override alone means
+"different endpoint, assume nothing", while an explicit proxy assertion means
+"same vendor behind a proxy, the vendor's facts still hold" — and the
+distinction is load-bearing there, gating assertions about OpenAI's
+`max_completion_tokens` and developer role, DeepSeek's thinking-as-text
+requirement, and Anthropic's cache TTL. A conformance harness pointing at a mock
+is emphatically not a transparent proxy. Requiring the distinction would mean
+specifying how an implementation learns which it is looking at, and that is a
+0.2 question.
 
 ### Under-claiming is non-conformance, and only one direction is checkable
 
