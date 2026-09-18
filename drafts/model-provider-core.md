@@ -55,7 +55,9 @@ profile is what an agent loop speaks downward.
 
 It is not a credential channel. A caller-held credential crosses out of band
 wherever the binding allows it, and only on one envelope type where no side
-channel exists. See Credentials below.
+channel exists. Members that could carry one instead — header maps — are
+non-conformant for that use and policed as far as a validator can. See
+Credentials below.
 
 ## Identity
 
@@ -404,6 +406,8 @@ otherwise assume the profile forgot them.
 - `stream` — boolean.
 - `reasoning` — `{ enabled?, budget_tokens?, effort?, encrypted_carry? }`.
 - `include_snapshot` — `never`, `on_part_end`, `every_delta`.
+- `headers` — non-secret request headers, such as tenancy or routing. Never a
+  credential; see Credentials.
 - `credential_ref` — names a credential the implementation holds; never a value.
 - `metadata` — opaque, passed through.
 
@@ -424,7 +428,10 @@ vendor. It is carried as an opaque value and never inspected.
 
 - `id`, `display_name?`
 - `wire`, `framing`
-- `endpoint` — the destination reached. No `headers`; see Credentials.
+- `endpoint` — the destination reached.
+- `headers` — what the implementation sends from its own configuration, so a
+  caller can see what accompanies its prompts. Never resolved from a credential
+  store.
 - `compatibility` — the twelve facts below.
 - `snapshot_policies` — which of `never`, `on_part_end`, `every_delta` the
   request may ask for, and whether `inference.sync` is answered.
@@ -491,12 +498,6 @@ This is the constraint
 provisioning at the agent-control boundary, and it holds here for the same
 reason one layer down.
 
-**`headers` is a credential channel and is excluded.** `Authorization: Bearer`
-is a header, so a caller-supplied header map defeats the rule while every
-explicitly credential-named field stays absent. The general form: **any member
-that passes caller text through to the upstream request is a credential
-channel, whatever it is named.** Nothing in this profile has that shape.
-
 ### Selecting a credential
 
 An earlier version of this draft claimed the rule costs a real implementation
@@ -561,9 +562,8 @@ body is logged by the same things that log everything else. So the fallback
 exists, and under it the value rides `provider.credential.grant.request` subject
 to four rules:
 
-1. **One type, one place.** No other payload member anywhere carries a value —
-   including `ProviderDescriptor`, which carries no `headers` member for exactly
-   this reason (see below).
+1. **One type, one place.** No other payload member anywhere carries a
+   credential value, including the header maps described below.
 2. **Non-journalable.** Never written to a journal, assembled into a trace,
    replayed from a cursor, or persisted.
 3. **The validator enforces it.** A trace containing the pair is invalid, with a
@@ -602,24 +602,66 @@ grants once and references thereafter, and a per-tenant caller grants per
 connection. Nothing appears to be lost, and the difference is recorded here
 rather than discovered later.
 
-### `headers` carries no credential anywhere, including on a descriptor
+### `headers` is a credential channel and also a legitimate one
 
-`Authorization: Bearer` is a header. A caller-supplied header map defeats every
-rule above while each explicitly credential-named field stays absent, so no
-envelope in this profile carries one — not `inference.create.request`, and not
-`ProviderDescriptor`.
+`Authorization: Bearer` is a header, so a header map is a way to defeat every
+rule above while each explicitly credential-named field stays absent. An earlier
+version of this draft concluded that the map should not exist.
 
-This is a real cost and it is deliberate. Makai's `Model` carries `base_url` and
-`headers` together, and that pair is how a caller points the implementation at a
-compatible endpoint it has never heard of. This profile keeps the first half:
-`endpoint` on the descriptor names the destination, and the compatibility facts
-say how it diverges from the wire it claims. What it does not keep is the
-free-form header map, because the custom-endpoint story and the credential
-channel were riding the same member and only one of them is worth carrying.
+That was wrong, and the argument against it is a configuration format that
+already separates the two things the removal assumed were one. Makai's custom
+provider file carries `auth` and `headers` as distinct members — `auth` is
+`{"env": "<VAR>"}`, or `"none"` for an anonymous endpoint, or absent so the
+credential resolves from the platform store by provider id — and the example its
+own test fixture reaches for is `X-Tenant`. That is the real case: a corporate
+gateway that needs tenancy or routing metadata alongside a credential it
+resolves separately. `endpoint` plus the compatibility facts does not express
+it, because the fact being expressed is not about the wire format. It is which
+tenant, which route, which deployment slot.
 
-**The general form: any member that passes caller text through to the upstream
-request is a credential channel, whatever it is named.** A future addition that
-needs one allowlists names rather than carrying values.
+**Removal does not close the channel; it moves those deployments off the
+profile.** A deployment that cannot be expressed does not stop existing. And
+nothing in that configuration format *enforces* the separation either — a user
+can write an `Authorization` header into it and it will work — so the property
+was always a convention rather than a structure, on both sides.
+
+So the profile keeps headers, in two places that are not the same kind of thing,
+and replaces removal with enforcement.
+
+#### On the descriptor: published, not supplied
+
+`ProviderDescriptor.headers` is what the implementation sends to that endpoint
+from its own configuration. It is **not caller text** — a descriptor is
+published by the implementation, and a caller reads it. Publishing it lets a
+caller see what accompanies its prompts, which is the same argument `endpoint`
+makes.
+
+An implementation must not publish a header whose value came from its credential
+store. That is a rule about what it publishes, not about what a caller may send.
+
+#### On the call: supplied, and policed
+
+`inference.create.request.headers` is caller text, and is where tenancy that
+varies per call belongs. Two rules:
+
+1. **A credential in `headers` is non-conformant.** A caller that needs a
+   credential uses the grant. An implementation that finds one in a header is
+   looking at a configuration error, not an alternative path.
+2. **The validator catches what it can.** A header named `Authorization`,
+   `Proxy-Authorization`, `X-Api-Key` or `Api-Key`, or any value matching a
+   bearer-token shape, is rejected.
+
+That check is **incomplete by construction** and cannot be otherwise: a
+credential can be called anything. It is worth having for the same reason rule 4
+is — it turns the common mistake into a caught one — and it must not be
+described as closing the channel. What closes the channel is that the grant
+exists, so a caller with a credential has somewhere correct to put it.
+
+**The general principle, restated correctly.** Any member that passes caller
+text through to the upstream request is a credential channel. The response is
+not to delete every such member, because some of them carry things a deployment
+genuinely needs. It is to make sure a correct path exists, make the incorrect
+path non-conformant, and catch the cases a validator can see.
 
 ## Shared Vocabulary
 
