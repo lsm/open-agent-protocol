@@ -44,7 +44,7 @@ func TestProviderTerminalDisagreeingWithItsParts(t *testing.T) {
 	for _, testCase := range []struct{ name, content string }{
 		{"fewer parts", `[{"type":"text","text":"hello"}]`},
 		{"different text", `[{"type":"text","text":"hell"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`},
-		{"different kind", `[{"type":"reasoning","reasoning":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`},
+		{"different kind and payload with it", `[{"type":"reasoning","reasoning":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`},
 		{"different arguments", `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"rust"}}]`},
 		{"different tool", `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t2","name":"search","arguments_json":{"q":"zig"}}]`},
 	} {
