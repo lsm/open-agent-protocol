@@ -60,6 +60,14 @@ func TestProviderTerminalDisagreeingWithItsParts(t *testing.T) {
 	}
 }
 
+func TestProviderTerminalOfADifferentKindCarryingNothingToCompare(t *testing.T) {
+	emptyText := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"text","text":""}}`
+	result := providerTrace(t, emptyText, completed(`[{"type":"reasoning","reasoning":"thinking"}]`))
+	if !hasCode(result, validation.CodeTerminalNotAssembly) {
+		t.Fatalf("a terminal of the wrong kind was admitted because there was nothing left to compare: %v", codes(result))
+	}
+}
+
 func TestProviderPartsEndingOutOfIndexOrder(t *testing.T) {
 	assembled := `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`
 	result := providerTrace(t, toolEnded, textEnded, completed(assembled))
