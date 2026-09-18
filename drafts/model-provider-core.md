@@ -1509,9 +1509,23 @@ two kinds of redirect. Makai already does: a base-URL override alone means
 distinction is load-bearing there, gating assertions about OpenAI's
 `max_completion_tokens` and developer role, DeepSeek's thinking-as-text
 requirement, and Anthropic's cache TTL. A conformance harness pointing at a mock
-is emphatically not a transparent proxy. Requiring the distinction would mean
-specifying how an implementation learns which it is looking at, and that is a
-0.2 question.
+is emphatically not a transparent proxy.
+
+The reason it stays a recommendation is stronger than "not yet decided": the
+distinction is not inferable. Nothing in a URL says whether the vendor is behind
+it, which is why the implementation that has this asks the operator with a
+separate flag rather than detecting it. So requiring the distinction would mean
+the profile specifying how an implementation is *told* which redirect it is
+looking at — and the only place that can live is operator configuration, which
+clause 13 has just put off the wire. The stronger form is in tension with 13,
+not merely later than it.
+
+The soft form also closes the objection it appears to leave open. A suite that
+must not check facts under an override cannot be misled by facts published under
+one. What survives is a non-suite caller trusting stale facts after an operator
+redirected the provider — and that is inside the operator's trust boundary by
+construction, because the operator set the override. The harm that outlives the
+soft clause belongs to the party who caused it.
 
 ### Under-claiming is non-conformance, and only one direction is checkable
 
