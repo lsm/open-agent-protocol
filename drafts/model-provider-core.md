@@ -1483,6 +1483,23 @@ built to be driven, and there is no counterpart here. Building one is the whole
 of the work, not a consequence of the profiles being independently servable —
 and an earlier version of this draft drew that conclusion too fast.
 
+**A harness that drives a binary from outside reaches a minority of the wire,
+and this is measured rather than estimated.** Of thirteen envelope types one
+implementation emits, five are reachable by spawning it and sending scripted
+envelopes with no credentials. The other eight — the tool-call part end, a
+snapshot carrying `arguments_partial`, the sync response, both grant refusals
+and the rest — exist only inside the implementation's own emitter, and were
+checked against the schemas only because their author temporarily printed every
+outbound frame from a test and piped it into a validator.
+
+So a green harness does not mean the wire is covered, and anyone reporting
+harness results has to say which frames were reached. Closing the gap needs
+either a provider the harness can drive or a way to make an implementation
+produce a named frame on demand, and neither exists. The second is the cheaper
+one and is worth considering as a conformance affordance rather than a hack: an
+implementation that can be asked to emit a specimen of each frame it supports is
+testable in a way one that cannot is not.
+
 Compatibility is a second, harder half, and the first implementation has drawn
 the line precisely. What a harness can do today: spawn a provider endpoint,
 drive discovery, drive a real inference against a **local, anonymous** provider
