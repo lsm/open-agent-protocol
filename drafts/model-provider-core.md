@@ -1383,18 +1383,62 @@ this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
 produces a perfectly valid trace.
 
-**Two of the fifteen corrected earlier findings from the same source rather than
-the draft.** The persistence hazard was first reported from a call graph and is
-real one step over from where it was placed; `auth_status` was first reported as
-belonging nowhere and belongs on the model entry. Both were caught by the
-reporter, against source, and both made the rule stronger than the version built
-on the original claim. That is the collaboration working rather than failing,
-and it is recorded here because a reader who checks the superseded claims will
-find them false.
+**Four of the seventeen corrected earlier findings from the same source rather
+than the draft**, and the pattern in them matters more than the count. Each
+superseded claim had been read off a call graph, a type name or a field's
+presence, and each correction came from reading the body: the persistence hazard
+was real one step over from where it was first placed; `auth_status` belonged
+somewhere its own earlier finding had ruled out; `usage_in_streaming` was an
+adjacent fact wearing the same name. All four were caught by the reporter,
+against source, and all four made the rule stronger than the version built on
+the original claim.
 
-That implementation is first-party under
+**The generalization is not that implementing found problems.** It is that
+reading source at one remove — a call graph, a signature, a struct field — was
+repeatedly different from reading it, on both sides, by parties with every
+reason to be careful. That is recorded here because a reader who checks a
+superseded claim will find it false, and because it is the argument for
+[Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)
+arriving from a direction that decision did not anticipate.
+
+**An implementation speaks this profile** — `lsm/makai#341`, twelve commits, with
+a deviations ledger naming every place it diverges: the three `other` providers,
+`usage_in_streaming` left unstated on `false`, grants advertised as `none`,
+keepalive dropped in translation, seven reasoning fields collapsed to one. Stop
+reasons appear in that table with no deviation, which is the only row where
+"carried across whole" is demonstrated rather than asserted.
+
+It is **first-party** under
 [Decision 0018](../decisions/0018-makai-becomes-first-party.md), so it
-establishes that the profile is implementable and not that it is right.
-**Nothing this project does not control speaks this profile.** Under Decision 0015 it becomes executable when something outside this
-repository speaks it, and Makai doing so is the expected first case and is not
-sufficient alone if Makai becomes first-party.
+establishes that the profile is *implementable* and not that it is *right*.
+**Nothing this project does not control speaks this profile**, and under
+Decision 0015 that is what executable would require.
+
+### Two things the implementation is not evidence for
+
+**The tier-1 out-of-band credential path has no implementation exercising it.**
+That implementation advertises `grant_kinds` as static-only and refuses
+refreshable grants, which is conformant and is exactly the path rule 8's third
+point exists to provide. It also means the most carefully argued part of the
+credential section is the part nothing has run: two tiers, a nonce, a
+binding-defined side channel, a mandatory-where-achievable rule, all
+unexercised. Treat that section as the least tested thing in this draft rather
+than the most, whatever its density of argument suggests. The work that would
+exercise it — a credential store gaining a representation it cannot write — is
+real and nothing currently forces it.
+
+**No compatibility fact has been observed.** All twelve are carried and mapped
+and none has been checked against the vendor it describes.
+
+### `other` is load-bearing, and tightening its criterion fails badly
+
+Three of that implementation's eight providers describe themselves with `other`,
+including the one whose existence attested both `ndjson` framing and
+`allows_anonymous`.
+
+So if the criterion for naming a wire ever tightens, those three do not lose
+*portability* — that is what `other` costs them by design and they already pay
+it. They lose *describability*: the profile stops being able to represent a
+provider it represents today. That is a worse failure than the one `other` was
+added to prevent, and it is the specific thing to weigh before anyone touches
+the criterion.
