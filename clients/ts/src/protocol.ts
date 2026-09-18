@@ -146,6 +146,7 @@ export interface TextPart {
 export interface ReasoningPart {
   type: 'reasoning';
   reasoning: string;
+  carry?: string;
 }
 
 export interface ImagePart {
@@ -158,6 +159,7 @@ export interface ToolCallPart {
   tool_call_id: string;
   name: string;
   arguments_json: JSONValue;
+  carry?: string;
 }
 
 export interface ToolResultPart {

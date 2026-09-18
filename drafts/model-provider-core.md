@@ -778,7 +778,8 @@ otherwise assume the profile forgot them.
 - sampling controls — `temperature`, `top_p`.
 - `output_schema` — structured output.
 - `stream` — boolean.
-- `reasoning` — `{ enabled?, budget_tokens?, effort?, encrypted_carry? }`.
+- `reasoning` — `{ enabled?, budget_tokens?, effort? }`. The carry is not here;
+  see below.
 - `include_snapshot` — `never`, `on_part_end`, `every_delta`.
 - `allow_degraded_features` — keys the caller will accept a downgrade on.
 - `headers` — non-secret request headers, such as tenancy or routing. Never a
@@ -814,22 +815,52 @@ One `reasoning` object replaces what Makai carries as seven separate options —
 split is vendor vocabulary leaking into an options struct rather than two
 concepts, and this draft takes it as one.
 
-`encrypted_carry` is the member that has no equivalent in the flattened set and
-is here because dropping it would be silent: some vendors return reasoning in an
-opaque encrypted form that must be handed back verbatim on the next call or the
-chain breaks. Google's thought signature is the same shape from a different
-vendor. It is carried as an opaque value and never inspected.
+The carry has no equivalent in the flattened set and exists because dropping it
+would be silent: some vendors return reasoning in an opaque encrypted form that
+must be handed back verbatim on the next call or the chain breaks. Google's
+thought signature is the same shape from a different vendor. It is an opaque
+value and is never inspected.
 
 **It needs a return path, and an earlier version of this draft gave it none.** A
-caller could send an `encrypted_carry` and had no way to obtain one: no response
+caller could send a carry and had no way to obtain one: no response
 envelope carried it. A caller driving a multi-turn tool-calling conversation got
 a signature-less tool call on turn one, had nothing to send on turn two, and the
 chain broke — the exact failure the member exists to prevent. Half a mechanism
 is worse than none, because it reads as covered.
 
 So `inference.part.ended` carries an optional opaque `carry` for the `tool_call`
-and `reasoning` kinds, under the same contract as the request member: verbatim,
-never inspected, never interpreted.
+and `reasoning` kinds, and **the same member on the same kinds of content part
+in `messages[]` is how it goes back**: verbatim, never inspected, never
+interpreted, in both directions.
+
+**A request-level `reasoning.encrypted_carry` was the wrong shape and is
+removed.** It was one value per request against one carry per part, and an
+implementer building the inbound half asked the question that exposes it: with
+several reasoning parts in a conversation, which one does a single member belong
+to? Every answer is a placement rule the profile would have had to invent —
+attach it to the most recent reasoning block, or the last one replayed, or the
+first — and a vendor whose signature belongs to a *specific* block would break
+under any of them the moment two blocks are in play.
+
+Symmetry removes the question instead of answering it. A carry arrives on a
+part and goes back on the part it came from, so placement is not a rule anyone
+has to state and a conversation with six reasoning blocks carries six
+signatures, each where it belongs. The profile is proposed, so removing the
+request member costs an implementation that has not built the inbound half
+nothing — which is exactly the implementation that found this.
+
+This is the shape the outbound half already had. The asymmetry was invisible
+while only the outbound half existed, which is the general form: a return path
+added to a one-directional member is not finished until something sends one
+back.
+
+**The terminal assembly carries it too**, and the validator checks that: a
+terminal content part must repeat the carry its part ended with. Without that
+rule an implementation could stream signed parts and settle with an unsigned
+assembly, and a caller that replays the terminal message — which is the obvious
+thing to replay, being the complete one — would hand back a history with every
+signature stripped. That is the broken chain the member exists to prevent,
+arriving through the one envelope a caller trusts most.
 
 **On the part, not on the terminal.** A signature belongs to a specific part,
 and a message with three reasoning parts needs three of them. In the

@@ -24,9 +24,9 @@
     "contentPart": {
       "oneOf": [
         { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "text" }, "text": { "type": "string" } }, "additionalProperties": false },
-        { "type": "object", "required": ["type", "reasoning"], "properties": { "type": { "const": "reasoning" }, "reasoning": { "type": "string" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "reasoning"], "properties": { "type": { "const": "reasoning" }, "reasoning": { "type": "string" }, "carry": { "type": "string" } }, "additionalProperties": false },
         { "type": "object", "required": ["type", "image"], "properties": { "type": { "const": "image" }, "image": { "$ref": "#/$defs/image" } }, "additionalProperties": false },
-        { "type": "object", "required": ["type", "tool_call_id", "name", "arguments_json"], "properties": { "type": { "const": "tool_call" }, "tool_call_id": { "$ref": "#/$defs/opaqueID" }, "name": { "$ref": "#/$defs/nonEmptyString" }, "arguments_json": true }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "tool_call_id", "name", "arguments_json"], "properties": { "type": { "const": "tool_call" }, "tool_call_id": { "$ref": "#/$defs/opaqueID" }, "name": { "$ref": "#/$defs/nonEmptyString" }, "arguments_json": true, "carry": { "type": "string" } }, "additionalProperties": false },
         { "type": "object", "required": ["type", "tool_call_id", "result"], "properties": { "type": { "const": "tool_result" }, "tool_call_id": { "$ref": "#/$defs/opaqueID" }, "result": true, "is_error": { "type": "boolean" } }, "additionalProperties": false }
       ]
     },

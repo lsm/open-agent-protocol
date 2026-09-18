@@ -32,9 +32,6 @@
         },
         "effort": {
           "$ref": "provider.schema.json#/$defs/reasoningLevel"
-        },
-        "encrypted_carry": {
-          "type": "string"
         }
       },
       "additionalProperties": false
