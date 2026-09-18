@@ -53,7 +53,9 @@ boundary. An implementation may use them directly; they do not cross here.
 It is not a commitment that this repository will ship an agent loop. The
 profile is what an agent loop speaks downward.
 
-It is not a credential channel. See Credentials below.
+It is not a credential channel for ordinary traffic. One envelope type carries a
+value, under five rules that keep it out of every trace, journal and replay. See
+Credentials below.
 
 ## Identity
 
@@ -198,7 +200,7 @@ nothing in it is agent-control-specific except the envelope set it carries.
 
 ## Envelope Types
 
-Twelve, in three groups.
+Fourteen, in four groups.
 
 ### Discovery
 
@@ -389,28 +391,88 @@ explicitly credential-named field stays absent. The general form: **any member
 that passes caller text through to the upstream request is a credential
 channel, whatever it is named.** Nothing in this profile has that shape.
 
-### Selecting a credential, and the limit of that
+### Selecting a credential
 
 An earlier version of this draft claimed the rule costs a real implementation
 nothing, because a provider is constructed without a credential and resolves one
 per request from its own store. The first half is right and the second half was
 wrong: Makai's per-call options carry `api_key` as well, and it is not
-vestigial — Vertex documents a per-call key as one of two accepted sources. A
-caller there supplies a credential per call today.
+vestigial — Vertex documents a per-call key as one of two accepted sources.
 
-So the rule needs a selection form rather than an absence, and
-`inference.create.request` carries an optional **`credential_ref`**: a name the
-implementation resolves from its own configured store. The caller says *which*
-credential, never *what* it is. `allows_anonymous` on the descriptor says a
-provider needs none at all — a local Ollama is correctly configured with no
-credential, and an implementation that treats absence as an error refuses it.
+So `inference.create.request` carries an optional **`credential_ref`**: a name
+the implementation resolves from its own configured store. The caller says
+*which* credential, never *what* it is. `allows_anonymous` on the descriptor
+says a provider needs none at all — a local Ollama is correctly configured with
+no credential, and an implementation that treats absence as an error refuses it.
 
-**This does not cover true bring-your-own-key.** `credential_ref` selects among
-credentials the implementation already holds. A caller holding a key the
-implementation has never seen cannot introduce it through this profile, and that
-is a deliberate limit rather than an oversight: admitting it means a credential
-value on the wire, which is the one thing this section exists to prevent. The
-cost is real and is recorded in the open questions.
+### Caller-held credentials: the grant
+
+`credential_ref` alone selects among credentials the implementation already
+holds. A caller holding a key the implementation has never seen — bring your own
+key, a per-tenant key, Vertex's documented per-call key — cannot introduce one,
+and an earlier version of this draft recorded that as a permanent limit.
+
+It cannot stay a limit. While an implementation could keep a native path beside
+this profile, a profile gap cost nothing: express the case natively and let OAP
+be the lossy outer wire. For an implementation whose *only* inference wire is
+this profile, whatever the profile cannot express, it cannot do — and dropping a
+documented provider path is a real loss, not a cleanup.
+
+**The rule was always about the channel, not about who owns the key.** The
+reason to keep credential values off envelopes is that envelopes are logged,
+assembled into traces, validated, journalled, replayed from a cursor, and
+persisted by intermediaries. A value that rides every request is a value in
+every one of those. That argument says nothing about whether the caller or the
+operator holds the key.
+
+So the profile admits a credential value in exactly one place, and makes the
+constraint checkable rather than advisory:
+
+| Type | Direction | Carries |
+| --- | --- | --- |
+| `provider.credential.grant.request` | caller → implementation | `provider_id`, the value, `ttl_ms?` |
+| `provider.credential.grant.response` | implementation → caller | `credential_ref`, `expires_at_ms?` |
+
+Five rules make it safe, and the fourth is the one that turns intent into
+enforcement:
+
+1. **One type, one place.** A credential value appears in
+   `provider.credential.grant.request` and in no payload member of any other
+   envelope. `inference.create.request` is unchanged: it carries a
+   `credential_ref`, and a ref from a grant is indistinguishable at the call
+   site from one naming operator configuration.
+2. **Non-journalable.** The grant pair must not be written to a journal,
+   included in an assembled trace, replayed from a cursor, or persisted by any
+   intermediary. A binding that records envelopes records everything except
+   these two types.
+3. **Connection-scoped, never durable.** A grant lives for the connection that
+   made it, expires at `expires_at_ms` if the implementation sets one, and does
+   not survive a reconnect. There is deliberately no path by which a granted
+   credential reaches storage, because a credential that survives a restart is
+   a credential the operator did not configure and cannot revoke.
+4. **The validator enforces it.** A trace containing either type is invalid, and
+   that is a diagnostic with a fixture, not a sentence in a draft. This is the
+   difference between a rule and a hope: the machinery this project already has
+   for assembling and validating traces is what makes "a credential never
+   reaches a trace" a testable claim.
+5. **Gated, and refusable.** The grant is an advertised capability. An
+   implementation that does not offer it refuses a grant request with a typed
+   `unsupported_feature`, and a caller learns that before it sends a secret
+   rather than after. An operator-configured-only deployment is a conformant
+   deployment.
+
+Bindings carry the rest of the obligation, and it belongs there because it is
+transport-shaped: a binding that can carry a grant must document its
+confidentiality requirement — a local pipe, or TLS — and a binding that cannot
+meet it does not carry the capability.
+
+**What this does not do.** It does not put credentials on the agent-control
+wire. [Decision 0017](../decisions/0017-provider-provisioning.md) refuses a
+caller-supplied credential there in any form, and nothing here relaxes it: this
+is a different profile at a different boundary, where the credential is actually
+consumed rather than passed through a control layer that has no use for it.
+Whether the grant shape should also be offered at that boundary is a separate
+decision, and the asymmetry is intentional until someone argues it away.
 
 ## Shared Vocabulary
 
@@ -461,8 +523,12 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    kind-discriminated payloads on start and end, or declares `stream`
    unsupported and answers unary.
 6. Honours its declared `snapshot_policy`.
-7. Carries no credential value on any envelope.
-8. States a compatibility fact where the provider it reaches diverges from the
+7. Carries no credential value on any envelope except
+   `provider.credential.grant.request`, and never journals, traces or replays
+   that pair.
+8. Refuses a grant with a typed `unsupported_feature` if it does not advertise
+   the capability, rather than accepting and ignoring it.
+9. States a compatibility fact where the provider it reaches diverges from the
    wire it claims, or states none and claims nothing.
 
 Streaming is required only if advertised. A unary-only implementation is
@@ -503,17 +569,16 @@ question. In Makai's tree it sits above the provider layer, not in it — the
 provider layer consumes a credential at request time and never learns its
 status. So it follows acquisition, and nothing owns acquisition yet.
 
-**Should the profile carry a per-call credential value at all?**
-`credential_ref` selects among credentials the implementation holds, and that
-covers per-tenant and per-call *selection*. It does not cover a caller that
-holds a key the implementation has never seen. Two honest positions: keep the
-absolute rule and lose that path through the profile, so a caller needing it
-configures the implementation out of band; or admit a named-reference form that
-can also carry a value under some deployment condition, which reopens exactly
-the channel Decision 0017 closed. This draft takes the first and does not
-pretend the cost is zero. It is the one open question here with a real
-constituency — Vertex's per-call key — and it is a decision about what the
-protocol is for, not a detail.
+**Is the grant the right shape for a caller-held credential?** The draft now
+admits one, on one envelope type, non-journalable, connection-scoped, validator-
+enforced and capability-gated. The reasoning is that the ban was always about
+the channel rather than about who owns the key. What is unproven is whether five
+rules are the right five: the non-journalable property in particular asks every
+binding and every intermediary to make an exception, and an exception that must
+be honoured everywhere is exactly the kind of rule that is honoured almost
+everywhere. A single binding that logs the grant makes the whole construction
+worthless, and the validator rule catches it only in traces this project
+assembles.
 
 **Is the compatibility set complete at twelve, and are the two renames right?** Twelve is one implementation's count, and a
 second implementation is as likely to add a thirteenth as to agree. The renames
