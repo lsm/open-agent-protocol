@@ -150,6 +150,9 @@
         "allows_anonymous": {
           "type": "boolean"
         },
+        "round_trips_carry": {
+          "type": "boolean"
+        },
         "context_window": {
           "type": "integer",
           "minimum": 1

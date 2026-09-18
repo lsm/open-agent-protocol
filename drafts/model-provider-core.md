@@ -815,20 +815,36 @@ and a message with three reasoning parts needs three of them. In the
 implementation this was found in, the value rides the tool call itself and the
 thinking part, which is the same placement.
 
-**An absent `carry` does not say why it is absent, and this is a known limit
-rather than an oversight.** A part that ends without one may come from a
-provider that never signs, or from one that signed and whose signature was lost
-in translation — a live run found exactly the second case, and the frame is
-indistinguishable from the first. A caller cannot tell them apart and therefore
-cannot tell a chain that will replay from one that will break on the next turn.
+**An absent `carry` does not say why it is absent, and the answer is a
+descriptor fact rather than a member on the part.** A part that ends without one
+may come from a provider that never signs, or from one that signed and whose
+signature was lost in translation — a live run found exactly the second case,
+and the two frames are identical.
 
-The profile does not add a member to distinguish them, because an implementation
-that knows its carry was dropped is an implementation that could have kept it,
-and a field asserting "I had one and lost it" is a bug report in the envelope
-rather than a protocol fact. The correct signal for a provider that cannot
-produce a carry it needs is a refusal or a failure, not a part that ends quietly
-and breaks a turn later. Stating the limit here is what keeps the absence from
-reading as "this provider does not sign".
+No member on `part.ended` distinguishes them, for two reasons. A caller's
+*action* is the same either way — do not replay this block, or replay it without
+the value — so a member that changes what the caller knows and not what it does
+is decoration. And the implementation where this was found could not populate
+such a member anyway: its lookup returns nothing, so the endpoint never learns
+that it lost a signature. A field only an implementation that knew could fill,
+and which by the rule above should have refused instead of losing it, is
+fillable by nobody.
+
+The ambiguity is a *discovery* question, and the profile already puts those on
+the descriptor. `round_trips_carry` says whether a carry this implementation
+emits can be handed back and reach the provider, and two existing rules then do
+the work. Clause 12 binds it in both directions: an endpoint that round-trips
+must say so, and one that says so must do it. And the create-time rule covers
+the caller, because sending `encrypted_carry` to an endpoint whose descriptor
+says `false` is decidable from the descriptor and the request alone — so it is
+refused at create, rather than discovered a turn later when the vendor rejects a
+replayed block.
+
+The member is added while nothing implements the round trip, which is the
+cheapest moment: no implementation has to change behaviour to comply, and the
+one that has this gap is obliged to advertise `false` rather than leave it
+silent. That silence is the under-claim shape clause 12 names, sitting in the
+implementation clause 12 was written against.
 
 This is one vendor's mechanism seen in one implementation, which is thin by this
 draft's own standard. It is in because the failure it prevents is silent and the
@@ -855,6 +871,9 @@ model error.
 - `grant_kinds` — `static`, `refreshable`, or both. Which kinds of granted
   credential it can hold without writing them down.
 - `allows_anonymous` — this provider needs no credential.
+- `round_trips_carry` — whether a `carry` this implementation emits on a
+  `tool_call` or `reasoning` part can be handed back as `encrypted_carry` on the
+  next call and reach the provider. Absent means no.
 - `context_window?`, `max_output_tokens?`
 
 `allows_anonymous` is not a nicety. A local Ollama needs no credential, and an

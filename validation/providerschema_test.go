@@ -32,6 +32,7 @@ func TestProviderSchemaAdmitsEachEnvelope(t *testing.T) {
 	for _, testCase := range []struct{ name, raw string }{
 		{"describe request", envelope("provider.describe.request", `"payload":{}`)},
 		{"describe response", envelope("provider.describe.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"profile_revision":"draft-2026-09-17","providers":[{"id":"ollama","wire":"other","wire_id":"ollama-chat","framing":"ndjson","allows_anonymous":true,"credential_grant":"none"}]}`)},
+		{"descriptor declining the carry round trip", envelope("provider.describe.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"providers":[{"id":"anthropic","wire":"anthropic-messages","framing":"sse","round_trips_carry":false}]}`)},
 		{"models list response", envelope("provider.models.list.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"models":[{"model_ref":"ollama/other:ollama-chat@llama3","model_id":"llama3","provider_id":"ollama","wire":"other","auth_status":"authenticated","source":"fallback"}]}`)},
 		{"create accepted", envelope("inference.create.response", `"in_reply_to":"e0","inference_id":"i1","payload":{"accepted":true,"honoured":{"include_snapshot":"on_part_end"}}`)},
 		{"create refused", envelope("inference.create.response", `"in_reply_to":"e0","payload":{"accepted":false,"error":{"code":"model_not_found","message":"no such provider"}}`)},
@@ -72,6 +73,7 @@ func TestProviderSchemaRefusesWhatTheDraftForbids(t *testing.T) {
 		{"grant channel carrying a value", envelope("provider.credential.grant.channel", `"in_reply_to":"e0","payload":{"nonce":"n1","channel":"/tmp/s.sock","value":"sk-abc"}`), "value"},
 		{"grant channel with no nonce", envelope("provider.credential.grant.channel", `"in_reply_to":"e0","payload":{"channel":"/tmp/s.sock"}`), "nonce"},
 		{"event without a sequence", envelope("inference.started", `"inference_id":"i1","payload":{"model_ref":"p/other:x@m"}`), "sequence"},
+		{"carry round trip as a string", envelope("provider.describe.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"providers":[{"id":"p","wire":"anthropic-messages","framing":"sse","round_trips_carry":"yes"}]}`), "round_trips_carry"},
 		{"unknown wire", envelope("provider.describe.response", `"in_reply_to":"e0","capability_revision":"r1","payload":{"protocol_versions":["0.1"],"providers":[{"id":"p","wire":"google-generative-ai","framing":"sse"}]}`), "wire"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
