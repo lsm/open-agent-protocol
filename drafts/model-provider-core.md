@@ -53,9 +53,9 @@ boundary. An implementation may use them directly; they do not cross here.
 It is not a commitment that this repository will ship an agent loop. The
 profile is what an agent loop speaks downward.
 
-It is not a credential channel for ordinary traffic. One envelope type carries a
-value, under five rules that keep it out of every trace, journal and replay. See
-Credentials below.
+It is not a credential channel. A caller-held credential crosses out of band
+wherever the binding allows it, and only on one envelope type where no side
+channel exists. See Credentials below.
 
 ## Identity
 
@@ -200,7 +200,7 @@ nothing in it is agent-control-specific except the envelope set it carries.
 
 ## Envelope Types
 
-Fourteen, in four groups.
+Eighteen, in five groups.
 
 ### Discovery
 
@@ -214,6 +214,56 @@ Fourteen, in four groups.
 `capability_revision` is required on both responses, for the reason agent
 control requires it on `capabilities.response` and `models.response`: the whole
 content is bound to one descriptor snapshot.
+
+#### The model entry
+
+Each entry in `provider.models.list.response`:
+
+- `model_ref` — `provider_id/wire@model_id`.
+- `model_id`, `display_name?`, `provider_id`, `wire`
+- `context_window?`, `max_output_tokens?`
+- `capabilities` — from `chat`, `streaming`, `tools`, `vision`, `reasoning`,
+  `prompt_cache`, `audio_input`, `audio_output`.
+- `lifecycle` — `stable`, `preview`, `deprecated`.
+- `source` — `discovered` or `fallback`.
+- `reasoning_default?` — `off`, `minimal`, `low`, `medium`, `high`.
+- `auth_status` — below.
+
+`source` distinguishes a catalog the implementation read from the provider from
+one it fell back to from a built-in list. Merging the two silently is how a
+client confidently offers a model that no longer exists; a caller looking at a
+fallback catalog is looking at something that may be months stale and should be
+told.
+
+#### `auth_status`, and a correction
+
+`auth_status` is on the model entry, from five values: `authenticated`,
+`login_required`, `expired`, `failed`, `unknown`.
+
+An earlier version of this draft recorded it as homeless — following credential
+acquisition, owned by no profile. That came from a true finding read the wrong
+way. The finding is that a provider layer *consumes* a credential at request
+time and never learns its status, so it cannot compute one. The conclusion drawn
+was that it therefore does not belong on this boundary, and that does not
+follow: Makai carries it on their model descriptor, on this boundary, today. A
+caller listing models wants to know which it can actually call, and
+`login_required` against `authenticated` is exactly that. It is a property of
+the catalog entry, not of an in-flight request.
+
+Two of Makai's seven values are excluded: `refreshing` and `login_in_progress`
+are transient states of a flow happening elsewhere, and an answer that is stale
+before it is read is worse than no answer. The remaining five are stable enough
+to describe a model by.
+
+**`auth_status` is not bound to `capability_revision`.** It is read at the
+moment the response is built and may be false immediately after — which is
+precisely why
+[Decision 0014](../decisions/0014-provider-descriptors.md) refuses it on a
+*provider descriptor*, whose whole content is fixed for a revision. The
+resolution is that a response is generated per request while a descriptor is
+fixed per revision, so the volatile fact belongs on the entry in the response
+and not in the descriptor. That distinction is the whole of 0014's objection and
+it is satisfied, not overridden.
 
 ### One inference call
 
@@ -268,38 +318,79 @@ in two places their union makes explicit:
 
 `part_index` is the correlation, and maps onto their `content_index`.
 
-### The running snapshot
+### The running snapshot: push and pull are different mechanisms
 
 Every one of Makai's ten part variants carries `partial`, the full running
-assistant message rather than the increment. Two modules exist only to move it
-across their wire.
+assistant message rather than the increment, with two modules existing only to
+move it. They *also* have a `sync_request`/`sync` pair by which a consumer asks
+for the current snapshot and gets it, or gets nothing if the stream is gone.
 
-Deltas alone oblige the consumer to be lossless: it must apply every increment,
-in order, without dropping one, or its reconstruction silently diverges from the
-provider's. That is a strong requirement to place on every consumer, and a
-snapshot is how an implementation lets a consumer resynchronize instead.
+Deltas alone oblige the consumer to be lossless: apply every increment, in
+order, without dropping one, or its reconstruction silently diverges. The
+per-inference `sequence` tells a consumer *that* it diverged. A snapshot is how
+it recovers.
 
-So `inference.part.delta` and `inference.part.ended` carry an optional
-`snapshot`: the accumulated message as the implementation holds it. An
-implementation declares whether it emits one, and how often, through
-`snapshot_policy` on its descriptor — `never`, `on_part_end`, `every_delta`.
+**Push and pull do not subsume each other and the profile carries both.**
 
-It is optional because it is expensive: `every_delta` is quadratic in the
-message, which is a real cost on a long completion and an obvious one on a
-slow link. It is in the profile rather than left to implementations because a
-consumer cannot resynchronize against a mechanism that might not be there, and
-because an implementation that already computes the snapshot — as at least one
-does — should not have to discard it at the boundary and make every consumer
-rebuild it.
+- **Push** costs bandwidth on every stream whether or not anyone diverged, and
+  is the only thing that helps a consumer that diverged *without noticing*.
+- **Pull** costs a round trip exactly when someone noticed, and requires the
+  producer still to be holding the state.
 
-**Contiguity does not substitute for this.** The per-inference `sequence`
-witnesses transport loss, so a consumer knows *that* it diverged. A snapshot is
-how it recovers.
+#### Push: `include_snapshot`, per request
+
+`inference.create.request` carries `include_snapshot`, and
+`inference.part.delta` and `inference.part.ended` carry an optional `snapshot`
+when it is set.
+
+**It is per request, not per provider.** An earlier version of this draft put a
+`snapshot_policy` on the descriptor, and that is the wrong axis: what a consumer
+can afford to reconstruct is a property of the consumer, and two clients against
+one provider can reasonably differ. The descriptor *declares* which policies it
+supports — `snapshot_policies`, from `never`, `on_part_end`, `every_delta` — and
+the request picks one. Declaring the capability and choosing the value are
+different jobs, and the earlier version did both in the same place.
+
+`every_delta` is quadratic in the message, which is a real cost on a long
+completion and an obvious one on a slow link. That is why it is chosen rather
+than assumed.
+
+#### Pull: `inference.sync`
+
+| Type | Direction | Carries |
+| --- | --- | --- |
+| `inference.sync.request` | caller → implementation | `inference_id` |
+| `inference.sync.response` | implementation → caller | `snapshot`, or absent when the inference is no longer held |
+
+An absent snapshot is an answer, not a failure: the inference has ended or been
+released, and the consumer should stop waiting rather than retry.
+
+An implementation may support pull, push, both, or neither, and says which. A
+consumer with neither must be lossless, which is a legitimate thing to require
+of a consumer on a reliable local transport and a poor thing to require over a
+network.
 
 ## The Call
 
 Split as the implementations split it, because per-call and per-provider are
 different sets and merging them makes both wrong.
+
+### What does not cross, from a real options struct
+
+Makai's `StreamOptions` carries twenty-five fields and is the closest thing
+either side has to a complete per-call list. Three are rejected outright and
+two are relocated, on their own reading as much as this draft's:
+
+- `cancel_token`, `on_payload_fn`, `on_payload_ctx` and
+  `requires_owned_stream_events` are in-process function pointers and
+  memory-ownership flags. They are in that struct because it doubles as an
+  internal call-options type, which is a design smell on their side rather than
+  a protocol shape.
+- `http_timeout_ms` and `ping_interval_ms` are transport-shaped and belong to a
+  binding.
+
+Naming them is worth the lines because a reader comparing the two lists will
+otherwise assume the profile forgot them.
 
 ### Per call — `inference.create.request`
 
@@ -311,17 +402,32 @@ different sets and merging them makes both wrong.
 - sampling controls — `temperature`, `top_p`.
 - `output_schema` — structured output.
 - `stream` — boolean.
-- `reasoning` — `{ enabled?, budget_tokens?, effort? }`.
+- `reasoning` — `{ enabled?, budget_tokens?, effort?, encrypted_carry? }`.
+- `include_snapshot` — `never`, `on_part_end`, `every_delta`.
 - `credential_ref` — names a credential the implementation holds; never a value.
 - `metadata` — opaque, passed through.
+
+One `reasoning` object replaces what Makai carries as seven separate options —
+`thinking_enabled`, `thinking_budget_tokens`, `thinking_effort`,
+`reasoning_effort`, `reasoning_summary`, `include_reasoning_encrypted`,
+`reasoning_enabled`. Their own reading is that the `thinking_*`/`reasoning_*`
+split is vendor vocabulary leaking into an options struct rather than two
+concepts, and this draft takes it as one.
+
+`encrypted_carry` is the member that has no equivalent in the flattened set and
+is here because dropping it would be silent: some vendors return reasoning in an
+opaque encrypted form that must be handed back verbatim on the next call or the
+chain breaks. Google's thought signature is the same shape from a different
+vendor. It is carried as an opaque value and never inspected.
 
 ### Per provider — `ProviderDescriptor`
 
 - `id`, `display_name?`
 - `wire`, `framing`
-- `endpoint` — the destination reached.
+- `endpoint` — the destination reached. No `headers`; see Credentials.
 - `compatibility` — the twelve facts below.
-- `snapshot_policy` — `never`, `on_part_end`, `every_delta`.
+- `snapshot_policies` — which of `never`, `on_part_end`, `every_delta` the
+  request may ask for, and whether `inference.sync` is answered.
 - `allows_anonymous` — this provider needs no credential.
 - `context_window?`, `max_output_tokens?`
 
@@ -409,70 +515,111 @@ no credential, and an implementation that treats absence as an error refuses it.
 
 `credential_ref` alone selects among credentials the implementation already
 holds. A caller holding a key the implementation has never seen — bring your own
-key, a per-tenant key, Vertex's documented per-call key — cannot introduce one,
-and an earlier version of this draft recorded that as a permanent limit.
+key, a per-tenant key, Vertex's documented per-call key — cannot introduce one.
 
-It cannot stay a limit. While an implementation could keep a native path beside
-this profile, a profile gap cost nothing: express the case natively and let OAP
-be the lossy outer wire. For an implementation whose *only* inference wire is
-this profile, whatever the profile cannot express, it cannot do — and dropping a
-documented provider path is a real loss, not a cleanup.
+An implementation that keeps a native path beside this profile pays nothing for
+that gap: it expresses the case natively and lets OAP be the lossy outer wire.
+An implementation whose *only* inference wire is this profile cannot do what the
+profile cannot express, and dropping a documented provider path is a real loss.
 
-**The rule was always about the channel, not about who owns the key.** The
-reason to keep credential values off envelopes is that envelopes are logged,
-assembled into traces, validated, journalled, replayed from a cursor, and
-persisted by intermediaries. A value that rides every request is a value in
-every one of those. That argument says nothing about whether the caller or the
-operator holds the key.
+**The rule was always about the channel, not about who owns the key.** Values are
+kept off envelopes because envelopes are logged, assembled into traces,
+validated, journalled, replayed from a cursor, and persisted by intermediaries.
+That says nothing about whether the caller or the operator holds the key.
 
-So the profile admits a credential value in exactly one place, and makes the
-constraint checkable rather than advisory:
+So the profile admits a caller-held credential, in two tiers, and **the strong
+tier is mandatory wherever it is achievable.**
 
 | Type | Direction | Carries |
 | --- | --- | --- |
-| `provider.credential.grant.request` | caller → implementation | `provider_id`, the value, `ttl_ms?` |
+| `provider.credential.grant.request` | caller → implementation | `provider_id`, `nonce`, `ttl_ms?`, and the value *only* in the fallback tier |
 | `provider.credential.grant.response` | implementation → caller | `credential_ref`, `expires_at_ms?` |
 
-Five rules make it safe, and the fourth is the one that turns intent into
-enforcement:
+#### Tier 1: out of band, and required where the binding allows it
 
-1. **One type, one place.** A credential value appears in
-   `provider.credential.grant.request` and in no payload member of any other
-   envelope. `inference.create.request` is unchanged: it carries a
-   `credential_ref`, and a ref from a grant is indistinguishable at the call
-   site from one naming operator configuration.
-2. **Non-journalable.** The grant pair must not be written to a journal,
-   included in an assembled trace, replayed from a cursor, or persisted by any
-   intermediary. A binding that records envelopes records everything except
-   these two types.
-3. **Connection-scoped, never durable.** A grant lives for the connection that
-   made it, expires at `expires_at_ms` if the implementation sets one, and does
-   not survive a reconnect. There is deliberately no path by which a granted
-   credential reaches storage, because a credential that survives a restart is
-   a credential the operator did not configure and cannot revoke.
-4. **The validator enforces it.** A trace containing either type is invalid, and
-   that is a diagnostic with a fixture, not a sentence in a draft. This is the
-   difference between a rule and a hope: the machinery this project already has
-   for assembling and validating traces is what makes "a credential never
-   reaches a trace" a testable claim.
-5. **Gated, and refusable.** The grant is an advertised capability. An
-   implementation that does not offer it refuses a grant request with a typed
-   `unsupported_feature`, and a caller learns that before it sends a secret
-   rather than after. An operator-configured-only deployment is a conformant
-   deployment.
+The grant envelope carries a **nonce and nothing secret**. It says a credential
+is arriving for this nonce, not here is a credential. The value crosses on a
+channel the binding defines, keyed by that nonce — an extra file descriptor on
+stdio, a second pipe locally. The response returns `credential_ref` and
+`inference.create.request` is unchanged.
 
-Bindings carry the rest of the obligation, and it belongs there because it is
-transport-shaped: a binding that can carry a grant must document its
-confidentiality requirement — a local pipe, or TLS — and a binding that cannot
-meet it does not carry the capability.
+The reason to prefer this is structural rather than aesthetic. A journal, a
+trace assembler, a replay cursor and a proxy need to know nothing about the
+grant, because nothing they can see carries a secret. The obligation moves from
+*every intermediary that handles the stream* to *each binding specification* — a
+small number of documents, written once and reviewed — and the validator rule
+becomes unconditional: **any envelope carrying a credential value is invalid**,
+with no permitted-but-special case and no fixture for an exception.
 
-**What this does not do.** It does not put credentials on the agent-control
-wire. [Decision 0017](../decisions/0017-provider-provisioning.md) refuses a
-caller-supplied credential there in any form, and nothing here relaxes it: this
-is a different profile at a different boundary, where the credential is actually
-consumed rather than passed through a control layer that has no use for it.
-Whether the grant shape should also be offered at that boundary is a separate
-decision, and the asymmetry is intentional until someone argues it away.
+**A binding that can carry the value out of band must.** This is a requirement
+on bindings, not a preference.
+
+#### Tier 2: on the envelope, where no side channel exists
+
+HTTP has no clean side channel. A second request is still a request, and its
+body is logged by the same things that log everything else. So the fallback
+exists, and under it the value rides `provider.credential.grant.request` subject
+to four rules:
+
+1. **One type, one place.** No other payload member anywhere carries a value —
+   including `ProviderDescriptor`, which carries no `headers` member for exactly
+   this reason (see below).
+2. **Non-journalable.** Never written to a journal, assembled into a trace,
+   replayed from a cursor, or persisted.
+3. **The validator enforces it.** A trace containing the pair is invalid, with a
+   diagnostic and a fixture.
+4. **Gated and refusable.** A caller learns the capability is unavailable before
+   it sends a secret, not after.
+
+This tier is the floor and is known to be weaker: an exception that every
+intermediary must honour is honoured almost everywhere, and the ones that get it
+wrong are invisible. It exists so that an HTTP binding is possible at all, not
+because it is good.
+
+#### Both tiers: a granted credential must be marked non-persistable
+
+A grant is connection-scoped, expires at `expires_at_ms` if one is set, and does
+not survive a reconnect. A credential that survives a restart is one the
+operator never configured and cannot revoke.
+
+**That property does not follow from the profile alone, and an implementation
+must carry the mark in its own code.** A granted credential may be an OAuth
+refresh token rather than a static key — which is exactly what a per-tenant
+caller hands over — and an implementation that refreshes expired credentials
+during ordinary requests will persist it through a path that has no idea a grant
+happened. The bug is invisible: nothing in the profile is violated by any
+envelope, and the credential is in the platform store anyway.
+
+So it is a conformance requirement rather than a note. A granted credential is
+marked non-persistable at the point it enters the implementation, and every
+refresh, cache and storage path honours the mark. Every implementation with a
+refresh path has this bug waiting, and none of them will notice.
+
+#### Scope difference, on the record
+
+Makai's per-call `api_key` is per call; a grant is per connection. A caller
+grants once and references thereafter, and a per-tenant caller grants per
+connection. Nothing appears to be lost, and the difference is recorded here
+rather than discovered later.
+
+### `headers` carries no credential anywhere, including on a descriptor
+
+`Authorization: Bearer` is a header. A caller-supplied header map defeats every
+rule above while each explicitly credential-named field stays absent, so no
+envelope in this profile carries one — not `inference.create.request`, and not
+`ProviderDescriptor`.
+
+This is a real cost and it is deliberate. Makai's `Model` carries `base_url` and
+`headers` together, and that pair is how a caller points the implementation at a
+compatible endpoint it has never heard of. This profile keeps the first half:
+`endpoint` on the descriptor names the destination, and the compatibility facts
+say how it diverges from the wire it claims. What it does not keep is the
+free-form header map, because the custom-endpoint story and the credential
+channel were riding the same member and only one of them is worth carrying.
+
+**The general form: any member that passes caller text through to the upstream
+request is a credential channel, whatever it is named.** A future addition that
+needs one allowlists names rather than carrying values.
 
 ## Shared Vocabulary
 
@@ -501,12 +648,60 @@ Every provider error maps to `ProtocolError`. The vendor's own status code,
 error type and message are preserved under `extensions`, never parsed into
 control flow by the caller.
 
-An implementation must distinguish, in the typed code, at least: the request
-was rejected as malformed; the credential was refused; the model was not found;
-a quota or rate limit was hit; the provider failed transiently; the provider
-failed permanently. A caller that cannot tell a rate limit from a bad request
-cannot retry correctly, and retry behaviour is the main thing a caller does with
-a provider error.
+**The axis is what the recipient does next, not whether the request is
+retriable.** An earlier version of this draft defined six classes from what a
+caller needs in order to retry. Retriability is one question a caller asks and
+not the only one, and sorting Makai's sixteen codes by it collapses distinctions
+that need different responses. Retriability is derivable from the class below
+rather than primary.
+
+| Action | Codes | Why it is its own class |
+| --- | --- | --- |
+| **Retry** | `rate_limited`, `provider_unavailable` | Transient. Back off and send it again. |
+| **Refresh** | `credential_expired` | A credential aged out. A refresh may fix it with no human involved. |
+| **Authenticate** | `credential_missing`, `credential_rejected` | No usable credential. A human must log in, or the key is wrong and retrying the refresh loops. |
+| **Report** | `invalid_request`, `protocol_violation`, `unsupported_version`, `model_not_found` | The caller or the peer is broken. Fail loudly; someone reads a log. Retrying cannot help. |
+| **Accept** | `aborted` | A normal outcome that happens to travel as a terminal. Not a failure. |
+
+The three credential states are one retry class and three different actions,
+which is the clearest case for the change: "do not blindly retry" is a single
+bucket on the old axis and is useless to a caller deciding between prompting a
+human, refreshing silently, and giving up.
+
+`protocol_violation` covers what Makai splits into `invalid_sequence`,
+`duplicate_sequence` and `sequence_gap`. Those name which invariant broke, which
+matters to an implementer and not to a caller, so the invariant belongs in the
+error's message and `extensions` rather than in the code. An implementation that
+wants them as distinct codes is free to say so in `extensions`; a caller
+branching on them would be branching on somebody else's bug.
+
+**Stream-lifecycle errors are deliberately absent.** Makai carries
+`stream_not_found` and `stream_already_exists`, which are state errors on a
+multiplexing layer. Multiplexing is a binding concern here, so those are the
+binding's to report.
+
+## Version negotiation
+
+The envelope carries `version`, and an implementation states which versions it
+speaks in `provider.describe.response` as `protocol_versions[]`.
+
+**`provider.describe.request` must be answered at any version the
+implementation supports**, so discovery is never the thing that fails on a
+version mismatch. A caller describes first and speaks the highest version both
+sides carry.
+
+Makai negotiates the other way, through a rejection: there is no hello, a client
+sends at its preferred version, and a server that cannot speak it refuses with
+`version_mismatch` and a `supported_versions` list. Their own assessment is that
+this is adequate rather than good — it costs a round trip on every mismatch,
+gives a client no way to discover capabilities without attempting something, and
+populates `supported_versions` on one error code out of sixteen, which makes a
+special case wear a general field's clothing. This draft takes the requirement
+and not the mechanism.
+
+An envelope at an unsupported version is refused with `unsupported_version`,
+carrying `protocol_versions[]`, so the rejection path still works for a caller
+that skipped discovery.
 
 ## Minimum Conformance
 
@@ -522,13 +717,18 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
 5. Emits the started/delta/ended triple for every part it streams, with the
    kind-discriminated payloads on start and end, or declares `stream`
    unsupported and answers unary.
-6. Honours its declared `snapshot_policy`.
-7. Carries no credential value on any envelope except
-   `provider.credential.grant.request`, and never journals, traces or replays
-   that pair.
-8. Refuses a grant with a typed `unsupported_feature` if it does not advertise
+6. Honours the `include_snapshot` value it accepted, and answers
+   `inference.sync.request` if it declared it.
+7. Carries a credential value out of band if its binding allows it, and only on
+   `provider.credential.grant.request` otherwise — never journalling, tracing or
+   replaying that pair.
+8. Marks a granted credential non-persistable at entry and honours the mark in
+   every refresh, cache and storage path.
+9. Refuses a grant with a typed `unsupported_feature` if it does not advertise
    the capability, rather than accepting and ignoring it.
-9. States a compatibility fact where the provider it reaches diverges from the
+10. Answers `provider.describe.request` at any version it supports, and lists
+    `protocol_versions[]`.
+11. States a compatibility fact where the provider it reaches diverges from the
    wire it claims, or states none and claims nothing.
 
 Streaming is required only if advertised. A unary-only implementation is
@@ -561,13 +761,13 @@ and nothing about whether an endpoint honours the wire it claims; a live
 provider proves that on one day, for money. The two halves need different
 machinery, and only the first is cheap once something exists to drive.
 
-**Where does credential acquisition live?** `auth_status` is deliberately
-homeless: [Decision 0014](../decisions/0014-provider-descriptors.md) keeps it
-off the descriptor because it moves without the descriptor moving, this profile
-does not claim it, and the agent-control draft records acquisition as an open
-question. In Makai's tree it sits above the provider layer, not in it — the
-provider layer consumes a credential at request time and never learns its
-status. So it follows acquisition, and nothing owns acquisition yet.
+**Where does credential acquisition live?** `auth_status` now has a home — the
+model entry, five stable values, not revision-bound — but *acquiring* a
+credential still does not. The grant covers a caller handing one over. Nothing
+covers the flow that produces one: a device-code login, a browser redirect, a
+refresh that needs a human. Makai hosts a full auth protocol on its own identity
+domain for exactly this, above the provider layer. It is not in this profile and
+it is not in agent control, where the core draft also records it as open.
 
 **Is the grant the right shape for a caller-held credential?** The draft now
 admits one, on one envelope type, non-journalable, connection-scoped, validator-
@@ -598,11 +798,16 @@ way agent control reports `native`/`emulated`/`degraded`/`unavailable`.
 
 This draft is written from two sources and neither makes it executable.
 
-**Makai's provider layer**, read from that tree on 2026-09-17, and read a second
-time against this draft's first version, which it corrected in four places — the
-lossy part collapse and its missing snapshot, an unattested `unary`, a
-promoted-six compatibility split that failed its own test, and a credential rule
-whose no-cost claim was false. The facts below: the per-call and
+**Makai's provider layer**, read from that tree on 2026-09-17, and read repeatedly against
+successive versions of this draft, which it corrected in ten places: the lossy
+part collapse, the missing snapshot, an unattested `unary`, a promoted-six
+compatibility split that failed its own test, a credential rule whose no-cost
+claim was false, a Serving Modes section that described software nobody has
+written, an exception-shaped grant where an out-of-band channel does better, a
+persistence path that would violate the grant's own rule, an error axis that
+collapsed three credential states into one, and an `auth_status` disposition
+that was wrong in the way its own earlier finding made it wrong. The facts
+below: the per-call and
 per-provider split, the event union and its triples, the stop reason set, the
 twelve compatibility divergences, the non-SSE framing, the credential-free
 construction, and `allows_anonymous`. It is not pinned in `adapter/makai/` and
