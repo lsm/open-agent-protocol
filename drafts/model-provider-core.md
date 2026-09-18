@@ -146,10 +146,11 @@ agent control.
 
 ## Serving Modes
 
-The two profiles are **independently servable**, and that is the practical
-consequence of making this a peer profile rather than a unit.
+The two profiles are **independently servable**. That is a property this profile
+permits, and it is the practical consequence of making it a peer profile rather
+than a unit. It is not a description of any implementation that exists.
 
-One binary can expose either. Started one way it serves `agent-control-core`: a
+One binary may expose either. Started one way it serves `agent-control-core`: a
 client drives sessions and runs, and the agent loop is behind it. Started the
 other way it serves `model-provider-core`: a caller drives one inference call at
 a time, and inference endpoints are behind it. Same process, same transport,
@@ -160,10 +161,10 @@ different profile in the envelope.
   caller ──model-provider-core─▶ [ binary ] ─────────────────▶ providers
 ```
 
-The second mode is worth naming because it is the smaller and more immediately
-useful deployment. A caller that wants one vocabulary over many inference
-vendors, and does not want an agent loop, gets exactly that — and every consumer
-of that interface speaks one language to OpenAI-flavour, Anthropic-flavour and
+The second mode is the smaller and more immediately useful deployment, and is
+why the profile is worth having before any agent loop adopts it. A caller that
+wants one vocabulary over many inference vendors, and does not want an agent
+loop, gets exactly that — one language to OpenAI-flavour, Anthropic-flavour and
 everything else behind it, without embedding a vendor SDK per vendor.
 
 An implementation may serve both at once, one, or neither. Serving one implies
@@ -171,11 +172,29 @@ nothing about the other: a provider-profile implementation with no agent loop is
 conformant, and so is an agent-control endpoint that reaches its model through a
 vendor SDK and speaks this profile nowhere.
 
+### Nothing serves this profile today, and the gap is not plumbing
+
+Stated plainly because the diagram above invites the opposite reading.
+
+Makai is the closest, and the distance is instructive. Read from that tree on
+2026-09-17: `makai --oap` serves `agent-control-core` and refuses every other
+profile — a single profile constant, a hello that rejects anything else, a
+profile mismatch on any envelope mapped to a decode error, and no flag that
+widens it. Its other mode hosts auth, provider and agent protocol servers in one
+process over a line binding, but those speak that project's own native wire, and
+none of its OAP files is reachable from that path.
+
+So the **architecture** is already there — a provider protocol server behind a
+line binding — and a serving mode for this profile would be a translation layer
+over it rather than new plumbing, the same relationship its OAP bridge has to
+its agent loop. What does not exist anywhere is a mode that speaks this profile.
+The shape is there; the mode is not, and building it is the work.
+
 The binding is the same shape as
 [the endpoint stdio binding](endpoint-stdio.md) — raw OAP envelopes, one per
 line, the profile distinguishing which vocabulary is in play. That binding is
-written for agent control and a provider-profile binding is not yet specified,
-but nothing in it is agent-control-specific except the envelope set it carries.
+written for agent control, a provider-profile binding is not yet specified, and
+nothing in it is agent-control-specific except the envelope set it carries.
 
 ## Envelope Types
 
@@ -462,16 +481,19 @@ answered here rather than deferred, and this draft does not answer it. Recorded
 streams with a capture date and an evidence class are the obvious candidate, and
 `provider.EvidenceClass` is an existing attempt at the second half.
 
-**What drives conformance?** Half of this is answered by Serving Modes above.
-Because a provider-profile implementation is independently servable, the harness
-is the same shape as the existing one: spawn a binary, drive a scripted
-inference over a line binding, hand the assembled trace to the validator. The
-envelope conformance story does not need inventing.
+**What drives conformance?** Serving Modes above settles the *shape* and
+nothing about readiness. Because a provider-profile implementation is
+independently servable, the harness can be the same one in outline: spawn a
+binary, drive a scripted inference over a line binding, hand the assembled trace
+to the validator. But the existing harness works because there is an endpoint
+built to be driven, and there is no counterpart here. Building one is the whole
+of the work, not a consequence of the profiles being independently servable —
+and an earlier version of this draft drew that conclusion too fast.
 
-What is not answered is compatibility. A loopback provider proves the envelopes
+Compatibility is a second, harder half. A loopback provider proves the envelopes
 and nothing about whether an endpoint honours the wire it claims; a live
 provider proves that on one day, for money. The two halves need different
-machinery, and only the first is cheap.
+machinery, and only the first is cheap once something exists to drive.
 
 **Where does credential acquisition live?** `auth_status` is deliberately
 homeless: [Decision 0014](../decisions/0014-provider-descriptors.md) keeps it
