@@ -276,11 +276,31 @@ type ModelEventPosition struct {
 	Sequence uint64 `json:"sequence"`
 }
 
+const (
+	WireOpenAIResponses       = "openai-responses"
+	WireAnthropicMessages     = "anthropic-messages"
+	WireOpenAIChatCompletions = "openai-chat-completions"
+)
+
+const (
+	ProviderDirect  = "direct"
+	ProviderGateway = "gateway"
+)
+
+type ProviderDescriptor struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Wire        string `json:"wire,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Endpoint    string `json:"endpoint,omitempty"`
+}
+
 type ModelsResponse struct {
-	SessionID      SessionID           `json:"session_id"`
-	CurrentModelID string              `json:"current_model_id,omitempty"`
-	Models         []ModelDescriptor   `json:"models"`
-	AsOfModelEvent *ModelEventPosition `json:"as_of_model_event,omitempty"`
+	SessionID      SessionID            `json:"session_id"`
+	CurrentModelID string               `json:"current_model_id,omitempty"`
+	Models         []ModelDescriptor    `json:"models"`
+	Providers      []ProviderDescriptor `json:"providers,omitempty"`
+	AsOfModelEvent *ModelEventPosition  `json:"as_of_model_event,omitempty"`
 }
 
 type SessionStatus string

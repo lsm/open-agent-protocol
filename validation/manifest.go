@@ -140,6 +140,7 @@ func diagnosticCodes() map[string]bool {
 		CodeAttachmentFieldInCatalog, CodeUndisclosedAttachLimit, CodeUndisclosedAttachModes, CodeUnattributedCall,
 		CodeWrongToolOwner, CodeUndisclosedProvideLimit, CodeResolutionPayloadMismatch,
 		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
+		CodeUnmatchedProvider, CodeDuplicateProvider,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {

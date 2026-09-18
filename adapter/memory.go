@@ -87,7 +87,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v8"
+const CapabilityRevision = "reference-memory-v9"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -678,6 +678,12 @@ func modelCatalog() []protocol.ModelDescriptor {
 	}
 }
 
+func providerCatalog() []protocol.ProviderDescriptor {
+	return []protocol.ProviderDescriptor{
+		{ID: "reference", DisplayName: "Reference Provider", Wire: protocol.WireOpenAIChatCompletions, Kind: protocol.ProviderDirect},
+	}
+}
+
 func (s *memorySession) Models(ctx context.Context, request protocol.ModelsRequest) (Catalog, error) {
 	if err := ctx.Err(); err != nil {
 		return Catalog{}, err
@@ -697,6 +703,7 @@ func (s *memorySession) Models(ctx context.Context, request protocol.ModelsReque
 			SessionID:      s.state.SessionID,
 			CurrentModelID: s.state.CurrentModelID,
 			Models:         modelCatalog(),
+			Providers:      providerCatalog(),
 		},
 	}, nil
 }

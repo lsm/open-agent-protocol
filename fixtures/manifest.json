@@ -4466,180 +4466,2887 @@
         "decisions/0006-models-catalog.md"
       ]
     },
-    {"id":"queue-explicit-idle-promoted","path":"valid/queue-explicit-idle-promoted.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-busy-then-promoted","path":"valid/queue-busy-then-promoted.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-busy-cancelled-prestart","path":"valid/queue-busy-cancelled-prestart.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-active-runs","path":"valid/queue-state-active-runs.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-reflects-early-settlement","path":"valid/queue-state-reflects-early-settlement.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-model-mutation-at-promotion","path":"valid/queue-model-mutation-at-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-busy-auto-rejected","path":"valid/queue-busy-auto-rejected.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-busy-auto-unadvertised-control","path":"valid/queue-busy-auto-unadvertised-control.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-idle-unadvertised-rejected","path":"valid/queue-idle-unadvertised-rejected.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-degraded-without-optin","path":"valid/queue-degraded-without-optin.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-limit-lowered-by-refresh","path":"valid/queue-limit-lowered-by-refresh.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-limit-cleared-mid-window","path":"valid/queue-limit-cleared-mid-window.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-limit-concurrent-reservation","path":"valid/queue-limit-concurrent-reservation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-limit-cleared-mutation-still-busy","path":"valid/queue-limit-cleared-mutation-still-busy.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-reuses-slot-of-settled-reservation","path":"valid/queue-reuses-slot-of-settled-reservation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-mode-refreshed-while-queued","path":"valid/queue-mode-refreshed-while-queued.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-per-run-behind-mutation","path":"valid/queue-per-run-behind-mutation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-at-promotion","path":"valid/queue-state-model-at-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-at-genesis","path":"valid/queue-state-model-at-genesis.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-omits-settled-before-terminal","path":"valid/queue-state-omits-settled-before-terminal.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-interaction-resolved-in-flight","path":"valid/queue-state-interaction-resolved-in-flight.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-ungated-over-limit","path":"valid/queue-ungated-over-limit.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-promoted-out-of-order","path":"semantic-invalid/queue-promoted-out-of-order.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_order_violation"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-prestart-terminal-interleaved","path":"semantic-invalid/queue-prestart-terminal-interleaved.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_order_violation"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-drops-reserved-run","path":"semantic-invalid/queue-state-drops-reserved-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-idle-unadvertised","path":"semantic-invalid/queue-idle-unadvertised.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unavailable_capability"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"],"covers":[{"capability":"session.message.delivery.queue","aspect":"gate"}]},
-    {"id":"queue-idle-unadvertised-wrong-reason","path":"semantic-invalid/queue-idle-unadvertised-wrong-reason.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unavailable_capability"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-degraded-admitted-without-optin","path":"semantic-invalid/queue-degraded-admitted-without-optin.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["degraded_without_optin"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-degraded-wrong-refusal","path":"semantic-invalid/queue-degraded-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["degraded_without_optin"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-busy-auto-wrong-refusal","path":"semantic-invalid/queue-busy-auto-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_run_transition"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-model-mutation-early","path":"semantic-invalid/queue-model-mutation-early.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["premature_session_mutation"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-over-limit","path":"semantic-invalid/queue-over-limit.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-over-active-limit","path":"semantic-invalid/queue-over-active-limit.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-over-limit-after-settlement","path":"semantic-invalid/queue-over-limit-after-settlement.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-overlap-unadvertised","path":"semantic-invalid/queue-overlap-unadvertised.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_run_transition"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-omits-pending-interaction","path":"semantic-invalid/queue-state-omits-pending-interaction.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-explicit-admitted-start","path":"semantic-invalid/queue-explicit-admitted-start.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_run_transition"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-auto-without-resolution","path":"semantic-invalid/queue-auto-without-resolution.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_run_transition"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-missing-reservation","path":"semantic-invalid/queue-state-missing-reservation.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-omits-active-runs","path":"semantic-invalid/queue-state-omits-active-runs.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"state-omits-active-runs-with-pending-permission","path":"semantic-invalid/state-omits-active-runs-with-pending-permission.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-drops-unsettled-run","path":"semantic-invalid/queue-state-drops-unsettled-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-omits-before-settlement","path":"semantic-invalid/queue-state-omits-before-settlement.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-false-settled-claim","path":"semantic-invalid/queue-state-false-settled-claim.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-settled-wrong-sequence","path":"semantic-invalid/queue-state-settled-wrong-sequence.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-settled-claim-then-activity","path":"semantic-invalid/queue-state-settled-claim-then-activity.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-pending-without-as-of","path":"semantic-invalid/queue-state-pending-without-as-of.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-as-of-never-reached","path":"semantic-invalid/queue-state-as-of-never-reached.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-omits-established-run","path":"semantic-invalid/queue-state-omits-established-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-limit-lowered-then-admitted","path":"semantic-invalid/queue-limit-lowered-then-admitted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-limit-unreached-refused","path":"semantic-invalid/queue-limit-unreached-refused.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"],"covers":[{"capability":"session.message.delivery.queue","aspect":"honour"}]},
-    {"id":"queue-over-limit-rejected","path":"valid/queue-over-limit-rejected.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-over-limit-wrong-refusal","path":"semantic-invalid/queue-over-limit-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-advertised-without-limit","path":"semantic-invalid/queue-advertised-without-limit.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_queue_limit"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-advertised-active-bound-one","path":"semantic-invalid/queue-advertised-active-bound-one.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_queue_limit"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-advertised-zero-limit","path":"schema-invalid/queue-advertised-zero-limit.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-terminal-status","path":"semantic-invalid/queue-state-terminal-status.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-started-listed-queued","path":"semantic-invalid/queue-state-started-listed-queued.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-queued-before-start","path":"valid/queue-state-queued-before-start.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-reservation-named-active","path":"semantic-invalid/queue-state-reservation-named-active.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-only-reservations","path":"valid/queue-state-only-reservations.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-busy-filled-in-window-wrong-refusal","path":"semantic-invalid/queue-busy-filled-in-window-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_run_transition"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-busy-filled-in-window-rejected","path":"valid/queue-busy-filled-in-window-rejected.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-wrong-sequence","path":"semantic-invalid/queue-state-model-anchor-wrong-sequence.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-never-promoted","path":"semantic-invalid/queue-state-model-anchor-never-promoted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-foreign-session","path":"semantic-invalid/queue-state-model-anchor-foreign-session.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lists-settled-run","path":"semantic-invalid/queue-state-lists-settled-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lists-run-settled-in-window","path":"valid/queue-state-lists-run-settled-in-window.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-in-window-run-unnamed","path":"semantic-invalid/queue-state-in-window-run-unnamed.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-without-mutation","path":"semantic-invalid/queue-state-model-anchor-without-mutation.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-queued-at-forthcoming-start","path":"semantic-invalid/queue-state-queued-at-forthcoming-start.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-queued-position-reached-without-start","path":"valid/queue-state-queued-position-reached-without-start.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-reservation-captured-before-promotion","path":"valid/queue-state-reservation-captured-before-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-reservation-captured-after-promotion","path":"valid/queue-state-reservation-captured-after-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-queued-entry-without-position","path":"semantic-invalid/queue-state-queued-entry-without-position.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-anchor-request-refused","path":"semantic-invalid/queue-state-anchor-request-refused.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-anchor-request-unanswered","path":"semantic-invalid/queue-state-anchor-request-unanswered.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["missing_response","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-entry-anchor-admitted-elsewhere","path":"semantic-invalid/queue-state-entry-anchor-admitted-elsewhere.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-idle-reservation-names-no-run","path":"valid/queue-state-idle-reservation-names-no-run.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-promoted-run-erased","path":"semantic-invalid/queue-state-promoted-run-erased.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-reservations-called-idle","path":"semantic-invalid/queue-state-reservations-called-idle.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-started-run-called-queued","path":"semantic-invalid/queue-state-started-run-called-queued.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-waiting-for-input-listing","path":"valid/queue-state-waiting-for-input-listing.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-window-status-before-promotion","path":"valid/queue-state-window-status-before-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-window-status-after-promotion","path":"valid/queue-state-window-status-after-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-two-started-entries","path":"semantic-invalid/queue-state-two-started-entries.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-window-earlier-run-still-listed","path":"valid/queue-state-window-earlier-run-still-listed.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-waiting-without-a-waiting-run","path":"semantic-invalid/queue-state-waiting-without-a-waiting-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-running-beside-a-waiting-run","path":"semantic-invalid/queue-state-running-beside-a-waiting-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-waiting-entry-and-session","path":"valid/queue-state-waiting-entry-and-session.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-running-after-the-wait-cleared","path":"valid/queue-state-running-after-the-wait-cleared.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-anchor-request-unaccounted","path":"semantic-invalid/queue-state-anchor-request-unaccounted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-anchor-request-reflected","path":"valid/queue-state-anchor-request-reflected.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-running-beside-a-pending-interaction","path":"semantic-invalid/queue-state-running-beside-a-pending-interaction.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-superseded","path":"semantic-invalid/queue-state-model-anchor-superseded.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-latest","path":"valid/queue-state-model-anchor-latest.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-before-a-later-promotion","path":"valid/queue-state-model-anchor-before-a-later-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-anchor-genesis-superseded","path":"semantic-invalid/queue-state-model-anchor-genesis-superseded.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-omission-excused-then-repeated","path":"semantic-invalid/queue-state-omission-excused-then-repeated.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-omission-excused-then-named","path":"valid/queue-state-omission-excused-then-named.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-listed-at-its-terminal-position","path":"semantic-invalid/queue-state-listed-at-its-terminal-position.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-after-the-mutation-settled","path":"semantic-invalid/queue-state-model-after-the-mutation-settled.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["premature_session_mutation"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-model-outlives-the-mutation","path":"valid/queue-state-model-outlives-the-mutation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-started-behind-a-reservation","path":"semantic-invalid/queue-state-started-behind-a-reservation.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-started-ahead-of-its-reservation","path":"valid/queue-state-started-ahead-of-its-reservation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-entry-leads-its-admission","path":"valid/queue-state-entry-leads-its-admission.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-entry-leads-a-different-run","path":"semantic-invalid/queue-state-entry-leads-a-different-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-entry-leads-without-an-anchor","path":"semantic-invalid/queue-state-entry-leads-without-an-anchor.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-cancelling-reservation-keeps-its-place","path":"valid/queue-state-cancelling-reservation-keeps-its-place.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-cancelling-reservation-without-its-place","path":"semantic-invalid/queue-state-cancelling-reservation-without-its-place.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-does-not-excuse-the-known-entries","path":"semantic-invalid/queue-state-lead-does-not-excuse-the-known-entries.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-claims-a-second-started-run","path":"semantic-invalid/queue-state-lead-claims-a-second-started-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-cancelling-reservation-before-its-promotion","path":"valid/queue-state-cancelling-reservation-before-its-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-cancelling-reservation-past-its-promotion","path":"semantic-invalid/queue-state-cancelling-reservation-past-its-promotion.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-cancelling-run-past-its-promotion","path":"valid/queue-state-cancelling-run-past-its-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-cancelling-run-left-the-queue-early","path":"semantic-invalid/queue-state-cancelling-run-left-the-queue-early.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-cancelling-run-drops-a-place-it-never-left","path":"semantic-invalid/queue-state-cancelling-run-drops-a-place-it-never-left.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-lists-a-settled-run","path":"semantic-invalid/queue-state-lead-lists-a-settled-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-names-its-executing-run","path":"valid/queue-state-lead-names-its-executing-run.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-names-no-active-run","path":"semantic-invalid/queue-state-lead-names-no-active-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-cancels-its-reservation","path":"valid/queue-state-lead-cancels-its-reservation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-listed-before-a-known-run","path":"semantic-invalid/queue-state-lead-listed-before-a-known-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-queued-by-a-started-admission","path":"semantic-invalid/queue-state-lead-queued-by-a-started-admission.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-invents-a-queue-place","path":"semantic-invalid/queue-state-lead-invents-a-queue-place.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-misplaces-its-reservation","path":"semantic-invalid/queue-state-lead-misplaces-its-reservation.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-keeps-its-place-through-promotion","path":"valid/queue-state-lead-keeps-its-place-through-promotion.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-keeps-a-place-past-its-promotion","path":"semantic-invalid/queue-state-lead-keeps-a-place-past-its-promotion.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-gives-up-a-place-it-never-left","path":"semantic-invalid/queue-state-lead-gives-up-a-place-it-never-left.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-capabilities-bound-moves-within-revision","path":"semantic-invalid/queue-capabilities-bound-moves-within-revision.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["stale_capability_revision"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-capabilities-level-moves-within-revision","path":"semantic-invalid/queue-capabilities-level-moves-within-revision.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["stale_capability_revision"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-capabilities-repeated-within-revision","path":"valid/queue-capabilities-repeated-within-revision.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-leads-claim-one-place-twice","path":"semantic-invalid/queue-state-leads-claim-one-place-twice.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-leads-take-consecutive-places","path":"valid/queue-state-leads-take-consecutive-places.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-counts-a-place-its-sibling-never-took","path":"semantic-invalid/queue-state-lead-counts-a-place-its-sibling-never-took.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-places-itself-beyond-the-queue","path":"semantic-invalid/queue-state-lead-places-itself-beyond-the-queue.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["missing_response","session_state_mismatch","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-a-started-run-and-a-reservation","path":"valid/queue-open-recovers-a-started-run-and-a-reservation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-lists-a-settled-run","path":"semantic-invalid/queue-open-lists-a-settled-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-lists-one-run-twice","path":"semantic-invalid/queue-open-lists-one-run-twice.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-claims-two-started-runs","path":"semantic-invalid/queue-open-claims-two-started-runs.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-names-a-run-from-nowhere","path":"semantic-invalid/queue-open-names-a-run-from-nowhere.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-reopens-and-claims-two-started-runs","path":"semantic-invalid/queue-open-reopens-and-claims-two-started-runs.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-reopens-with-its-reservation","path":"valid/queue-open-reopens-with-its-reservation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-resumes-the-run-the-cursor-names","path":"valid/queue-open-resumes-the-run-the-cursor-names.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-resumes-a-reservation-beside-the-cursor","path":"valid/queue-open-resumes-a-reservation-beside-the-cursor.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-resumes-past-the-cursor","path":"semantic-invalid/queue-open-resumes-past-the-cursor.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["sequence_gap","sequence_gap"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-a-cancelling-reservation","path":"valid/queue-open-recovers-a-cancelling-reservation.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-a-cancelling-run-beside-a-started-one","path":"semantic-invalid/queue-open-recovers-a-cancelling-run-beside-a-started-one.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-through-the-pointer-alone","path":"valid/queue-open-recovers-through-the-pointer-alone.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-resumes-the-pointer-past-the-cursor","path":"semantic-invalid/queue-open-resumes-the-pointer-past-the-cursor.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["sequence_gap","sequence_gap"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-fixes-the-genesis-model","path":"valid/queue-open-fixes-the-genesis-model.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-genesis-model-contradicted","path":"semantic-invalid/queue-open-genesis-model-contradicted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["premature_session_mutation"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-recovered-run-holds-the-session","path":"semantic-invalid/queue-state-recovered-run-holds-the-session.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_run_transition","queue_order_violation","queue_order_violation"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-a-blocked-run","path":"valid/queue-open-recovers-a-blocked-run.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-keeps-a-resolved-interaction-pending","path":"semantic-invalid/queue-open-keeps-a-resolved-interaction-pending.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-recovered-run-names-an-unseen-interaction","path":"valid/queue-state-recovered-run-names-an-unseen-interaction.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-adds-an-interaction-the-entry-denied","path":"semantic-invalid/queue-open-adds-an-interaction-the-entry-denied.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-a-run-mid-tool-call","path":"valid/queue-open-recovers-a-run-mid-tool-call.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-a-tool-call-that-ends-twice","path":"semantic-invalid/queue-open-recovers-a-tool-call-that-ends-twice.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_tool_transition"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-recovers-a-cancelled-run","path":"valid/queue-open-recovers-a-cancelled-run.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-resolves-a-recovered-interaction","path":"valid/queue-open-resolves-a-recovered-interaction.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-resolves-an-unseen-interaction","path":"valid/queue-state-resolves-an-unseen-interaction.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-open-resolves-a-known-interaction-wrongly","path":"semantic-invalid/queue-open-resolves-a-known-interaction-wrongly.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_interaction"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lists-a-run-it-says-it-settled","path":"semantic-invalid/queue-state-lists-a-run-it-says-it-settled.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-settles-one-run-twice","path":"semantic-invalid/queue-state-settles-one-run-twice.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-drops-only-what-it-settled","path":"valid/queue-state-drops-only-what-it-settled.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-executes-a-run-that-never-starts","path":"semantic-invalid/queue-state-executes-a-run-that-never-starts.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-executes-a-run-whose-start-follows","path":"valid/queue-state-executes-a-run-whose-start-follows.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-leads-listed-out-of-admission-order","path":"semantic-invalid/queue-state-leads-listed-out-of-admission-order.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-earlier-anchor-answers-the-entry","path":"semantic-invalid/queue-state-earlier-anchor-answers-the-entry.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-earlier-anchor-vindicates-the-entry","path":"semantic-invalid/queue-state-earlier-anchor-vindicates-the-entry.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-executes-a-run-that-never-starts","path":"semantic-invalid/queue-state-lead-executes-a-run-that-never-starts.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-lead-executes-a-run-whose-start-follows","path":"valid/queue-state-lead-executes-a-run-whose-start-follows.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-refusal-after-an-answered-sibling","path":"semantic-invalid/queue-refusal-after-an-answered-sibling.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["queue_limit_exceeded"],"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
-    {"id":"queue-refusal-among-unanswered-siblings","path":"valid/queue-refusal-among-unanswered-siblings.json","kind":"positive","valid":true,"units":["core","queue"],"provenance":["drafts/staged-units-graduation.md","decisions/0007-queue-delivery.md"]},
+    {
+      "id": "queue-explicit-idle-promoted",
+      "path": "valid/queue-explicit-idle-promoted.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-busy-then-promoted",
+      "path": "valid/queue-busy-then-promoted.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-busy-cancelled-prestart",
+      "path": "valid/queue-busy-cancelled-prestart.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-active-runs",
+      "path": "valid/queue-state-active-runs.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-reflects-early-settlement",
+      "path": "valid/queue-state-reflects-early-settlement.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-model-mutation-at-promotion",
+      "path": "valid/queue-model-mutation-at-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-busy-auto-rejected",
+      "path": "valid/queue-busy-auto-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-busy-auto-unadvertised-control",
+      "path": "valid/queue-busy-auto-unadvertised-control.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-idle-unadvertised-rejected",
+      "path": "valid/queue-idle-unadvertised-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-degraded-without-optin",
+      "path": "valid/queue-degraded-without-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-limit-lowered-by-refresh",
+      "path": "valid/queue-limit-lowered-by-refresh.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-limit-cleared-mid-window",
+      "path": "valid/queue-limit-cleared-mid-window.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-limit-concurrent-reservation",
+      "path": "valid/queue-limit-concurrent-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-limit-cleared-mutation-still-busy",
+      "path": "valid/queue-limit-cleared-mutation-still-busy.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-reuses-slot-of-settled-reservation",
+      "path": "valid/queue-reuses-slot-of-settled-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-mode-refreshed-while-queued",
+      "path": "valid/queue-mode-refreshed-while-queued.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-per-run-behind-mutation",
+      "path": "valid/queue-per-run-behind-mutation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-at-promotion",
+      "path": "valid/queue-state-model-at-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-at-genesis",
+      "path": "valid/queue-state-model-at-genesis.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-omits-settled-before-terminal",
+      "path": "valid/queue-state-omits-settled-before-terminal.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-interaction-resolved-in-flight",
+      "path": "valid/queue-state-interaction-resolved-in-flight.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-ungated-over-limit",
+      "path": "valid/queue-ungated-over-limit.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-promoted-out-of-order",
+      "path": "semantic-invalid/queue-promoted-out-of-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_order_violation"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-prestart-terminal-interleaved",
+      "path": "semantic-invalid/queue-prestart-terminal-interleaved.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_order_violation"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-drops-reserved-run",
+      "path": "semantic-invalid/queue-state-drops-reserved-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-idle-unadvertised",
+      "path": "semantic-invalid/queue-idle-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.message.delivery.queue",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "queue-idle-unadvertised-wrong-reason",
+      "path": "semantic-invalid/queue-idle-unadvertised-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-degraded-admitted-without-optin",
+      "path": "semantic-invalid/queue-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-degraded-wrong-refusal",
+      "path": "semantic-invalid/queue-degraded-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-busy-auto-wrong-refusal",
+      "path": "semantic-invalid/queue-busy-auto-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-model-mutation-early",
+      "path": "semantic-invalid/queue-model-mutation-early.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "premature_session_mutation"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-over-limit",
+      "path": "semantic-invalid/queue-over-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-over-active-limit",
+      "path": "semantic-invalid/queue-over-active-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-over-limit-after-settlement",
+      "path": "semantic-invalid/queue-over-limit-after-settlement.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-overlap-unadvertised",
+      "path": "semantic-invalid/queue-overlap-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-omits-pending-interaction",
+      "path": "semantic-invalid/queue-state-omits-pending-interaction.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-explicit-admitted-start",
+      "path": "semantic-invalid/queue-explicit-admitted-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-auto-without-resolution",
+      "path": "semantic-invalid/queue-auto-without-resolution.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-missing-reservation",
+      "path": "semantic-invalid/queue-state-missing-reservation.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-omits-active-runs",
+      "path": "semantic-invalid/queue-state-omits-active-runs.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "state-omits-active-runs-with-pending-permission",
+      "path": "semantic-invalid/state-omits-active-runs-with-pending-permission.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-drops-unsettled-run",
+      "path": "semantic-invalid/queue-state-drops-unsettled-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-omits-before-settlement",
+      "path": "semantic-invalid/queue-state-omits-before-settlement.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-false-settled-claim",
+      "path": "semantic-invalid/queue-state-false-settled-claim.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-settled-wrong-sequence",
+      "path": "semantic-invalid/queue-state-settled-wrong-sequence.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-settled-claim-then-activity",
+      "path": "semantic-invalid/queue-state-settled-claim-then-activity.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-pending-without-as-of",
+      "path": "semantic-invalid/queue-state-pending-without-as-of.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-as-of-never-reached",
+      "path": "semantic-invalid/queue-state-as-of-never-reached.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-omits-established-run",
+      "path": "semantic-invalid/queue-state-omits-established-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-limit-lowered-then-admitted",
+      "path": "semantic-invalid/queue-limit-lowered-then-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-limit-unreached-refused",
+      "path": "semantic-invalid/queue-limit-unreached-refused.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.message.delivery.queue",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "queue-over-limit-rejected",
+      "path": "valid/queue-over-limit-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-over-limit-wrong-refusal",
+      "path": "semantic-invalid/queue-over-limit-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-advertised-without-limit",
+      "path": "semantic-invalid/queue-advertised-without-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_queue_limit"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-advertised-active-bound-one",
+      "path": "semantic-invalid/queue-advertised-active-bound-one.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_queue_limit"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-advertised-zero-limit",
+      "path": "schema-invalid/queue-advertised-zero-limit.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-terminal-status",
+      "path": "semantic-invalid/queue-state-terminal-status.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-started-listed-queued",
+      "path": "semantic-invalid/queue-state-started-listed-queued.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-queued-before-start",
+      "path": "valid/queue-state-queued-before-start.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-reservation-named-active",
+      "path": "semantic-invalid/queue-state-reservation-named-active.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-only-reservations",
+      "path": "valid/queue-state-only-reservations.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-busy-filled-in-window-wrong-refusal",
+      "path": "semantic-invalid/queue-busy-filled-in-window-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-busy-filled-in-window-rejected",
+      "path": "valid/queue-busy-filled-in-window-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-wrong-sequence",
+      "path": "semantic-invalid/queue-state-model-anchor-wrong-sequence.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-never-promoted",
+      "path": "semantic-invalid/queue-state-model-anchor-never-promoted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-foreign-session",
+      "path": "semantic-invalid/queue-state-model-anchor-foreign-session.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lists-settled-run",
+      "path": "semantic-invalid/queue-state-lists-settled-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lists-run-settled-in-window",
+      "path": "valid/queue-state-lists-run-settled-in-window.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-in-window-run-unnamed",
+      "path": "semantic-invalid/queue-state-in-window-run-unnamed.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-without-mutation",
+      "path": "semantic-invalid/queue-state-model-anchor-without-mutation.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-queued-at-forthcoming-start",
+      "path": "semantic-invalid/queue-state-queued-at-forthcoming-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-queued-position-reached-without-start",
+      "path": "valid/queue-state-queued-position-reached-without-start.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-reservation-captured-before-promotion",
+      "path": "valid/queue-state-reservation-captured-before-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-reservation-captured-after-promotion",
+      "path": "valid/queue-state-reservation-captured-after-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-queued-entry-without-position",
+      "path": "semantic-invalid/queue-state-queued-entry-without-position.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-anchor-request-refused",
+      "path": "semantic-invalid/queue-state-anchor-request-refused.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-anchor-request-unanswered",
+      "path": "semantic-invalid/queue-state-anchor-request-unanswered.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "missing_response",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-entry-anchor-admitted-elsewhere",
+      "path": "semantic-invalid/queue-state-entry-anchor-admitted-elsewhere.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-idle-reservation-names-no-run",
+      "path": "valid/queue-state-idle-reservation-names-no-run.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-promoted-run-erased",
+      "path": "semantic-invalid/queue-state-promoted-run-erased.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-reservations-called-idle",
+      "path": "semantic-invalid/queue-state-reservations-called-idle.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-started-run-called-queued",
+      "path": "semantic-invalid/queue-state-started-run-called-queued.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-waiting-for-input-listing",
+      "path": "valid/queue-state-waiting-for-input-listing.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-window-status-before-promotion",
+      "path": "valid/queue-state-window-status-before-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-window-status-after-promotion",
+      "path": "valid/queue-state-window-status-after-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-two-started-entries",
+      "path": "semantic-invalid/queue-state-two-started-entries.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-window-earlier-run-still-listed",
+      "path": "valid/queue-state-window-earlier-run-still-listed.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-waiting-without-a-waiting-run",
+      "path": "semantic-invalid/queue-state-waiting-without-a-waiting-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-running-beside-a-waiting-run",
+      "path": "semantic-invalid/queue-state-running-beside-a-waiting-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-waiting-entry-and-session",
+      "path": "valid/queue-state-waiting-entry-and-session.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-running-after-the-wait-cleared",
+      "path": "valid/queue-state-running-after-the-wait-cleared.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-anchor-request-unaccounted",
+      "path": "semantic-invalid/queue-state-anchor-request-unaccounted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-anchor-request-reflected",
+      "path": "valid/queue-state-anchor-request-reflected.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-running-beside-a-pending-interaction",
+      "path": "semantic-invalid/queue-state-running-beside-a-pending-interaction.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-superseded",
+      "path": "semantic-invalid/queue-state-model-anchor-superseded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-latest",
+      "path": "valid/queue-state-model-anchor-latest.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-before-a-later-promotion",
+      "path": "valid/queue-state-model-anchor-before-a-later-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-anchor-genesis-superseded",
+      "path": "semantic-invalid/queue-state-model-anchor-genesis-superseded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-omission-excused-then-repeated",
+      "path": "semantic-invalid/queue-state-omission-excused-then-repeated.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-omission-excused-then-named",
+      "path": "valid/queue-state-omission-excused-then-named.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-listed-at-its-terminal-position",
+      "path": "semantic-invalid/queue-state-listed-at-its-terminal-position.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-after-the-mutation-settled",
+      "path": "semantic-invalid/queue-state-model-after-the-mutation-settled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "premature_session_mutation"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-model-outlives-the-mutation",
+      "path": "valid/queue-state-model-outlives-the-mutation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-started-behind-a-reservation",
+      "path": "semantic-invalid/queue-state-started-behind-a-reservation.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-started-ahead-of-its-reservation",
+      "path": "valid/queue-state-started-ahead-of-its-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-entry-leads-its-admission",
+      "path": "valid/queue-state-entry-leads-its-admission.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-entry-leads-a-different-run",
+      "path": "semantic-invalid/queue-state-entry-leads-a-different-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-entry-leads-without-an-anchor",
+      "path": "semantic-invalid/queue-state-entry-leads-without-an-anchor.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-cancelling-reservation-keeps-its-place",
+      "path": "valid/queue-state-cancelling-reservation-keeps-its-place.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-cancelling-reservation-without-its-place",
+      "path": "semantic-invalid/queue-state-cancelling-reservation-without-its-place.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-does-not-excuse-the-known-entries",
+      "path": "semantic-invalid/queue-state-lead-does-not-excuse-the-known-entries.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-claims-a-second-started-run",
+      "path": "semantic-invalid/queue-state-lead-claims-a-second-started-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-cancelling-reservation-before-its-promotion",
+      "path": "valid/queue-state-cancelling-reservation-before-its-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-cancelling-reservation-past-its-promotion",
+      "path": "semantic-invalid/queue-state-cancelling-reservation-past-its-promotion.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-cancelling-run-past-its-promotion",
+      "path": "valid/queue-state-cancelling-run-past-its-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-cancelling-run-left-the-queue-early",
+      "path": "semantic-invalid/queue-state-cancelling-run-left-the-queue-early.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-cancelling-run-drops-a-place-it-never-left",
+      "path": "semantic-invalid/queue-state-cancelling-run-drops-a-place-it-never-left.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-lists-a-settled-run",
+      "path": "semantic-invalid/queue-state-lead-lists-a-settled-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-names-its-executing-run",
+      "path": "valid/queue-state-lead-names-its-executing-run.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-names-no-active-run",
+      "path": "semantic-invalid/queue-state-lead-names-no-active-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-cancels-its-reservation",
+      "path": "valid/queue-state-lead-cancels-its-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-listed-before-a-known-run",
+      "path": "semantic-invalid/queue-state-lead-listed-before-a-known-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-queued-by-a-started-admission",
+      "path": "semantic-invalid/queue-state-lead-queued-by-a-started-admission.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-invents-a-queue-place",
+      "path": "semantic-invalid/queue-state-lead-invents-a-queue-place.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-misplaces-its-reservation",
+      "path": "semantic-invalid/queue-state-lead-misplaces-its-reservation.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-keeps-its-place-through-promotion",
+      "path": "valid/queue-state-lead-keeps-its-place-through-promotion.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-keeps-a-place-past-its-promotion",
+      "path": "semantic-invalid/queue-state-lead-keeps-a-place-past-its-promotion.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-gives-up-a-place-it-never-left",
+      "path": "semantic-invalid/queue-state-lead-gives-up-a-place-it-never-left.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-capabilities-bound-moves-within-revision",
+      "path": "semantic-invalid/queue-capabilities-bound-moves-within-revision.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-capabilities-level-moves-within-revision",
+      "path": "semantic-invalid/queue-capabilities-level-moves-within-revision.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-capabilities-repeated-within-revision",
+      "path": "valid/queue-capabilities-repeated-within-revision.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-leads-claim-one-place-twice",
+      "path": "semantic-invalid/queue-state-leads-claim-one-place-twice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-leads-take-consecutive-places",
+      "path": "valid/queue-state-leads-take-consecutive-places.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-counts-a-place-its-sibling-never-took",
+      "path": "semantic-invalid/queue-state-lead-counts-a-place-its-sibling-never-took.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-places-itself-beyond-the-queue",
+      "path": "semantic-invalid/queue-state-lead-places-itself-beyond-the-queue.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "missing_response",
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-a-started-run-and-a-reservation",
+      "path": "valid/queue-open-recovers-a-started-run-and-a-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-lists-a-settled-run",
+      "path": "semantic-invalid/queue-open-lists-a-settled-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-lists-one-run-twice",
+      "path": "semantic-invalid/queue-open-lists-one-run-twice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-claims-two-started-runs",
+      "path": "semantic-invalid/queue-open-claims-two-started-runs.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-names-a-run-from-nowhere",
+      "path": "semantic-invalid/queue-open-names-a-run-from-nowhere.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-reopens-and-claims-two-started-runs",
+      "path": "semantic-invalid/queue-open-reopens-and-claims-two-started-runs.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-reopens-with-its-reservation",
+      "path": "valid/queue-open-reopens-with-its-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-resumes-the-run-the-cursor-names",
+      "path": "valid/queue-open-resumes-the-run-the-cursor-names.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-resumes-a-reservation-beside-the-cursor",
+      "path": "valid/queue-open-resumes-a-reservation-beside-the-cursor.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-resumes-past-the-cursor",
+      "path": "semantic-invalid/queue-open-resumes-past-the-cursor.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "sequence_gap",
+        "sequence_gap"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-a-cancelling-reservation",
+      "path": "valid/queue-open-recovers-a-cancelling-reservation.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-a-cancelling-run-beside-a-started-one",
+      "path": "semantic-invalid/queue-open-recovers-a-cancelling-run-beside-a-started-one.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-through-the-pointer-alone",
+      "path": "valid/queue-open-recovers-through-the-pointer-alone.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-resumes-the-pointer-past-the-cursor",
+      "path": "semantic-invalid/queue-open-resumes-the-pointer-past-the-cursor.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "sequence_gap",
+        "sequence_gap"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-fixes-the-genesis-model",
+      "path": "valid/queue-open-fixes-the-genesis-model.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-genesis-model-contradicted",
+      "path": "semantic-invalid/queue-open-genesis-model-contradicted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "premature_session_mutation"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-recovered-run-holds-the-session",
+      "path": "semantic-invalid/queue-state-recovered-run-holds-the-session.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition",
+        "queue_order_violation",
+        "queue_order_violation"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-a-blocked-run",
+      "path": "valid/queue-open-recovers-a-blocked-run.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-keeps-a-resolved-interaction-pending",
+      "path": "semantic-invalid/queue-open-keeps-a-resolved-interaction-pending.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-recovered-run-names-an-unseen-interaction",
+      "path": "valid/queue-state-recovered-run-names-an-unseen-interaction.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-adds-an-interaction-the-entry-denied",
+      "path": "semantic-invalid/queue-open-adds-an-interaction-the-entry-denied.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-a-run-mid-tool-call",
+      "path": "valid/queue-open-recovers-a-run-mid-tool-call.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-a-tool-call-that-ends-twice",
+      "path": "semantic-invalid/queue-open-recovers-a-tool-call-that-ends-twice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_tool_transition"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-recovers-a-cancelled-run",
+      "path": "valid/queue-open-recovers-a-cancelled-run.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-resolves-a-recovered-interaction",
+      "path": "valid/queue-open-resolves-a-recovered-interaction.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-resolves-an-unseen-interaction",
+      "path": "valid/queue-state-resolves-an-unseen-interaction.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-open-resolves-a-known-interaction-wrongly",
+      "path": "semantic-invalid/queue-open-resolves-a-known-interaction-wrongly.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lists-a-run-it-says-it-settled",
+      "path": "semantic-invalid/queue-state-lists-a-run-it-says-it-settled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-settles-one-run-twice",
+      "path": "semantic-invalid/queue-state-settles-one-run-twice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-drops-only-what-it-settled",
+      "path": "valid/queue-state-drops-only-what-it-settled.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-executes-a-run-that-never-starts",
+      "path": "semantic-invalid/queue-state-executes-a-run-that-never-starts.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-executes-a-run-whose-start-follows",
+      "path": "valid/queue-state-executes-a-run-whose-start-follows.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-leads-listed-out-of-admission-order",
+      "path": "semantic-invalid/queue-state-leads-listed-out-of-admission-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-earlier-anchor-answers-the-entry",
+      "path": "semantic-invalid/queue-state-earlier-anchor-answers-the-entry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-earlier-anchor-vindicates-the-entry",
+      "path": "semantic-invalid/queue-state-earlier-anchor-vindicates-the-entry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-executes-a-run-that-never-starts",
+      "path": "semantic-invalid/queue-state-lead-executes-a-run-that-never-starts.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-state-lead-executes-a-run-whose-start-follows",
+      "path": "valid/queue-state-lead-executes-a-run-whose-start-follows.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-refusal-after-an-answered-sibling",
+      "path": "semantic-invalid/queue-refusal-after-an-answered-sibling.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "queue-refusal-among-unanswered-siblings",
+      "path": "valid/queue-refusal-among-unanswered-siblings.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
     {
       "id": "compound-open-admits-its-message",
       "path": "valid/compound-open-admits-its-message.json",
@@ -4647,8 +7354,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-queued-message",
@@ -4657,8 +7368,14 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open", "queue"],
-      "provenance": ["decisions/0009-compound-open.md", "decisions/0007-queue-delivery.md"]
+      "units": [
+        "compound-open",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md",
+        "decisions/0007-queue-delivery.md"
+      ]
     },
     {
       "id": "compound-open-queued-without-position",
@@ -4666,9 +7383,17 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["session_state_mismatch"],
-      "units": ["compound-open", "queue"],
-      "provenance": ["decisions/0009-compound-open.md", "decisions/0007-queue-delivery.md"]
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "compound-open",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md",
+        "decisions/0007-queue-delivery.md"
+      ]
     },
     {
       "id": "compound-open-anonymous-model-reconciled",
@@ -4676,9 +7401,15 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["model_not_in_catalog"],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-session-exists-discharges-elections",
@@ -4687,8 +7418,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-refused-on-another-election",
@@ -4697,8 +7432,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-subscribe-unadvertised-refused",
@@ -4707,8 +7446,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-refused-for-an-existing-session",
@@ -4717,8 +7460,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-per-run-model-selection",
@@ -4727,8 +7474,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-refused-for-another-feature",
@@ -4737,8 +7488,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-degraded-subscribe-refused-without-optin",
@@ -4747,8 +7502,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-degraded-subscribe-with-optin",
@@ -4757,8 +7516,12 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-degraded-subscribe-admitted-without-optin",
@@ -4766,9 +7529,15 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["degraded_without_optin"],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "compound-open-subscribe-unadvertised",
@@ -4776,10 +7545,21 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["unavailable_capability"],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"],
-      "covers": [{ "capability": "session.open.subscribe", "aspect": "gate" }]
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.open.subscribe",
+          "aspect": "gate"
+        }
+      ]
     },
     {
       "id": "compound-open-subscribe-refused-advertised",
@@ -4787,10 +7567,21 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["unhonoured_capability"],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"],
-      "covers": [{ "capability": "session.open.subscribe", "aspect": "honour" }]
+      "codes": [
+        "unhonoured_capability"
+      ],
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.open.subscribe",
+          "aspect": "honour"
+        }
+      ]
     },
     {
       "id": "compound-open-anchor-names-an-open-without-a-message",
@@ -4798,9 +7589,15 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["session_state_mismatch"],
-      "units": ["compound-open"],
-      "provenance": ["decisions/0009-compound-open.md"]
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md"
+      ]
     },
     {
       "id": "endpoint-two-settlement-paths-settle-one-run",
@@ -4808,9 +7605,15 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["duplicate_run_terminal"],
-      "units": ["core"],
-      "provenance": ["drafts/endpoint-stdio.md"]
+      "codes": [
+        "duplicate_run_terminal"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "drafts/endpoint-stdio.md"
+      ]
     },
     {
       "id": "endpoint-cancel-race-settles-twice",
@@ -4818,70 +7621,1065 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["duplicate_run_terminal"],
-      "units": ["core"],
-      "provenance": ["drafts/endpoint-stdio.md"]
+      "codes": [
+        "duplicate_run_terminal"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "drafts/endpoint-stdio.md"
+      ]
     },
-    {"id":"control-tool-roundtrip","path":"valid/control-tool-roundtrip.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-resolved-without-ack","path":"valid/control-tool-resolved-without-ack.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-cancelled-with-run","path":"valid/control-tool-cancelled-with-run.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-two-tools","path":"valid/open-provide-two-tools.json","kind":"positive","valid":true,"units":["core","control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-unadvertised-rejected","path":"valid/open-provide-unadvertised-rejected.json","kind":"positive","valid":true,"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-wrong-owner","path":"valid/open-provide-wrong-owner.json","kind":"positive","valid":true,"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-dangling-source","path":"valid/open-provide-dangling-source.json","kind":"positive","valid":true,"units":["control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-colliding-name","path":"valid/open-provide-colliding-name.json","kind":"positive","valid":true,"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-refused-over-limit","path":"valid/open-provide-refused-over-limit.json","kind":"positive","valid":true,"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-repeated-acknowledgement","path":"valid/control-call-repeated-acknowledgement.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-foreign-responder-after-settlement","path":"valid/control-call-foreign-responder-after-settlement.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-timeout-races-resolution","path":"valid/control-call-timeout-races-resolution.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-late-acknowledgement","path":"valid/control-call-late-acknowledgement.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-unknown-interaction-refused","path":"valid/control-call-unknown-interaction-refused.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-state-ack-recovered","path":"valid/control-state-ack-recovered.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-unadvertised","path":"semantic-invalid/open-provide-unadvertised.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unavailable_capability"],"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"],"covers":[{"capability":"action.tools.provide","aspect":"gate"}]},
-    {"id":"open-provide-refused-within-limits","path":"semantic-invalid/open-provide-refused-within-limits.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["undisclosed_provide_limit"],"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"],"covers":[{"capability":"action.tools.provide","aspect":"honour"}]},
-    {"id":"open-provide-wrong-owner-admitted","path":"semantic-invalid/open-provide-wrong-owner-admitted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["wrong_tool_owner"],"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-wrong-owner-wrong-refusal","path":"semantic-invalid/open-provide-wrong-owner-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["wrong_tool_owner"],"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-dangling-source-admitted","path":"semantic-invalid/open-provide-dangling-source-admitted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_tool_source"],"units":["control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-dangling-source-wrong-refusal","path":"semantic-invalid/open-provide-dangling-source-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_tool_source"],"units":["control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-colliding-name-admitted","path":"semantic-invalid/open-provide-colliding-name-admitted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_tool_name"],"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"open-provide-colliding-name-wrong-refusal","path":"semantic-invalid/open-provide-colliding-name-wrong-refusal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_tool_name"],"units":["control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-requested-without-interaction","path":"semantic-invalid/control-call-requested-without-interaction.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_tool_transition"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-started-before-ack","path":"semantic-invalid/control-tool-started-before-ack.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_tool_transition"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-started-after-rejected-ack","path":"semantic-invalid/control-tool-started-after-rejected-ack.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_tool_transition"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-terminal-after-rejected-result","path":"semantic-invalid/control-tool-terminal-after-rejected-result.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["illegal_tool_transition"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-result-mismatch","path":"semantic-invalid/control-tool-result-mismatch.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["resolution_payload_mismatch"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-error-mismatch","path":"semantic-invalid/control-tool-error-mismatch.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["resolution_payload_mismatch"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-refusal-below-the-ladder","path":"semantic-invalid/control-call-refusal-below-the-ladder.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["wrong_interaction_responder"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-valid-resolution-rejected","path":"semantic-invalid/control-call-valid-resolution-rejected.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-double-accepted-resolution","path":"semantic-invalid/control-call-double-accepted-resolution.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-double-accepted-ack","path":"semantic-invalid/control-call-double-accepted-ack.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-ack-after-result-accepted","path":"semantic-invalid/control-call-ack-after-result-accepted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-unknown-interaction-accepted","path":"semantic-invalid/control-call-unknown-interaction-accepted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-refusal-invents-settlement","path":"semantic-invalid/control-call-refusal-invents-settlement.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-event-unmatched-request","path":"semantic-invalid/control-call-event-unmatched-request.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-call-owner-mismatch","path":"semantic-invalid/control-tool-call-owner-mismatch.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["wrong_tool_owner"],"units":["core","control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-pending-at-terminal","path":"semantic-invalid/control-tool-pending-at-terminal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["pending_interaction_at_terminal","pending_tool_at_terminal"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-tool-wrong-owner","path":"semantic-invalid/control-tool-wrong-owner.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["wrong_interaction_responder"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-state-omits-acknowledged","path":"semantic-invalid/control-state-omits-acknowledged.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-state-acknowledges-unpending","path":"semantic-invalid/control-state-acknowledges-unpending.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"tools-catalog-omits-provided","path":"semantic-invalid/tools-catalog-omits-provided.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["catalog_mismatch"],"units":["control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"tools-catalog-alters-provided-schema","path":"semantic-invalid/tools-catalog-alters-provided-schema.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["catalog_mismatch"],"units":["control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"tools-refresh-collides-with-provided","path":"semantic-invalid/tools-refresh-collides-with-provided.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_tool_name"],"units":["control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"tools-refresh-removes-provided-source","path":"semantic-invalid/tools-refresh-removes-provided-source.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["unmatched_tool_source"],"units":["control-tools","tool-sources"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-resolve-two-arms","path":"schema-invalid/control-resolve-two-arms.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-resolve-settled-without-settlement","path":"schema-invalid/control-resolve-settled-without-settlement.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-resolve-accepted-with-reason","path":"schema-invalid/control-resolve-accepted-with-reason.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-overlapping-resolutions","path":"valid/control-call-overlapping-resolutions.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-retry-accepted-before-terminal","path":"semantic-invalid/control-call-retry-accepted-before-terminal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["duplicate_interaction"],"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-ack-after-settlement","path":"valid/control-call-ack-after-settlement.json","kind":"positive","valid":true,"units":["core","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-recovered-resolution","path":"valid/control-call-recovered-resolution.json","kind":"positive","valid":true,"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-recovered-state-after-resolution","path":"valid/control-call-recovered-state-after-resolution.json","kind":"positive","valid":true,"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-recovered-cancelled","path":"valid/control-call-recovered-cancelled.json","kind":"positive","valid":true,"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-recovered-ack-reported","path":"valid/control-call-recovered-ack-reported.json","kind":"positive","valid":true,"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-recovered-state-keeps-resolved","path":"semantic-invalid/control-call-recovered-state-keeps-resolved.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-    {"id":"control-call-recovered-ack-omitted","path":"semantic-invalid/control-call-recovered-ack-omitted.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","recovery","control-tools"],"provenance":["drafts/staged-units-graduation.md","decisions/0011-control-layer-provided-tools.md"]},
-
-    {"id":"terminal-provenance-inferred","path":"valid/terminal-provenance-inferred.json","kind":"positive","valid":true,"phase":"","codes":[],"units":["core"],"provenance":["decisions/0010-terminal-provenance.md"]},
-    {"id":"terminal-provenance-bad-enum","path":"schema-invalid/terminal-provenance-bad-enum.json","kind":"schema-invalid","valid":false,"phase":"schema","codes":["schema_invalid"],"units":["core"],"provenance":["decisions/0010-terminal-provenance.md"]}
+    {
+      "id": "control-tool-roundtrip",
+      "path": "valid/control-tool-roundtrip.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-resolved-without-ack",
+      "path": "valid/control-tool-resolved-without-ack.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-cancelled-with-run",
+      "path": "valid/control-tool-cancelled-with-run.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-two-tools",
+      "path": "valid/open-provide-two-tools.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-unadvertised-rejected",
+      "path": "valid/open-provide-unadvertised-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-wrong-owner",
+      "path": "valid/open-provide-wrong-owner.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-dangling-source",
+      "path": "valid/open-provide-dangling-source.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-colliding-name",
+      "path": "valid/open-provide-colliding-name.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-refused-over-limit",
+      "path": "valid/open-provide-refused-over-limit.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-repeated-acknowledgement",
+      "path": "valid/control-call-repeated-acknowledgement.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-foreign-responder-after-settlement",
+      "path": "valid/control-call-foreign-responder-after-settlement.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-timeout-races-resolution",
+      "path": "valid/control-call-timeout-races-resolution.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-late-acknowledgement",
+      "path": "valid/control-call-late-acknowledgement.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-unknown-interaction-refused",
+      "path": "valid/control-call-unknown-interaction-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-state-ack-recovered",
+      "path": "valid/control-state-ack-recovered.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-unadvertised",
+      "path": "semantic-invalid/open-provide-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tools.provide",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "open-provide-refused-within-limits",
+      "path": "semantic-invalid/open-provide-refused-within-limits.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_provide_limit"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tools.provide",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "open-provide-wrong-owner-admitted",
+      "path": "semantic-invalid/open-provide-wrong-owner-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "wrong_tool_owner"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-wrong-owner-wrong-refusal",
+      "path": "semantic-invalid/open-provide-wrong-owner-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "wrong_tool_owner"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-dangling-source-admitted",
+      "path": "semantic-invalid/open-provide-dangling-source-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-dangling-source-wrong-refusal",
+      "path": "semantic-invalid/open-provide-dangling-source-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-colliding-name-admitted",
+      "path": "semantic-invalid/open-provide-colliding-name-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_name"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "open-provide-colliding-name-wrong-refusal",
+      "path": "semantic-invalid/open-provide-colliding-name-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_name"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-requested-without-interaction",
+      "path": "semantic-invalid/control-call-requested-without-interaction.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_tool_transition"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-started-before-ack",
+      "path": "semantic-invalid/control-tool-started-before-ack.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_tool_transition"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-started-after-rejected-ack",
+      "path": "semantic-invalid/control-tool-started-after-rejected-ack.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_tool_transition"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-terminal-after-rejected-result",
+      "path": "semantic-invalid/control-tool-terminal-after-rejected-result.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_tool_transition"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-result-mismatch",
+      "path": "semantic-invalid/control-tool-result-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "resolution_payload_mismatch"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-error-mismatch",
+      "path": "semantic-invalid/control-tool-error-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "resolution_payload_mismatch"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-refusal-below-the-ladder",
+      "path": "semantic-invalid/control-call-refusal-below-the-ladder.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "wrong_interaction_responder"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-valid-resolution-rejected",
+      "path": "semantic-invalid/control-call-valid-resolution-rejected.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-double-accepted-resolution",
+      "path": "semantic-invalid/control-call-double-accepted-resolution.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-double-accepted-ack",
+      "path": "semantic-invalid/control-call-double-accepted-ack.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-ack-after-result-accepted",
+      "path": "semantic-invalid/control-call-ack-after-result-accepted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-unknown-interaction-accepted",
+      "path": "semantic-invalid/control-call-unknown-interaction-accepted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-refusal-invents-settlement",
+      "path": "semantic-invalid/control-call-refusal-invents-settlement.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-event-unmatched-request",
+      "path": "semantic-invalid/control-call-event-unmatched-request.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-call-owner-mismatch",
+      "path": "semantic-invalid/control-tool-call-owner-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "wrong_tool_owner"
+      ],
+      "units": [
+        "core",
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-pending-at-terminal",
+      "path": "semantic-invalid/control-tool-pending-at-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "pending_interaction_at_terminal",
+        "pending_tool_at_terminal"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-tool-wrong-owner",
+      "path": "semantic-invalid/control-tool-wrong-owner.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "wrong_interaction_responder"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-state-omits-acknowledged",
+      "path": "semantic-invalid/control-state-omits-acknowledged.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-state-acknowledges-unpending",
+      "path": "semantic-invalid/control-state-acknowledges-unpending.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "tools-catalog-omits-provided",
+      "path": "semantic-invalid/tools-catalog-omits-provided.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "tools-catalog-alters-provided-schema",
+      "path": "semantic-invalid/tools-catalog-alters-provided-schema.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "tools-refresh-collides-with-provided",
+      "path": "semantic-invalid/tools-refresh-collides-with-provided.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_name"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "tools-refresh-removes-provided-source",
+      "path": "semantic-invalid/tools-refresh-removes-provided-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-resolve-two-arms",
+      "path": "schema-invalid/control-resolve-two-arms.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-resolve-settled-without-settlement",
+      "path": "schema-invalid/control-resolve-settled-without-settlement.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-resolve-accepted-with-reason",
+      "path": "schema-invalid/control-resolve-accepted-with-reason.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-overlapping-resolutions",
+      "path": "valid/control-call-overlapping-resolutions.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-retry-accepted-before-terminal",
+      "path": "semantic-invalid/control-call-retry-accepted-before-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_interaction"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-ack-after-settlement",
+      "path": "valid/control-call-ack-after-settlement.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-recovered-resolution",
+      "path": "valid/control-call-recovered-resolution.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "recovery",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-recovered-state-after-resolution",
+      "path": "valid/control-call-recovered-state-after-resolution.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "recovery",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-recovered-cancelled",
+      "path": "valid/control-call-recovered-cancelled.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "recovery",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-recovered-ack-reported",
+      "path": "valid/control-call-recovered-ack-reported.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "recovery",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-recovered-state-keeps-resolved",
+      "path": "semantic-invalid/control-call-recovered-state-keeps-resolved.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "recovery",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-recovered-ack-omitted",
+      "path": "semantic-invalid/control-call-recovered-ack-omitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "recovery",
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "terminal-provenance-inferred",
+      "path": "valid/terminal-provenance-inferred.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0010-terminal-provenance.md"
+      ]
+    },
+    {
+      "id": "terminal-provenance-bad-enum",
+      "path": "schema-invalid/terminal-provenance-bad-enum.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0010-terminal-provenance.md"
+      ]
+    },
+    {
+      "id": "models-providers-resolved",
+      "path": "valid/models-providers-resolved.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0014-provider-descriptors.md"
+      ]
+    },
+    {
+      "id": "models-unmatched-provider",
+      "path": "semantic-invalid/models-unmatched-provider.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_provider"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0014-provider-descriptors.md"
+      ]
+    },
+    {
+      "id": "models-duplicate-provider",
+      "path": "semantic-invalid/models-duplicate-provider.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_provider"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0014-provider-descriptors.md"
+      ]
+    }
   ]
 }

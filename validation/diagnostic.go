@@ -59,6 +59,8 @@ const (
 	CodePrematureSessionMutation = "premature_session_mutation"
 	CodeUndisclosedQueueLimit    = "undisclosed_queue_limit"
 
+	CodeUnmatchedProvider        = "unmatched_provider"
+	CodeDuplicateProvider        = "duplicate_provider"
 	CodeUnmatchedToolSource      = "unmatched_tool_source"
 	CodeDuplicateToolSource      = "duplicate_tool_source"
 	CodeCatalogMismatch          = "catalog_mismatch"
