@@ -1149,6 +1149,20 @@ key cannot reach storage there even in principle.
 An implementation in that position says which kinds its bypass carries, so a
 caller can tell.
 
+**A predicate written to simplify routing can disable a mechanism that exists
+for a reason, and that is a distinct hazard from missing a write.** In the
+implementation this rule was built against it happened three times, the last
+being the worst: a predicate written to keep routing simple reported
+not-expired for every ephemeral credential, so the refresh lock was never
+reached and a granted OAuth credential refreshed unlocked. Latent until
+something grants OAuth credentials, and then concurrent requests race on a
+rotating refresh token with nothing coalescing them.
+
+The general form is that adding a credential kind adds a *shape* the existing
+predicates were not written to classify, and the cheapest way to make them
+compile is to answer the question they were not asking. Each of the three was a
+convenience that silently removed a guarantee.
+
 **Find every predicate that routes on credential kind, not only every path that
 writes.** This is the part that catches an implementation out, reported from
 doing it. Having built the unreachable representation, its routing predicates —
@@ -1490,33 +1504,41 @@ and an earlier version of this draft drew that conclusion too fast.
 **A harness that drives a binary from outside reaches a minority of the wire,
 and this is measured rather than estimated.** Of thirteen envelope types one
 implementation emits, five are reachable by spawning it and sending scripted
-envelopes with no credentials. The other eight — the tool-call part end, a
-snapshot carrying `arguments_partial`, the sync response, both grant refusals
-and the rest — exist only inside the implementation's own emitter, and were
-checked against the schemas only because their author temporarily printed every
-outbound frame from a test and piped it into a validator.
+envelopes with no credentials: the two discovery responses, the two grant
+answers — which carry nonces and references, not secrets — and
+`inference.create.response`. The other eight are the frames only a **live
+inference** produces, which is the event stream plus two responses that answer a
+request about an inference already running. They exist only inside the
+implementation's own emitter and were checked against the schemas only because
+its author temporarily printed every outbound frame from a test and piped it
+into a validator.
 
 So a green harness does not mean the wire is covered, and anyone reporting
 harness results has to say which frames were reached. Closing the gap needs
 either a provider the harness can drive or a way to make an implementation
 produce a named frame on demand, and neither exists. The second is the cheaper
-one and is worth considering as a conformance affordance rather than a hack: an
-implementation that can be asked to emit a specimen of each frame it supports is
-testable in a way one that cannot is not.
+one and is now specified as
+[the binding's specimen request](provider-stdio.md): an implementation that can
+be asked to emit a specimen of each frame it supports, less the few it declares
+it withholds, is testable in a way one
+that cannot is not. Nothing implements it yet.
 
 Compatibility is a second, harder half, and the first implementation has drawn
 the line precisely. What a harness can do today: spawn a provider endpoint,
 drive discovery, drive a real inference against a **local, anonymous** provider
 with no credentials anywhere, and assemble a trace.
 
-That covers discovery, the inference lifecycle, the part triples, cancellation
-and the error classes. It does **not** cover four of the eighteen envelope
-types: the two `provider.credential.grant` envelopes, which a session with no
-credentials anywhere cannot reach by construction, and the `inference.sync`
-pair, which nothing described drives. The grant pair is the same gap the
-Evidence section names — the most argued part of the draft is the part nothing
-has run — arriving here as a hole in the harness rather than in the
-implementation.
+That covers the answers a request draws. What it does not cover is an
+inference's event stream — the part triple, a terminal that assembles, a
+snapshot mid-flight — which is the measurement above rather than a separate gap,
+and `inference.sync`, which nothing described drives.
+
+**The grant exchange is reachable, and an earlier version of this paragraph said
+it was not.** On a tier-1 binding the exchange carries a nonce, a channel and a
+reference and no secret, so a harness can drive a real one without holding a
+credential. What it cannot drive is the side channel the value crosses on, which
+is the thing the Evidence section names as the part nothing has run. Those are
+different gaps and conflating them made the harness look blinder than it is.
 
 What it cannot do is observe a single compatibility fact. The twelve are carried
 and mapped; none has been checked against the vendor it describes, because

@@ -231,6 +231,92 @@ The endpoint binding's contract, with inferences in place of runs.
 - **Keepalives are the binding's own.** An implementation that needs one emits a
   control frame, never an envelope, and it consumes no sequence.
 
+## The specimen request
+
+**Optional, and a harness is much weaker without it.**
+
+A harness that spawns an implementation and drives scripted envelopes reaches
+only the frames a scripted exchange can provoke. Measured against the first
+implementation: **five of the thirteen envelope types it emits.** The line is
+not request against event — it is whether a **live inference** is needed. The
+five are the two discovery responses, the two grant answers and
+`inference.create.response`, none of which needs one. The eight that do are
+`inference.started`, the part triple, `inference.completed`, `inference.failed`,
+and the two responses that answer a request *about an inference already
+running* — `inference.sync.response` carrying a mid-flight `arguments_partial`,
+and `inference.cancel.response`. A harness can send those two requests; with
+nothing running, it gets a refusal rather than the frame.
+
+They live inside the implementation's emitter and are reachable only by driving
+a real provider, or by temporarily printing every outbound frame, which is what
+actually happened and was deleted each time.
+
+So an implementation **may** support a specimen request: asked for one, it emits
+one well-formed instance of every envelope type it would otherwise emit, **less
+what it declares in `excluded`** — which today is the two grant answers, for the
+reason below.
+
+**It is a binding control frame, not an envelope**, because it asks the
+implementation about itself rather than driving the protocol. It carries an
+`id` and draws exactly one correlated answer, the way replay does on the
+endpoint binding:
+
+```json
+{"control":"specimen","id":"s1"}
+```
+
+```json
+{"control":"specimen.accepted","id":"s1",
+ "types":["inference.started","inference.part.started","..."],
+ "excluded":["provider.credential.grant.channel","provider.credential.grant.response"]}
+{"control":"specimen.error","id":"s1","code":"unsupported","message":"..."}
+```
+
+After `specimen.accepted`, one instance of each type in `types` follows as
+ordinary envelope lines, in the order listed, and the stream then continues as
+before.
+
+**`types` predicts the stream and must list only what specimens will follow
+for.** That is what makes the affordance worth having: a harness knows how many
+frames to expect and which, so a stall, a refusal and a completed run are three
+distinguishable outcomes rather than one silence. An implementation that emitted
+specimens with no accepted frame would leave a harness unable to tell any of
+them apart — and one that listed a type it will not emit a specimen for would
+reintroduce the same ambiguity through the list meant to remove it.
+
+**`excluded` names what the implementation supports and deliberately does not
+specimen**, which today is only the grant envelopes. Without it a harness cannot
+tell "this implementation does not support tool-call parts" from "it supports
+them and the specimen is withheld," and those are different conformance answers.
+A harness counts `types` and reports `excluded` as **covered by declaration
+rather than by specimen** — the same distinction as conformance against
+compatibility, one level down.
+- Each specimen is a real frame from the implementation's own emitter, not a
+  literal an author wrote out. A specimen that does not come from the code that
+  would emit it in earnest tests the specimen writer.
+- **The grant answers are excluded** — `provider.credential.grant.channel` and
+  `provider.credential.grant.response`. Not because they cannot be traced: on
+  this binding tier 1 is mandatory, so the exchange carries a nonce, a channel
+  and a reference and no secret, and a harness can drive a real one. They are
+  excluded because a **specimen** of either fabricates an exchange that did not
+  happen — a channel path nothing is listening on, and a `credential_ref`
+  naming a credential the implementation does not hold. A harness that could not
+  tell a specimen reference from a real one would be one confusion away from
+  using it. They appear in `excluded`, never in `types`.
+
+  `provider.credential.grant.request` is not in either list because the caller
+  sends it and the implementation never emits it. `types` and `excluded`
+  partition what an implementation *emits*.
+- A specimen run settles nothing and allocates nothing. No inference exists
+  afterwards.
+
+**Why this is a conformance affordance and not a debugging hack.** Without it,
+"which frames did the harness reach" is answered by the implementation author's
+say-so. With it, a harness answers it by construction: the implementation
+declares what it emits, the harness demands one of each, and the validator
+judges them. An implementation that can be asked is testable in a way one that
+cannot is not, and the gap is eight frames out of thirteen rather than a corner.
+
 ## Conformance
 
 An implementation claiming this binding:
@@ -248,8 +334,19 @@ An implementation claiming this binding:
    deadline, burns the nonce, and destroys the socket when the grant settles.
 7. Never blocks its envelope reader on the credential channel.
 8. Settles every accepted inference before exiting 0.
+9. If it supports a specimen request: answers it with one correlated
+   `specimen.accepted` whose `types` are exactly the specimens that follow and
+   whose `excluded` names what it supports but withholds, then emits one
+   instance of each type in that order, each from its own emitter, allocating
+   nothing. An implementation that does not support it answers `specimen.error`,
+   because an unanswered control frame is indistinguishable from a stall.
 
 ## Open questions
+
+**Nothing has implemented the specimen request.** It is specified here because
+a harness cannot rely on an affordance one implementation invented, and the
+measurement that motivates it — five of thirteen — comes from one implementation
+and may not generalize.
 
 **The 30-second deadline is a number nobody has measured.** It is long enough
 for a caller to read a path and connect, and short enough that a hung grant does
