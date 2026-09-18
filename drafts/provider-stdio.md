@@ -237,19 +237,40 @@ The endpoint binding's contract, with inferences in place of runs.
 
 A harness that spawns an implementation and drives scripted envelopes reaches
 only the frames a scripted exchange can provoke. Measured against the first
-implementation: **five of the thirteen envelope types it emits.** The other
-eight — a tool-call part end, a snapshot carrying `arguments_partial`, the sync
-response, both grant refusals — live inside its emitter and are reachable only
-by driving a real provider, or by temporarily printing every outbound frame,
-which is what actually happened and was deleted each time.
+implementation: **five of the thirteen envelope types it emits.** Those five are
+the ones a request draws an answer to — the two discovery responses, the two
+grant answers, and `inference.create.response`. The other eight are the whole of
+an inference's event stream: `inference.started`, the part triple,
+`inference.completed`, `inference.failed`, `inference.sync.response` carrying a
+mid-flight `arguments_partial`, and `inference.cancel.response`. They live
+inside the implementation's emitter and are reachable only by driving a real
+provider, or by temporarily printing every outbound frame, which is what
+actually happened and was deleted each time.
 
 So an implementation **may** support a specimen request: asked for one, it emits
-one well-formed instance of every envelope type it would otherwise emit, and
-nothing else.
+one well-formed instance of every envelope type it would otherwise emit.
 
-- It is a **binding control frame**, not an envelope — `{"control":
-  "specimen"}` — because it asks the implementation about itself rather than
-  driving the protocol.
+**It is a binding control frame, not an envelope**, because it asks the
+implementation about itself rather than driving the protocol. It carries an
+`id` and draws exactly one correlated answer, the way replay does on the
+endpoint binding:
+
+```json
+{"control":"specimen","id":"s1"}
+```
+
+```json
+{"control":"specimen.accepted","id":"s1","types":["inference.started", "..."]}
+{"control":"specimen.error","id":"s1","code":"unsupported","message":"..."}
+```
+
+After `specimen.accepted`, one instance of each listed type follows as ordinary
+envelope lines, in the order listed, and the stream then continues as before.
+**`types` is what makes the affordance worth having**: a harness knows how many
+frames to expect and which, so a stall, a refusal and a completed run are three
+distinguishable outcomes rather than one silence. An implementation that emitted
+specimens with no accepted frame would leave a harness unable to tell any of
+them apart.
 - Each specimen is a real frame from the implementation's own emitter, not a
   literal an author wrote out. A specimen that does not come from the code that
   would emit it in earnest tests the specimen writer.
@@ -284,9 +305,11 @@ An implementation claiming this binding:
    deadline, burns the nonce, and destroys the socket when the grant settles.
 7. Never blocks its envelope reader on the credential channel.
 8. Settles every accepted inference before exiting 0.
-9. If it supports a specimen request: emits one instance of every type it
-   supports except the grant envelopes, each from its own emitter, allocating
-   nothing.
+9. If it supports a specimen request: answers it with one correlated
+   `specimen.accepted` naming the types, then emits one instance of each in that
+   order, each from its own emitter, allocating nothing. An implementation that
+   does not support it answers `specimen.error`, because an unanswered control
+   frame is indistinguishable from a stall.
 
 ## Open questions
 
