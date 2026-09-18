@@ -40,7 +40,8 @@ it; that is what most pinned harnesses do. Or it may speak to inference
 endpoints directly and expose the same profile; that is what Makai does. The
 upper boundary is identical. The lower one is where they differ, and
 `model-provider-core` is what makes it a boundary rather than an
-implementation detail.
+implementation detail. It is specified in
+[the model-provider-core draft](model-provider-core.md).
 
 ## What a client may choose
 
@@ -163,7 +164,8 @@ Each boundary needs the same three things, and reading the decisions
 individually hides it:
 
 1. **A protocol for the boundary.** Agent control has one. Tools have MCP and
-   the source kinds. Providers have 0016, proposed.
+   the source kinds. Providers have 0016 and
+   [its draft](model-provider-core.md), both proposed and neither executable.
 2. **Discovery** — what is available here. `action.tools.list`; `models.list`
    plus 0014's provider descriptors.
 3. **Provision and selection by the client** — attach a source, supply a tool,
