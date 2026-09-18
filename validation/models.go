@@ -158,6 +158,9 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	if defaults > 1 {
 		s.addExpected(CodeAmbiguousDefaultModel, i, line, e, "/payload/models", "catalog marks more than one model as the default", "at most one default", uintString(uint64(defaults)))
 	}
+	if len(p.Providers) > 0 {
+		s.checkProviders(i, line, e, p)
+	}
 	if p.CurrentModelID != "" && !ids[p.CurrentModelID] {
 
 		s.addExpected(CodeModelNotInCatalog, i, line, e, "/payload/current_model_id", "catalog reports a current model it does not list", "one of the catalog's own ids", p.CurrentModelID)
@@ -181,6 +184,25 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	}
 	st.catalog = served
 	s.reconcileUnjudgedModels(st, served)
+}
+
+func (s *state) checkProviders(i, line int, e protocol.Envelope, p protocol.ModelsResponse) {
+	declared := make(map[string]bool, len(p.Providers))
+	for _, provider := range p.Providers {
+		if declared[provider.ID] {
+			s.addExpected(CodeDuplicateProvider, i, line, e, "/payload/providers", "catalog lists two provider descriptors under one id, so a provider_id resolves to neither", "one descriptor per id", provider.ID)
+			continue
+		}
+		declared[provider.ID] = true
+	}
+	reported := map[string]bool{}
+	for _, model := range p.Models {
+		if model.ProviderID == "" || declared[model.ProviderID] || reported[model.ProviderID] {
+			continue
+		}
+		reported[model.ProviderID] = true
+		s.addExpected(CodeUnmatchedProvider, i, line, e, "/payload/models", "a model attributes itself to a provider the catalog does not declare", "a provider declared in providers", model.ProviderID, model.ID)
+	}
 }
 
 func sameCatalog(a, b map[string]protocol.ModelDescriptor) bool {

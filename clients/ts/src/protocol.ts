@@ -384,6 +384,17 @@ export interface ModelDescriptor {
   default?: boolean;
 }
 
+/** What a `ModelDescriptor.provider_id` resolves to. `id` is opaque and endpoint-scoped. */
+export interface ProviderDescriptor {
+  id: string;
+  display_name?: string;
+  /** The request shape the endpoint speaks to this provider. */
+  wire?: 'openai-responses' | 'anthropic-messages' | 'openai-chat-completions';
+  kind?: 'direct' | 'gateway';
+  /** The destination the endpoint reaches, so a client can tell a direct provider from a gateway. */
+  endpoint?: string;
+}
+
 /** One run-scoped event, named by its run and sequence because sequences restart per run. */
 export interface ModelEventPosition {
   run_id: string;
@@ -395,6 +406,8 @@ export interface ModelsResponse {
   session_id: string;
   current_model_id?: string;
   models: ModelDescriptor[];
+  /** Where the catalog's models come from. Where present, every `provider_id` names an entry. */
+  providers?: ProviderDescriptor[];
   /** The last model-affecting event this catalog reflects; absent when it reflects none. */
   as_of_model_event?: ModelEventPosition;
 }
