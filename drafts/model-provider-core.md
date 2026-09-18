@@ -815,6 +815,21 @@ and a message with three reasoning parts needs three of them. In the
 implementation this was found in, the value rides the tool call itself and the
 thinking part, which is the same placement.
 
+**An absent `carry` does not say why it is absent, and this is a known limit
+rather than an oversight.** A part that ends without one may come from a
+provider that never signs, or from one that signed and whose signature was lost
+in translation — a live run found exactly the second case, and the frame is
+indistinguishable from the first. A caller cannot tell them apart and therefore
+cannot tell a chain that will replay from one that will break on the next turn.
+
+The profile does not add a member to distinguish them, because an implementation
+that knows its carry was dropped is an implementation that could have kept it,
+and a field asserting "I had one and lost it" is a bug report in the envelope
+rather than a protocol fact. The correct signal for a provider that cannot
+produce a carry it needs is a refusal or a failure, not a part that ends quietly
+and breaks a turn later. Stating the limit here is what keeps the absence from
+reading as "this provider does not sign".
+
 This is one vendor's mechanism seen in one implementation, which is thin by this
 draft's own standard. It is in because the failure it prevents is silent and the
 member is inert for every provider that does not use it — an opaque value nobody
@@ -1881,6 +1896,34 @@ That is this project's gap, not an implementation's.
 
 **No compatibility fact has been observed.** All twelve are carried and mapped
 and none has been checked against the vendor it describes.
+
+**Two of the three part kinds are unreachable through that implementation by
+construction, not by omission.** It refuses `tools` and `reasoning` controls at
+create — "this endpoint does not forward tools to a provider", "this endpoint
+does not forward reasoning controls" — so a caller cannot ask for either, and a
+well-behaved provider therefore never emits a `tool_use` or a thinking block.
+A live run did produce all three triples over `anthropic-messages`, and this
+draft's own validator accepts the trace, but only because the server in that run
+emitted them unprompted, which a vendor would not do.
+
+The distinction matters for step 3 and is easy to lose: the part triple is
+correct and is exercised end to end, while the *route by which a caller reaches
+two thirds of it* does not exist in the only implementation. A conformance suite
+driving that endpoint cannot observe a `tool_call` part from a real provider, so
+a suite designed on the assumption that it can will report coverage it does not
+have. That is an implementation property rather than a protocol defect — the
+profile defines the parts and the controls, and the endpoint declines the
+request fields — but it is the kind of absence that reads as tested.
+
+**The `carry` return path is specified and cannot be populated.** The same run
+ended a `reasoning` part with no `carry` although the provider had accumulated
+the signature: the translator reads it out of a per-message partial whose
+content is empty for every provider that emits thinking, so the lookup is always
+out of range and the field never appears. Its unit test constructs a partial
+that holds one, and nothing real does. The consequence is the case the return
+path was added for — a vendor rejecting a replayed thinking block whose
+signature is missing, so multi-turn extended thinking cannot work through that
+endpoint. The path exists in the profile and has never carried a value.
 
 ### `other` is load-bearing, and tightening its criterion fails badly
 
