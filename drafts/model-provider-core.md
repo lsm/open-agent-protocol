@@ -953,7 +953,11 @@ implementation to attempt it says so.
 The demand is structural, in three parts.
 
 **1. A representation with no path to storage, not a flag consulted at each
-write.** A mark presumes a field on something that already exists and a set of
+write.** The wording is load-bearing, confirmed by an implementation building
+it: a rule saying "mark it non-persistable" produces a boolean on the existing
+type and a set of call sites to remember, and a rule asking for a representation
+produces a second store no writer can reach. The first is a rule; the second is
+a structure. A mark presumes a field on something that already exists and a set of
 paths that can be taught to check it. What is actually required is that a
 granted credential be held in a form from which no write is reachable. A flag is
 remembered; a representation is checked by the compiler. The property this rule
@@ -975,6 +979,23 @@ key cannot reach storage there even in principle.
 
 An implementation in that position says which kinds its bypass carries, so a
 caller can tell.
+
+**Find every predicate that routes on credential kind, not only every path that
+writes.** This is the part that catches an implementation out, reported from
+doing it. Having built the unreachable representation, its routing predicates —
+the ones deciding whether a request takes the refresh path or the static-key
+path — still read the durable store, so a granted refreshable credential was
+invisible to them, took the wrong branch, and failed as an unknown provider:
+accepted, held correctly, unusable. Writers and routers are different sets, and
+the second is the one nobody goes looking for.
+
+**The test is about the payload, not the mechanism.** Assert that a granted
+secret never appears in the bytes a writer would emit, with a configured
+credential beside it that still does. That survives a refactor which reorganizes
+the storage entirely; a test that checks a flag is consulted does not, and a
+flag-checking test is what a rule saying "mark it" would have produced. Prove it
+by adding a write into the path that must not write, and watching the assertion
+fail.
 
 **3. A refreshable grant must be refused if refreshing means persisting.** This
 is the specific hazard and it is near-universal: refresh and persistence are
@@ -1449,15 +1470,17 @@ Decision 0015 that is what executable would require.
 ### Two things the implementation is not evidence for
 
 **The tier-1 out-of-band credential path has no implementation exercising it.**
-That implementation advertises `grant_kinds` as static-only and refuses
-refreshable grants, which is conformant and is exactly the path rule 8's third
-point exists to provide. It also means the most carefully argued part of the
-credential section is the part nothing has run: two tiers, a nonce, a
-binding-defined side channel, a mandatory-where-achievable rule, all
-unexercised. Treat that section as the least tested thing in this draft rather
-than the most, whatever its density of argument suggests. The work that would
-exercise it — a credential store gaining a representation it cannot write — is
-real and nothing currently forces it.
+Two tiers, a nonce, a binding-defined side channel, a mandatory-where-achievable
+rule: all unexercised. Treat that section as the least tested thing in this
+draft rather than the most, whatever its density of argument suggests.
+
+The reason has changed once and is worth tracking. It was that the
+implementation had no way to hold a caller-granted credential without writing it
+down. That capability now exists (`lsm/makai#343`) — a second store no writer
+can reach, structural rather than flagged, about a day's work against an
+estimated re-architecture. The remaining reason is that **the stdio binding's
+side channel is unspecified**, so there is nothing for a grant to arrive on.
+That is this project's gap, not an implementation's.
 
 **No compatibility fact has been observed.** All twelve are carried and mapped
 and none has been checked against the vendor it describes.
