@@ -232,3 +232,48 @@ func TestProviderCorpusIsInvalidFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderCorpusDeclaresWhatAFrameDecoderCanCheck(t *testing.T) {
+	manifest, err := LoadManifest(filepath.Join("..", "fixtures", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := map[string]int{}
+	for _, entry := range manifest.Fixtures {
+		if entry.Profile != ProfileModelProvider {
+			continue
+		}
+		scopes[entry.Scope]++
+		if entry.Scope == ScopeTrace && entry.Valid {
+			t.Fatalf("fixture %q is positive and trace-scoped; a positive fixture asks every frame to be accepted, which a frame decoder can answer", entry.ID)
+		}
+	}
+	if scopes[ScopeFrame] == 0 || scopes[ScopeTrace] == 0 {
+		t.Fatalf("the provider corpus declares %d frame-scoped and %d trace-scoped fixtures", scopes[ScopeFrame], scopes[ScopeTrace])
+	}
+}
+
+func TestProviderCorpusScopeFollowsItsCodes(t *testing.T) {
+	base := FixtureEntry{ID: "f", Path: "provider/x.json", Kind: KindSemanticInvalid, Phase: PhaseSemantic, Units: []string{"provider-core"}, Profile: ProfileModelProvider}
+	for _, testCase := range []struct {
+		name    string
+		codes   []string
+		scope   string
+		refused bool
+	}{
+		{"a trace rule labelled frame", []string{CodeSequenceGap}, ScopeFrame, true},
+		{"a frame rule labelled trace", []string{CodeCredentialInHeaders}, ScopeTrace, true},
+		{"a mixed fixture is frame", []string{CodeSequenceGap, CodeSchemaInvalid}, ScopeFrame, false},
+		{"a trace rule labelled trace", []string{CodeTerminalNotAssembly}, ScopeTrace, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			entry := base
+			entry.Codes = testCase.codes
+			entry.Scope = testCase.scope
+			_, err := LoadManifest(writeManifest(t, []FixtureEntry{entry}))
+			if testCase.refused != (err != nil && strings.Contains(err.Error(), "scope")) {
+				t.Fatalf("refused=%v: %v", testCase.refused, err)
+			}
+		})
+	}
+}

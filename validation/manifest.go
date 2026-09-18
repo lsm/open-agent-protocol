@@ -34,6 +34,8 @@ type FixtureEntry struct {
 
 	Profile string `json:"profile,omitempty"`
 
+	Scope string `json:"scope,omitempty"`
+
 	Packs []string `json:"packs,omitempty"`
 }
 
@@ -48,6 +50,31 @@ const (
 )
 
 const ProfileModelProvider = "model-provider-core"
+
+const (
+	ScopeFrame = "frame"
+	ScopeTrace = "trace"
+)
+
+func traceOnlyCode(code string) bool {
+	switch code {
+	case CodeSequenceGap, CodeSequenceRegression, CodeEventAfterTerminal, CodeTerminalNotAssembly:
+		return true
+	}
+	return false
+}
+
+func scopeOf(e FixtureEntry) string {
+	if e.Valid || len(e.Codes) == 0 {
+		return ScopeFrame
+	}
+	for _, code := range e.Codes {
+		if !traceOnlyCode(code) {
+			return ScopeFrame
+		}
+	}
+	return ScopeTrace
+}
 
 var providerUnits = map[string]bool{"provider-core": true, "credentials": true, "carry": true}
 
@@ -220,10 +247,21 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 		default:
 			return FixtureManifest{}, fmt.Errorf("fixture entry %d has invalid kind %q", i, e.Kind)
 		}
+		if e.Scope != "" && e.Profile != ProfileModelProvider {
+			return FixtureManifest{}, fmt.Errorf("fixture %q declares a scope outside the provider profile", e.ID)
+		}
 		if e.Profile != "" && e.Profile != ProfileModelProvider {
 			return FixtureManifest{}, fmt.Errorf("fixture entry %d has unknown profile %q", i, e.Profile)
 		}
 		if e.Profile == ProfileModelProvider {
+			switch e.Scope {
+			case ScopeFrame, ScopeTrace:
+			default:
+				return FixtureManifest{}, fmt.Errorf("provider fixture %q must declare scope %q or %q", e.ID, ScopeFrame, ScopeTrace)
+			}
+			if want := scopeOf(e); e.Scope != want {
+				return FixtureManifest{}, fmt.Errorf("provider fixture %q declares scope %q and its diagnostic codes make it %q", e.ID, e.Scope, want)
+			}
 			if e.Kind == KindLoadInvalid || e.Mode != "" || len(e.Packs) > 0 || len(e.Covers) > 0 {
 				return FixtureManifest{}, fmt.Errorf("fixture %q is a provider fixture and cannot carry packs, modes or capability coverage", e.ID)
 			}
