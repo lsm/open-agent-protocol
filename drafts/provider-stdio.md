@@ -137,8 +137,12 @@ here rather than guessed at.
 **An implementation that cannot open the channel advertises `none`.** Where a
 build cannot serve this tier, `credential_grant` is `none` and `grant_kinds` is
 empty for every provider it describes — not the tier advertised and every grant
-refused. A caller then reads the limit from the descriptor and uses tier 2 or
-declines, instead of discovering it by being refused. This is the descriptor
+refused. A caller then reads the limit from the descriptor and declines, or
+reaches that implementation over a binding whose tier it can serve, instead of
+discovering the limit by being refused. It does not fall back to tier 2 here:
+this binding makes `on_envelope` non-conformant outright, so on stdio a
+`none` descriptor means no caller-held credential at all rather than a lesser
+one. This is the descriptor
 rule the profile applies to features, reaching a build's environment instead:
 publish what this build can do, never what the codebase can do.
 

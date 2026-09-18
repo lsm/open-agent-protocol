@@ -1444,8 +1444,9 @@ overlap each boundary carries codes the other has no referent for: agent control
 has `session_not_found`, `run_not_found`,
 `run_already_terminal`, `session_busy` and `stale_capabilities`, none of
 which has a referent below the loop; this profile has `credential_missing`,
-`credential_rejected`, `credential_expired`, `provider_unavailable` and
-`aborted`, none of which belongs above it. One type carrying both would be the union of
+`credential_rejected`, `credential_expired`, `provider_unavailable`,
+`resource_exhausted`, `endpoint_error` and `aborted`, none of which belongs
+above it. One type carrying both would be the union of
 everything, which is what an error code exists to avoid. So an implementation
 reuses the shape and defines its own enum, and a reader implementing both should
 expect exactly that.
@@ -1508,7 +1509,7 @@ envelope this profile carries an error on, and a code outside it is
 recommendation: a caller can exhaust the table.
 
 Two codes were missing from the table when it was only prose, and both were in
-use. `unsupported_feature` is named three other places in this draft — it is
+use. `unsupported_feature` is named four other places in this draft — it is
 what an endpoint returns for a grant it does not accept — and appeared in no
 class. `resource_exhausted` is new, and it exists because a real implementation
 had nowhere to put it: both of its decoders mapped every JSON parse failure,
