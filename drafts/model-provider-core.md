@@ -479,10 +479,11 @@ says it was; the vendor's variant is preserved under `extensions` and does not
 silently become `message`. An implementation that can reconcile before closing a
 part should — the right place for that is at `part.ended`, not at the terminal.
 
-**This one the validator can enforce**, unlike the credential rules: a trace
-that streams parts and whose `inference.completed.message` is not their assembly
-is invalid, checkable from the envelopes alone. A trace with no part envelopes
-is outside the rule rather than failing it. It is the first rule in this draft
+**The validator enforces this**, unlike the credential rules: a trace that
+streams parts and whose `inference.completed.message` is not their assembly is
+invalid — `terminal_not_assembly`, checkable from the envelopes alone. A trace
+with no part envelopes is outside the rule rather than failing it, which is what
+keeps a unary implementation conformant. It is the first rule in this draft
 that came from the build *and* falls inside the machinery this project already
 has.
 
@@ -1090,8 +1091,11 @@ to four rules:
    credential value, including the header maps described below.
 2. **Non-journalable.** Never written to a journal, assembled into a trace,
    replayed from a cursor, or persisted.
-3. **The validator enforces it.** A trace containing the pair is invalid, with a
-   diagnostic and a fixture.
+3. **The validator enforces it.** A trace containing a grant request that
+   carries a `value` is invalid — `credential_in_trace` — because a trace
+   carrying one was assembled from a stream that recorded a secret. A tier-1
+   exchange is not caught by this and must not be: it carries a nonce, a channel
+   and a reference, and tracing it is fine.
 4. **Gated and refusable.** A caller learns the capability is unavailable before
    it sends a secret, not after — by reading `credential_grant` on the
    descriptor, which is what makes that sentence achievable rather than
