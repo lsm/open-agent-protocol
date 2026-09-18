@@ -892,6 +892,15 @@ correctly configured provider.
 
 ## Compatibility Facts
 
+**Provisional for 0.1.0.** Every other part of this profile is about frame
+shape, sequencing and ownership — things an implementation can be driven to
+demonstrate and a suite can check. These twelve are the only part that asserts
+something about the *world*: what a named vendor's endpoint actually does. None
+has been checked against the vendor it describes, and the one that met a real
+options struct needed an undecidable case added on first contact. Treat the
+table as a named annex that may change in a way the rest of the profile may not,
+and do not read a tagged release shipping alongside it as settling it.
+
 The closed set an implementation states about a provider that claims a wire. It
 is Makai's `OpenAICompatOptions` — twelve fields, each one a vendor that broke a
 shape while claiming it — of which eleven are carried across whole and one is
@@ -1403,11 +1412,31 @@ rather than primary.
 
 | Action | Codes | Why it is its own class |
 | --- | --- | --- |
-| **Retry** | `rate_limited`, `provider_unavailable` | Transient. Back off and send it again. |
+| **Retry** | `rate_limited`, `provider_unavailable`, `resource_exhausted` | Transient. Back off and send it again. |
 | **Refresh** | `credential_expired` | A credential aged out. A refresh may fix it with no human involved. |
 | **Authenticate** | `credential_missing`, `credential_rejected` | No usable credential. A human must log in, or the key is wrong and retrying the refresh loops. |
-| **Report** | `invalid_request`, `protocol_violation`, `unsupported_version`, `model_not_found` | The caller or the peer is broken. Fail loudly; someone reads a log. Retrying cannot help. |
+| **Report** | `invalid_request`, `protocol_violation`, `unsupported_version`, `unsupported_feature`, `model_not_found` | The caller or the peer is broken. Fail loudly; someone reads a log. Retrying cannot help. |
 | **Accept** | `aborted` | A normal outcome that happens to travel as a terminal. Not a failure. |
+
+**The set is closed and the schema enforces it.** An earlier version of this
+draft listed the codes in prose over an open `code` string, so an implementation
+could emit anything and a caller branching on the table was branching on a
+convention. `providerError` now constrains `code` to the enum above on every
+envelope this profile carries an error on, and a code outside it is
+`schema_invalid`. That is what makes the action axis a contract rather than a
+recommendation: a caller can exhaust the table.
+
+Two codes were missing from the table when it was only prose, and both were in
+use. `unsupported_feature` is named three other places in this draft — it is
+what an endpoint returns for a grant it does not accept — and appeared in no
+class. `resource_exhausted` is new, and it exists because a real implementation
+had nowhere to put it: both of its decoders mapped every JSON parse failure,
+including running out of memory, to `protocol_violation`, so a host under memory
+pressure told its peer that its frame was malformed. The caller is told to report
+a bug when the correct action is to back off. The code is the profile's half of
+that fix; whether an implementation can allocate the error frame at all, and so
+whether the honest behaviour is to send it or to drop the connection, is the
+binding's question and the stdio binding's exit contract is where it belongs.
 
 The three credential states are one retry class and three different actions,
 which is the clearest case for the change: "do not blindly retry" is a single
@@ -1535,6 +1564,16 @@ implementation that builds its destination from a built-in literal and ignores
 the override does not fail: the suite runs, the frames validate, and every
 request went to the vendor. A green conformance report that tested nothing is
 worse than a red one.
+
+**The schema enforces this, and does not merely fail to provide it.**
+`inference.create.request` is a closed payload — the member list is fixed and
+`additionalProperties` is `false` — so a destination arriving on the wire under
+any name is `schema_invalid` at the validator rather than an unknown field an
+implementation happens to ignore. The difference matters: ignoring is a property
+of one decoder and can change without anyone noticing, while refusing is a
+property of the profile that every implementation inherits. A later revision
+that wanted a caller-supplied destination would have to add the member, in the
+open, against this clause.
 
 **The override is operator configuration, and must never be a member of the
 create request.** Every implementation resolves the destination first and
@@ -1915,13 +1954,19 @@ Two tiers, a nonce, a binding-defined side channel, a mandatory-where-achievable
 rule: all unexercised. Treat that section as the least tested thing in this
 draft rather than the most, whatever its density of argument suggests.
 
-The reason has changed once and is worth tracking. It was that the
-implementation had no way to hold a caller-granted credential without writing it
-down. That capability now exists (`lsm/makai#343`) — a second store no writer
-can reach, structural rather than flagged, about a day's work against an
-estimated re-architecture. The remaining reason is that **the stdio binding's
-side channel is unspecified**, so there is nothing for a grant to arrive on.
-That is this project's gap, not an implementation's.
+The reason has changed twice, and tracking it is the point. It was first that
+the implementation had no way to hold a caller-granted credential without
+writing it down. That capability now exists (`lsm/makai#343`) — a second store no
+writer can reach, structural rather than flagged. It was then that the stdio
+binding's side channel was unspecified, so there was nothing for a grant to
+arrive on. **That is no longer true**: [the stdio binding](provider-stdio.md)
+specifies the channel — a per-grant socket, the `provider.credential.grant.channel`
+envelope, a nonce, an arrival deadline and a burn rule.
+
+So both of this project's reasons are discharged, and what remains is that no
+implementation has exercised the path. The gap moved from the protocol to an
+implementation, which is a different thing to be waiting on and should not go on
+being described as a specification hole.
 
 **No compatibility fact has been observed.** All twelve are carried and mapped
 and none has been checked against the vendor it describes.
