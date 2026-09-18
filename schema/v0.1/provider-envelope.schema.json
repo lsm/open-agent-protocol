@@ -3,69 +3,438 @@
   "$id": "provider-envelope.schema.json",
   "title": "Open Agent Protocol model-provider-core envelope",
   "type": "object",
-  "required": ["protocol", "version", "profile", "type", "id", "payload"],
+  "required": [
+    "protocol",
+    "version",
+    "profile",
+    "type",
+    "id",
+    "payload"
+  ],
   "properties": {
-    "protocol": { "const": "open-agent-protocol" },
-    "version": { "const": "0.1" },
-    "profile": { "const": "open-agent-protocol.model-provider-core" },
-    "type": { "type": "string" },
-    "id": { "$ref": "common.schema.json#/$defs/opaqueID" },
-    "payload": { "type": "object" },
-    "sequence": { "type": "integer", "minimum": 1 },
-    "timestamp_ms": { "type": "integer" },
-    "in_reply_to": { "$ref": "common.schema.json#/$defs/opaqueID" },
-    "inference_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
-    "capability_revision": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-    "extensions": { "type": "object" }
+    "protocol": {
+      "const": "open-agent-protocol"
+    },
+    "version": {
+      "const": "0.1"
+    },
+    "profile": {
+      "const": "open-agent-protocol.model-provider-core"
+    },
+    "type": {
+      "type": "string"
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/opaqueID"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp_ms": {
+      "type": "integer"
+    },
+    "in_reply_to": {
+      "$ref": "common.schema.json#/$defs/opaqueID"
+    },
+    "inference_id": {
+      "$ref": "common.schema.json#/$defs/opaqueID"
+    },
+    "capability_revision": {
+      "$ref": "common.schema.json#/$defs/nonEmptyString"
+    },
+    "extensions": {
+      "type": "object"
+    }
   },
   "additionalProperties": false,
   "oneOf": [
-    { "$ref": "#/$defs/describeRequest" },
-    { "$ref": "#/$defs/describeResponse" },
-    { "$ref": "#/$defs/modelsListRequest" },
-    { "$ref": "#/$defs/modelsListResponse" },
-    { "$ref": "#/$defs/credentialGrantRequest" },
-    { "$ref": "#/$defs/credentialGrantResponse" },
-    { "$ref": "#/$defs/createRequest" },
-    { "$ref": "#/$defs/createResponse" },
-    { "$ref": "#/$defs/started" },
-    { "$ref": "#/$defs/partStarted" },
-    { "$ref": "#/$defs/partDelta" },
-    { "$ref": "#/$defs/partEnded" },
-    { "$ref": "#/$defs/completed" },
-    { "$ref": "#/$defs/failed" },
-    { "$ref": "#/$defs/cancelRequest" },
-    { "$ref": "#/$defs/cancelResponse" },
-    { "$ref": "#/$defs/syncRequest" },
-    { "$ref": "#/$defs/syncResponse" }
+    {
+      "$ref": "#/$defs/describeRequest"
+    },
+    {
+      "$ref": "#/$defs/describeResponse"
+    },
+    {
+      "$ref": "#/$defs/modelsListRequest"
+    },
+    {
+      "$ref": "#/$defs/modelsListResponse"
+    },
+    {
+      "$ref": "#/$defs/credentialGrantRequest"
+    },
+    {
+      "$ref": "#/$defs/credentialGrantResponse"
+    },
+    {
+      "$ref": "#/$defs/createRequest"
+    },
+    {
+      "$ref": "#/$defs/createResponse"
+    },
+    {
+      "$ref": "#/$defs/started"
+    },
+    {
+      "$ref": "#/$defs/partStarted"
+    },
+    {
+      "$ref": "#/$defs/partDelta"
+    },
+    {
+      "$ref": "#/$defs/partEnded"
+    },
+    {
+      "$ref": "#/$defs/completed"
+    },
+    {
+      "$ref": "#/$defs/failed"
+    },
+    {
+      "$ref": "#/$defs/cancelRequest"
+    },
+    {
+      "$ref": "#/$defs/cancelResponse"
+    },
+    {
+      "$ref": "#/$defs/syncRequest"
+    },
+    {
+      "$ref": "#/$defs/syncResponse"
+    }
   ],
   "$defs": {
-    "response": { "required": ["in_reply_to"] },
-    "scoped": { "required": ["inference_id"] },
-    "event": { "required": ["inference_id", "sequence"] },
-    "unscoped": { "not": { "required": ["inference_id"] } },
-
-    "describeRequest": { "properties": { "type": { "const": "provider.describe.request" }, "payload": { "$ref": "provider.schema.json#/$defs/describeRequest" } } },
-    "describeResponse": { "allOf": [{ "$ref": "#/$defs/response" }], "required": ["capability_revision"], "properties": { "type": { "const": "provider.describe.response" }, "payload": { "$ref": "provider.schema.json#/$defs/describeResponse" } } },
-    "modelsListRequest": { "properties": { "type": { "const": "provider.models.list.request" }, "payload": { "$ref": "provider.schema.json#/$defs/modelsListRequest" } } },
-    "modelsListResponse": { "allOf": [{ "$ref": "#/$defs/response" }], "required": ["capability_revision"], "properties": { "type": { "const": "provider.models.list.response" }, "payload": { "$ref": "provider.schema.json#/$defs/modelsListResponse" } } },
-
-    "credentialGrantRequest": { "properties": { "type": { "const": "provider.credential.grant.request" }, "payload": { "$ref": "provider.schema.json#/$defs/credentialGrantRequest" } } },
-    "credentialGrantResponse": { "allOf": [{ "$ref": "#/$defs/response" }], "properties": { "type": { "const": "provider.credential.grant.response" }, "payload": { "$ref": "provider.schema.json#/$defs/credentialGrantResponse" } } },
-
-    "createRequest": { "allOf": [{ "$ref": "#/$defs/unscoped" }], "properties": { "type": { "const": "inference.create.request" }, "payload": { "$ref": "inference.schema.json#/$defs/createRequest" } } },
-    "createResponse": { "allOf": [{ "$ref": "#/$defs/response" }], "properties": { "type": { "const": "inference.create.response" }, "payload": { "$ref": "inference.schema.json#/$defs/createResponse" } } },
-
-    "started": { "allOf": [{ "$ref": "#/$defs/event" }], "properties": { "type": { "const": "inference.started" }, "payload": { "$ref": "inference.schema.json#/$defs/started" } } },
-    "partStarted": { "allOf": [{ "$ref": "#/$defs/event" }], "properties": { "type": { "const": "inference.part.started" }, "payload": { "$ref": "inference.schema.json#/$defs/partStarted" } } },
-    "partDelta": { "allOf": [{ "$ref": "#/$defs/event" }], "properties": { "type": { "const": "inference.part.delta" }, "payload": { "$ref": "inference.schema.json#/$defs/partDelta" } } },
-    "partEnded": { "allOf": [{ "$ref": "#/$defs/event" }], "properties": { "type": { "const": "inference.part.ended" }, "payload": { "$ref": "inference.schema.json#/$defs/partEnded" } } },
-    "completed": { "allOf": [{ "$ref": "#/$defs/event" }], "properties": { "type": { "const": "inference.completed" }, "payload": { "$ref": "inference.schema.json#/$defs/completed" } } },
-    "failed": { "allOf": [{ "$ref": "#/$defs/event" }], "properties": { "type": { "const": "inference.failed" }, "payload": { "$ref": "inference.schema.json#/$defs/failed" } } },
-
-    "cancelRequest": { "allOf": [{ "$ref": "#/$defs/scoped" }], "properties": { "type": { "const": "inference.cancel.request" }, "payload": { "$ref": "inference.schema.json#/$defs/cancelRequest" } } },
-    "cancelResponse": { "allOf": [{ "$ref": "#/$defs/response" }, { "$ref": "#/$defs/scoped" }], "properties": { "type": { "const": "inference.cancel.response" }, "payload": { "$ref": "inference.schema.json#/$defs/cancelResponse" } } },
-    "syncRequest": { "allOf": [{ "$ref": "#/$defs/scoped" }], "properties": { "type": { "const": "inference.sync.request" }, "payload": { "$ref": "inference.schema.json#/$defs/syncRequest" } } },
-    "syncResponse": { "allOf": [{ "$ref": "#/$defs/response" }, { "$ref": "#/$defs/scoped" }], "properties": { "type": { "const": "inference.sync.response" }, "payload": { "$ref": "inference.schema.json#/$defs/syncResponse" } } }
+    "response": {
+      "required": [
+        "in_reply_to"
+      ]
+    },
+    "scoped": {
+      "required": [
+        "inference_id"
+      ]
+    },
+    "event": {
+      "required": [
+        "inference_id",
+        "sequence"
+      ]
+    },
+    "unscoped": {
+      "not": {
+        "required": [
+          "inference_id"
+        ]
+      }
+    },
+    "describeRequest": {
+      "properties": {
+        "type": {
+          "const": "provider.describe.request"
+        },
+        "payload": {
+          "$ref": "provider.schema.json#/$defs/describeRequest"
+        }
+      }
+    },
+    "describeResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "required": [
+        "capability_revision"
+      ],
+      "properties": {
+        "type": {
+          "const": "provider.describe.response"
+        },
+        "payload": {
+          "$ref": "provider.schema.json#/$defs/describeResponse"
+        }
+      }
+    },
+    "modelsListRequest": {
+      "properties": {
+        "type": {
+          "const": "provider.models.list.request"
+        },
+        "payload": {
+          "$ref": "provider.schema.json#/$defs/modelsListRequest"
+        }
+      }
+    },
+    "modelsListResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "required": [
+        "capability_revision"
+      ],
+      "properties": {
+        "type": {
+          "const": "provider.models.list.response"
+        },
+        "payload": {
+          "$ref": "provider.schema.json#/$defs/modelsListResponse"
+        }
+      }
+    },
+    "credentialGrantRequest": {
+      "properties": {
+        "type": {
+          "const": "provider.credential.grant.request"
+        },
+        "payload": {
+          "$ref": "provider.schema.json#/$defs/credentialGrantRequest"
+        }
+      }
+    },
+    "credentialGrantResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "provider.credential.grant.response"
+        },
+        "payload": {
+          "$ref": "provider.schema.json#/$defs/credentialGrantResponse"
+        }
+      }
+    },
+    "createRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/unscoped"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.create.request"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/createRequest"
+        }
+      }
+    },
+    "createResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.create.response"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/createResponse"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "payload": {
+              "properties": {
+                "accepted": {
+                  "const": true
+                }
+              },
+              "required": [
+                "accepted"
+              ]
+            }
+          },
+          "required": [
+            "inference_id"
+          ]
+        },
+        {
+          "properties": {
+            "payload": {
+              "properties": {
+                "accepted": {
+                  "const": false
+                }
+              },
+              "required": [
+                "accepted"
+              ]
+            }
+          },
+          "not": {
+            "required": [
+              "inference_id"
+            ]
+          }
+        }
+      ]
+    },
+    "started": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/event"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.started"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/started"
+        }
+      }
+    },
+    "partStarted": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/event"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.part.started"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/partStarted"
+        }
+      }
+    },
+    "partDelta": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/event"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.part.delta"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/partDelta"
+        }
+      }
+    },
+    "partEnded": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/event"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.part.ended"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/partEnded"
+        }
+      }
+    },
+    "completed": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/event"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.completed"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/completed"
+        }
+      }
+    },
+    "failed": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/event"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.failed"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/failed"
+        }
+      }
+    },
+    "cancelRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scoped"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.cancel.request"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/cancelRequest"
+        }
+      }
+    },
+    "cancelResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        },
+        {
+          "$ref": "#/$defs/scoped"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.cancel.response"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/cancelResponse"
+        }
+      }
+    },
+    "syncRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scoped"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.sync.request"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/syncRequest"
+        }
+      }
+    },
+    "syncResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        },
+        {
+          "$ref": "#/$defs/scoped"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "inference.sync.response"
+        },
+        "payload": {
+          "$ref": "inference.schema.json#/$defs/syncResponse"
+        }
+      }
+    }
   }
 }
