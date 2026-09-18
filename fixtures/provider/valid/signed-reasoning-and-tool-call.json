@@ -32,7 +32,7 @@
     "type": "inference.part.delta",
     "id": "d0-4",
     "inference_id": "i1",
-    "sequence": 4,
+    "sequence": 3,
     "payload": {
       "part_index": 0,
       "delta": "think"
@@ -45,7 +45,7 @@
     "type": "inference.part.ended",
     "id": "n0",
     "inference_id": "i1",
-    "sequence": 5,
+    "sequence": 4,
     "payload": {
       "part_index": 0,
       "part_kind": "reasoning",
@@ -60,7 +60,7 @@
     "type": "inference.part.started",
     "id": "s1",
     "inference_id": "i1",
-    "sequence": 3,
+    "sequence": 5,
     "payload": {
       "part_index": 1,
       "part_kind": "tool_call",
@@ -75,7 +75,7 @@
     "type": "inference.part.delta",
     "id": "d1-7",
     "inference_id": "i1",
-    "sequence": 7,
+    "sequence": 6,
     "payload": {
       "part_index": 1,
       "delta": "{\"city\":"
@@ -88,7 +88,7 @@
     "type": "inference.part.delta",
     "id": "d1-8",
     "inference_id": "i1",
-    "sequence": 8,
+    "sequence": 7,
     "payload": {
       "part_index": 1,
       "delta": "\"Kyoto\"}"
@@ -101,7 +101,7 @@
     "type": "inference.part.ended",
     "id": "n1",
     "inference_id": "i1",
-    "sequence": 9,
+    "sequence": 8,
     "payload": {
       "part_index": 1,
       "part_kind": "tool_call",
@@ -122,7 +122,7 @@
     "type": "inference.completed",
     "id": "t1",
     "inference_id": "i1",
-    "sequence": 10,
+    "sequence": 9,
     "payload": {
       "stop_reason": "tool_use",
       "message": {

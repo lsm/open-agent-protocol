@@ -61,6 +61,8 @@ func providerDiagnosticCodes() map[string]bool {
 		CodeCredentialInHeaders: true,
 		CodeTerminalNotAssembly: true,
 		CodeEventAfterTerminal:  true,
+		CodeSequenceGap:         true,
+		CodeSequenceRegression:  true,
 	}
 }
 
@@ -233,7 +235,15 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 					return FixtureManifest{}, fmt.Errorf("fixture %q has unknown provider conformance unit %q", e.ID, unit)
 				}
 			}
+			if e.Valid {
+				if e.Kind != KindPositive || e.Phase != "" || len(e.Codes) > 0 {
+					return FixtureManifest{}, fmt.Errorf("valid fixture %q carries a non-positive kind, a phase or diagnostic codes", e.ID)
+				}
+			}
 			if !e.Valid {
+				if e.Kind == KindPositive {
+					return FixtureManifest{}, fmt.Errorf("invalid fixture %q is marked positive", e.ID)
+				}
 				if e.Phase != PhaseDecode && e.Phase != PhaseSchema && e.Phase != PhaseSemantic {
 					return FixtureManifest{}, fmt.Errorf("invalid fixture %q lacks a valid phase", e.ID)
 				}

@@ -9103,6 +9103,40 @@
       ],
       "provenance": [],
       "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-sequence-gap",
+      "path": "provider/semantic-invalid/sequence-gap.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "sequence_gap"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core"
+    },
+    {
+      "id": "provider-sequence-repeated",
+      "path": "provider/semantic-invalid/sequence-repeated.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "sequence_regression"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core"
     }
   ]
 }

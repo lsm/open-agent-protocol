@@ -47,7 +47,7 @@
     "type": "inference.part.delta",
     "id": "d0-4",
     "inference_id": "i1",
-    "sequence": 4,
+    "sequence": 3,
     "payload": {
       "part_index": 0,
       "delta": "hel"
@@ -60,7 +60,7 @@
     "type": "inference.part.delta",
     "id": "d0-5",
     "inference_id": "i1",
-    "sequence": 5,
+    "sequence": 4,
     "payload": {
       "part_index": 0,
       "delta": "lo"
@@ -73,7 +73,7 @@
     "type": "inference.part.ended",
     "id": "n0",
     "inference_id": "i1",
-    "sequence": 6,
+    "sequence": 5,
     "payload": {
       "part_index": 0,
       "part_kind": "text",
@@ -87,7 +87,7 @@
     "type": "inference.completed",
     "id": "t1",
     "inference_id": "i1",
-    "sequence": 7,
+    "sequence": 6,
     "payload": {
       "stop_reason": "stop",
       "message": {

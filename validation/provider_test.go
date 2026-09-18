@@ -1,6 +1,7 @@
 package validation_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -24,19 +25,26 @@ func codes(result validation.Result) []string {
 	return found
 }
 
-const (
-	textEnded = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"text","text":"hello"}}`
-	toolEnded = `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e3","inference_id":"i1","sequence":3,"payload":{"part_index":1,"part_kind":"tool_call","tool_call":{"tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}}}`
-)
+func scoped(kind, id string, sequence int, payload string) string {
+	return `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"` + kind + `","id":"` + id + `","inference_id":"i1","sequence":` + strconv.Itoa(sequence) + `,"payload":` + payload + `}`
+}
 
-func completed(content string) string {
-	return `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.completed","id":"e9","inference_id":"i1","sequence":9,"payload":{"stop_reason":"tool_use","message":{"role":"assistant","content":` + content + `}}}`
+func textEnded(sequence int) string {
+	return scoped("inference.part.ended", "e2", sequence, `{"part_index":0,"part_kind":"text","text":"hello"}`)
+}
+
+func toolEnded(sequence int) string {
+	return scoped("inference.part.ended", "e3", sequence, `{"part_index":1,"part_kind":"tool_call","tool_call":{"tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}}`)
+}
+
+func completed(sequence int, content string) string {
+	return scoped("inference.completed", "e9", sequence, `{"stop_reason":"tool_use","message":{"role":"assistant","content":`+content+`}}`)
 }
 
 func TestProviderTerminalIsTheAssemblyOfItsParts(t *testing.T) {
 	assembled := `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`
-	if diags := codes(providerTrace(t, textEnded, toolEnded, completed(assembled))); len(diags) != 0 {
-		t.Fatalf("a terminal agreeing with its parts was rejected: %v", providerTrace(t, textEnded, toolEnded, completed(assembled)).Diagnostics)
+	if diags := codes(providerTrace(t, textEnded(1), toolEnded(2), completed(3, assembled))); len(diags) != 0 {
+		t.Fatalf("a terminal agreeing with its parts was rejected: %v", providerTrace(t, textEnded(1), toolEnded(2), completed(3, assembled)).Diagnostics)
 	}
 }
 
@@ -49,7 +57,7 @@ func TestProviderTerminalDisagreeingWithItsParts(t *testing.T) {
 		{"different tool", `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t2","name":"search","arguments_json":{"q":"zig"}}]`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			result := providerTrace(t, textEnded, toolEnded, completed(testCase.content))
+			result := providerTrace(t, textEnded(1), toolEnded(2), completed(3, testCase.content))
 			for _, d := range result.Diagnostics {
 				if d.Code == validation.CodeTerminalNotAssembly {
 					return
@@ -61,26 +69,26 @@ func TestProviderTerminalDisagreeingWithItsParts(t *testing.T) {
 }
 
 func TestProviderTerminalOfADifferentKindCarryingNothingToCompare(t *testing.T) {
-	emptyText := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"text","text":""}}`
-	result := providerTrace(t, emptyText, completed(`[{"type":"reasoning","reasoning":"thinking"}]`))
+	emptyText := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":1,"payload":{"part_index":0,"part_kind":"text","text":""}}`
+	result := providerTrace(t, emptyText, completed(2, `[{"type":"reasoning","reasoning":"thinking"}]`))
 	if !hasCode(result, validation.CodeTerminalNotAssembly) {
 		t.Fatalf("a terminal of the wrong kind was admitted because there was nothing left to compare: %v", codes(result))
 	}
 }
 
 func TestProviderTerminalDroppingACarryItsPartEndedWith(t *testing.T) {
-	signed := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"reasoning","text":"thinking","carry":"sig-1"}}`
-	if !hasCode(providerTrace(t, signed, completed(`[{"type":"reasoning","reasoning":"thinking"}]`)), validation.CodeTerminalNotAssembly) {
+	signed := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"e2","inference_id":"i1","sequence":1,"payload":{"part_index":0,"part_kind":"reasoning","text":"thinking","carry":"sig-1"}}`
+	if !hasCode(providerTrace(t, signed, completed(2, `[{"type":"reasoning","reasoning":"thinking"}]`)), validation.CodeTerminalNotAssembly) {
 		t.Fatal("a terminal that dropped its part's carry was admitted")
 	}
-	if result := providerTrace(t, signed, completed(`[{"type":"reasoning","reasoning":"thinking","carry":"sig-1"}]`)); len(result.Diagnostics) != 0 {
+	if result := providerTrace(t, signed, completed(2, `[{"type":"reasoning","reasoning":"thinking","carry":"sig-1"}]`)); len(result.Diagnostics) != 0 {
 		t.Fatalf("a terminal repeating its part's carry was rejected: %v", result.Diagnostics)
 	}
 }
 
 func TestProviderPartsEndingOutOfIndexOrder(t *testing.T) {
 	assembled := `[{"type":"text","text":"hello"},{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}}]`
-	result := providerTrace(t, toolEnded, textEnded, completed(assembled))
+	result := providerTrace(t, toolEnded(1), textEnded(2), completed(3, assembled))
 	if diags := codes(result); len(diags) != 0 {
 		t.Fatalf("a terminal in part_index order was judged against arrival order: %v", result.Diagnostics)
 	}
@@ -88,7 +96,7 @@ func TestProviderPartsEndingOutOfIndexOrder(t *testing.T) {
 
 func TestProviderTerminalInArrivalOrderRatherThanIndexOrder(t *testing.T) {
 	byArrival := `[{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"}},{"type":"text","text":"hello"}]`
-	result := providerTrace(t, toolEnded, textEnded, completed(byArrival))
+	result := providerTrace(t, toolEnded(1), textEnded(2), completed(3, byArrival))
 	for _, d := range result.Diagnostics {
 		if d.Code == validation.CodeTerminalNotAssembly {
 			return
@@ -99,7 +107,7 @@ func TestProviderTerminalInArrivalOrderRatherThanIndexOrder(t *testing.T) {
 
 func TestProviderPartEndingAfterItsTerminal(t *testing.T) {
 	assembled := `[{"type":"text","text":"hello"}]`
-	result := providerTrace(t, textEnded, completed(assembled), toolEnded)
+	result := providerTrace(t, textEnded(1), completed(2, assembled), toolEnded(3))
 	var assembly, after bool
 	for _, d := range result.Diagnostics {
 		switch d.Code {
@@ -129,7 +137,7 @@ func TestProviderTraceWithADuplicateKey(t *testing.T) {
 }
 
 func TestProviderTerminalWithNoStreamedPartsIsOutsideTheRule(t *testing.T) {
-	unary := completed(`[{"type":"text","text":"whatever the provider said"}]`)
+	unary := completed(1, `[{"type":"text","text":"whatever the provider said"}]`)
 	if diags := codes(providerTrace(t, unary)); len(diags) != 0 {
 		t.Fatalf("a unary terminal was judged against parts it never streamed: %v", diags)
 	}
@@ -223,5 +231,32 @@ func TestProviderToolSchemaDescribingAHeadersPropertyIsNotAHeader(t *testing.T) 
 	envelope := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"c1","payload":{"model_ref":"p1/m1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"http_request","input_schema":{"properties":{"headers":{"description":"Bearer auth is injected by the gateway"}}}}]}}`
 	if hasCode(providerTrace(t, envelope), validation.CodeCredentialInHeaders) {
 		t.Fatal("a tool's input_schema describing a headers property is not a credential in a header")
+	}
+}
+
+func TestProviderSequenceMustBeContiguousPerInference(t *testing.T) {
+	for _, testCase := range []struct {
+		name, code string
+		frames     []string
+	}{
+		{"a gap", validation.CodeSequenceGap, []string{textEnded(1), completed(3, `[{"type":"text","text":"hello"}]`)}},
+		{"not opening at one", validation.CodeSequenceGap, []string{textEnded(2), completed(3, `[{"type":"text","text":"hello"}]`)}},
+		{"a repeat", validation.CodeSequenceRegression, []string{textEnded(1), toolEnded(1)}},
+		{"going backwards", validation.CodeSequenceRegression, []string{textEnded(2), toolEnded(1)}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := providerTrace(t, testCase.frames...)
+			if !hasCode(result, testCase.code) {
+				t.Fatalf("want %s, got %v", testCase.code, codes(result))
+			}
+		})
+	}
+}
+
+func TestProviderSequenceIsPerInferenceNotPerTrace(t *testing.T) {
+	second := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"o1","inference_id":"i2","sequence":1,"payload":{"part_index":0,"part_kind":"text","text":"other"}}`
+	result := providerTrace(t, textEnded(1), second, toolEnded(2))
+	if hasCode(result, validation.CodeSequenceGap) || hasCode(result, validation.CodeSequenceRegression) {
+		t.Fatalf("two inferences each counting from one were judged as one sequence: %v", result.Diagnostics)
 	}
 }
