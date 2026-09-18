@@ -874,6 +874,16 @@ model error.
 - `round_trips_carry` — whether a `carry` this implementation emits on a
   `tool_call` or `reasoning` part can be handed back as `encrypted_carry` on the
   next call and reach the provider. Absent means no.
+
+`round_trips_carry` absent means no, and that is safe here for a reason worth
+stating rather than assuming: a caller that reads absent, a caller that reads
+`false`, and a caller holding a descriptor older than the field all take the
+same action — do not rely on a carry. **Additive absence is safe exactly when
+unknown and no imply the same caller action.** Where they diverge — where not
+knowing should make a caller probe, degrade loudly, or decline to proceed rather
+than quietly assume no — a new member needs a third state or a different shape.
+No member in this profile has that property today, and the question belongs to
+each addition rather than being settled once.
 - `context_window?`, `max_output_tokens?`
 
 `allows_anonymous` is not a nicety. A local Ollama needs no credential, and an
