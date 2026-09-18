@@ -80,18 +80,74 @@ the descriptor both members.
 
 ### Wire
 
-A closed set. The values are the three this repository's `provider` package
-already names and builds real requests for:
+A closed set of **named** shapes, plus one escape:
 
 - `openai-responses`
 - `anthropic-messages`
 - `openai-chat-completions`
+- `other`
 
-Adding a value is a protocol change, not configuration. A wire an
-implementation reaches but this set does not name is reported as `unavailable`
-rather than approximated to a neighbour.
+Adding a named value is a protocol change, not configuration.
 
-### Framing
+#### Why there is an escape, and what it costs
+
+An earlier version of this draft had the three names and no escape, and said a
+wire the set does not name is reported `unavailable` rather than approximated to
+a neighbour. Mapped against a real registry of eight APIs, that names five.
+Azure, Codex and native OpenAI all land on `openai-responses`; Google's
+generative API and Ollama land on nothing.
+
+Two consequences, and the second is the one that forced the change:
+
+**Google is not an edge case.** It is two of those eight and a major vendor.
+
+**The profile reasoned from a provider it could not describe.** `ndjson` is in
+the framing set below because Ollama is newline-delimited with no SSE parser.
+`allows_anonymous` exists because a local Ollama needs no credential. Both
+arguments are sound and both cite the one provider the wire set excluded — so
+*no provider this profile could express used `ndjson` framing*, while `ndjson`'s
+justification rested on a provider it could not serve. A member's reasoning and
+its reachability had come apart.
+
+**The escape is not "add `ollama`."** A set that grows one vendor at a time is
+what a closed set exists to prevent, and the second category has no natural
+bound: `openai-chat-completions` is a shape a dozen vendors implement,
+`anthropic-messages` is one vendor's shape that others emulate, and Ollama's is
+one vendor's shape that nobody emulates. Mixing de facto standards with specific
+vendors in one enum guarantees this recurs.
+
+So the criterion for a named value is stated rather than left to taste:
+
+> A wire is named when **more than one independent implementer speaks it**.
+> A shape only its originator implements is `other`.
+
+That is how the three present values arose, it bounds growth, and it gives a
+shape a way to graduate later — if Google's becomes widely emulated, it earns a
+name, and nothing about the providers already describing themselves as `other`
+breaks.
+
+**What `other` costs, explicitly.** A caller never builds a vendor request —
+that is the profile's whole point — so `wire` is not how a caller talks to a
+provider. What it buys is the ability to reason across providers: that two share
+a request-shape family, and therefore a behaviour family and a failure domain.
+`other` gives that up. The compatibility facts still describe the endpoint, and
+`endpoint` still names it, but a caller learns nothing portable about the shape
+underneath and must not infer any.
+
+That is a real loss and it is now explicit rather than silent. `unavailable`
+made the provider undescribable; `other` makes it describable with a named gap.
+
+#### Attested: the provider/wire split holds on real endpoints
+
+Three of those eight — Azure, Codex and native OpenAI — are distinct providers
+speaking one wire, told apart by `provider_id` and `endpoint`.
+[Decision 0017](../decisions/0017-provider-provisioning.md) argued for keeping
+`provider_id` and `wire` as separate members on the grounds that an
+implementation keying providers by wire loses the distinction the moment two
+endpoints share a shape. That was an argument; this is three endpoints where it
+happens, in one registry.
+
+### Framing### Framing
 
 Streaming framing is a **separate member** from wire, from the closed set
 `sse`, `ndjson`, `unary`.
@@ -105,7 +161,11 @@ compatibility prober and would be wrong for the profile. A profile that folded
 framing into wire would exclude a working provider while believing its set
 complete.
 
-**`sse` and `ndjson` are attested; `unary` is not.** All eight of Makai's APIs
+**`sse` and `ndjson` are attested; `unary` is not.** Until the wire set gained
+`other`, `ndjson` was also unreachable — the only provider attesting it was one
+the profile could not name. The implementation carries a test asserting that no
+expressible provider yields `ndjson`, written to start failing when that stops
+being true, which is the only reason to write such a test down. All eight of Makai's APIs
 stream, and their non-streaming call is a facade that opens a stream, drains it
 and returns the result rather than a separate framing. This repository's prober
 always requests a stream. So `unary` is here because a non-streaming provider is
@@ -1047,9 +1107,9 @@ three wires and parses each one's stream. It was written as a compatibility
 prober and its assumptions show — it requires `text/event-stream` — but the
 disagreements it had to encode are the ones the profile must carry.
 
-**One implementation is being built against it**, and ten findings from writing
-the vocabulary, codec, discovery, grants and admission are already in this
-draft. From the first pass: `ProtocolError` and
+**One implementation is being built against it**, and twelve findings from
+writing the vocabulary, codec, discovery, grants, admission and the wire mapping
+are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
 had silently dropped a value, `opaque` is a reserved word in the implementation
 language, the envelope scope rule for `inference.create.response` was
@@ -1066,8 +1126,11 @@ From the third: the persistence rule asked for a flag where it needed a
 representation, and the mechanism the rule was first justified by turned out not
 to exist.
 
-Of the eleven, ten were places the draft was silent or wrong rather than merely
-incomplete. Three — the persistence rule, the grant advertisement and
+From the fourth: the closed wire set named five of eight registered APIs, and
+excluded the one provider two of the draft's own members were justified by.
+
+Of the twelve, eleven were places the draft was silent or wrong rather than
+merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
