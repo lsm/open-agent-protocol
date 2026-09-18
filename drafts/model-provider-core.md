@@ -1091,9 +1091,11 @@ to four rules:
    credential value, including the header maps described below.
 2. **Non-journalable.** Never written to a journal, assembled into a trace,
    replayed from a cursor, or persisted.
-3. **The validator enforces it.** A trace containing any grant envelope is
-   invalid — `credential_in_trace` — whichever tier produced it, because a trace
-   carrying one was assembled from a stream that recorded a secret.
+3. **The validator enforces it.** A trace containing a grant request that
+   carries a `value` is invalid — `credential_in_trace` — because a trace
+   carrying one was assembled from a stream that recorded a secret. A tier-1
+   exchange is not caught by this and must not be: it carries a nonce, a channel
+   and a reference, and tracing it is fine.
 4. **Gated and refusable.** A caller learns the capability is unavailable before
    it sends a secret, not after — by reading `credential_grant` on the
    descriptor, which is what makes that sentence achievable rather than

@@ -85,12 +85,12 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodePayloadDecode, Index: i, Line: entry.line, Message: err.Error()})
 			continue
 		}
-		if e.Type == "provider.credential.grant.request" || e.Type == "provider.credential.grant.response" || e.Type == "provider.credential.grant.channel" {
+		if e.Type == "provider.credential.grant.request" && carriesCredentialValue(e.Payload) {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{
 				Fixture: fixture, Phase: PhaseSemantic, Code: CodeCredentialInTrace, Index: i, Line: entry.line,
-				EnvelopeID: e.ID, Type: e.Type, Pointer: "/type",
-				Expected: "no credential exchange in an assembled trace", Actual: e.Type,
-				Message: "a credential grant exchange is not journalled, traced or replayed, so a trace containing one was assembled from a stream that recorded a secret",
+				EnvelopeID: e.ID, Type: e.Type, Pointer: "/payload/value",
+				Expected: "a grant that names a nonce and carries no value", Actual: "a grant carrying a credential value",
+				Message: "the on-envelope credential tier is never journalled, traced or replayed, so a trace carrying one was assembled from a stream that recorded a secret",
 			})
 			continue
 		}
@@ -140,6 +140,15 @@ type providerTerminal struct {
 	index    int
 	line     int
 	payload  providerCompleted
+}
+
+func carriesCredentialValue(payload json.RawMessage) bool {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &members); err != nil {
+		return false
+	}
+	_, present := members["value"]
+	return present
 }
 
 func scopedEvent(kind string) bool {

@@ -117,21 +117,25 @@ func TestProviderTerminalWithNoStreamedPartsIsOutsideTheRule(t *testing.T) {
 	}
 }
 
-func TestProviderTraceCarryingACredentialExchange(t *testing.T) {
+func TestProviderTraceCarryingACredentialValue(t *testing.T) {
+	onEnvelope := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"provider.credential.grant.request","id":"g1","payload":{"provider_id":"p","nonce":"n1","value":"sk-abc"}}`
+	result := providerTrace(t, onEnvelope)
+	for _, d := range result.Diagnostics {
+		if d.Code == validation.CodeCredentialInTrace {
+			return
+		}
+	}
+	t.Fatalf("a trace carrying a credential value was admitted: %v", codes(result))
+}
+
+func TestProviderTraceOfAnOutOfBandGrant(t *testing.T) {
 	for _, frame := range []string{
 		`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"provider.credential.grant.request","id":"g1","payload":{"provider_id":"p","nonce":"n1"}}`,
 		`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"provider.credential.grant.channel","id":"g2","in_reply_to":"g1","payload":{"nonce":"n1","channel":"/tmp/s.sock"}}`,
 		`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"provider.credential.grant.response","id":"g3","in_reply_to":"g1","payload":{"accepted":true,"credential_ref":"c1"}}`,
 	} {
-		result := providerTrace(t, frame)
-		found := false
-		for _, d := range result.Diagnostics {
-			if d.Code == validation.CodeCredentialInTrace {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("a trace carrying a credential exchange was admitted: %v", codes(result))
+		if diags := codes(providerTrace(t, frame)); len(diags) != 0 {
+			t.Fatalf("a tier-1 grant frame carrying no secret was rejected: %v", diags)
 		}
 	}
 }
