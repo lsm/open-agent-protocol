@@ -134,6 +134,26 @@ A binding for a platform genuinely without them would need another form. None of
 the platforms this has been built against is one, so that form is not specified
 here rather than guessed at.
 
+**An implementation that cannot open the channel advertises `none`.** Where a
+build cannot serve this tier, `credential_grant` is `none` and `grant_kinds` is
+empty for every provider it describes — not the tier advertised and every grant
+refused. A caller then reads the limit from the descriptor and uses tier 2 or
+declines, instead of discovering it by being refused. This is the descriptor
+rule the profile applies to features, reaching a build's environment instead:
+publish what this build can do, never what the codebase can do.
+
+**The condition is a capability, never a platform name.** An implementation
+gating this on an operating system encodes its belief about that system into
+something that keeps applying after the belief stops being true — and the belief
+is usually about a toolchain rather than a platform. A first implementation of
+this section reported unix sockets unavailable on Windows; what was true is that
+the platform has them and that implementation's standard library exposed none
+for that target. The guard that says "not Windows and no unix sockets" keeps
+excluding the platform after its toolchain gains support, while the guard that
+asks only whether this build has a unix socket corrects itself. This binding
+therefore names no platform in the condition, and neither should an
+implementation.
+
 **Not a numbered descriptor.** The obvious spawn form — inherit descriptor 3 —
 has no meaning on Windows, where an extra stdio slot is an inherited handle
 rather than a numbered descriptor. A binding built on numbered descriptors would
