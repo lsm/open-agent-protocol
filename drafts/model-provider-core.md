@@ -1509,7 +1509,7 @@ mid-stream cancel is seen, settled with one terminal. Against a local provider
 that is not running it answers `provider_unavailable`, a Retry-class error,
 which is the honest answer rather than a contrived one.
 
-**Eighteen findings** from writing the vocabulary, codec, discovery, grants,
+**Twenty findings** from writing the vocabulary, codec, discovery, grants,
 admission, the wire mapping, the inference lifecycle, the compatibility facts
 and a spawnable endpoint are already in this draft. From the first pass: `ProtocolError` and
 `ToolDefinition` are not shared the way the draft claimed, `reasoning_default`
@@ -1547,16 +1547,22 @@ condition knowable before the request leaves the building is a refusal or a
 terminal, and the worse of the two answers satisfied every other rule. From the
 ninth: `ttl_ms` was doing duty for two different clocks — a credential's
 lifetime and a channel's arrival deadline — and the nonce had no stated
-lifecycle at all.
+lifecycle at all. From the tenth, found by an implementer reading their own code
+while answering a different question: a snapshot could not represent a tool
+call, because `arguments_json` is complete JSON and a tool call in flight is a
+partial fragment — so the recovery mechanism was unavailable for the one part
+kind where divergence is consequential. And the profile had no way to say which
+revision of itself an implementation was built against, which costs nothing
+until one profile freezes and the other does not.
 
-Of the eighteen, seventeen were places the draft was silent or wrong rather than
+Of the twenty, nineteen were places the draft was silent or wrong rather than
 merely incomplete. Three — the persistence rule, the grant advertisement and
 `grant_kinds` — were rules that no envelope could violate, which is the class
 this project's machinery is worst at catching: the validator assembles traces
 and checks envelopes, and an implementation writing a caller's key to disk
 produces a perfectly valid trace.
 
-**Four of the eighteen corrected earlier findings from the same source rather
+**Four of the twenty corrected earlier findings from the same source rather
 than the draft**, and the pattern in them matters more than the count. Each
 superseded claim had been read off a call graph, a type name or a field's
 presence, and each correction came from reading the body: the persistence hazard
@@ -1594,7 +1600,7 @@ do not make a profile implementable; they make two implementations agree.**
 
 And the implementability it establishes is narrower than it looks: that
 implementation was written from this prose **with its author available**.
-Eighteen findings are eighteen places the prose alone was insufficient, each
+Twenty findings are twenty places the prose alone was insufficient, each
 resolved by asking. A second implementer gets none of that. So the standing is
 *implementable in conversation with the author*, and the findings are the
 measurement of the gap rather than a side effect of closing it.
