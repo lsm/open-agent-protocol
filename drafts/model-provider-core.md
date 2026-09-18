@@ -1544,6 +1544,14 @@ the opacity is about the format, not about whether it distinguishes anything. An
 implementation with nothing that identifies a state omits the member, which at
 least says so, rather than publishing a name that looks like an answer.
 
+**A stale value is the correct output, not a defect to avoid.** Once this draft
+moves and an implementation has not re-implemented against it, the commit it
+publishes is older than the draft — and that is precisely the fact a caller
+needs, because the member answers what the implementation was built against and
+never what exists. An implementation that keeps the value fresh by pointing it
+at a stream, or omits it to avoid looking behind, has removed the only signal
+that would have told a caller the two are out of step.
+
 This is cheap now and expensive later, because whatever expresses it is itself a
 schema change — which is the argument for settling it before schemas exist
 rather than after.
