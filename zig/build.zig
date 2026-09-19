@@ -1892,6 +1892,9 @@ pub fn build(b: *std.Build) void {
     const bench_compare_test = b.addTest(.{ .root_module = bench_compare_mod });
 
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
+    test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
+    test_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(counting_allocator_test).step);
     test_step.dependOn(&b.addRunArtifact(bench_compare_test).step);
     test_step.dependOn(&b.addRunArtifact(owned_slice_test).step);
