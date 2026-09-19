@@ -48,7 +48,19 @@ pub const Registry = struct {
 
     pub fn deinit(self: *Registry) void {
         for (self.documents.values()) |parsed| parsed.deinit();
+        for (self.documents.keys(), 0..) |key, index| {
+            if (index >= schema_bytes.all.len) self.allocator.free(key);
+        }
         self.documents.deinit(self.allocator);
+    }
+
+    pub fn addDocument(self: *Registry, name: []const u8, bytes: []const u8) !void {
+        if (self.documents.get(name) != null) return;
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, bytes, .{});
+        errdefer parsed.deinit();
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.documents.put(self.allocator, owned, parsed);
     }
 
     pub fn root(self: *const Registry, name: []const u8) ?std.json.Value {
@@ -96,6 +108,9 @@ pub const Validator = struct {
     registry: *const Registry,
     allocator: std.mem.Allocator,
     failures: std.ArrayList(Failure) = .empty,
+    retained_pointer: ?[]u8 = null,
+    depth: usize = 0,
+    suppress_root_alternatives: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, registry: *const Registry) Validator {
         return .{ .registry = registry, .allocator = allocator };
@@ -104,10 +119,43 @@ pub const Validator = struct {
     pub fn deinit(self: *Validator) void {
         for (self.failures.items) |failure| self.allocator.free(failure.pointer);
         self.failures.deinit(self.allocator);
+        if (self.retained_pointer) |owned| self.allocator.free(owned);
     }
 
     pub fn validate(self: *Validator, document: []const u8, instance: std.json.Value) Error!?Failure {
+        return self.validateWithBranches(document, instance, &.{});
+    }
+
+    pub fn validateWithBranches(
+        self: *Validator,
+        document: []const u8,
+        instance: std.json.Value,
+        extra_branches: []const []const u8,
+    ) Error!?Failure {
         const schema = self.registry.root(document) orelse return Unsupported.UnresolvableRef;
+        const base = try self.validateSchema(schema, document, instance) orelse return null;
+        if (extra_branches.len == 0) return base;
+
+        const carried = try self.allocator.dupe(u8, base.pointer);
+        errdefer self.allocator.free(carried);
+        for (extra_branches) |ref| {
+            const target = try self.resolve(ref, document);
+            const branch = try self.validateSchema(target.schema, target.document, instance);
+            if (branch != null) continue;
+            self.suppress_root_alternatives = true;
+            defer self.suppress_root_alternatives = false;
+            const skeleton = try self.validateSchema(schema, document, instance);
+            if (skeleton == null) {
+                self.allocator.free(carried);
+                return null;
+            }
+        }
+        if (self.retained_pointer) |previous| self.allocator.free(previous);
+        self.retained_pointer = carried;
+        return .{ .pointer = carried, .keyword = base.keyword };
+    }
+
+    pub fn validateSchema(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value) Error!?Failure {
         var pointer = Pointer{ .allocator = self.allocator };
         defer pointer.deinit();
         for (self.failures.items) |failure| self.allocator.free(failure.pointer);
@@ -139,6 +187,8 @@ pub const Validator = struct {
     }
 
     fn check(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value, pointer: *Pointer) Error!void {
+        self.depth += 1;
+        defer self.depth -= 1;
         switch (schema) {
             .bool => |always| {
                 if (!always) try self.record(pointer, "false");
@@ -183,7 +233,8 @@ pub const Validator = struct {
             }
             if (!matched) try self.record(pointer, "anyOf");
         }
-        if (object.get("oneOf")) |branches| {
+        if (object.get("oneOf")) |branches| skip: {
+            if (self.suppress_root_alternatives and self.depth == 1) break :skip;
             if (branches != .array) return error.InvalidSchema;
             var matches: usize = 0;
             for (branches.array.items) |branch| {
@@ -372,7 +423,7 @@ pub const Validator = struct {
         const hash = std.mem.indexOfScalar(u8, ref, '#');
         const file = if (hash) |at| ref[0..at] else ref;
         const fragment = if (hash) |at| ref[at + 1 ..] else "";
-        const target_document = if (file.len == 0) document else file;
+        const target_document = if (file.len == 0) document else stripSchemaBase(file);
         var node = self.registry.root(target_document) orelse return Unsupported.UnresolvableRef;
         var parts = std.mem.splitScalar(u8, fragment, '/');
         while (parts.next()) |part| {
@@ -383,6 +434,13 @@ pub const Validator = struct {
         return .{ .schema = node, .document = target_document };
     }
 };
+
+pub const schema_base = "https://open-agent-protocol.local/v0.1/";
+
+fn stripSchemaBase(uri: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, uri, schema_base)) return uri[schema_base.len..];
+    return uri;
+}
 
 fn typeMatches(name: []const u8, instance: std.json.Value) bool {
     if (std.mem.eql(u8, name, "object")) return instance == .object;
@@ -462,4 +520,61 @@ fn valueEql(a: std.json.Value, b: std.json.Value) bool {
             break :blk true;
         },
     };
+}
+
+test "a failure survives the branch validations that follow it" {
+    const allocator = std.testing.allocator;
+    var registry = try Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    const line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","payload":{"session_id":"s"}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    defer parsed.deinit();
+
+    var validator = Validator.init(allocator, &registry);
+    defer validator.deinit();
+
+    const branches = [_][]const u8{"common.schema.json#/$defs/nonEmptyString"};
+    const failure = (try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches)).?;
+
+    try std.testing.expect(failure.pointer.len == 0 or failure.pointer[0] == '/');
+    for (failure.pointer) |c| try std.testing.expect(c != 0xaa);
+    try std.testing.expect(failure.keyword.len > 0);
+}
+
+test "a pack branch does not excuse an envelope from the root the profile requires" {
+    const allocator = std.testing.allocator;
+    var registry = try Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    const pack_schema =
+        \\{"$id":"pack/storage.schema.json","$defs":{"objectsRead":{"type":"object","required":["session_id"],
+        \\"properties":{"type":{"const":"com.example.storage.objects.read"},"session_id":{"type":"string"},
+        \\"payload":{"type":"object"}}}}}
+    ;
+    try registry.addDocument("pack/storage.schema.json", pack_schema);
+    const branches = [_][]const u8{"pack/storage.schema.json#/$defs/objectsRead"};
+
+    const complete =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.storage.objects.read","id":"e1","session_id":"s","payload":{}}
+    ;
+    const without_protocol =
+        \\{"version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.storage.objects.read","id":"e1","session_id":"s","payload":{}}
+    ;
+
+    for ([_]struct { line: []const u8, accepted: bool }{
+        .{ .line = complete, .accepted = true },
+        .{ .line = without_protocol, .accepted = false },
+    }) |case| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case.line, .{});
+        defer parsed.deinit();
+        var validator = Validator.init(allocator, &registry);
+        defer validator.deinit();
+        const failure = try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches);
+        try std.testing.expectEqual(case.accepted, failure == null);
+    }
 }
