@@ -213,6 +213,27 @@ is ported and reproduces its corpus, or that unit's graduation is explicitly
 recorded as lapsed. There is no third option where the evidence quietly stops
 existing.
 
+### A change that rewrites the corpus happens before the port or after it
+
+Every stage in this record is gated on reproducing bytes that already exist.
+That works because the bytes hold still.
+
+Some changes under consideration rewrite the expectations themselves — moving
+harness-specific error codes out of `code` and into `extensions` would
+regenerate `expected-oap.json` across the adapter corpora. During the port, such
+a change is diffed against a target that is also moving, and the two artifacts
+that could catch an error in it, the oracle and the corpus, are both being
+edited by the change that needs them.
+
+So a corpus-rewriting change is made **entirely before the port or entirely
+after it, never during**. Before, the Go tree performs the migration and the
+corpus is regenerated once under an oracle that already has differential
+coverage, and the port then aims at something that has stopped moving. After,
+the port completes against today's expectations and the migration is a separate
+change with two implementations available to diff. This is a property of the
+corpus rather than of any particular change, and it binds whatever the error-code
+question is answered with.
+
 ### The repositories merge with history
 
 `git subtree` or a merge of unrelated histories, never a copy.
@@ -369,15 +390,23 @@ as distinct codes is free to say so in `extensions`" — so it keeps one
 `ProtocolError` shape across both profiles. It is also the largest migration:
 every harness-specific code in every adapter moves.
 
-*Keep `code` open and add a required closed member for the action class.* The
-contract becomes the action, a harness keeps its own identifier, and nobody
-enumerates a 48th string. Note what it costs before choosing it: the provider
-profile **refuses** an `action` member today, deliberately and with a schema
-test, because for a closed set the action is derivable from the code and a wire
-member would be a second source of truth that can disagree. For an open set that
-argument inverts, which is the case for this shape — but it leaves the two
-profiles with different `ProtocolError` shapes, and `common.schema.json` is
-`additionalProperties: false`, so the member has to be admitted for both.
+*Keep `code` open and add a closed member for the action class.* The contract
+becomes the action, a harness keeps its own identifier, and nobody enumerates a
+48th string. The provider profile **refuses** an `action` member today,
+deliberately and with a schema test, because for a closed set the action derives
+from the code and a wire member would be a second source of truth that can
+disagree. For an open set that derivation is impossible, so the argument
+inverts.
+
+It also has an answer rather than only an inversion, and the answer is this
+project's usual move: **a second source of truth that can be checked is not the
+hazard an unchecked one is.** Admit `action` in the common shape, require it
+where derivation is impossible, permit it where derivation works, and have the
+validator assert there that it equals the derived value. One `ProtocolError`
+shape instead of two, and the provider's redundancy becomes a diagnostic the
+corpus can exercise rather than a divergence nobody sees. The cost is one more
+rule, and `common.schema.json` is `additionalProperties: false`, so the member is
+admitted for both profiles either way.
 
 *Leave it open.* Status quo. The action stays a convention, and `retriable` —
 which the base schema already carries and the provider profile treats as derived
