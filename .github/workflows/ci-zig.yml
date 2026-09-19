@@ -30,12 +30,26 @@ jobs:
           GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
           GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}
         run: |
-          echo "has_anthropic=$([[ -n \"$ANTHROPIC_API_KEY\" || -n \"$ANTHROPIC_AUTH_TOKEN\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "has_openai=$([[ -n \"$OPENAI_API_KEY\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "has_google=$([[ -n \"$GOOGLE_API_KEY\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "has_azure=$([[ -n \"$AZURE_OPENAI_API_KEY\" && -n \"$AZURE_OPENAI_ENDPOINT\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "has_ollama=$([[ -n \"$OLLAMA_API_KEY\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "has_github_copilot=$([[ -n \"$GH_COPILOT_REFRESH\" && -n \"$GH_COPILOT_ACCESS\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          has_anthropic=false
+          has_openai=false
+          has_google=false
+          has_azure=false
+          has_ollama=false
+          has_github_copilot=false
+          if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$ANTHROPIC_AUTH_TOKEN" ]; then has_anthropic=true; fi
+          if [ -n "$OPENAI_API_KEY" ]; then has_openai=true; fi
+          if [ -n "$GOOGLE_API_KEY" ]; then has_google=true; fi
+          if [ -n "$AZURE_OPENAI_API_KEY" ] && [ -n "$AZURE_OPENAI_ENDPOINT" ]; then has_azure=true; fi
+          if [ -n "$OLLAMA_API_KEY" ]; then has_ollama=true; fi
+          if [ -n "$GH_COPILOT_REFRESH" ] && [ -n "$GH_COPILOT_ACCESS" ]; then has_github_copilot=true; fi
+          {
+            echo "has_anthropic=$has_anthropic"
+            echo "has_openai=$has_openai"
+            echo "has_google=$has_google"
+            echo "has_azure=$has_azure"
+            echo "has_ollama=$has_ollama"
+            echo "has_github_copilot=$has_github_copilot"
+          } >> "$GITHUB_OUTPUT"
 
   # =============================================================================
   # Unit Tests (always run, no secrets needed)
