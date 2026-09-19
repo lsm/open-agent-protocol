@@ -179,7 +179,33 @@ The Go validator compiles `schema/v0.1/*.json` with a JSON Schema 2020-12
 library. Zig has no mature one, and this is the port's only genuine unknown.
 
 **The schema bytes are embedded in the binary and interpreted at runtime** by a
-bounded 2020-12 subset interpreter covering what these twelve files use.
+2020-12 interpreter. The twelve bundled files need a small one: 1,974 lines
+using 22 keywords, and `pattern` appears exactly once, in `pack.schema.json`.
+No `unevaluatedProperties`, no `unevaluatedItems`, no dynamic refs or anchors,
+so no annotation collection and no regex engine for the bundled set.
+
+**The bundled files are not the only schemas this validator compiles, and
+scoping the interpreter to them would be scoped to the wrong thing.** Two
+further inputs are author-supplied rather than ours, and both reach
+`jsonschema.NewCompiler()`: a caller's `output_schema` on a run request
+(`validation/outputschema.go`), and the schema files a pack ships
+(`validation/pack.go`). Nothing constrains either to the subset above.
+
+There is a third, and it is not in the schema layer at all: `validation/controltools.go`
+compiles a regular expression an endpoint discloses on its descriptor and
+matches tool names against it. Zig's standard library has no regex, so the one
+dependency the bundled files avoid arrives anyway, in the semantic state
+machine.
+
+**The gate does not cover this, and that is the point of recording it.** The
+corpus's own author-supplied schemas stay inside the same 22 keywords by
+accident — the `output_schema` fixtures use four, the 33 pack schema files
+seventeen — so a bounded interpreter passes all 546 fixtures while a legitimate
+caller schema outside the subset fails in the field. That is an instrument
+whose blind spot is invisible in its own output, which this project has
+found enough times to name. Stage 2 either implements 2020-12 for
+author-supplied schemas or refuses them explicitly with a diagnostic; what it
+must not do is pass the gate and leave the question open.
 
 An earlier version of this record chose code generation, and the argument
 against it is that it buys nothing. A generator has to understand 2020-12
