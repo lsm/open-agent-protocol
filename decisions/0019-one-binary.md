@@ -20,13 +20,35 @@ round trip, and specimen emission.
 That leaves two trees in two languages on opposite sides of one boundary. This
 repository is the specification, the validator, a corpus, and eight adapters
 that translate third-party harnesses **into** OAP. Makai is an implementation
-that speaks OAP natively.
+that speaks OAP natively, and already carries the TUI, the agent loop, both
+profiles and their bindings.
 
 A user should install one thing and type one command. An earlier version of this
 record proposed reaching that with two executables and declined a rewrite,
 arguing from effort. That argument was weak, and this record replaces it.
 
 ## Decisions
+
+### `oapx` is Makai renamed, and the port lands inside it
+
+This is not a new codebase. The binary that ships is the implementation
+[Decision 0018](0018-makai-becomes-first-party.md) made the OAP SDK, renamed,
+and the port moves what this repository has into it rather than rebuilding both
+halves.
+
+That is the record's most useful property and it is worth stating before the
+stages: **there is never a moment without a working product.** The TUI, the
+agent loop, both profiles and their bindings already run. Each stage adds a
+capability to a binary that already ships, which is why the port has no big
+bang, no cutover, and no branch that has to be right all at once before anything
+works.
+
+It also decides what does *not* port. `client/` is a Go SDK and stays one.
+`tools/nocomment` retires with the Go tree. `conformance/` is a development
+harness and moves only if someone wants it in the product. Whether `serve/`
+survives at all is an open question below. **What ports is what the product
+needs**: the validator, the adapter interfaces and reference adapter, and the
+adapters people actually use.
 
 ### One binary ships, and it is `oapx`
 
