@@ -55,7 +55,7 @@ type RunningDemoServer = {
   close: () => Promise<void>;
 };
 
-const PUBLIC_DIR = path.resolve(process.cwd(), "typescript/demo/public");
+const PUBLIC_DIR = path.resolve(process.cwd(), "sdk/typescript/demo/public");
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
 const CHAT_PROVIDERS: ChatProviderConfig[] = [

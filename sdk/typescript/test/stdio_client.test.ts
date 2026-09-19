@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 import { createMakaiStdioClient, MakaiStdioClient, StdioFrame, StdioProtocolError } from "../src";
 
-const sourceFixturesDir = path.resolve(__dirname, "../../typescript/test/fixtures");
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 
 test("connect succeeds with ready handshake and receives event frame", async () => {
   const client = new MakaiStdioClient({

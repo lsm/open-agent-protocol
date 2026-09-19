@@ -18,7 +18,7 @@ import {
   type StdioFrame,
 } from "../src";
 
-const sourceFixturesDir = path.resolve(__dirname, "../../typescript/test/fixtures");
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 const fixtureScript = path.join(sourceFixturesDir, "execution-server.js");
 
 type Harness = {

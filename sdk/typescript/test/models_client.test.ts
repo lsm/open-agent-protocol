@@ -11,7 +11,7 @@ import {
   type ModelDescriptor,
 } from "../src";
 
-const sourceFixturesDir = path.resolve(__dirname, "../../typescript/test/fixtures");
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 const fixtureScript = path.join(sourceFixturesDir, "models-server.js");
 const ULID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 

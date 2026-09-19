@@ -13,7 +13,7 @@ import {
   createMakaiStdioClient,
 } from "../src";
 
-const sourceFixturesDir = path.resolve(__dirname, "../../typescript/test/fixtures");
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 const pidReportingServer = path.join(sourceFixturesDir, "pid-reporting-server.js");
 const streamCancelObserverServer = path.join(sourceFixturesDir, "stream-cancel-observer-server.js");
 

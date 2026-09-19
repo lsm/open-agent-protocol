@@ -14,7 +14,7 @@ import {
   type ModelDescriptor,
 } from "../src";
 
-const sourceFixturesDir = path.resolve(__dirname, "../../typescript/test/fixtures");
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 
 function makeDescriptor(overrides: Partial<ModelDescriptor> = {}): ModelDescriptor {
   return {

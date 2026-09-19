@@ -140,7 +140,7 @@ jobs:
   # =============================================================================
   # Go SDK (deterministic, no API keys)
   #
-  # The Go module in go/ is self-contained and is deliberately NOT wired into
+  # The Go module in sdk/go/ is self-contained and is deliberately NOT wired into
   # the Zig build. Its protocol tests run against a fake host built into the
   # test binary; MAKAI_BINARY_PATH additionally switches on the real-runtime
   # smoke tests, which skip themselves when it is unset.
@@ -167,7 +167,7 @@ jobs:
           cache: false
 
       - name: Check Go formatting
-        working-directory: go
+        working-directory: sdk/go
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
@@ -177,14 +177,14 @@ jobs:
           fi
 
       - name: Vet Go SDK
-        working-directory: go
+        working-directory: sdk/go
         run: go vet ./...
 
       - name: Build makai binary for Go SDK E2E
         run: zig build install --prefix /tmp/makai-go
 
       - name: Run Go SDK tests
-        working-directory: go
+        working-directory: sdk/go
         env:
           MAKAI_BINARY_PATH: /tmp/makai-go/bin/makai
         run: go test -race ./...
@@ -197,7 +197,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: rust
+        working-directory: sdk/rust
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -218,8 +218,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+            sdk/rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('sdk/rust/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -239,11 +239,11 @@ jobs:
         run: cargo test --all-features
 
   # =============================================================================
-  # Python SDK (python/)
+  # Python SDK (sdk/python/)
   #
   # Mirrors ts-sdk-e2e: build the runtime, point MAKAI_BINARY_PATH at it, and
   # run the suite. Without that variable every test in
-  # python/tests/test_real_binary.py skips, so the E2E lane sets it explicitly.
+  # sdk/python/tests/test_real_binary.py skips, so the E2E lane sets it explicitly.
   #
   # MAKAI_TEST_REAL_AUTH is deliberately NOT set: the auth-protocol E2E test
   # stays opt-in. On macOS an unsigned local build blocks on a Keychain access
@@ -275,18 +275,18 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python SDK with dev extras
-        working-directory: python
+        working-directory: sdk/python
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
 
       - name: Type check (mypy --strict)
-        working-directory: python
+        working-directory: sdk/python
         run: python -m mypy
 
       - name: Build makai binary for Python SDK E2E
         run: zig build install --prefix /tmp/makai-py
 
       - name: Run Python SDK unit + E2E tests
-        working-directory: python
+        working-directory: sdk/python
         env:
           MAKAI_BINARY_PATH: /tmp/makai-py/bin/makai
         run: python -m pytest -q

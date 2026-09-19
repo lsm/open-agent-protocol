@@ -8,7 +8,7 @@ import { startDemoServer } from "../demo/server";
 import { createMakaiClient, MakaiAuthError } from "../src";
 
 const binaryPath = process.env.MAKAI_BINARY_PATH;
-const sourceFixturesDir = path.resolve(__dirname, "../../typescript/test/fixtures");
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 const executionFixture = path.join(sourceFixturesDir, "execution-server.js");
 
 function fixtureServerOptions(tempHome: string, requestLog?: string) {
