@@ -60,7 +60,7 @@ pub const Admission = enum {
     rejected,
 };
 
-pub const ErrorCode = enum {
+pub const EmittedErrorCode = enum {
     invalid_request,
     unsupported_feature,
     capability_degraded,
@@ -72,6 +72,10 @@ pub const ErrorCode = enum {
     run_already_terminal,
     provider_error,
     internal_error,
+
+    pub fn text(self: EmittedErrorCode) []const u8 {
+        return @tagName(self);
+    }
 };
 
 pub const RunControl = enum {
@@ -96,7 +100,7 @@ pub const DetailEntry = struct {
 };
 
 pub const ProtocolError = struct {
-    code: ErrorCode,
+    code: []const u8,
     message: []const u8,
     retriable: ?bool = null,
     details: []const DetailEntry = &.{},
@@ -109,6 +113,7 @@ pub const ProtocolError = struct {
     }
 
     pub fn deinit(self: *ProtocolError, allocator: std.mem.Allocator) void {
+        allocator.free(self.code);
         allocator.free(self.message);
         for (self.details) |entry| {
             allocator.free(entry.key);
@@ -682,7 +687,7 @@ test "terminal classification covers exactly the three v0.1 terminals" {
     const failed = Payload{ .run_failed = .{
         .session_id = "s",
         .run_id = "r",
-        .err = .{ .code = .internal_error, .message = "boom" },
+        .err = .{ .code = EmittedErrorCode.internal_error.text(), .message = "boom" },
     } };
     const cancelled = Payload{ .run_cancelled = .{ .session_id = "s", .run_id = "r" } };
 
@@ -704,7 +709,7 @@ test "run control capability keys are the four gated keys" {
 
 test "protocol error detail lookup finds a declared key" {
     const err = ProtocolError{
-        .code = .unsupported_feature,
+        .code = EmittedErrorCode.unsupported_feature.text(),
         .message = "unadvertised",
         .details = &.{
             .{ .key = "feature", .value = "run.instructions" },

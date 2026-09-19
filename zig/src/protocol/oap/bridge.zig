@@ -166,7 +166,7 @@ pub const Bridge = struct {
             .agent_result => |result_json| try self.retainResultEvidence(oap_session_id, result_json),
             .agent_error => |payload| {
                 const mapped = mapNativeErrorCode(payload.code);
-                try server.settleFailed(oap_session_id, mapped, payload.message);
+                try server.settleFailed(oap_session_id, mapped.text(), payload.message);
                 if (mapped == .session_not_found) self.forgetSession(oap_session_id);
             },
             .agent_stopped => try server.settleCancelled(oap_session_id, null),
@@ -257,8 +257,8 @@ pub const Bridge = struct {
             const code = if (stringField(root, "code")) |text|
                 mapNativeErrorName(text)
             else
-                oap_types.ErrorCode.internal_error;
-            try server.settleFailed(oap_session_id, code, message);
+                oap_types.EmittedErrorCode.internal_error;
+            try server.settleFailed(oap_session_id, code.text(), message);
             return;
         }
 
@@ -286,7 +286,7 @@ pub const Bridge = struct {
             try server.settleCancelled(oap_session_id, "the native agent loop reported cancellation");
         } else if (std.mem.eql(u8, stop_reason, "error")) {
             const message = if (evidence) |value| value.text else "the agent loop ended in an error state";
-            try server.settleFailed(oap_session_id, .provider_error, message);
+            try server.settleFailed(oap_session_id, oap_types.EmittedErrorCode.provider_error.text(), message);
         } else {
             if (evidence) |value| server.noteUsage(oap_session_id, value.usage);
             const text = if (evidence) |value| value.text else "";
@@ -315,7 +315,7 @@ pub const Bridge = struct {
         var settled_any = false;
         for (ids.items) |session_id| {
             if (self.sessions.contains(session_id)) continue;
-            try server.settleFailed(session_id, .internal_error, message);
+            try server.settleFailed(session_id, oap_types.EmittedErrorCode.internal_error.text(), message);
             settled_any = true;
         }
         return settled_any;
@@ -324,7 +324,7 @@ pub const Bridge = struct {
     pub fn failActiveRuns(self: *Self, server: *Server, message: []const u8) !void {
         var iterator = self.sessions.iterator();
         while (iterator.next()) |entry| {
-            try server.settleFailed(entry.key_ptr.*, .internal_error, message);
+            try server.settleFailed(entry.key_ptr.*, oap_types.EmittedErrorCode.internal_error.text(), message);
         }
     }
 };
@@ -376,7 +376,7 @@ fn collectResultText(allocator: std.mem.Allocator, root: std.json.ObjectMap) ![]
     return out;
 }
 
-pub fn mapNativeErrorCode(code: agent_types.AgentErrorCode) oap_types.ErrorCode {
+pub fn mapNativeErrorCode(code: agent_types.AgentErrorCode) oap_types.EmittedErrorCode {
     return switch (code) {
         .invalid_request => .invalid_request,
         .agent_not_found, .session_expired => .session_not_found,
@@ -387,7 +387,7 @@ pub fn mapNativeErrorCode(code: agent_types.AgentErrorCode) oap_types.ErrorCode 
     };
 }
 
-fn mapNativeErrorName(name: []const u8) oap_types.ErrorCode {
+fn mapNativeErrorName(name: []const u8) oap_types.EmittedErrorCode {
     const code = std.meta.stringToEnum(agent_types.AgentErrorCode, name) orelse return .internal_error;
     return mapNativeErrorCode(code);
 }
@@ -729,7 +729,7 @@ test "a native error event settles the run as a typed failure" {
 
     var failed = try nextOap(&fixture.server, allocator);
     defer failed.deinit(allocator);
-    try testing.expectEqual(oap_types.ErrorCode.provider_error, failed.payload.run_failed.err.code);
+    try testing.expectEqualStrings("provider_error", failed.payload.run_failed.err.code);
     try testing.expectEqualStrings("upstream refused", failed.payload.run_failed.err.message);
 }
 
@@ -747,7 +747,7 @@ test "a correlated native agent_error settles the run as a failure" {
 
     var failed = try nextOap(&fixture.server, allocator);
     defer failed.deinit(allocator);
-    try testing.expectEqual(oap_types.ErrorCode.session_not_found, failed.payload.run_failed.err.code);
+    try testing.expectEqualStrings("session_not_found", failed.payload.run_failed.err.code);
 }
 
 test "a native agent_end reporting cancellation settles as cancelled behind an accepted intent" {
@@ -974,7 +974,7 @@ test "an agent_end that reports an error state settles as a failure" {
 
     var failed = try nextOap(&fixture.server, allocator);
     defer failed.deinit(allocator);
-    try testing.expectEqual(oap_types.ErrorCode.provider_error, failed.payload.run_failed.err.code);
+    try testing.expectEqualStrings("provider_error", failed.payload.run_failed.err.code);
     try testing.expectEqualStrings("the provider rejected the request", failed.payload.run_failed.err.message);
 }
 
