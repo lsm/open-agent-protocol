@@ -280,6 +280,64 @@ message. A flat copy destroys the only record of why the implementation is
 shaped the way it is — which is the precise failure the comment policy's own
 merge rule already anticipates for code arriving from another unit.
 
+### Where everything lands
+
+```
+open-agent-protocol/
+  README.md  STABILITY.md  IMPLEMENTERS.md  CLAUDE.md
+  decisions/            protocol decisions
+  drafts/               profiles and bindings
+  schema/v0.1/          normative schemas — embedded into oapx
+  fixtures/             the corpus: agent-control, provider, adapter corpora
+  research/             mapping ledgers, adjudication record
+  examples/
+
+  zig/                  oapx — the binary that ships
+    build.zig  build.zig.zon
+    src/
+      agent/ tui/ providers/ transports/ tools/ auth/ oauth/ json/
+      protocol/{oap,agent,provider,tool,auth}
+      validation/       ← ported from go/validation
+      adapters/         ← ported from go/adapter, by demand
+    test/  vendor/
+
+  sdk/                  clients, one per language
+    go/ python/ rust/ typescript/
+
+  go/                   the oracle — deleted when differential goes silent
+    protocol/ validation/ adapter/ serve/ client/ cmd/oap/ conformance/
+    provider/ internal/ tools/nocomment/
+
+  scripts/              comment checker, pattern gates
+  docs/
+```
+
+**The specification sits at the root because it outlives both
+implementations.** `schema/`, `fixtures/`, `drafts/` and `decisions/` belong to
+neither tree, which is this record's rule about corpus ownership expressed as a
+directory rather than as a sentence.
+
+**`go/` means the oracle and nothing else.** The implementation moves from the
+repository root into it, which costs an import-path rewrite across roughly 215
+files. That is one scripted commit on a tree whose only remaining job is to be
+diffed, and it makes `zig/` visibly the product from the first day rather than
+the last. Makai's own Go SDK lands at `sdk/go` instead, so the name `go/` does
+not mean two things while one of them is being deleted.
+
+Three collisions the merge resolves rather than discovers:
+
+**Two TypeScript clients.** This repository has `clients/ts`, the zero-dependency
+far-side proof of the daemon wire; the implementation has `typescript/`. Whether
+they become one `sdk/typescript` depends on whether the second speaks OAP or its
+own surface, which is a question to settle by reading it.
+
+**Two Go trees with different jobs**, resolved by the `sdk/go` placement above.
+
+**Two comment checkers.** `tools/nocomment` covers `.go`; the implementation's
+checker covers `.zig` and `.ts` and has retired its allowlist. The second must
+cover `.go` **before** the first retires, or the policy has a gap for the length
+of the port.
+
 ### A rewritten wrapper does not weaken the evidence
 
 What makes an adapter third-party evidence under
@@ -380,7 +438,10 @@ against.
 **Whether `serve/` survives.** The hub is twelve ops, an adapter dimension,
 cursor replay and multiplexed subscriptions — a different layer from `oapx serve
 agent`, which exposes one loop. Whether it ports, moves, or is dropped is not
-decided here.
+decided here. Note what the layout above makes of each answer: if it does not
+port it never appears under `zig/`, and it disappears with `go/` rather than
+being removed. That makes the question a deletion rather than a port, which is
+cheaper to decide and worth deciding early.
 
 **What `oapx serve agent provider` routes on, and what answers a frame with no
 profile.** This was filed as untested and is worse than that: it contradicts
