@@ -91,7 +91,6 @@ func TestLoadRegistryProcessAdapters(t *testing.T) {
 			"hermes": {"type": "hermes", "executable": "/bin/python", "working_directory": "/tmp", "model": "glm-5.3"},
 			"pi": {"type": "pi", "executable": "/bin/pi", "working_directory": "/tmp"},
 			"acp": {"type": "acp", "executable": "/bin/cagent", "working_directory": "/tmp"},
-			"makai": {"type": "makai", "executable": "/bin/makai", "working_directory": "/tmp", "agent_config": {}, "system_prompt": "be brief"},
 			"deepseek": {"type": "deepseek", "executable": "/bin/dsh", "working_directory": "/tmp", "provider": "deepseek", "model": "deepseek-chat", "max_tokens": 4096},
 			"opencode": {"type": "opencode", "endpoint": "http://127.0.0.1:4096", "agent": "code"}
 		}
@@ -100,7 +99,7 @@ func TestLoadRegistryProcessAdapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"acp", "claude", "codex", "deepseek", "hermes", "makai", "opencode", "pi"}
+	want := []string{"acp", "claude", "codex", "deepseek", "hermes", "opencode", "pi"}
 	if got := strings.Join(registry.Names(), ","); got != strings.Join(want, ",") {
 		t.Fatalf("names: %q", got)
 	}
@@ -114,7 +113,6 @@ func TestLoadRegistryConstructorErrors(t *testing.T) {
 	}{
 		{"claude without executable", `"claude": {"type": "claude"}`, []string{"claude", "executable"}},
 		{"acp relative directory", `"acp": {"type": "acp", "executable": "/bin/x", "working_directory": "relative"}`, []string{"acp", "absolute working directory"}},
-		{"makai without agent config", `"makai": {"type": "makai", "executable": "/bin/x", "working_directory": "/tmp"}`, []string{"makai", "agent config"}},
 		{"deepseek without provider", `"deepseek": {"type": "deepseek", "executable": "/bin/x", "working_directory": "/tmp", "model": "m"}`, []string{"deepseek", "provider"}},
 		{"opencode without endpoint", `"opencode": {"type": "opencode"}`, []string{"opencode", "endpoint"}},
 		{"unknown type", `"ghost": {"type": "ghost"}`, []string{"ghost", "unknown type"}},
@@ -356,7 +354,6 @@ func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
 			"codex": {"type": "codex", "executable": "/bin/codex", "working_directory": "/tmp"},
 			"hermes": {"type": "hermes", "executable": "/bin/python", "working_directory": "/tmp", "model": "glm-5.3"},
 			"pi": {"type": "pi", "executable": "/bin/pi", "working_directory": "/tmp"},
-			"makai": {"type": "makai", "executable": "/bin/makai", "working_directory": "/tmp", "agent_config": {}},
 			"deepseek": {"type": "deepseek", "executable": "/bin/dsh", "working_directory": "/tmp", "provider": "deepseek", "model": "deepseek-chat"},
 			"opencode": {"type": "opencode", "endpoint": "http://127.0.0.1:4096"}
 		}

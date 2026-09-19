@@ -15,7 +15,6 @@ import (
 	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek"
 	"github.com/lsm/open-agent-protocol/go/adapter/hermes"
-	"github.com/lsm/open-agent-protocol/go/adapter/makai"
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
 	"github.com/lsm/open-agent-protocol/go/adapter/pi"
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -232,13 +231,6 @@ func buildAdapter(name string, entry adapterEntry, environ func(string) (string,
 		implementation, err := acp.New(acp.Config{
 			Executable: entry.Executable, Args: entry.Args, Environment: environment,
 			WorkingDirectory: entry.WorkingDirectory, JournalCapacity: entry.JournalCapacity,
-		})
-		return implementation, wrapBuild(name, err)
-	case "makai":
-		implementation, err := makai.New(makai.Config{
-			Executable: entry.Executable, Args: entry.Args, Environment: environment,
-			WorkingDirectory: entry.WorkingDirectory, AgentConfig: entry.AgentConfig,
-			SystemPrompt: entry.SystemPrompt, JournalCapacity: entry.JournalCapacity,
 		})
 		return implementation, wrapBuild(name, err)
 	case "opencode":

@@ -285,6 +285,17 @@ record, and is decided here: `adapter/makai` is frozen, never ported, and its
 unit does not lapse under the clause above. Its corpus is retained with the
 frozen adapter; retiring the Go tree does not mean deleting it.
 
+**Superseded on 2026-09-19: the adapter and its corpus are deleted.** The
+paragraph above reserved a frozen adapter over a third-party Makai and the
+pinned bytes that proved it. Neither party still exists: Decision 0018 made
+Makai first-party and its source now lives in this repository, so an adapter
+that spawns a pinned external Makai binary translates the tree into itself. The
+evidence the corpus held was never the only evidence for `+control-tools` —
+`adapter.CallResolver`, the memory reference adapter, and
+`adapter/controltools_test.go` carry the unit and stay. What is lost is the
+provenance of one harness at one commit, and that survives as prose in
+`research/makai-agent-67ad514-mapping.md`, which is not deleted.
+
 ### A change that rewrites the corpus happens before the port or after it
 
 Every stage in this record is gated on reproducing bytes that already exist.

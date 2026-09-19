@@ -7,7 +7,9 @@
     "claude": {
       "type": "claude",
       "executable": "/absolute/path/to/claude",
-      "environment": ["ANTHROPIC_API_KEY"],
+      "environment": [
+        "ANTHROPIC_API_KEY"
+      ],
       "working_directory": "/absolute/project/path",
       "model": "sonnet-5"
     },
@@ -28,12 +30,6 @@
       "working_directory": "/absolute/project/path",
       "provider": "deepseek",
       "model": "deepseek-chat"
-    },
-    "makai": {
-      "type": "makai",
-      "executable": "/absolute/path/to/makai",
-      "working_directory": "/absolute/project/path",
-      "agent_config": {}
     },
     "pi": {
       "type": "pi",
@@ -57,8 +53,13 @@
       "display_name": "Filesystem",
       "endpoint": "stdio:filesystem-tools",
       "command": "/absolute/path/to/mcp-filesystem",
-      "args": ["--root", "/absolute/project/path"],
-      "environment": ["MCP_TOKEN"]
+      "args": [
+        "--root",
+        "/absolute/project/path"
+      ],
+      "environment": [
+        "MCP_TOKEN"
+      ]
     }
   }
 }
