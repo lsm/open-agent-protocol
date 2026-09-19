@@ -3,10 +3,7 @@ const jsonschema = @import("jsonschema");
 
 pub const pack_base_uri = "https://open-agent-protocol.local/ext/";
 
-pub const Branch = struct {
-    declared_type: []const u8,
-    ref: []const u8,
-};
+pub const Branch = jsonschema.Alternative;
 
 pub const Member = struct {
     payload_type: []const u8,
