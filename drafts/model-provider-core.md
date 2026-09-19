@@ -893,10 +893,15 @@ No member on `part.ended` distinguishes them, for two reasons. A caller's
 *action* is the same either way — do not replay this block, or replay it without
 the value — so a member that changes what the caller knows and not what it does
 is decoration. And the implementation where this was found could not populate
-such a member anyway: its lookup returns nothing, so the endpoint never learns
-that it lost a signature. A field only an implementation that knew could fill,
-and which by the rule above should have refused instead of losing it, is
+such a member anyway: its lookup returned nothing, so the endpoint never learned
+that it had lost a signature. A field only an implementation that knew could
+fill, and which by the rule above should have refused instead of losing it, was
 fillable by nobody.
+
+That second reason has since expired — `lsm/makai#347` fixed the lookup, so
+that endpoint no longer loses a signature it holds. The first stands alone now,
+and it was always the stronger of the two: the caller does the same thing
+either way.
 
 The ambiguity is a *discovery* question, and the profile already puts those on
 the descriptor. `round_trips_carry` says whether a carry this implementation
@@ -908,11 +913,20 @@ says `false` is decidable from the descriptor and the request alone — so it is
 refused at create, rather than discovered a turn later when the vendor rejects a
 replayed block.
 
-The member is added while nothing implements the round trip, which is the
-cheapest moment: no implementation has to change behaviour to comply, and the
-one that has this gap is obliged to advertise `false` rather than leave it
-silent. That silence is the under-claim shape clause 13 names, sitting in the
-implementation clause 13 was written against.
+The member was added while nothing implemented the round trip, which was the
+cheapest moment: no implementation had to change behaviour to comply, and the
+one carrying the gap was obliged to advertise `false` rather than leave it
+silent — the under-claim shape clause 13 names, sitting in the implementation
+clause 13 was written against.
+
+What happened next is worth recording, because it is not what that paragraph
+predicted. `lsm/makai#347` closed the gap rather than advertising it. The carry
+round-trips, and the honest `false` moved down a level: to the built-in
+providers that genuinely do not round-trip, which refuse a carry at create
+rather than dropping it, while the one that does advertises `true`. So the fact
+turned out to be per provider rather than per endpoint — which is where the
+profile had already put it — and the create-time rule is enforced rather than
+only specified.
 
 This is one vendor's mechanism seen in one implementation, which is thin by this
 draft's own standard. It is in because the failure it prevents is silent and the
@@ -1926,12 +1940,12 @@ into a validator.
 So a green harness does not mean the wire is covered, and anyone reporting
 harness results has to say which frames were reached. Closing the gap needs
 either a provider the harness can drive or a way to make an implementation
-produce a named frame on demand, and neither exists. The second is the cheaper
-one and is now specified as
-[the binding's specimen request](provider-stdio.md): an implementation that can
-be asked to emit a specimen of each frame it supports, less the few it declares
-it withholds, is testable in a way one
-that cannot is not. Nothing implements it yet.
+produce a named frame on demand. The second is the cheaper one and is specified
+as [the binding's specimen request](provider-stdio.md): an implementation that
+can be asked to emit a specimen of each frame it supports, less the few it
+declares it withholds, is testable in a way one that cannot is not.
+`lsm/makai#347` implements it, behind an explicit flag, so an endpoint does not
+answer the control frame unless it was started to.
 
 Compatibility is a second, harder half, and the first implementation has drawn
 the line precisely. What a harness can do today: spawn a provider endpoint,
@@ -2126,8 +2140,12 @@ arriving from a direction that decision did not anticipate.
 
 **An implementation speaks this profile** — `lsm/makai#341`, twelve commits, with
 a deviations ledger naming every place it diverges: the three `other` providers,
-`usage_in_streaming` left unstated on `false`, grants advertised as `none`,
-keepalive dropped in translation, seven reasoning fields collapsed to one. Stop
+`usage_in_streaming` left unstated on `false`, keepalive dropped in
+translation, seven reasoning fields collapsed to one. The ledger also recorded
+grants advertised as `none`, and that row did not survive its own branch: at
+merge the endpoint advertises the out-of-band tier with the `static` kind, and
+`none` only where the toolchain reports no unix-socket support — which is the
+mandatory-where-achievable rule behaving rather than a deviation from it. Stop
 reasons appear in that table with no deviation, which is the only row where
 "carried across whole" is demonstrated rather than asserted.
 
@@ -2153,57 +2171,59 @@ That is the real argument for schemas, and it says which shapes to specify
 hardest: **the ones a finding had to fix**, because each is a place the prose
 underdetermined and a stranger will underdetermine again.
 
-### Two things the implementation is not evidence for
-
-**The tier-1 out-of-band credential path has no implementation exercising it.**
-Two tiers, a nonce, a binding-defined side channel, a mandatory-where-achievable
-rule: all unexercised. Treat that section as the least tested thing in this
-draft rather than the most, whatever its density of argument suggests.
-
-The reason has changed twice, and tracking it is the point. It was first that
-the implementation had no way to hold a caller-granted credential without
-writing it down. That capability now exists (`lsm/makai#343`) — a second store no
-writer can reach, structural rather than flagged. It was then that the stdio
-binding's side channel was unspecified, so there was nothing for a grant to
-arrive on. **That is no longer true**: [the stdio binding](provider-stdio.md)
-specifies the channel — a per-grant socket, the `provider.credential.grant.channel`
-envelope, a nonce, an arrival deadline and a burn rule.
-
-So both of this project's reasons are discharged, and what remains is that no
-implementation has exercised the path. The gap moved from the protocol to an
-implementation, which is a different thing to be waiting on and should not go on
-being described as a specification hole.
+### What the implementation is not evidence for
 
 **No compatibility fact has been observed.** All twelve are carried and mapped
-and none has been checked against the vendor it describes.
+and none has been checked against the vendor it describes. This is the entry in
+this section that has not moved.
 
-**Two of the three part kinds are unreachable through that implementation by
-construction, not by omission.** It refuses `tools` and `reasoning` controls at
-create — "this endpoint does not forward tools to a provider", "this endpoint
-does not forward reasoning controls" — so a caller cannot ask for either, and a
-well-behaved provider therefore never emits a `tool_use` or a thinking block.
-A live run did produce all three triples over `anthropic-messages`, and this
-draft's own validator accepts the trace, but only because the server in that run
-emitted them unprompted, which a vendor would not do.
+Three entries stood here and have since closed. The trail is kept because each
+was a different kind of gap and each took a different thing to shut, and because
+a section that only ever records what is still missing teaches nothing about how
+things stop being missing.
 
-The distinction matters for step 3 and is easy to lose: the part triple is
-correct and is exercised end to end, while the *route by which a caller reaches
-two thirds of it* does not exist in the only implementation. A conformance suite
-driving that endpoint cannot observe a `tool_call` part from a real provider, so
-a suite designed on the assumption that it can will report coverage it does not
-have. That is an implementation property rather than a protocol defect — the
-profile defines the parts and the controls, and the endpoint declines the
-request fields — but it is the kind of absence that reads as tested.
+**The tier-1 out-of-band credential path is exercised.** It stood open through
+two reasons in turn. The first was that the implementation had no way to hold a
+caller-granted credential without writing it down; `lsm/makai#343` built one — a
+second store no writer can reach, structural rather than flagged. The second was
+that the stdio binding's side channel was unspecified, so there was nothing for
+a grant to arrive on; [the stdio binding](provider-stdio.md) now specifies it —
+a per-grant socket, the `provider.credential.grant.channel` envelope, a nonce,
+an arrival deadline and a burn rule. What remained after both was that nothing
+had run the path. As of `lsm/makai#341` the endpoint opens the channel,
+advertises the out-of-band tier with the `static` kind, and enforces the arrival
+deadline, the burn and the release on expiry; a build whose toolchain reports no
+unix-socket support advertises `none` rather than a tier it cannot open, which
+is the mandatory-where-achievable rule behaving rather than being asserted.
 
-**The `carry` return path is specified and cannot be populated.** The same run
-ended a `reasoning` part with no `carry` although the provider had accumulated
-the signature: the translator reads it out of a per-message partial whose
-content is empty for every provider that emits thinking, so the lookup is always
-out of range and the field never appears. Its unit test constructs a partial
-that holds one, and nothing real does. The consequence is the case the return
-path was added for — a vendor rejecting a replayed thinking block whose
-signature is missing, so multi-turn extended thinking cannot work through that
-endpoint. The path exists in the profile and has never carried a value.
+**All three part kinds are reachable.** The endpoint previously refused `tools`
+and `reasoning` controls at create, so a caller could not ask for either and a
+well-behaved provider never emitted a `tool_use` or a thinking block; the live
+run that produced all three triples over `anthropic-messages` only did so
+because the server emitted them unprompted, which a vendor would not do.
+`lsm/makai#341` forwards both, so the route by which a caller reaches two thirds
+of the part vocabulary now exists. The distinction that made this worth
+recording is still worth keeping: the part triple was correct and exercised end
+to end the whole time, and what was missing was the route to it — an absence
+that reads as tested, and the shape a conformance suite is most likely to
+mistake for coverage.
+
+**The `carry` return path carries a value.** It was specified and could not be
+populated: the translator read the signature out of a per-message partial whose
+content is empty for every provider that emits thinking, so the lookup was
+always out of range and the field never appeared, while its unit test
+constructed a partial that held one. `lsm/makai#347` closes both halves. The
+case the path was added for — a vendor rejecting a replayed thinking block whose
+signature is missing, so multi-turn extended thinking cannot work through the
+endpoint — is what it now covers.
+
+What none of these three become is *third-party* evidence.
+[Decision 0018](../decisions/0018-makai-becomes-first-party.md) makes that
+implementation first-party, so each of these closures is this project checking
+its own work. They answer "is the profile implementable end to end", which is
+what `v0.1.0` waits on. They do not answer
+[Decision 0015](../decisions/0015-evidence-from-implementations-we-do-not-control.md)'s
+question, and a second implementation is still what would.
 
 ### `other` is load-bearing, and tightening its criterion fails badly
 

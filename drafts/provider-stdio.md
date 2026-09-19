@@ -398,10 +398,12 @@ held a secret past the lifetime it itself published.
 
 ## Open questions
 
-**Nothing has implemented the specimen request.** It is specified here because
-a harness cannot rely on an affordance one implementation invented, and the
-measurement that motivates it — five of thirteen — comes from one implementation
-and may not generalize.
+**One implementation answers the specimen request** (`lsm/makai#347`), behind an
+explicit flag, so an endpoint does not answer the control frame unless it was
+started to. What stays open is whether the shape generalizes: it is specified
+here rather than left to that implementation because a harness cannot rely on an
+affordance one implementation invented, and the measurement that motivates it —
+five of thirteen — comes from one implementation and may not generalize.
 
 **The 30-second deadline is a number nobody has measured.** It is long enough
 for a caller to read a path and connect, and short enough that a hung grant does
