@@ -9,9 +9,10 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "zig",
+        "src",
+        "test",
+        "vendor",
         "docs",
-        "CHANGELOG.md",
     },
     .fingerprint = 0x2810735ca1ee9efd,
 }
