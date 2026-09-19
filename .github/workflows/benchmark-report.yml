@@ -100,7 +100,7 @@ jobs:
             echo '```text'
             comparison_valid=true
             for mode in latency allocation; do
-              if output=$(zig build bench-compare -Doptimize=ReleaseFast -- "artifacts/baseline/$mode.jsonl" "artifacts/candidate/$mode.jsonl" 2>&1); then
+              if output=$(zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- "artifacts/baseline/$mode.jsonl" "artifacts/candidate/$mode.jsonl" 2>&1); then
                 printf '%s\n' "$output"
               else
                 comparison_valid=false
