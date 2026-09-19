@@ -1,0 +1,18 @@
+.{
+    .name = .makai,
+    .version = "0.2.0",
+    .dependencies = .{
+        .zigzag = .{
+            .path = "vendor/zigzag",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "test",
+        "vendor",
+        "docs",
+    },
+    .fingerprint = 0x2810735ca1ee9efd,
+}

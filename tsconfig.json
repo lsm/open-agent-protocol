@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "types": ["node"],
+    "rootDir": "sdk/typescript",
+    "outDir": "dist"
+  },
+  "include": ["sdk/typescript/src/**/*.ts", "sdk/typescript/test/**/*.ts", "sdk/typescript/demo/**/*.ts"]
+}

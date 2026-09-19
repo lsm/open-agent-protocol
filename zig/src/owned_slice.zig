@@ -1,0 +1,142 @@
+const std = @import("std");
+
+pub fn OwnedSlice(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        items: []const T,
+        is_owned: bool,
+
+        pub fn initBorrowed(items: []const T) Self {
+            return .{ .items = items, .is_owned = false };
+        }
+
+        pub fn initOwned(items: []const T) Self {
+            return .{ .items = items, .is_owned = true };
+        }
+
+        pub fn slice(self: Self) []const T {
+            return self.items;
+        }
+
+        pub fn ensureOwned(self: *Self, allocator: std.mem.Allocator) !void {
+            if (self.is_owned) return;
+            self.items = try allocator.dupe(T, self.items);
+            self.is_owned = true;
+        }
+
+        pub fn cloneIfBorrowed(self: *Self, allocator: std.mem.Allocator) !void {
+            return self.ensureOwned(allocator);
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            if (!self.is_owned) return;
+
+            const mut_items: []T = @constCast(self.items);
+
+            const has_deinit = comptime blk: {
+                const info = @typeInfo(T);
+                switch (info) {
+                    .@"struct", .@"union", .@"enum", .@"opaque" => {
+                        break :blk @hasDecl(T, "deinit");
+                    },
+                    else => break :blk false,
+                }
+            };
+
+            if (has_deinit) {
+                for (mut_items) |*item| {
+                    item.deinit(allocator);
+                }
+            }
+
+            allocator.free(self.items);
+            self.* = undefined;
+        }
+    };
+}
+
+test "OwnedSlice borrowed does not free" {
+    const items = [_]u32{ 1, 2, 3 };
+    var s = OwnedSlice(u32).initBorrowed(&items);
+    s.deinit(std.testing.allocator);
+}
+
+test "OwnedSlice owned frees memory" {
+    const allocator = std.testing.allocator;
+
+    const items = try allocator.alloc(u32, 3);
+    items[0] = 10;
+    items[1] = 20;
+    items[2] = 30;
+
+    var s = OwnedSlice(u32).initOwned(items);
+    try std.testing.expectEqual(@as(usize, 3), s.slice().len);
+    try std.testing.expectEqual(@as(u32, 20), s.slice()[1]);
+
+    s.deinit(allocator);
+}
+
+test "OwnedSlice with struct that has deinit" {
+    const allocator = std.testing.allocator;
+
+    const Item = struct {
+        data: []const u8,
+
+        pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+            alloc.free(self.data);
+        }
+    };
+
+    const items = try allocator.alloc(Item, 2);
+    items[0] = .{ .data = try allocator.dupe(u8, "hello") };
+    items[1] = .{ .data = try allocator.dupe(u8, "world") };
+
+    var s = OwnedSlice(Item).initOwned(items);
+    try std.testing.expectEqual(@as(usize, 2), s.slice().len);
+    try std.testing.expectEqualStrings("hello", s.slice()[0].data);
+
+    s.deinit(allocator);
+}
+
+test "OwnedSlice empty owned slice" {
+    const allocator = std.testing.allocator;
+
+    const items = try allocator.alloc(u32, 0);
+    var s = OwnedSlice(u32).initOwned(items);
+    try std.testing.expectEqual(@as(usize, 0), s.slice().len);
+
+    s.deinit(allocator);
+}
+
+test "OwnedSlice empty borrowed slice" {
+    var s = OwnedSlice(u32).initBorrowed(&.{});
+    try std.testing.expectEqual(@as(usize, 0), s.slice().len);
+    s.deinit(std.testing.allocator);
+}
+
+test "OwnedSlice ensureOwned upgrades borrowed slice" {
+    const allocator = std.testing.allocator;
+    const input = [_]u8{ 'a', 'b', 'c' };
+
+    var s = OwnedSlice(u8).initBorrowed(&input);
+    try std.testing.expect(!s.is_owned);
+
+    try s.ensureOwned(allocator);
+    defer s.deinit(allocator);
+
+    try std.testing.expect(s.is_owned);
+    try std.testing.expectEqualStrings("abc", s.slice());
+}
+
+test "OwnedSlice cloneIfBorrowed is alias of ensureOwned" {
+    const allocator = std.testing.allocator;
+    const input = [_]u8{ 'x', 'y' };
+
+    var s = OwnedSlice(u8).initBorrowed(&input);
+    try s.cloneIfBorrowed(allocator);
+    defer s.deinit(allocator);
+
+    try std.testing.expect(s.is_owned);
+    try std.testing.expectEqualStrings("xy", s.slice());
+}

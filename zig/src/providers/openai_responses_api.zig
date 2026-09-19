@@ -1,0 +1,2529 @@
+const std = @import("std");
+const compat = @import("compat");
+const ai_types = @import("ai_types");
+const event_stream = @import("event_stream");
+const api_registry = @import("api_registry");
+const sse_parser = @import("sse_parser");
+const error_detail = @import("provider_error_detail");
+const json_writer = @import("json_writer");
+const tool_call_tracker = @import("tool_call_tracker");
+const sanitize = @import("sanitize");
+const retry_util = @import("retry");
+const pre_transform = @import("pre_transform");
+const StringBuilder = @import("string_builder").StringBuilder;
+const oauth_storage = @import("oauth/storage");
+const codex_oauth = @import("oauth/openai_codex");
+
+const openai_codex_responses_api = "openai-codex-responses";
+const default_codex_instructions = "You are a helpful coding assistant.";
+
+fn shouldSkipAssistant(msg: ai_types.Message) bool {
+    switch (msg) {
+        .assistant => |a| {
+            return a.stop_reason == .aborted or a.stop_reason == .@"error";
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn collectToolCallIds(allocator: std.mem.Allocator, messages: []const ai_types.Message) !std.StringHashMap(void) {
+    var tool_call_ids = std.StringHashMap(void).init(allocator);
+    errdefer {
+        var iter = tool_call_ids.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        tool_call_ids.deinit();
+    }
+
+    for (messages) |msg| {
+        switch (msg) {
+            .assistant => |a| {
+                for (a.content) |c| {
+                    if (c == .tool_call) {
+                        const id_dup = try allocator.dupe(u8, c.tool_call.id);
+                        try tool_call_ids.put(id_dup, {});
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    return tool_call_ids;
+}
+
+fn isOrphanedToolResult(msg: ai_types.Message, tool_call_ids: *const std.StringHashMap(void)) bool {
+    if (tool_call_ids.count() == 0) {
+        return false;
+    }
+    switch (msg) {
+        .tool_result => |tr| {
+            if (tr.tool_call_id.len > 0) {
+                return !tool_call_ids.contains(tr.tool_call_id);
+            }
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn isOpenAICodexResponsesModel(model: ai_types.Model) bool {
+    return std.mem.eql(u8, model.api, openai_codex_responses_api);
+}
+
+fn isTransparentOpenAIProxy(model: ai_types.Model) bool {
+    if (!std.mem.eql(u8, model.provider, "openai")) return false;
+    const model_compat = model.compat orelse return false;
+    return model_compat.supports_store == true and
+        model_compat.supports_developer_role == true and
+        model_compat.supports_reasoning_effort == true;
+}
+
+fn isOpenAIHost(base_url: []const u8) bool {
+    const uri = std.Uri.parse(base_url) catch return false;
+    const host = uri.host orelse return false;
+    const value = host.percent_encoded;
+    return std.ascii.eqlIgnoreCase(value, "openai.com") or
+        (value.len > "openai.com".len and std.ascii.eqlIgnoreCase(value[value.len - "openai.com".len ..], "openai.com") and value[value.len - "openai.com".len - 1] == '.');
+}
+
+fn freeToolCallIds(allocator: std.mem.Allocator, map: *std.StringHashMap(void)) void {
+    var iter = map.keyIterator();
+    while (iter.next()) |key| {
+        allocator.free(key.*);
+    }
+    map.deinit();
+}
+
+fn allowsAnonymous(model: ai_types.Model) bool {
+    if (!model.allows_anonymous) return false;
+    const vendors = [_][]const u8{ "openai", "deepseek", "openai-codex", "azure" };
+    for (vendors) |vendor| {
+        if (std.mem.eql(u8, model.provider, vendor)) return false;
+    }
+    return true;
+}
+
+fn envApiKey(allocator: std.mem.Allocator, provider_id: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, provider_id, "deepseek")) {
+        return compat.getEnvVarOwned(allocator, "DEEPSEEK_API_KEY") catch null;
+    }
+    if (std.mem.eql(u8, provider_id, "openai")) {
+        return compat.getEnvVarOwned(allocator, "OPENAI_API_KEY") catch null;
+    }
+    return null;
+}
+
+fn appendMessageText(msg: ai_types.Message, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    switch (msg) {
+        .user => |u| switch (u.content) {
+            .text => |t| try out.appendSlice(allocator, t),
+            .parts => |parts| for (parts) |p| switch (p) {
+                .text => |t| {
+                    if (out.items.len > 0) try out.append(allocator, '\n');
+                    try out.appendSlice(allocator, t.text);
+                },
+                .image => {},
+            },
+        },
+        .assistant => |a| for (a.content) |c| switch (c) {
+            .text => |t| {
+                if (out.items.len > 0) try out.append(allocator, '\n');
+                try out.appendSlice(allocator, t.text);
+            },
+            .thinking => |t| {
+                if (out.items.len > 0) try out.append(allocator, '\n');
+                try out.appendSlice(allocator, t.thinking);
+            },
+            .tool_call => {},
+        },
+        .tool_result => |tr| for (tr.content) |c| switch (c) {
+            .text => |t| {
+                if (out.items.len > 0) try out.append(allocator, '\n');
+                try out.appendSlice(allocator, t.text);
+            },
+            .image => {},
+        },
+    }
+}
+
+fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: ai_types.StreamOptions, allocator: std.mem.Allocator) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+
+    var transformed = try pre_transform.preTransform(allocator, context.messages, .{
+        .target_api = model.api,
+        .target_provider = model.provider,
+        .target_model_id = model.id,
+        .max_tool_id_len = if (isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
+        .insert_synthetic_results = true,
+        .tools = context.tools,
+    });
+    defer transformed.deinit();
+
+    var tx_context = context;
+    tx_context.messages = transformed.messages;
+
+    var w = json_writer.JsonWriter.init(&buf, allocator);
+    try w.beginObject();
+    try w.writeStringField("model", model.id);
+
+    const is_codex_model = isOpenAICodexResponsesModel(model);
+    const supports_openai_reasoning = model.reasoning and (isOpenAIHost(model.base_url) or
+        is_codex_model or
+        (if (model.compat) |model_compat| model_compat.supports_reasoning_effort == true else false));
+    const explicit_system_prompt = context.getSystemPrompt();
+    if (is_codex_model) {
+        const instructions = explicit_system_prompt orelse default_codex_instructions;
+        const sanitized = try sanitize.sanitizeSurrogatesInPlace(allocator, instructions);
+        defer {
+            if (sanitized.ptr != instructions.ptr) {
+                allocator.free(@constCast(sanitized));
+            }
+        }
+        try w.writeStringField("instructions", sanitized);
+    }
+
+    if (context.tools) |tools| {
+        if (tools.len > 0) {
+            const honors_native_caps = is_codex_model or isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model);
+            const model_compat: ai_types.OpenAICompatOptions = model.compat orelse .{};
+            const supports_tool_strict = model_compat.supports_strict_mode orelse honors_native_caps;
+            try w.writeKey("tools");
+            try w.beginArray();
+            for (tools) |tool| {
+                try w.beginObject();
+                try w.writeStringField("type", "function");
+                try w.writeStringField("name", tool.name);
+                try w.writeStringField("description", tool.description);
+                if (supports_tool_strict) {
+                    try w.writeBoolField("strict", false);
+                }
+                try w.writeKey("parameters");
+                try w.writeRawJson(tool.parameters_schema_json);
+                try w.endObject();
+            }
+            try w.endArray();
+        }
+    }
+
+    try w.writeBoolField("stream", true);
+    if (!is_codex_model) {
+        try w.writeIntField("max_output_tokens", options.max_tokens orelse model.max_tokens);
+    }
+
+    if (supports_openai_reasoning) {
+        try w.writeKey("reasoning");
+        try w.beginObject();
+        if (normalizedOpenAIReasoningEffort(options)) |effort| {
+            try w.writeStringField("effort", effort);
+        }
+        if (options.getReasoningSummary()) |summary| {
+            try w.writeStringField("summary", summary);
+        } else {
+            try w.writeStringField("summary", "auto");
+        }
+        try w.endObject();
+
+        try w.writeKey("include");
+        try w.beginArray();
+        try w.writeString("reasoning.encrypted_content");
+        try w.endArray();
+    }
+
+    const is_openai_proxy = std.mem.eql(u8, model.provider, "openai") and if (model.compat) |compat_options|
+        compat_options.supports_store == true and
+            compat_options.supports_developer_role == true and
+            compat_options.supports_reasoning_effort == true
+    else
+        false;
+    const supports_store = isOpenAIHost(model.base_url) or
+        (if (model.compat) |compat_options| compat_options.supports_store == true else false) or
+        is_codex_model;
+    if (supports_store) {
+        try w.writeBoolField("store", false);
+    }
+
+    if (options.service_tier) |tier| {
+        const tier_str: []const u8 = switch (tier) {
+            .default => "default",
+            .flex => "flex",
+            .priority => "priority",
+        };
+        try w.writeStringField("service_tier", tier_str);
+    }
+
+    if (options.getSessionId()) |sid| {
+        if (options.cache_retention) |retention| {
+            if (retention != .none) {
+                try w.writeStringField("prompt_cache_key", sid);
+            }
+        }
+    }
+
+    if (options.cache_retention) |retention| {
+        if (retention == .long and (isOpenAIHost(model.base_url) or is_openai_proxy)) {
+            try w.writeStringField("prompt_cache_retention", "24h");
+        }
+    }
+
+    try w.writeKey("input");
+    try w.beginArray();
+
+    var tool_call_ids = collectToolCallIds(allocator, tx_context.messages) catch std.StringHashMap(void).init(allocator);
+    defer freeToolCallIds(allocator, &tool_call_ids);
+
+    if (!is_codex_model) {
+        if (explicit_system_prompt) |sp| {
+            try w.beginObject();
+            const system_role: []const u8 = if (supports_openai_reasoning) "developer" else "system";
+            try w.writeStringField("role", system_role);
+            const sanitized = try sanitize.sanitizeSurrogatesInPlace(allocator, sp);
+            defer {
+                if (sanitized.ptr != sp.ptr) {
+                    allocator.free(@constCast(sanitized));
+                }
+            }
+            try w.writeStringField("content", sanitized);
+            try w.endObject();
+        }
+    }
+
+    if (std.mem.startsWith(u8, model.name, "gpt-5") and !options.reasoning_enabled) {
+        try w.beginObject();
+        const juice_role: []const u8 = if (supports_openai_reasoning) "developer" else "system";
+        try w.writeStringField("role", juice_role);
+        try w.writeStringField("content", "# Juice: 0 !important");
+        try w.endObject();
+    }
+
+    for (tx_context.messages) |m| {
+        if (shouldSkipAssistant(m)) continue;
+
+        if (isOrphanedToolResult(m, &tool_call_ids)) continue;
+
+        switch (m) {
+            .user => |u| {
+                try w.beginObject();
+                try w.writeStringField("type", "message");
+                try w.writeStringField("role", "user");
+
+                switch (u.content) {
+                    .text => |t| {
+                        const sanitized = try sanitize.sanitizeSurrogatesInPlace(allocator, t);
+                        defer {
+                            if (sanitized.ptr != t.ptr) {
+                                allocator.free(@constCast(sanitized));
+                            }
+                        }
+                        try w.writeStringField("content", sanitized);
+                    },
+                    .parts => |parts| {
+                        try w.writeKey("content");
+                        try w.beginArray();
+                        for (parts) |p| {
+                            switch (p) {
+                                .text => |t| {
+                                    try w.beginObject();
+                                    try w.writeStringField("type", "input_text");
+                                    try w.writeStringField("text", t.text);
+                                    try w.endObject();
+                                },
+                                .image => |img| {
+                                    try w.beginObject();
+                                    try w.writeStringField("type", "input_image");
+                                    try w.writeStringField("image_url", img.data);
+                                    try w.endObject();
+                                },
+                            }
+                        }
+                        try w.endArray();
+                    },
+                }
+                try w.endObject();
+            },
+            .assistant => |a| {
+                for (a.content) |c| {
+                    switch (c) {
+                        .text => |t| {
+                            try w.beginObject();
+                            try w.writeStringField("type", "message");
+                            try w.writeStringField("role", "assistant");
+                            try w.writeStringField("content", t.text);
+                            try w.endObject();
+                        },
+                        .thinking => |t| {
+                            _ = t;
+                        },
+                        .tool_call => |tc| {
+                            try w.beginObject();
+                            try w.writeStringField("type", "function_call");
+                            try w.writeStringField("call_id", tc.id);
+                            try w.writeStringField("name", tc.name);
+                            try w.writeStringField("arguments", tc.arguments_json);
+                            try w.endObject();
+                        },
+                        .image => {},
+                    }
+                }
+            },
+            .tool_result => |tr| {
+                var result_text = std.ArrayList(u8).empty;
+                defer result_text.deinit(allocator);
+                for (tr.content) |c| {
+                    switch (c) {
+                        .text => |t| {
+                            if (result_text.items.len > 0) try result_text.append(allocator, '\n');
+                            try result_text.appendSlice(allocator, t.text);
+                        },
+                        .image => {},
+                    }
+                }
+                try w.beginObject();
+                try w.writeStringField("type", "function_call_output");
+                try w.writeStringField("call_id", tr.tool_call_id);
+                try w.writeStringField("output", result_text.items);
+                try w.endObject();
+            },
+        }
+    }
+
+    try w.endArray();
+    try w.endObject();
+    return buf.toOwnedSlice(allocator);
+}
+
+fn normalizedOpenAIReasoningEffort(options: ai_types.StreamOptions) ?[]const u8 {
+    if (options.getReasoningEffort()) |explicit| {
+        if (std.mem.eql(u8, explicit, "none")) return "none";
+    }
+    if (!options.reasoning_enabled) return null;
+    const effort = options.getReasoningEffort() orelse return "medium";
+    if (std.mem.eql(u8, effort, "off")) return null;
+    if (std.mem.eql(u8, effort, "minimal")) return "low";
+    return effort;
+}
+
+fn buildUrlWithSuffix(allocator: std.mem.Allocator, base_url: []const u8, suffix: []const u8) ![]const u8 {
+    var sb = StringBuilder{};
+    sb.count(base_url);
+    sb.count(suffix);
+    try sb.allocate(allocator);
+    errdefer sb.deinit(allocator);
+
+    _ = sb.append(base_url);
+    _ = sb.append(suffix);
+
+    std.debug.assert(sb.len == sb.cap);
+    const out = sb.ptr.?[0..sb.cap];
+    sb.ptr = null;
+    sb.cap = 0;
+    sb.len = 0;
+    return out;
+}
+
+fn responsesPathForModel(model: ai_types.Model) []const u8 {
+    if (isOpenAICodexResponsesModel(model)) return "/responses";
+    return "/v1/responses";
+}
+
+fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
+    var sb = StringBuilder{};
+    sb.count("Bearer ");
+    sb.count(token);
+    try sb.allocate(allocator);
+    errdefer sb.deinit(allocator);
+
+    _ = sb.append("Bearer ");
+    _ = sb.append(token);
+
+    std.debug.assert(sb.len == sb.cap);
+    const out = sb.ptr.?[0..sb.cap];
+    sb.ptr = null;
+    sb.cap = 0;
+    sb.len = 0;
+    return out;
+}
+
+fn buildCompoundId(allocator: std.mem.Allocator, call_id: []const u8, item_id: []const u8) ![]const u8 {
+    var sb = StringBuilder{};
+    sb.count(call_id);
+    sb.count("|");
+    sb.count(item_id);
+    try sb.allocate(allocator);
+    errdefer sb.deinit(allocator);
+
+    _ = sb.append(call_id);
+    _ = sb.append("|");
+    _ = sb.append(item_id);
+
+    std.debug.assert(sb.len == sb.cap);
+    const out = sb.ptr.?[0..sb.cap];
+    sb.ptr = null;
+    sb.cap = 0;
+    sb.len = 0;
+    return out;
+}
+
+fn pushOwnedEvent(allocator: std.mem.Allocator, stream: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) !void {
+    const owned = try ai_types.cloneAssistantMessageEvent(allocator, event);
+    errdefer {
+        var cleanup = owned;
+        ai_types.deinitAssistantMessageEvent(allocator, &cleanup);
+    }
+
+    if (!stream.pushBlocking(owned)) return error.StreamCompleted;
+}
+
+const ParsedEvent = struct {
+    event_type: EventType,
+    output_index: usize,
+
+    const EventType = union(enum) {
+        text_delta: []const u8,
+        output_item_added: OutputItem,
+        function_call_args_delta: struct { item_id: []const u8, delta: []const u8 },
+        function_call_args_done: struct { item_id: []const u8, arguments: []const u8 },
+        reasoning_delta: []const u8,
+        reasoning_done: void,
+        output_item_done: OutputItem,
+        completed: CompletedInfo,
+    };
+
+    const OutputItem = struct {
+        item_type: []const u8,
+        id: ?[]const u8,
+        call_id: ?[]const u8,
+        name: ?[]const u8,
+        arguments: ?[]const u8,
+    };
+
+    const CompletedInfo = struct {
+        status: ?[]const u8,
+        usage: ?ai_types.Usage,
+    };
+};
+
+fn parseResponseEventFromValue(json_value: std.json.Value) ?ParsedEvent {
+    if (json_value != .object) return null;
+    const obj = json_value.object;
+
+    const type_val = obj.get("type") orelse return null;
+    if (type_val != .string) return null;
+    const event_type_str = type_val.string;
+
+    const output_index: usize = if (obj.get("output_index")) |oi|
+        if (oi == .integer) @intCast(oi.integer) else 0
+    else
+        0;
+
+    if (std.mem.eql(u8, event_type_str, "response.output_text.delta")) {
+        const delta = obj.get("delta") orelse return null;
+        if (delta != .string) return null;
+        return .{
+            .event_type = .{ .text_delta = delta.string },
+            .output_index = output_index,
+        };
+    }
+
+    if (std.mem.eql(u8, event_type_str, "response.output_item.added")) {
+        const item_val = obj.get("item") orelse return null;
+        if (item_val != .object) return null;
+        const item = item_val.object;
+
+        const output_item: ParsedEvent.OutputItem = .{
+            .item_type = if (item.get("type")) |t| if (t == .string) t.string else "" else "",
+            .id = if (item.get("id")) |i| if (i == .string) i.string else null else null,
+            .call_id = if (item.get("call_id")) |c| if (c == .string) c.string else null else null,
+            .name = if (item.get("name")) |n| if (n == .string) n.string else null else null,
+            .arguments = if (item.get("arguments")) |a| if (a == .string) a.string else null else null,
+        };
+
+        return .{
+            .event_type = .{ .output_item_added = output_item },
+            .output_index = output_index,
+        };
+    }
+
+    if (std.mem.eql(u8, event_type_str, "response.function_call_arguments.delta")) {
+        const item_id = obj.get("item_id") orelse return null;
+        if (item_id != .string) return null;
+        const delta = obj.get("delta") orelse return null;
+        if (delta != .string) return null;
+
+        return .{
+            .event_type = .{ .function_call_args_delta = .{
+                .item_id = item_id.string,
+                .delta = delta.string,
+            } },
+            .output_index = output_index,
+        };
+    }
+
+    if (std.mem.eql(u8, event_type_str, "response.function_call_arguments.done")) {
+        const item_id = obj.get("item_id") orelse return null;
+        if (item_id != .string) return null;
+        const arguments = obj.get("arguments") orelse return null;
+        if (arguments != .string) return null;
+
+        return .{
+            .event_type = .{ .function_call_args_done = .{
+                .item_id = item_id.string,
+                .arguments = arguments.string,
+            } },
+            .output_index = output_index,
+        };
+    }
+
+    if (std.mem.eql(u8, event_type_str, "response.reasoning.delta")) {
+        const delta = obj.get("delta") orelse return null;
+        if (delta != .string) return null;
+
+        return .{
+            .event_type = .{ .reasoning_delta = delta.string },
+            .output_index = output_index,
+        };
+    }
+
+    if (std.mem.eql(u8, event_type_str, "response.reasoning.done")) {
+        return .{
+            .event_type = .reasoning_done,
+            .output_index = output_index,
+        };
+    }
+
+    if (std.mem.eql(u8, event_type_str, "response.output_item.done")) {
+        const item_val = obj.get("item") orelse return null;
+        if (item_val != .object) return null;
+        const item = item_val.object;
+
+        const output_item: ParsedEvent.OutputItem = .{
+            .item_type = if (item.get("type")) |t| if (t == .string) t.string else "" else "",
+            .id = if (item.get("id")) |i| if (i == .string) i.string else null else null,
+            .call_id = if (item.get("call_id")) |c| if (c == .string) c.string else null else null,
+            .name = if (item.get("name")) |n| if (n == .string) n.string else null else null,
+            .arguments = if (item.get("arguments")) |a| if (a == .string) a.string else null else null,
+        };
+
+        return .{
+            .event_type = .{ .output_item_done = output_item },
+            .output_index = output_index,
+        };
+    }
+
+    if (std.mem.eql(u8, event_type_str, "response.completed")) {
+        var info: ParsedEvent.CompletedInfo = .{
+            .status = null,
+            .usage = null,
+        };
+
+        if (obj.get("response")) |resp| {
+            if (resp == .object) {
+                if (resp.object.get("status")) |st| {
+                    if (st == .string) info.status = st.string;
+                }
+                if (resp.object.get("usage")) |u| {
+                    if (u == .object) {
+                        var usage = ai_types.Usage{};
+                        if (u.object.get("input_tokens")) |v| {
+                            if (v == .integer) usage.input = @intCast(v.integer);
+                        }
+                        if (u.object.get("output_tokens")) |v| {
+                            if (v == .integer) usage.output = @intCast(v.integer);
+                        }
+                        usage.total_tokens = usage.input + usage.output;
+                        info.usage = usage;
+                    }
+                }
+            }
+        }
+
+        return .{
+            .event_type = .{ .completed = info },
+            .output_index = output_index,
+        };
+    }
+
+    return null;
+}
+
+fn cloneOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+    if (value) |s| return try allocator.dupe(u8, s);
+    return null;
+}
+
+fn cloneOutputItem(allocator: std.mem.Allocator, item: ParsedEvent.OutputItem) !ParsedEvent.OutputItem {
+    const item_type = try allocator.dupe(u8, item.item_type);
+    errdefer allocator.free(item_type);
+
+    const id = try cloneOptionalString(allocator, item.id);
+    errdefer if (id) |s| allocator.free(s);
+
+    const call_id = try cloneOptionalString(allocator, item.call_id);
+    errdefer if (call_id) |s| allocator.free(s);
+
+    const name = try cloneOptionalString(allocator, item.name);
+    errdefer if (name) |s| allocator.free(s);
+
+    const arguments = try cloneOptionalString(allocator, item.arguments);
+    errdefer if (arguments) |s| allocator.free(s);
+
+    return .{
+        .item_type = item_type,
+        .id = id,
+        .call_id = call_id,
+        .name = name,
+        .arguments = arguments,
+    };
+}
+
+fn deinitOutputItem(allocator: std.mem.Allocator, item: ParsedEvent.OutputItem) void {
+    allocator.free(item.item_type);
+    if (item.id) |s| allocator.free(s);
+    if (item.call_id) |s| allocator.free(s);
+    if (item.name) |s| allocator.free(s);
+    if (item.arguments) |s| allocator.free(s);
+}
+
+fn cloneParsedEvent(allocator: std.mem.Allocator, event: ParsedEvent) !ParsedEvent {
+    return switch (event.event_type) {
+        .text_delta => |delta| .{
+            .event_type = .{ .text_delta = try allocator.dupe(u8, delta) },
+            .output_index = event.output_index,
+        },
+        .output_item_added => |item| .{
+            .event_type = .{ .output_item_added = try cloneOutputItem(allocator, item) },
+            .output_index = event.output_index,
+        },
+        .function_call_args_delta => |args| blk: {
+            const item_id = try allocator.dupe(u8, args.item_id);
+            errdefer allocator.free(item_id);
+            const delta = try allocator.dupe(u8, args.delta);
+            errdefer allocator.free(delta);
+            break :blk .{
+                .event_type = .{ .function_call_args_delta = .{ .item_id = item_id, .delta = delta } },
+                .output_index = event.output_index,
+            };
+        },
+        .function_call_args_done => |args| blk: {
+            const item_id = try allocator.dupe(u8, args.item_id);
+            errdefer allocator.free(item_id);
+            const arguments = try allocator.dupe(u8, args.arguments);
+            errdefer allocator.free(arguments);
+            break :blk .{
+                .event_type = .{ .function_call_args_done = .{ .item_id = item_id, .arguments = arguments } },
+                .output_index = event.output_index,
+            };
+        },
+        .reasoning_delta => |delta| .{
+            .event_type = .{ .reasoning_delta = try allocator.dupe(u8, delta) },
+            .output_index = event.output_index,
+        },
+        .reasoning_done => .{
+            .event_type = .reasoning_done,
+            .output_index = event.output_index,
+        },
+        .output_item_done => |item| .{
+            .event_type = .{ .output_item_done = try cloneOutputItem(allocator, item) },
+            .output_index = event.output_index,
+        },
+        .completed => |info| .{
+            .event_type = .{ .completed = .{
+                .status = try cloneOptionalString(allocator, info.status),
+                .usage = info.usage,
+            } },
+            .output_index = event.output_index,
+        },
+    };
+}
+
+fn deinitParsedEvent(allocator: std.mem.Allocator, event: *ParsedEvent) void {
+    switch (event.event_type) {
+        .text_delta => |delta| allocator.free(delta),
+        .output_item_added => |item| deinitOutputItem(allocator, item),
+        .function_call_args_delta => |args| {
+            allocator.free(args.item_id);
+            allocator.free(args.delta);
+        },
+        .function_call_args_done => |args| {
+            allocator.free(args.item_id);
+            allocator.free(args.arguments);
+        },
+        .reasoning_delta => |delta| allocator.free(delta),
+        .reasoning_done => {},
+        .output_item_done => |item| deinitOutputItem(allocator, item),
+        .completed => |info| {
+            if (info.status) |status| allocator.free(status);
+        },
+    }
+    event.* = undefined;
+}
+
+fn parseResponseEventToStruct(data: []const u8, allocator: std.mem.Allocator) ?ParsedEvent {
+    if (std.mem.eql(u8, data, "[DONE]")) return null;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return null;
+    defer parsed.deinit();
+
+    const borrowed = parseResponseEventFromValue(parsed.value) orelse return null;
+    return cloneParsedEvent(allocator, borrowed) catch null;
+}
+
+const ToolCallState = struct {
+    content_index: usize,
+    compound_id: []const u8,
+    name: []const u8,
+};
+
+const ThreadCtx = struct {
+    allocator: std.mem.Allocator,
+    stream: *event_stream.AssistantMessageEventStream,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    api_key: []u8,
+    body: []u8,
+    service_tier: ?ai_types.ServiceTier,
+    cancel_token: ?ai_types.CancelToken = null,
+    on_payload_fn: ?*const fn (on_ctx: ?*anyopaque, payload_json: []const u8) void = null,
+    on_payload_ctx: ?*anyopaque = null,
+    retry_config: ?ai_types.RetryConfig = null,
+    ping_interval_ms: ?u64 = null,
+
+    fn deinit(self: *ThreadCtx) void {
+        self.allocator.free(self.api_key);
+        self.allocator.free(self.body);
+        var mut_context = self.context;
+        mut_context.deinit(self.allocator);
+        var mut_model = self.model;
+        mut_model.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+};
+
+fn runThread(ctx: *ThreadCtx) void {
+    const allocator = ctx.allocator;
+    const stream = ctx.stream;
+    const model = ctx.model;
+    const api_key = ctx.api_key;
+    const body = ctx.body;
+    const service_tier = ctx.service_tier;
+    const cancel_token = ctx.cancel_token;
+    const on_payload_fn = ctx.on_payload_fn;
+    const on_payload_ctx = ctx.on_payload_ctx;
+    const retry_opts = ctx.retry_config;
+
+    if (on_payload_fn) |cb| {
+        cb(on_payload_ctx, body);
+    }
+
+    if (cancel_token) |ct| {
+        if (ct.isCancelled()) {
+            ctx.deinit();
+            stream.completeWithError("request cancelled");
+            stream.markThreadDone();
+            return;
+        }
+    }
+
+    var client = compat.http.HttpClient.init(allocator);
+    defer client.deinit();
+
+    const url = buildUrlWithSuffix(allocator, model.base_url, responsesPathForModel(model)) catch {
+        ctx.deinit();
+        stream.completeWithError("oom url");
+        stream.markThreadDone();
+        return;
+    };
+
+    const auth = buildBearerAuthValue(allocator, api_key) catch {
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError("oom auth");
+        stream.markThreadDone();
+        return;
+    };
+
+    const uri = std.Uri.parse(url) catch {
+        allocator.free(auth);
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError("invalid URL");
+        stream.markThreadDone();
+        return;
+    };
+
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    defer headers.deinit(allocator);
+    if (api_key.len > 0) {
+        headers.append(allocator, .{ .name = "authorization", .value = auth }) catch {
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("oom headers");
+            stream.markThreadDone();
+            return;
+        };
+    }
+    headers.append(allocator, .{ .name = "content-type", .value = "application/json" }) catch {
+        allocator.free(auth);
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError("oom headers");
+        stream.markThreadDone();
+        return;
+    };
+    if (model.headers) |model_headers| {
+        for (model_headers) |header| {
+            if (compat.http.headerPresent(headers.items, header.name)) continue;
+            headers.append(allocator, .{ .name = header.name, .value = header.value }) catch {
+                allocator.free(auth);
+                allocator.free(url);
+                ctx.deinit();
+                stream.completeWithError("oom headers");
+                stream.markThreadDone();
+                return;
+            };
+        }
+    }
+
+    const MAX_RETRIES: u8 = 3;
+    const BASE_DELAY_MS: u32 = 1000;
+    const max_delay_ms: u32 = if (retry_opts) |rc| rc.max_retry_delay_ms orelse 60000 else 60000;
+
+    var response: compat.http.Response = undefined;
+    var head_buf: [4096]u8 = undefined;
+    var retry_attempt: u8 = 0;
+    var req: compat.http.Request = undefined;
+    var req_initialized = false;
+    defer if (req_initialized) req.deinit();
+
+    while (true) {
+        if (cancel_token) |ct| {
+            if (ct.isCancelled()) {
+                allocator.free(auth);
+                allocator.free(url);
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+        }
+
+        if (req_initialized) {
+            req.deinit();
+            req_initialized = false;
+        }
+
+        req = client.openRequest(.POST, uri, .{ .extra_headers = headers.items }) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                allocator.free(auth);
+                allocator.free(url);
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("request failed");
+            stream.markThreadDone();
+            return;
+        };
+        req_initialized = true;
+
+        compat.http.sendRequest(&req, body) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                allocator.free(auth);
+                allocator.free(url);
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("send failed");
+            stream.markThreadDone();
+            return;
+        };
+
+        response = compat.http.receiveResponse(&req, &head_buf) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                allocator.free(auth);
+                allocator.free(url);
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("receive failed");
+            stream.markThreadDone();
+            return;
+        };
+
+        if (response.head.status == .ok) {
+            break;
+        }
+
+        const status_code: u16 = @intFromEnum(response.head.status);
+        const should_retry = retry_util.isRetryable(status_code) and retry_attempt < MAX_RETRIES;
+
+        if (should_retry) {
+            const error_text: []const u8 = &.{};
+
+            const is_retryable_error = retry_util.isRetryableError(error_text);
+
+            var delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+
+            if (std.mem.find(u8, response.head.bytes, "\r\n") != null) {
+                var retry_after_iter = response.head.iterateHeaders();
+                while (retry_after_iter.next()) |header| {
+                    if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
+                        if (retry_util.extractRetryDelayFromHeader(header.value)) |server_delay| {
+                            if (server_delay <= max_delay_ms) {
+                                delay = server_delay;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (retry_util.extractRetryDelayFromBody(error_text)) |body_delay| {
+                if (body_delay <= max_delay_ms) {
+                    delay = body_delay;
+                }
+            }
+
+            if (!is_retryable_error and !retry_util.isRetryable(status_code)) {
+                break;
+            }
+
+            if (!retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                allocator.free(auth);
+                allocator.free(url);
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+
+            retry_attempt += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    if (response.head.status != .ok) {
+        var error_buf: [4096]u8 = undefined;
+        const error_reader = compat.http.responseReader(&response, &error_buf);
+        const error_body = compat.http.allocRemainingResponse(allocator, error_reader, 8192) catch null;
+        defer if (error_body) |eb| allocator.free(eb);
+
+        const detail = if (error_body) |eb| error_detail.describe(allocator, eb) catch null else null;
+        defer if (detail) |text| allocator.free(text);
+
+        const status_code: u16 = @intFromEnum(response.head.status);
+        const error_msg = std.fmt.allocPrint(allocator, "{s} request failed: HTTP {d}{s}", .{
+            model.provider,
+            status_code,
+            detail orelse "",
+        }) catch "responses request failed";
+        defer if (!std.mem.eql(u8, error_msg, "responses request failed")) allocator.free(error_msg);
+
+        allocator.free(auth);
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError(error_msg);
+        stream.markThreadDone();
+        return;
+    }
+
+    var parser = sse_parser.SSEParser.init(allocator);
+    defer parser.deinit();
+
+    var transfer_buf: [4096]u8 = undefined;
+    var read_buf: [8192]u8 = undefined;
+    const reader = compat.http.responseReader(&response, &transfer_buf);
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .stop;
+
+    var tool_call_tracker_instance = tool_call_tracker.ToolCallTracker.init(allocator);
+    defer tool_call_tracker_instance.deinit();
+
+    var item_id_to_content_index = std.StringHashMap(usize).init(allocator);
+    defer {
+        var iter = item_id_to_content_index.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+        }
+        item_id_to_content_index.deinit();
+    }
+
+    var item_id_to_compound_id = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var iter = item_id_to_compound_id.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        item_id_to_compound_id.deinit();
+    }
+
+    var next_content_index: usize = 0;
+    var thinking_started = false;
+    var thinking_content_index: ?usize = null;
+    var text_content_index: ?usize = null;
+    var text_started = false;
+
+    var last_ping_time: i64 = 0;
+    const ping_interval = ctx.ping_interval_ms orelse 0;
+
+    _ = pushOwnedEvent(allocator, stream, .{
+        .start = .{
+            .partial = .{
+                .content = &.{},
+                .api = model.api,
+                .provider = model.provider,
+                .model = model.id,
+                .usage = .{},
+                .stop_reason = .stop,
+                .timestamp = compat.time.nowMillis(),
+            },
+        },
+    }) catch {};
+
+    while (true) {
+        if (ping_interval > 0) {
+            const now = compat.time.nowMillis();
+            if (now - last_ping_time >= ping_interval) {
+                stream.push(.{ .keepalive = {} }) catch {};
+                last_ping_time = now;
+            }
+        }
+
+        if (cancel_token) |ct| {
+            if (ct.isCancelled()) {
+                allocator.free(auth);
+                allocator.free(url);
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+        }
+
+        const n = compat.http.readResponse(reader, &read_buf) catch {
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("read failed");
+            stream.markThreadDone();
+            return;
+        };
+        if (n == 0) break;
+
+        const events = parser.feed(read_buf[0..n]) catch |err| {
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError(sse_parser.errorMessage(err));
+            stream.markThreadDone();
+            return;
+        };
+
+        for (events) |ev| {
+            var parsed = parseResponseEventToStruct(ev.data, allocator) orelse continue;
+            defer deinitParsedEvent(allocator, &parsed);
+
+            switch (parsed.event_type) {
+                .text_delta => |delta| {
+                    if (!text_started) {
+                        text_content_index = next_content_index;
+                        next_content_index += 1;
+                        text_started = true;
+
+                        _ = pushOwnedEvent(allocator, stream, .{
+                            .text_start = .{
+                                .content_index = text_content_index.?,
+                                .partial = .{
+                                    .content = &.{},
+                                    .api = model.api,
+                                    .provider = model.provider,
+                                    .model = model.id,
+                                    .usage = usage,
+                                    .stop_reason = stop_reason,
+                                    .timestamp = compat.time.nowMillis(),
+                                },
+                            },
+                        }) catch {};
+                    }
+
+                    text.appendSlice(allocator, delta) catch {};
+
+                    if (text_content_index) |idx| {
+                        _ = pushOwnedEvent(allocator, stream, .{
+                            .text_delta = .{
+                                .content_index = idx,
+                                .delta = delta,
+                                .partial = .{
+                                    .content = &.{},
+                                    .api = model.api,
+                                    .provider = model.provider,
+                                    .model = model.id,
+                                    .usage = usage,
+                                    .stop_reason = stop_reason,
+                                    .timestamp = compat.time.nowMillis(),
+                                },
+                            },
+                        }) catch {};
+                    }
+                },
+                .output_item_added => |item| {
+                    if (std.mem.eql(u8, item.item_type, "function_call")) {
+                        const call_id = item.call_id orelse "";
+                        const item_id = item.id orelse "";
+                        const name = item.name orelse "";
+
+                        const compound_id = buildCompoundId(allocator, call_id, item_id) catch {
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom compound id");
+                            stream.markThreadDone();
+                            return;
+                        };
+
+                        const content_index = next_content_index;
+                        next_content_index += 1;
+
+                        const duped_item_id = allocator.dupe(u8, item_id) catch {
+                            allocator.free(compound_id);
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom item_id");
+                            stream.markThreadDone();
+                            return;
+                        };
+                        item_id_to_content_index.put(duped_item_id, content_index) catch {
+                            allocator.free(duped_item_id);
+                            allocator.free(compound_id);
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom item map");
+                            stream.markThreadDone();
+                            return;
+                        };
+
+                        item_id_to_compound_id.put(allocator.dupe(u8, item_id) catch {
+                            allocator.free(compound_id);
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom compound map");
+                            stream.markThreadDone();
+                            return;
+                        }, compound_id) catch {
+                            allocator.free(compound_id);
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom compound map");
+                            stream.markThreadDone();
+                            return;
+                        };
+
+                        _ = tool_call_tracker_instance.startCall(content_index, content_index, compound_id, name) catch {
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom tool call start");
+                            stream.markThreadDone();
+                            return;
+                        };
+
+                        _ = pushOwnedEvent(allocator, stream, .{
+                            .toolcall_start = .{
+                                .content_index = content_index,
+                                .id = compound_id,
+                                .name = name,
+                                .partial = .{
+                                    .content = &.{},
+                                    .api = model.api,
+                                    .provider = model.provider,
+                                    .model = model.id,
+                                    .usage = usage,
+                                    .stop_reason = stop_reason,
+                                    .timestamp = compat.time.nowMillis(),
+                                },
+                            },
+                        }) catch {};
+                    }
+                },
+                .function_call_args_delta => |args| {
+                    if (item_id_to_content_index.get(args.item_id)) |content_index| {
+                        tool_call_tracker_instance.appendDelta(content_index, args.delta) catch {};
+
+                        _ = pushOwnedEvent(allocator, stream, .{
+                            .toolcall_delta = .{
+                                .content_index = content_index,
+                                .delta = args.delta,
+                                .partial = .{
+                                    .content = &.{},
+                                    .api = model.api,
+                                    .provider = model.provider,
+                                    .model = model.id,
+                                    .usage = usage,
+                                    .stop_reason = stop_reason,
+                                    .timestamp = compat.time.nowMillis(),
+                                },
+                            },
+                        }) catch {};
+                    }
+                },
+                .function_call_args_done => |args| {
+                    _ = args;
+                },
+                .reasoning_delta => |delta| {
+                    if (!thinking_started) {
+                        thinking_content_index = next_content_index;
+                        next_content_index += 1;
+                        thinking_started = true;
+
+                        _ = pushOwnedEvent(allocator, stream, .{
+                            .thinking_start = .{
+                                .content_index = thinking_content_index.?,
+                                .partial = .{
+                                    .content = &.{},
+                                    .api = model.api,
+                                    .provider = model.provider,
+                                    .model = model.id,
+                                    .usage = usage,
+                                    .stop_reason = stop_reason,
+                                    .timestamp = compat.time.nowMillis(),
+                                },
+                            },
+                        }) catch {};
+                    }
+
+                    thinking.appendSlice(allocator, delta) catch {};
+
+                    if (thinking_content_index) |idx| {
+                        _ = pushOwnedEvent(allocator, stream, .{
+                            .thinking_delta = .{
+                                .content_index = idx,
+                                .delta = delta,
+                                .partial = .{
+                                    .content = &.{},
+                                    .api = model.api,
+                                    .provider = model.provider,
+                                    .model = model.id,
+                                    .usage = usage,
+                                    .stop_reason = stop_reason,
+                                    .timestamp = compat.time.nowMillis(),
+                                },
+                            },
+                        }) catch {};
+                    }
+                },
+                .reasoning_done => {
+                    if (thinking_content_index) |idx| {
+                        _ = pushOwnedEvent(allocator, stream, .{
+                            .thinking_end = .{
+                                .content_index = idx,
+                                .content = thinking.items,
+                                .partial = .{
+                                    .content = &.{},
+                                    .api = model.api,
+                                    .provider = model.provider,
+                                    .model = model.id,
+                                    .usage = usage,
+                                    .stop_reason = stop_reason,
+                                    .timestamp = compat.time.nowMillis(),
+                                },
+                            },
+                        }) catch {};
+                    }
+                },
+                .output_item_done => |item| {
+                    if (std.mem.eql(u8, item.item_type, "function_call")) {
+                        const item_id = item.id orelse "";
+                        if (item_id_to_content_index.get(item_id)) |content_index| {
+                            if (tool_call_tracker_instance.completeCall(content_index, allocator)) |tc| {
+                                defer {
+                                    allocator.free(tc.id);
+                                    allocator.free(tc.name);
+                                    if (tc.arguments_json.len > 0) allocator.free(tc.arguments_json);
+                                    if (tc.thought_signature) |sig| allocator.free(sig);
+                                }
+
+                                _ = pushOwnedEvent(allocator, stream, .{
+                                    .toolcall_end = .{
+                                        .content_index = content_index,
+                                        .tool_call = tc,
+                                        .partial = .{
+                                            .content = &.{},
+                                            .api = model.api,
+                                            .provider = model.provider,
+                                            .model = model.id,
+                                            .usage = usage,
+                                            .stop_reason = stop_reason,
+                                            .timestamp = compat.time.nowMillis(),
+                                        },
+                                    },
+                                }) catch {};
+                            }
+                        }
+                    }
+                },
+                .completed => |info| {
+                    if (info.status) |st| {
+                        if (std.mem.eql(u8, st, "incomplete")) stop_reason = .length;
+                    }
+                    if (info.usage) |u| {
+                        usage = u;
+                    }
+                },
+            }
+        }
+    }
+
+    if (usage.total_tokens == 0) usage.total_tokens = usage.input + usage.output;
+
+    usage.calculateCost(model.cost);
+
+    if (service_tier) |tier| {
+        const tier_multiplier: f64 = switch (tier) {
+            .flex => 0.5,
+            .priority => 2.0,
+            .default => 1.0,
+        };
+        usage.cost.input *= tier_multiplier;
+        usage.cost.output *= tier_multiplier;
+        usage.cost.cache_read *= tier_multiplier;
+        usage.cost.cache_write *= tier_multiplier;
+        usage.cost.total *= tier_multiplier;
+    }
+
+    const has_thinking = thinking.items.len > 0;
+    const has_text = text.items.len > 0;
+    const filled_count: usize = (if (has_thinking) @as(usize, 1) else @as(usize, 0)) +
+        (if (has_text) @as(usize, 1) else @as(usize, 0));
+
+    var content_slice: []ai_types.AssistantContent = undefined;
+    if (filled_count == 0) {
+        content_slice = allocator.alloc(ai_types.AssistantContent, 1) catch {
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("oom result");
+            stream.markThreadDone();
+            return;
+        };
+        content_slice[0] = .{ .text = .{ .text = "" } };
+    } else {
+        content_slice = allocator.alloc(ai_types.AssistantContent, filled_count) catch {
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("oom building result");
+            stream.markThreadDone();
+            return;
+        };
+        var idx: usize = 0;
+
+        if (has_thinking) {
+            content_slice[idx] = .{ .thinking = .{
+                .thinking = allocator.dupe(u8, thinking.items) catch {
+                    allocator.free(content_slice);
+                    allocator.free(auth);
+                    allocator.free(url);
+                    ctx.deinit();
+                    stream.completeWithError("oom building thinking");
+                    stream.markThreadDone();
+                    return;
+                },
+            } };
+            idx += 1;
+        }
+
+        if (has_text) {
+            content_slice[idx] = .{
+                .text = .{
+                    .text = allocator.dupe(u8, text.items) catch {
+                        for (content_slice[0..idx]) |*block| {
+                            switch (block.*) {
+                                .thinking => |t| allocator.free(t.thinking),
+                                else => {},
+                            }
+                        }
+                        allocator.free(content_slice);
+                        allocator.free(auth);
+                        allocator.free(url);
+                        ctx.deinit();
+                        stream.completeWithError("oom building text");
+                        stream.markThreadDone();
+                        return;
+                    },
+                },
+            };
+            idx += 1;
+        }
+
+        std.debug.assert(idx == filled_count);
+    }
+
+    const api_dup = allocator.dupe(u8, model.api) catch {
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        allocator.free(auth);
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        stream.markThreadDone();
+        return;
+    };
+    const provider_dup = allocator.dupe(u8, model.provider) catch {
+        allocator.free(api_dup);
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        allocator.free(auth);
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        stream.markThreadDone();
+        return;
+    };
+    const model_dup = allocator.dupe(u8, model.id) catch {
+        allocator.free(provider_dup);
+        allocator.free(api_dup);
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        allocator.free(auth);
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        stream.markThreadDone();
+        return;
+    };
+
+    const out = ai_types.AssistantMessage{
+        .content = content_slice,
+        .api = api_dup,
+        .provider = provider_dup,
+        .model = model_dup,
+        .usage = usage,
+        .stop_reason = stop_reason,
+        .timestamp = compat.time.nowMillis(),
+        .is_owned = true,
+    };
+
+    allocator.free(auth);
+    allocator.free(url);
+    ctx.deinit();
+
+    stream.complete(out);
+    stream.markThreadDone();
+}
+
+pub fn streamOpenAIResponses(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
+    const o = options orelse ai_types.StreamOptions{};
+
+    const api_key: []u8 = blk: {
+        if (o.getApiKey()) |k| {
+            if (k.len > 0) break :blk try allocator.dupe(u8, k);
+        }
+        if (envApiKey(allocator, model.provider)) |k| {
+            if (k.len > 0) break :blk @constCast(k);
+            allocator.free(k);
+        }
+        if (allowsAnonymous(model)) break :blk try allocator.dupe(u8, "");
+        return error.MissingApiKey;
+    };
+    errdefer allocator.free(api_key);
+
+    const owned_model = try ai_types.cloneModel(allocator, model);
+    errdefer {
+        var mut_m = owned_model;
+        mut_m.deinit(allocator);
+    }
+
+    const owned_context = try ai_types.cloneContext(allocator, context);
+    errdefer {
+        var mut_ctx = owned_context;
+        mut_ctx.deinit(allocator);
+    }
+
+    const body = try buildRequestBody(owned_model, owned_context, o, allocator);
+    errdefer allocator.free(body);
+
+    const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    errdefer allocator.destroy(s);
+    s.* = event_stream.AssistantMessageEventStream.init(allocator);
+    s.owns_events = true;
+    s.wait_for_thread_on_deinit = true;
+
+    const ctx = try allocator.create(ThreadCtx);
+    errdefer allocator.destroy(ctx);
+    ctx.* = .{
+        .allocator = allocator,
+        .stream = s,
+        .model = owned_model,
+        .context = owned_context,
+        .api_key = api_key,
+        .body = body,
+        .service_tier = o.service_tier,
+        .cancel_token = o.cancel_token,
+        .on_payload_fn = o.on_payload_fn,
+        .on_payload_ctx = o.on_payload_ctx,
+        .retry_config = o.retry,
+        .ping_interval_ms = o.ping_interval_ms,
+    };
+
+    const th = try std.Thread.spawn(.{}, runThread, .{ctx});
+    th.detach();
+    return s;
+}
+
+fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
+    return switch (level) {
+        .off => "off",
+        .minimal => "minimal",
+        .low => "low",
+        .medium => "medium",
+        .high => "high",
+        .xhigh => "xhigh",
+    };
+}
+
+pub fn streamSimpleOpenAIResponses(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.SimpleStreamOptions, allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
+    const o = options orelse ai_types.SimpleStreamOptions{};
+    return streamOpenAIResponses(model, context, .{
+        .temperature = o.temperature,
+        .max_tokens = o.max_tokens,
+        .api_key = if (o.api_key) |k| ai_types.OwnedSlice(u8).initBorrowed(k) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .cache_retention = o.cache_retention,
+        .session_id = if (o.session_id) |sid| ai_types.OwnedSlice(u8).initBorrowed(sid) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .headers = o.headers,
+        .retry = o.retry,
+        .cancel_token = o.cancel_token,
+        .on_payload_fn = o.on_payload_fn,
+        .on_payload_ctx = o.on_payload_ctx,
+        .reasoning_effort = if (o.reasoning) |r| ai_types.OwnedSlice(u8).initBorrowed(thinkingLevelToString(r)) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .reasoning_summary = if (o.reasoning_summary) |s| ai_types.OwnedSlice(u8).initBorrowed(s) else ai_types.OwnedSlice(u8).initBorrowed(""),
+    }, allocator);
+}
+
+pub fn registerOpenAIResponsesApiProvider(registry: *api_registry.ApiRegistry) !void {
+    try registry.registerApiProvider(.{
+        .api = "openai-responses",
+        .stream = streamOpenAIResponses,
+        .stream_simple = streamSimpleOpenAIResponses,
+    }, null);
+}
+
+fn refreshOpenAICodexCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !oauth_storage.Credentials {
+    const refreshed = try codex_oauth.refreshToken(.{
+        .refresh = credentials.refresh,
+        .access = credentials.access,
+        .expires = credentials.expires,
+        .provider_data = credentials.provider_data,
+    }, allocator);
+    errdefer {
+        allocator.free(refreshed.refresh);
+        allocator.free(refreshed.access);
+    }
+    const provider_data = refreshed.provider_data;
+    errdefer if (provider_data) |data| allocator.free(data);
+
+    return .{
+        .refresh = refreshed.refresh,
+        .access = refreshed.access,
+        .expires = refreshed.expires,
+        .provider_data = provider_data,
+    };
+}
+
+fn getOpenAICodexApiKey(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) ![]const u8 {
+    return try codex_oauth.getApiKey(.{
+        .refresh = credentials.refresh,
+        .access = credentials.access,
+        .expires = credentials.expires,
+    }, allocator);
+}
+
+pub fn registerOpenAICodexResponsesApiProvider(registry: *api_registry.ApiRegistry) !void {
+    try registry.registerApiProvider(.{
+        .api = "openai-codex-responses",
+        .stream = streamOpenAIResponses,
+        .stream_simple = streamSimpleOpenAIResponses,
+        .auth_provider_id = "openai-codex",
+        .auth_refresh_fn = refreshOpenAICodexCredentials,
+        .auth_get_api_key_fn = getOpenAICodexApiKey,
+    }, null);
+}
+
+test "anonymous streaming is opt-in and never applies to an openai vendor id" {
+    const base: ai_types.Model = .{
+        .id = "m",
+        .name = "M",
+        .api = "openai-responses",
+        .provider = "gateway",
+        .base_url = "https://gw.test",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1000,
+        .max_tokens = 100,
+    };
+    try std.testing.expect(!allowsAnonymous(base));
+
+    var opted = base;
+    opted.allows_anonymous = true;
+    try std.testing.expect(allowsAnonymous(opted));
+
+    for ([_][]const u8{ "openai", "deepseek", "openai-codex", "azure" }) |vendor_id| {
+        var vendor = opted;
+        vendor.provider = vendor_id;
+        try std.testing.expect(!allowsAnonymous(vendor));
+    }
+}
+
+test "OpenAI Codex provider registers OAuth hooks" {
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    try registerOpenAICodexResponsesApiProvider(&registry);
+
+    const provider = registry.getApiProvider("openai-codex-responses") orelse return error.TestExpectedCodexProvider;
+    try std.testing.expectEqualStrings("openai-codex", provider.auth_provider_id.?);
+    try std.testing.expect(provider.auth_refresh_fn != null);
+    try std.testing.expect(provider.auth_get_api_key_fn != null);
+}
+
+test "OpenAI Codex responses use Codex backend path" {
+    const model: ai_types.Model = .{
+        .id = "gpt-test",
+        .name = "GPT Test",
+        .api = "openai-codex-responses",
+        .provider = "openai-codex",
+        .base_url = "https://chatgpt.com/backend-api/codex",
+        .reasoning = true,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 16384,
+    };
+    try std.testing.expectEqualStrings("/responses", responsesPathForModel(model));
+}
+
+test "OpenAI Codex request body includes default instructions" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-test",
+        .name = "GPT Test",
+        .api = "openai-codex-responses",
+        .provider = "openai-codex",
+        .base_url = "https://chatgpt.com/backend-api/codex",
+        .reasoning = true,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{ .messages = &.{} };
+    const body = try buildRequestBody(model, context, .{}, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"instructions\":\"You are a helpful coding assistant.\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"store\":false") != null);
+    try std.testing.expect(std.mem.find(u8, body, "max_output_tokens") == null);
+}
+
+test "OpenAI Codex request body uses system prompt as instructions" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-test",
+        .name = "GPT Test",
+        .api = "openai-codex-responses",
+        .provider = "openai-codex",
+        .base_url = "https://chatgpt.com/backend-api/codex",
+        .reasoning = true,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .system_prompt = ai_types.OwnedSlice(u8).initBorrowed("Use the project style."),
+        .messages = &.{},
+    };
+    const body = try buildRequestBody(model, context, .{}, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"instructions\":\"Use the project style.\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"role\":\"developer\"") == null);
+}
+
+test "OpenAI Responses request body sends local tools without strict schema mode" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-test",
+        .name = "GPT Test",
+        .api = "openai-codex-responses",
+        .provider = "openai-codex",
+        .base_url = "https://chatgpt.com/backend-api/codex",
+        .reasoning = true,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 16384,
+    };
+    const tools = [_]ai_types.Tool{.{
+        .name = "file_read",
+        .description = "Read a file",
+        .parameters_schema_json = "{\"type\":\"object\",\"properties\":{\"workspace_root\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"workspace_root\",\"path\"],\"additionalProperties\":false}",
+    }};
+    const context: ai_types.Context = .{
+        .messages = &.{},
+        .tools = &tools,
+    };
+    const body = try buildRequestBody(model, context, .{}, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"name\":\"file_read\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"strict\":false") != null);
+}
+
+fn parseEventForTest(data: []const u8, allocator: std.mem.Allocator) ?struct { parsed: std.json.Parsed(std.json.Value), event: ParsedEvent } {
+    if (std.mem.eql(u8, data, "[DONE]")) return null;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return null;
+    const event = parseResponseEventFromValue(parsed.value) orelse {
+        parsed.deinit();
+        return null;
+    };
+    return .{ .parsed = parsed, .event = event };
+}
+
+test "parseResponseEventFromValue handles text delta" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"Hello\"}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.event.output_index);
+    try std.testing.expectEqualStrings("Hello", result.event.event_type.text_delta);
+}
+
+test "parseResponseEventFromValue handles output_item.added for function_call" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_123\",\"call_id\":\"call_abc\",\"name\":\"bash\",\"arguments\":\"\"}}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.event.output_index);
+
+    switch (result.event.event_type) {
+        .output_item_added => |item| {
+            try std.testing.expectEqualStrings("function_call", item.item_type);
+            try std.testing.expectEqualStrings("fc_123", item.id.?);
+            try std.testing.expectEqualStrings("call_abc", item.call_id.?);
+            try std.testing.expectEqualStrings("bash", item.name.?);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseResponseEventFromValue handles function_call_arguments.delta" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_123\",\"delta\":\"{\\\"cmd\\\": \\\"ls\\\"\"}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.event.output_index);
+
+    switch (result.event.event_type) {
+        .function_call_args_delta => |args| {
+            try std.testing.expectEqualStrings("fc_123", args.item_id);
+            try std.testing.expectEqualStrings("{\"cmd\": \"ls\"", args.delta);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseResponseEventFromValue maintains function_call delta continuity" {
+    const allocator = std.testing.allocator;
+    const data1 = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_123\",\"delta\":\"{\\\"cmd\\\":\\\"ls\"}";
+    const data2 = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_123\",\"delta\":\" -la\\\"}\"}";
+
+    const result1 = parseEventForTest(data1, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result1.parsed.deinit();
+
+    const result2 = parseEventForTest(data2, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result2.parsed.deinit();
+
+    switch (result1.event.event_type) {
+        .function_call_args_delta => |args1| switch (result2.event.event_type) {
+            .function_call_args_delta => |args2| {
+                try std.testing.expectEqualStrings(args1.item_id, args2.item_id);
+                try std.testing.expectEqual(@as(usize, 0), result1.event.output_index);
+                try std.testing.expectEqual(@as(usize, 0), result2.event.output_index);
+            },
+            else => try std.testing.expect(false),
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseResponseEventFromValue handles function_call_arguments.done" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"fc_123\",\"arguments\":\"{\\\"cmd\\\": \\\"ls -la\\\"}\"}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.event.output_index);
+
+    switch (result.event.event_type) {
+        .function_call_args_done => |args| {
+            try std.testing.expectEqualStrings("fc_123", args.item_id);
+            try std.testing.expectEqualStrings("{\"cmd\": \"ls -la\"}", args.arguments);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseResponseEventFromValue handles reasoning.delta" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.reasoning.delta\",\"output_index\":0,\"delta\":\"Let me think...\"}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.event.output_index);
+    try std.testing.expectEqualStrings("Let me think...", result.event.event_type.reasoning_delta);
+}
+
+test "parseResponseEventFromValue handles reasoning.done" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.reasoning.done\",\"output_index\":0}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.event.output_index);
+    try std.testing.expect(result.event.event_type == .reasoning_done);
+}
+
+test "parseResponseEventFromValue handles output_item.done" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_123\",\"call_id\":\"call_abc\",\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.event.output_index);
+
+    switch (result.event.event_type) {
+        .output_item_done => |item| {
+            try std.testing.expectEqualStrings("function_call", item.item_type);
+            try std.testing.expectEqualStrings("fc_123", item.id.?);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseResponseEventFromValue handles response.completed with usage" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    switch (result.event.event_type) {
+        .completed => |info| {
+            try std.testing.expectEqualStrings("completed", info.status.?);
+            try std.testing.expectEqual(@as(u64, 100), info.usage.?.input);
+            try std.testing.expectEqual(@as(u64, 50), info.usage.?.output);
+            try std.testing.expectEqual(@as(u64, 150), info.usage.?.total_tokens);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "parseResponseEventFromValue handles response.completed with incomplete status" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\"}}";
+
+    const result = parseEventForTest(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.parsed.deinit();
+
+    switch (result.event.event_type) {
+        .completed => |info| {
+            try std.testing.expectEqualStrings("incomplete", info.status.?);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "buildCompoundId creates correct format" {
+    const allocator = std.testing.allocator;
+    const compound_id = try buildCompoundId(allocator, "call_abc", "fc_123");
+    defer allocator.free(compound_id);
+
+    try std.testing.expectEqualStrings("call_abc|fc_123", compound_id);
+}
+
+test "parseResponseEventToStruct returns null for [DONE]" {
+    const allocator = std.testing.allocator;
+    const result = parseResponseEventToStruct("[DONE]", allocator);
+    try std.testing.expect(result == null);
+}
+
+test "parseResponseEventToStruct returns null for invalid JSON" {
+    const allocator = std.testing.allocator;
+    const result = parseResponseEventToStruct("not valid json", allocator);
+    try std.testing.expect(result == null);
+}
+
+test "parseResponseEventToStruct owns function call output item strings" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_123\",\"call_id\":\"call_abc\",\"name\":\"shell_execute\",\"arguments\":\"\"}}";
+
+    var event = parseResponseEventToStruct(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitParsedEvent(allocator, &event);
+
+    const clobber = try allocator.alloc(u8, 4096);
+    defer allocator.free(clobber);
+    @memset(clobber, 'x');
+
+    switch (event.event_type) {
+        .output_item_added => |item| {
+            try std.testing.expectEqualStrings("function_call", item.item_type);
+            try std.testing.expectEqualStrings("fc_123", item.id.?);
+            try std.testing.expectEqualStrings("call_abc", item.call_id.?);
+            try std.testing.expectEqualStrings("shell_execute", item.name.?);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "OpenAI Responses stream events own cloned function call strings" {
+    const allocator = std.testing.allocator;
+
+    var stream = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.owns_events = true;
+    defer stream.deinit();
+
+    const added_data = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_123\",\"call_id\":\"call_abc\",\"name\":\"shell_execute\",\"arguments\":\"\"}}";
+    var added = parseResponseEventToStruct(added_data, allocator) orelse return error.TestExpectedAdded;
+    const added_item = added.event_type.output_item_added;
+    const compound_id = try buildCompoundId(allocator, added_item.call_id.?, added_item.id.?);
+    defer allocator.free(compound_id);
+
+    try pushOwnedEvent(allocator, &stream, .{ .toolcall_start = .{
+        .content_index = 0,
+        .id = compound_id,
+        .name = added_item.name.?,
+        .partial = .{
+            .content = &.{},
+            .api = "openai-codex-responses",
+            .provider = "openai-codex",
+            .model = "gpt-test",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 1,
+            .is_owned = false,
+        },
+    } });
+    deinitParsedEvent(allocator, &added);
+
+    const start_event = stream.poll() orelse return error.TestExpectedStartEvent;
+    switch (start_event) {
+        .toolcall_start => |start| {
+            try std.testing.expectEqualStrings("call_abc|fc_123", start.id);
+            try std.testing.expectEqualStrings("shell_execute", start.name);
+        },
+        else => return error.TestExpectedStartEvent,
+    }
+    var mutable_start = start_event;
+    ai_types.deinitAssistantMessageEvent(allocator, &mutable_start);
+
+    const delta_data = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_123\",\"delta\":\"{\\\"command\\\":\\\"ls -al\\\"}\"}";
+    var delta = parseResponseEventToStruct(delta_data, allocator) orelse return error.TestExpectedDelta;
+    const args = delta.event_type.function_call_args_delta;
+    try pushOwnedEvent(allocator, &stream, .{ .toolcall_delta = .{
+        .content_index = 0,
+        .delta = args.delta,
+        .partial = .{
+            .content = &.{},
+            .api = "openai-codex-responses",
+            .provider = "openai-codex",
+            .model = "gpt-test",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 2,
+            .is_owned = false,
+        },
+    } });
+    deinitParsedEvent(allocator, &delta);
+
+    const delta_event = stream.poll() orelse return error.TestExpectedDeltaEvent;
+    switch (delta_event) {
+        .toolcall_delta => |tool_delta| {
+            try std.testing.expectEqualStrings("{\"command\":\"ls -al\"}", tool_delta.delta);
+        },
+        else => return error.TestExpectedDeltaEvent,
+    }
+    var mutable_delta = delta_event;
+    ai_types.deinitAssistantMessageEvent(allocator, &mutable_delta);
+}
+
+test "parseResponseEventFromValue returns null for unknown event type" {
+    const allocator = std.testing.allocator;
+    const data = "{\"type\":\"unknown.event\",\"output_index\":0}";
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch {
+        try std.testing.expect(false);
+        return;
+    };
+    defer parsed.deinit();
+
+    const result = parseResponseEventFromValue(parsed.value);
+    try std.testing.expect(result == null);
+}
+
+test "buildRequestBody includes service_tier when set" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-4o",
+        .name = "gpt-4o",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 2.5, .output = 10.0, .cache_read = 1.25, .cache_write = 2.5 },
+        .context_window = 128000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .service_tier = .flex,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"service_tier\":\"flex\"") != null);
+}
+
+test "buildRequestBody omits service_tier when null" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-4o",
+        .name = "gpt-4o",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 2.5, .output = 10.0, .cache_read = 1.25, .cache_write = 2.5 },
+        .context_window = 128000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{};
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "service_tier") == null);
+}
+
+test "buildRequestBody includes GPT-5 juice workaround when reasoning disabled" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5",
+        .name = "gpt-5-turbo",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 5.0, .output = 15.0, .cache_read = 2.5, .cache_write = 5.0 },
+        .context_window = 200000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .system_prompt = ai_types.OwnedSlice(u8).initBorrowed("You are helpful."),
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .reasoning_enabled = false,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "# Juice: 0 !important") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"role\":\"developer\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"effort\":\"none\"") == null);
+    try std.testing.expect(std.mem.find(u8, body, "\"effort\":\"medium\"") == null);
+}
+
+test "buildRequestBody juice workaround uses system role on generic endpoints" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5",
+        .name = "gpt-5-turbo",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://proxy.example.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .system_prompt = ai_types.OwnedSlice(u8).initBorrowed("You are helpful."),
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .reasoning_enabled = false,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "# Juice: 0 !important") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"role\":\"developer\"") == null);
+    try std.testing.expect(std.mem.find(u8, body, "\"role\":\"system\"") != null);
+}
+
+test "buildRequestBody normalizes minimal reasoning effort for OpenAI" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5.4-mini",
+        .name = "GPT-5.4-Mini",
+        .api = "openai-codex-responses",
+        .provider = "openai-codex",
+        .base_url = "https://chatgpt.com/backend-api/codex",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 272000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .reasoning_effort = ai_types.OwnedSlice(u8).initBorrowed("minimal"),
+        .reasoning_enabled = true,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"effort\":\"low\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"effort\":\"minimal\"") == null);
+}
+
+test "buildRequestBody omits unsupported none reasoning effort" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5",
+        .name = "gpt-5",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .reasoning_effort = ai_types.OwnedSlice(u8).initBorrowed("off"),
+        .reasoning_enabled = true,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"reasoning\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"effort\":\"none\"") == null);
+    try std.testing.expect(std.mem.find(u8, body, "\"effort\"") == null);
+}
+
+test "buildRequestBody preserves explicit none effort with reasoning disabled" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5.1",
+        .name = "gpt-5.1",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .reasoning_effort = ai_types.OwnedSlice(u8).initBorrowed("none"),
+        .reasoning_enabled = false,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"effort\":\"none\"") != null);
+}
+
+test "buildRequestBody omits strict tool fields on generic endpoints" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5",
+        .name = "gpt-5",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://gateway.example.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200000,
+        .max_tokens = 16384,
+    };
+    const tools = [_]ai_types.Tool{.{
+        .name = "file_read",
+        .description = "Read a file",
+        .parameters_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+    }};
+    const context: ai_types.Context = .{
+        .messages = &.{},
+        .tools = &tools,
+    };
+
+    const body = try buildRequestBody(model, context, .{}, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"name\":\"file_read\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"strict\"") == null);
+}
+
+test "buildRequestBody omits strict tool fields when a partial compat block leaves it unset" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5",
+        .name = "gpt-5",
+        .api = "openai-responses",
+        .provider = "gateway",
+        .base_url = "https://gateway.example.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200000,
+        .max_tokens = 16384,
+        .compat = .{ .supports_anthropic_cache_ttl = true },
+    };
+    const tools = [_]ai_types.Tool{.{
+        .name = "file_read",
+        .description = "Read a file",
+        .parameters_schema_json = "{\"type\":\"object\",\"properties\":{}}",
+    }};
+    const context: ai_types.Context = .{
+        .messages = &.{},
+        .tools = &tools,
+    };
+
+    const body = try buildRequestBody(model, context, .{}, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"name\":\"file_read\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"strict\"") == null);
+}
+
+test "buildRequestBody omits GPT-5 juice workaround when reasoning enabled" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-5",
+        .name = "gpt-5-turbo",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 5.0, .output = 15.0, .cache_read = 2.5, .cache_write = 5.0 },
+        .context_window = 200000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .system_prompt = ai_types.OwnedSlice(u8).initBorrowed("You are helpful."),
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .reasoning_enabled = true,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "Juice") == null);
+}
+
+test "buildRequestBody omits juice workaround for non-GPT-5 models" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-4o",
+        .name = "gpt-4o",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 2.5, .output = 10.0, .cache_read = 1.25, .cache_write = 2.5 },
+        .context_window = 128000,
+        .max_tokens = 16384,
+    };
+    const context: ai_types.Context = .{
+        .system_prompt = ai_types.OwnedSlice(u8).initBorrowed("You are helpful."),
+        .messages = &.{},
+    };
+    const options: ai_types.StreamOptions = .{
+        .reasoning_enabled = false,
+    };
+
+    const body = try buildRequestBody(model, context, options, allocator);
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "Juice") == null);
+}
+
+test "ServiceTier enum values are correct" {
+    try std.testing.expectEqual(ai_types.ServiceTier.default, .default);
+    try std.testing.expectEqual(ai_types.ServiceTier.flex, .flex);
+    try std.testing.expectEqual(ai_types.ServiceTier.priority, .priority);
+}
+
+test "ReasoningSummary enum values are correct" {
+    try std.testing.expectEqual(ai_types.ReasoningSummary.auto, .auto);
+    try std.testing.expectEqual(ai_types.ReasoningSummary.concise, .concise);
+    try std.testing.expectEqual(ai_types.ReasoningSummary.detailed, .detailed);
+}
+
+test "streamSimpleOpenAIResponses exits early when pre-cancelled" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gpt-4o-mini",
+        .name = "gpt-4o-mini",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 4096,
+    };
+    const context: ai_types.Context = .{ .messages = &.{} };
+
+    var cancelled = std.atomic.Value(bool).init(true);
+    const cancel_token = ai_types.CancelToken{ .cancelled = &cancelled };
+
+    const stream = try streamSimpleOpenAIResponses(model, context, .{
+        .api_key = "test-key",
+        .cancel_token = cancel_token,
+    }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |ev| {
+        var mutable_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
+    }
+
+    try std.testing.expect(stream.getError() != null);
+    try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
+}

@@ -1,0 +1,489 @@
+const std = @import("std");
+const compat = @import("compat");
+const storage = @import("oauth/storage");
+const anthropic = @import("oauth/anthropic");
+const github = @import("oauth/github_copilot");
+const codex = @import("oauth/openai_codex");
+
+pub const Provider = enum {
+    anthropic,
+    github_copilot,
+    openai_codex,
+    kimi,
+    api_key,
+};
+
+pub fn providerStorageKey(provider: Provider) []const u8 {
+    return switch (provider) {
+        .anthropic => "anthropic",
+        .github_copilot => "github-copilot",
+        .openai_codex => "openai-codex",
+        .kimi => "kimi",
+        .api_key => "",
+    };
+}
+
+pub fn storesApiKeyFor(provider: Provider) bool {
+    return provider == .kimi or provider == .api_key;
+}
+
+const Phase = enum { running, done, failed };
+
+pub const PollResult = union(enum) {
+    none,
+    show_auth: struct { url: []const u8, instructions: ?[]const u8 },
+    request_input: struct { message: []const u8 },
+    done: storage.Credentials,
+    failed: []const u8,
+};
+
+var g_active: ?*LoginSession = null;
+
+pub const LoginSession = struct {
+    allocator: std.mem.Allocator,
+    provider: Provider,
+    provider_id: []const u8,
+    mutex: std.atomic.Mutex = .unlocked,
+    thread: ?std.Thread = null,
+    phase: Phase = .running,
+    shutting_down: bool = false,
+
+    auth_pending: bool = false,
+    auth_url: []u8 = &.{},
+    auth_instructions: []u8 = &.{},
+
+    prompt_pending: bool = false,
+    prompt_message: []u8 = &.{},
+
+    input_ready: bool = false,
+    input_value: []u8 = &.{},
+
+    result: ?storage.Credentials = null,
+    error_name: []u8 = &.{},
+    owned_provider_id: ?[]u8 = null,
+
+    pub fn start(allocator: std.mem.Allocator, provider: Provider) !*LoginSession {
+        if (g_active != null) return error.LoginInProgress;
+
+        const self = try allocator.create(LoginSession);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+            .provider = provider,
+            .provider_id = providerStorageKey(provider),
+        };
+
+        g_active = self;
+        errdefer g_active = null;
+
+        self.thread = switch (provider) {
+            .anthropic => try std.Thread.spawn(.{}, runAnthropic, .{self}),
+            .github_copilot => try std.Thread.spawn(.{}, runGithub, .{self}),
+            .openai_codex => try std.Thread.spawn(.{}, runCodex, .{self}),
+            .kimi => try std.Thread.spawn(.{}, runKimi, .{self}),
+            .api_key => try std.Thread.spawn(.{}, runApiKey, .{self}),
+        };
+        return self;
+    }
+
+    pub fn startApiKey(allocator: std.mem.Allocator, provider_id: []const u8) !*LoginSession {
+        if (g_active != null) return error.LoginInProgress;
+        if (provider_id.len == 0) return error.InvalidProviderId;
+
+        const owned_id = try allocator.dupe(u8, provider_id);
+        errdefer allocator.free(owned_id);
+
+        const self = try allocator.create(LoginSession);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+            .provider = .api_key,
+            .provider_id = owned_id,
+            .owned_provider_id = owned_id,
+        };
+
+        g_active = self;
+        errdefer g_active = null;
+
+        self.thread = try std.Thread.spawn(.{}, runApiKey, .{self});
+        return self;
+    }
+
+    pub fn storesApiKey(self: *const LoginSession) bool {
+        return storesApiKeyFor(self.provider);
+    }
+
+    fn lock(self: *LoginSession) void {
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    pub fn deinit(self: *LoginSession) void {
+        {
+            self.lock();
+            defer self.mutex.unlock();
+            self.shutting_down = true;
+        }
+        if (self.thread) |thread| thread.join();
+        const allocator = self.allocator;
+        if (self.auth_url.len > 0) allocator.free(self.auth_url);
+        if (self.auth_instructions.len > 0) allocator.free(self.auth_instructions);
+        if (self.prompt_message.len > 0) allocator.free(self.prompt_message);
+        if (self.input_value.len > 0) allocator.free(self.input_value);
+        if (self.error_name.len > 0) allocator.free(self.error_name);
+        if (self.result) |creds| creds.deinit(allocator);
+        if (self.owned_provider_id) |owned| allocator.free(owned);
+        g_active = null;
+        allocator.destroy(self);
+    }
+
+    pub fn poll(self: *LoginSession) PollResult {
+        self.lock();
+        defer self.mutex.unlock();
+
+        if (self.auth_pending) {
+            self.auth_pending = false;
+            return .{ .show_auth = .{
+                .url = self.auth_url,
+                .instructions = if (self.auth_instructions.len > 0) self.auth_instructions else null,
+            } };
+        }
+        if (self.prompt_pending) {
+            self.prompt_pending = false;
+            return .{ .request_input = .{ .message = self.prompt_message } };
+        }
+        if (self.phase == .done) {
+            if (self.result) |creds| {
+                self.result = null;
+                return .{ .done = creds };
+            }
+            return .none;
+        }
+        if (self.phase == .failed) {
+            return .{ .failed = if (self.error_name.len > 0) self.error_name else "login failed" };
+        }
+        return .none;
+    }
+
+    pub fn provideInput(self: *LoginSession, text: []const u8) !void {
+        const dup = try self.allocator.dupe(u8, text);
+        self.lock();
+        defer self.mutex.unlock();
+        if (self.input_value.len > 0) self.allocator.free(self.input_value);
+        self.input_value = dup;
+        self.input_ready = true;
+    }
+
+    fn recordAuth(self: *LoginSession, url: []const u8, instructions: ?[]const u8) void {
+        self.lock();
+        defer self.mutex.unlock();
+        if (self.auth_url.len > 0) self.allocator.free(self.auth_url);
+        self.auth_url = self.allocator.dupe(u8, url) catch &.{};
+        if (self.auth_instructions.len > 0) self.allocator.free(self.auth_instructions);
+        self.auth_instructions = if (instructions) |ins| (self.allocator.dupe(u8, ins) catch &.{}) else &.{};
+        self.auth_pending = true;
+    }
+
+    fn waitForInput(self: *LoginSession, message: []const u8, allow_empty: bool) []const u8 {
+        self.lock();
+        if (self.prompt_message.len > 0) self.allocator.free(self.prompt_message);
+        self.prompt_message = self.allocator.dupe(u8, message) catch &.{};
+        self.prompt_pending = true;
+        self.input_ready = false;
+        self.mutex.unlock();
+
+        while (true) {
+            self.lock();
+            const ready = self.input_ready;
+            const shutting = self.shutting_down;
+            if (ready) {
+                const value = self.input_value;
+                self.input_value = &.{};
+                self.input_ready = false;
+                self.mutex.unlock();
+                if (value.len == 0) {
+                    if (allow_empty) {
+                        self.allocator.free(value);
+                        return "";
+                    }
+                    return value;
+                }
+                return value;
+            }
+            self.mutex.unlock();
+            if (shutting) {
+                if (allow_empty) return "";
+                return self.allocator.alloc(u8, 0) catch @panic("OOM");
+            }
+            compat.time.sleepNs(5 * std.time.ns_per_ms);
+        }
+    }
+
+    fn finishSuccess(self: *LoginSession, refresh: []const u8, access: []const u8, expires: i64, provider_data: ?[]const u8) void {
+        self.lock();
+        defer self.mutex.unlock();
+        const refresh_copy = self.allocator.dupe(u8, refresh) catch return self.setFailedLocked("OutOfMemory");
+        const access_copy = self.allocator.dupe(u8, access) catch {
+            self.allocator.free(refresh_copy);
+            return self.setFailedLocked("OutOfMemory");
+        };
+        const pd_copy: ?[]const u8 = if (provider_data) |pd| (self.allocator.dupe(u8, pd) catch {
+            self.allocator.free(refresh_copy);
+            self.allocator.free(access_copy);
+            return self.setFailedLocked("OutOfMemory");
+        }) else null;
+        self.result = .{
+            .refresh = refresh_copy,
+            .access = access_copy,
+            .expires = expires,
+            .provider_data = pd_copy,
+        };
+        self.phase = .done;
+    }
+
+    fn finishError(self: *LoginSession, name: []const u8) void {
+        self.lock();
+        defer self.mutex.unlock();
+        self.setFailedLocked(name);
+    }
+
+    fn setFailedLocked(self: *LoginSession, name: []const u8) void {
+        if (self.error_name.len > 0) self.allocator.free(self.error_name);
+        self.error_name = self.allocator.dupe(u8, name) catch &.{};
+        self.phase = .failed;
+    }
+};
+
+fn anthropicOnAuth(info: anthropic.AuthInfo) void {
+    if (g_active) |s| s.recordAuth(info.url, info.instructions);
+}
+fn anthropicOnPrompt(prompt: anthropic.Prompt) []const u8 {
+    const s = g_active orelse return "";
+    return s.waitForInput(prompt.message, prompt.allow_empty);
+}
+
+fn githubOnAuth(info: github.AuthInfo) void {
+    if (g_active) |s| s.recordAuth(info.url, info.instructions);
+}
+fn githubOnPrompt(prompt: github.Prompt) []const u8 {
+    const s = g_active orelse return "";
+    return s.waitForInput(prompt.message, prompt.allow_empty);
+}
+
+fn codexOnAuth(info: codex.AuthInfo) void {
+    if (g_active) |s| s.recordAuth(info.url, info.instructions);
+}
+fn codexOnPrompt(prompt: codex.Prompt) []const u8 {
+    const s = g_active orelse return "";
+    return s.waitForInput(prompt.message, prompt.allow_empty);
+}
+
+fn runAnthropic(self: *LoginSession) void {
+    const creds = anthropic.login(.{ .onAuth = anthropicOnAuth, .onPrompt = anthropicOnPrompt }, self.allocator) catch |err| {
+        self.finishError(@errorName(err));
+        return;
+    };
+    defer {
+        self.allocator.free(creds.refresh);
+        self.allocator.free(creds.access);
+    }
+    self.finishSuccess(creds.refresh, creds.access, creds.expires, null);
+}
+
+fn runGithub(self: *LoginSession) void {
+    const creds = github.login(.{ .onAuth = githubOnAuth, .onPrompt = githubOnPrompt }, self.allocator) catch |err| {
+        self.finishError(@errorName(err));
+        return;
+    };
+    defer freeGithubCredentials(self.allocator, creds);
+    self.finishSuccess(creds.refresh, creds.access, creds.expires, creds.provider_data);
+}
+
+fn runCodex(self: *LoginSession) void {
+    const creds = codex.login(.{ .onAuth = codexOnAuth, .onPrompt = codexOnPrompt }, self.allocator) catch |err| {
+        self.finishError(@errorName(err));
+        return;
+    };
+    defer {
+        self.allocator.free(creds.refresh);
+        self.allocator.free(creds.access);
+        if (creds.provider_data) |pd| self.allocator.free(pd);
+    }
+    self.finishSuccess(creds.refresh, creds.access, creds.expires, creds.provider_data);
+}
+
+fn runKimi(self: *LoginSession) void {
+    const region_prompt = "Select your region:\n  1. China (api.kimi.com)\n  2. Global (api.moonshot.ai)\nEnter choice (1 or 2):";
+    const region_choice = self.waitForInput(region_prompt, false);
+    defer self.allocator.free(region_choice);
+
+    const region = if (std.mem.eql(u8, std.mem.trim(u8, region_choice, " \t\r\n"), "2"))
+        "global"
+    else
+        "china";
+
+    const api_key = self.waitForInput("Enter Kimi API key:", false);
+    defer self.allocator.free(api_key);
+    const trimmed_api_key = std.mem.trim(u8, api_key, " \t\r\n");
+    if (trimmed_api_key.len == 0) {
+        self.finishError("ApiKeyRequired");
+        return;
+    }
+
+    const provider_data = std.fmt.allocPrint(self.allocator, "region:{s}", .{region}) catch {
+        self.finishError("OutOfMemory");
+        return;
+    };
+    defer self.allocator.free(provider_data);
+
+    self.finishSuccess("", trimmed_api_key, std.math.maxInt(i64), provider_data);
+}
+
+fn runApiKey(self: *LoginSession) void {
+    const prompt = std.fmt.allocPrint(self.allocator, "Enter API key for {s}:", .{self.provider_id}) catch {
+        self.finishError("OutOfMemory");
+        return;
+    };
+    defer self.allocator.free(prompt);
+
+    const api_key = self.waitForInput(prompt, false);
+    defer self.allocator.free(api_key);
+    const trimmed = std.mem.trim(u8, api_key, " \t\r\n");
+    if (trimmed.len == 0) {
+        self.finishError("ApiKeyRequired");
+        return;
+    }
+    self.finishSuccess("", trimmed, std.math.maxInt(i64), null);
+}
+
+fn freeGithubCredentials(allocator: std.mem.Allocator, creds: github.Credentials) void {
+    allocator.free(creds.refresh);
+    allocator.free(creds.access);
+    if (creds.provider_data) |pd| allocator.free(pd);
+    if (creds.base_url) |bu| allocator.free(bu);
+    if (creds.enabled_models) |models| {
+        for (models) |m| allocator.free(m);
+        allocator.free(models);
+    }
+}
+
+test "providerStorageKey maps to expected ids" {
+    try std.testing.expectEqualStrings("anthropic", providerStorageKey(.anthropic));
+    try std.testing.expectEqualStrings("github-copilot", providerStorageKey(.github_copilot));
+    try std.testing.expectEqualStrings("openai-codex", providerStorageKey(.openai_codex));
+    try std.testing.expectEqualStrings("kimi", providerStorageKey(.kimi));
+}
+
+test "LoginSession start rejects a second concurrent login" {
+    var placeholder: LoginSession = .{
+        .allocator = std.testing.allocator,
+        .provider = .anthropic,
+        .provider_id = providerStorageKey(.anthropic),
+    };
+    g_active = &placeholder;
+    defer g_active = null;
+
+    try std.testing.expectError(error.LoginInProgress, LoginSession.start(std.testing.allocator, .anthropic));
+}
+
+test "LoginSession bridges prompt input through the worker" {
+    const Helper = struct {
+        fn worker(session: *LoginSession) void {
+            const input = session.waitForInput("Enter code:", false);
+            defer if (input.len > 0) session.allocator.free(input);
+            session.finishSuccess("refresh-tok", input, 1234, null);
+        }
+    };
+
+    const session = try std.testing.allocator.create(LoginSession);
+    session.* = .{
+        .allocator = std.testing.allocator,
+        .provider = .anthropic,
+        .provider_id = providerStorageKey(.anthropic),
+    };
+    g_active = session;
+    session.thread = try std.Thread.spawn(.{}, Helper.worker, .{session});
+    defer session.deinit();
+
+    var requested = false;
+    var attempts: usize = 0;
+    while (attempts < 200) : (attempts += 1) {
+        switch (session.poll()) {
+            .request_input => {
+                requested = true;
+                break;
+            },
+            else => {},
+        }
+        compat.time.sleepNs(2 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(requested);
+
+    try session.provideInput("my-code");
+
+    var creds: ?storage.Credentials = null;
+    attempts = 0;
+    while (attempts < 200) : (attempts += 1) {
+        switch (session.poll()) {
+            .done => |c| {
+                creds = c;
+                break;
+            },
+            else => {},
+        }
+        compat.time.sleepNs(2 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(creds != null);
+    defer creds.?.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("my-code", creds.?.access);
+    try std.testing.expectEqualStrings("refresh-tok", creds.?.refresh);
+}
+
+test "LoginSession trims Kimi API key before storing" {
+    const session = try LoginSession.start(std.testing.allocator, .kimi);
+    defer session.deinit();
+
+    var attempts: usize = 0;
+    while (attempts < 200) : (attempts += 1) {
+        switch (session.poll()) {
+            .request_input => |req| {
+                try std.testing.expect(std.mem.indexOf(u8, req.message, "region") != null);
+                break;
+            },
+            else => {},
+        }
+        compat.time.sleepNs(2 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(attempts < 200);
+    try session.provideInput("1\n");
+
+    attempts = 0;
+    while (attempts < 200) : (attempts += 1) {
+        switch (session.poll()) {
+            .request_input => |req| {
+                try std.testing.expect(std.mem.indexOf(u8, req.message, "API key") != null);
+                break;
+            },
+            else => {},
+        }
+        compat.time.sleepNs(2 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(attempts < 200);
+    try session.provideInput("  kimi-secret\n");
+
+    var creds: ?storage.Credentials = null;
+    attempts = 0;
+    while (attempts < 200) : (attempts += 1) {
+        switch (session.poll()) {
+            .done => |c| {
+                creds = c;
+                break;
+            },
+            else => {},
+        }
+        compat.time.sleepNs(2 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(creds != null);
+    defer creds.?.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("kimi-secret", creds.?.access);
+    try std.testing.expectEqualStrings("region:china", creds.?.provider_data.?);
+}

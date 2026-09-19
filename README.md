@@ -57,7 +57,7 @@ Protocol artifacts:
 Executable core (Go 1.27 or later):
 
 ```sh
-go run ./cmd/oap check
+go run ./go/cmd/oap check
 ```
 
 The command validates positive and negative fixtures and drives the deterministic
@@ -68,7 +68,7 @@ a durable persistence implementation.
 ### Validating a trace (`oap validate`)
 
 ```sh
-go run ./cmd/oap validate [--format=human|json] [-mode strict|tolerant] [-pack <dir>]... <trace.json>...
+go run ./go/cmd/oap validate [--format=human|json] [-mode strict|tolerant] [-pack <dir>]... <trace.json>...
 ```
 
 `-mode strict` (the default) compiles the bundle exactly as published: an
@@ -647,7 +647,7 @@ Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:
 
 ```sh
-go run ./cmd/oap providers zai-cn
+go run ./go/cmd/oap providers zai-cn
 ```
 
 Ordinary tests use fake credentials and loopback provider servers. Credentialed

@@ -1,0 +1,382 @@
+name: Release Binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.os_name }}-${{ matrix.arch_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-macos
+            os_name: macos
+            arch_name: arm64
+            archive: tar.gz
+            binary_name: makai
+            npm_target: darwin-arm64
+          - runner: macos-latest
+            target: x86_64-macos
+            os_name: macos
+            arch_name: x64
+            archive: tar.gz
+            binary_name: makai
+            npm_target: darwin-x64
+          - runner: ubuntu-latest
+            target: aarch64-linux
+            os_name: linux
+            arch_name: arm64
+            archive: tar.gz
+            binary_name: makai
+            npm_target: linux-arm64
+          - runner: ubuntu-latest
+            target: x86_64-linux
+            os_name: linux
+            arch_name: x64
+            archive: tar.gz
+            binary_name: makai
+            npm_target: linux-x64
+          - runner: windows-latest
+            target: x86_64-windows
+            os_name: windows
+            arch_name: x64
+            archive: zip
+            binary_name: makai.exe
+            npm_target: win32-x64
+          - runner: windows-latest
+            target: aarch64-windows
+            os_name: windows
+            arch_name: arm64
+            archive: zip
+            binary_name: makai.exe
+            npm_target: win32-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # Zig cannot locate the macOS SDK by itself when an explicit -Dtarget is
+      # passed (#196): framework resolution fails with "unable to find
+      # framework 'Security'. searched paths: none". Export SDKROOT for the
+      # build.zig SDK lookup and fail fast if the SDK is unusable.
+      - name: Resolve macOS SDK (SDKROOT)
+        if: matrix.os_name == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_PATH="$(xcrun --show-sdk-path)"
+          echo "SDKROOT=${SDK_PATH}" >> "$GITHUB_ENV"
+          test -d "${SDK_PATH}/System/Library/Frameworks/Security.framework"
+
+      - name: Build target binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT_ROOT="$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}"
+          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe --prefix "$OUT_ROOT"
+
+      # Secret names and formats match lsm/hyperneo so one set of values serves both
+      # repos: APPLE_CERTIFICATE is the base64 .p12, APPLE_API_PRIVATE_KEY is the raw
+      # .p8 PEM text (not base64), and APPLE_API_KEY is the key id the .p8 filename
+      # must carry. APPLE_SIGNING_IDENTITY takes either the certificate's SHA-1 hash
+      # or its "Developer ID Application: ..." name; the throwaway keychain below
+      # holds exactly one certificate, so the name cannot be ambiguous here the way
+      # it can on a developer machine that imported the certificate twice.
+      - name: Sign and notarize macOS binary
+        if: matrix.os_name == 'macos'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          BINARY="$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin/${{ matrix.binary_name }}"
+
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              echo "::error::APPLE_CERTIFICATE is unset on a tag build; a release must ship signed macOS binaries"
+              exit 1
+            fi
+            echo "::warning::macOS signing secrets are unset; leaving ${{ matrix.arch_name }} binary unsigned (workflow_dispatch only)"
+            exit 0
+          fi
+
+          KEYCHAIN="$RUNNER_TEMP/codesign.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          codesign --force --timestamp --options runtime \
+            --identifier ai.hyperneo.oap \
+            --keychain "$KEYCHAIN" \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            "$BINARY"
+          codesign --verify --strict --verbose=2 "$BINARY"
+
+          if [ -z "${APPLE_API_PRIVATE_KEY:-}" ]; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              echo "::error::signing succeeded but APPLE_API_PRIVATE_KEY is unset on a tag build; an unnotarized Developer ID binary is still blocked by Gatekeeper"
+              exit 1
+            fi
+            echo "::warning::notarization secrets are unset; leaving the signed ${{ matrix.arch_name }} binary unnotarized (workflow_dispatch only)"
+            exit 0
+          fi
+
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          ditto -c -k --keepParent "$BINARY" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait --timeout 30m
+          rm -f "$KEY_PATH" "$RUNNER_TEMP/notarize.zip"
+
+          codesign --display --verbose=4 "$BINARY" 2>&1 | grep -E 'Identifier|Authority|TeamIdentifier|flags'
+
+      - name: Discard signing keychain
+        if: always() && matrix.os_name == 'macos'
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/codesign.keychain-db" 2>/dev/null || true
+
+      - name: Package tar.gz
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          ARTIFACT="makai-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz"
+          BIN_DIR="$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          tar -C "$BIN_DIR" -czf "$GITHUB_WORKSPACE/dist/$ARTIFACT" "${{ matrix.binary_name }}"
+
+      - name: Package zip
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            (Get-Content package.json | ConvertFrom-Json).version
+          }
+          $artifact = "makai-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}.zip"
+          $binDir = "$env:GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/dist" | Out-Null
+          Compress-Archive -Path "$binDir/${{ matrix.binary_name }}" -DestinationPath "$env:GITHUB_WORKSPACE/dist/$artifact" -Force
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: makai-${{ matrix.os_name }}-${{ matrix.arch_name }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Stage binary for npm packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist-npm-upload"
+          cp "$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin/${{ matrix.binary_name }}" \
+             "$GITHUB_WORKSPACE/dist-npm-upload/makai-${{ matrix.npm_target }}"
+
+      - name: Upload binary for npm packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-binary-${{ matrix.npm_target }}
+          path: dist-npm-upload/makai-${{ matrix.npm_target }}
+          if-no-files-found: error
+
+  checksums:
+    name: Generate checksums
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create SHA256 checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum makai-*.tar.gz makai-*.zip > SHA256SUMS.txt
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: makai-checksums
+          path: dist/SHA256SUMS.txt
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [checksums]
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/makai-*.tar.gz
+            dist/makai-*.zip
+            dist/SHA256SUMS.txt
+
+  package-npm:
+    name: Package npm platforms
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Align main package version with tag
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$TAG_VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Build TypeScript SDK
+        run: npm run build:sdk
+
+      - name: Verify npm package ships TypeScript declarations
+        run: node scripts/check-npm-declarations.mjs
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/bin
+          pattern: npm-binary-*
+          merge-multiple: true
+
+      - name: Move binaries to expected locations
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin-flat
+          for f in dist/bin/*; do
+            binary=$(basename "$f")
+            mv "$f" "dist/bin-flat/$binary"
+            chmod +x "dist/bin-flat/$binary" 2>/dev/null || true
+          done
+          rm -rf dist/bin
+          mv dist/bin-flat dist/bin
+
+      - name: Package npm packages
+        run: npx tsx scripts/package-npm.ts --version "${GITHUB_REF_NAME#v}"
+
+      - name: Upload npm packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: dist/npm/
+          if-no-files-found: error
+
+  publish-npm:
+    name: Publish npm packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [package-npm]
+    steps:
+      - name: Download npm packages
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: dist/npm
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish platform packages
+        run: |
+          set -euo pipefail
+          FAILED=0
+          for pkg in dist/npm/cli-*; do
+            PKG_NAME=$(basename "$pkg")
+            echo "Publishing $PKG_NAME..."
+            if OUTPUT=$(cd "$pkg" && npm publish --access public 2>&1); then
+              echo "$OUTPUT"
+              echo "$PKG_NAME published successfully"
+            else
+              echo "$OUTPUT"
+              if echo "$OUTPUT" | grep -qiE "previously published|cannot publish over|EPUBLISHCONFLICT"; then
+                echo "::warning::$PKG_NAME already published, skipping"
+              else
+                echo "::error::Failed to publish $PKG_NAME"
+                FAILED=1
+              fi
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "One or more platform packages failed to publish"
+            exit 1
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        run: |
+          set -euo pipefail
+          if OUTPUT=$(cd dist/npm/makai && npm publish --access public 2>&1); then
+            echo "$OUTPUT"
+            echo "makai published successfully"
+          else
+            echo "$OUTPUT"
+            if echo "$OUTPUT" | grep -qiE "previously published|cannot publish over|EPUBLISHCONFLICT"; then
+              echo "::warning::makai already published, skipping"
+            else
+              echo "::error::Failed to publish makai"
+              exit 1
+            fi
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
