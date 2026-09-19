@@ -109,8 +109,6 @@ pub const Validator = struct {
     allocator: std.mem.Allocator,
     failures: std.ArrayList(Failure) = .empty,
     retained_pointer: ?[]u8 = null,
-    depth: usize = 0,
-    suppress_root_alternatives: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, registry: *const Registry) Validator {
         return .{ .registry = registry, .allocator = allocator };
@@ -133,26 +131,18 @@ pub const Validator = struct {
         extra_branches: []const []const u8,
     ) Error!?Failure {
         const schema = self.registry.root(document) orelse return Unsupported.UnresolvableRef;
-        const base = try self.validateSchema(schema, document, instance) orelse return null;
-        if (extra_branches.len == 0) return base;
+        if (extra_branches.len == 0) return self.validateSchema(schema, document, instance);
 
-        const carried = try self.allocator.dupe(u8, base.pointer);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const composed = try composeAlternatives(arena.allocator(), schema, extra_branches);
+        const failure = try self.validateSchema(composed, document, instance) orelse return null;
+
+        const carried = try self.allocator.dupe(u8, failure.pointer);
         errdefer self.allocator.free(carried);
-        for (extra_branches) |ref| {
-            const target = try self.resolve(ref, document);
-            const branch = try self.validateSchema(target.schema, target.document, instance);
-            if (branch != null) continue;
-            self.suppress_root_alternatives = true;
-            defer self.suppress_root_alternatives = false;
-            const skeleton = try self.validateSchema(schema, document, instance);
-            if (skeleton == null) {
-                self.allocator.free(carried);
-                return null;
-            }
-        }
         if (self.retained_pointer) |previous| self.allocator.free(previous);
         self.retained_pointer = carried;
-        return .{ .pointer = carried, .keyword = base.keyword };
+        return .{ .pointer = carried, .keyword = failure.keyword };
     }
 
     pub fn validateSchema(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value) Error!?Failure {
@@ -187,8 +177,6 @@ pub const Validator = struct {
     }
 
     fn check(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value, pointer: *Pointer) Error!void {
-        self.depth += 1;
-        defer self.depth -= 1;
         switch (schema) {
             .bool => |always| {
                 if (!always) try self.record(pointer, "false");
@@ -233,8 +221,7 @@ pub const Validator = struct {
             }
             if (!matched) try self.record(pointer, "anyOf");
         }
-        if (object.get("oneOf")) |branches| skip: {
-            if (self.suppress_root_alternatives and self.depth == 1) break :skip;
+        if (object.get("oneOf")) |branches| {
             if (branches != .array) return error.InvalidSchema;
             var matches: usize = 0;
             for (branches.array.items) |branch| {
@@ -434,6 +421,30 @@ pub const Validator = struct {
         return .{ .schema = node, .document = target_document };
     }
 };
+
+fn composeAlternatives(
+    allocator: std.mem.Allocator,
+    envelope: std.json.Value,
+    refs: []const []const u8,
+) !std.json.Value {
+    if (envelope != .object) return envelope;
+    const existing = envelope.object.get("oneOf") orelse return envelope;
+    if (existing != .array) return envelope;
+
+    var members = std.json.Array.init(allocator);
+    for (existing.array.items) |member| try members.append(member);
+    for (refs) |ref| {
+        var node: std.json.ObjectMap = .empty;
+        try node.put(allocator, "$ref", .{ .string = ref });
+        try members.append(.{ .object = node });
+    }
+
+    var composed: std.json.ObjectMap = .empty;
+    var it = envelope.object.iterator();
+    while (it.next()) |entry| try composed.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    try composed.put(allocator, "oneOf", .{ .array = members });
+    return .{ .object = composed };
+}
 
 pub const schema_base = "https://open-agent-protocol.local/v0.1/";
 
