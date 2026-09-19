@@ -101,6 +101,20 @@ fixtures **and** on fuzzed input until the fuzzer stops finding disagreements,
 the Go implementation has no information left to give. Deleting it before that
 turns a verifiable port into a hopeful one.
 
+### Byte equality is not the whole gate
+
+The corpus adjudicates **outputs**, and a port of this size is not mainly a
+logic problem. The documented top defect class in the implementation doing the
+porting is an `errdefer` left armed after ownership transfers — six instances on
+the `model-provider-core` branch alone. A reducer with a double free or a leak
+produces byte-identical `expected-oap.json` right up until it does not, and
+every output gate in this record is blind to it.
+
+So each stage gate carries a second clause: **allocation-failure testing over
+every allocating function, and the corpus run under a leak-checking allocator**,
+not byte equality alone. Cheap now, very expensive to retrofit across eight
+adapters.
+
 ### Every stage is gated on data that already exists
 
 The port does not need the Go tests. It needs the Go *fixtures*, which are
@@ -111,30 +125,60 @@ language-neutral:
 - **108 adapter corpus cases** — `native.jsonl` through the production reducer,
   compared against `expected-oap.json`.
 
-A Zig reducer either reproduces those bytes or it does not. This is why the
-rewrite is mechanical rather than risky, and it is the answer to the question a
-rewrite usually cannot answer: how do you know the new one is faithful.
+A Zig reducer either reproduces those bytes or it does not. That answers the
+question a rewrite usually cannot answer — how do you know the new one is
+faithful — for everything observable in a frame, and nothing else. What it does
+not answer is the clause above.
 
-### Schema validation is generated from the schemas
+**The seam differential execution needs already exists.** `oap validate
+[--provider] --format=json <trace>` emits `(phase, code, pointer, expected,
+actual)` per diagnostic as data, on arbitrary input rather than only on the
+corpus. Comparing two implementations costs a diff of two JSON documents, so the
+groundwork stage other ports need is free here.
+
+### The schema is embedded and interpreted, not compiled into code
 
 The Go validator compiles `schema/v0.1/*.json` with a JSON Schema 2020-12
 library. Zig has no mature one, and this is the port's only genuine unknown.
 
-Three ways out, and only one keeps the schema normative. Porting a
-schema-validation subset is bounded work and a new thing to maintain.
-Hand-writing the checks makes the Zig source the truth and the schema a
-description of it, which is the failure this project has spent its whole history
-avoiding. **So the checks are generated from the schemas at build time**, and CI
-fails when generated code and schema disagree.
+**The schema bytes are embedded in the binary and interpreted at runtime** by a
+bounded 2020-12 subset interpreter covering what these twelve files use.
+
+An earlier version of this record chose code generation, and the argument
+against it is that it buys nothing. A generator has to understand 2020-12
+exactly as much as an interpreter does — it moves where that understanding runs
+and adds two artifacts, the emitted validator and the gate that proves it still
+matches its source. The interpreter is the one thing; codegen is that same thing
+plus a generator plus generated code in review.
+
+The deciding property is stronger than the arithmetic. **An embedded schema is
+normative by construction**: the bytes in the binary *are* the schema. Under
+codegen the binary's behaviour is a derivative and "the schema is still the
+truth" becomes a claim some job checks — which is the same inversion this record
+refuses one rung up.
+
+The cost is a parse at process start and dynamic dispatch instead of
+straight-line code: microseconds against milliseconds of I/O, amortised per
+process when a test harness validates repeatedly. Codegen is reserved for a
+profile that shows it matters.
+
+Hand-writing the checks remains refused. It makes the Zig source the truth and
+the schema a description of it.
 
 ### Order: validator first, adapters after
 
 1. Types and strict decode. Makai has most of this already.
 2. Schema validation by codegen. Gate: all 546 fixtures match phase and codes.
 3. The semantic state machine. Same gate, now including every diagnostic code.
-4. Differential fuzzing against the Go oracle until it stops finding anything.
-5. Adapters, one at a time. Gate: the corpus reproduces `expected-oap.json`.
-6. The oracle is retired, or kept in CI.
+4. Adapters, one at a time. Gate: the corpus reproduces `expected-oap.json`,
+   under a leak-checking allocator.
+5. The oracle is retired, or kept in CI.
+
+**Differential fuzzing is not a stage.** It starts the moment stage 2 compiles
+and runs continuously from there. A stage can slip; a gate that runs on every
+change cannot. The argument for it is the one this record already makes against
+the corpus — fixtures prove what someone wrote a fixture for — and that argument
+applies to stages 2 and 3 as much as to the end of the port.
 
 **The order is not arbitrary.** `adapter/adaptertest` runs the real validator
 in-process on every trace an adapter emits, and that loop is the reason adapter
@@ -144,6 +188,22 @@ validator first means every adapter lands with the check already under it.
 
 Adapters port by demand rather than by list. An unported adapter is unavailable
 rather than broken, and `--backend hermes` says so.
+
+### The oracle is not retired while any adapter is unported
+
+Differential execution falling silent is the condition for retiring the
+**validator** oracle. It says nothing about adapters.
+
+The corpus carries a graduated unit's evidence across the port only for an
+adapter that has been ported and reproduces it. For one still in Go, the
+artifact its graduation rests on **is** the Go adapter. Retiring the tree on a
+validator-shaped condition alone would delete the evidence base for every
+unported adapter while its unit still claims graduation.
+
+So retirement takes a second clause: every adapter whose unit claims graduation
+is ported and reproduces its corpus, or that unit's graduation is explicitly
+recorded as lapsed. There is no third option where the evidence quietly stops
+existing.
 
 ### The repositories merge with history
 
@@ -192,6 +252,12 @@ independent units of 2,670 to 3,540 lines each, each with a hermetic corpus and
 a mapping ledger in `research/` that does not move. They are two thirds of the
 work and the only part that can be done in any order.
 
+**The comment policy already survives the merge.** The implementation tree
+carries a checker over every tracked `.zig` and `.ts`, with self-tests and its
+allowlist ratchet retired. The merged tree inherits enforcement and needs the
+checker extended to `.go`, which is the cheap direction. `tools/nocomment`
+retires with the Go tree.
+
 **The measured shape.** About 48,000 lines of Go source, of which roughly 38,000
 port: 24,545 in adapters, 9,151 in validation, 3,959 in the adapter interfaces
 and reference adapter. The hub in `serve/` (5,564) is a separate question this
@@ -237,10 +303,25 @@ cursor replay and multiplexed subscriptions — a different layer from `oap serv
 agent`, which exposes one loop. Whether it ports, moves, or is dropped is not
 decided here.
 
-**Whether both profiles can be served concurrently by one process today.** The
-diagram shows two doors on one binary. That follows from the architecture and
-has not been run.
+**What `oap serve agent provider` routes on, and what answers a frame with no
+profile.** This was filed as untested and is worse than that: it contradicts
+what is built. Each of the implementation's two endpoints refuses the other's
+profile **at decode**, and the refusal names which profile that endpoint serves.
+The two profiles also carry disjoint `ProtocolError` sets, neither a subset of
+the other, so each has its own vocabulary for saying no.
 
-**What replaces `tools/nocomment` for the Zig tree.** The zero-comment policy is
-enforced by a Go tool over Go files. The policy is not Go-specific; the
-enforcement is.
+Serving both therefore needs a router that reads the envelope's `profile` before
+decode and hands the frame to the endpoint that owns it. The hard case is a
+frame whose `profile` is absent or unknown, because answering it requires
+choosing an error vocabulary and the vocabulary is exactly what is missing.
+
+The answer this record proposes, for its own decision to confirm: **that frame is
+refused by the binding rather than by a profile.** One bounded diagnostic and a
+closed connection, the same shape as an implementation that cannot allocate its
+own error frame. Inventing a shared error vocabulary for the case would create a
+third code set that neither profile owns, to answer a frame neither profile
+claimed.
+
+**How much larger the Zig tree is.** Thirty-eight thousand lines of Go is not
+thirty-eight thousand lines of Zig. Explicit allocators and `errdefer` inflate
+it. This changes the estimate and not the decision.
