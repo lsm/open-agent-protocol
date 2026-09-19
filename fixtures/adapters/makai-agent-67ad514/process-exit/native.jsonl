@@ -1,1 +1,0 @@
-{"action":"process-exit","classification":"observed-only","direction":"agent-to-client","fidelity":"synthesized","raw":{"message_id":"00000000000000000000000102","payload":{"ping_id":"fixture"},"sequence":2,"session_id":"Abcdefghijklmnopqrstu","timestamp":2,"type":"pong","version":1}}

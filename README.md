@@ -101,7 +101,7 @@ Execution is claimed per control, only for the keys an endpoint advertises
 above `unavailable`, so an endpoint that supports none of the four still
 claims the unit by refusing all four correctly.
 [Decision 0005](decisions/0005-run-controls.md) graduates the discipline and
-`model_id`: Codex and Makai apply it natively per run
+`model_id`: Codex applies it natively per run
 (`run.model_selection`, mode `per_run`), which means the model binds that run
 alone and `current_model_id` — the model the next control-free submission
 would use — does not move. The reference adapter executes all four.
@@ -592,7 +592,6 @@ Research:
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
 - [Pinned Codex app-server mapping](research/codex-app-server-8d7cc24-mapping.md)
 - [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md)
-- [Pinned Makai agent-protocol mapping](research/makai-agent-67ad514-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.85.1-mapping.md)
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.8.31-mapping.md)
@@ -613,7 +612,7 @@ and multiplexed subscriptions to be conformant.
 ```sh
 oap endpoint --adapter memory     # the reference endpoint: one adapter, raw envelopes
 oap conformance                   # drive that reference endpoint and judge it
-oap conformance --command "makai --oap"   # drive somebody else's
+oap conformance --command "some-agent --oap" # drive somebody else's
 ```
 
 The binding carries cursor replay as a transport control frame — the same
@@ -726,7 +725,6 @@ download anything.
 | Adapter | Gate variables | CI |
 | --- | --- | --- |
 | Codex app-server | `OAP_CODEX_INTEGRATION`, `_BIN`, `_COMMIT` | skipped |
-| Makai | `OAP_MAKAI_INTEGRATION`, `_BIN`, `_COMMIT`, `_SHA256` | skipped |
 | OpenCode | `OAP_OPENCODE_INTEGRATION`, `_BIN` | skipped |
 | pi | `OAP_PI_SMOKE` / `OAP_PI_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 | DeepSeek Harness | `OAP_DEEPSEEK_HARNESS_SMOKE` / `_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
