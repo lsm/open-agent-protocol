@@ -47,7 +47,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
 
     var judged: usize = 0;
     var skipped_tolerant: usize = 0;
-    var skipped_provider: usize = 0;
+    var provider_judged: usize = 0;
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
     var disagreeing = std.ArrayList([]const u8).empty;
@@ -63,7 +63,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         if (std.mem.eql(u8, kind, "load-invalid")) continue;
         if (std.mem.eql(u8, phase, "decode") or std.mem.eql(u8, phase, "schema")) continue;
         const provider_profile = std.mem.eql(u8, profile, "model-provider-core");
-        if (provider_profile) skipped_provider += 1;
+        if (provider_profile) provider_judged += 1;
         if (entry.get("mode")) |mode| {
             if (std.mem.eql(u8, mode.string, "tolerant")) {
                 skipped_tolerant += 1;
@@ -120,7 +120,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         }
     }
 
-    std.debug.print("\nsemantic judged={d} disagreeing={d} skipped_tolerant={d} provider={d}\n", .{ judged, disagreeing.items.len, skipped_tolerant, skipped_provider });
+    std.debug.print("\nsemantic judged={d} disagreeing={d} skipped_tolerant={d} provider={d}\n", .{ judged, disagreeing.items.len, skipped_tolerant, provider_judged });
 
     std.mem.sort([]const u8, disagreeing.items, {}, lessThan);
     var declared = std.ArrayList([]const u8).empty;

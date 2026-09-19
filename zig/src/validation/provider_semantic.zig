@@ -264,13 +264,25 @@ fn sameJson(a: ?std.json.Value, b: ?std.json.Value) bool {
     return valueEql(left, right);
 }
 
+fn numeric(value: std.json.Value) ?f64 {
+    return switch (value) {
+        .integer => |n| @floatFromInt(n),
+        .float => |n| n,
+        .number_string => |text| std.fmt.parseFloat(f64, text) catch null,
+        else => null,
+    };
+}
+
 fn valueEql(a: std.json.Value, b: std.json.Value) bool {
+    if (numeric(a)) |left| {
+        const right = numeric(b) orelse return false;
+        return left == right;
+    }
+    if (numeric(b) != null) return false;
     return switch (a) {
         .null => b == .null,
         .bool => |x| b == .bool and b.bool == x,
-        .integer => |x| b == .integer and b.integer == x,
-        .float => |x| b == .float and b.float == x,
-        .number_string => |x| b == .number_string and std.mem.eql(u8, b.number_string, x),
+        .integer, .float, .number_string => unreachable,
         .string => |x| b == .string and std.mem.eql(u8, b.string, x),
         .array => |x| blk: {
             if (b != .array or b.array.items.len != x.items.len) break :blk false;
@@ -399,4 +411,20 @@ test "an inference sequence opens at one, advances by one, and closes at the ter
         \\[{"type":"inference.failed","id":"a","inference_id":"i","sequence":1,"payload":{}},
         \\{"type":"inference.part.delta","id":"b","inference_id":"i","sequence":2,"payload":{}}]
     , &.{"event_after_terminal"});
+}
+
+test "arguments that differ only in how a number is spelled are the same arguments" {
+    try expectCodes(
+        \\[{"type":"inference.part.ended","id":"b","inference_id":"i","sequence":1,"payload":{"part_index":0,
+        \\"part_kind":"tool_call","tool_call":{"tool_call_id":"t","name":"n","arguments_json":{"limit":1}}}},
+        \\{"type":"inference.completed","id":"d","inference_id":"i","sequence":2,"payload":{"message":{"content":[
+        \\{"type":"tool_call","tool_call_id":"t","name":"n","arguments_json":{"limit":1.0}}]}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"inference.part.ended","id":"b","inference_id":"i","sequence":1,"payload":{"part_index":0,
+        \\"part_kind":"tool_call","tool_call":{"tool_call_id":"t","name":"n","arguments_json":{"limit":1}}}},
+        \\{"type":"inference.completed","id":"d","inference_id":"i","sequence":2,"payload":{"message":{"content":[
+        \\{"type":"tool_call","tool_call_id":"t","name":"n","arguments_json":{"limit":2}}]}}}]
+    , &.{"terminal_not_assembly"});
 }
