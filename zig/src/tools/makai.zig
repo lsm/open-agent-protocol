@@ -7725,19 +7725,19 @@ fn pumpOapIntents(
 
         bridge.appendSubmissionLines(pending, submission_lines) catch |err| {
             clearOwnedLines(allocator, submission_lines);
-            try oap.settleFailed(pending.session_id, .internal_error, @errorName(err));
+            try oap.settleFailed(pending.session_id, oap_types.EmittedErrorCode.internal_error.text(), @errorName(err));
             did_work = true;
             continue;
         };
         for (submission_lines.items) |line| {
             const dispatched = stdio_loop.dispatchInboundLine(line) catch |err| {
-                try oap.settleFailed(pending.session_id, .internal_error, @errorName(err));
+                try oap.settleFailed(pending.session_id, oap_types.EmittedErrorCode.internal_error.text(), @errorName(err));
                 break;
             };
             if (!dispatched) {
                 try oap.settleFailed(
                     pending.session_id,
-                    .internal_error,
+                    oap_types.EmittedErrorCode.internal_error.text(),
                     "the native agent host rejected the translated submission",
                 );
                 break;
