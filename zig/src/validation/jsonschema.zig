@@ -48,7 +48,19 @@ pub const Registry = struct {
 
     pub fn deinit(self: *Registry) void {
         for (self.documents.values()) |parsed| parsed.deinit();
+        for (self.documents.keys(), 0..) |key, index| {
+            if (index >= schema_bytes.all.len) self.allocator.free(key);
+        }
         self.documents.deinit(self.allocator);
+    }
+
+    pub fn addDocument(self: *Registry, name: []const u8, bytes: []const u8) !void {
+        if (self.documents.get(name) != null) return;
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, bytes, .{});
+        errdefer parsed.deinit();
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.documents.put(self.allocator, owned, parsed);
     }
 
     pub fn root(self: *const Registry, name: []const u8) ?std.json.Value {
@@ -107,7 +119,27 @@ pub const Validator = struct {
     }
 
     pub fn validate(self: *Validator, document: []const u8, instance: std.json.Value) Error!?Failure {
+        return self.validateWithBranches(document, instance, &.{});
+    }
+
+    pub fn validateWithBranches(
+        self: *Validator,
+        document: []const u8,
+        instance: std.json.Value,
+        extra_branches: []const []const u8,
+    ) Error!?Failure {
         const schema = self.registry.root(document) orelse return Unsupported.UnresolvableRef;
+        const base = try self.validateSchema(schema, document, instance);
+        if (base == null) return null;
+        for (extra_branches) |ref| {
+            const target = try self.resolve(ref, document);
+            const branch = try self.validateSchema(target.schema, target.document, instance);
+            if (branch == null) return null;
+        }
+        return base;
+    }
+
+    pub fn validateSchema(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value) Error!?Failure {
         var pointer = Pointer{ .allocator = self.allocator };
         defer pointer.deinit();
         for (self.failures.items) |failure| self.allocator.free(failure.pointer);
@@ -372,7 +404,7 @@ pub const Validator = struct {
         const hash = std.mem.indexOfScalar(u8, ref, '#');
         const file = if (hash) |at| ref[0..at] else ref;
         const fragment = if (hash) |at| ref[at + 1 ..] else "";
-        const target_document = if (file.len == 0) document else file;
+        const target_document = if (file.len == 0) document else stripSchemaBase(file);
         var node = self.registry.root(target_document) orelse return Unsupported.UnresolvableRef;
         var parts = std.mem.splitScalar(u8, fragment, '/');
         while (parts.next()) |part| {
@@ -383,6 +415,13 @@ pub const Validator = struct {
         return .{ .schema = node, .document = target_document };
     }
 };
+
+pub const schema_base = "https://open-agent-protocol.local/v0.1/";
+
+fn stripSchemaBase(uri: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, uri, schema_base)) return uri[schema_base.len..];
+    return uri;
+}
 
 fn typeMatches(name: []const u8, instance: std.json.Value) bool {
     if (std.mem.eql(u8, name, "object")) return instance == .object;

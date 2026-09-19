@@ -1,8 +1,22 @@
 const std = @import("std");
 const jsonschema = @import("jsonschema");
+const packs_mod = @import("packs");
 const build_options = @import("build_options");
 
-const judged_floor = 503;
+const judged_floor = 514;
+
+const unhandled_pack_composition = [_][]const u8{
+    "ext-pack-cross-ref-declared",
+    "ext-descriptor-member-advertised",
+    "ext-member-on-event-unadvertised",
+};
+
+fn isUnhandled(id: []const u8) bool {
+    for (unhandled_pack_composition) |name| {
+        if (std.mem.eql(u8, name, id)) return true;
+    }
+    return false;
+}
 
 const Entry = struct {
     id: []const u8,
@@ -42,6 +56,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     var skipped_tolerant: usize = 0;
     var unsupported: usize = 0;
     var undecodable: usize = 0;
+    var unhandled: usize = 0;
     var disagreements = std.ArrayList(u8).empty;
     defer disagreements.deinit(allocator);
 
@@ -49,11 +64,19 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         const entry = raw.object;
         const kind = entry.get("kind").?.string;
         const phase = if (entry.get("phase")) |p| p.string else "";
-        if (entry.get("packs")) |packs| {
-            if (packs.array.items.len > 0) {
-                skipped_packs += 1;
-                continue;
+        var pack_dirs = std.ArrayList([]const u8).empty;
+        defer {
+            for (pack_dirs.items) |d| allocator.free(d);
+            pack_dirs.deinit(allocator);
+        }
+        if (entry.get("packs")) |declared| {
+            for (declared.array.items) |name| {
+                try pack_dirs.append(allocator, try std.fs.path.join(allocator, &.{ root, "fixtures", name.string }));
             }
+        }
+        if (isUnhandled(entry.get("id").?.string)) {
+            unhandled += 1;
+            continue;
         }
         if (entry.get("mode")) |mode| {
             if (std.mem.eql(u8, mode.string, "tolerant")) {
@@ -87,13 +110,23 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
             else => continue,
         };
 
+        var loaded = packs_mod.load(allocator, &registry, pack_dirs.items) catch {
+            skipped_packs += 1;
+            continue;
+        };
+        defer loaded.deinit();
+
+        var refs = std.ArrayList([]const u8).empty;
+        defer refs.deinit(allocator);
+        for (loaded.branches) |branch| try refs.append(allocator, branch.ref);
+
         var validator = jsonschema.Validator.init(allocator, &registry);
         defer validator.deinit();
 
         var saw_failure = false;
         var gave_up = false;
         for (envelopes) |envelope| {
-            const result = validator.validate(documentFor(profile), envelope) catch {
+            const result = validator.validateWithBranches(documentFor(profile), envelope, refs.items) catch {
                 gave_up = true;
                 break;
             };
@@ -112,7 +145,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
     }
 
-    std.debug.print("\njudged={d} skipped_packs={d} skipped_tolerant={d} unsupported={d} undecodable={d}\n", .{ judged, skipped_packs, skipped_tolerant, unsupported, undecodable });
+    std.debug.print("\njudged={d} skipped_packs={d} skipped_tolerant={d} unsupported={d} undecodable={d} unhandled={d}\n", .{ judged, skipped_packs, skipped_tolerant, unsupported, undecodable, unhandled });
     if (disagreements.items.len > 0) {
         std.debug.print("disagreements:\n{s}", .{disagreements.items});
         return error.SchemaPhaseDisagrees;
@@ -120,4 +153,5 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     if (unsupported != 0) return error.InterpreterRefusedAFixtureItOnceJudged;
     if (undecodable != 0) return error.FixtureStoppedDecoding;
     try std.testing.expect(judged >= judged_floor);
+    try std.testing.expectEqual(unhandled_pack_composition.len, unhandled);
 }

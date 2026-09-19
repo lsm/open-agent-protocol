@@ -66,6 +66,13 @@ pub fn build(b: *std.Build) void {
     });
     fixture_gate_mod.addImport("jsonschema", jsonschema_mod);
     fixture_gate_mod.addOptions("build_options", gate_options);
+    const packs_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/packs.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    packs_mod.addImport("jsonschema", jsonschema_mod);
+    fixture_gate_mod.addImport("packs", packs_mod);
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
 
 
