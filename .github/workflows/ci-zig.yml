@@ -1,0 +1,659 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-secrets:
+    name: Check Available Secrets
+    runs-on: ubuntu-latest
+    outputs:
+      has_anthropic: ${{ steps.check.outputs.has_anthropic }}
+      has_openai: ${{ steps.check.outputs.has_openai }}
+      has_google: ${{ steps.check.outputs.has_google }}
+      has_azure: ${{ steps.check.outputs.has_azure }}
+      has_ollama: ${{ steps.check.outputs.has_ollama }}
+      has_github_copilot: ${{ steps.check.outputs.has_github_copilot }}
+    steps:
+      - name: Check which secrets are available
+        id: check
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
+          GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}
+        run: |
+          echo "has_anthropic=$([[ -n \"$ANTHROPIC_API_KEY\" || -n \"$ANTHROPIC_AUTH_TOKEN\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "has_openai=$([[ -n \"$OPENAI_API_KEY\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "has_google=$([[ -n \"$GOOGLE_API_KEY\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "has_azure=$([[ -n \"$AZURE_OPENAI_API_KEY\" && -n \"$AZURE_OPENAI_ENDPOINT\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "has_ollama=$([[ -n \"$OLLAMA_API_KEY\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "has_github_copilot=$([[ -n \"$GH_COPILOT_REFRESH\" && -n \"$GH_COPILOT_ACCESS\" ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+  # =============================================================================
+  # Unit Tests (always run, no secrets needed)
+  # =============================================================================
+  unit-tests:
+    name: Unit Tests - ${{ matrix.group }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, transport, protocol, providers, utils, makai-cli, tui, tools, agent-types, agent-loop, agent-mod, agent-bridge, agent-unit, agent-chain]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check Zig pattern guardrails
+        run: ./scripts/check-zig-patterns.sh
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+
+      - name: Run ${{ matrix.group }} unit tests
+        run: zig build test-unit-${{ matrix.group }}
+
+  no-comments:
+    name: Zero-Comments Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      # Full history so the ratchet can resolve the submitted range's start
+      # (the pull request's base sha, or a push's pre-update sha) — a
+      # shallow clone would leave that commit unfetched, and an explicitly
+      # requested base that cannot resolve is a hard error in the checker.
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run checker self-tests
+        run: node --test scripts/check-no-comments.test.mjs
+
+      - name: Check zero-comments policy
+        run: node scripts/check-no-comments.mjs --check --base "$BASE_SHA"
+        env:
+          # The PR base sha or the push's pre-update sha: the start of the
+          # submitted range, so an allowlist addition anywhere in it is
+          # caught. Empty falls through to the checker's HEAD^1 comparison.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+  ts-sdk-e2e:
+    name: TS SDK E2E
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build makai binary for TS SDK E2E
+        run: zig build install --prefix /tmp/makai-smoke
+
+      - name: Run TS SDK unit + E2E tests
+        env:
+          MAKAI_BINARY_PATH: /tmp/makai-smoke/bin/makai
+        run: npm run test:sdk
+
+      - name: Verify npm package ships TypeScript declarations
+        run: npm run check:declarations
+
+  # =============================================================================
+  # Go SDK (deterministic, no API keys)
+  #
+  # The Go module in go/ is self-contained and is deliberately NOT wired into
+  # the Zig build. Its protocol tests run against a fake host built into the
+  # test binary; MAKAI_BINARY_PATH additionally switches on the real-runtime
+  # smoke tests, which skip themselves when it is unset.
+  # =============================================================================
+  go-sdk:
+    name: Go SDK
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          # The module has no dependencies, so there is no go.sum to cache.
+          cache: false
+
+      - name: Check Go formatting
+        working-directory: go
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet Go SDK
+        working-directory: go
+        run: go vet ./...
+
+      - name: Build makai binary for Go SDK E2E
+        run: zig build install --prefix /tmp/makai-go
+
+      - name: Run Go SDK tests
+        working-directory: go
+        env:
+          MAKAI_BINARY_PATH: /tmp/makai-go/bin/makai
+        run: go test -race ./...
+
+  # =============================================================================
+  rust-sdk:
+    name: Rust SDK
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build makai binary for Rust SDK E2E
+        working-directory: .
+        run: zig build install --prefix /tmp/makai-rs
+
+      - name: Run Rust SDK unit + E2E tests
+        env:
+          MAKAI_BINARY_PATH: /tmp/makai-rs/bin/makai
+        run: cargo test --all-features
+
+  # =============================================================================
+  # Python SDK (python/)
+  #
+  # Mirrors ts-sdk-e2e: build the runtime, point MAKAI_BINARY_PATH at it, and
+  # run the suite. Without that variable every test in
+  # python/tests/test_real_binary.py skips, so the E2E lane sets it explicitly.
+  #
+  # MAKAI_TEST_REAL_AUTH is deliberately NOT set: the auth-protocol E2E test
+  # stays opt-in. On macOS an unsigned local build blocks on a Keychain access
+  # prompt and auth_providers_request never answers. Linux reads
+  # ~/.makai/auth.json instead and should be fine, but that has not been
+  # verified on a runner, so enabling it here is left as a follow-up rather
+  # than a guess that could redden main.
+  #
+  # The Python SDK is not wired into the Zig build; zig build install is used
+  # only to produce the binary this job exercises.
+  # =============================================================================
+  python-sdk-e2e:
+    name: Python SDK E2E
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python SDK with dev extras
+        working-directory: python
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Type check (mypy --strict)
+        working-directory: python
+        run: python -m mypy
+
+      - name: Build makai binary for Python SDK E2E
+        run: zig build install --prefix /tmp/makai-py
+
+      - name: Run Python SDK unit + E2E tests
+        working-directory: python
+        env:
+          MAKAI_BINARY_PATH: /tmp/makai-py/bin/makai
+        run: python -m pytest -q
+
+  # =============================================================================
+  # TUI PTY Harness (deterministic, fixture provider — no API keys)
+  #
+  # Drives `makai --tui` through a pseudo-terminal with the canned-reply
+  # fixture (MAKAI_TUI_FIXTURE), asserting the core loop scenario plus the
+  # #264 UX-sweep scenarios (every ratified slash command, kept key, the
+  # y/a/n approval flow, session save+resume) and recording the TUI
+  # performance baseline (startup-to-first-frame, keypress-to-render latency,
+  # binary size, tui/ LOC). Metrics and the scenario summary land in the job
+  # summary and the run artifacts; see scripts/tui-pty-driver.py and
+  # docs/tui-performance-baseline.md.
+  # =============================================================================
+  tui-pty-harness:
+    name: TUI PTY Harness
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+
+      - name: Run TUI PTY driver
+        run: |
+          zig build install -Doptimize=ReleaseFast --prefix "$RUNNER_TEMP/makai-pty"
+          python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/makai" --output-dir tui-pty-out --scenario all
+
+      - name: Record metrics in job summary
+        if: success()
+        run: |
+          {
+            echo '### TUI PTY baseline'
+            echo '```json'
+            cat tui-pty-out/metrics.json
+            echo '```'
+            echo '### TUI PTY scenario summary'
+            echo '```json'
+            cat tui-pty-out/summary.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload TUI PTY artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-pty-harness
+          path: tui-pty-out/
+          if-no-files-found: warn
+
+  # =============================================================================
+  # Cross-compile Smoke (release-target coverage)
+  #
+  # Unit CI only compiles for the host (linux), so macOS/Windows release
+  # targets were never compiled before the first release tag, breaking the
+  # release run (#196). This job compiles every release target not already
+  # covered by native jobs on every PR (compile + link only; nothing is
+  # executed).
+  #
+  # Scoping: building for macOS requires the macOS SDK (frameworks + sysroot),
+  # which hosted Linux runners do not have, so the macOS targets run on
+  # macos-latest (aarch64 natively, x86_64 cross-compiled from the same SDK).
+  # x86_64-windows cross-compiles from Linux using Zig's bundled mingw-w64, as
+  # does aarch64-linux. The x86_64-linux release target is already compiled
+  # natively by the unit-test jobs and is not repeated here.
+  # =============================================================================
+
+  cross-compile-smoke:
+    name: Cross-compile - ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-macos
+            binary_name: makai
+          - runner: macos-latest
+            target: x86_64-macos
+            binary_name: makai
+          - runner: ubuntu-latest
+            target: aarch64-linux
+            binary_name: makai
+          - runner: ubuntu-latest
+            target: x86_64-windows
+            binary_name: makai.exe
+          - runner: windows-latest
+            target: aarch64-windows
+            binary_name: makai.exe
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # Zig cannot locate the macOS SDK by itself when an explicit -Dtarget is
+      # passed (#196): framework resolution fails with "unable to find
+      # framework 'Security'. searched paths: none". Export SDKROOT for the
+      # build.zig SDK lookup and fail fast if the SDK is unusable.
+      - name: Resolve macOS SDK (SDKROOT)
+        if: contains(matrix.target, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_PATH="$(xcrun --show-sdk-path)"
+          echo "SDKROOT=${SDK_PATH}" >> "$GITHUB_ENV"
+          test -d "${SDK_PATH}/System/Library/Frameworks/Security.framework"
+
+      - name: Compile ${{ matrix.target }} binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build install -Dtarget=${{ matrix.target }} --prefix "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}"
+
+      - name: Verify binary was produced
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}/bin/${{ matrix.binary_name }}"
+
+  # =============================================================================
+  # E2E Tests (run in parallel)
+  # Add new tests by adding a new job following the pattern below
+  # =============================================================================
+
+  e2e-anthropic:
+    name: E2E - Anthropic
+    needs: [unit-tests, check-secrets]
+    if: needs.check-secrets.outputs.has_anthropic == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Anthropic E2E tests
+        run: zig build test-e2e-anthropic
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_MODEL: claude-haiku-4-5
+
+  e2e-openai:
+    name: E2E - OpenAI
+    needs: [unit-tests, check-secrets]
+    if: needs.check-secrets.outputs.has_openai == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run OpenAI E2E tests
+        run: zig build test-e2e-openai
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-4o-mini
+          OPENAI_RESPONSES_MODEL: gpt-4o-mini
+
+  e2e-azure:
+    name: E2E - Azure
+    needs: [unit-tests, check-secrets]
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Azure E2E tests
+        run: zig build test-e2e-azure
+        env:
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_MODEL: gpt-4o-mini
+
+  e2e-google:
+    name: E2E - Google
+    needs: [unit-tests, check-secrets]
+    if: needs.check-secrets.outputs.has_google == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Google E2E tests
+        run: zig build test-e2e-google
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_MODEL: gemini-2.5-flash
+
+  e2e-ollama:
+    name: E2E - Ollama
+    needs: [unit-tests, check-secrets]
+    if: needs.check-secrets.outputs.has_ollama == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Ollama E2E tests
+        run: zig build test-e2e-ollama
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OLLAMA_MODEL: gemma4:31b
+
+  e2e-github-copilot:
+    name: E2E - GitHub Copilot
+    needs: [unit-tests, check-secrets]
+    # TODO(#32): Re-enable once the CI Copilot quota resets or credentials are
+    # rotated; the current token returns quota-exceeded for all tested models.
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run GitHub Copilot E2E tests
+        run: zig build test-e2e-github-copilot
+        env:
+          GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
+          GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}
+
+  e2e-protocol:
+    name: E2E - Protocol (Mock)
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Protocol E2E tests (mock-based)
+        run: zig build test-e2e-protocol
+
+  e2e-protocol-fullstack-ollama:
+    name: E2E - Provider Protocol Fullstack (Ollama)
+    needs: [unit-tests, check-secrets]
+    if: needs.check-secrets.outputs.has_ollama == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Provider Protocol Fullstack E2E tests (Ollama)
+        run: zig build test-e2e-provider-protocol-fullstack-ollama
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OLLAMA_MODEL: gemma4:31b
+
+  e2e-protocol-fullstack-github:
+    name: E2E - Provider Protocol Fullstack (GitHub Copilot)
+    needs: [unit-tests, check-secrets]
+    # TODO(#32): Re-enable once the CI Copilot quota resets or credentials are
+    # rotated; the current token returns quota-exceeded for all tested models.
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Provider Protocol Fullstack E2E tests (GitHub Copilot)
+        run: zig build test-e2e-provider-protocol-fullstack-github
+        env:
+          GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
+          GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}
+
+  e2e-distributed-fullstack-github:
+    name: E2E - Distributed Fullstack (GitHub Copilot)
+    needs: [unit-tests, check-secrets]
+    # TODO(#32): Re-enable once the CI Copilot quota resets or credentials are
+    # rotated; the current token returns quota-exceeded for all tested models.
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+      - name: Run Distributed Fullstack E2E tests (GitHub Copilot)
+        run: zig build test-e2e-distributed-fullstack-github
+        env:
+          GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
+          GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}

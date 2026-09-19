@@ -1,0 +1,393 @@
+const fs = require("node:fs");
+const readline = require("node:readline");
+
+function emit(frame) {
+  process.stdout.write(JSON.stringify(frame) + "\n");
+}
+
+function loadJson(path, fallback) {
+  if (!path) return fallback;
+  return JSON.parse(fs.readFileSync(path, "utf8"));
+}
+
+function appendLog(path, line) {
+  if (!path) return;
+  fs.appendFileSync(path, line + "\n");
+}
+
+function ack(env) {
+  const id = env.stream_id || env.session_id;
+  return {
+    type: "ack",
+    ...(env.stream_id ? { stream_id: env.stream_id } : { session_id: env.session_id }),
+    message_id: `${id}-ack`,
+    sequence: 2,
+    timestamp: Date.now(),
+    version: 1,
+    in_reply_to: env.message_id,
+    payload: { acknowledged_id: env.message_id },
+  };
+}
+
+function frame(env, type, payload, sequence) {
+  const id = env.stream_id || env.session_id;
+  return {
+    type,
+    ...(env.stream_id ? { stream_id: env.stream_id } : { session_id: env.session_id }),
+    message_id: `${id}-${sequence}`,
+    sequence,
+    timestamp: Date.now(),
+    version: 1,
+    in_reply_to: env.message_id,
+    payload,
+  };
+}
+
+// The real agent server publishes async run output (agent_event projections
+// and agent_result/agent_error settlements) WITHOUT in_reply_to — it is
+// session-routed, not a reply (spec §13.3.2). Every other fixture frame
+// replies to its request (unfaithfully, for simplicity); frames built here
+// model the real uncorrelated shape so tests exercise the stale-frame
+// hazards a correlated-only fixture cannot reproduce (#205).
+function asyncFrame(env, type, payload, sequence) {
+  const id = env.stream_id || env.session_id;
+  return {
+    type,
+    ...(env.stream_id ? { stream_id: env.stream_id } : { session_id: env.session_id }),
+    message_id: `${id}-async-${sequence}`,
+    sequence,
+    timestamp: Date.now(),
+    version: 1,
+    payload,
+  };
+}
+
+const defaultProviderResult = {
+  role: "assistant",
+  content: [{ type: "text", text: "hello" }],
+  usage: { input: 3, output: 5, cache_read: 1, cache_write: 0 },
+  provider_id: "anthropic",
+  api: "anthropic-messages",
+  model_id: "claude-sonnet-4-5",
+  stop_reason: "end_turn",
+};
+
+function defaultProviderEventsFor(env) {
+  const modelRef = env.payload?.model_ref || "";
+  if (modelRef === "test-fixture/test-fixture@fixture-echo-v1") {
+    const message = env.payload?.context?.messages?.[0]?.content || "";
+    return [
+      { type: "message_start", provider_id: "test-fixture", api: "test-fixture", model_id: "fixture-echo-v1" },
+      { type: "text_delta", delta: `[fixture-echo-v1] ${String(message).split("").reverse().join("")}` },
+      { type: "message_end", usage: { input: 1, output: 1 }, stop_reason: "end_turn" },
+    ];
+  }
+  return [
+    { type: "message_start", provider_id: "anthropic", api: "anthropic-messages", model_id: "claude-sonnet-4-5" },
+    { type: "text_delta", delta: "hel" },
+    { type: "reasoning", delta: "thinking" },
+    { type: "text_delta", delta: "lo" },
+    { type: "message_end", usage: { input: 3, output: 5 }, stop_reason: "end_turn" },
+  ];
+}
+
+const configuredProviderEvents = process.env.MAKAI_TEST_PROVIDER_EVENTS_PATH
+  ? loadJson(process.env.MAKAI_TEST_PROVIDER_EVENTS_PATH, null)
+  : null;
+
+const defaultAgentEvents = [
+  { type: "agent_start", session_id: "testNanoIdSess1234567" },
+  { type: "turn_start" },
+  { type: "message_start", provider_id: "anthropic", api: "anthropic-messages", model_id: "claude-sonnet-4-5" },
+  { type: "text_delta", delta: "agent" },
+  { type: "tool_execution_start", tool_call_id: "tool-1", tool_name: "lookup" },
+  { type: "tool_execution_end", tool_call_id: "tool-1", is_error: false },
+  { type: "turn_end", stop_reason: "end_turn" },
+  { type: "agent_end", usage: { input: 7, output: 9 }, stop_reason: "end_turn" },
+];
+
+emit({ type: "ready", protocol_version: "1" });
+
+const requestLog = process.env.MAKAI_TEST_REQUEST_LOG || "";
+const authStatePath = process.env.MAKAI_TEST_AUTH_STATE_PATH || "";
+const providerResult = loadJson(process.env.MAKAI_TEST_PROVIDER_RESULT_PATH, defaultProviderResult);
+const agentEvents = loadJson(process.env.MAKAI_TEST_AGENT_EVENTS_PATH, defaultAgentEvents);
+const agentResult = loadJson(process.env.MAKAI_TEST_AGENT_RESULT_PATH, null);
+const agentError = loadJson(process.env.MAKAI_TEST_AGENT_ERROR_PATH, null);
+// Loop-internal failure payload ({ code, message }) for the failure-pair knob
+// below; null when the knob is off.
+const agentFailurePair = loadJson(process.env.MAKAI_TEST_AGENT_FAILURE_PAIR_PATH, null);
+// The failure pair fires ONCE (a one-off internal failure); later messages on
+// the session run the normal event flow so a same-id follow-up run can
+// succeed and prove it was not poisoned by the first run's settlement.
+let failurePairFired = false;
+const defaultModelsResponse = {
+  models: [{
+    model_ref: "anthropic/anthropic-messages@claude-sonnet-4-5",
+    model_id: "claude-sonnet-4-5",
+    display_name: "Claude Sonnet 4.5",
+    provider_id: "anthropic",
+    api: "anthropic-messages",
+    auth_status: "authenticated",
+    lifecycle: "stable",
+    capabilities: ["chat", "streaming", "tools", "reasoning"],
+    source: "dynamic",
+    base_url: "https://api.anthropic.com",
+    context_window: 200000,
+    max_output_tokens: 8192,
+    reasoning_default: "medium",
+  }],
+  fetched_at_ms: 1,
+  cache_max_age_ms: 300000,
+};
+const modelsResponse = loadJson(process.env.MAKAI_TEST_MODELS_RESPONSE_PATH, defaultModelsResponse);
+
+const requestCounts = new Map();
+const authenticatedProviders = new Set();
+const authFlows = new Map();
+
+// Session-tracking mode mirrors the real agent server's session lifecycle:
+// a live session id rejects agent_start (agent_busy) and only a
+// sequence-valid agent_stop removes the session (replying agent_stopped).
+// Without this env the fixture stays a stateless line responder.
+const trackAgentSessions = Boolean(process.env.MAKAI_TEST_TRACK_AGENT_SESSIONS);
+const agentSessions = new Map();
+// Sessions whose first agent_message was rejected by the
+// MAKAI_TEST_REJECT_FIRST_AGENT_MESSAGE knob (one-shot per session).
+const agentMessageRejectionsDone = new Set();
+// Sessions whose first agent_message output was suppressed by
+// MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE (one-shot per session): the
+// message is ACCEPTED (counter advanced) but no run output follows — the
+// unknown-outcome scenario of §13.4.1/#210 gap 7. Later messages on the same
+// session flow normally so a same-id retry can succeed once the probe's stop
+// removed the session.
+const agentMessageSuppressionsDone = new Set();
+// Sessions whose first agent_message failed admission with an uncorrelated
+// runtime agent_error (one-shot per session): MAKAI_TEST_ADMISSION_RUNTIME_ERROR
+// mirrors §13.4.1's server-side acceptance-path failure — the expected counter
+// does NOT advance and nothing is admitted, but the frame on the wire is
+// identical to §13.4.2's settlement of an admitted run.
+const admissionRuntimeErrorsDone = new Set();
+
+function loadAuthState() {
+  if (!authStatePath || !fs.existsSync(authStatePath)) return;
+  try {
+    const state = JSON.parse(fs.readFileSync(authStatePath, "utf8"));
+    for (const providerId of state.authenticatedProviders || []) {
+      authenticatedProviders.add(providerId);
+    }
+  } catch {
+    // Ignore corrupt fixture state and behave as logged out.
+  }
+}
+
+function saveAuthState() {
+  if (!authStatePath) return;
+  fs.writeFileSync(authStatePath, JSON.stringify({ authenticatedProviders: [...authenticatedProviders] }));
+}
+
+loadAuthState();
+
+function shouldAuthReject(envType) {
+  if (process.env.MAKAI_TEST_AUTH_REQUIRED_ALWAYS) return true;
+  if (!process.env.MAKAI_TEST_AUTH_REQUIRED_ONCE) return false;
+  const count = requestCounts.get(envType) || 0;
+  requestCounts.set(envType, count + 1);
+  return count === 0;
+}
+
+function authRequiredPayload() {
+  const payload = { error_code: "auth_required", reason: "login required" };
+  if (!process.env.MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID) {
+    payload.provider_id = "anthropic";
+  }
+  return payload;
+}
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+rl.on("line", (line) => {
+  let env;
+  try {
+    env = JSON.parse(line);
+  } catch {
+    return;
+  }
+  appendLog(requestLog, JSON.stringify(env));
+  emit(ack(env));
+
+  if (env.type === "complete_request") {
+    if (shouldAuthReject("complete_request")) {
+      emit(frame(env, "nack", authRequiredPayload(), 3));
+      return;
+    }
+    if (process.env.MAKAI_TEST_SUPPRESS_COMPLETE_RESPONSE) return;
+    emit(frame(env, "result", providerResult, 3));
+  } else if (env.type === "stream_request") {
+    if (shouldAuthReject("stream_request")) {
+      emit(frame(env, "nack", authRequiredPayload(), 3));
+      return;
+    }
+    const providerEvents = configuredProviderEvents ?? defaultProviderEventsFor(env);
+    for (let i = 0; i < providerEvents.length; i += 1) {
+      const event = providerEvents[i];
+      emit(frame(env, event.type, event, i + 3));
+    }
+  } else if (env.type === "agent_start") {
+    if (trackAgentSessions) {
+      if (agentSessions.has(env.session_id)) {
+        // The real agent server rejects a duplicate start with an
+        // agent_error frame (code+message, both carrying in_reply_to); the
+        // nack flavor stays the default so coverage exercises both SDK
+        // rejection paths.
+        if (process.env.MAKAI_TEST_AGENT_BUSY_AS_ERROR) {
+          emit(frame(env, "agent_error", { code: "agent_busy", message: "session already exists" }, 3));
+        } else {
+          emit(frame(env, "nack", { error_code: "agent_busy", reason: "session already exists" }, 3));
+        }
+        return;
+      }
+      // Registered before any auth rejection so a failed attempt's teardown
+      // stop still finds (and removes) the session, like the real server.
+      agentSessions.set(env.session_id, 2);
+    }
+    if (shouldAuthReject("agent_start")) {
+      emit(frame(env, "nack", authRequiredPayload(), 3));
+      return;
+    }
+    if (process.env.MAKAI_TEST_SUPPRESS_AGENT_START_RESPONSE) {
+      // Start admitted (the session registers above when tracking) but the
+      // reply never arrives: the start's outcome is UNKNOWABLE to the client
+      // — the §6.1/#205 timeout scenario.
+      return;
+    }
+    emit(frame(env, "agent_started", { session_id: env.session_id }, 3));
+  } else if (env.type === "agent_message") {
+    // One-shot correlated rejection knob (#210 gap 7): the FIRST message on a
+    // session is rejected exactly like a real-server validation failure
+    // (request-correlated agent_error, sequence 0) and admits nothing — the
+    // expected counter does not advance.
+    if (process.env.MAKAI_TEST_REJECT_FIRST_AGENT_MESSAGE && !agentMessageRejectionsDone.has(env.session_id)) {
+      agentMessageRejectionsDone.add(env.session_id);
+      emit(frame(env, "agent_error", { code: "invalid_request", message: "invalid sequence" }, 0));
+      return;
+    }
+    if (process.env.MAKAI_TEST_ADMISSION_RUNTIME_ERROR && !admissionRuntimeErrorsDone.has(env.session_id)) {
+      // §13.4.1 admission-path failure: UNCORRELATED runtime agent_error,
+      // counter not advanced, nothing admitted — the wire twin of the
+      // §13.4.2 settlement the MAKAI_TEST_AGENT_ERROR_PATH knob emits. A
+      // client must not read either shape as proof of acceptance (#210
+      // gap 7); placed BEFORE the tracking advance so the expected counter
+      // stays at the pre-send value.
+      admissionRuntimeErrorsDone.add(env.session_id);
+      emit(asyncFrame(env, "agent_error", { code: "internal_error", message: "admission allocation failure" }, 3));
+      return;
+    }
+    if (trackAgentSessions) {
+      // Real-server validation (§13.1): an out-of-sequence message is
+      // rejected with a request-correlated agent_error (sequence 0) and the
+      // expected counter does not advance. A true duplicate sequence is
+      // rejected here.
+      const expected = agentSessions.get(env.session_id) ?? 1;
+      if (env.sequence !== expected) {
+        emit(frame(env, "agent_error", { code: "invalid_request", message: "invalid sequence" }, 0));
+        return;
+      }
+      agentSessions.set(env.session_id, expected + 1);
+    }
+    if (process.env.MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE && !agentMessageSuppressionsDone.has(env.session_id)) {
+      agentMessageSuppressionsDone.add(env.session_id);
+      return;
+    }
+    if (process.env.MAKAI_TEST_AGENT_MALFORMED_RESULT_JSON) {
+      emit(frame(env, "agent_result", { result_json: "not-json" }, 3));
+    } else if (process.env.MAKAI_TEST_AGENT_MALFORMED_EVENT_JSON) {
+      emit(frame(env, "agent_started", { session_id: env.session_id }, 3));
+      emit(frame(env, "agent_event", { event_json: "not-json" }, 4));
+    } else if (agentFailurePair && !failurePairFired) {
+      // Real-server loop-internal failure shape (§13.4.2): the pair
+      // agent_event(error) + settlement agent_error is ONE settlement, both
+      // frames published as uncorrelated async output. A consumer that
+      // terminates on the first frame must drain the second before the id is
+      // reused (#205).
+      failurePairFired = true;
+      emit(asyncFrame(env, "agent_event", { event_json: JSON.stringify({ type: "error", code: agentFailurePair.code, message: agentFailurePair.message }) }, 3));
+      emit(asyncFrame(env, "agent_error", { code: agentFailurePair.code, message: agentFailurePair.message }, 4));
+    } else if (agentError) {
+      // Real-server settlement shape (§13.4.2): an agent-level failure
+      // settles through an UNCORRELATED agent_error on the session route —
+      // request-validation rejections are correlated, settlements are async
+      // output. (Correlating it here made the SDK's gap-7 rollback mistake
+      // the settlement for a message rejection.)
+      emit(asyncFrame(env, "agent_error", agentError, 3));
+    } else if (agentResult) {
+      emit(frame(env, "agent_result", { result_json: JSON.stringify(agentResult) }, 3));
+      if (trackAgentSessions) {
+        // The real server publishes the terminal agent_end event after the
+        // agent_result frame; mirror it so tests exercise the SDK's
+        // post-terminal drain against the stale-frame hazard.
+        emit(frame(env, "agent_event", { event_json: JSON.stringify({ type: "agent_end", stop_reason: "end_turn" }) }, 4));
+      }
+    } else {
+      for (let i = 0; i < agentEvents.length; i += 1) {
+        emit(frame(env, "agent_event", { event_json: JSON.stringify(agentEvents[i]) }, i + 3));
+      }
+    }
+  } else if (env.type === "agent_stop") {
+    if (trackAgentSessions) {
+      const expected = agentSessions.get(env.session_id) ?? 1;
+      if (env.sequence !== expected) {
+        // Real-server validation shape (§13.1): a request-correlated
+        // agent_error carrying sequence 0 — the two-state stop probe (#210
+        // gap 7) keys its retry on this rejection.
+        emit(frame(env, "agent_error", { code: "invalid_request", message: "invalid sequence" }, 0));
+        return;
+      }
+      agentSessions.delete(env.session_id);
+      emit(frame(env, "agent_stopped", { session_id: env.session_id, reason: env.payload?.reason || "stopped" }, 3));
+    }
+  } else if (env.type === "auth_providers_request") {
+    const providers = process.env.MAKAI_TEST_AUTH_REQUIRES_PROMPT ? [
+      {
+        id: "test-fixture",
+        name: "Test Fixture (CI)",
+        auth_status: authenticatedProviders.has("test-fixture") ? "authenticated" : "login_required",
+      },
+      { id: "github-copilot", name: "GitHub Copilot", auth_status: "unknown" },
+      { id: "anthropic", name: "Anthropic", auth_status: "unknown" },
+    ] : [];
+    emit(frame(env, "auth_providers_response", { providers }, 3));
+  } else if (env.type === "auth_login_start") {
+    const providerId = env.payload?.provider_id || "";
+    const flowId = env.stream_id || env.payload?.flow_id || "";
+    authFlows.set(flowId, providerId);
+    if (process.env.MAKAI_TEST_AUTH_REQUIRES_PROMPT) {
+      emit(frame(env, "auth_event", { prompt: { flow_id: flowId, prompt_id: "test-prompt", provider_id: providerId, message: "Enter code", allow_empty: false } }, 3));
+    } else {
+      authenticatedProviders.add(providerId);
+      saveAuthState();
+      emit(frame(env, "auth_event", { success: { flow_id: flowId, provider_id: providerId } }, 3));
+      emit(frame(env, "auth_login_result", { status: "success", flow_id: flowId, provider_id: providerId }, 4));
+    }
+  } else if (env.type === "auth_prompt_response") {
+    const flowId = env.stream_id || env.payload?.flow_id || "";
+    const providerId = authFlows.get(flowId) || env.payload?.provider_id || "test-fixture";
+    if (env.payload?.answer === "ok" || env.payload?.answer === "letmein") {
+      authenticatedProviders.add(providerId);
+      saveAuthState();
+      emit(frame(env, "auth_event", { success: { flow_id: flowId, provider_id: providerId } }, 3));
+      emit(frame(env, "auth_login_result", { status: "success", flow_id: flowId, provider_id: providerId }, 4));
+    } else {
+      emit(frame(env, "auth_event", { error: { flow_id: flowId, provider_id: providerId, code: "invalid_code", message: "fixture rejected code" } }, 3));
+      emit(frame(env, "auth_login_result", { status: "failed", flow_id: flowId, provider_id: providerId }, 4));
+    }
+  } else if (env.type === "auth_cancel") {
+    const flowId = env.stream_id || env.payload?.flow_id || "";
+    const providerId = authFlows.get(flowId) || env.payload?.provider_id || "test-fixture";
+    emit(frame(env, "auth_login_result", { status: "cancelled", flow_id: flowId, provider_id: providerId }, 3));
+  } else if (env.type === "models_request") {
+    emit(frame(env, "models_response", modelsResponse, 3));
+  }
+});
+
+rl.on("close", () => process.exit(0));

@@ -1,0 +1,1814 @@
+const std = @import("std");
+const compat = @import("compat");
+const builtin = @import("builtin");
+
+fn defaultIo() std.Io {
+    return if (@import("builtin").is_test)
+        std.testing.io
+    else
+        std.Io.Threaded.global_single_threaded.io();
+}
+
+const auth_file_name = "auth.json";
+const auth_temp_prefix = auth_file_name ++ ".tmp.";
+const keychain_service = "ai.hyperneo.oap";
+const keychain_service_env = "MAKAI_KEYCHAIN_SERVICE";
+const keychain_account = auth_file_name;
+const keychain_shared_account = "auth.shared.json";
+const keychain_item_label = "makai credentials";
+const codex_keychain_service = "Codex Auth";
+const credential_file_permissions: std.Io.File.Permissions = @enumFromInt(0o600);
+const stale_temp_min_age_ms = 24 * 60 * 60 * 1000;
+
+const keychain_save_fn: SaveFn = saveToPreferredStorage;
+
+const KeychainError = error{ KeychainUnavailable, KeychainNeedsInteraction, KeychainBusy };
+const KeychainAllocError = KeychainError || std.mem.Allocator.Error;
+
+const keychain_busy_attempts = 30;
+const keychain_busy_backoff_ms = 2;
+
+var keychain_mutex: std.Io.Mutex = .init;
+
+fn lockKeychainOrBusy() bool {
+    var attempt: usize = 0;
+    while (true) : (attempt += 1) {
+        if (keychain_mutex.tryLock()) return true;
+        if (attempt + 1 >= keychain_busy_attempts) return false;
+        compat.time.sleepMs(keychain_busy_backoff_ms);
+    }
+}
+
+fn lockKeychainWaiting() void {
+    keychain_mutex.lockUncancelable(defaultIo());
+}
+
+fn unlockKeychain() void {
+    keychain_mutex.unlock(defaultIo());
+}
+
+const KeychainLoadResult = union(enum) {
+    found: AuthStorage,
+    not_found,
+    unavailable,
+    needs_interaction,
+    busy,
+};
+
+fn secureFree(allocator: std.mem.Allocator, data: []const u8) void {
+    if (data.len == 0) {
+        allocator.free(data);
+        return;
+    }
+
+    const writable: []u8 = @constCast(data);
+    std.crypto.secureZero(u8, writable);
+    allocator.free(data);
+}
+
+fn isAuthTempFile(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, auth_temp_prefix);
+}
+
+fn parseAuthTempTimestampMillis(name: []const u8) ?i64 {
+    if (!isAuthTempFile(name)) return null;
+
+    const suffix = name[auth_temp_prefix.len..];
+    const dot_index = std.mem.indexOfScalar(u8, suffix, '.') orelse return null;
+    if (dot_index == 0) return null;
+
+    return std.fmt.parseInt(i64, suffix[0..dot_index], 10) catch null;
+}
+
+fn isStaleAuthTempFile(name: []const u8, now_ms: i64) bool {
+    const created_ms = parseAuthTempTimestampMillis(name) orelse return false;
+    return created_ms <= now_ms - stale_temp_min_age_ms;
+}
+
+fn cleanupStaleAuthTempFiles(auth_dir: std.Io.Dir) !void {
+    var iterable_dir = try auth_dir.openDir(defaultIo(), ".", .{ .iterate = true });
+    defer iterable_dir.close(defaultIo());
+
+    const now_ms = compat.time.nowMillis();
+    var iter = iterable_dir.iterate();
+    while (try iter.next(defaultIo())) |entry| {
+        if (entry.kind == .file and isStaleAuthTempFile(entry.name, now_ms)) {
+            auth_dir.deleteFile(defaultIo(), entry.name) catch {};
+        }
+    }
+}
+
+fn cleanupExistingAuthDirectory(cwd: std.Io.Dir, dir_path: []const u8) void {
+    var auth_dir = cwd.openDir(defaultIo(), dir_path, .{ .iterate = true }) catch return;
+    defer auth_dir.close(defaultIo());
+
+    cleanupStaleAuthTempFiles(auth_dir) catch {};
+}
+
+fn prepareAuthDirectory(cwd: std.Io.Dir, dir_path: []const u8) !void {
+    try compat.fs.createDir(cwd, dir_path);
+}
+
+fn atomicSaveCredentials(cwd: std.Io.Dir, dir_path: []const u8, file_path: []const u8, data: []const u8, allocator: std.mem.Allocator) !void {
+    const tmp_name = try std.fmt.allocPrint(allocator, "{s}{d}.{x}", .{ auth_temp_prefix, compat.time.nowMillis(), compat.random.int(u64) });
+    defer allocator.free(tmp_name);
+
+    const tmp_path = try std.fs.path.join(allocator, &.{ dir_path, tmp_name });
+    defer allocator.free(tmp_path);
+
+    var cleanup_tmp = false;
+    defer if (cleanup_tmp) cwd.deleteFile(defaultIo(), tmp_path) catch {};
+
+    {
+        var file = try cwd.createFile(defaultIo(), tmp_path, .{ .exclusive = true, .truncate = false, .permissions = credential_file_permissions });
+        cleanup_tmp = true;
+        defer file.close(defaultIo());
+        try file.writeStreamingAll(defaultIo(), data);
+        try file.sync(defaultIo());
+        file.setPermissions(defaultIo(), credential_file_permissions) catch |err| switch (err) {
+            error.PermissionDenied => return err,
+            else => {},
+        };
+    }
+
+    try cwd.rename(tmp_path, cwd, file_path, defaultIo());
+    cleanup_tmp = false;
+
+    var final_file = try compat.fs.openFile(cwd, file_path, .{ .mode = .write_only });
+    defer final_file.close(defaultIo());
+    final_file.setPermissions(defaultIo(), credential_file_permissions) catch |err| switch (err) {
+        error.PermissionDenied => return err,
+        else => {},
+    };
+}
+
+pub const Credentials = struct {
+    refresh: []const u8,
+    access: []const u8,
+    expires: i64,
+    provider_data: ?[]const u8 = null,
+
+    pub fn deinit(self: *const Credentials, allocator: std.mem.Allocator) void {
+        secureFree(allocator, self.refresh);
+        secureFree(allocator, self.access);
+        if (self.provider_data) |data| {
+            secureFree(allocator, data);
+        }
+    }
+};
+
+pub const OAuthProvider = struct {
+    id: []const u8,
+    name: []const u8 = "",
+    refresh_fn: *const fn (credentials: Credentials, allocator: std.mem.Allocator) anyerror!Credentials,
+    get_api_key_fn: *const fn (credentials: Credentials, allocator: std.mem.Allocator) anyerror![]const u8,
+};
+
+pub const ProviderAuth = union(enum) {
+    api_key: []const u8,
+    oauth: Credentials,
+
+    pub fn deinit(self: *const ProviderAuth, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .api_key => |key| secureFree(allocator, key),
+            .oauth => |creds| creds.deinit(allocator),
+        }
+    }
+};
+
+pub const SaveFn = *const fn (storage: *const AuthStorage) anyerror!void;
+
+fn emptyStorage(allocator: std.mem.Allocator, save_fn: ?SaveFn) AuthStorage {
+    return .{
+        .providers = std.StringHashMap(ProviderAuth).init(allocator),
+        .allocator = allocator,
+        .save_fn = save_fn,
+    };
+}
+
+fn deinitProviderMap(allocator: std.mem.Allocator, providers: *std.StringHashMap(ProviderAuth)) void {
+    var iter = providers.iterator();
+    while (iter.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        entry.value_ptr.deinit(allocator);
+    }
+    providers.deinit();
+}
+
+fn parseAuthJson(allocator: std.mem.Allocator, content: []const u8, save_fn: ?SaveFn) !AuthStorage {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    var providers = std.StringHashMap(ProviderAuth).init(allocator);
+    errdefer deinitProviderMap(allocator, &providers);
+
+    const root = parsed.value.object;
+    var iter = root.iterator();
+    while (iter.next()) |entry| {
+        const provider_id = try allocator.dupe(u8, entry.key_ptr.*);
+        errdefer allocator.free(provider_id);
+
+        const provider_obj = entry.value_ptr.*.object;
+        if (provider_obj.get("api_key")) |api_key_val| {
+            const api_key = try allocator.dupe(u8, api_key_val.string);
+            errdefer secureFree(allocator, api_key);
+
+            const provider_data: ?[]const u8 = blk: {
+                const r = if (provider_obj.get("region")) |region_val|
+                    try allocator.dupe(u8, region_val.string)
+                else
+                    break :blk null;
+                defer allocator.free(r);
+                break :blk try std.fmt.allocPrint(allocator, "region:{s}", .{r});
+            };
+            errdefer if (provider_data) |pd| allocator.free(pd);
+
+            if (provider_data == null) {
+                try providers.put(provider_id, .{ .api_key = api_key });
+            } else {
+                try providers.put(provider_id, .{ .oauth = .{
+                    .refresh = "",
+                    .access = api_key,
+                    .expires = std.math.maxInt(i64),
+                    .provider_data = provider_data,
+                } });
+            }
+        } else if (provider_obj.get("refresh")) |refresh_val| {
+            const refresh = try allocator.dupe(u8, refresh_val.string);
+            errdefer secureFree(allocator, refresh);
+
+            const access = try allocator.dupe(u8, provider_obj.get("access").?.string);
+            errdefer secureFree(allocator, access);
+
+            const provider_data = if (provider_obj.get("provider_data")) |pd|
+                try allocator.dupe(u8, pd.string)
+            else
+                null;
+            errdefer if (provider_data) |data| secureFree(allocator, data);
+
+            const expires = provider_obj.get("expires").?.integer;
+            try providers.put(provider_id, .{ .oauth = .{
+                .refresh = refresh,
+                .access = access,
+                .expires = expires,
+                .provider_data = provider_data,
+            } });
+        } else {
+            allocator.free(provider_id);
+        }
+    }
+
+    return .{
+        .providers = providers,
+        .allocator = allocator,
+        .save_fn = save_fn,
+    };
+}
+
+fn appendJsonString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: []const u8) !void {
+    const encoded = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(encoded);
+    try buf.appendSlice(allocator, encoded);
+}
+
+fn serializeAuthJson(storage: *const AuthStorage, allocator: std.mem.Allocator) ![]u8 {
+    var json_buf = std.ArrayList(u8).empty;
+    errdefer json_buf.deinit(allocator);
+
+    try json_buf.appendSlice(allocator, "{\n");
+
+    var iter = storage.providers.iterator();
+    var first = true;
+    while (iter.next()) |entry| {
+        if (!first) try json_buf.appendSlice(allocator, ",\n");
+        first = false;
+
+        try json_buf.appendSlice(allocator, "  ");
+        try appendJsonString(allocator, &json_buf, entry.key_ptr.*);
+        try json_buf.appendSlice(allocator, ": ");
+
+        switch (entry.value_ptr.*) {
+            .api_key => |key| {
+                try json_buf.appendSlice(allocator, "{\"api_key\":");
+                try appendJsonString(allocator, &json_buf, key);
+                try json_buf.appendSlice(allocator, "}");
+            },
+            .oauth => |creds| {
+                const is_api_key_style = creds.refresh.len == 0 and creds.expires == std.math.maxInt(i64);
+                var wrote_api_key_style = false;
+                if (is_api_key_style) if (creds.provider_data) |data| {
+                    if (std.mem.startsWith(u8, data, "region:")) {
+                        const region = data["region:".len..];
+                        try json_buf.appendSlice(allocator, "{\"api_key\":");
+                        try appendJsonString(allocator, &json_buf, creds.access);
+                        try json_buf.appendSlice(allocator, ",\"region\":");
+                        try appendJsonString(allocator, &json_buf, region);
+                        try json_buf.appendSlice(allocator, "}");
+                        wrote_api_key_style = true;
+                    }
+                };
+                if (wrote_api_key_style) continue;
+                try json_buf.appendSlice(allocator, "{\"refresh\":");
+                try appendJsonString(allocator, &json_buf, creds.refresh);
+                try json_buf.appendSlice(allocator, ",\"access\":");
+                try appendJsonString(allocator, &json_buf, creds.access);
+                try json_buf.appendSlice(allocator, ",\"expires\":");
+                const expires_str = try std.fmt.allocPrint(allocator, "{d}", .{creds.expires});
+                defer allocator.free(expires_str);
+                try json_buf.appendSlice(allocator, expires_str);
+                if (creds.provider_data) |data| {
+                    try json_buf.appendSlice(allocator, ",\"provider_data\":");
+                    try appendJsonString(allocator, &json_buf, data);
+                }
+                try json_buf.appendSlice(allocator, "}");
+            },
+        }
+    }
+
+    try json_buf.appendSlice(allocator, "\n}\n");
+    return try json_buf.toOwnedSlice(allocator);
+}
+
+fn shouldUseKeychain() bool {
+    return builtin.os.tag == .macos and !builtin.is_test;
+}
+
+const macos_keychain = if (builtin.os.tag == .macos) struct {
+    const OSStatus = i32;
+    const UInt32 = u32;
+    const SecKeychainItem = opaque {};
+    const SecKeychainItemRef = ?*SecKeychainItem;
+    const errSecSuccess: OSStatus = 0;
+    const errSecDuplicateItem: OSStatus = -25299;
+    const errSecItemNotFound: OSStatus = -25300;
+    const errSecInteractionNotAllowed: OSStatus = -25308;
+    const errSecInteractionRequired: OSStatus = -25315;
+
+    extern "c" fn SecKeychainSetUserInteractionAllowed(state: u8) OSStatus;
+    extern "c" fn SecKeychainGetUserInteractionAllowed(state: *u8) OSStatus;
+
+    const KeychainScope = struct {
+        restore: ?u8,
+
+        fn begin(interaction: ?u8) KeychainScope {
+            lockKeychainWaiting();
+            return applyInteraction(interaction);
+        }
+
+        fn tryBegin(interaction: ?u8) ?KeychainScope {
+            if (!lockKeychainOrBusy()) return null;
+            return applyInteraction(interaction);
+        }
+
+        fn applyInteraction(interaction: ?u8) KeychainScope {
+            const override = interaction orelse return .{ .restore = null };
+            var previous: u8 = 1;
+            if (SecKeychainGetUserInteractionAllowed(&previous) != errSecSuccess) previous = 1;
+            _ = SecKeychainSetUserInteractionAllowed(override);
+            return .{ .restore = previous };
+        }
+
+        fn end(self: KeychainScope) void {
+            if (self.restore) |previous| _ = SecKeychainSetUserInteractionAllowed(previous);
+            unlockKeychain();
+        }
+    };
+
+    extern "c" fn SecKeychainFindGenericPassword(
+        keychainOrArray: ?*const anyopaque,
+        serviceNameLength: UInt32,
+        serviceName: [*]const u8,
+        accountNameLength: UInt32,
+        accountName: [*]const u8,
+        passwordLength: *UInt32,
+        passwordData: *?*anyopaque,
+        itemRef: *SecKeychainItemRef,
+    ) OSStatus;
+    extern "c" fn SecKeychainAddGenericPassword(
+        keychain: ?*const anyopaque,
+        serviceNameLength: UInt32,
+        serviceName: [*]const u8,
+        accountNameLength: UInt32,
+        accountName: [*]const u8,
+        passwordLength: UInt32,
+        passwordData: ?*const anyopaque,
+        itemRef: ?*SecKeychainItemRef,
+    ) OSStatus;
+    extern "c" fn SecKeychainItemModifyAttributesAndData(
+        itemRef: SecKeychainItemRef,
+        attrList: ?*const anyopaque,
+        length: UInt32,
+        data: ?*const anyopaque,
+    ) OSStatus;
+    extern "c" fn SecKeychainItemFreeContent(
+        attrList: ?*const anyopaque,
+        data: ?*anyopaque,
+    ) OSStatus;
+    extern "c" fn CFRelease(cf: ?*const anyopaque) void;
+    extern "c" fn SecKeychainCopyDefault(outKeychain: *?*const anyopaque) OSStatus;
+
+    const SecAccessRef = ?*anyopaque;
+    const CFStringRef = ?*anyopaque;
+    const SecKeychainAttribute = extern struct { tag: u32, length: u32, data: ?*anyopaque };
+    const SecKeychainAttributeList = extern struct { count: u32, attr: [*]SecKeychainAttribute };
+    const kSecGenericPasswordItemClass: u32 = 0x67656E70;
+    const kSecServiceItemAttr: u32 = 0x73766365;
+    const kSecAccountItemAttr: u32 = 0x61636374;
+    const kCFStringEncodingUTF8: u32 = 0x08000100;
+    extern "c" fn SecKeychainItemCreateFromContent(
+        itemClass: u32,
+        attrList: *SecKeychainAttributeList,
+        length: UInt32,
+        data: ?*const anyopaque,
+        keychainRef: ?*const anyopaque,
+        initialAccess: SecAccessRef,
+        itemRef: *SecKeychainItemRef,
+    ) OSStatus;
+    extern "c" fn SecKeychainItemDelete(itemRef: SecKeychainItemRef) OSStatus;
+    extern "c" fn SecAccessCreate(descriptor: CFStringRef, trustedlist: ?*const anyopaque, accessRef: *SecAccessRef) OSStatus;
+    extern "c" fn CFStringCreateWithCString(alloc: ?*const anyopaque, cStr: [*:0]const u8, encoding: u32) CFStringRef;
+
+    fn asUInt32(value: usize) !UInt32 {
+        return std.math.cast(UInt32, value) orelse error.KeychainUnavailable;
+    }
+
+    fn defaultKeychain() ?*const anyopaque {
+        var kc: ?*const anyopaque = null;
+        const status = SecKeychainCopyDefault(&kc);
+        if (status != errSecSuccess) return null;
+        return kc;
+    }
+
+    fn readServiceAccount(allocator: std.mem.Allocator, service: []const u8, account: []const u8) KeychainAllocError!?[]u8 {
+        const scope = KeychainScope.tryBegin(0) orelse return error.KeychainBusy;
+        defer scope.end();
+        return findServiceAccount(allocator, service, account);
+    }
+
+    fn findServiceAccount(allocator: std.mem.Allocator, service: []const u8, account: []const u8) KeychainAllocError!?[]u8 {
+        var password_len: UInt32 = 0;
+        var password_data: ?*anyopaque = null;
+        var item: SecKeychainItemRef = null;
+
+        const kc = defaultKeychain();
+        defer if (kc) |ref| CFRelease(ref);
+
+        const status = SecKeychainFindGenericPassword(
+            kc,
+            try asUInt32(service.len),
+            service.ptr,
+            try asUInt32(account.len),
+            account.ptr,
+            &password_len,
+            &password_data,
+            &item,
+        );
+        defer if (item) |value| CFRelease(@ptrCast(value));
+
+        if (status == errSecItemNotFound) return null;
+        if (status == errSecInteractionNotAllowed or status == errSecInteractionRequired) {
+            return error.KeychainNeedsInteraction;
+        }
+        if (status != errSecSuccess) return error.KeychainUnavailable;
+        const data = password_data orelse return error.KeychainUnavailable;
+        defer _ = SecKeychainItemFreeContent(null, data);
+
+        const bytes: [*]const u8 = @ptrCast(data);
+        return try allocator.dupe(u8, bytes[0..password_len]);
+    }
+
+    fn writeServiceAccount(service: []const u8, account: []const u8, data: []const u8) KeychainError!void {
+        var password_len: UInt32 = 0;
+        var password_data: ?*anyopaque = null;
+        var item: SecKeychainItemRef = null;
+
+        const kc = defaultKeychain();
+        defer if (kc) |ref| CFRelease(ref);
+
+        const find_status = SecKeychainFindGenericPassword(
+            kc,
+            try asUInt32(service.len),
+            service.ptr,
+            try asUInt32(account.len),
+            account.ptr,
+            &password_len,
+            &password_data,
+            &item,
+        );
+        if (password_data) |value| {
+            _ = SecKeychainItemFreeContent(null, value);
+        }
+        defer if (item) |value| CFRelease(@ptrCast(value));
+
+        if (find_status == errSecSuccess) {
+            const update_status = SecKeychainItemModifyAttributesAndData(
+                item,
+                null,
+                try asUInt32(data.len),
+                @ptrCast(data.ptr),
+            );
+            if (update_status != errSecSuccess) return error.KeychainUnavailable;
+            return;
+        }
+
+        if (find_status != errSecItemNotFound) return error.KeychainUnavailable;
+        try createSharedItem(kc, service, account, data);
+    }
+
+    fn createSharedItem(kc: ?*const anyopaque, service: []const u8, account: []const u8, data: []const u8) KeychainError!void {
+        const label = CFStringCreateWithCString(null, keychain_item_label, kCFStringEncodingUTF8) orelse return error.KeychainUnavailable;
+        defer CFRelease(label);
+        var access: SecAccessRef = null;
+        if (SecAccessCreate(label, null, &access) != errSecSuccess) return error.KeychainUnavailable;
+        defer if (access) |ref| CFRelease(ref);
+
+        var attrs = [_]SecKeychainAttribute{
+            .{ .tag = kSecServiceItemAttr, .length = try asUInt32(service.len), .data = @ptrCast(@constCast(service.ptr)) },
+            .{ .tag = kSecAccountItemAttr, .length = try asUInt32(account.len), .data = @ptrCast(@constCast(account.ptr)) },
+        };
+        var list = SecKeychainAttributeList{ .count = attrs.len, .attr = &attrs };
+        var item: SecKeychainItemRef = null;
+        const status = SecKeychainItemCreateFromContent(
+            kSecGenericPasswordItemClass,
+            &list,
+            try asUInt32(data.len),
+            @ptrCast(data.ptr),
+            kc,
+            access,
+            &item,
+        );
+        defer if (item) |value| CFRelease(@ptrCast(value));
+        if (status == errSecDuplicateItem) return writeServiceAccount(service, account, data);
+        if (status != errSecSuccess) return error.KeychainUnavailable;
+    }
+
+    fn deleteServiceAccount(service: []const u8, account: []const u8) KeychainError!void {
+        var password_len: UInt32 = 0;
+        var password_data: ?*anyopaque = null;
+        var item: SecKeychainItemRef = null;
+
+        const kc = defaultKeychain();
+        defer if (kc) |ref| CFRelease(ref);
+
+        const status = SecKeychainFindGenericPassword(
+            kc,
+            try asUInt32(service.len),
+            service.ptr,
+            try asUInt32(account.len),
+            account.ptr,
+            &password_len,
+            &password_data,
+            &item,
+        );
+        if (password_data) |value| _ = SecKeychainItemFreeContent(null, value);
+        defer if (item) |value| CFRelease(@ptrCast(value));
+        if (status == errSecItemNotFound) return;
+        if (status != errSecSuccess) return error.KeychainUnavailable;
+        if (SecKeychainItemDelete(item) != errSecSuccess) return error.KeychainUnavailable;
+    }
+
+    fn read(allocator: std.mem.Allocator) KeychainAllocError!?[]u8 {
+        const service = try keychainServiceName(allocator);
+        defer allocator.free(service);
+
+        const scope = KeychainScope.tryBegin(0) orelse return error.KeychainBusy;
+        defer scope.end();
+
+        if (try findServiceAccount(allocator, service, keychain_shared_account)) |content| return content;
+        const legacy = (try findServiceAccount(allocator, service, keychain_account)) orelse return null;
+        writeServiceAccount(service, keychain_shared_account, legacy) catch return legacy;
+        deleteServiceAccount(service, keychain_account) catch {};
+        return legacy;
+    }
+
+    fn write(allocator: std.mem.Allocator, data: []const u8) KeychainAllocError!void {
+        const service = try keychainServiceName(allocator);
+        defer allocator.free(service);
+
+        const scope = KeychainScope.begin(null);
+        defer scope.end();
+
+        try writeServiceAccount(service, keychain_shared_account, data);
+    }
+} else struct {
+    fn readServiceAccount(_: std.mem.Allocator, _: []const u8, _: []const u8) KeychainAllocError!?[]u8 {
+        return error.KeychainUnavailable;
+    }
+
+    fn writeServiceAccount(_: []const u8, _: []const u8, _: []const u8) KeychainError!void {
+        return error.KeychainUnavailable;
+    }
+
+    fn read(_: std.mem.Allocator) KeychainAllocError!?[]u8 {
+        return error.KeychainUnavailable;
+    }
+
+    fn write(_: std.mem.Allocator, _: []const u8) KeychainAllocError!void {
+        return error.KeychainUnavailable;
+    }
+};
+
+fn keychainServiceName(allocator: std.mem.Allocator) ![]u8 {
+    if (compat.getEnvVarOwned(allocator, keychain_service_env)) |override| {
+        if (override.len > 0) return override;
+        allocator.free(override);
+    } else |_| {}
+    return allocator.dupe(u8, keychain_service);
+}
+
+fn loadFromKeychain(allocator: std.mem.Allocator) !KeychainLoadResult {
+    return loadFromKeychainWithCodexImport(allocator, true);
+}
+
+fn loadFromKeychainWithCodexImport(allocator: std.mem.Allocator, import_codex: bool) !KeychainLoadResult {
+    const content = macos_keychain.read(allocator) catch |err| switch (err) {
+        error.KeychainBusy => return .busy,
+        error.KeychainNeedsInteraction => return .needs_interaction,
+        else => return .unavailable,
+    };
+    const owned = content orelse return .not_found;
+    defer secureFree(allocator, owned);
+
+    var storage = parseAuthJson(allocator, owned, keychain_save_fn) catch return .unavailable;
+    errdefer storage.deinit();
+    if (import_codex) try maybeImportCodexCliCredentials(&storage);
+    return .{ .found = storage };
+}
+
+fn saveToKeychain(storage: *const AuthStorage) !void {
+    const content = try serializeAuthJson(storage, storage.allocator);
+    defer secureFree(storage.allocator, content);
+    try macos_keychain.write(storage.allocator, content);
+}
+
+fn saveToPreferredStorage(storage: *const AuthStorage) !void {
+    if (shouldUseKeychain()) {
+        saveToKeychain(storage) catch {
+            try storage.saveToFile();
+            return;
+        };
+        return;
+    }
+    try storage.saveToFile();
+}
+
+fn codexHomePath(allocator: std.mem.Allocator) ![]u8 {
+    if (compat.getEnvVarOwned(allocator, "CODEX_HOME")) |codex_home| {
+        return codex_home;
+    } else |_| {}
+
+    const home = try compat.getEnvVarOwned(allocator, "HOME");
+    defer allocator.free(home);
+    return try std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+fn codexAuthPath(allocator: std.mem.Allocator) ![]u8 {
+    const codex_home = try codexHomePath(allocator);
+    defer allocator.free(codex_home);
+    return try std.fs.path.join(allocator, &.{ codex_home, auth_file_name });
+}
+
+fn codexKeychainAccountForHome(allocator: std.mem.Allocator, codex_home: []const u8) ![]u8 {
+    const alphabet = "0123456789abcdef";
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(codex_home, &digest, .{});
+
+    var account = try allocator.alloc(u8, "cli|".len + 16);
+    errdefer allocator.free(account);
+    @memcpy(account[0.."cli|".len], "cli|");
+
+    for (digest[0..8], 0..) |byte, idx| {
+        account["cli|".len + idx * 2] = alphabet[byte >> 4];
+        account["cli|".len + idx * 2 + 1] = alphabet[byte & 0x0f];
+    }
+    return account;
+}
+
+fn loadCodexCliKeychainAuth(allocator: std.mem.Allocator) !?[]u8 {
+    if (!shouldUseKeychain()) return null;
+
+    const codex_home = try codexHomePath(allocator);
+    defer allocator.free(codex_home);
+
+    const account = try codexKeychainAccountForHome(allocator, codex_home);
+    defer allocator.free(account);
+
+    return try macos_keychain.readServiceAccount(allocator, codex_keychain_service, account);
+}
+
+fn parseJwtExpiresMillis(token: []const u8) ?i64 {
+    const first_dot = std.mem.indexOfScalar(u8, token, '.') orelse return null;
+    const rest = token[first_dot + 1 ..];
+    const second_rel = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+    const payload = rest[0..second_rel];
+
+    var buffer: [4096]u8 = undefined;
+    const decoded_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload) catch return null;
+    if (decoded_len > buffer.len) return null;
+    const decoded = buffer[0..decoded_len];
+    std.base64.url_safe_no_pad.Decoder.decode(decoded, payload) catch return null;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, decoded, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const exp = parsed.value.object.get("exp") orelse return null;
+    const seconds: i64 = switch (exp) {
+        .integer => |value| value,
+        .float => |value| @intFromFloat(value),
+        else => return null,
+    };
+    return seconds * 1000 - (5 * 60 * 1000);
+}
+
+fn importCodexCliCredentials(storage: *AuthStorage, content: []const u8) !void {
+    if (storage.providers.contains("openai-codex")) return;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, storage.allocator, content, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+
+    const tokens_value = parsed.value.object.get("tokens") orelse return;
+    if (tokens_value != .object) return;
+    const tokens = &tokens_value.object;
+
+    const access_value = tokens.get("access_token") orelse return;
+    const refresh_value = tokens.get("refresh_token") orelse return;
+    if (access_value != .string or refresh_value != .string) return;
+
+    const expires = parseJwtExpiresMillis(access_value.string) orelse compat.time.nowMillis() + (60 * 60 * 1000);
+    const provider_data = if (tokens.get("account_id")) |account| blk: {
+        if (account != .string) break :blk null;
+        break :blk try std.json.Stringify.valueAlloc(storage.allocator, .{ .source = "codex-cli", .account_id = account.string }, .{});
+    } else try std.json.Stringify.valueAlloc(storage.allocator, .{ .source = "codex-cli" }, .{});
+    errdefer if (provider_data) |data| secureFree(storage.allocator, data);
+
+    const key = try storage.allocator.dupe(u8, "openai-codex");
+    errdefer storage.allocator.free(key);
+    const access = try storage.allocator.dupe(u8, access_value.string);
+    errdefer secureFree(storage.allocator, access);
+    const refresh = try storage.allocator.dupe(u8, refresh_value.string);
+    errdefer secureFree(storage.allocator, refresh);
+
+    try storage.providers.put(key, .{ .oauth = .{
+        .refresh = refresh,
+        .access = access,
+        .expires = expires,
+        .provider_data = provider_data,
+    } });
+}
+
+fn maybeImportCodexCliCredentials(storage: *AuthStorage) !void {
+    if (builtin.is_test) return;
+    if (storage.providers.contains("openai-codex")) return;
+
+    if (loadCodexCliKeychainAuth(storage.allocator)) |maybe_content| {
+        if (maybe_content) |content| {
+            defer secureFree(storage.allocator, content);
+            try importCodexCliCredentials(storage, content);
+            if (storage.providers.contains("openai-codex")) return;
+        }
+    } else |_| {}
+
+    const path = codexAuthPath(storage.allocator) catch return;
+    defer storage.allocator.free(path);
+
+    const content = compat.fs.readFileAlloc(storage.allocator, compat.fs.getCwd(), path, 1024 * 1024) catch return;
+    defer secureFree(storage.allocator, content);
+
+    try importCodexCliCredentials(storage, content);
+}
+
+pub const AuthStorage = struct {
+    providers: std.StringHashMap(ProviderAuth),
+    allocator: std.mem.Allocator,
+    save_fn: ?SaveFn = null,
+    ephemeral: ?std.StringHashMap(ProviderAuth) = null,
+
+    pub fn putEphemeral(self: *AuthStorage, provider_id: []const u8, auth: ProviderAuth) !void {
+        if (self.ephemeral == null) {
+            self.ephemeral = std.StringHashMap(ProviderAuth).init(self.allocator);
+        }
+
+        if (self.ephemeral.?.getEntry(provider_id)) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+            entry.value_ptr.* = auth;
+            return;
+        }
+
+        const key = try self.allocator.dupe(u8, provider_id);
+        errdefer self.allocator.free(key);
+        try self.ephemeral.?.put(key, auth);
+    }
+
+    pub fn resolvedCredential(self: *const AuthStorage, provider_id: []const u8) ?ProviderAuth {
+        if (self.ephemeralAuth(provider_id)) |auth| return auth;
+        return self.providers.get(provider_id);
+    }
+
+    pub fn hasEphemeral(self: *const AuthStorage, provider_id: []const u8) bool {
+        const map = self.ephemeral orelse return false;
+        return map.contains(provider_id);
+    }
+
+    pub fn ephemeralCount(self: *const AuthStorage) usize {
+        const map = self.ephemeral orelse return 0;
+        return map.count();
+    }
+
+    pub fn releaseEphemeral(self: *AuthStorage) void {
+        if (self.ephemeral) |*map| {
+            deinitProviderMap(self.allocator, map);
+            self.ephemeral = null;
+        }
+    }
+
+    fn ephemeralAuth(self: *const AuthStorage, provider_id: []const u8) ?ProviderAuth {
+        const map = self.ephemeral orelse return null;
+        return map.get(provider_id);
+    }
+
+    fn refreshEphemeral(
+        self: *AuthStorage,
+        provider_id: []const u8,
+        oauth_provider: OAuthProvider,
+        credentials: Credentials,
+    ) !Credentials {
+        const refreshed = try oauth_provider.refresh_fn(credentials, self.allocator);
+        errdefer refreshed.deinit(self.allocator);
+        try self.putEphemeral(provider_id, .{ .oauth = refreshed });
+        return refreshed;
+    }
+
+    pub fn getEphemeralApiKey(
+        self: *AuthStorage,
+        provider_id: []const u8,
+        oauth_provider: ?OAuthProvider,
+    ) !?[]const u8 {
+        const auth = self.ephemeralAuth(provider_id) orelse return null;
+
+        switch (auth) {
+            .api_key => |key| return try self.allocator.dupe(u8, key),
+            .oauth => |credentials| {
+                const provider = oauth_provider orelse return error.UnknownProvider;
+                if (compat.time.nowMillis() >= credentials.expires) {
+                    const refreshed = try self.refreshEphemeral(provider_id, provider, credentials);
+                    return try provider.get_api_key_fn(refreshed, self.allocator);
+                }
+                return try provider.get_api_key_fn(credentials, self.allocator);
+            },
+        }
+    }
+
+    pub fn loadFromFile(allocator: std.mem.Allocator) !AuthStorage {
+        return loadFromFileWithSaveFn(allocator, null);
+    }
+
+    fn loadFromFileWithSaveFn(allocator: std.mem.Allocator, save_fn: ?SaveFn) !AuthStorage {
+        const home = compat.getEnvVarOwned(allocator, "HOME") catch return error.NoHomeDir;
+        defer allocator.free(home);
+        const dir_path = try std.fs.path.join(allocator, &.{ home, ".makai" });
+        defer allocator.free(dir_path);
+        const path = try std.fs.path.join(allocator, &.{ home, ".makai", auth_file_name });
+        defer allocator.free(path);
+
+        const cwd = compat.fs.getCwd();
+        cleanupExistingAuthDirectory(cwd, dir_path);
+
+        var file = compat.fs.openFile(cwd, path, .{}) catch {
+            return emptyStorage(allocator, save_fn);
+        };
+        file.close(defaultIo());
+
+        const content = try compat.fs.readFileAlloc(allocator, cwd, path, 1024 * 1024);
+        defer allocator.free(content);
+
+        return try parseAuthJson(allocator, content, save_fn);
+    }
+
+    pub fn loadDefault(allocator: std.mem.Allocator) !AuthStorage {
+        if (shouldUseKeychain()) {
+            switch (try loadFromKeychain(allocator)) {
+                .found => |storage| {
+                    var loaded = storage;
+                    try maybeImportCodexCliCredentials(&loaded);
+                    return loaded;
+                },
+                .not_found => {
+                    var storage = try loadFromFileWithSaveFn(allocator, keychain_save_fn);
+                    try maybeImportCodexCliCredentials(&storage);
+                    return storage;
+                },
+                .unavailable, .needs_interaction, .busy => {
+                    var storage = try loadFromFile(allocator);
+                    try maybeImportCodexCliCredentials(&storage);
+                    return storage;
+                },
+            }
+        }
+
+        var storage = try loadFromFile(allocator);
+        try maybeImportCodexCliCredentials(&storage);
+        return storage;
+    }
+
+    pub fn loadDefaultStoredOnly(allocator: std.mem.Allocator) !AuthStorage {
+        if (shouldUseKeychain()) {
+            switch (try loadFromKeychainWithCodexImport(allocator, false)) {
+                .found => |storage| return storage,
+                .not_found => return try loadFromFileWithSaveFn(allocator, keychain_save_fn),
+                .unavailable, .needs_interaction, .busy => return try loadFromFile(allocator),
+            }
+        }
+
+        return try loadFromFile(allocator);
+    }
+
+    pub fn saveToFile(self: *const AuthStorage) !void {
+        const home = compat.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
+        defer self.allocator.free(home);
+        const dir_path = try std.fs.path.join(self.allocator, &.{ home, ".makai" });
+        defer self.allocator.free(dir_path);
+
+        const file_path = try std.fs.path.join(self.allocator, &.{ home, ".makai", auth_file_name });
+        defer self.allocator.free(file_path);
+
+        const cwd = compat.fs.getCwd();
+        try prepareAuthDirectory(cwd, dir_path);
+        cleanupExistingAuthDirectory(cwd, dir_path);
+
+        const json_buf = try serializeAuthJson(self, self.allocator);
+        defer secureFree(self.allocator, json_buf);
+
+        try atomicSaveCredentials(cwd, dir_path, file_path, json_buf, self.allocator);
+    }
+
+    pub fn hasRefreshableCredentials(self: *const AuthStorage, provider_id: []const u8) bool {
+        const auth = self.ephemeralAuth(provider_id) orelse
+            self.providers.get(provider_id) orelse return false;
+        return switch (auth) {
+            .api_key => false,
+            .oauth => true,
+        };
+    }
+
+    pub fn configuredCredentialsExpired(self: *const AuthStorage, provider_id: []const u8) bool {
+        const auth = self.providers.get(provider_id) orelse return false;
+        return switch (auth) {
+            .api_key => false,
+            .oauth => |credentials| compat.time.nowMillis() >= credentials.expires,
+        };
+    }
+
+    pub fn credentialsExpired(self: *const AuthStorage, provider_id: []const u8) bool {
+        const auth = self.resolvedCredential(provider_id) orelse return false;
+        return switch (auth) {
+            .api_key => false,
+            .oauth => |credentials| compat.time.nowMillis() >= credentials.expires,
+        };
+    }
+
+    pub fn persist(self: *const AuthStorage) !void {
+        if (self.save_fn) |save| return save(self);
+        return self.saveToFile();
+    }
+
+    pub fn refreshCredentials(self: *AuthStorage, provider_id: []const u8, oauth_provider: OAuthProvider) !void {
+        if (self.ephemeralAuth(provider_id)) |ephemeral_auth| {
+            const credentials = switch (ephemeral_auth) {
+                .api_key => return error.NotRefreshable,
+                .oauth => |value| value,
+            };
+            const refreshed = try self.refreshEphemeral(provider_id, oauth_provider, credentials);
+            _ = refreshed;
+            return;
+        }
+
+        const auth = self.providers.get(provider_id) orelse return error.AuthRequired;
+        const credentials = switch (auth) {
+            .api_key => return error.NotRefreshable,
+            .oauth => |credentials| credentials,
+        };
+
+        var ownership_transferred = false;
+        const new_credentials = try oauth_provider.refresh_fn(credentials, self.allocator);
+        errdefer if (!ownership_transferred) new_credentials.deinit(self.allocator);
+
+        const provider_id_copy = try self.allocator.dupe(u8, provider_id);
+        errdefer if (!ownership_transferred) self.allocator.free(provider_id_copy);
+
+        const removed = self.providers.fetchRemove(provider_id) orelse return error.AuthRequired;
+        errdefer {
+            if (self.providers.fetchRemove(provider_id_copy)) |new_removed| {
+                self.allocator.free(new_removed.key);
+                new_removed.value.deinit(self.allocator);
+            }
+            self.providers.put(removed.key, removed.value) catch {
+                self.allocator.free(removed.key);
+                removed.value.deinit(self.allocator);
+            };
+        }
+
+        try self.providers.put(provider_id_copy, .{ .oauth = new_credentials });
+        ownership_transferred = true;
+        try self.persist();
+
+        self.allocator.free(removed.key);
+        removed.value.deinit(self.allocator);
+    }
+
+    pub fn getApiKey(self: *AuthStorage, provider_id: []const u8, oauth_provider: ?OAuthProvider) !?[]const u8 {
+        if (try self.getEphemeralApiKey(provider_id, oauth_provider)) |key| return key;
+
+        const auth = self.providers.get(provider_id) orelse return null;
+
+        switch (auth) {
+            .api_key => |key| return try self.allocator.dupe(u8, key),
+            .oauth => |credentials| {
+                const provider = oauth_provider orelse return error.UnknownProvider;
+                if (compat.time.nowMillis() >= credentials.expires) {
+                    try self.refreshCredentials(provider_id, provider);
+                    const refreshed_auth = self.providers.get(provider_id) orelse return error.AuthRequired;
+                    return switch (refreshed_auth) {
+                        .api_key => |key| try self.allocator.dupe(u8, key),
+                        .oauth => |refreshed| try provider.get_api_key_fn(refreshed, self.allocator),
+                    };
+                }
+
+                return try provider.get_api_key_fn(credentials, self.allocator);
+            },
+        }
+    }
+
+    pub fn deinit(self: *AuthStorage) void {
+        deinitProviderMap(self.allocator, &self.providers);
+        self.releaseEphemeral();
+    }
+};
+
+test "AuthStorage - load non-existent file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const previous_home = try setHomeForTest(std.testing.allocator, tmp.sub_path[0..]);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    var storage = try AuthStorage.loadFromFile(std.testing.allocator);
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), storage.providers.count());
+}
+
+test "AuthStorage - save and load" {
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+
+    const provider_id = try std.testing.allocator.dupe(u8, "test-provider");
+    const api_key = try std.testing.allocator.dupe(u8, "test-key");
+    try storage.providers.put(provider_id, .{ .api_key = api_key });
+}
+
+test "ProviderAuth - deinit api_key" {
+    const api_key = try std.testing.allocator.dupe(u8, "test-key");
+    const auth = ProviderAuth{ .api_key = api_key };
+    auth.deinit(std.testing.allocator);
+}
+
+test "ProviderAuth - deinit oauth" {
+    const refresh = try std.testing.allocator.dupe(u8, "refresh_token");
+    const access = try std.testing.allocator.dupe(u8, "access_token");
+    const auth = ProviderAuth{
+        .oauth = .{
+            .refresh = refresh,
+            .access = access,
+            .expires = compat.time.nowMillis() + 3600000,
+        },
+    };
+    auth.deinit(std.testing.allocator);
+}
+
+test "oauth_storage_imports_codex_cli_credentials" {
+    var storage = emptyStorage(std.testing.allocator, null);
+    defer storage.deinit();
+
+    const content =
+        \\{
+        \\  "auth_mode": "chatgpt",
+        \\  "tokens": {
+        \\    "access_token": "e30.eyJleHAiOjIwMDAwMDAwMDB9.sig",
+        \\    "refresh_token": "refresh-token",
+        \\    "account_id": "account-123"
+        \\  }
+        \\}
+    ;
+
+    try importCodexCliCredentials(&storage, content);
+
+    const auth = storage.providers.get("openai-codex") orelse return error.TestExpectedCodexCredentials;
+    switch (auth) {
+        .oauth => |credentials| {
+            try std.testing.expectEqualStrings("refresh-token", credentials.refresh);
+            try std.testing.expectEqualStrings("e30.eyJleHAiOjIwMDAwMDAwMDB9.sig", credentials.access);
+            try std.testing.expectEqual(@as(i64, 1_999_999_700_000), credentials.expires);
+            try std.testing.expect(credentials.provider_data != null);
+            try std.testing.expect(std.mem.indexOf(u8, credentials.provider_data.?, "codex-cli") != null);
+        },
+        .api_key => return error.TestExpectedOAuthCredentials,
+    }
+}
+
+test "serializeAuthJson preserves providers after region api key oauth entry" {
+    var auth_storage = emptyStorage(std.testing.allocator, null);
+    defer auth_storage.deinit();
+
+    try auth_storage.providers.put(try std.testing.allocator.dupe(u8, "kimi"), .{ .oauth = .{
+        .refresh = try std.testing.allocator.dupe(u8, ""),
+        .access = try std.testing.allocator.dupe(u8, "kimi-key"),
+        .expires = std.math.maxInt(i64),
+        .provider_data = try std.testing.allocator.dupe(u8, "region:china"),
+    } });
+    try auth_storage.providers.put(try std.testing.allocator.dupe(u8, "openai-codex"), .{ .api_key = try std.testing.allocator.dupe(u8, "codex-key") });
+
+    const json = try serializeAuthJson(&auth_storage, std.testing.allocator);
+    defer std.testing.allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"kimi\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"region\":\"china\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"openai-codex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"codex-key\"") != null);
+}
+
+test "codexKeychainAccountForHome uses Codex CLI account format" {
+    const account = try codexKeychainAccountForHome(std.testing.allocator, "/Users/test/.codex");
+    defer std.testing.allocator.free(account);
+    const same_account = try codexKeychainAccountForHome(std.testing.allocator, "/Users/test/.codex");
+    defer std.testing.allocator.free(same_account);
+
+    try std.testing.expect(std.mem.startsWith(u8, account, "cli|"));
+    try std.testing.expectEqual(@as(usize, 20), account.len);
+    try std.testing.expectEqualStrings(account, same_account);
+}
+
+test "saveToFile writes atomically via temp file + rename" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+
+    const provider_id = try std.testing.allocator.dupe(u8, "test-provider");
+    const api_key = try std.testing.allocator.dupe(u8, "sk-test-key-12345");
+    try storage.providers.put(provider_id, .{ .api_key = api_key });
+
+    const oauth_id = try std.testing.allocator.dupe(u8, "oauth-provider");
+    const refresh = try std.testing.allocator.dupe(u8, "refresh_tok");
+    const access = try std.testing.allocator.dupe(u8, "access_tok");
+    try storage.providers.put(oauth_id, .{
+        .oauth = .{
+            .refresh = refresh,
+            .access = access,
+            .expires = 1700000000000,
+        },
+    });
+
+    var json_buf = std.ArrayList(u8).empty;
+    defer json_buf.deinit(std.testing.allocator);
+
+    try json_buf.appendSlice(std.testing.allocator, "{\"test-provider\":{\"api_key\":\"sk-test-key-12345\"}}");
+
+    const tmp_path = ".auth_test.json.tmp";
+    const final_path = ".auth_test.json";
+
+    try compat.fs.atomicReplace(tmp_dir.dir, final_path, tmp_path, json_buf.items);
+
+    const content = try compat.fs.readFileAlloc(std.testing.allocator, tmp_dir.dir, final_path, 1024);
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.find(u8, content, "sk-test-key-12345") != null);
+    try std.testing.expect(std.mem.find(u8, content, "test-provider") != null);
+}
+fn putOwnedAuth(storage: *AuthStorage, provider_id: []const u8, auth: ProviderAuth) !void {
+    const key = try storage.allocator.dupe(u8, provider_id);
+    errdefer storage.allocator.free(key);
+    try storage.providers.put(key, auth);
+}
+
+const TestHomeOverride = struct {
+    previous: std.process.Environ,
+    entry: [:0]u8,
+    block: []?[*:0]const u8,
+};
+
+fn setHomeForTest(allocator: std.mem.Allocator, home: []const u8) !TestHomeOverride {
+    const entry = try std.mem.concatWithSentinel(allocator, u8, &.{ "HOME=", home }, 0);
+    errdefer allocator.free(entry);
+
+    const block = try allocator.alloc(?[*:0]const u8, 2);
+    errdefer allocator.free(block);
+    block[0] = entry.ptr;
+    block[1] = null;
+
+    const previous = std.testing.environ;
+    std.testing.environ = .{ .block = .{ .slice = block[0..1 :null] } };
+    return .{ .previous = previous, .entry = entry, .block = block };
+}
+
+fn restoreHomeForTest(allocator: std.mem.Allocator, override: TestHomeOverride) void {
+    std.testing.environ = override.previous;
+    allocator.free(override.block);
+    allocator.free(override.entry);
+}
+
+fn countAuthTempFiles(home: []const u8) !usize {
+    const dir_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    defer std.testing.allocator.free(dir_path);
+
+    var dir = try compat.fs.getCwd().openDir(defaultIo(), dir_path, .{ .iterate = true });
+    defer dir.close(defaultIo());
+
+    var count: usize = 0;
+    var it = dir.iterate();
+    while (try it.next(defaultIo())) |entry| {
+        if (isAuthTempFile(entry.name)) count += 1;
+    }
+    return count;
+}
+
+fn staleAuthTempName(allocator: std.mem.Allocator, suffix: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}{d}.{s}", .{ auth_temp_prefix, compat.time.nowMillis() - stale_temp_min_age_ms - 1000, suffix });
+}
+
+fn activeAuthTempName(allocator: std.mem.Allocator, suffix: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}{d}.{s}", .{ auth_temp_prefix, compat.time.nowMillis(), suffix });
+}
+
+test "oauth_storage_saveToFile_direct_sets_0600_and_same_directory_temp_rename" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = tmp.sub_path[0..];
+    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+
+    const api_key = try std.testing.allocator.dupe(u8, "secret-key");
+    try putOwnedAuth(&storage, "direct-provider", .{ .api_key = api_key });
+
+    try storage.saveToFile();
+
+    const file_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    defer std.testing.allocator.free(file_path);
+
+    const content = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), file_path, 4096);
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.find(u8, content, "direct-provider") != null);
+    try std.testing.expect(std.mem.find(u8, content, "secret-key") != null);
+
+    if (builtin.os.tag != .windows) {
+        const file = try compat.fs.openFile(compat.fs.getCwd(), file_path, .{});
+        defer file.close(defaultIo());
+        const info = try file.stat(defaultIo());
+        try std.testing.expectEqual(@as(u32, 0o600), @as(u32, @intFromEnum(info.permissions)) & 0o777);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), try countAuthTempFiles(home));
+}
+
+test "oauth_storage_saveToFile_rename_failure_leaves_target_unchanged_and_cleans_temp" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = tmp.sub_path[0..];
+    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    defer std.testing.allocator.free(makai_path);
+    try compat.fs.createDir(compat.fs.getCwd(), makai_path);
+
+    const blocker_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    defer std.testing.allocator.free(blocker_path);
+    try compat.fs.createDir(compat.fs.getCwd(), blocker_path);
+
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+
+    const api_key = try std.testing.allocator.dupe(u8, "secret-key");
+    try putOwnedAuth(&storage, "rename-failure-provider", .{ .api_key = api_key });
+
+    try std.testing.expectError(error.IsDir, storage.saveToFile());
+
+    const stat = try compat.fs.getCwd().statFile(defaultIo(), blocker_path, .{});
+    try std.testing.expectEqual(std.Io.File.Kind.directory, stat.kind);
+    try std.testing.expectEqual(@as(usize, 0), try countAuthTempFiles(home));
+}
+
+fn writeAuthTestFile(home: []const u8, name: []const u8, content: []const u8) !void {
+    const path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", name });
+    defer std.testing.allocator.free(path);
+    try compat.fs.writeFile(compat.fs.getCwd(), path, content);
+}
+
+test "oauth_storage_loadFromFile_cleans_stale_temp_files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = tmp.sub_path[0..];
+    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    defer std.testing.allocator.free(makai_path);
+    try compat.fs.createDir(compat.fs.getCwd(), makai_path);
+
+    const stale_tmp = try staleAuthTempName(std.testing.allocator, "stale");
+    defer std.testing.allocator.free(stale_tmp);
+    try writeAuthTestFile(home, stale_tmp, "orphaned");
+    try writeAuthTestFile(home, auth_file_name, "{\"provider\":{\"api_key\":\"key\"}}\n");
+
+    var storage = try AuthStorage.loadFromFile(std.testing.allocator);
+    defer storage.deinit();
+
+    try std.testing.expect(storage.providers.contains("provider"));
+    try std.testing.expectEqual(@as(usize, 0), try countAuthTempFiles(home));
+}
+
+test "oauth_storage_saveToFile_replaces_existing_file_without_requiring_temp_cleanup" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = tmp.sub_path[0..];
+    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    defer std.testing.allocator.free(makai_path);
+    try compat.fs.createDir(compat.fs.getCwd(), makai_path);
+
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    defer std.testing.allocator.free(auth_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), auth_path, "original-credentials");
+
+    const active_tmp = try activeAuthTempName(std.testing.allocator, "active");
+    defer std.testing.allocator.free(active_tmp);
+    try writeAuthTestFile(home, active_tmp, "active-writer");
+
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+
+    const api_key = try std.testing.allocator.dupe(u8, "replacement-key");
+    try putOwnedAuth(&storage, "provider", .{ .api_key = api_key });
+
+    try storage.saveToFile();
+
+    const content = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), auth_path, 4096);
+    defer std.testing.allocator.free(content);
+    try std.testing.expect(std.mem.find(u8, content, "replacement-key") != null);
+
+    const active_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", active_tmp });
+    defer std.testing.allocator.free(active_path);
+    const active_content = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), active_path, 4096);
+    defer std.testing.allocator.free(active_content);
+    try std.testing.expectEqualStrings("active-writer", active_content);
+}
+
+const save_opens_auth_directory_handle = false;
+
+test "oauth_storage_saveToFile_does_not_require_directory_iteration" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (save_opens_auth_directory_handle) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home = tmp.sub_path[0..];
+    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    defer std.testing.allocator.free(makai_path);
+    try compat.fs.createDir(compat.fs.getCwd(), makai_path);
+    try compat.fs.getCwd().setFilePermissions(defaultIo(), makai_path, @enumFromInt(0o300), .{});
+    defer compat.fs.getCwd().setFilePermissions(defaultIo(), makai_path, @enumFromInt(0o700), .{}) catch {};
+
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+
+    const api_key = try std.testing.allocator.dupe(u8, "search-only-key");
+    try putOwnedAuth(&storage, "provider", .{ .api_key = api_key });
+
+    try storage.saveToFile();
+
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    defer std.testing.allocator.free(auth_path);
+    const content = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), auth_path, 4096);
+    defer std.testing.allocator.free(content);
+    try std.testing.expect(std.mem.find(u8, content, "search-only-key") != null);
+}
+
+test "oauth_storage_keychain_read_lock_succeeds_when_uncontended" {
+    try std.testing.expect(lockKeychainOrBusy());
+    unlockKeychain();
+}
+
+test "oauth_storage_keychain_read_lock_reports_busy_while_a_writer_holds_it" {
+    lockKeychainWaiting();
+    defer unlockKeychain();
+
+    try std.testing.expect(!lockKeychainOrBusy());
+}
+
+test "oauth_storage_keychain_read_lock_waits_out_transient_contention" {
+    const Reader = struct {
+        fn run(started: *std.atomic.Value(bool), acquired: *std.atomic.Value(bool)) void {
+            started.store(true, .release);
+            const ok = lockKeychainOrBusy();
+            acquired.store(ok, .release);
+            if (ok) unlockKeychain();
+        }
+    };
+
+    var started: std.atomic.Value(bool) = .init(false);
+    var acquired: std.atomic.Value(bool) = .init(false);
+
+    lockKeychainWaiting();
+    const thread = try std.Thread.spawn(.{}, Reader.run, .{ &started, &acquired });
+
+    while (!started.load(.acquire)) {}
+    compat.time.sleepMs(10);
+    unlockKeychain();
+
+    thread.join();
+    try std.testing.expect(acquired.load(.acquire));
+}
+
+var ephemeral_test_saves: usize = 0;
+var ephemeral_test_last_payload: [4096]u8 = undefined;
+var ephemeral_test_last_len: usize = 0;
+
+fn countingSaveFn(storage: *const AuthStorage) anyerror!void {
+    ephemeral_test_saves += 1;
+    const content = try serializeAuthJson(storage, storage.allocator);
+    defer secureFree(storage.allocator, content);
+    const len = @min(content.len, ephemeral_test_last_payload.len);
+    @memcpy(ephemeral_test_last_payload[0..len], content[0..len]);
+    ephemeral_test_last_len = len;
+}
+
+fn lastSavedPayload() []const u8 {
+    return ephemeral_test_last_payload[0..ephemeral_test_last_len];
+}
+
+fn ephemeralTestRefresh(credentials: Credentials, allocator: std.mem.Allocator) anyerror!Credentials {
+    _ = credentials;
+    const refresh = try allocator.dupe(u8, "refreshed-refresh");
+    errdefer allocator.free(refresh);
+    const access = try allocator.dupe(u8, "refreshed-access");
+
+    return Credentials{
+        .refresh = refresh,
+        .access = access,
+        .expires = std.math.maxInt(i64),
+    };
+}
+
+fn ephemeralTestApiKey(credentials: Credentials, allocator: std.mem.Allocator) anyerror![]const u8 {
+    return allocator.dupe(u8, credentials.access);
+}
+
+const ephemeral_test_provider = OAuthProvider{
+    .id = "ephemeral-test",
+    .refresh_fn = ephemeralTestRefresh,
+    .get_api_key_fn = ephemeralTestApiKey,
+};
+
+fn emptyTestStorage(allocator: std.mem.Allocator) AuthStorage {
+    ephemeral_test_saves = 0;
+    ephemeral_test_last_len = 0;
+    return AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(allocator),
+        .allocator = allocator,
+        .save_fn = countingSaveFn,
+    };
+}
+
+test "a granted credential never reaches the serialized form a writer would emit" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.putEphemeral("tenant-a", .{ .api_key = try allocator.dupe(u8, "sk-granted-secret") });
+    try storage.persist();
+
+    try std.testing.expectEqual(@as(usize, 1), ephemeral_test_saves);
+    try std.testing.expect(std.mem.indexOf(u8, lastSavedPayload(), "sk-granted-secret") == null);
+    try std.testing.expect(std.mem.indexOf(u8, lastSavedPayload(), "tenant-a") == null);
+}
+
+test "a durable credential beside a granted one is still written" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.providers.put(
+        try allocator.dupe(u8, "configured"),
+        .{ .api_key = try allocator.dupe(u8, "sk-configured") },
+    );
+    try storage.putEphemeral("granted", .{ .api_key = try allocator.dupe(u8, "sk-granted") });
+    try storage.persist();
+
+    try std.testing.expect(std.mem.indexOf(u8, lastSavedPayload(), "sk-configured") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lastSavedPayload(), "sk-granted") == null);
+}
+
+test "refreshing a granted credential writes nothing" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.putEphemeral("tenant-a", .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "granted-refresh"),
+        .access = try allocator.dupe(u8, "granted-access"),
+        .expires = 0,
+    } });
+
+    const key = try storage.getApiKey("tenant-a", ephemeral_test_provider) orelse
+        return error.TestExpectedKey;
+    defer allocator.free(key);
+
+    try std.testing.expectEqualStrings("refreshed-access", key);
+    try std.testing.expectEqual(@as(usize, 0), ephemeral_test_saves);
+}
+
+test "refreshing a configured credential still writes" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.providers.put(try allocator.dupe(u8, "configured"), .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "stored-refresh"),
+        .access = try allocator.dupe(u8, "stored-access"),
+        .expires = 0,
+    } });
+
+    const key = try storage.getApiKey("configured", ephemeral_test_provider) orelse
+        return error.TestExpectedKey;
+    defer allocator.free(key);
+
+    try std.testing.expectEqualStrings("refreshed-access", key);
+    try std.testing.expectEqual(@as(usize, 1), ephemeral_test_saves);
+}
+
+test "a granted credential outranks a configured one and stops doing so when released" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.providers.put(
+        try allocator.dupe(u8, "shared"),
+        .{ .api_key = try allocator.dupe(u8, "sk-configured") },
+    );
+    try storage.putEphemeral("shared", .{ .api_key = try allocator.dupe(u8, "sk-granted") });
+
+    const granted = try storage.getApiKey("shared", null) orelse return error.TestExpectedKey;
+    defer allocator.free(granted);
+    try std.testing.expectEqualStrings("sk-granted", granted);
+
+    storage.releaseEphemeral();
+    try std.testing.expectEqual(@as(usize, 0), storage.ephemeralCount());
+
+    const configured = try storage.getApiKey("shared", null) orelse return error.TestExpectedKey;
+    defer allocator.free(configured);
+    try std.testing.expectEqualStrings("sk-configured", configured);
+}
+
+test "replacing a granted credential frees the one it displaces" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.putEphemeral("tenant-a", .{ .api_key = try allocator.dupe(u8, "sk-first") });
+    try storage.putEphemeral("tenant-a", .{ .api_key = try allocator.dupe(u8, "sk-second") });
+
+    try std.testing.expectEqual(@as(usize, 1), storage.ephemeralCount());
+    const key = try storage.getApiKey("tenant-a", null) orelse return error.TestExpectedKey;
+    defer allocator.free(key);
+    try std.testing.expectEqualStrings("sk-second", key);
+}
+
+test "a granted oauth credential routes through the refreshable path and never through persistence" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try std.testing.expect(!storage.hasRefreshableCredentials("tenant-a"));
+
+    try storage.putEphemeral("tenant-a", .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "granted-refresh"),
+        .access = try allocator.dupe(u8, "granted-access"),
+        .expires = 0,
+    } });
+
+    try std.testing.expect(storage.hasRefreshableCredentials("tenant-a"));
+    try std.testing.expect(storage.credentialsExpired("tenant-a"));
+
+    try storage.refreshCredentials("tenant-a", ephemeral_test_provider);
+    try std.testing.expect(!storage.credentialsExpired("tenant-a"));
+
+    const key = try storage.getApiKey("tenant-a", ephemeral_test_provider) orelse
+        return error.TestExpectedKey;
+    defer allocator.free(key);
+    try std.testing.expectEqualStrings("refreshed-access", key);
+    try std.testing.expectEqual(@as(usize, 0), ephemeral_test_saves);
+}
+
+test "a granted static key is not reported as refreshable" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.putEphemeral("tenant-a", .{ .api_key = try allocator.dupe(u8, "sk-granted") });
+    try std.testing.expect(!storage.hasRefreshableCredentials("tenant-a"));
+}
+
+test "the explicit refresh entry point reaches a granted credential and still writes nothing" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.putEphemeral("tenant-a", .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "granted-refresh"),
+        .access = try allocator.dupe(u8, "granted-access"),
+        .expires = std.math.maxInt(i64),
+    } });
+
+    try storage.refreshCredentials("tenant-a", ephemeral_test_provider);
+    try std.testing.expectEqual(@as(usize, 0), ephemeral_test_saves);
+
+    const key = try storage.getApiKey("tenant-a", ephemeral_test_provider) orelse
+        return error.TestExpectedKey;
+    defer allocator.free(key);
+    try std.testing.expectEqualStrings("refreshed-access", key);
+}
+
+test "refreshing a granted static key is refused rather than treated as absent" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.putEphemeral("tenant-a", .{ .api_key = try allocator.dupe(u8, "sk-granted") });
+    try std.testing.expectError(
+        error.NotRefreshable,
+        storage.refreshCredentials("tenant-a", ephemeral_test_provider),
+    );
+    try std.testing.expectEqual(@as(usize, 0), ephemeral_test_saves);
+}
+
+test "the origin check sees a granted credential rather than skipping it" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try std.testing.expect(storage.resolvedCredential("tenant-a") == null);
+
+    try storage.putEphemeral("tenant-a", .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "granted-refresh"),
+        .access = try allocator.dupe(u8, "granted-access"),
+        .expires = std.math.maxInt(i64),
+    } });
+
+    const auth = storage.resolvedCredential("tenant-a") orelse
+        return error.TestExpectedCredential;
+    try std.testing.expectEqualStrings("granted-refresh", auth.oauth.refresh);
+
+    try storage.providers.put(try allocator.dupe(u8, "configured"), .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "stored-refresh"),
+        .access = try allocator.dupe(u8, "stored-access"),
+        .expires = std.math.maxInt(i64),
+    } });
+    const configured = storage.resolvedCredential("configured") orelse
+        return error.TestExpectedCredential;
+    try std.testing.expectEqualStrings("stored-refresh", configured.oauth.refresh);
+}
+
+test "a granted credential does not make an expired configured login look current" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.providers.put(try allocator.dupe(u8, "anthropic"), .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "stored-refresh"),
+        .access = try allocator.dupe(u8, "stored-access"),
+        .expires = 0,
+    } });
+
+    try std.testing.expect(storage.credentialsExpired("anthropic"));
+    try std.testing.expect(storage.configuredCredentialsExpired("anthropic"));
+
+    try storage.putEphemeral("anthropic", .{ .api_key = try allocator.dupe(u8, "sk-granted") });
+
+    try std.testing.expect(!storage.credentialsExpired("anthropic"));
+    try std.testing.expect(storage.configuredCredentialsExpired("anthropic"));
+}
+
+test "an expired granted credential reports expired so the locked refresh runs" {
+    const allocator = std.testing.allocator;
+    var storage = emptyTestStorage(allocator);
+    defer storage.deinit();
+
+    try storage.putEphemeral("tenant-a", .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "granted-refresh"),
+        .access = try allocator.dupe(u8, "granted-access"),
+        .expires = 0,
+    } });
+    try std.testing.expect(storage.credentialsExpired("tenant-a"));
+
+    try storage.putEphemeral("tenant-b", .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "granted-refresh"),
+        .access = try allocator.dupe(u8, "granted-access"),
+        .expires = std.math.maxInt(i64),
+    } });
+    try std.testing.expect(!storage.credentialsExpired("tenant-b"));
+
+    try storage.putEphemeral("tenant-c", .{ .api_key = try allocator.dupe(u8, "sk-granted") });
+    try std.testing.expect(!storage.credentialsExpired("tenant-c"));
+}
+
+test "replacing a granted credential cannot lose both on an allocation failure" {
+    const Case = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var storage = AuthStorage{
+                .providers = std.StringHashMap(ProviderAuth).init(allocator),
+                .allocator = allocator,
+            };
+            defer storage.deinit();
+
+            {
+                const first = try allocator.dupe(u8, "sk-first");
+                errdefer allocator.free(first);
+                try storage.putEphemeral("tenant", .{ .api_key = first });
+            }
+            {
+                const second = try allocator.dupe(u8, "sk-second");
+                errdefer allocator.free(second);
+                try storage.putEphemeral("tenant", .{ .api_key = second });
+            }
+
+            try std.testing.expectEqual(@as(usize, 1), storage.ephemeralCount());
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Case.run, .{});
+}
+
+test "refreshing a granted credential under allocation failure frees it exactly once" {
+    const Case = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var storage = AuthStorage{
+                .providers = std.StringHashMap(ProviderAuth).init(allocator),
+                .allocator = allocator,
+            };
+            defer storage.deinit();
+
+            {
+                const refresh = try allocator.dupe(u8, "granted-refresh");
+                errdefer allocator.free(refresh);
+                const access = try allocator.dupe(u8, "granted-access");
+                errdefer allocator.free(access);
+
+                try storage.putEphemeral("tenant", .{ .oauth = .{
+                    .refresh = refresh,
+                    .access = access,
+                    .expires = 0,
+                } });
+            }
+
+            try storage.refreshCredentials("tenant", ephemeral_test_provider);
+
+            const key = try storage.getApiKey("tenant", ephemeral_test_provider) orelse
+                return error.TestExpectedKey;
+            defer allocator.free(key);
+            try std.testing.expectEqualStrings("refreshed-access", key);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Case.run, .{});
+}

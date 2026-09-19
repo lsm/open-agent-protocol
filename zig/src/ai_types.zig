@@ -1,0 +1,1636 @@
+const std = @import("std");
+const owned_slice_mod = @import("owned_slice");
+
+pub const OwnedSlice = owned_slice_mod.OwnedSlice;
+
+pub const KnownApi = enum {
+    openai_completions,
+    openai_responses,
+    azure_openai_responses,
+    openai_codex_responses,
+    anthropic_messages,
+    google_generative_ai,
+    google_gemini_cli,
+    ollama,
+};
+
+pub const ThinkingLevel = enum { off, minimal, low, medium, high, xhigh };
+
+pub const ServiceTier = enum {
+    default,
+    flex,
+    priority,
+};
+
+pub const ReasoningSummary = enum {
+    auto,
+    concise,
+    detailed,
+};
+
+pub const ThinkingBudgets = struct {
+    minimal: ?u32 = null,
+    low: ?u32 = null,
+    medium: ?u32 = null,
+    high: ?u32 = null,
+    xhigh: ?u32 = null,
+};
+
+pub const CacheRetention = enum { none, short, long };
+
+pub const StopReason = enum {
+    stop,
+    length,
+    tool_use,
+    content_filter,
+    @"error",
+    aborted,
+};
+
+pub const HeaderPair = struct {
+    name: []const u8,
+    value: []const u8,
+
+    pub fn deinit(self: *HeaderPair, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.value);
+    }
+};
+
+pub const RetryConfig = struct {
+    max_retry_delay_ms: ?u32 = 60_000,
+};
+
+pub const CancelToken = struct {
+    cancelled: *std.atomic.Value(bool),
+
+    pub fn isCancelled(self: CancelToken) bool {
+        return self.cancelled.load(.acquire);
+    }
+};
+
+pub const Metadata = struct {
+    user_id: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+
+    pub fn getUserId(self: *const Metadata) ?[]const u8 {
+        const uid = self.user_id.slice();
+        return if (uid.len > 0) uid else null;
+    }
+
+    pub fn deinit(self: *Metadata, allocator: std.mem.Allocator) void {
+        self.user_id.deinit(allocator);
+    }
+};
+
+pub const ToolChoice = union(enum) {
+    auto: void,
+    none: void,
+    required: void,
+    function: []const u8,
+};
+
+pub const StreamOptions = struct {
+    temperature: ?f32 = null,
+    max_tokens: ?u32 = null,
+    api_key: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    cache_retention: ?CacheRetention = null,
+    session_id: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    headers: ?[]const HeaderPair = null,
+    retry: RetryConfig = .{},
+    cancel_token: ?CancelToken = null,
+    on_payload_fn: ?*const fn (ctx: ?*anyopaque, payload_json: []const u8) void = null,
+    on_payload_ctx: ?*anyopaque = null,
+    thinking_enabled: bool = false,
+    thinking_budget_tokens: ?u32 = null,
+    thinking_effort: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    reasoning_effort: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    reasoning_summary: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    include_reasoning_encrypted: bool = false,
+    reasoning_enabled: bool = true,
+    service_tier: ?ServiceTier = null,
+    metadata: ?Metadata = null,
+    tool_choice: ?ToolChoice = null,
+    owned_tool_choice_function: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    http_timeout_ms: ?u64 = 30_000,
+    ping_interval_ms: ?u64 = null,
+    owned_headers: ?OwnedSlice(HeaderPair) = null,
+    requires_owned_stream_events: bool = false,
+
+    pub fn getApiKey(self: *const StreamOptions) ?[]const u8 {
+        const key = self.api_key.slice();
+        return if (key.len > 0) key else null;
+    }
+
+    pub fn getSessionId(self: *const StreamOptions) ?[]const u8 {
+        const sid = self.session_id.slice();
+        return if (sid.len > 0) sid else null;
+    }
+
+    pub fn getThinkingEffort(self: *const StreamOptions) ?[]const u8 {
+        const effort = self.thinking_effort.slice();
+        return if (effort.len > 0) effort else null;
+    }
+
+    pub fn getReasoningEffort(self: *const StreamOptions) ?[]const u8 {
+        const effort = self.reasoning_effort.slice();
+        return if (effort.len > 0) effort else null;
+    }
+
+    pub fn getReasoningSummary(self: *const StreamOptions) ?[]const u8 {
+        const summary = self.reasoning_summary.slice();
+        return if (summary.len > 0) summary else null;
+    }
+
+    pub fn deinit(self: *StreamOptions, allocator: std.mem.Allocator) void {
+        self.api_key.deinit(allocator);
+        self.session_id.deinit(allocator);
+        self.thinking_effort.deinit(allocator);
+        self.reasoning_effort.deinit(allocator);
+        self.reasoning_summary.deinit(allocator);
+        if (self.metadata) |*meta| {
+            meta.deinit(allocator);
+        }
+
+        self.owned_tool_choice_function.deinit(allocator);
+        if (self.owned_headers) |*headers| {
+            headers.deinit(allocator);
+        }
+    }
+};
+
+pub const SimpleStreamOptions = struct {
+    temperature: ?f32 = null,
+    max_tokens: ?u32 = null,
+    api_key: ?[]const u8 = null,
+    cache_retention: ?CacheRetention = null,
+    session_id: ?[]const u8 = null,
+    headers: ?[]const HeaderPair = null,
+    retry: RetryConfig = .{},
+    cancel_token: ?CancelToken = null,
+    on_payload_fn: ?*const fn (ctx: ?*anyopaque, payload_json: []const u8) void = null,
+    on_payload_ctx: ?*anyopaque = null,
+    reasoning: ?ThinkingLevel = null,
+    thinking_budgets: ?ThinkingBudgets = null,
+    reasoning_summary: ?[]const u8 = null,
+    http_timeout_ms: ?u64 = 30_000,
+};
+
+pub const TextContent = struct {
+    text: []const u8,
+    text_signature: ?[]const u8 = null,
+};
+
+pub const ThinkingContent = struct {
+    thinking: []const u8,
+    thinking_signature: ?[]const u8 = null,
+};
+
+pub const ImageContent = struct {
+    data: []const u8,
+    mime_type: []const u8,
+};
+
+pub const ToolCall = struct {
+    id: []const u8,
+    name: []const u8,
+    arguments_json: []const u8,
+    thought_signature: ?[]const u8 = null,
+};
+
+pub const AssistantContent = union(enum) {
+    text: TextContent,
+    thinking: ThinkingContent,
+    tool_call: ToolCall,
+    image: ImageContent,
+};
+
+pub const UserContentPart = union(enum) {
+    text: TextContent,
+    image: ImageContent,
+
+    pub fn deinit(self: *UserContentPart, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .text => |*t| {
+                allocator.free(t.text);
+                if (t.text_signature) |s| allocator.free(s);
+            },
+            .image => |*img| {
+                allocator.free(img.data);
+                allocator.free(img.mime_type);
+            },
+        }
+    }
+};
+
+pub const UserContent = union(enum) {
+    text: []const u8,
+    parts: []const UserContentPart,
+
+    pub fn deinit(self: *UserContent, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .text => |t| allocator.free(t),
+            .parts => |parts| {
+                const mut_parts: []UserContentPart = @constCast(parts);
+                for (mut_parts) |*part| {
+                    part.deinit(allocator);
+                }
+                allocator.free(parts);
+            },
+        }
+    }
+};
+
+pub const UsageCost = struct {
+    input: f64 = 0,
+    output: f64 = 0,
+    cache_read: f64 = 0,
+    cache_write: f64 = 0,
+    total: f64 = 0,
+};
+
+pub const Usage = struct {
+    input: u64 = 0,
+    output: u64 = 0,
+    cache_read: u64 = 0,
+    cache_write: u64 = 0,
+    total_tokens: u64 = 0,
+    cost: UsageCost = .{},
+
+    pub fn calculateCost(self: *Usage, model_cost: Cost) void {
+        self.cost.input = (@as(f64, @floatFromInt(self.input)) / 1_000_000.0) * model_cost.input;
+        self.cost.output = (@as(f64, @floatFromInt(self.output)) / 1_000_000.0) * model_cost.output;
+        self.cost.cache_read = (@as(f64, @floatFromInt(self.cache_read)) / 1_000_000.0) * model_cost.cache_read;
+        self.cost.cache_write = (@as(f64, @floatFromInt(self.cache_write)) / 1_000_000.0) * model_cost.cache_write;
+        self.cost.total = self.cost.input + self.cost.output + self.cost.cache_read + self.cost.cache_write;
+    }
+};
+
+pub const UserMessage = struct {
+    content: UserContent,
+    timestamp: i64,
+
+    pub fn deinit(self: *UserMessage, allocator: std.mem.Allocator) void {
+        self.content.deinit(allocator);
+    }
+};
+
+pub const ArtifactReference = struct {
+    artifact_id: []const u8,
+    uri: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    mime_type: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    byte_size: ?u64 = null,
+    sha256: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    description: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+
+    pub fn getUri(self: *const ArtifactReference) ?[]const u8 {
+        const value = self.uri.slice();
+        return if (value.len > 0) value else null;
+    }
+
+    pub fn getMimeType(self: *const ArtifactReference) ?[]const u8 {
+        const value = self.mime_type.slice();
+        return if (value.len > 0) value else null;
+    }
+
+    pub fn getSha256(self: *const ArtifactReference) ?[]const u8 {
+        const value = self.sha256.slice();
+        return if (value.len > 0) value else null;
+    }
+
+    pub fn getDescription(self: *const ArtifactReference) ?[]const u8 {
+        const value = self.description.slice();
+        return if (value.len > 0) value else null;
+    }
+
+    pub fn deinit(self: *ArtifactReference, allocator: std.mem.Allocator) void {
+        allocator.free(self.artifact_id);
+        self.uri.deinit(allocator);
+        self.mime_type.deinit(allocator);
+        self.sha256.deinit(allocator);
+        self.description.deinit(allocator);
+    }
+};
+
+pub const AssistantMessage = struct {
+    content: []const AssistantContent,
+    api: []const u8,
+    provider: []const u8,
+    model: []const u8,
+    usage: Usage,
+    stop_reason: StopReason,
+    error_message: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    timestamp: i64,
+    is_owned: bool = false,
+
+    pub fn getErrorMessage(self: *const AssistantMessage) ?[]const u8 {
+        const err = self.error_message.slice();
+        return if (err.len > 0) err else null;
+    }
+
+    pub fn deinit(self: *AssistantMessage, allocator: std.mem.Allocator) void {
+        for (self.content) |block| {
+            switch (block) {
+                .text => |t| {
+                    if (t.text.len > 0) allocator.free(t.text);
+                    if (t.text_signature) |s| allocator.free(s);
+                },
+                .thinking => |t| {
+                    if (t.thinking.len > 0) allocator.free(t.thinking);
+                    if (t.thinking_signature) |s| allocator.free(s);
+                },
+                .tool_call => |tc| {
+                    allocator.free(tc.id);
+                    allocator.free(tc.name);
+                    if (tc.arguments_json.len > 0) allocator.free(tc.arguments_json);
+                    if (tc.thought_signature) |s| allocator.free(s);
+                },
+                .image => |img| {
+                    allocator.free(img.data);
+                    allocator.free(img.mime_type);
+                },
+            }
+        }
+        allocator.free(self.content);
+        if (self.is_owned) {
+            allocator.free(self.api);
+            allocator.free(self.provider);
+            allocator.free(self.model);
+        }
+        self.error_message.deinit(allocator);
+    }
+};
+
+pub fn deinitAssistantContentElements(allocator: std.mem.Allocator, blocks: []AssistantContent) void {
+    for (blocks) |block| {
+        switch (block) {
+            .text => |t| {
+                if (t.text.len > 0) allocator.free(t.text);
+                if (t.text_signature) |s| allocator.free(s);
+            },
+            .thinking => |t| {
+                if (t.thinking.len > 0) allocator.free(t.thinking);
+                if (t.thinking_signature) |s| allocator.free(s);
+            },
+            .tool_call => |tc| {
+                allocator.free(tc.id);
+                allocator.free(tc.name);
+                if (tc.arguments_json.len > 0) allocator.free(tc.arguments_json);
+                if (tc.thought_signature) |s| allocator.free(s);
+            },
+            .image => |img| {
+                allocator.free(img.data);
+                allocator.free(img.mime_type);
+            },
+        }
+    }
+}
+
+pub fn deinitAssistantContent(allocator: std.mem.Allocator, blocks: []AssistantContent) void {
+    deinitAssistantContentElements(allocator, blocks);
+    allocator.free(blocks);
+}
+
+pub const ToolResultMessage = struct {
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    content: []const UserContentPart,
+    details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
+    is_error: bool,
+    timestamp: i64,
+
+    pub fn getDetailsJson(self: *const ToolResultMessage) ?[]const u8 {
+        const details = self.details_json.slice();
+        return if (details.len > 0) details else null;
+    }
+
+    pub fn deinit(self: *ToolResultMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_call_id);
+        allocator.free(self.tool_name);
+        const mut_content: []UserContentPart = @constCast(self.content);
+        for (mut_content) |*part| {
+            part.deinit(allocator);
+        }
+        allocator.free(self.content);
+        self.details_json.deinit(allocator);
+        self.artifacts.deinit(allocator);
+    }
+};
+
+pub const Message = union(enum) {
+    user: UserMessage,
+    assistant: AssistantMessage,
+    tool_result: ToolResultMessage,
+
+    pub fn deinit(self: *Message, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .user => |*msg| msg.deinit(allocator),
+            .assistant => |*msg| msg.deinit(allocator),
+            .tool_result => |*msg| msg.deinit(allocator),
+        }
+    }
+
+    pub fn timestamp(self: Message) i64 {
+        return switch (self) {
+            .user => |m| m.timestamp,
+            .assistant => |m| m.timestamp,
+            .tool_result => |m| m.timestamp,
+        };
+    }
+};
+
+pub const CompactMessagesResult = struct {
+    before: usize,
+    after: usize,
+};
+
+const compact_keep_recent_messages = 8;
+const compact_max_message_chars = 800;
+const compact_max_summary_chars = 12 * 1024;
+
+pub fn compactMessageHistory(allocator: std.mem.Allocator, messages: *std.ArrayList(Message)) !CompactMessagesResult {
+    const before = messages.items.len;
+    if (before <= compact_keep_recent_messages + 1) return .{ .before = before, .after = before };
+
+    const keep_start = before - compact_keep_recent_messages;
+    const summary_text = try buildCompactSummary(allocator, messages.items[0..keep_start]);
+    var summary_transferred = false;
+    errdefer if (!summary_transferred) allocator.free(summary_text);
+
+    var next = std.ArrayList(Message).empty;
+    errdefer {
+        for (next.items) |*msg| msg.deinit(allocator);
+        next.deinit(allocator);
+    }
+
+    try next.append(allocator, .{ .user = .{
+        .content = .{ .text = summary_text },
+        .timestamp = messages.items[keep_start - 1].timestamp(),
+    } });
+    summary_transferred = true;
+
+    for (messages.items[keep_start..]) |msg| {
+        try next.append(allocator, try cloneMessage(allocator, msg));
+    }
+
+    for (messages.items) |*msg| msg.deinit(allocator);
+    messages.clearRetainingCapacity();
+    try messages.appendSlice(allocator, next.items);
+    next.clearRetainingCapacity();
+    next.deinit(allocator);
+
+    return .{ .before = before, .after = messages.items.len };
+}
+
+fn buildCompactSummary(allocator: std.mem.Allocator, messages: []const Message) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "Previous conversation context was compacted. Summary of older messages:\n");
+    for (messages) |msg| {
+        if (out.items.len >= compact_max_summary_chars) {
+            try out.appendSlice(allocator, "\n[summary truncated]\n");
+            break;
+        }
+        try appendMessageSummary(allocator, &out, msg);
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
+
+fn appendMessageSummary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), msg: Message) !void {
+    switch (msg) {
+        .user => |m| {
+            try out.appendSlice(allocator, "- User: ");
+            try appendUserContentSummary(allocator, out, m.content);
+        },
+        .assistant => |m| {
+            try out.appendSlice(allocator, "- Assistant: ");
+            try appendAssistantContentSummary(allocator, out, m.content);
+        },
+        .tool_result => |m| {
+            try appendFmt(allocator, out, "- Tool result ({s}{s}): ", .{ m.tool_name, if (m.is_error) ", error" else "" });
+            try appendUserContentPartsSummary(allocator, out, m.content);
+        },
+    }
+    try out.append(allocator, '\n');
+}
+
+fn appendUserContentSummary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), content: UserContent) !void {
+    switch (content) {
+        .text => |text| try appendBoundedText(allocator, out, text),
+        .parts => |parts| try appendUserContentPartsSummary(allocator, out, parts),
+    }
+}
+
+fn appendUserContentPartsSummary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), parts: []const UserContentPart) !void {
+    var wrote = false;
+    for (parts) |part| {
+        if (wrote) try out.appendSlice(allocator, " ");
+        switch (part) {
+            .text => |text| try appendBoundedText(allocator, out, text.text),
+            .image => |image| try appendFmt(allocator, out, "[image {s}, {d} bytes]", .{ image.mime_type, image.data.len }),
+        }
+        wrote = true;
+    }
+    if (!wrote) try out.appendSlice(allocator, "[empty]");
+}
+
+fn appendAssistantContentSummary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), content: []const AssistantContent) !void {
+    var wrote = false;
+    for (content) |block| {
+        if (wrote) try out.appendSlice(allocator, " ");
+        switch (block) {
+            .text => |text| try appendBoundedText(allocator, out, text.text),
+            .thinking => |thinking| {
+                try out.appendSlice(allocator, "[thinking] ");
+                try appendBoundedText(allocator, out, thinking.thinking);
+            },
+            .tool_call => |tool_call| try appendFmt(allocator, out, "[tool call {s} args={s}]", .{ tool_call.name, boundedSlice(tool_call.arguments_json) }),
+            .image => |image| try appendFmt(allocator, out, "[image {s}, {d} bytes]", .{ image.mime_type, image.data.len }),
+        }
+        wrote = true;
+    }
+    if (!wrote) try out.appendSlice(allocator, "[empty]");
+}
+
+fn appendBoundedText(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
+    const slice = boundedSlice(text);
+    try out.appendSlice(allocator, slice);
+    if (slice.len < text.len) try out.appendSlice(allocator, "...");
+}
+
+fn appendFmt(allocator: std.mem.Allocator, out: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
+    const text = try std.fmt.allocPrint(allocator, fmt, args);
+    defer allocator.free(text);
+    try out.appendSlice(allocator, text);
+}
+
+fn boundedSlice(text: []const u8) []const u8 {
+    if (text.len <= compact_max_message_chars) return text;
+    return text[0..compact_max_message_chars];
+}
+
+pub const Tool = struct {
+    name: []const u8,
+    description: []const u8,
+    parameters_schema_json: []const u8,
+
+    pub fn deinit(self: *Tool, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.description);
+        allocator.free(self.parameters_schema_json);
+    }
+};
+
+pub const Context = struct {
+    system_prompt: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    messages: []const Message,
+    tools: ?[]const Tool = null,
+    is_owned: bool = false,
+
+    pub fn getSystemPrompt(self: *const Context) ?[]const u8 {
+        const prompt = self.system_prompt.slice();
+        return if (prompt.len > 0) prompt else null;
+    }
+
+    pub fn deinit(self: *Context, allocator: std.mem.Allocator) void {
+        self.system_prompt.deinit(allocator);
+        if (!self.is_owned) return;
+
+        const mut_messages: []Message = @constCast(self.messages);
+        for (mut_messages) |*msg| {
+            msg.deinit(allocator);
+        }
+        allocator.free(self.messages);
+        if (self.tools) |tools| {
+            const mut_tools: []Tool = @constCast(tools);
+            for (mut_tools) |*tool| {
+                tool.deinit(allocator);
+            }
+            allocator.free(tools);
+        }
+    }
+};
+
+pub const Cost = struct {
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+};
+
+pub const OpenAICompatOptions = struct {
+    supports_store: ?bool = null,
+    supports_developer_role: ?bool = null,
+    supports_reasoning_effort: ?bool = null,
+    supports_usage_in_streaming: ?bool = null,
+    max_tokens_field: ?enum { max_completion_tokens, max_tokens } = null,
+    requires_tool_result_name: ?bool = null,
+    requires_assistant_after_tool_result: ?bool = null,
+    requires_thinking_as_text: ?bool = null,
+    requires_mistral_tool_ids: ?bool = null,
+    thinking_format: ?enum { openai, zai, qwen } = null,
+    supports_strict_mode: ?bool = null,
+    supports_anthropic_cache_ttl: ?bool = null,
+};
+
+pub const RoutingPreferences = struct {
+    only: ?[][]const u8 = null,
+    order: ?[][]const u8 = null,
+};
+
+pub const Model = struct {
+    id: []const u8,
+    name: []const u8,
+    api: []const u8,
+    provider: []const u8,
+    base_url: []const u8,
+    reasoning: bool,
+    input: []const []const u8,
+    cost: Cost,
+    context_window: u32,
+    max_tokens: u32,
+    headers: ?[]const HeaderPair = null,
+    compat: ?OpenAICompatOptions = null,
+    allows_anonymous: bool = false,
+    is_owned: bool = false,
+
+    pub fn deinit(self: *Model, allocator: std.mem.Allocator) void {
+        if (!self.is_owned) return;
+
+        allocator.free(self.id);
+        allocator.free(self.name);
+        allocator.free(self.api);
+        allocator.free(self.provider);
+        allocator.free(self.base_url);
+        for (self.input) |input| {
+            allocator.free(input);
+        }
+        allocator.free(self.input);
+        if (self.headers) |headers| {
+            for (headers) |header| {
+                allocator.free(header.name);
+                allocator.free(header.value);
+            }
+            allocator.free(headers);
+        }
+    }
+};
+
+pub const AssistantMessageEvent = union(enum) {
+    start: struct { partial: AssistantMessage },
+    text_start: struct { content_index: usize, partial: AssistantMessage },
+    text_delta: struct { content_index: usize, delta: []const u8, partial: AssistantMessage },
+    text_end: struct { content_index: usize, content: []const u8, partial: AssistantMessage },
+    thinking_start: struct { content_index: usize, partial: AssistantMessage },
+    thinking_delta: struct { content_index: usize, delta: []const u8, partial: AssistantMessage },
+    thinking_end: struct { content_index: usize, content: []const u8, partial: AssistantMessage },
+    toolcall_start: struct {
+        content_index: usize,
+        id: []const u8,
+        name: []const u8,
+        partial: AssistantMessage,
+    },
+    toolcall_delta: struct { content_index: usize, delta: []const u8, partial: AssistantMessage },
+    toolcall_end: struct { content_index: usize, tool_call: ToolCall, partial: AssistantMessage },
+    done: struct { reason: StopReason, message: AssistantMessage },
+    @"error": struct { reason: StopReason, err: AssistantMessage },
+    keepalive: void,
+};
+
+pub fn cloneToolCall(allocator: std.mem.Allocator, tool_call: ToolCall) error{OutOfMemory}!ToolCall {
+    const id = try allocator.dupe(u8, tool_call.id);
+    errdefer allocator.free(id);
+    const name = try allocator.dupe(u8, tool_call.name);
+    errdefer allocator.free(name);
+    const arguments_json = try allocator.dupe(u8, tool_call.arguments_json);
+    errdefer allocator.free(arguments_json);
+    const thought_signature = if (tool_call.thought_signature) |s|
+        try allocator.dupe(u8, s)
+    else
+        null;
+    errdefer if (thought_signature) |s| allocator.free(s);
+
+    return .{
+        .id = id,
+        .name = name,
+        .arguments_json = arguments_json,
+        .thought_signature = thought_signature,
+    };
+}
+
+pub fn deinitToolCall(allocator: std.mem.Allocator, tool_call: *ToolCall) void {
+    allocator.free(tool_call.id);
+    allocator.free(tool_call.name);
+    if (tool_call.arguments_json.len > 0) allocator.free(tool_call.arguments_json);
+    if (tool_call.thought_signature) |s| allocator.free(s);
+}
+
+pub fn cloneAssistantMessage(allocator: std.mem.Allocator, msg: AssistantMessage) !AssistantMessage {
+    var content = try allocator.alloc(AssistantContent, msg.content.len);
+    var cloned_count: usize = 0;
+    errdefer {
+        for (content[0..cloned_count]) |block| {
+            switch (block) {
+                .text => |t| {
+                    allocator.free(t.text);
+                    if (t.text_signature) |s| allocator.free(s);
+                },
+                .thinking => |t| {
+                    allocator.free(t.thinking);
+                    if (t.thinking_signature) |s| allocator.free(s);
+                },
+                .tool_call => |tc| {
+                    allocator.free(tc.id);
+                    allocator.free(tc.name);
+                    allocator.free(tc.arguments_json);
+                    if (tc.thought_signature) |s| allocator.free(s);
+                },
+                .image => |img| {
+                    allocator.free(img.data);
+                    allocator.free(img.mime_type);
+                },
+            }
+        }
+        allocator.free(content);
+    }
+
+    for (msg.content, 0..) |block, i| {
+        content[i] = switch (block) {
+            .text => |t| blk: {
+                const text = try allocator.dupe(u8, t.text);
+                errdefer allocator.free(text);
+                const text_signature = if (t.text_signature) |s| try allocator.dupe(u8, s) else null;
+                errdefer if (text_signature) |s| allocator.free(s);
+                break :blk .{ .text = .{
+                    .text = text,
+                    .text_signature = text_signature,
+                } };
+            },
+            .thinking => |t| blk: {
+                const thinking = try allocator.dupe(u8, t.thinking);
+                errdefer allocator.free(thinking);
+                const thinking_signature = if (t.thinking_signature) |s| try allocator.dupe(u8, s) else null;
+                errdefer if (thinking_signature) |s| allocator.free(s);
+                break :blk .{ .thinking = .{
+                    .thinking = thinking,
+                    .thinking_signature = thinking_signature,
+                } };
+            },
+            .tool_call => |tc| blk: {
+                const id = try allocator.dupe(u8, tc.id);
+                errdefer allocator.free(id);
+                const name = try allocator.dupe(u8, tc.name);
+                errdefer allocator.free(name);
+                const arguments_json = try allocator.dupe(u8, tc.arguments_json);
+                errdefer allocator.free(arguments_json);
+                const thought_signature = if (tc.thought_signature) |s| try allocator.dupe(u8, s) else null;
+                errdefer if (thought_signature) |s| allocator.free(s);
+                break :blk .{ .tool_call = .{
+                    .id = id,
+                    .name = name,
+                    .arguments_json = arguments_json,
+                    .thought_signature = thought_signature,
+                } };
+            },
+            .image => |img| blk: {
+                const data = try allocator.dupe(u8, img.data);
+                errdefer allocator.free(data);
+                const mime_type = try allocator.dupe(u8, img.mime_type);
+                errdefer allocator.free(mime_type);
+                break :blk .{ .image = .{
+                    .data = data,
+                    .mime_type = mime_type,
+                } };
+            },
+        };
+        cloned_count += 1;
+    }
+
+    const error_msg = if (msg.getErrorMessage()) |e|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, e))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer {
+        var em = error_msg;
+        em.deinit(allocator);
+    }
+
+    const api = try allocator.dupe(u8, msg.api);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, msg.provider);
+    errdefer allocator.free(provider);
+    const model_str = try allocator.dupe(u8, msg.model);
+    errdefer allocator.free(model_str);
+
+    return .{
+        .content = content,
+        .api = api,
+        .provider = provider,
+        .model = model_str,
+        .usage = msg.usage,
+        .stop_reason = msg.stop_reason,
+        .error_message = error_msg,
+        .timestamp = msg.timestamp,
+        .is_owned = true,
+    };
+}
+
+pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *AssistantMessage) void {
+    msg.deinit(allocator);
+}
+
+pub fn cloneAssistantMessageEvent(allocator: std.mem.Allocator, event: AssistantMessageEvent) !AssistantMessageEvent {
+    return switch (event) {
+        .start => |s| .{ .start = .{
+            .partial = try cloneAssistantMessage(allocator, s.partial),
+        } },
+        .text_start => |t| .{ .text_start = .{
+            .content_index = t.content_index,
+            .partial = try cloneAssistantMessage(allocator, t.partial),
+        } },
+        .text_delta => |d| blk: {
+            const delta = try allocator.dupe(u8, d.delta);
+            errdefer allocator.free(delta);
+            var partial = try cloneAssistantMessage(allocator, d.partial);
+            errdefer partial.deinit(allocator);
+            break :blk .{ .text_delta = .{
+                .content_index = d.content_index,
+                .delta = delta,
+                .partial = partial,
+            } };
+        },
+        .text_end => |t| blk: {
+            const content = try allocator.dupe(u8, t.content);
+            errdefer allocator.free(content);
+            var partial = try cloneAssistantMessage(allocator, t.partial);
+            errdefer partial.deinit(allocator);
+            break :blk .{ .text_end = .{
+                .content_index = t.content_index,
+                .content = content,
+                .partial = partial,
+            } };
+        },
+        .thinking_start => |t| .{ .thinking_start = .{
+            .content_index = t.content_index,
+            .partial = try cloneAssistantMessage(allocator, t.partial),
+        } },
+        .thinking_delta => |d| blk: {
+            const delta = try allocator.dupe(u8, d.delta);
+            errdefer allocator.free(delta);
+            var partial = try cloneAssistantMessage(allocator, d.partial);
+            errdefer partial.deinit(allocator);
+            break :blk .{ .thinking_delta = .{
+                .content_index = d.content_index,
+                .delta = delta,
+                .partial = partial,
+            } };
+        },
+        .thinking_end => |t| blk: {
+            const content = try allocator.dupe(u8, t.content);
+            errdefer allocator.free(content);
+            var partial = try cloneAssistantMessage(allocator, t.partial);
+            errdefer partial.deinit(allocator);
+            break :blk .{ .thinking_end = .{
+                .content_index = t.content_index,
+                .content = content,
+                .partial = partial,
+            } };
+        },
+        .toolcall_start => |t| blk: {
+            const id = try allocator.dupe(u8, t.id);
+            errdefer allocator.free(id);
+            const name = try allocator.dupe(u8, t.name);
+            errdefer allocator.free(name);
+            var partial = try cloneAssistantMessage(allocator, t.partial);
+            errdefer partial.deinit(allocator);
+            break :blk .{ .toolcall_start = .{
+                .content_index = t.content_index,
+                .id = id,
+                .name = name,
+                .partial = partial,
+            } };
+        },
+        .toolcall_delta => |d| blk: {
+            const delta = try allocator.dupe(u8, d.delta);
+            errdefer allocator.free(delta);
+            var partial = try cloneAssistantMessage(allocator, d.partial);
+            errdefer partial.deinit(allocator);
+            break :blk .{ .toolcall_delta = .{
+                .content_index = d.content_index,
+                .delta = delta,
+                .partial = partial,
+            } };
+        },
+        .toolcall_end => |t| blk: {
+            const id = try allocator.dupe(u8, t.tool_call.id);
+            errdefer allocator.free(id);
+            const name = try allocator.dupe(u8, t.tool_call.name);
+            errdefer allocator.free(name);
+            const arguments_json = try allocator.dupe(u8, t.tool_call.arguments_json);
+            errdefer allocator.free(arguments_json);
+            const thought_signature = if (t.tool_call.thought_signature) |s|
+                try allocator.dupe(u8, s)
+            else
+                null;
+            errdefer if (thought_signature) |s| allocator.free(s);
+            var partial = try cloneAssistantMessage(allocator, t.partial);
+            errdefer partial.deinit(allocator);
+
+            break :blk .{ .toolcall_end = .{
+                .content_index = t.content_index,
+                .tool_call = .{
+                    .id = id,
+                    .name = name,
+                    .arguments_json = arguments_json,
+                    .thought_signature = thought_signature,
+                },
+                .partial = partial,
+            } };
+        },
+        .done => |d| .{ .done = .{
+            .reason = d.reason,
+            .message = try cloneAssistantMessage(allocator, d.message),
+        } },
+        .@"error" => |e| .{ .@"error" = .{
+            .reason = e.reason,
+            .err = try cloneAssistantMessage(allocator, e.err),
+        } },
+        .keepalive => .keepalive,
+    };
+}
+
+pub fn deinitAssistantMessageEvent(allocator: std.mem.Allocator, event: *AssistantMessageEvent) void {
+    switch (event.*) {
+        .start => |*s| s.partial.deinit(allocator),
+        .text_start => |*t| t.partial.deinit(allocator),
+        .thinking_start => |*t| t.partial.deinit(allocator),
+        .toolcall_start => |*t| {
+            allocator.free(t.id);
+            allocator.free(t.name);
+            t.partial.deinit(allocator);
+        },
+        .text_delta => |*d| {
+            allocator.free(d.delta);
+            d.partial.deinit(allocator);
+        },
+        .text_end => |*t| {
+            allocator.free(t.content);
+            t.partial.deinit(allocator);
+        },
+        .thinking_delta => |*t| {
+            allocator.free(t.delta);
+            t.partial.deinit(allocator);
+        },
+        .thinking_end => |*t| {
+            allocator.free(t.content);
+            t.partial.deinit(allocator);
+        },
+        .toolcall_delta => |*t| {
+            allocator.free(t.delta);
+            t.partial.deinit(allocator);
+        },
+        .toolcall_end => |*t| {
+            allocator.free(t.tool_call.id);
+            allocator.free(t.tool_call.name);
+            if (t.tool_call.arguments_json.len > 0) allocator.free(t.tool_call.arguments_json);
+            if (t.tool_call.thought_signature) |s| allocator.free(s);
+            t.partial.deinit(allocator);
+        },
+        .done => |*d| d.message.deinit(allocator),
+        .@"error" => |*e| e.err.deinit(allocator),
+        .keepalive => {},
+    }
+}
+
+pub fn cloneMessage(allocator: std.mem.Allocator, msg: Message) !Message {
+    return switch (msg) {
+        .user => |u| .{ .user = .{
+            .content = try cloneUserContent(u.content, allocator),
+            .timestamp = u.timestamp,
+        } },
+        .assistant => |a| .{ .assistant = try cloneAssistantMessage(allocator, a) },
+        .tool_result => |tr| .{ .tool_result = try cloneToolResultMessage(allocator, tr) },
+    };
+}
+
+fn cloneUserContent(content: UserContent, allocator: std.mem.Allocator) !UserContent {
+    return switch (content) {
+        .text => |t| .{ .text = try allocator.dupe(u8, t) },
+        .parts => |parts| blk: {
+            const cloned_parts = try allocator.alloc(UserContentPart, parts.len);
+            var initialized: usize = 0;
+            errdefer {
+                for (cloned_parts[0..initialized]) |*part| part.deinit(allocator);
+                allocator.free(cloned_parts);
+            }
+
+            for (parts, 0..) |part, i| {
+                cloned_parts[i] = try cloneUserContentPart(allocator, part);
+                initialized += 1;
+            }
+            break :blk .{ .parts = cloned_parts };
+        },
+    };
+}
+
+fn cloneUserContentPart(allocator: std.mem.Allocator, part: UserContentPart) !UserContentPart {
+    return switch (part) {
+        .text => |t| blk: {
+            const text = try allocator.dupe(u8, t.text);
+            errdefer allocator.free(text);
+            const text_signature = if (t.text_signature) |sig|
+                try allocator.dupe(u8, sig)
+            else
+                null;
+            errdefer if (text_signature) |sig| allocator.free(sig);
+
+            break :blk .{ .text = .{
+                .text = text,
+                .text_signature = text_signature,
+            } };
+        },
+        .image => |img| blk: {
+            const data = try allocator.dupe(u8, img.data);
+            errdefer allocator.free(data);
+            const mime_type = try allocator.dupe(u8, img.mime_type);
+            errdefer allocator.free(mime_type);
+
+            break :blk .{ .image = .{
+                .data = data,
+                .mime_type = mime_type,
+            } };
+        },
+    };
+}
+
+fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !ToolResultMessage {
+    const cloned_content = try allocator.alloc(UserContentPart, tr.content.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (cloned_content[0..initialized]) |*part| part.deinit(allocator);
+        allocator.free(cloned_content);
+    }
+
+    for (tr.content, 0..) |part, i| {
+        cloned_content[i] = try cloneUserContentPart(allocator, part);
+        initialized += 1;
+    }
+
+    var details_json = if (tr.getDetailsJson()) |dj|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, dj))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer details_json.deinit(allocator);
+
+    const cloned_artifacts = try cloneArtifactReferences(allocator, tr.artifacts.slice());
+    errdefer {
+        var artifacts = OwnedSlice(ArtifactReference).initOwned(cloned_artifacts);
+        artifacts.deinit(allocator);
+    }
+
+    const tool_call_id = try allocator.dupe(u8, tr.tool_call_id);
+    errdefer allocator.free(tool_call_id);
+    const tool_name = try allocator.dupe(u8, tr.tool_name);
+    errdefer allocator.free(tool_name);
+
+    return .{
+        .tool_call_id = tool_call_id,
+        .tool_name = tool_name,
+        .content = cloned_content,
+        .details_json = details_json,
+        .artifacts = OwnedSlice(ArtifactReference).initOwned(cloned_artifacts),
+        .is_error = tr.is_error,
+        .timestamp = tr.timestamp,
+    };
+}
+
+fn cloneArtifactReferences(allocator: std.mem.Allocator, artifacts: []const ArtifactReference) ![]ArtifactReference {
+    const cloned = try allocator.alloc(ArtifactReference, artifacts.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (cloned[0..initialized]) |*artifact| artifact.deinit(allocator);
+        allocator.free(cloned);
+    }
+
+    for (artifacts, 0..) |artifact, i| {
+        cloned[i] = try cloneArtifactReference(allocator, artifact);
+        initialized += 1;
+    }
+
+    return cloned;
+}
+
+fn cloneArtifactReference(allocator: std.mem.Allocator, artifact: ArtifactReference) !ArtifactReference {
+    const artifact_id = try allocator.dupe(u8, artifact.artifact_id);
+    errdefer allocator.free(artifact_id);
+
+    const uri = if (artifact.getUri()) |value|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, value))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer {
+        var mutable = uri;
+        mutable.deinit(allocator);
+    }
+
+    const mime_type = if (artifact.getMimeType()) |value|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, value))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer {
+        var mutable = mime_type;
+        mutable.deinit(allocator);
+    }
+
+    const sha256 = if (artifact.getSha256()) |value|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, value))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer {
+        var mutable = sha256;
+        mutable.deinit(allocator);
+    }
+
+    const description = if (artifact.getDescription()) |value|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, value))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer {
+        var mutable = description;
+        mutable.deinit(allocator);
+    }
+
+    return .{
+        .artifact_id = artifact_id,
+        .uri = uri,
+        .mime_type = mime_type,
+        .byte_size = artifact.byte_size,
+        .sha256 = sha256,
+        .description = description,
+    };
+}
+
+pub fn cloneContext(allocator: std.mem.Allocator, ctx: Context) !Context {
+    var system_prompt = if (ctx.getSystemPrompt()) |sp|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, sp))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer system_prompt.deinit(allocator);
+
+    const messages = try allocator.alloc(Message, ctx.messages.len);
+    var initialized_messages: usize = 0;
+    errdefer {
+        for (messages[0..initialized_messages]) |*m| m.deinit(allocator);
+        allocator.free(messages);
+    }
+
+    for (ctx.messages, 0..) |msg, i| {
+        messages[i] = try cloneMessage(allocator, msg);
+        initialized_messages += 1;
+    }
+
+    var tools: ?[]Tool = null;
+    if (ctx.tools) |t| {
+        const owned_tools = try allocator.alloc(Tool, t.len);
+        var initialized_tools: usize = 0;
+        errdefer {
+            for (owned_tools[0..initialized_tools]) |*tool| tool.deinit(allocator);
+            allocator.free(owned_tools);
+        }
+
+        for (t, 0..) |tool, i| {
+            const name = try allocator.dupe(u8, tool.name);
+            errdefer allocator.free(name);
+            const description = try allocator.dupe(u8, tool.description);
+            errdefer allocator.free(description);
+            const parameters_schema_json = try allocator.dupe(u8, tool.parameters_schema_json);
+            errdefer allocator.free(parameters_schema_json);
+
+            owned_tools[i] = .{
+                .name = name,
+                .description = description,
+                .parameters_schema_json = parameters_schema_json,
+            };
+            initialized_tools += 1;
+        }
+
+        tools = owned_tools;
+    }
+
+    return .{
+        .system_prompt = system_prompt,
+        .messages = messages,
+        .tools = tools,
+        .is_owned = true,
+    };
+}
+
+pub fn cloneModel(allocator: std.mem.Allocator, model: Model) !Model {
+    const id = try allocator.dupe(u8, model.id);
+    errdefer allocator.free(id);
+    const name = try allocator.dupe(u8, model.name);
+    errdefer allocator.free(name);
+    const api = try allocator.dupe(u8, model.api);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, model.provider);
+    errdefer allocator.free(provider);
+    const base_url = try allocator.dupe(u8, model.base_url);
+    errdefer allocator.free(base_url);
+
+    const input = try allocator.alloc([]const u8, model.input.len);
+    var input_filled: usize = 0;
+    errdefer {
+        for (input[0..input_filled]) |in| allocator.free(in);
+        allocator.free(input);
+    }
+    for (model.input) |inp| {
+        input[input_filled] = try allocator.dupe(u8, inp);
+        input_filled += 1;
+    }
+
+    var headers: ?[]HeaderPair = null;
+    if (model.headers) |h| {
+        const pairs = try allocator.alloc(HeaderPair, h.len);
+        var filled: usize = 0;
+        errdefer {
+            for (pairs[0..filled]) |*hp| {
+                allocator.free(hp.name);
+                allocator.free(hp.value);
+            }
+            allocator.free(pairs);
+        }
+
+        for (h) |hp| {
+            const pair_name = try allocator.dupe(u8, hp.name);
+            errdefer allocator.free(pair_name);
+            const pair_value = try allocator.dupe(u8, hp.value);
+
+            pairs[filled] = .{ .name = pair_name, .value = pair_value };
+            filled += 1;
+        }
+
+        headers = pairs;
+    }
+    errdefer if (headers) |hs| {
+        for (hs) |*hp| {
+            allocator.free(hp.name);
+            allocator.free(hp.value);
+        }
+        allocator.free(hs);
+    };
+
+    return .{
+        .id = id,
+        .name = name,
+        .api = api,
+        .provider = provider,
+        .base_url = base_url,
+        .reasoning = model.reasoning,
+        .input = input,
+        .cost = model.cost,
+        .context_window = model.context_window,
+        .max_tokens = model.max_tokens,
+        .headers = headers,
+        .compat = model.compat,
+        .allows_anonymous = model.allows_anonymous,
+        .is_owned = true,
+    };
+}
+
+test "Context deinit frees owned system_prompt even with borrowed messages" {
+    const allocator = std.testing.allocator;
+
+    var ctx = Context{
+        .system_prompt = OwnedSlice(u8).initOwned(try allocator.dupe(u8, "be concise")),
+        .messages = &.{},
+        .is_owned = false,
+    };
+
+    ctx.deinit(allocator);
+}
+
+test "cloneAssistantMessage deep copies text content" {
+    const content = [_]AssistantContent{.{ .text = .{ .text = "hello" } }};
+    const msg = AssistantMessage{
+        .content = &content,
+        .api = "openai-completions",
+        .provider = "openai",
+        .model = "gpt-4o",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 123,
+    };
+
+    var cloned = try cloneAssistantMessage(std.testing.allocator, msg);
+    defer deinitAssistantMessageOwned(std.testing.allocator, &cloned);
+
+    try std.testing.expectEqualStrings("hello", cloned.content[0].text.text);
+    try std.testing.expectEqualStrings("openai", cloned.provider);
+}
+
+test "cloneAssistantMessage is leak-free when an allocation fails mid-clone" {
+    const allocator = std.testing.allocator;
+
+    const content = [_]AssistantContent{
+        .{ .text = .{ .text = "hello", .text_signature = "sig" } },
+        .{ .thinking = .{ .thinking = "hmm", .thinking_signature = "tsig" } },
+        .{ .tool_call = .{ .id = "call-1", .name = "get_weather", .arguments_json = "{}", .thought_signature = "ts" } },
+        .{ .image = .{ .data = "img", .mime_type = "image/png" } },
+    };
+    const msg = AssistantMessage{
+        .content = &content,
+        .api = "openai-completions",
+        .provider = "openai",
+        .model = "gpt-4o",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+
+    var fail_index: usize = 0;
+    while (fail_index <= 20) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        if (cloneAssistantMessage(failing.allocator(), msg)) |cloned| {
+            var mutable = cloned;
+            mutable.deinit(failing.allocator());
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+        }
+    }
+}
+
+test "cloneToolCall deep copies borrowed tool-call strings" {
+    const allocator = std.testing.allocator;
+
+    const borrowed = ToolCall{
+        .id = "call-1",
+        .name = "get_weather",
+        .arguments_json = "{\"city\":\"SF\"}",
+        .thought_signature = "sig-1",
+    };
+
+    var owned = try cloneToolCall(allocator, borrowed);
+    defer deinitToolCall(allocator, &owned);
+
+    try std.testing.expectEqualStrings("call-1", owned.id);
+    try std.testing.expectEqualStrings("get_weather", owned.name);
+    try std.testing.expectEqualStrings("{\"city\":\"SF\"}", owned.arguments_json);
+    try std.testing.expectEqualStrings("sig-1", owned.thought_signature.?);
+    try std.testing.expect(@intFromPtr(owned.id.ptr) != @intFromPtr(borrowed.id.ptr));
+    try std.testing.expect(@intFromPtr(owned.name.ptr) != @intFromPtr(borrowed.name.ptr));
+}
+
+test "ToolResultMessage details_json uses OwnedSlice and deep clones" {
+    const allocator = std.testing.allocator;
+
+    const content = try allocator.alloc(UserContentPart, 1);
+    content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "ok") } };
+
+    var msg = ToolResultMessage{
+        .tool_call_id = try allocator.dupe(u8, "call-1"),
+        .tool_name = try allocator.dupe(u8, "test_tool"),
+        .content = content,
+        .details_json = OwnedSlice(u8).initOwned(try allocator.dupe(u8, "{\"k\":1}")),
+        .is_error = false,
+        .timestamp = 1,
+    };
+    defer msg.deinit(allocator);
+
+    var cloned = try cloneToolResultMessage(allocator, msg);
+    defer cloned.deinit(allocator);
+
+    try std.testing.expectEqualStrings("{\"k\":1}", msg.getDetailsJson().?);
+    try std.testing.expectEqualStrings("{\"k\":1}", cloned.getDetailsJson().?);
+    try std.testing.expect(@intFromPtr(msg.details_json.slice().ptr) != @intFromPtr(cloned.details_json.slice().ptr));
+}
+
+test "compactMessageHistory summarizes older messages and keeps recent messages" {
+    var messages = std.ArrayList(Message).empty;
+    defer {
+        for (messages.items) |*msg| msg.deinit(std.testing.allocator);
+        messages.deinit(std.testing.allocator);
+    }
+
+    for (0..12) |i| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "message {d}", .{i});
+        errdefer std.testing.allocator.free(text);
+        try messages.append(std.testing.allocator, .{ .user = .{
+            .content = .{ .text = text },
+            .timestamp = @intCast(i),
+        } });
+    }
+
+    const result = try compactMessageHistory(std.testing.allocator, &messages);
+
+    try std.testing.expectEqual(@as(usize, 12), result.before);
+    try std.testing.expectEqual(@as(usize, 9), result.after);
+    try std.testing.expectEqual(@as(usize, 9), messages.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, messages.items[0].user.content.text, "Previous conversation context was compacted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, messages.items[0].user.content.text, "message 3") != null);
+    try std.testing.expectEqualStrings("message 4", messages.items[1].user.content.text);
+    try std.testing.expectEqualStrings("message 11", messages.items[8].user.content.text);
+}
+
+test "AssistantMessageEventStream deinit drains unpolled events" {
+    const event_stream = @import("event_stream");
+    var stream = event_stream.AssistantMessageEventStream.init(std.testing.allocator);
+    defer stream.deinit();
+
+    const delta_str = try std.testing.allocator.dupe(u8, "test delta content");
+    const partial = AssistantMessage{
+        .content = &.{},
+        .api = "google-generative-ai",
+        .provider = "google",
+        .model = "gemini-2.5-flash",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+    const event = AssistantMessageEvent{
+        .text_delta = .{
+            .content_index = 0,
+            .delta = delta_str,
+            .partial = partial,
+        },
+    };
+    try stream.push(event);
+
+    if (stream.poll()) |evt| {
+        switch (evt) {
+            .text_delta => |d| std.testing.allocator.free(d.delta),
+            else => {},
+        }
+    }
+
+    const result = AssistantMessage{
+        .content = &.{},
+        .api = "google-generative-ai",
+        .provider = "google",
+        .model = "gemini-2.5-flash",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+    stream.complete(result);
+}
+
+test "AssistantMessageEventStream deinit drains unpolled toolcall_end events" {
+    const event_stream = @import("event_stream");
+    var stream = event_stream.AssistantMessageEventStream.init(std.testing.allocator);
+    defer stream.deinit();
+
+    const tool_id = try std.testing.allocator.dupe(u8, "tool-123");
+    const tool_name = try std.testing.allocator.dupe(u8, "bash");
+    const args_json = try std.testing.allocator.dupe(u8, "{\"cmd\": \"ls\"}");
+    const partial = AssistantMessage{
+        .content = &.{},
+        .api = "openai-completions",
+        .provider = "openai",
+        .model = "gpt-4o",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+
+    const event = AssistantMessageEvent{
+        .toolcall_end = .{
+            .content_index = 0,
+            .tool_call = .{
+                .id = tool_id,
+                .name = tool_name,
+                .arguments_json = args_json,
+            },
+            .partial = partial,
+        },
+    };
+    try stream.push(event);
+
+    if (stream.poll()) |evt| {
+        switch (evt) {
+            .toolcall_end => |tc| {
+                std.testing.allocator.free(tc.tool_call.id);
+                std.testing.allocator.free(tc.tool_call.name);
+                std.testing.allocator.free(tc.tool_call.arguments_json);
+            },
+            else => {},
+        }
+    }
+
+    const result = AssistantMessage{
+        .content = &.{},
+        .api = "openai-completions",
+        .provider = "openai",
+        .model = "gpt-4o",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+    stream.complete(result);
+}
+
+test "Usage.calculateCost computes correct dollar costs" {
+    var usage = Usage{
+        .input = 1_000_000,
+        .output = 500_000,
+        .cache_read = 200_000,
+        .cache_write = 100_000,
+    };
+
+    const model_cost = Cost{
+        .input = 3.0,
+        .output = 15.0,
+        .cache_read = 0.30,
+        .cache_write = 3.75,
+    };
+
+    usage.calculateCost(model_cost);
+
+    try std.testing.expectApproxEqAbs(3.0, usage.cost.input, 0.0001);
+    try std.testing.expectApproxEqAbs(7.5, usage.cost.output, 0.0001);
+    try std.testing.expectApproxEqAbs(0.06, usage.cost.cache_read, 0.0001);
+    try std.testing.expectApproxEqAbs(0.375, usage.cost.cache_write, 0.0001);
+    try std.testing.expectApproxEqAbs(10.935, usage.cost.total, 0.0001);
+}
+
+test "OpenAICompatOptions defaults are correct" {
+    const compat = OpenAICompatOptions{};
+
+    try std.testing.expect(compat.supports_store == null);
+    try std.testing.expect(compat.supports_developer_role == null);
+    try std.testing.expect(compat.supports_reasoning_effort == null);
+    try std.testing.expect(compat.supports_usage_in_streaming == null);
+    try std.testing.expect(compat.max_tokens_field == null);
+    try std.testing.expect(compat.requires_tool_result_name == null);
+    try std.testing.expect(compat.requires_assistant_after_tool_result == null);
+    try std.testing.expect(compat.requires_thinking_as_text == null);
+    try std.testing.expect(compat.requires_mistral_tool_ids == null);
+    try std.testing.expect(compat.thinking_format == null);
+    try std.testing.expect(compat.supports_strict_mode == null);
+}
+
+test "Model with compat options" {
+    const model = Model{
+        .id = "test-model",
+        .name = "Test Model",
+        .api = "openai-completions",
+        .provider = "test",
+        .base_url = "https://api.test.com",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 100,
+        .compat = .{
+            .supports_store = false,
+            .max_tokens_field = .max_tokens,
+            .thinking_format = .zai,
+        },
+    };
+
+    try std.testing.expect(model.compat != null);
+    try std.testing.expect(!model.compat.?.supports_store.?);
+    try std.testing.expect(model.compat.?.max_tokens_field.? == .max_tokens);
+    try std.testing.expect(model.compat.?.thinking_format.? == .zai);
+}
+
+test "RoutingPreferences defaults are correct" {
+    const prefs = RoutingPreferences{};
+
+    try std.testing.expect(prefs.only == null);
+    try std.testing.expect(prefs.order == null);
+}
+
+test "cloneModel frees duped header pairs when a later allocation fails" {
+    const allocator = std.testing.allocator;
+
+    const headers = [_]HeaderPair{
+        .{ .name = "x-one", .value = "first" },
+        .{ .name = "x-two", .value = "second" },
+        .{ .name = "x-three", .value = "third" },
+    };
+
+    const model = Model{
+        .id = "test-model",
+        .name = "Test Model",
+        .api = "openai-completions",
+        .provider = "test",
+        .base_url = "https://api.test.com",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 100,
+        .headers = &headers,
+    };
+
+    const Case = struct {
+        fn run(failing: std.mem.Allocator, source: Model) !void {
+            var cloned = try cloneModel(failing, source);
+            cloned.deinit(failing);
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(allocator, Case.run, .{model});
+}
