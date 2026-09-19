@@ -1,8 +1,9 @@
 const std = @import("std");
 const semantic = @import("semantic");
+const provider = @import("provider_semantic");
 const build_options = @import("build_options");
 
-const judged_floor = 467;
+const judged_floor = 483;
 const tolerant_fixtures = 3;
 
 const queue_admission_pending = [_][]const u8{
@@ -61,10 +62,8 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
 
         if (std.mem.eql(u8, kind, "load-invalid")) continue;
         if (std.mem.eql(u8, phase, "decode") or std.mem.eql(u8, phase, "schema")) continue;
-        if (!std.mem.eql(u8, profile, "agent-control-core")) {
-            skipped_provider += 1;
-            continue;
-        }
+        const provider_profile = std.mem.eql(u8, profile, "model-provider-core");
+        if (provider_profile) skipped_provider += 1;
         if (entry.get("mode")) |mode| {
             if (std.mem.eql(u8, mode.string, "tolerant")) {
                 skipped_tolerant += 1;
@@ -76,7 +75,8 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         defer expected.deinit(allocator);
         if (entry.get("codes")) |codes| {
             for (codes.array.items) |code| {
-                if (semantic.isImplemented(code.string)) try expected.append(allocator, code.string);
+                const ported = if (provider_profile) provider.isImplemented(code.string) else semantic.isImplemented(code.string);
+                if (ported) try expected.append(allocator, code.string);
             }
         }
 
@@ -93,14 +93,21 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
             else => continue,
         };
 
-        var machine = semantic.Machine.init(allocator);
-        defer machine.deinit();
-        for (envelopes, 0..) |envelope, index| try machine.apply(index, envelope);
-        try machine.close();
-
         var emitted = std.ArrayList([]const u8).empty;
         defer emitted.deinit(allocator);
-        for (machine.diagnostics.items) |diagnostic| try emitted.append(allocator, diagnostic.code);
+        if (provider_profile) {
+            var machine = provider.Machine.init(allocator);
+            defer machine.deinit();
+            for (envelopes, 0..) |envelope, index| try machine.apply(index, envelope);
+            try machine.close();
+            for (machine.diagnostics.items) |diagnostic| try emitted.append(allocator, diagnostic.code);
+        } else {
+            var machine = semantic.Machine.init(allocator);
+            defer machine.deinit();
+            for (envelopes, 0..) |envelope, index| try machine.apply(index, envelope);
+            try machine.close();
+            for (machine.diagnostics.items) |diagnostic| try emitted.append(allocator, diagnostic.code);
+        }
 
         judged += 1;
         const want = try joined(allocator, expected.items);
@@ -113,7 +120,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         }
     }
 
-    std.debug.print("\nsemantic judged={d} disagreeing={d} skipped_tolerant={d} skipped_provider={d}\n", .{ judged, disagreeing.items.len, skipped_tolerant, skipped_provider });
+    std.debug.print("\nsemantic judged={d} disagreeing={d} skipped_tolerant={d} provider={d}\n", .{ judged, disagreeing.items.len, skipped_tolerant, skipped_provider });
 
     std.mem.sort([]const u8, disagreeing.items, {}, lessThan);
     var declared = std.ArrayList([]const u8).empty;
