@@ -893,10 +893,15 @@ No member on `part.ended` distinguishes them, for two reasons. A caller's
 *action* is the same either way — do not replay this block, or replay it without
 the value — so a member that changes what the caller knows and not what it does
 is decoration. And the implementation where this was found could not populate
-such a member anyway: its lookup returns nothing, so the endpoint never learns
-that it lost a signature. A field only an implementation that knew could fill,
-and which by the rule above should have refused instead of losing it, is
+such a member anyway: its lookup returned nothing, so the endpoint never learned
+that it had lost a signature. A field only an implementation that knew could
+fill, and which by the rule above should have refused instead of losing it, was
 fillable by nobody.
+
+That second reason has since expired — `lsm/makai#347` fixed the lookup, so
+that endpoint no longer loses a signature it holds. The first stands alone now,
+and it was always the stronger of the two: the caller does the same thing
+either way.
 
 The ambiguity is a *discovery* question, and the profile already puts those on
 the descriptor. `round_trips_carry` says whether a carry this implementation
@@ -908,11 +913,20 @@ says `false` is decidable from the descriptor and the request alone — so it is
 refused at create, rather than discovered a turn later when the vendor rejects a
 replayed block.
 
-The member is added while nothing implements the round trip, which is the
-cheapest moment: no implementation has to change behaviour to comply, and the
-one that has this gap is obliged to advertise `false` rather than leave it
-silent. That silence is the under-claim shape clause 13 names, sitting in the
-implementation clause 13 was written against.
+The member was added while nothing implemented the round trip, which was the
+cheapest moment: no implementation had to change behaviour to comply, and the
+one carrying the gap was obliged to advertise `false` rather than leave it
+silent — the under-claim shape clause 13 names, sitting in the implementation
+clause 13 was written against.
+
+What happened next is worth recording, because it is not what that paragraph
+predicted. `lsm/makai#347` closed the gap rather than advertising it. The carry
+round-trips, and the honest `false` moved down a level: to the built-in
+providers that genuinely do not round-trip, which refuse a carry at create
+rather than dropping it, while the one that does advertises `true`. So the fact
+turned out to be per provider rather than per endpoint — which is where the
+profile had already put it — and the create-time rule is enforced rather than
+only specified.
 
 This is one vendor's mechanism seen in one implementation, which is thin by this
 draft's own standard. It is in because the failure it prevents is silent and the
