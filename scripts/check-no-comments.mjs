@@ -489,7 +489,7 @@ function listFiles(args) {
   }
   // -z emits NUL-delimited names without C-quoting non-ASCII paths or
   // touching embedded whitespace, so every tracked filename reads exactly.
-  return git(["ls-files", "-z", "*.zig", "*.ts"])
+  return git(["ls-files", "-z", "*.zig", "*.ts", ":!:clients/ts/**"])
     .split("\0")
     .filter(Boolean);
 }
