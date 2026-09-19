@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { getNoopLogger, type MakaiLogger } from "./logger";
 
+export type ModuleResolver = (specifier: string) => string;
+
 type BinaryResolverBaseOptions = {
   cacheDir?: string;
+  cwd?: string;
+  resolveModule?: ModuleResolver;
   logger?: MakaiLogger;
 };
 
@@ -157,18 +161,20 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
 
   const platformKey = `${process.platform}-${process.arch}`;
   const bundledPackage = `@makai/cli-${platformKey}`;
+  const resolveModule = options.resolveModule ?? ((specifier: string) => require.resolve(specifier));
   try {
     const bundledBinaryName = process.platform === "win32" ? "makai.exe" : "makai";
-    const bundledPath = require.resolve(`${bundledPackage}/bin/${bundledBinaryName}`);
+    const bundledPath = resolveModule(`${bundledPackage}/bin/${bundledBinaryName}`);
     logger.debug("binary: resolved from bundled package", { path: bundledPath, package: bundledPackage });
     return bundledPath;
   } catch {
     logger.debug("binary: bundled package not found", { package: bundledPackage });
   }
 
+  const cwd = options.cwd ?? process.cwd();
   const localCandidates = [
-    path.resolve(process.cwd(), "zig-out", "bin", binaryName),
-    path.resolve(process.cwd(), "zig", "zig-out", "bin", binaryName),
+    path.resolve(cwd, "zig-out", "bin", binaryName),
+    path.resolve(cwd, "zig", "zig-out", "bin", binaryName),
   ];
   for (const candidate of localCandidates) {
     logger.debug("binary: checking local candidate", { path: candidate });

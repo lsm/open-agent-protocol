@@ -17,7 +17,7 @@ export {
   type MakaiClientOptions as DeprecatedMakaiStdioClientOptions,
 } from "./stdio_client";
 
-export { resolveMakaiBinary, type BinaryResolverOptions } from "./binary_resolver";
+export { resolveMakaiBinary, type BinaryResolverOptions, type ModuleResolver } from "./binary_resolver";
 
 export {
   MakaiAuthClient,
