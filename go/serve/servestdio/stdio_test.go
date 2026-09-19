@@ -2023,17 +2023,19 @@ func TestRefusalHeldThroughAFullQueueStillArrives(t *testing.T) {
 	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"capabilities","adapter":"hang"}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	for id := 2; id <= 4; id++ {
+	if _, err := stdinWriter.Write([]byte(`{"id":2,"op":"adapters"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	<-writer.entered
+	for id := 3; id <= 4; id++ {
 		if _, err := stdinWriter.Write([]byte(fmt.Sprintf(`{"id":%d,"op":"adapters"}`+"\n", id))); err != nil {
 			t.Fatal(err)
 		}
 	}
-	<-writer.entered
-	time.Sleep(100 * time.Millisecond)
-	close(writer.release)
 	if err := stdinWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
+	close(writer.release)
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
