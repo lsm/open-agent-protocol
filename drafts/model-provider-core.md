@@ -2140,8 +2140,12 @@ arriving from a direction that decision did not anticipate.
 
 **An implementation speaks this profile** — `lsm/makai#341`, twelve commits, with
 a deviations ledger naming every place it diverges: the three `other` providers,
-`usage_in_streaming` left unstated on `false`, grants advertised as `none`,
-keepalive dropped in translation, seven reasoning fields collapsed to one. Stop
+`usage_in_streaming` left unstated on `false`, keepalive dropped in
+translation, seven reasoning fields collapsed to one. The ledger also recorded
+grants advertised as `none`, and that row did not survive its own branch: at
+merge the endpoint advertises the out-of-band tier with the `static` kind, and
+`none` only where the toolchain reports no unix-socket support — which is the
+mandatory-where-achievable rule behaving rather than a deviation from it. Stop
 reasons appear in that table with no deviation, which is the only row where
 "carried across whole" is demonstrated rather than asserted.
 

@@ -508,8 +508,11 @@ error sets, so no code could answer for both. That was inherited from an impleme
 repeated without checking. What the specifications actually say is stranger:
 **`agent-control-core` enumerates no error codes at all.** `ProtocolError.code`
 is an open string in `common.schema.json`, and 47 distinct codes appear across
-this repository's own agent-control fixtures, including harness-specific ones
-like `claude_api_429`. Only the provider profile closed its set, in `#82`,
+this repository's own agent-control fixtures — counting the adapter corpora's
+`expected-oap.json`, which is where the harness-specific ones such as
+`claude_api_429` live, and which is the scope that matters here because those
+corpora are the traces the adapters actually emit. The three top-level fixture
+directories alone hold 15. Only the provider profile closed its set, in `#82`,
 earlier on the day of this record. So there is no intersection to appeal to and no missing
 vocabulary either — there is one closed set and one open string.
 
@@ -531,9 +534,9 @@ correlated. An unattributable frame takes the same treatment.
 **What `agent-control-core` does about its error codes.** The provider profile
 closed its set, and the reason applies here unchanged: a code table in prose
 over an open string makes the action a caller derives a convention rather than a
-contract. But 47 distinct codes appear in this repository's agent-control
-fixtures, with `claude_api_429` and `com.example.storage.object_not_found` among
-them, which says the field is carrying two things — what a caller should **do**,
+contract. But those 47 codes are real traffic, and the two ends of the range say
+why: `com.example.storage.object_not_found` comes from a hand-written fixture
+and `claude_api_429` from an adapter corpus, which says the field is carrying two things — what a caller should **do**,
 and where the error came **from**. Three shapes are available and this record
 decides none of them.
 
