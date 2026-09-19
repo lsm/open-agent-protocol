@@ -108,6 +108,7 @@ pub const Validator = struct {
     registry: *const Registry,
     allocator: std.mem.Allocator,
     failures: std.ArrayList(Failure) = .empty,
+    retained_pointer: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, registry: *const Registry) Validator {
         return .{ .registry = registry, .allocator = allocator };
@@ -116,6 +117,7 @@ pub const Validator = struct {
     pub fn deinit(self: *Validator) void {
         for (self.failures.items) |failure| self.allocator.free(failure.pointer);
         self.failures.deinit(self.allocator);
+        if (self.retained_pointer) |owned| self.allocator.free(owned);
     }
 
     pub fn validate(self: *Validator, document: []const u8, instance: std.json.Value) Error!?Failure {
@@ -129,14 +131,22 @@ pub const Validator = struct {
         extra_branches: []const []const u8,
     ) Error!?Failure {
         const schema = self.registry.root(document) orelse return Unsupported.UnresolvableRef;
-        const base = try self.validateSchema(schema, document, instance);
-        if (base == null) return null;
+        const base = try self.validateSchema(schema, document, instance) orelse return null;
+        if (extra_branches.len == 0) return base;
+
+        const carried = try self.allocator.dupe(u8, base.pointer);
+        errdefer self.allocator.free(carried);
         for (extra_branches) |ref| {
             const target = try self.resolve(ref, document);
             const branch = try self.validateSchema(target.schema, target.document, instance);
-            if (branch == null) return null;
+            if (branch == null) {
+                self.allocator.free(carried);
+                return null;
+            }
         }
-        return base;
+        if (self.retained_pointer) |previous| self.allocator.free(previous);
+        self.retained_pointer = carried;
+        return .{ .pointer = carried, .keyword = base.keyword };
     }
 
     pub fn validateSchema(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value) Error!?Failure {
@@ -501,4 +511,26 @@ fn valueEql(a: std.json.Value, b: std.json.Value) bool {
             break :blk true;
         },
     };
+}
+
+test "a failure survives the branch validations that follow it" {
+    const allocator = std.testing.allocator;
+    var registry = try Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    const line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","payload":{"session_id":"s"}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    defer parsed.deinit();
+
+    var validator = Validator.init(allocator, &registry);
+    defer validator.deinit();
+
+    const branches = [_][]const u8{"common.schema.json#/$defs/nonEmptyString"};
+    const failure = (try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches)).?;
+
+    try std.testing.expect(failure.pointer.len == 0 or failure.pointer[0] == '/');
+    for (failure.pointer) |c| try std.testing.expect(c != 0xaa);
+    try std.testing.expect(failure.keyword.len > 0);
 }
