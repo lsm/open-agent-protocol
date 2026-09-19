@@ -389,9 +389,11 @@ against `credential_ref` in both directions and against `error` in neither, so a
 response could grant and refuse at once and a refusal could carry no reason.
 Reviewed against the draft, two fixtures of this repository's own —
 `provider-sequence-gap` and the positive traces they were derived from — blessed
-a sequence gap the draft forbids. Neither tree found its own defect. Both are
-reported rather than cited to an upstream change, because the implementation
-side of the first is not in this repository.
+a sequence gap the draft forbids. Neither tree found its own defect. Both are closed
+and both are citable: the implementation's coherence rule now checks `accepted`
+against `error` in both directions as well as against `credential_ref`
+(`lsm/makai#347`), and the sequence rule the gap fixtures needed was implemented
+here rather than worked around by renumbering them (`#84`).
 
 **The adapters are the best-shaped part of the port**, not the worst: eight
 independent units of 2,670 to 3,540 lines each, each with a hermetic corpus and
