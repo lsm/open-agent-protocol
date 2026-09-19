@@ -163,6 +163,8 @@ const Window = struct {
     started_ever: bool = false,
     reached_strict: bool = false,
     reached_loose: bool = false,
+    max_active: ?i64 = null,
+    max_queued: ?i64 = null,
     mutation: bool = false,
     closed: bool = false,
 };
@@ -385,12 +387,11 @@ pub const Machine = struct {
         return counts;
     }
 
-    fn exceeds(self: *const Machine, counts: Counts, outstanding: usize) bool {
-        const limits = self.limits orelse return false;
-        if (limits.max_active) |bound| {
+    fn exceeds(window: *const Window, counts: Counts, outstanding: usize) bool {
+        if (window.max_active) |bound| {
             if (@as(i64, @intCast(counts.active + outstanding + 1)) > bound) return true;
         }
-        if (limits.max_queued) |bound| {
+        if (window.max_queued) |bound| {
             if (@as(i64, @intCast(counts.queued + outstanding + 1)) > bound) return true;
         }
         return false;
@@ -418,10 +419,10 @@ pub const Machine = struct {
         for (open.items) |window| {
             if (counts.active > 0) window.busy_ever = true;
             if (counts.started > 0) window.started_ever = true;
-            if (self.exceeds(counts, 0)) window.reached_strict = true;
+            if (exceeds(window, counts, 0)) window.reached_strict = true;
             var others = outstanding;
             if (!self.answered(window.request)) others -= 1;
-            if (self.exceeds(counts, others)) window.reached_loose = true;
+            if (exceeds(window, counts, others)) window.reached_loose = true;
         }
     }
 
@@ -447,11 +448,13 @@ pub const Machine = struct {
             .busy_ever = counts.active > 0,
             .started_ever = counts.started > 0,
             .offered = self.queueOffered(),
+            .max_active = if (self.limits) |held| held.max_active else null,
+            .max_queued = if (self.limits) |held| held.max_queued else null,
             .mutation = member(payload, "model_id") != null and
                 std.mem.eql(u8, self.modes.get(feature_model_selection) orelse "", "session_mutation"),
         };
-        window.reached_strict = self.exceeds(counts, 0);
-        window.reached_loose = self.exceeds(counts, open.items.len);
+        window.reached_strict = exceeds(window, counts, 0);
+        window.reached_loose = exceeds(window, counts, open.items.len);
         try self.windows.put(self.allocator, window.request, window);
         try self.refreshQueueWindows(session);
     }
@@ -1167,6 +1170,21 @@ test "a refusal at a bound the session had not reached reports a bound that does
         \\{"type":"session.message.submit.request","id":"q2","payload":{"session_id":"s","delivery":"auto"}},
         \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
     , &.{ "queue_limit_exceeded", "missing_run_terminal" });
+}
+
+test "a sibling that opens after a window moves the bound that window is judged against" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"session.message.delivery.queue":{"level":"native"}},
+        \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":1}}},
+        \\{"type":"session.message.submit.request","id":"q0","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r0","in_reply_to":"q0","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"error.response","id":"x1","in_reply_to":"q1","payload":{"error":{"code":"run_active"}}}]
+    , &.{"missing_run_terminal"});
 }
 
 test "an outstanding sibling moves the bound a refusal is judged against" {
