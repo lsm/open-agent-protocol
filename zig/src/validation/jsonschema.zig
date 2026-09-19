@@ -109,6 +109,8 @@ pub const Validator = struct {
     allocator: std.mem.Allocator,
     failures: std.ArrayList(Failure) = .empty,
     retained_pointer: ?[]u8 = null,
+    depth: usize = 0,
+    suppress_root_alternatives: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, registry: *const Registry) Validator {
         return .{ .registry = registry, .allocator = allocator };
@@ -139,7 +141,11 @@ pub const Validator = struct {
         for (extra_branches) |ref| {
             const target = try self.resolve(ref, document);
             const branch = try self.validateSchema(target.schema, target.document, instance);
-            if (branch == null) {
+            if (branch != null) continue;
+            self.suppress_root_alternatives = true;
+            defer self.suppress_root_alternatives = false;
+            const skeleton = try self.validateSchema(schema, document, instance);
+            if (skeleton == null) {
                 self.allocator.free(carried);
                 return null;
             }
@@ -181,6 +187,8 @@ pub const Validator = struct {
     }
 
     fn check(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value, pointer: *Pointer) Error!void {
+        self.depth += 1;
+        defer self.depth -= 1;
         switch (schema) {
             .bool => |always| {
                 if (!always) try self.record(pointer, "false");
@@ -225,7 +233,8 @@ pub const Validator = struct {
             }
             if (!matched) try self.record(pointer, "anyOf");
         }
-        if (object.get("oneOf")) |branches| {
+        if (object.get("oneOf")) |branches| skip: {
+            if (self.suppress_root_alternatives and self.depth == 1) break :skip;
             if (branches != .array) return error.InvalidSchema;
             var matches: usize = 0;
             for (branches.array.items) |branch| {
@@ -533,4 +542,39 @@ test "a failure survives the branch validations that follow it" {
     try std.testing.expect(failure.pointer.len == 0 or failure.pointer[0] == '/');
     for (failure.pointer) |c| try std.testing.expect(c != 0xaa);
     try std.testing.expect(failure.keyword.len > 0);
+}
+
+test "a pack branch does not excuse an envelope from the root the profile requires" {
+    const allocator = std.testing.allocator;
+    var registry = try Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    const pack_schema =
+        \\{"$id":"pack/storage.schema.json","$defs":{"objectsRead":{"type":"object","required":["session_id"],
+        \\"properties":{"type":{"const":"com.example.storage.objects.read"},"session_id":{"type":"string"},
+        \\"payload":{"type":"object"}}}}}
+    ;
+    try registry.addDocument("pack/storage.schema.json", pack_schema);
+    const branches = [_][]const u8{"pack/storage.schema.json#/$defs/objectsRead"};
+
+    const complete =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.storage.objects.read","id":"e1","session_id":"s","payload":{}}
+    ;
+    const without_protocol =
+        \\{"version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.storage.objects.read","id":"e1","session_id":"s","payload":{}}
+    ;
+
+    for ([_]struct { line: []const u8, accepted: bool }{
+        .{ .line = complete, .accepted = true },
+        .{ .line = without_protocol, .accepted = false },
+    }) |case| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case.line, .{});
+        defer parsed.deinit();
+        var validator = Validator.init(allocator, &registry);
+        defer validator.deinit();
+        const failure = try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches);
+        try std.testing.expectEqual(case.accepted, failure == null);
+    }
 }
