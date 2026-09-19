@@ -91,11 +91,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     semantic_gate_mod.addImport("semantic", semantic_mod);
+    const provider_semantic_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/provider_semantic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    semantic_gate_mod.addImport("provider_semantic", provider_semantic_mod);
+    const provider_semantic_test = b.addTest(.{ .root_module = provider_semantic_mod });
     semantic_gate_mod.addOptions("build_options", gate_options);
     const semantic_gate_test = b.addTest(.{ .root_module = semantic_gate_mod });
     const tolerate_test = b.addTest(.{ .root_module = tolerate_mod });
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
-
 
     const schema_bytes_test = b.addTest(.{ .root_module = schema_bytes_mod });
     const test_unit_validation_step = b.step("test-unit-validation", "Run validation unit tests");
@@ -104,6 +110,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(tolerate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
 
     const ai_types_mod = b.createModule(.{
@@ -1929,6 +1936,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
     test_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_test).step);
+    test_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(counting_allocator_test).step);
     test_step.dependOn(&b.addRunArtifact(bench_compare_test).step);
