@@ -167,7 +167,15 @@ the schema a description of it.
 
 ### Order: validator first, adapters after
 
-1. Types and strict decode. Makai has most of this already.
+1. Types and strict decode. Makai has most of this already, and one piece of it
+   wrong in a load-bearing place: its agent-control decoder reads the error code
+   through a required enum, so a code outside its own eleven is a *decode
+   failure* rather than an unknown value — at two call sites, one of which is
+   `error.response`, the frame this record just chose as the profile-independent
+   answer. Built on unchanged, the Zig validator rejects this repository's own
+   agent-control fixtures before any semantic check runs. The field is an owned
+   string; an enum survives only as a mapping for what an implementation itself
+   emits.
 2. Schema validation by codegen. Gate: all 546 fixtures match phase and codes.
 3. The semantic state machine. Same gate, now including every diagnostic code.
 4. Adapters, one at a time. Gate: the corpus reproduces `expected-oap.json`,
@@ -346,13 +354,37 @@ Correlation is solved and has precedent: an implementation that cannot decode a
 bad frame already sniffs the `id` out of the raw line so the refusal goes back
 correlated. An unattributable frame takes the same treatment.
 
-**Whether `agent-control-core` should close its error code set.** The provider
-profile did, and the reason applies here unchanged: a code table in prose over
-an open string makes the action a caller derives a convention rather than a
-contract. This repository's agent-control fixtures carry 47 distinct codes, of
-which harness-specific strings are a large share, so closing the set is not a
-one-line change and is not this record's to make. It is named because the port
-will have to model one behaviour or the other.
+**What `agent-control-core` does about its error codes.** The provider profile
+closed its set, and the reason applies here unchanged: a code table in prose
+over an open string makes the action a caller derives a convention rather than a
+contract. But 47 distinct codes appear in this repository's agent-control
+fixtures, with `claude_api_429` and `com.example.storage.object_not_found` among
+them, which says the field is carrying two things — what a caller should **do**,
+and where the error came **from**. Three shapes are available and this record
+decides none of them.
+
+*Close the set and send origin detail in `extensions`.* This is the resolution
+the provider profile already made in prose — "an implementation that wants them
+as distinct codes is free to say so in `extensions`" — so it keeps one
+`ProtocolError` shape across both profiles. It is also the largest migration:
+every harness-specific code in every adapter moves.
+
+*Keep `code` open and add a required closed member for the action class.* The
+contract becomes the action, a harness keeps its own identifier, and nobody
+enumerates a 48th string. Note what it costs before choosing it: the provider
+profile **refuses** an `action` member today, deliberately and with a schema
+test, because for a closed set the action is derivable from the code and a wire
+member would be a second source of truth that can disagree. For an open set that
+argument inverts, which is the case for this shape — but it leaves the two
+profiles with different `ProtocolError` shapes, and `common.schema.json` is
+`additionalProperties: false`, so the member has to be admitted for both.
+
+*Leave it open.* Status quo. The action stays a convention, and `retriable` —
+which the base schema already carries and the provider profile treats as derived
+rather than primary — stays the only machine-readable hint.
+
+The port has to model one of the three, so this needs deciding before stage 1
+finishes rather than after.
 
 **How much larger the Zig tree is.** Thirty-eight thousand lines of Go is not
 thirty-eight thousand lines of Zig. Explicit allocators and `errdefer` inflate
