@@ -34,30 +34,41 @@ The Go tree stays a second executable — the adapter host and the implementer
 tooling — and `oap` spawns it only for the one mode that needs it. Most
 installations never have it on disk.
 
-```
-      you                                          other apps
-       │ TUI, CLI                                   │ SDKs
-       ▼                                            ▼
-  ┌─ oap ─ one binary ───────────────────────────────────────────┐
-  │                                                              │
-  │    agent profile  ──▶  own agent loop  ──▶  provider profile │
-  │                                                              │
-  └──────────────────────────────────────────────────────────────┘
-                    │                                │
-                    │ endpoint-stdio,                │
-                    │ only under --backend           │
-                    ▼                                ▼
-      ┌─ oap-adapters ─ Go, optional ──┐     inference providers
-      │  oap endpoint                  │     anthropic, openai,
-      │  eight harness adapters        │     ollama, …
-      └────────────────────────────────┘
-                    │
-                    ▼
-        Claude Code, Codex, ACP, …
+```mermaid
+flowchart TB
+  you["you<br/>TUI, CLI"]
+  apps["other apps<br/>SDKs: ts, python, go"]
+  callers["inference callers<br/>one vocabulary, no agent"]
+
+  subgraph oap["oap — one binary"]
+    loop["own agent loop<br/>TUI and CLI"]
+    agent["agent profile<br/>agent-control-core"]
+    provider["provider profile<br/>model-provider-core"]
+  end
+
+  subgraph adapters["oap-adapters — Go, optional"]
+    endpoint["oap endpoint"]
+    harnesses["eight harness adapters"]
+  end
+
+  vendors["inference providers<br/>anthropic, openai, ollama"]
+  third["Claude Code, Codex, ACP, …"]
+
+  you --> loop
+  apps --> agent
+  callers --> provider
+  agent -- "spawned over endpoint-stdio" --> endpoint
+  endpoint --> harnesses
+  harnesses --> third
+  provider --> vendors
 ```
 
-`agent profile` is `agent-control-core` and `provider profile` is
-`model-provider-core`. The two doors and the loop between them are one process.
+**The two profiles are independent doors, and neither is downstream of the
+other.** `oap serve provider` serves a caller that wants one vocabulary over
+many inference vendors and does not want an agent loop at all; `oap serve
+agent` serves a caller that wants the loop. The loop itself consumes inference,
+but by what internal path is an implementation question this record does not
+answer, so no arrow claims one.
 
 ### The adapters are reached over the protocol, not rewritten into it
 
