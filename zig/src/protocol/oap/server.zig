@@ -340,9 +340,9 @@ pub const Server = struct {
             oap_envelope.DecodeError.InvalidField => "envelope carries an invalid field",
             else => "envelope is not a well formed agent-control core frame",
         };
-        const code: oap_types.ErrorCode = switch (err) {
-            oap_envelope.DecodeError.UnknownEnvelopeType => .unsupported_feature,
-            else => .invalid_request,
+        const code: []const u8 = switch (err) {
+            oap_envelope.DecodeError.UnknownEnvelopeType => oap_types.EmittedErrorCode.unsupported_feature.text(),
+            else => oap_types.EmittedErrorCode.invalid_request.text(),
         };
         try self.pushError(in_reply_to, null, null, code, message, &.{});
     }
@@ -367,7 +367,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 null,
-                .unsupported_feature,
+                oap_types.EmittedErrorCode.unsupported_feature.text(),
                 "this endpoint answers agent-control core requests only",
                 &.{
                     .{ .key = "feature", .value = env.payload.typeName() },
@@ -384,7 +384,7 @@ pub const Server = struct {
             env.id,
             env.session_id,
             null,
-            .stale_capabilities,
+            oap_types.EmittedErrorCode.stale_capabilities.text(),
             "request pinned a capability revision this endpoint no longer serves",
             &.{
                 .{ .key = "expected_revision", .value = supplied },
@@ -402,7 +402,7 @@ pub const Server = struct {
                 env.id,
                 null,
                 null,
-                .unsupported_feature,
+                oap_types.EmittedErrorCode.unsupported_feature.text(),
                 "this endpoint serves open-agent-protocol 0.1 agent-control-core only",
                 &.{
                     .{ .key = "feature", .value = "protocol.initialize" },
@@ -476,7 +476,7 @@ pub const Server = struct {
                         env.id,
                         env.session_id,
                         null,
-                        .invalid_request,
+                        oap_types.EmittedErrorCode.invalid_request.text(),
                         "envelope and payload session_id disagree",
                         &.{},
                     );
@@ -534,7 +534,7 @@ pub const Server = struct {
                     env.id,
                     env.session_id,
                     env.run_id,
-                    .invalid_request,
+                    oap_types.EmittedErrorCode.invalid_request.text(),
                     "envelope and payload session_id disagree",
                     &.{},
                 );
@@ -548,7 +548,7 @@ pub const Server = struct {
                         env.id,
                         env.session_id,
                         env.run_id,
-                        .invalid_request,
+                        oap_types.EmittedErrorCode.invalid_request.text(),
                         "envelope and payload run_id disagree",
                         &.{},
                     );
@@ -566,7 +566,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 null,
-                .session_not_found,
+                oap_types.EmittedErrorCode.session_not_found.text(),
                 "session is not open on this endpoint",
                 &.{},
             );
@@ -675,7 +675,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 null,
-                .unsupported_feature,
+                oap_types.EmittedErrorCode.unsupported_feature.text(),
                 "this endpoint resolves auto delivery only",
                 &.{
                     .{ .key = "feature", .value = key },
@@ -690,7 +690,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 null,
-                .session_not_found,
+                oap_types.EmittedErrorCode.session_not_found.text(),
                 "session is not open on this endpoint",
                 &.{},
             );
@@ -702,7 +702,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 null,
-                .session_not_found,
+                oap_types.EmittedErrorCode.session_not_found.text(),
                 "the session closed with a cancelled run and cannot admit further work",
                 &.{},
             );
@@ -715,7 +715,7 @@ pub const Server = struct {
                     env.id,
                     env.session_id,
                     null,
-                    .session_busy,
+                    oap_types.EmittedErrorCode.session_busy.text(),
                     "this endpoint admits one foreground run per session",
                     &.{},
                 );
@@ -732,7 +732,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 null,
-                .model_not_found,
+                oap_types.EmittedErrorCode.model_not_found.text(),
                 "no model is configured for this session and the submission named none",
                 &.{.{ .key = "model_id", .value = "" }},
             );
@@ -748,7 +748,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 null,
-                .model_not_found,
+                oap_types.EmittedErrorCode.model_not_found.text(),
                 "the selected model reference is not a valid provider_id/api@model_id",
                 &.{.{ .key = "model_id", .value = effective_model.? }},
             );
@@ -804,7 +804,7 @@ pub const Server = struct {
                     env.id,
                     env.session_id,
                     null,
-                    .unsupported_feature,
+                    oap_types.EmittedErrorCode.unsupported_feature.text(),
                     "this endpoint forwards text content only",
                     &.{
                         .{ .key = "feature", .value = key },
@@ -828,7 +828,7 @@ pub const Server = struct {
                     env.id,
                     env.session_id,
                     null,
-                    .unsupported_feature,
+                    oap_types.EmittedErrorCode.unsupported_feature.text(),
                     "this endpoint has not advertised that run control",
                     &.{
                         .{ .key = "feature", .value = key },
@@ -842,7 +842,7 @@ pub const Server = struct {
                     env.id,
                     env.session_id,
                     null,
-                    .capability_degraded,
+                    oap_types.EmittedErrorCode.capability_degraded.text(),
                     "that run control is degraded and the submission did not opt in",
                     &.{.{ .key = "feature", .value = key }},
                 );
@@ -853,7 +853,7 @@ pub const Server = struct {
                     env.id,
                     env.session_id,
                     null,
-                    .model_not_found,
+                    oap_types.EmittedErrorCode.model_not_found.text(),
                     "the empty model id is not servable",
                     &.{.{ .key = "model_id", .value = "" }},
                 );
@@ -1002,7 +1002,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 env.run_id,
-                .session_not_found,
+                oap_types.EmittedErrorCode.session_not_found.text(),
                 "session is not open on this endpoint",
                 &.{},
             );
@@ -1014,7 +1014,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 env.run_id,
-                .run_not_found,
+                oap_types.EmittedErrorCode.run_not_found.text(),
                 "no run with that id is known to this session",
                 &.{},
             );
@@ -1026,7 +1026,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 env.run_id,
-                .run_not_found,
+                oap_types.EmittedErrorCode.run_not_found.text(),
                 "no run with that id is known to this session",
                 &.{},
             );
@@ -1038,7 +1038,7 @@ pub const Server = struct {
                 env.id,
                 env.session_id,
                 env.run_id,
-                .run_already_terminal,
+                oap_types.EmittedErrorCode.run_already_terminal.text(),
                 "the run already reached a terminal state",
                 &.{},
             );
@@ -1206,7 +1206,7 @@ pub const Server = struct {
         const run = if (entry.run) |*candidate| candidate else return;
         if (run.settled) return;
         if (!run.started_emitted) {
-            try self.settleFailed(session_id, .internal_error, "the run completed before it was observed to start");
+            try self.settleFailed(session_id, oap_types.EmittedErrorCode.internal_error.text(), "the run completed before it was observed to start");
             return;
         }
         const sequence = run.sequence + 1;
@@ -1253,7 +1253,7 @@ pub const Server = struct {
     pub fn settleFailed(
         self: *Self,
         session_id: []const u8,
-        code: oap_types.ErrorCode,
+        code: []const u8,
         message: []const u8,
     ) !void {
         const entry = self.sessions.getPtr(session_id) orelse return;
@@ -1272,6 +1272,8 @@ pub const Server = struct {
             errdefer self.allocator.free(payload_session);
             const payload_run = try self.allocator.dupe(u8, run.run_id);
             errdefer self.allocator.free(payload_run);
+            const owned_code = try self.allocator.dupe(u8, code);
+            errdefer self.allocator.free(owned_code);
             const owned_message = try self.allocator.dupe(u8, message);
             errdefer self.allocator.free(owned_message);
 
@@ -1284,7 +1286,7 @@ pub const Server = struct {
                 .payload = .{ .run_failed = .{
                     .session_id = payload_session,
                     .run_id = payload_run,
-                    .err = .{ .code = code, .message = owned_message, .retriable = false },
+                    .err = .{ .code = owned_code, .message = owned_message, .retriable = false },
                     .usage = run.usage,
                     .duration_ms = elapsedMs(run.started_at_ms),
                 } },
@@ -1299,7 +1301,7 @@ pub const Server = struct {
         const run = if (entry.run) |*candidate| candidate else return;
         if (run.settled) return;
         if (!run.cancel_requested) {
-            try self.settleFailed(session_id, .internal_error, "the run stopped without an accepted cancellation");
+            try self.settleFailed(session_id, oap_types.EmittedErrorCode.internal_error.text(), "the run stopped without an accepted cancellation");
             return;
         }
         const sequence = run.sequence + 1;
@@ -1352,7 +1354,7 @@ pub const Server = struct {
         in_reply_to: ?[]const u8,
         session_id: ?[]const u8,
         run_id: ?[]const u8,
-        code: oap_types.ErrorCode,
+        code: []const u8,
         message: []const u8,
         details: []const oap_types.DetailEntry,
     ) !void {
@@ -1364,6 +1366,8 @@ pub const Server = struct {
         errdefer if (owned_session) |value| self.allocator.free(value);
         const owned_run = if (run_id) |value| try self.allocator.dupe(u8, value) else null;
         errdefer if (owned_run) |value| self.allocator.free(value);
+        const owned_code = try self.allocator.dupe(u8, code);
+        errdefer self.allocator.free(owned_code);
         const owned_message = try self.allocator.dupe(u8, message);
         errdefer self.allocator.free(owned_message);
         const owned_details = try cloneDetails(self.allocator, details);
@@ -1376,7 +1380,7 @@ pub const Server = struct {
             .run_id = owned_run,
             .timestamp_ms = compat.time.nowMillis(),
             .payload = .{ .error_response = .{
-                .code = code,
+                .code = owned_code,
                 .message = owned_message,
                 .retriable = false,
                 .details = owned_details,
@@ -1689,7 +1693,7 @@ test "initialize refuses a version or profile this endpoint does not serve" {
     defer reply.deinit(allocator);
 
     try std.testing.expectEqualStrings("init-bad", reply.in_reply_to.?);
-    try std.testing.expectEqual(oap_types.ErrorCode.unsupported_feature, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("unsupported_feature", reply.payload.error_response.code);
     try std.testing.expectEqualStrings("unsatisfiable", reply.payload.error_response.detail("reason").?);
     try std.testing.expect(!server.initialized);
 }
@@ -1748,7 +1752,7 @@ test "a pinned stale revision is rejected on every other request" {
     defer reply.deinit(allocator);
 
     const err = reply.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.stale_capabilities, err.code);
+    try std.testing.expectEqualStrings("stale_capabilities", err.code);
     try std.testing.expectEqualStrings("older-revision", err.detail("expected_revision").?);
     try std.testing.expectEqualStrings(CAPABILITY_REVISION, err.detail("current_revision").?);
     try std.testing.expectEqual(@as(u32, 0), server.sessions.count());
@@ -1793,7 +1797,7 @@ test "session state for an unopened session is a typed error" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
     try std.testing.expectEqualStrings("state-1", reply.in_reply_to.?);
-    try std.testing.expectEqual(oap_types.ErrorCode.session_not_found, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("session_not_found", reply.payload.error_response.code);
 }
 
 test "a complete run emits admission, contiguous run events, and one terminal" {
@@ -1900,7 +1904,7 @@ test "a second submission is refused while a run is nonterminal" {
     try submitTestMessage(&server, "req-2", "sess-1");
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.session_busy, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("session_busy", reply.payload.error_response.code);
     try std.testing.expectEqualStrings("req-2", reply.in_reply_to.?);
     try std.testing.expect(server.popPendingSubmission() == null);
 
@@ -2047,7 +2051,7 @@ test "a duplicate native terminal never produces a second portable terminal" {
     drainOutbound(&server, allocator);
 
     try server.settleCompleted("sess-1", "twice", "end_turn");
-    try server.settleFailed("sess-1", .provider_error, "late failure");
+    try server.settleFailed("sess-1", oap_types.EmittedErrorCode.provider_error.text(), "late failure");
     try server.noteContent("sess-1", .{ .text = "late text" });
     try std.testing.expect(server.popOutbound() == null);
 }
@@ -2074,7 +2078,7 @@ test "cancelling a settled run reports run_already_terminal" {
 
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.run_already_terminal, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("run_already_terminal", reply.payload.error_response.code);
 }
 
 test "a stale cancellation never targets a replacement run" {
@@ -2100,7 +2104,7 @@ test "a stale cancellation never targets a replacement run" {
 
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.run_not_found, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("run_not_found", reply.payload.error_response.code);
     try std.testing.expect(server.popPendingCancel() == null);
 }
 
@@ -2118,7 +2122,7 @@ test "a native stop without an accepted cancellation settles as a failure" {
     var terminal = try nextEnvelope(&server, allocator);
     defer terminal.deinit(allocator);
     try std.testing.expectEqual(oap_types.Payload.run_failed, std.meta.activeTag(terminal.payload));
-    try std.testing.expectEqual(oap_types.ErrorCode.internal_error, terminal.payload.run_failed.err.code);
+    try std.testing.expectEqualStrings("internal_error", terminal.payload.run_failed.err.code);
 }
 
 test "a cancelled session refuses further submissions" {
@@ -2143,7 +2147,7 @@ test "a cancelled session refuses further submissions" {
     try submitTestMessage(&server, "req-2", "sess-1");
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.session_not_found, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("session_not_found", reply.payload.error_response.code);
 }
 
 test "an unadvertised run control is refused before any identity is allocated" {
@@ -2170,7 +2174,7 @@ test "an unadvertised run control is refused before any identity is allocated" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
     const err = reply.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.unsupported_feature, err.code);
+    try std.testing.expectEqualStrings("unsupported_feature", err.code);
     try std.testing.expectEqualStrings("run.instructions", err.detail("feature").?);
     try std.testing.expectEqualStrings("unadvertised", err.detail("reason").?);
     try std.testing.expect(server.popPendingSubmission() == null);
@@ -2205,7 +2209,7 @@ test "run control refusal follows the declared control order" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
     const err = reply.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.model_not_found, err.code);
+    try std.testing.expectEqualStrings("model_not_found", err.code);
     try std.testing.expectEqualStrings("", err.detail("model_id").?);
     try std.testing.expect(server.popOutbound() == null);
 }
@@ -2288,7 +2292,7 @@ fn settleTerminalProbe(allocator: std.mem.Allocator) !void {
     try submitTestMessage(&server, "req-2", "sess-1");
     drainOutbound(&server, allocator);
     discardPending(&server, allocator);
-    try server.settleFailed("sess-1", .provider_error, "upstream refused");
+    try server.settleFailed("sess-1", oap_types.EmittedErrorCode.provider_error.text(), "upstream refused");
     drainOutbound(&server, allocator);
 
     try submitTestMessage(&server, "req-3", "sess-1");
@@ -2336,7 +2340,7 @@ test "a syntactically invalid model selection is refused before admission" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
     const err = reply.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.model_not_found, err.code);
+    try std.testing.expectEqualStrings("model_not_found", err.code);
     try std.testing.expectEqualStrings("claude-sonnet-4-5", err.detail("model_id").?);
     try std.testing.expect(server.popOutbound() == null);
     try std.testing.expect(server.popPendingSubmission() == null);
@@ -2387,7 +2391,7 @@ test "non-text content is refused on submit, so a carry never reaches a session 
         var reply = try nextEnvelope(&server, allocator);
         defer reply.deinit(allocator);
         const err = reply.payload.error_response;
-        try std.testing.expectEqual(oap_types.ErrorCode.unsupported_feature, err.code);
+        try std.testing.expectEqualStrings("unsupported_feature", err.code);
         try std.testing.expectEqualStrings(case.feature, err.detail("feature").?);
         try std.testing.expect(server.popOutbound() == null);
         try std.testing.expect(server.popPendingSubmission() == null);
@@ -2422,7 +2426,7 @@ test "an idle settled session is evicted and reported to the host" {
 
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.session_not_found, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("session_not_found", reply.payload.error_response.code);
 }
 
 test "a zero idle ttl disables session eviction" {
@@ -2468,7 +2472,7 @@ test "a cancel whose envelope scope disagrees with its payload is refused" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
     const err = reply.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.invalid_request, err.code);
+    try std.testing.expectEqualStrings("invalid_request", err.code);
     try std.testing.expect(server.popOutbound() == null);
 }
 
@@ -2493,7 +2497,7 @@ test "a cancel whose envelope run_id disagrees with its payload is refused" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
     const err = reply.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.invalid_request, err.code);
+    try std.testing.expectEqualStrings("invalid_request", err.code);
     try std.testing.expect(server.popOutbound() == null);
 }
 
@@ -2520,7 +2524,7 @@ test "an explicit unsupported delivery mode is refused with a typed error" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
     const err = reply.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.unsupported_feature, err.code);
+    try std.testing.expectEqualStrings("unsupported_feature", err.code);
     try std.testing.expectEqualStrings("session.message.delivery.steer", err.detail("feature").?);
     try std.testing.expect(server.popPendingSubmission() == null);
 }
@@ -2536,7 +2540,7 @@ test "a submission with no model anywhere is refused" {
 
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.model_not_found, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("model_not_found", reply.payload.error_response.code);
     try std.testing.expect(server.popPendingSubmission() == null);
 }
 
@@ -2562,7 +2566,7 @@ test "envelope and payload session_id must agree" {
 
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.invalid_request, reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("invalid_request", reply.payload.error_response.code);
 }
 
 test "an undecodable envelope answers with a typed error rather than crashing" {
@@ -2579,7 +2583,7 @@ test "an undecodable envelope answers with a typed error rather than crashing" {
     );
     var second = try nextEnvelope(&server, allocator);
     defer second.deinit(allocator);
-    try std.testing.expectEqual(oap_types.ErrorCode.unsupported_feature, second.payload.error_response.code);
+    try std.testing.expectEqualStrings("unsupported_feature", second.payload.error_response.code);
 }
 
 test "a full conversation drives the endpoint end to end over lines" {

@@ -118,7 +118,7 @@ pub fn serializeUsage(w: *json_writer.JsonWriter, usage: oap_types.Usage) !void 
 
 fn serializeProtocolError(w: *json_writer.JsonWriter, err: oap_types.ProtocolError) !void {
     try w.beginObject();
-    try w.writeStringField("code", @tagName(err.code));
+    try w.writeStringField("code", err.code);
     try w.writeStringField("message", err.message);
     if (err.retriable) |retriable| try w.writeBoolField("retriable", retriable);
     if (err.details.len > 0) {
@@ -596,7 +596,8 @@ pub fn deserializeMessage(value: std.json.Value, allocator: std.mem.Allocator) !
 fn deserializeProtocolError(value: std.json.Value, allocator: std.mem.Allocator) !oap_types.ProtocolError {
     if (value != .object) return DecodeError.InvalidField;
     const obj = value.object;
-    const code = try requiredEnum(oap_types.ErrorCode, obj, "code");
+    const code = try requiredOwnedString(obj, "code", allocator);
+    errdefer allocator.free(code);
     const message = try requiredOwnedString(obj, "message", allocator);
     errdefer allocator.free(message);
     const retriable = try optionalBool(obj, "retriable");
@@ -1168,7 +1169,7 @@ test "round trips a typed error response with details" {
         .id = "err-1",
         .in_reply_to = "req-9",
         .payload = .{ .error_response = .{
-            .code = .unsupported_feature,
+            .code = oap_types.EmittedErrorCode.unsupported_feature.text(),
             .message = "run.instructions is not advertised",
             .retriable = false,
             .details = &.{
@@ -1186,7 +1187,7 @@ test "round trips a typed error response with details" {
 
     try std.testing.expectEqualStrings("req-9", decoded.in_reply_to.?);
     const err = decoded.payload.error_response;
-    try std.testing.expectEqual(oap_types.ErrorCode.unsupported_feature, err.code);
+    try std.testing.expectEqualStrings("unsupported_feature", err.code);
     try std.testing.expectEqual(false, err.retriable.?);
     try std.testing.expectEqualStrings("run.instructions", err.detail("feature").?);
     try std.testing.expectEqualStrings("unadvertised", err.detail("reason").?);
@@ -1399,4 +1400,44 @@ test "serialized envelopes always carry the protocol triple" {
     try std.testing.expect(std.mem.indexOf(u8, line, "\"profile\":\"" ++ oap_types.PROFILE ++ "\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"type\":\"capabilities.request\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\n") == null);
+}
+
+test "an error code outside this endpoint's own set decodes as a value and survives a round trip" {
+    const allocator = std.testing.allocator;
+
+    const prefix = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++
+        oap_types.PROFILE ++ "\",\"id\":\"e-1\",\"type\":\"";
+
+    const cases = [_]struct { line: []const u8, code: []const u8 }{
+        .{
+            .line = prefix ++ "error.response\",\"in_reply_to\":\"r-1\",\"payload\":{\"error\":{\"code\":\"claude_api_429\",\"message\":\"rate limited\"}}}",
+            .code = "claude_api_429",
+        },
+        .{
+            .line = prefix ++ "error.response\",\"in_reply_to\":\"r-1\",\"payload\":{\"error\":{\"code\":\"com.example.storage.object_not_found\",\"message\":\"absent\"}}}",
+            .code = "com.example.storage.object_not_found",
+        },
+        .{
+            .line = prefix ++ "run.failed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"error\":{\"code\":\"hermes_rate_limited\",\"message\":\"slow down\"}}}",
+            .code = "hermes_rate_limited",
+        },
+    };
+
+    for (cases) |case| {
+        var decoded = try deserializeEnvelope(case.line, allocator);
+        defer decoded.deinit(allocator);
+
+        const decoded_code = switch (decoded.payload) {
+            .error_response => |err| err.code,
+            .run_failed => |failed| failed.err.code,
+            else => return error.TestUnexpectedPayload,
+        };
+        try std.testing.expectEqualStrings(case.code, decoded_code);
+
+        const line = try serializeEnvelope(decoded, allocator);
+        defer allocator.free(line);
+        const quoted = try std.fmt.allocPrint(allocator, "\"code\":\"{s}\"", .{case.code});
+        defer allocator.free(quoted);
+        try std.testing.expect(std.mem.indexOf(u8, line, quoted) != null);
+    }
 }
