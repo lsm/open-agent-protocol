@@ -307,20 +307,52 @@ decided here.
 profile.** This was filed as untested and is worse than that: it contradicts
 what is built. Each of the implementation's two endpoints refuses the other's
 profile **at decode**, and the refusal names which profile that endpoint serves.
-The two profiles also carry disjoint `ProtocolError` sets, neither a subset of
-the other, so each has its own vocabulary for saying no.
 
 Serving both therefore needs a router that reads the envelope's `profile` before
 decode and hands the frame to the endpoint that owns it. The hard case is a
-frame whose `profile` is absent or unknown, because answering it requires
-choosing an error vocabulary and the vocabulary is exactly what is missing.
+frame whose `profile` is absent or unknown.
 
-The answer this record proposes, for its own decision to confirm: **that frame is
-refused by the binding rather than by a profile.** One bounded diagnostic and a
-closed connection, the same shape as an implementation that cannot allocate its
-own error frame. Inventing a shared error vocabulary for the case would create a
-third code set that neither profile owns, to answer a frame neither profile
-claimed.
+**The answer this record proposes: `error.response` carrying
+`invalid_request`, correlated where an id can be recovered, connection kept
+open.** For its own decision to confirm.
+
+`error.response` is in the base envelope schema rather than in either profile,
+so answering with it needs no vocabulary the frame failed to declare. Two
+earlier answers were wrong and are recorded here because the reasons are worth
+more than the conclusion.
+
+The first was that the profiles carry *disjoint* error sets, so no code could
+answer for both. That was inherited from an implementation's own notes and
+repeated without checking. What the specifications actually say is stranger:
+**`agent-control-core` enumerates no error codes at all.** `ProtocolError.code`
+is an open string in `common.schema.json`, and 47 distinct codes appear across
+this repository's own agent-control fixtures, including harness-specific ones
+like `claude_api_429`. Only the provider profile closed its set, in `#82`, three
+days before this record. So there is no intersection to appeal to and no missing
+vocabulary either — there is one closed set and one open string.
+
+The second was to close the connection. That is the wrong severity and it breaks
+a rule this profile argues for elsewhere. A provider connection carries accepted
+inferences, each owed exactly one terminal; closing on an unattributable frame
+strands every one of them, which is the failure the profile refuses when it
+declines to hand back an `inference_id` with a refusal. It is also not one
+severity: on `--addr` it costs a connection, and on `--stdio` there is one
+connection per process, so it means exit. Closing is for framing desync, where
+the next frame boundary genuinely cannot be located. A frame that framed,
+parsed, and had an envelope shape is a content error on a healthy stream, and a
+healthy stream can carry its own answer.
+
+Correlation is solved and has precedent: an implementation that cannot decode a
+bad frame already sniffs the `id` out of the raw line so the refusal goes back
+correlated. An unattributable frame takes the same treatment.
+
+**Whether `agent-control-core` should close its error code set.** The provider
+profile did, and the reason applies here unchanged: a code table in prose over
+an open string makes the action a caller derives a convention rather than a
+contract. This repository's agent-control fixtures carry 47 distinct codes, of
+which harness-specific strings are a large share, so closing the set is not a
+one-line change and is not this record's to make. It is named because the port
+will have to model one behaviour or the other.
 
 **How much larger the Zig tree is.** Thirty-eight thousand lines of Go is not
 thirty-eight thousand lines of Zig. Explicit allocators and `errdefer` inflate
