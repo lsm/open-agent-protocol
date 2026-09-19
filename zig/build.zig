@@ -50,9 +50,29 @@ pub fn build(b: *std.Build) void {
     schema_bytes_mod.addAnonymousImport("schema_session", .{
         .root_source_file = b.path("../schema/v0.1/session.schema.json"),
     });
+    const jsonschema_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/jsonschema.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    jsonschema_mod.addImport("schema_bytes", schema_bytes_mod);
+    const jsonschema_test = b.addTest(.{ .root_module = jsonschema_mod });
+    const gate_options = b.addOptions();
+    gate_options.addOption([]const u8, "repository_root", b.pathFromRoot(".."));
+    const fixture_gate_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/fixture_gate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fixture_gate_mod.addImport("jsonschema", jsonschema_mod);
+    fixture_gate_mod.addOptions("build_options", gate_options);
+    const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
+
     const schema_bytes_test = b.addTest(.{ .root_module = schema_bytes_mod });
     const test_unit_validation_step = b.step("test-unit-validation", "Run validation unit tests");
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
 
     const ai_types_mod = b.createModule(.{
         .root_source_file = b.path("src/ai_types.zig"),
