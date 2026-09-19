@@ -15,18 +15,18 @@ output_directory=$(cd "$output_directory" && pwd)
 
 cd "$(git rev-parse --show-toplevel)"
 
-zig build bench -Doptimize=ReleaseFast -Dgit-revision="$git_revision" -- \
+zig build --build-file zig/build.zig bench -Doptimize=ReleaseFast -Dgit-revision="$git_revision" -- \
   --mode latency --samples 30 --iterations 100 --host-class "$host_class" \
   > "$output_directory/latency.jsonl"
-zig build bench -Doptimize=ReleaseFast -Dgit-revision="$git_revision" -- \
+zig build --build-file zig/build.zig bench -Doptimize=ReleaseFast -Dgit-revision="$git_revision" -- \
   --mode allocation --samples 15 --iterations 10 --host-class "$host_class" \
   > "$output_directory/allocation.jsonl"
 
 # A report must be internally valid before it is retained as a baseline.
-zig build bench-compare -Doptimize=ReleaseFast -- \
+zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- \
   "$output_directory/latency.jsonl" "$output_directory/latency.jsonl" \
   > "$output_directory/latency-summary.txt"
-zig build bench-compare -Doptimize=ReleaseFast -- \
+zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- \
   "$output_directory/allocation.jsonl" "$output_directory/allocation.jsonl" \
   > "$output_directory/allocation-summary.txt"
 

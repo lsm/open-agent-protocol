@@ -12,28 +12,28 @@ Go 1.27 module, no Makefile. CI (`.github/workflows/ci.yml`) has two independent
 
 ```sh
 test -z "$(gofmt -l .)"
-go run ./tools/nocomment --check   # zero-comments policy, ratcheted by tools/nocomment/allowlist.txt
+go run ./go/tools/nocomment --check   # zero-comments policy, ratcheted by go/tools/nocomment/allowlist.txt
 go vet ./...
 go test ./...
 go test -race ./...
-go run ./cmd/oap check      # compiles schemas, validates fixtures/manifest.json, drives the memory adapter demo
+go run ./go/cmd/oap check      # compiles schemas, validates fixtures/manifest.json, drives the memory adapter demo
 ```
 
 The TypeScript job runs `npm ci && npm test` in `clients/ts` (see below). A schema or client change can pass every Go command and still fail CI there, so run both before pushing. The Go suite takes about 10 seconds. Single package or single test:
 
 ```sh
-go test ./serve/...
-go test ./adapter/hermes -run TestApprovalGateRoundTrip
-go test ./adapter/codex/appserver -run EvidenceCorpus -v   # the hermetic corpus for one adapter
+go test ./go/serve/...
+go test ./go/adapter/hermes -run TestApprovalGateRoundTrip
+go test ./go/adapter/codex/appserver -run EvidenceCorpus -v   # the hermetic corpus for one adapter
 ```
 
-CLI subcommands (`go run ./cmd/oap <cmd>`): `check`, `validate [--format=json] <trace.json>...`, `fixtures [manifest]`, `demo`, `serve [--config path] [--addr host:port] [--stdio]`, `endpoint [--adapter name]`, `conformance [--command "<cmd>"] [--format json]`, `providers zai-cn`.
+CLI subcommands (`go run ./go/cmd/oap <cmd>`): `check`, `validate [--format=json] <trace.json>...`, `fixtures [manifest]`, `demo`, `serve [--config path] [--addr host:port] [--stdio]`, `endpoint [--adapter name]`, `conformance [--command "<cmd>"] [--format json]`, `providers zai-cn`.
 
 Run the endpoint conformance harness after changing the stdio binding,
 `serve/serveendpoint`, or the memory adapter's script:
 
 ```sh
-go run ./cmd/oap conformance --command "go run ./cmd/oap endpoint"
+go run ./go/cmd/oap conformance --command "go run ./go/cmd/oap endpoint"
 ```
 
 It drives a scripted session over `drafts/endpoint-stdio.md` and hands the
@@ -59,7 +59,7 @@ TypeScript client (`clients/ts`, zero runtime deps, Node 18+):
 cd clients/ts && npm ci && npm test   # tsc build, then node --test over dist/test
 ```
 
-Its integration test builds `./cmd/oap` and boots the memory adapter; set `OAP_GO` if `go` is not on `PATH`, or `OAP_TS_SKIP_INTEGRATION=1` to skip it.
+Its integration test builds `./go/cmd/oap` and boots the memory adapter; set `OAP_GO` if `go` is not on `PATH`, or `OAP_TS_SKIP_INTEGRATION=1` to skip it.
 
 ### Opt-in real-process gates
 
@@ -137,9 +137,9 @@ Adding an adapter means all of the above plus: a `case` in `serve/registry.go`'s
 ## Conventions
 
 - **Source files carry zero comments.** Rationale lives in commit messages, PR
-  descriptions, `decisions/`, and `drafts/` — not in code. `tools/nocomment`
+  descriptions, `decisions/`, and `drafts/` — not in code. `go/tools/nocomment`
   (vendored from `lsm/nocomment-for-agents`) enforces it, and
-  `tools/nocomment/allowlist.txt` is a ratchet listing the files that still
+  `go/tools/nocomment/allowlist.txt` is a ratchet listing the files that still
   carry comments. It shrinks, with one exception: a branch that forked before
   this policy lands adds its commented files to the list when it merges,
   because stripping another unit's rationale inside a merge commit destroys

@@ -134,8 +134,8 @@ The artifacts that answer the question are in this repository and you can run
 them against your own endpoint:
 
 ```sh
-go run ./cmd/oap validate --format=json your-trace.json    # judge a trace you supply
-go run ./cmd/oap conformance --command "your-endpoint"     # drive your endpoint, then judge what it produced
+go run ./go/cmd/oap validate --format=json your-trace.json    # judge a trace you supply
+go run ./go/cmd/oap conformance --command "your-endpoint"     # drive your endpoint, then judge what it produced
 ```
 
 `oap conformance` spawns your binary as a process, drives a scripted session

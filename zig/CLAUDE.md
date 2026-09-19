@@ -4,26 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Makai is a Zig-first streaming AI runtime plus SDKs for TypeScript, Python, Go and Rust. The Zig core (`zig/src/`) provides a unified multi-provider streaming abstraction (Anthropic, OpenAI Completions/Responses, Azure OpenAI, Google Generative AI, OpenAI Codex, Gemini CLI, Ollama; a Vertex implementation exists but is not registered, see Providers), four distributed wire protocols (auth, provider, agent, tool) plus two native Open Agent Protocol endpoints (`protocol/oap/` for agent control, `protocol/oap/provider/` for model providers), an agent loop with local tool execution, OAuth flows with credential storage, pluggable transports, and a `makai` binary that runs as a stdio protocol host, a native OAP host, a terminal UI, or a one-shot CLI. Each SDK (`typescript/`, `python/`, `go/`, `rust/`) spawns `makai --stdio` and exposes the same `auth`/`models`/`provider`/`agent` namespaces over newline-delimited JSON frames; none of them is wired into the Zig build.
+Makai is a Zig-first streaming AI runtime plus SDKs for TypeScript, Python, Go and Rust. The Zig core (`zig/src/`) provides a unified multi-provider streaming abstraction (Anthropic, OpenAI Completions/Responses, Azure OpenAI, Google Generative AI, OpenAI Codex, Gemini CLI, Ollama; a Vertex implementation exists but is not registered, see Providers), four distributed wire protocols (auth, provider, agent, tool) plus two native Open Agent Protocol endpoints (`protocol/oap/` for agent control, `protocol/oap/provider/` for model providers), an agent loop with local tool execution, OAuth flows with credential storage, pluggable transports, and a `makai` binary that runs as a stdio protocol host, a native OAP host, a terminal UI, or a one-shot CLI. Each SDK (`sdk/typescript/`, `sdk/python/`, `sdk/go/`, `sdk/rust/`) spawns `makai --stdio` and exposes the same `auth`/`models`/`provider`/`agent` namespaces over newline-delimited JSON frames; none of them is wired into the Zig build.
 
 `DESIGN.md` is the authoritative design reference (layers, protocol boundaries, sequencing, ownership, transport posture, test strategy). `docs/v1-sdk-agent-provider-spec.md` is the normative SDK + protocol spec. Read those before changing protocol or SDK behavior.
 
 ## Build and Test Commands
 
-All Zig commands run from the repo root (where `build.zig` and `build.zig.zon` live). Requires Zig 0.16.0 (`mlugg/setup-zig` in CI). Node 22 for the TypeScript SDK and scripts.
+`build.zig` and `build.zig.zon` live in `zig/`, so Zig commands either run from
+`zig/` or pass `--build-file zig/build.zig` from the repository root. The
+commands below are written the second way, because CI, the `Makefile` and the
+benchmark scripts all run from the root. Requires Zig 0.16.0 (`mlugg/setup-zig`
+in CI). Node 22 for the TypeScript SDK and scripts.
 
 ```bash
-zig build                         # Build + install zig-out/bin/makai
-zig build run -- --version        # Run the makai CLI (args after --)
-zig build run-tui                 # Run the terminal UI
-zig build test                    # Run every unit test module
-zig build -Doptimize=ReleaseFast  # Optimized binary (what the PTY harness uses)
-zig build -Doptimize=ReleaseSafe  # What the tagged release workflow builds
+zig build --build-file zig/build.zig                         # Build + install zig/zig-out/bin/makai
+zig build --build-file zig/build.zig run -- --version        # Run the makai CLI (args after --)
+zig build --build-file zig/build.zig run-tui                 # Run the terminal UI
+zig build --build-file zig/build.zig test                    # Run every unit test module
+zig build --build-file zig/build.zig -Doptimize=ReleaseFast  # Optimized binary (what the PTY harness uses)
+zig build --build-file zig/build.zig -Doptimize=ReleaseSafe  # What the tagged release workflow builds
 ```
 
 A root `Makefile` wraps the everyday commands: `make build`, `make tui` (build, then start
 `makai --tui`), `make test`, `make test-tui`, `make check` (guardrail scripts), `make clean`
-(project `.zig-cache` + `zig-out`) and `make clean-all` (also the global zig cache).
+(project `zig/.zig-cache` + `zig/zig-out`) and `make clean-all` (also the global zig cache).
 
 ### macOS: the Keychain, non-interactive runs, and test isolation
 
@@ -46,7 +50,7 @@ lists bind to the **code hash**, so every unsigned rebuild is a new identity and
 a signed build escapes it, because the access list then binds to the signing certificate rather than
 the hash. Released macOS binaries are signed with Developer ID, hardened-runtime enabled and
 notarized in `release-binaries.yml`; a tag build fails rather than publishing unsigned macOS
-artifacts. Locally, `make build MAKAI_CODESIGN_IDENTITY=<sha1>` signs `zig-out/bin/makai` under the
+artifacts. Locally, `make build MAKAI_CODESIGN_IDENTITY=<sha1>` signs `zig/zig-out/bin/makai` under the
 stable identifier `ai.hyperneo.oap` — a self-signed code-signing certificate is enough for the access
 list, no Apple account needed — and a bad identity fails the build instead of silently leaving it
 unsigned. Pass the certificate's SHA-1 hash from `security find-identity -v -p codesigning` rather
@@ -96,7 +100,7 @@ Four limits:
    `loadDefault` attaches the Keychain save callback when the service has no item (the `.not_found`
    branch, which the read-side fail-fast change does not touch), so login writes go to the Keychain
    rather than the temporary `HOME`'s `auth.json` and the login assertions in
-   `typescript/test/makai_binary_smoke.test.ts` and `typescript/test/demo_server.test.ts` fail on
+   `sdk/typescript/test/makai_binary_smoke.test.ts` and `sdk/typescript/test/demo_server.test.ts` fail on
    `ENOENT`. There is no switch that forces file-backed storage — `shouldUseKeychain()` is
    hardcoded to macOS non-test builds. Run those on Linux.
 
@@ -122,38 +126,38 @@ Most groups map to a job in the `unit-tests` matrix in `.github/workflows/ci.yml
 The invariant behind both paragraphs: every artifact wired into the global `test` step must also be wired into at least one group the matrix actually invokes, and vice versa — `zig build test` is meant to be the superset of CI, not a disjoint set. Wiring a test only into `test` and `test-unit-agent` runs it in no CI job at all; that was live for `tools_artifact_test` until the `test-unit-tools` group was added, and for `sse_parser_test` and `transport_retry_test` in the opposite direction, which sat in matrix groups but not in `test`. `oauth/storage.zig` was the worst case: it had a module but no `addTest` at all, so its thirteen tests ran nowhere and silently rotted past compiling against Zig 0.16 until `oauth_storage_test` was wired into both steps. A module without a test artifact is invisible to this invariant, so check that the `addTest` exists, not just that a group references it.
 
 ```bash
-zig build test-unit-core          # event_stream, streaming_json, ai_types, tool_call_tracker, owned_slice, string_builder, hive_array, compat, artifact store, bench helpers
-zig build test-unit-transport     # transport, stdio, sse, websocket, in_process, transport_retry
-zig build test-unit-protocol      # provider/agent/auth/tool protocol types+envelope+server+client+runtime, oap types+envelope+server+bridge (incl. the three golden OAP traces), partial serializer/reconstructor, model_ref, model catalog types, provider_base_url
-zig build test-unit-providers     # api_registry, stream, register_builtins, sse_parser, every provider API, auth provider defs
-zig build test-unit-utils         # oauth (pkce, openai_codex, refresh_lock, storage, mod), github_copilot, overflow, retry, oom, sanitize, pre_transform, auth_resolver
-zig build test-unit-makai-cli     # zig/src/tools/makai.zig + auth_cli
-zig build test-unit-tui           # tui runtime/session/config/state/commands/login/app/views, model_catalog, scenarios + e2e + mock transport
-zig build test-unit-tools         # all 11 tools/*: common, process_runner, artifact, shell, file, edit, hashline, search, workspace, mcp_bridge, registry
-zig build test-unit-agent         # aggregate (local-only, not in the CI matrix): permission, agent types/loop/mod/bridge, tools/*, tui runtime, zig/test/unit/*
-zig build test-unit-agent-types   # agent types + permission
-zig build test-unit-agent-loop    # agent loop only
-zig build test-unit-agent-mod     # agent module only
-zig build test-unit-agent-bridge  # agent provider-protocol bridge
-zig build test-unit-agent-unit    # zig/test/unit/agent.zig
-zig build test-unit-agent-chain   # zig/test/unit/agent_protocol_chain.zig
+zig build --build-file zig/build.zig test-unit-core          # event_stream, streaming_json, ai_types, tool_call_tracker, owned_slice, string_builder, hive_array, compat, artifact store, bench helpers
+zig build --build-file zig/build.zig test-unit-transport     # transport, stdio, sse, websocket, in_process, transport_retry
+zig build --build-file zig/build.zig test-unit-protocol      # provider/agent/auth/tool protocol types+envelope+server+client+runtime, oap types+envelope+server+bridge (incl. the three golden OAP traces), partial serializer/reconstructor, model_ref, model catalog types, provider_base_url
+zig build --build-file zig/build.zig test-unit-providers     # api_registry, stream, register_builtins, sse_parser, every provider API, auth provider defs
+zig build --build-file zig/build.zig test-unit-utils         # oauth (pkce, openai_codex, refresh_lock, storage, mod), github_copilot, overflow, retry, oom, sanitize, pre_transform, auth_resolver
+zig build --build-file zig/build.zig test-unit-makai-cli     # zig/src/tools/makai.zig + auth_cli
+zig build --build-file zig/build.zig test-unit-tui           # tui runtime/session/config/state/commands/login/app/views, model_catalog, scenarios + e2e + mock transport
+zig build --build-file zig/build.zig test-unit-tools         # all 11 tools/*: common, process_runner, artifact, shell, file, edit, hashline, search, workspace, mcp_bridge, registry
+zig build --build-file zig/build.zig test-unit-agent         # aggregate (local-only, not in the CI matrix): permission, agent types/loop/mod/bridge, tools/*, tui runtime, zig/test/unit/*
+zig build --build-file zig/build.zig test-unit-agent-types   # agent types + permission
+zig build --build-file zig/build.zig test-unit-agent-loop    # agent loop only
+zig build --build-file zig/build.zig test-unit-agent-mod     # agent module only
+zig build --build-file zig/build.zig test-unit-agent-bridge  # agent provider-protocol bridge
+zig build --build-file zig/build.zig test-unit-agent-unit    # zig/test/unit/agent.zig
+zig build --build-file zig/build.zig test-unit-agent-chain   # zig/test/unit/agent_protocol_chain.zig
 ```
 
 ### E2E Steps
 
 ```bash
-zig build test-e2e-protocol                     # mock-based, no keys; runs in CI
-zig build test-e2e-distributed-fullstack        # mock-based, no keys
-zig build test-e2e-anthropic                    # ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, ANTHROPIC_MODEL
-zig build test-e2e-openai                       # OPENAI_API_KEY, OPENAI_MODEL, OPENAI_RESPONSES_MODEL
-zig build test-e2e-google                       # GOOGLE_API_KEY, GOOGLE_MODEL
-zig build test-e2e-ollama                       # OLLAMA_API_KEY, OLLAMA_MODEL
-zig build test-e2e-azure                        # AZURE_OPENAI_API_KEY, AZURE_OPENAI_BASE_URL, AZURE_OPENAI_MODEL (disabled in CI)
-zig build test-e2e-github-copilot               # GH_COPILOT_REFRESH, GH_COPILOT_ACCESS (disabled in CI, quota)
-zig build test-e2e-provider-protocol-fullstack-ollama
-zig build test-e2e-provider-protocol-fullstack-github
-zig build test-e2e-distributed-fullstack-github
-zig build test-e2e                              # aggregate; runs distributed-fullstack via test-e2e-protocol, but omits the -github variant
+zig build --build-file zig/build.zig test-e2e-protocol                     # mock-based, no keys; runs in CI
+zig build --build-file zig/build.zig test-e2e-distributed-fullstack        # mock-based, no keys
+zig build --build-file zig/build.zig test-e2e-anthropic                    # ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, ANTHROPIC_MODEL
+zig build --build-file zig/build.zig test-e2e-openai                       # OPENAI_API_KEY, OPENAI_MODEL, OPENAI_RESPONSES_MODEL
+zig build --build-file zig/build.zig test-e2e-google                       # GOOGLE_API_KEY, GOOGLE_MODEL
+zig build --build-file zig/build.zig test-e2e-ollama                       # OLLAMA_API_KEY, OLLAMA_MODEL
+zig build --build-file zig/build.zig test-e2e-azure                        # AZURE_OPENAI_API_KEY, AZURE_OPENAI_BASE_URL, AZURE_OPENAI_MODEL (disabled in CI)
+zig build --build-file zig/build.zig test-e2e-github-copilot               # GH_COPILOT_REFRESH, GH_COPILOT_ACCESS (disabled in CI, quota)
+zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-ollama
+zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-github
+zig build --build-file zig/build.zig test-e2e-distributed-fullstack-github
+zig build --build-file zig/build.zig test-e2e                              # aggregate; runs distributed-fullstack via test-e2e-protocol, but omits the -github variant
 ```
 
 See `.github/workflows/ci.yml` for the exact env wiring and which lanes are currently gated off.
@@ -199,15 +203,15 @@ npm run demo:start                # builds then runs dist/demo/server.js
 
 `resolveMakaiBinary` picks the binary in this order: `MAKAI_BINARY_PATH` or an explicit `binaryPath`; `MAKAI_BINARY_URL`/`binaryUrl` (checksum required); the platform package `@makai/cli-<platform>-<arch>`; `./zig-out/bin/makai`; `./zig/zig-out/bin/makai`; then `PATH`. **The platform package outranks both local build paths**, so if an optional `@makai/cli-*` package is installed, `zig build` alone does not make the SDK tests exercise your fresh binary. Set `MAKAI_BINARY_PATH` to be sure which one runs (CI builds with `zig build install --prefix /tmp/makai-smoke` and points `MAKAI_BINARY_PATH` at it).
 
-That variable is also what gates real-binary coverage. Every test in `typescript/test/makai_binary_smoke.test.ts` calls `t.skip("MAKAI_BINARY_PATH is not set")` when it is unset, so `npm run test:sdk` passes green with **zero** end-to-end binary coverage, and a binary found through `zig-out` or the platform package does not switch those tests on. Export `MAKAI_BINARY_PATH` explicitly when you mean to exercise the real runtime.
+That variable is also what gates real-binary coverage. Every test in `sdk/typescript/test/makai_binary_smoke.test.ts` calls `t.skip("MAKAI_BINARY_PATH is not set")` when it is unset, so `npm run test:sdk` passes green with **zero** end-to-end binary coverage, and a binary found through `zig-out` or the platform package does not switch those tests on. Export `MAKAI_BINARY_PATH` explicitly when you mean to exercise the real runtime.
 
 ### TUI PTY Harness and Benchmarks
 
 ```bash
-zig build install -Doptimize=ReleaseFast --prefix /tmp/makai-pty
+zig build --build-file zig/build.zig install -Doptimize=ReleaseFast --prefix /tmp/makai-pty
 python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/makai --output-dir tui-pty-out --scenario all
-zig build bench -Doptimize=ReleaseFast -- --mode latency --samples 30 --iterations 100 --host-class <host>
-zig build bench-compare -Doptimize=ReleaseFast -- baseline.jsonl candidate.jsonl
+zig build --build-file zig/build.zig bench -Doptimize=ReleaseFast -- --mode latency --samples 30 --iterations 100 --host-class <host>
+zig build --build-file zig/build.zig bench-compare -Doptimize=ReleaseFast -- baseline.jsonl candidate.jsonl
 ./scripts/capture-benchmark-baseline.sh <out-dir> <host-class> [git-revision]
 ```
 
@@ -230,7 +234,7 @@ The PTY driver is deterministic: `MAKAI_TUI_FIXTURE` selects a canned reply (see
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Hosts: zig/src/tools/makai.zig (CLI: --stdio, --tui, -p,    │
-│         auth), zig/src/tui/ (zigzag TUI), typescript/ (SDK)  │
+│         auth), zig/src/tui/ (zigzag TUI), sdk/typescript/ (SDK)  │
 ├──────────────────────────────────────────────────────────────┤
 │  Agent Layer (agent/): agent.zig, agent_loop.zig, types.zig, │
 │    provider_protocol_bridge.zig                              │

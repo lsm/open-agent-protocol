@@ -1,0 +1,543 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import test from "node:test";
+import { createMakaiStdioClient, MakaiStdioClient, StdioFrame, StdioProtocolError } from "../src";
+
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
+
+test("connect succeeds with ready handshake and receives event frame", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "ready-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    client.send({ type: "stream_request", stream_id: "s1" });
+    const frame = await client.nextFrame(5000);
+    assert.equal(frame.type, "event");
+    assert.equal(frame.stream_id, "s1");
+  } finally {
+    await client.close();
+  }
+});
+
+test("nextFrameForStream preserves foreign frames for their owner", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "route-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    client.send({ type: "stream_request", stream_id: "s1" });
+    client.send({ type: "stream_request", stream_id: "s2" });
+
+    const secondFrame = await client.nextFrameForStream("s2", 5000);
+    assert.equal(secondFrame.type, "event");
+    assert.equal(secondFrame.stream_id, "s2");
+
+    const firstFrame = await client.nextFrameForStream("s1", 5000);
+    assert.equal(firstFrame.type, "event");
+    assert.equal(firstFrame.stream_id, "s1");
+  } finally {
+    await client.close();
+  }
+});
+
+test("nextFrameForSession preserves foreign session frames for their owner", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "route-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    client.send({ type: "agent_message", session_id: "a1" });
+    client.send({ type: "agent_message", session_id: "a2" });
+
+    const secondFrame = await client.nextFrameForSession("a2", 5000);
+    assert.equal(secondFrame.type, "agent_event");
+    assert.equal(secondFrame.session_id, "a2");
+
+    const firstFrame = await client.nextFrameForSession("a1", 5000);
+    assert.equal(firstFrame.type, "agent_event");
+    assert.equal(firstFrame.session_id, "a1");
+  } finally {
+    await client.close();
+  }
+});
+
+test("targeted frame reads preserve frames across stream and session owners", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "route-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    client.send({ type: "stream_request", stream_id: "s1" });
+    client.send({ type: "agent_message", session_id: "a1" });
+
+    const agentFrame = await client.nextFrameForSession("a1", 5000);
+    assert.equal(agentFrame.type, "agent_event");
+    assert.equal(agentFrame.session_id, "a1");
+
+    const streamFrame = await client.nextFrameForStream("s1", 5000);
+    assert.equal(streamFrame.type, "event");
+    assert.equal(streamFrame.stream_id, "s1");
+  } finally {
+    await client.close();
+  }
+});
+
+test("correlated session waits on one session each receive their own reply", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const first = client.nextFrameForSession("a1", 5000, { correlate: "req-first" });
+    const second = client.nextFrameForSession("a1", 5000, { correlate: "req-second" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-second" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-first" });
+
+    const [firstFrame, secondFrame] = await Promise.all([first, second]);
+    assert.equal(firstFrame.in_reply_to, "req-first");
+    assert.equal(secondFrame.in_reply_to, "req-second");
+  } finally {
+    await client.close();
+  }
+});
+
+test("correlated reply is not consumed by an uncorrelated waiter on the same session", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const established = client.nextFrameForSession("a1", 5000);
+    const duplicate = client.nextFrameForSession("a1", 5000, { correlate: "req-duplicate" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-duplicate" });
+
+    const duplicateFrame = await duplicate;
+    assert.equal(duplicateFrame.in_reply_to, "req-duplicate");
+
+    let timersFired = 0;
+    setTimeout(() => { timersFired += 1; }, 25);
+    setTimeout(() => { timersFired += 1; }, 75);
+    const stolen = await Promise.race([
+      established.then((frame) => ({ stole: true, in_reply_to: frame.in_reply_to })),
+      new Promise<{ stole: false }>((resolve) => setTimeout(() => resolve({ stole: false }), 150)),
+    ]);
+    assert.deepEqual(stolen, { stole: false });
+    assert.equal(timersFired, 2);
+
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-output", payload: { omit_in_reply_to: true } });
+    const establishedFrame = await established;
+    assert.equal(establishedFrame.session_id, "a1");
+    assert.equal(establishedFrame.in_reply_to, undefined);
+  } finally {
+    await client.close();
+  }
+});
+
+test("correlated stream waits on one stream each receive their own reply", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const first = client.nextFrameForStream("s1", 5000, { correlate: "req-first" });
+    const second = client.nextFrameForStream("s1", 5000, { correlate: "req-second" });
+    client.send({ type: "stream_request", stream_id: "s1", message_id: "req-first" });
+    client.send({ type: "stream_request", stream_id: "s1", message_id: "req-second" });
+
+    const [firstFrame, secondFrame] = await Promise.all([first, second]);
+    assert.equal(firstFrame.in_reply_to, "req-first");
+    assert.equal(secondFrame.in_reply_to, "req-second");
+    assert.equal(firstFrame.stream_id, "s1");
+    assert.equal(secondFrame.stream_id, "s1");
+  } finally {
+    await client.close();
+  }
+});
+
+test("frames with unmatched or absent in_reply_to keep session-routed behavior", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const unmatched = client.nextFrameForSession("a1", 5000);
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-nobody-waiting-for" });
+    const unmatchedFrame = await unmatched;
+    assert.equal(unmatchedFrame.in_reply_to, "req-nobody-waiting-for");
+    assert.equal(unmatchedFrame.session_id, "a1");
+
+    const uncorrelated = client.nextFrameForSession("a1", 5000, { correlate: "req-registered" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-no-reply-to", payload: { omit_in_reply_to: true } });
+    const uncorrelatedFrame = await uncorrelated;
+    assert.equal(uncorrelatedFrame.in_reply_to, undefined);
+    assert.equal(uncorrelatedFrame.session_id, "a1");
+  } finally {
+    await client.close();
+  }
+});
+
+test("reply arriving while its owner is between waits is parked, not consumed by a foreign correlated waiter", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const established = client.nextFrameForSession("a1", 5000, { correlate: "req-a" });
+    const ownerFirst = client.nextFrameForSession("a1", 5000, { correlate: "req-b" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-b" });
+    assert.equal((await ownerFirst).in_reply_to, "req-b");
+
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-b" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const stolen = await Promise.race([
+      established.then((frame) => ({ stole: true, in_reply_to: frame.in_reply_to })),
+      new Promise<{ stole: false }>((resolve) => setTimeout(() => resolve({ stole: false }), 100)),
+    ]);
+    assert.deepEqual(stolen, { stole: false });
+
+    const reclaimed = await client.nextFrameForSession("a1", 5000, { correlate: "req-b" });
+    assert.equal(reclaimed.in_reply_to, "req-b");
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-a" });
+    assert.equal((await established).in_reply_to, "req-a");
+  } finally {
+    await client.close();
+  }
+});
+
+test("a second reply parked by a foreign waiter survives its owner winning the concurrent read", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const owner = client.nextFrameForSession("a1", 5000, { correlate: "req-a" });
+    const foreign = client.nextFrameForSession("a1", 5000, { correlate: "req-b" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-a", payload: { replies: 2 } });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-b" });
+
+    assert.equal((await owner).in_reply_to, "req-a");
+    assert.equal((await foreign).in_reply_to, "req-b");
+
+    const second = await client.nextFrameForSession("a1", 2000, { correlate: "req-a" });
+    assert.equal(second.in_reply_to, "req-a");
+  } finally {
+    await client.close();
+  }
+});
+
+test("concurrent waits sharing one correlate are each delivered while a foreign waiter holds the read lock", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const lockHolder = client.nextFrameForSession("a1", 3000, { correlate: "req-idle" });
+    const firstOwner = client.nextFrameForSession("a1", 1500, { correlate: "req-a" });
+    const secondOwner = client.nextFrameForSession("a1", 1500, { correlate: "req-a" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-a", payload: { replies: 2 } });
+
+    const lockHolderSettled = lockHolder.then(() => "lock-holder", () => "lock-holder");
+    const bothDelivered = Promise.all([firstOwner, secondOwner]).then(() => "owners", () => "owners");
+    assert.equal(await Promise.race([bothDelivered, lockHolderSettled]), "owners");
+
+    const delivered = await Promise.all([firstOwner, secondOwner]);
+    assert.deepEqual(delivered.map((frame) => frame.in_reply_to), ["req-a", "req-a"]);
+    await assert.rejects(lockHolder, /timed out/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("replies-only wait parks uncorrelated frames for the route owner", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const duplicate = client.nextFrameForSession("a1", 5000, { correlate: "req-duplicate", repliesOnly: true });
+    const owner = client.nextFrameForSession("a1", 5000, { correlate: "req-owner" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-output", payload: { omit_in_reply_to: true } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const consumed = await Promise.race([
+      duplicate.then((frame) => ({ by: "duplicate", type: frame.type })),
+      new Promise<{ by: string }>((resolve) => setTimeout(() => resolve({ by: "none" }), 100)),
+    ]);
+    assert.deepEqual(consumed, { by: "none" });
+
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-duplicate" });
+    assert.equal((await duplicate).in_reply_to, "req-duplicate");
+    const ownerFrame = await owner;
+    assert.equal(ownerFrame.session_id, "a1");
+    assert.equal(ownerFrame.in_reply_to, undefined);
+  } finally {
+    await client.close();
+  }
+});
+
+test("aborted correlated wait leaves its parked reply for the replacement waiter", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const established = client.nextFrameForSession("a1", 5000);
+    const controller = new AbortController();
+    const aborted = client.nextFrameForSession("a1", 5000, { correlate: "req-aborted", signal: controller.signal });
+    controller.abort();
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-aborted" });
+
+    await assert.rejects(aborted, /frame wait for session a1 aborted/);
+    const replacement = await client.nextFrameForSession("a1", 5000, { correlate: "req-aborted" });
+    assert.equal(replacement.in_reply_to, "req-aborted");
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-established", payload: { omit_in_reply_to: true } });
+    assert.equal((await established).session_id, "a1");
+  } finally {
+    await client.close();
+  }
+});
+
+test("replies-only wait skips frames already parked on the session queue", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const foreign = client.nextFrameForSession("a2", 5000);
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-owner-output", payload: { omit_in_reply_to: true } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const duplicate = client.nextFrameForSession("a1", 5000, { correlate: "req-duplicate", repliesOnly: true });
+    const skipped = await Promise.race([
+      duplicate.then((frame) => ({ took: true, in_reply_to: frame.in_reply_to })),
+      new Promise<{ took: boolean }>((resolve) => setTimeout(() => resolve({ took: false }), 100)),
+    ]);
+    assert.deepEqual(skipped, { took: false });
+
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-duplicate" });
+    assert.equal((await duplicate).in_reply_to, "req-duplicate");
+    const owner = await client.nextFrameForSession("a1", 5000);
+    assert.equal(owner.session_id, "a1");
+    assert.equal(owner.in_reply_to, undefined);
+    client.send({ type: "agent_message", session_id: "a2", message_id: "req-foreign", payload: { omit_in_reply_to: true } });
+    assert.equal((await foreign).session_id, "a2");
+  } finally {
+    await client.close();
+  }
+});
+
+test("already-aborted correlated wait rejects without consuming its parked reply", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "correlate-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const foreignReader = client.nextFrameForSession("a1", 5000, { correlate: "req-foreign" });
+    const ownerFirst = client.nextFrameForSession("a1", 5000, { correlate: "req-x" });
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-x" });
+    assert.equal((await ownerFirst).in_reply_to, "req-x");
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-x" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      client.nextFrameForSession("a1", 5000, { correlate: "req-x", signal: controller.signal }),
+      /frame wait for session a1 aborted/,
+    );
+
+    const replacement = await client.nextFrameForSession("a1", 5000, { correlate: "req-x" });
+    assert.equal(replacement.in_reply_to, "req-x");
+    client.send({ type: "agent_message", session_id: "a1", message_id: "req-foreign" });
+    assert.equal((await foreignReader).in_reply_to, "req-foreign");
+  } finally {
+    await client.close();
+  }
+});
+
+test("nextFrameForStream evicts late orphaned frames from the shared buffer", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "one-stream-server.js")],
+    handshakeTimeoutMs: 5000,
+    streamFrameQueueTtlMs: 20,
+  });
+
+  await client.connect();
+  try {
+    const orphanedWaiter = client.nextFrameForStream("s2", 30);
+    await assert.rejects(orphanedWaiter, /timed out waiting for frame for stream s2 after 30ms/);
+
+    const blocked = client.nextFrameForStream("s1", 80);
+    client.send({ type: "stream_request", stream_id: "s2" });
+    await assert.rejects(blocked, /timed out waiting for frame for stream s1 after 80ms/);
+
+    await assert.rejects(
+      () => client.nextFrameForStream("s2", 20),
+      /timed out waiting for frame for stream s2 after 20ms/,
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("createMakaiStdioClient forwards streamFrameQueueTtlMs", async () => {
+  const client = await createMakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "one-stream-server.js")],
+    handshakeTimeoutMs: 5000,
+    streamFrameQueueTtlMs: 20,
+  });
+
+  await client.connect();
+  try {
+    const orphanedWaiter = client.nextFrameForStream("s2", 30);
+    await assert.rejects(orphanedWaiter, /timed out waiting for frame for stream s2 after 30ms/);
+
+    const blocked = client.nextFrameForStream("s1", 80);
+    client.send({ type: "stream_request", stream_id: "s2" });
+    await assert.rejects(blocked, /timed out waiting for frame for stream s1 after 80ms/);
+
+    await assert.rejects(
+      () => client.nextFrameForStream("s2", 20),
+      /timed out waiting for frame for stream s2 after 20ms/,
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("nextFrameForStream does not consume timeout budget while waiting for read lock", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "one-stream-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const blocked = client.nextFrameForStream("s1", 160);
+    const delayed = new Promise((resolve) => setTimeout(resolve, 40))
+      .then(() => client.nextFrameForStream("s2", 80));
+
+    setTimeout(() => {
+      client.send({ type: "stream_request", stream_id: "s2" });
+    }, 110);
+
+    const [delayedResult, blockedResult] = await Promise.allSettled([delayed, blocked]);
+    assert.equal(delayedResult.status, "fulfilled");
+    assert.equal((delayedResult as PromiseFulfilledResult<StdioFrame>).value.type, "event");
+    assert.equal((delayedResult as PromiseFulfilledResult<StdioFrame>).value.stream_id, "s2");
+    assert.equal(blockedResult.status, "rejected");
+    assert.match(
+      blockedResult.reason instanceof Error ? blockedResult.reason.message : String(blockedResult.reason),
+      /timed out waiting for frame for stream s1 after 160ms/,
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("nextFrameForSession does not consume timeout budget while waiting for read lock", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "route-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await client.connect();
+  try {
+    const blocked = client.nextFrameForSession("a1", 160);
+    const delayed = new Promise((resolve) => setTimeout(resolve, 40))
+      .then(() => client.nextFrameForSession("a2", 80));
+
+    setTimeout(() => {
+      client.send({ type: "agent_message", session_id: "a2" });
+    }, 110);
+
+    const [delayedResult, blockedResult] = await Promise.allSettled([delayed, blocked]);
+    assert.equal(delayedResult.status, "fulfilled");
+    assert.equal((delayedResult as PromiseFulfilledResult<StdioFrame>).value.type, "agent_event");
+    assert.equal((delayedResult as PromiseFulfilledResult<StdioFrame>).value.session_id, "a2");
+    assert.equal(blockedResult.status, "rejected");
+    assert.match(
+      blockedResult.reason instanceof Error ? blockedResult.reason.message : String(blockedResult.reason),
+      /timed out waiting for frame for session a1 after 160ms/,
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("connect surfaces protocol error frame", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "error-server.js")],
+    handshakeTimeoutMs: 5000,
+  });
+
+  await assert.rejects(
+    () => client.connect(),
+    (error: unknown) =>
+      error instanceof StdioProtocolError &&
+      error.code === "version_mismatch" &&
+      error.message.includes("unsupported protocol"),
+  );
+  await client.close();
+});
+
+test("connect times out when no handshake frame arrives", async () => {
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [path.join(sourceFixturesDir, "silent-server.js")],
+    handshakeTimeoutMs: 100,
+  });
+
+  await assert.rejects(() => client.connect(), /handshake timed out/);
+  await client.close();
+});

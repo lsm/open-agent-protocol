@@ -460,7 +460,7 @@ void run();
 
 ## Rust SDK
 
-A Rust SDK for the same stdio protocol lives under [`rust/`](rust/README.md) (crate `makai`). It exposes the same four namespaces — `auth`, `models`, `provider`, `agent` — on tokio, with streams as `futures_core::Stream`s and tools executing in the caller's process. See [`rust/README.md`](rust/README.md) for install and quick-start.
+A Rust SDK for the same stdio protocol lives under [`sdk/rust/`](../sdk/rust/README.md) (crate `makai`). It exposes the same four namespaces — `auth`, `models`, `provider`, `agent` — on tokio, with streams as `futures_core::Stream`s and tools executing in the caller's process. See [`sdk/rust/README.md`](../sdk/rust/README.md) for install and quick-start.
 
 ## Zig core library
 

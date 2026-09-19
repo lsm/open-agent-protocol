@@ -8,8 +8,8 @@
     "skipLibCheck": true,
     "declaration": true,
     "types": ["node"],
-    "rootDir": "typescript",
+    "rootDir": "sdk/typescript",
     "outDir": "dist"
   },
-  "include": ["typescript/src/**/*.ts", "typescript/test/**/*.ts", "typescript/demo/**/*.ts"]
+  "include": ["sdk/typescript/src/**/*.ts", "sdk/typescript/test/**/*.ts", "sdk/typescript/demo/**/*.ts"]
 }

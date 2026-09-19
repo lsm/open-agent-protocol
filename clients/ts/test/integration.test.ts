@@ -64,7 +64,7 @@ test(
     const binary = join(workdir, 'oap');
     t.after(() => rmSync(workdir, { recursive: true, force: true }));
 
-    const build = spawnSync(go.binary, ['build', '-o', binary, './cmd/oap'], {
+    const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/oap'], {
       cwd: repoRoot,
       env: go.env,
       encoding: 'utf8',
@@ -235,7 +235,7 @@ test(
     const binary = join(workdir, 'oap');
     t.after(() => rmSync(workdir, { recursive: true, force: true }));
 
-    const build = spawnSync(go.binary, ['build', '-o', binary, './cmd/oap'], {
+    const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/oap'], {
       cwd: repoRoot,
       env: go.env,
       encoding: 'utf8',
