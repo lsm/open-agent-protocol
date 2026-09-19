@@ -3,13 +3,10 @@ const jsonschema = @import("jsonschema");
 const packs_mod = @import("packs");
 const build_options = @import("build_options");
 
-const judged_floor = 514;
+const judged_floor = 517;
 const tolerant_fixtures = 3;
 
 const unhandled_pack_composition = [_][]const u8{
-    "ext-pack-cross-ref-declared",
-    "ext-descriptor-member-advertised",
-    "ext-member-on-event-unadvertised",
 };
 
 fn isUnhandled(id: []const u8) bool {
@@ -121,8 +118,24 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         defer refs.deinit(allocator);
         for (loaded.branches) |branch| try refs.append(allocator, branch.ref);
 
+        var override_arena = std.heap.ArenaAllocator.init(allocator);
+        defer override_arena.deinit();
+
         var validator = jsonschema.Validator.init(allocator, &registry);
         defer validator.deinit();
+
+        for (loaded.members) |member| {
+            const target = packs_mod.payloadTarget(&registry, documentFor(profile), member.payload_type) orelse continue;
+            const current = validator.overrides.get(target.document) orelse registry.root(target.document).?;
+            const widened = try jsonschema.withMember(
+                override_arena.allocator(),
+                current,
+                target.definition,
+                member.name,
+                member.schema,
+            );
+            try validator.overrides.put(allocator, target.document, widened);
+        }
 
         var saw_failure = false;
         var gave_up = false;

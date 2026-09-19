@@ -54,6 +54,25 @@ pub const Registry = struct {
         self.documents.deinit(self.allocator);
     }
 
+    pub fn definitionCarryingType(self: *const Registry, document: []const u8, declared: []const u8) ?[]const u8 {
+        const root_value = self.root(document) orelse return null;
+        if (root_value != .object) return null;
+        const defs = root_value.object.get("$defs") orelse return null;
+        if (defs != .object) return null;
+        var it = defs.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != .object) continue;
+            const properties = entry.value_ptr.object.get("properties") orelse continue;
+            if (properties != .object) continue;
+            const type_schema = properties.object.get("type") orelse continue;
+            if (type_schema != .object) continue;
+            const constant = type_schema.object.get("const") orelse continue;
+            if (constant != .string) continue;
+            if (std.mem.eql(u8, constant.string, declared)) return entry.key_ptr.*;
+        }
+        return null;
+    }
+
     pub fn addDocument(self: *Registry, name: []const u8, bytes: []const u8) !void {
         if (self.documents.get(name) != null) return;
         const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, bytes, .{});
@@ -109,6 +128,7 @@ pub const Validator = struct {
     allocator: std.mem.Allocator,
     failures: std.ArrayList(Failure) = .empty,
     retained_pointer: ?[]u8 = null,
+    overrides: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, registry: *const Registry) Validator {
         return .{ .registry = registry, .allocator = allocator };
@@ -117,6 +137,7 @@ pub const Validator = struct {
     pub fn deinit(self: *Validator) void {
         for (self.failures.items) |failure| self.allocator.free(failure.pointer);
         self.failures.deinit(self.allocator);
+        self.overrides.deinit(self.allocator);
         if (self.retained_pointer) |owned| self.allocator.free(owned);
     }
 
@@ -411,7 +432,9 @@ pub const Validator = struct {
         const file = if (hash) |at| ref[0..at] else ref;
         const fragment = if (hash) |at| ref[at + 1 ..] else "";
         const target_document = if (file.len == 0) document else stripSchemaBase(file);
-        var node = self.registry.root(target_document) orelse return Unsupported.UnresolvableRef;
+        var node = self.overrides.get(target_document) orelse
+            self.registry.root(target_document) orelse
+            return Unsupported.UnresolvableRef;
         var parts = std.mem.splitScalar(u8, fragment, '/');
         while (parts.next()) |part| {
             if (part.len == 0) continue;
@@ -421,6 +444,43 @@ pub const Validator = struct {
         return .{ .schema = node, .document = target_document };
     }
 };
+
+pub fn withMember(
+    allocator: std.mem.Allocator,
+    document: std.json.Value,
+    definition: []const u8,
+    member: []const u8,
+    member_schema: std.json.Value,
+) !std.json.Value {
+    if (document != .object) return document;
+    const defs = document.object.get("$defs") orelse return document;
+    if (defs != .object) return document;
+    const target = defs.object.get(definition) orelse return document;
+    if (target != .object) return document;
+    const properties = target.object.get("properties") orelse return document;
+    if (properties != .object) return document;
+
+    var widened: std.json.ObjectMap = .empty;
+    var property = properties.object.iterator();
+    while (property.next()) |entry| try widened.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    try widened.put(allocator, member, member_schema);
+
+    var rebuilt: std.json.ObjectMap = .empty;
+    var field = target.object.iterator();
+    while (field.next()) |entry| try rebuilt.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    try rebuilt.put(allocator, "properties", .{ .object = widened });
+
+    var rebuilt_defs: std.json.ObjectMap = .empty;
+    var def = defs.object.iterator();
+    while (def.next()) |entry| try rebuilt_defs.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    try rebuilt_defs.put(allocator, definition, .{ .object = rebuilt });
+
+    var rebuilt_document: std.json.ObjectMap = .empty;
+    var top = document.object.iterator();
+    while (top.next()) |entry| try rebuilt_document.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    try rebuilt_document.put(allocator, "$defs", .{ .object = rebuilt_defs });
+    return .{ .object = rebuilt_document };
+}
 
 fn composeAlternatives(
     allocator: std.mem.Allocator,
