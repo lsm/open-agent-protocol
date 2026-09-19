@@ -64,12 +64,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
 
       - name: Run ${{ matrix.group }} unit tests
-        run: zig build test-unit-${{ matrix.group }}
+        run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
 
   no-comments:
     name: Zero-Comments Policy
@@ -127,7 +127,7 @@ jobs:
         run: npm ci
 
       - name: Build makai binary for TS SDK E2E
-        run: zig build install --prefix /tmp/makai-smoke
+        run: zig build --build-file zig/build.zig install --prefix /tmp/makai-smoke
 
       - name: Run TS SDK unit + E2E tests
         env:
@@ -181,7 +181,7 @@ jobs:
         run: go vet ./...
 
       - name: Build makai binary for Go SDK E2E
-        run: zig build install --prefix /tmp/makai-go
+        run: zig build --build-file zig/build.zig install --prefix /tmp/makai-go
 
       - name: Run Go SDK tests
         working-directory: sdk/go
@@ -231,7 +231,7 @@ jobs:
 
       - name: Build makai binary for Rust SDK E2E
         working-directory: .
-        run: zig build install --prefix /tmp/makai-rs
+        run: zig build --build-file zig/build.zig install --prefix /tmp/makai-rs
 
       - name: Run Rust SDK unit + E2E tests
         env:
@@ -283,7 +283,7 @@ jobs:
         run: python -m mypy
 
       - name: Build makai binary for Python SDK E2E
-        run: zig build install --prefix /tmp/makai-py
+        run: zig build --build-file zig/build.zig install --prefix /tmp/makai-py
 
       - name: Run Python SDK unit + E2E tests
         working-directory: sdk/python
@@ -321,13 +321,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
 
       - name: Run TUI PTY driver
         run: |
-          zig build install -Doptimize=ReleaseFast --prefix "$RUNNER_TEMP/makai-pty"
+          zig build --build-file zig/build.zig install -Doptimize=ReleaseFast --prefix "$RUNNER_TEMP/makai-pty"
           python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/makai" --output-dir tui-pty-out --scenario all
 
       - name: Record metrics in job summary
@@ -418,7 +418,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zig build install -Dtarget=${{ matrix.target }} --prefix "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}"
+          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} --prefix "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}"
 
       - name: Verify binary was produced
         shell: bash
@@ -444,11 +444,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Anthropic E2E tests
-        run: zig build test-e2e-anthropic
+        run: zig build --build-file zig/build.zig test-e2e-anthropic
         continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -468,11 +468,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run OpenAI E2E tests
-        run: zig build test-e2e-openai
+        run: zig build --build-file zig/build.zig test-e2e-openai
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -492,11 +492,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Azure E2E tests
-        run: zig build test-e2e-azure
+        run: zig build --build-file zig/build.zig test-e2e-azure
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -515,11 +515,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Google E2E tests
-        run: zig build test-e2e-google
+        run: zig build --build-file zig/build.zig test-e2e-google
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_MODEL: gemini-2.5-flash
@@ -537,11 +537,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Ollama E2E tests
-        run: zig build test-e2e-ollama
+        run: zig build --build-file zig/build.zig test-e2e-ollama
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OLLAMA_MODEL: gemma4:31b
@@ -561,11 +561,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run GitHub Copilot E2E tests
-        run: zig build test-e2e-github-copilot
+        run: zig build --build-file zig/build.zig test-e2e-github-copilot
         env:
           GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
           GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}
@@ -582,11 +582,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Protocol E2E tests (mock-based)
-        run: zig build test-e2e-protocol
+        run: zig build --build-file zig/build.zig test-e2e-protocol
 
   e2e-protocol-fullstack-ollama:
     name: E2E - Provider Protocol Fullstack (Ollama)
@@ -601,11 +601,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Provider Protocol Fullstack E2E tests (Ollama)
-        run: zig build test-e2e-provider-protocol-fullstack-ollama
+        run: zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-ollama
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OLLAMA_MODEL: gemma4:31b
@@ -625,11 +625,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Provider Protocol Fullstack E2E tests (GitHub Copilot)
-        run: zig build test-e2e-provider-protocol-fullstack-github
+        run: zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-github
         env:
           GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
           GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}
@@ -649,11 +649,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
             ${{ runner.os }}-zig-
       - name: Run Distributed Fullstack E2E tests (GitHub Copilot)
-        run: zig build test-e2e-distributed-fullstack-github
+        run: zig build --build-file zig/build.zig test-e2e-distributed-fullstack-github
         env:
           GH_COPILOT_REFRESH: ${{ secrets.GH_COPILOT_REFRESH }}
           GH_COPILOT_ACCESS: ${{ secrets.GH_COPILOT_ACCESS }}
