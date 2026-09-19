@@ -182,6 +182,9 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   const logger = createCapturingLogger();
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
   const binaryName = process.platform === "win32" ? "makai.exe" : "makai";
+  const resolveModule = (specifier: string): string => {
+    throw new Error(`Cannot find module '${specifier}'`);
+  };
   const prevPath = process.env.MAKAI_BINARY_PATH;
   const prevUrl = process.env.MAKAI_BINARY_URL;
   const prevChecksum = process.env.MAKAI_BINARY_SHA256;
@@ -189,7 +192,10 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   delete process.env.MAKAI_BINARY_URL;
   delete process.env.MAKAI_BINARY_SHA256;
   try {
-    const resolved = await resolveMakaiBinary({ logger, cwd: emptyCwd });
+    const resolved = await resolveMakaiBinary({ logger, cwd: emptyCwd, resolveModule });
+    const notFoundLog = logger.entries.find((e) => e.message === "binary: bundled package not found");
+    assert.ok(notFoundLog, "expected 'binary: bundled package not found' log");
+
     const candidateLogs = logger.entries.filter((e) => e.message === "binary: checking local candidate");
     assert.deepEqual(
       candidateLogs.map((e) => e.context?.path),
@@ -214,6 +220,44 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     if (prevChecksum === undefined) delete process.env.MAKAI_BINARY_SHA256;
     else process.env.MAKAI_BINARY_SHA256 = prevChecksum;
     await fs.promises.rm(emptyCwd, { recursive: true, force: true });
+  }
+});
+
+test("binary resolver logs resolution from the bundled package", async () => {
+  const logger = createCapturingLogger();
+  const bundledPath = path.join(path.sep, "bundled", "bin", process.platform === "win32" ? "makai.exe" : "makai");
+  const specifiers: string[] = [];
+  const resolveModule = (specifier: string): string => {
+    specifiers.push(specifier);
+    return bundledPath;
+  };
+  const prevPath = process.env.MAKAI_BINARY_PATH;
+  const prevUrl = process.env.MAKAI_BINARY_URL;
+  const prevChecksum = process.env.MAKAI_BINARY_SHA256;
+  delete process.env.MAKAI_BINARY_PATH;
+  delete process.env.MAKAI_BINARY_URL;
+  delete process.env.MAKAI_BINARY_SHA256;
+  try {
+    const resolved = await resolveMakaiBinary({ logger, resolveModule });
+    assert.equal(resolved, bundledPath);
+    assert.deepEqual(specifiers, [
+      `@makai/cli-${process.platform}-${process.arch}/bin/${process.platform === "win32" ? "makai.exe" : "makai"}`,
+    ]);
+
+    const bundledLog = logger.entries.find((e) => e.message === "binary: resolved from bundled package");
+    assert.ok(bundledLog, "expected 'binary: resolved from bundled package' log");
+    assert.equal(bundledLog.context?.path, bundledPath);
+    assert.equal(bundledLog.context?.package, `@makai/cli-${process.platform}-${process.arch}`);
+
+    const candidateLogs = logger.entries.filter((e) => e.message === "binary: checking local candidate");
+    assert.deepEqual(candidateLogs, [], "bundled package must short-circuit the local candidate search");
+  } finally {
+    if (prevPath === undefined) delete process.env.MAKAI_BINARY_PATH;
+    else process.env.MAKAI_BINARY_PATH = prevPath;
+    if (prevUrl === undefined) delete process.env.MAKAI_BINARY_URL;
+    else process.env.MAKAI_BINARY_URL = prevUrl;
+    if (prevChecksum === undefined) delete process.env.MAKAI_BINARY_SHA256;
+    else process.env.MAKAI_BINARY_SHA256 = prevChecksum;
   }
 });
 
